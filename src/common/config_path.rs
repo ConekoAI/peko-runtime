@@ -270,28 +270,24 @@ mod tests {
     }
 
     #[test]
-    fn test_get_array() {
-        let config = AgentConfig::default();
-        let value = get_config_value(&config, "extensions.enabled").unwrap();
-        // Default whitelist enables common built-in tools
-        assert!(value.is_array());
-        let arr = value.as_array().unwrap();
-        assert!(!arr.is_empty());
-        assert!(arr.contains(&serde_json::json!("builtin:tool:Bash")));
-    }
-
-    #[test]
     fn test_get_bool() {
+        // `enable_task_tools` is a per-agent toggle that defaults to
+        // `true`. Use it instead of the removed `auto_accept_trusted`
+        // field as the round-trip "get bool" target.
         let config = AgentConfig::default();
-        let value = get_config_value(&config, "auto_accept_trusted").unwrap();
-        assert_eq!(value, serde_json::json!(false));
+        let value = get_config_value(&config, "enable_task_tools").unwrap();
+        assert_eq!(value, serde_json::json!(true));
     }
 
     #[test]
-    fn test_get_number() {
+    fn test_get_optional_string() {
+        // `description` is the only surviving `Option<String>` field on
+        // `AgentConfig`; use it as the "get None" target. (Numeric
+        // round-trip lives on `PrincipalRoutingConfig` after the
+        // ownership refactor.)
         let config = AgentConfig::default();
-        let value = get_config_value(&config, "default_timeout_seconds").unwrap();
-        assert_eq!(value, serde_json::json!(300));
+        let value = get_config_value(&config, "description").unwrap();
+        assert_eq!(value, serde_json::json!(null));
     }
 
     #[test]
@@ -328,33 +324,39 @@ mod tests {
 
     #[test]
     fn test_set_array_value() {
-        let mut config = AgentConfig::default();
-        set_config_value(&mut config, "extensions.enabled", r#"["Bash","Read"]"#).unwrap();
-        assert_eq!(
-            config.extensions.as_ref().unwrap().enabled,
-            vec!["Bash", "Read"]
-        );
+        // **Track B**: `AgentConfig::extensions` was removed; the
+        // principal's allowlist is the source of truth for what
+        // tools a principal can see. The "set array" path is
+        // exercised on `PrincipalConfig::permissions` instead;
+        // see `PrincipalConfig` serde tests in
+        // `principal/config.rs`. The wrapper functions remain
+        // here for the surviving primitive fields.
     }
 
     #[test]
     fn test_set_bool_value() {
         let mut config = AgentConfig::default();
-        set_config_value(&mut config, "auto_accept_trusted", "true").unwrap();
-        assert!(config.auto_accept_trusted);
+        set_config_value(&mut config, "enable_task_tools", "false").unwrap();
+        assert!(!config.enable_task_tools);
     }
 
     #[test]
-    fn test_set_number_value() {
+    fn test_set_optional_string_value() {
+        // Round-trip an `Option<String>` (the only numeric-shaped
+        // field that survived the tidy). Numeric round-trip moved to
+        // `PrincipalRoutingConfig`.
         let mut config = AgentConfig::default();
-        set_config_value(&mut config, "default_timeout_seconds", "600").unwrap();
-        assert_eq!(config.default_timeout_seconds, 600);
+        set_config_value(&mut config, "description", "\"hello\"").unwrap();
+        assert_eq!(config.description.as_deref(), Some("hello"));
     }
 
     #[test]
     fn test_set_invalid_type_fails() {
+        // Cast a non-numeric value into a numeric field by reusing
+        // the optional-string path: send a number where a bool is
+        // expected.
         let mut config = AgentConfig::default();
-        let err =
-            set_config_value(&mut config, "default_timeout_seconds", "not-a-number").unwrap_err();
+        let err = set_config_value(&mut config, "enable_task_tools", "not-a-bool").unwrap_err();
         assert!(err.to_string().contains("Invalid value"));
     }
 

@@ -1,59 +1,78 @@
 //! Agent configuration (lifted from `src/types/agent.rs` in issue #31e)
+//!
+//! [`AgentConfig`] is the **per-agent** configuration that the engine
+//! owns. Principal-level config ([`PrincipalConfig`](crate::principal::config::PrincipalConfig))
+//! and runtime state ([`PrincipalContext`](crate::principal::context::PrincipalContext))
+//! hold the authority for shared fields (owner, permissions, workspace,
+//! provider/model hint, allowed extensions). What stays here is per-agent:
+//!
+//! - `name` / `description` — identity for serialization/routing
+//! - `prompt` — the agent's authored system prompt body (Markdown)
+//! - `agent_did` — the per-agent DID issued by the runtime (issue #28)
+//! - `enable_task_tools` / `enable_async_tools` — per-agent toggles that
+//!   control whether the planning-todo and async-execution tool families
+//!   are wired in
+//!
+//! A handful of principal-mirrored fields still live on this struct
+//! (`owner`, `permissions`) because the IPC/CRUD layer and engine
+//! paths read them from here today. The principal ownership refactor
+//! is staged:
+//! - `owner` / `permissions` are slated to move to `PrincipalConfig`
+//!   in a follow-up; the IPC/CRUD handlers will then look up the
+//!   principal instead of reading the mirrored field.
+//!
+//! The doc comments on those fields flag "Track B" / "Track C" so the
+//! next reader knows they're on borrowed time.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 use crate::auth::Subject;
-use crate::common::types::agent_legacy::{ChannelConfig, ExtensionConfig};
 
 /// Agent configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    /// Configuration format version
-    ///
-    /// Versions:
-    /// - `"1.0"` / `"2.0"`: legacy schema with embedded
-    ///   `[provider]` table; migrated to v3 on first load.
-    /// - `"3.0"`: runtime catalog + secret store. No provider/model
-    ///   fields on the agent; optional `preferred_provider_id` and
-    ///   `preferred_model_id` as soft hints.
-    #[serde(default = "default_config_version")]
-    pub version: String,
     /// Unique identifier (DID will be generated from this)
     pub name: String,
     /// Human-readable description
     pub description: Option<String>,
 
-    /// Extension configurations — unified whitelist and settings for all extension types
-    /// (tools, skills, MCP servers, universal tools, etc.)
-    #[serde(default)]
-    pub extensions: Option<ExtensionConfig>,
-    /// Channel configurations
-    #[serde(default)]
-    pub channels: Option<ChannelConfig>,
-    /// Auto-accept quotes (for trusted agents)
-    #[serde(default)]
-    pub auto_accept_trusted: bool,
-    /// Require human approval for contracts above this amount
-    pub approval_threshold: Option<f64>,
-    /// Default timeout for tasks (seconds)
-    #[serde(default = "default_timeout_seconds_value")]
-    pub default_timeout_seconds: u64,
-    /// Workspace directory for bootstrap files
-    pub workspace: Option<PathBuf>,
-    /// System prompt configuration
-    pub prompt: Option<PromptConfig>,
-    /// Host runtime identifier for multi-host awareness (ADR-032)
-    #[serde(default)]
-    pub host_runtime_id: String,
+    /// The agent's system prompt template (Markdown).
+    ///
+    /// `{{placeholder}}` tokens are replaced at prompt build time
+    /// (see `agents::prompt::builder`). `Some("")` is allowed and falls
+    /// back to `"You are <name>."` at build time. `None` means the
+    /// agent has no authored prompt — typical of a compiled-in root
+    /// agent extension where the body comes from the extension source
+    /// rather than user-authored TOML.
+    ///
+    /// Two production sources for the body:
+    /// - A compiled-in agent extension (e.g. `builtin:agent:root`) — the
+    ///   body comes from `AgentPrompt.body` at construction time and is
+    ///   never read from disk.
+    /// - A user-authored agent extension on disk
+    ///   (`<workspace>/agents/<name>.md`) — same path; the agent
+    ///   runner loads the markdown and the body ends up here.
+    pub prompt: Option<String>,
+
     /// Owner identity for ownership and permission model (ADR-039).
     ///
     /// Canonical form is `owner = { kind, id }` (a `Subject`).
+    ///
+    /// **Track C**: read-side authority for ownership / permission
+    /// checks will move to `PrincipalConfig::owner`. This field stays
+    /// for now because the IPC/CRUD layer still stamps it on the
+    /// on-disk agent TOML and consumes it for `transfer_agent_owner`
+    /// style operations.
     #[serde(default)]
     pub owner: Subject,
-    /// Explicit permission grants on this agent (ADR-033)
+
+    /// Explicit permission grants on this agent (ADR-033).
+    ///
+    /// **Track C**: read-side authority for permission checks will
+    /// move to `PrincipalConfig::permissions`.
     #[serde(default)]
     pub permissions: Vec<crate::auth::ownership::PermissionGrant>,
+
     /// Per-agent stable identifier (DID) — issue #28.
     ///
     /// Persisted from the agent's `Identity` (generated and stored under
@@ -70,17 +89,6 @@ pub struct AgentConfig {
     /// see `Subject::principal_wire_id` for the canonical resolution.
     #[serde(default)]
     pub agent_did: Option<String>,
-
-    /// **v3+.** Soft hint: which provider id the runtime should prefer
-    /// when this agent runs without an explicit caller override.
-    /// Resolved at request time by `LlmResolver`. Optional.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preferred_provider_id: Option<String>,
-
-    /// **v3+.** Soft hint: which model id within the preferred
-    /// provider the agent is tuned for. Optional.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preferred_model_id: Option<String>,
 
     /// Whether the planning-todo family (`TaskCreate`/`TaskGet`/
     /// `TaskList`/`TaskUpdate`) is enabled for this agent. Defaults to
@@ -103,7 +111,8 @@ fn default_true() -> bool {
 impl AgentConfig {
     /// Resolve the effective `Subject` owner.
     ///
-    /// Thin alias for `self.owner.clone()`.
+    /// Thin alias for `self.owner.clone()`. **Track C** will remove
+    /// this once ownership authority moves to `PrincipalConfig`.
     #[must_use]
     pub fn resolved_owner(&self) -> Subject {
         self.owner.clone()
@@ -131,89 +140,18 @@ impl AgentConfig {
     }
 }
 
-fn default_config_version() -> String {
-    "3.0".to_string()
-}
-
-fn default_timeout_seconds_value() -> u64 {
-    300
-}
-
-fn default_owner() -> Subject {
-    // Preserve the legacy "no owner" sentinel used in on-disk configs.
-    Subject::User(String::new())
-}
-
-impl AgentConfig {
-    /// Get the extension whitelist.
-    #[must_use]
-    pub fn extension_whitelist(&self) -> Vec<String> {
-        self.extensions
-            .as_ref()
-            .map(|e| e.enabled.clone())
-            .unwrap_or_default()
-    }
-
-    /// Check if an extension is enabled according to the whitelist.
-    ///
-    /// Delegates to `ExtensionConfig::is_extension_enabled`.
-    #[must_use]
-    pub fn is_extension_enabled(&self, name: &str) -> bool {
-        let Some(ref extensions) = self.extensions else {
-            return false;
-        };
-        extensions.is_extension_enabled(name)
-    }
-}
-
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            version: default_config_version(),
             name: "unnamed-agent".to_string(),
             description: None,
-            extensions: Some(ExtensionConfig::default()),
-            channels: None,
-            auto_accept_trusted: false,
-            approval_threshold: Some(100.0),
-            default_timeout_seconds: 300,
-            workspace: None,
             prompt: None,
-            host_runtime_id: String::new(),
-            owner: default_owner(),
+            owner: Subject::User(String::new()),
             permissions: Vec::new(),
             // Issue #28: back-filled on first `Agent::new()`.
             agent_did: None,
-            // v3+ soft hints. None by default.
-            preferred_provider_id: None,
-            preferred_model_id: None,
             enable_task_tools: true,
             enable_async_tools: true,
         }
     }
-}
-
-/// Prompt configuration
-///
-/// The agent's system prompt is a single Markdown body. `{{placeholder}}`
-/// tokens in the body are replaced by `SystemPromptBuilder` at prompt
-/// build time with rendered sections (tools, skills, agents, runtime,
-/// self-update). See `agents::prompt::builder` for the full placeholder
-/// grammar.
-///
-/// Two production sources for the body:
-///   - A compiled-in agent extension (e.g. `builtin:agent:root`) — the
-///     body comes from `AgentPrompt.body` at construction time and is
-///     never read from disk.
-///   - A user-authored agent extension on disk (`<workspace>/agents/<name>.md`)
-///     — same path; the agent runner loads the markdown and the body
-///     ends up here.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PromptConfig {
-    /// The agent's system prompt template (Markdown).
-    ///
-    /// Empty is allowed and falls back to `"You are <name>."` at
-    /// build time so agents without an authored prompt still run.
-    pub body: String,
 }

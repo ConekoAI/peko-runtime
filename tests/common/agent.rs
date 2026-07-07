@@ -18,28 +18,27 @@ use std::path::Path;
 /// Layout produced under `home/.peko/`:
 ///   agents/<name>/config.toml          v3 agent config with soft hints
 ///   agents/<name>/SYSTEM.md            empty system prompt
+///
+/// **Note**: as of the Track-B `AgentConfig` tidy, this helper
+/// writes only the fields that survived the cleanup. The
+/// previously-emitted `auto_accept_trusted`, `default_timeout_seconds`,
+/// `[channels]`, `[extensions]`, and inline `[prompt]` blocks are
+/// gone from `AgentConfig`; the catalog holds the provider/model
+/// wiring, `PrincipalConfig` carries the principal-mirrored fields,
+/// and `principal.toml`'s `[capabilities]` list is the source of
+/// truth for tool visibility. This helper is kept for any test that
+/// still needs a raw v3 agent TOML on disk.
+#[allow(dead_code)]
 pub fn write_v3_mock_agent(home: &Path, name: &str, _mock_llm_url: &str) -> std::io::Result<()> {
     let agent_dir = home.join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
 
     let config_toml = format!(
-        r#"version = "3.0"
-name = "{name}"
+        r#"name = "{name}"
 description = "CLI integration test agent"
-auto_accept_trusted = false
 
-preferred_provider_id = "mock-llm"
-preferred_model_id = "default"
-default_timeout_seconds = 60
-
-[extensions]
-enabled = []
-
-[channels]
-cli = true
-
-[prompt]
-system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
+enable_task_tools = true
+enable_async_tools = true
 "#
     );
 

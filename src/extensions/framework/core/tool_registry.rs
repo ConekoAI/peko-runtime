@@ -80,6 +80,15 @@ impl ToolRegistry {
         let owners = self.tool_owners.read().await;
 
         if let Some(list) = allowed_extensions {
+            // An empty allowlist means "no restrictions" — every
+            // registered tool is visible.  This matches the semantic on
+            // `Agent::with_principal_allowed_extensions` and the field
+            // name (`allowed_extensions` as a permissive list, not a
+            // denylist).  Default principals with no explicit
+            // `[allowed_extensions]` entries see every registered tool.
+            if list.is_empty() {
+                return true;
+            }
             let whitelist = crate::common::types::agent_legacy::ExtensionConfig {
                 enabled: list.to_vec(),
                 ..Default::default()

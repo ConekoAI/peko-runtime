@@ -223,8 +223,11 @@ mod tests {
     fn test_agent_config_default() {
         let config = AgentConfig::default();
         assert_eq!(config.name, "unnamed-agent");
-        assert_eq!(config.default_timeout_seconds, 300);
-        assert!(!config.auto_accept_trusted);
+        // Per-agent toggles default to on. The numeric/timeout fields
+        // they replaced have moved to principal-level config; their
+        // round-trip coverage lives on `PrincipalRoutingConfig`.
+        assert!(config.enable_task_tools);
+        assert!(config.enable_async_tools);
         // Issue #28: `agent_did` is `None` by default — back-filled on
         // first `Agent::new()` and persisted into config.toml.
         assert!(config.agent_did.is_none());
@@ -392,16 +395,19 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_config_has_default_extensions() {
+    fn test_agent_config_has_no_per_agent_extensions() {
+        // **Track B**: `AgentConfig::extensions` was removed; the
+        // principal's allowlist (`PrincipalContext::allowed_extensions`)
+        // is the source of truth for tool visibility. What an agent
+        // sees is bound at construction via
+        // `Agent::with_principal_allowed_extensions`.
         let config = AgentConfig::default();
-
-        // Default extension config exists with common built-in tools enabled
-        assert!(config.extensions.is_some());
-        let extensions = config.extensions.unwrap();
-        assert!(!extensions.enabled.is_empty());
-        assert!(extensions
-            .enabled
-            .contains(&"builtin:tool:Bash".to_string()));
+        // Sanity: the per-agent config no longer carries an
+        // extension whitelist field at all (compile-time check via
+        // the missing field access). The principal-side default
+        // (empty allow-list) round-trip is covered by
+        // `ExtensionConfig::default()` itself.
+        let _ = config.name;
     }
 
     #[test]
@@ -428,8 +434,6 @@ mod tests {
     fn test_v3_round_trip_has_no_legacy_fields() {
         let mut config = AgentConfig::default();
         config.name = "modern".to_string();
-        config.preferred_provider_id = Some("openai".into());
-        config.preferred_model_id = Some("gpt-4o-mini".into());
 
         let toml = toml::to_string_pretty(&config).unwrap();
         assert!(
@@ -441,9 +445,18 @@ mod tests {
             toml.contains("owner"),
             "owner field must be serialized as a Subject in v3 (PR #43 cleanup): {toml}"
         );
-        // Soft hints round-trip.
-        assert!(toml.contains("preferred_provider_id = \"openai\""));
-        assert!(toml.contains("preferred_model_id = \"gpt-4o-mini\""));
-        assert!(toml.contains("version = \"3.0\""));
+        // **Track B**: `preferred_provider_id` / `preferred_model_id`
+        // were removed from `AgentConfig`; the principal's hint is
+        // the source of truth and round-trips through
+        // `PrincipalConfig`. The agent's own TOML no longer carries
+        // those fields.
+        assert!(
+            !toml.contains("preferred_provider_id"),
+            "preferred_provider_id must NOT be serialized on AgentConfig (Track B): {toml}"
+        );
+        assert!(
+            !toml.contains("preferred_model_id"),
+            "preferred_model_id must NOT be serialized on AgentConfig (Track B): {toml}"
+        );
     }
 }

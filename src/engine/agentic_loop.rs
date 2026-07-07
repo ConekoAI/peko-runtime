@@ -887,13 +887,26 @@ impl AgenticLoop {
                             tc,
                             &self.extension_core,
                             self.agent.name(),
-                            self.agent.config.workspace.as_ref(),
+                            // **Track B**: per-agent `workspace` was
+                            // removed from `AgentConfig`; the
+                            // principal's workspace snapshot lives
+                            // on the agent itself.
+                            self.agent.principal_workspace(),
                             &session,
                             &run_id,
                             self.caller_id.as_deref(),
                             &self.agent_principal_id,
                             self.agent.principal_name().unwrap_or(""),
-                            Some(self.agent.config.extension_whitelist()),
+                            // **Track B**: per-agent allowlist now
+                            // lives on the agent itself, not on
+                            // `AgentConfig`.
+                            Some(
+                                self.agent
+                                    .principal_allowed_extensions()
+                                    .iter()
+                                    .cloned()
+                                    .collect::<Vec<_>>(),
+                            ),
                             self.cancel.clone(),
                             &on_event,
                         )
@@ -984,7 +997,15 @@ impl AgenticLoop {
     /// list is filtered by the agent's extension whitelist so the LLM only
     /// sees tools the agent is actually allowed to invoke.
     async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let allowed = self.agent.config.extension_whitelist();
+        // **Track B**: per-agent extension whitelist removed from
+        // `AgentConfig`; the principal's allowlist snapshot is
+        // carried on the agent itself.
+        let allowed = self
+            .agent
+            .principal_allowed_extensions()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
         let defs = self
             .extension_core
             .list_tool_definitions_with_allowlist(&allowed)
@@ -1141,14 +1162,12 @@ mod tests {
 
     /// Build a minimal agent config using the mock provider
     fn test_agent_config(name: &str) -> AgentConfig {
+        // **Track B**: per-agent extension whitelist removed from
+        // `AgentConfig`. The `*` placeholder this used to set is
+        // now applied via `Agent::with_principal_allowed_extensions`
+        // downstream of this fixture.
         AgentConfig {
             name: name.to_string(),
-            preferred_provider_id: Some("openai".into()),
-            preferred_model_id: Some("default".into()),
-            extensions: Some(crate::common::types::agent_legacy::ExtensionConfig {
-                enabled: vec!["*".to_string()],
-                ..Default::default()
-            }),
             ..Default::default()
         }
     }
