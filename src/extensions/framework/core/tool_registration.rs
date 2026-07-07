@@ -342,7 +342,6 @@ mod tests {
                 principal_name: None,
                 allowed_extensions: None,
                 abort_signal: None,
-                directory_tracker: None,
             },
             Arc::new(ExtensionServices::new()),
         );

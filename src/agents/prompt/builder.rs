@@ -45,8 +45,9 @@ pub struct SystemPromptBuilder {
     /// Principal runtime id for extension-scoped prompt hooks (P2 audit).
     principal_id: Option<String>,
     /// Per-principal long-term memory loaded from `<workspace>/MEMORY.md`.
-    /// Appended to the rendered prompt under a clearly delimited section
-    /// if present. The principal owns this file and may update it via
+    /// Rendered into the system prompt at the `{{memory}}` placeholder
+    /// when the template opts in; templates that omit `{{memory}}` get
+    /// no section. The principal owns this file and may update it via
     /// `Write`.
     principal_memory: Option<String>,
 }
@@ -94,9 +95,10 @@ impl SystemPromptBuilder {
 
     /// Set the per-principal long-term memory loaded from `<workspace>/MEMORY.md`.
     ///
-    /// When set, the builder appends a `## Your long-term memory (MEMORY.md)`
-    /// section containing this content to the rendered prompt. Pass `None`
-    /// (the default) when the file does not exist.
+    /// When set, the builder renders the memory at the `{{memory}}`
+    /// placeholder in the prompt body. Templates that omit `{{memory}}`
+    /// get no section. Pass `None` (the default) when the file does not
+    /// exist.
     pub fn with_principal_memory(mut self, memory: impl Into<String>) -> Self {
         self.principal_memory = Some(memory.into());
         self
@@ -162,23 +164,26 @@ impl SystemPromptBuilder {
             self.build_self_update_section(is_minimal),
         );
         values.insert(Placeholder::McpContext, self.build_mcp_context_section());
+        values.insert(Placeholder::Memory, self.build_memory_section());
 
         // 3. Replace placeholders in template
-        let mut rendered = replace_placeholders(&template, &values, true);
+        replace_placeholders(&template, &values, true)
+    }
 
-        // 4. Append principal long-term memory section, if a
-        //    MEMORY.md was found at the principal's workspace root.
-        //    Use a clearly delimited header so the model can attribute
-        //    the content (it is owned by the principal, not the user).
-        if let Some(memory) = self.principal_memory.as_deref() {
-            if !memory.trim().is_empty() {
-                rendered.push_str("\n\n## Your long-term memory (MEMORY.md)\n\n");
-                rendered.push_str(memory.trim());
-                rendered.push('\n');
-            }
+    /// Build the principal long-term memory section from MEMORY.md.
+    ///
+    /// Returns the trimmed memory content with a leading header when
+    /// `principal_memory` is set and non-empty; otherwise an empty
+    /// string so templates that omit `{{memory}}` get no section.
+    fn build_memory_section(&self) -> String {
+        let Some(memory) = self.principal_memory.as_deref() else {
+            return String::new();
+        };
+        let trimmed = memory.trim();
+        if trimmed.is_empty() {
+            return String::new();
         }
-
-        rendered
+        format!("## Your long-term memory (MEMORY.md)\n\n{trimmed}\n")
     }
 
     /// Build the MCP context section via Extension Core hooks
@@ -642,4 +647,77 @@ You are {{agent_name}}.
     // test_reserved_params_in_tools_section removed in ADR-019 cleanup:
     // reserved parameter docs are no longer injected into the system prompt
     // because ExtensionCore handles execution control via hooks.
+
+    /// `{{memory}}` placeholder renders the loaded MEMORY.md content
+    /// under the standard `## Your long-term memory (MEMORY.md)` header.
+    /// This pins down the opt-in wiring so casual users (who use the
+    /// default supervisor template) still see their memory without
+    /// having to author a custom system prompt.
+    #[test]
+    fn memory_placeholder_renders_content_when_set() {
+        let template = "You are {{agent_name}}.\n\n{{memory}}\n";
+
+        let prompt = SystemPromptBuilder::new("test-agent")
+            .with_mode(PromptMode::Full)
+            .with_body(template)
+            .with_principal_memory("Prefer tabs over spaces.")
+            .build();
+
+        assert!(
+            prompt.contains("## Your long-term memory (MEMORY.md)"),
+            "expected the memory section header in: {prompt}"
+        );
+        assert!(
+            prompt.contains("Prefer tabs over spaces."),
+            "expected the memory body in: {prompt}"
+        );
+        assert!(!prompt.contains("{{memory}}"));
+    }
+
+    /// When the template omits `{{memory}}`, the builder must NOT
+    /// append the memory section unconditionally — that's the whole
+    /// point of making it a placeholder. Templates that don't opt in
+    /// see no memory content at all, even when memory is loaded.
+    #[test]
+    fn memory_placeholder_omitted_when_not_in_template() {
+        let template = "You are {{agent_name}}.\n";
+
+        let prompt = SystemPromptBuilder::new("test-agent")
+            .with_mode(PromptMode::Full)
+            .with_body(template)
+            .with_principal_memory("should not appear")
+            .build();
+
+        assert!(
+            !prompt.contains("## Your long-term memory"),
+            "memory section leaked into a template that did not opt in: {prompt}"
+        );
+        assert!(
+            !prompt.contains("should not appear"),
+            "memory body leaked into a template that did not opt in: {prompt}"
+        );
+    }
+
+    /// When `principal_memory` is `None` (e.g. MEMORY.md doesn't exist),
+    /// `{{memory}}` resolves to the empty string — the marker is removed
+    /// by the placeholder regex, leaving a clean prompt rather than a
+    /// dangling `{{memory}}` token.
+    #[test]
+    fn memory_placeholder_removed_when_memory_unset() {
+        let template = "You are {{agent_name}}.\n\n{{memory}}\n";
+
+        let prompt = SystemPromptBuilder::new("test-agent")
+            .with_mode(PromptMode::Full)
+            .with_body(template)
+            .build();
+
+        assert!(
+            !prompt.contains("{{memory}}"),
+            "unreplaced {{memory}} marker leaked into: {prompt}"
+        );
+        assert!(
+            !prompt.contains("## Your long-term memory"),
+            "memory section rendered with no memory: {prompt}"
+        );
+    }
 }

@@ -749,9 +749,15 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
 }
 
 fn default_agent_prompt(name: &str) -> String {
+    // The `{{{{...}}}}` quadruple-braces emit the literal `{{memory}}`
+    // placeholder that `SystemPromptBuilder::build` substitutes for the
+    // principal's MEMORY.md content. Doubled braces are needed because
+    // `format!` treats `{...}` as a substitution argument and `{{` as
+    // a literal `{`.
     format!(
         "---\ndescription: \"Default assistant for {name}\"\n---\n\n\
-        You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n"
+        You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
+        {{{{memory}}}}\n"
     )
 }
 
@@ -860,6 +866,13 @@ mod tests {
     fn default_agent_prompt_contains_name() {
         let prompt = default_agent_prompt("spot");
         assert!(prompt.contains("spot"));
+        // The default supervisor template must opt in to the
+        // `{{memory}}` placeholder so casual users see their MEMORY.md
+        // content without authoring a custom template.
+        assert!(
+            prompt.contains("{{memory}}"),
+            "default agent prompt must include the {{memory}} placeholder; got: {prompt}"
+        );
     }
 
     #[tokio::test]

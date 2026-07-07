@@ -33,6 +33,8 @@ pub enum Placeholder {
     ThinkingLevel,
     /// MCP server context section - {{mcp_context}}
     McpContext,
+    /// Principal long-term memory from MEMORY.md - {{memory}}
+    Memory,
 }
 
 impl Placeholder {
@@ -52,6 +54,7 @@ impl Placeholder {
             Self::Channel => "{{channel}}",
             Self::ThinkingLevel => "{{thinking_level}}",
             Self::McpContext => "{{mcp_context}}",
+            Self::Memory => "{{memory}}",
         }
     }
 }
@@ -88,6 +91,7 @@ mod tests {
     fn test_placeholder_markers() {
         assert_eq!(Placeholder::Tools.marker(), "{{tools}}");
         assert_eq!(Placeholder::Runtime.marker(), "{{runtime}}");
+        assert_eq!(Placeholder::Memory.marker(), "{{memory}}");
     }
 
     #[test]

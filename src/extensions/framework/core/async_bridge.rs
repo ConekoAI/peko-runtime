@@ -178,7 +178,6 @@ impl ExtensionAsyncAdapter {
                     principal_name: None,
                     allowed_extensions: None,
                     abort_signal: None,
-                    directory_tracker: None,
                 },
             )
             .await;
@@ -244,7 +243,6 @@ impl ExtensionAsyncAdapter {
                                 principal_name: None,
                                 allowed_extensions: None,
                                 abort_signal: None,
-                                directory_tracker: None,
                             },
                         )
                         .await;

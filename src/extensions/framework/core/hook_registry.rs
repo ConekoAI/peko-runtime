@@ -429,7 +429,6 @@ impl HookRegistry {
             ref principal_id,
             ref principal_name,
             ref abort_signal,
-            ref directory_tracker,
             ..
         } = input
         {
@@ -454,11 +453,6 @@ impl HookRegistry {
             };
             let tool_ctx = if let Some(rx) = abort_signal {
                 tool_ctx.with_abort_signal(rx.clone())
-            } else {
-                tool_ctx
-            };
-            let tool_ctx = if let Some(tracker) = directory_tracker {
-                tool_ctx.with_directory_tracker(tracker.clone())
             } else {
                 tool_ctx
             };
