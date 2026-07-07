@@ -868,12 +868,23 @@ impl AgenticLoop {
                     .await?;
                 }
 
-                // Execute tools
-                for tool_call in &tool_calls {
-                    let allowed_extensions = Some(self.agent.config.extension_whitelist());
-                    let result = tool_executor
-                        .execute(
-                            tool_call,
+                // Execute tools in parallel (fan-out). Independent tool
+                // calls from a single LLM response run concurrently —
+                // `Read + Read`, `Glob + Grep`, `Bash + Bash`, etc. Each
+                // gets its own `CancellationToken` clone (cheap; the
+                // token is `Arc`-backed) so a per-tool cancel still
+                // wins for that specific tool.
+                //
+                // Results land in `messages` in the order the tool
+                // calls arrived (try_join_all preserves iterator
+                // order), but tool-result identity is keyed by
+                // `tool_call_id`, not position, so even a shuffle
+                // would still match correctly on the next LLM turn.
+                let tool_call_futs: Vec<_> = tool_calls
+                    .iter()
+                    .map(|tc| {
+                        tool_executor.execute(
+                            tc,
                             &self.extension_core,
                             self.agent.name(),
                             self.agent.config.workspace.as_ref(),
@@ -882,12 +893,15 @@ impl AgenticLoop {
                             self.caller_id.as_deref(),
                             &self.agent_principal_id,
                             self.agent.principal_name().unwrap_or(""),
-                            allowed_extensions,
+                            Some(self.agent.config.extension_whitelist()),
                             self.cancel.clone(),
                             &on_event,
                         )
-                        .await?;
-                    messages.push(result.message);
+                    })
+                    .collect();
+                let tool_results = futures::future::try_join_all(tool_call_futs).await?;
+                for r in tool_results {
+                    messages.push(r.message);
                 }
 
                 // Continue to next iteration
@@ -1545,6 +1559,173 @@ mod tests {
             result.iterations >= 1,
             "Should complete at least 1 iteration, got {}",
             result.iterations
+        );
+    }
+
+    // ===================================================================
+    // Parallel tool execution: when an LLM response carries multiple
+    // tool calls, the engine must fan them out concurrently. Each
+    // tool records its start/end timestamps into a shared log; the
+    // test asserts the intervals overlap.
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_parallel_tool_execution_overlaps_in_time() {
+        use crate::extensions::builtin::adapter::BuiltinToolAdapter;
+        use crate::providers::MockResponse;
+        use crate::tools::Tool;
+        use serde_json::json;
+        use std::sync::Mutex as StdMutex;
+        use std::time::{Duration, Instant};
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+
+        // Shared log: each tool pushes (name, start, end). The test
+        // asserts the two intervals overlap — proof of concurrency.
+        let log: Arc<StdMutex<Vec<(&'static str, Instant, Instant)>>> =
+            Arc::new(StdMutex::new(Vec::new()));
+
+        struct SlowTool {
+            label: &'static str,
+            log: Arc<StdMutex<Vec<(&'static str, Instant, Instant)>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl Tool for SlowTool {
+            fn name(&self) -> &str {
+                self.label
+            }
+
+            fn description(&self) -> String {
+                format!("slow tool {}", self.label)
+            }
+
+            fn parameters(&self) -> serde_json::Value {
+                json!({"type": "object", "properties": {}})
+            }
+
+            async fn execute(
+                &self,
+                _params: serde_json::Value,
+            ) -> anyhow::Result<serde_json::Value> {
+                let start = Instant::now();
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                let end = Instant::now();
+                self.log.lock().unwrap().push((self.label, start, end));
+                Ok(json!({"ok": true, "label": self.label}))
+            }
+        }
+
+        let core = global_core().unwrap();
+        BuiltinToolAdapter::register_tool(
+            &core,
+            Arc::new(SlowTool {
+                label: "ParaA",
+                log: log.clone(),
+            }) as Arc<dyn Tool>,
+        )
+        .await
+        .unwrap();
+        BuiltinToolAdapter::register_tool(
+            &core,
+            Arc::new(SlowTool {
+                label: "ParaB",
+                log: log.clone(),
+            }) as Arc<dyn Tool>,
+        )
+        .await
+        .unwrap();
+
+        // First response: TWO tool calls in one stream. The mock
+        // adapter's `stream_with_tools` reads from `stream_responses`,
+        // so we queue raw `StreamEvent` vectors here. The loop sees a
+        // single response with two calls and fans them out.
+        mock.queue_stream_response(MockResponse::Stream(vec![
+            crate::providers::StreamEvent::Start {
+                provider: "mock".to_string(),
+                model: "default".to_string(),
+            },
+            crate::providers::StreamEvent::ToolCallStart { content_index: 0 },
+            crate::providers::StreamEvent::ToolCallEnd {
+                content_index: 0,
+                tool_call: ContentBlock::ToolCall {
+                    id: "tc_a".to_string(),
+                    name: "ParaA".to_string(),
+                    arguments: json!({}),
+                },
+            },
+            crate::providers::StreamEvent::ToolCallStart { content_index: 1 },
+            crate::providers::StreamEvent::ToolCallEnd {
+                content_index: 1,
+                tool_call: ContentBlock::ToolCall {
+                    id: "tc_b".to_string(),
+                    name: "ParaB".to_string(),
+                    arguments: json!({}),
+                },
+            },
+            crate::providers::StreamEvent::Usage {
+                input: 0,
+                output: 0,
+                total: 0,
+            },
+            crate::providers::StreamEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ]));
+        // Second response: final text answer.
+        mock.queue_text("Both tools done.");
+
+        let config = test_agent_config("para-tools-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let loop_ = AgenticLoop::new(agent.clone(), provider, core).await;
+
+        let session = test_session("para-tools-agent", temp_dir.path()).await;
+        let started = Instant::now();
+        let result = loop_
+            .run_with_resume("Run both tools", |_| {}, session, None)
+            .await;
+        let total_elapsed = started.elapsed();
+
+        assert!(
+            result.is_ok(),
+            "Parallel tool loop should succeed: {:?}",
+            result.err()
+        );
+        let log_snapshot = log.lock().unwrap().clone();
+        assert_eq!(
+            log_snapshot.len(),
+            2,
+            "expected both tools to have run, got {log_snapshot:?}"
+        );
+
+        let (_, a_start, a_end) = log_snapshot
+            .iter()
+            .find(|(n, _, _)| *n == "ParaA")
+            .expect("ParaA recorded");
+        let (_, b_start, b_end) = log_snapshot
+            .iter()
+            .find(|(n, _, _)| *n == "ParaB")
+            .expect("ParaB recorded");
+
+        // Concurrency proof: the two intervals overlap. If they ran
+        // serially, B's start would equal A's end (or later).
+        let overlap = *a_start < *b_end && *b_start < *a_end;
+        assert!(
+            overlap,
+            "tools ran serially: ParaA=[{a_start:?}..{a_end:?}], \
+             ParaB=[{b_start:?}..{b_end:?}] — they should overlap"
+        );
+
+        // Total elapsed should be ~120ms (one tool's worth), not
+        // ~240ms (serial). Use 220ms as a generous upper bound to
+        // tolerate scheduler jitter on shared CI runners.
+        assert!(
+            total_elapsed < Duration::from_millis(220),
+            "total elapsed {total_elapsed:?} suggests serial execution; \
+             expected ~120ms with parallel fan-out"
         );
     }
 
