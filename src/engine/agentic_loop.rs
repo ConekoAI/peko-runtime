@@ -93,7 +93,7 @@ pub struct AgenticLoop {
     /// synthetic user-role messages. Always present — `None` would
     /// disable on-demand discovery, which is the default for callers
     /// that don't opt in (notably tests and legacy agent paths).
-    directory_tracker: Arc<crate::agents::prompt::memory::DirectoryContextTracker>,
+    directory_tracker: Arc<crate::extensions::framework::types::DirectoryContextTracker>,
 }
 
 impl AgenticLoop {
@@ -172,7 +172,7 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_directory_tracker(
         mut self,
-        tracker: Arc<crate::agents::prompt::memory::DirectoryContextTracker>,
+        tracker: Arc<crate::extensions::framework::types::DirectoryContextTracker>,
     ) -> Self {
         self.directory_tracker = tracker;
         self

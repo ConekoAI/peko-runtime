@@ -73,7 +73,7 @@ pub async fn execute_tool_via_core_with_context(
     allowed_extensions: Option<Vec<String>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
     directory_tracker: Option<
-        std::sync::Arc<crate::agents::prompt::memory::DirectoryContextTracker>,
+        std::sync::Arc<crate::extensions::framework::types::DirectoryContextTracker>,
     >,
 ) -> Result<(String, serde_json::Value, bool)> {
     let point = HookPoint::ToolExecute {

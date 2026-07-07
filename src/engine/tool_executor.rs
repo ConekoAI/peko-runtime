@@ -78,7 +78,9 @@ impl ToolExecutor {
         principal_name: &str,
         allowed_extensions: Option<Vec<String>>,
         cancel: Option<tokio_util::sync::CancellationToken>,
-        directory_tracker: Option<Arc<crate::agents::prompt::memory::DirectoryContextTracker>>,
+        directory_tracker: Option<
+            Arc<crate::extensions::framework::types::DirectoryContextTracker>,
+        >,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
     ) -> Result<ToolExecutionResult> {
         let (id, name, arguments) = match tool_call {

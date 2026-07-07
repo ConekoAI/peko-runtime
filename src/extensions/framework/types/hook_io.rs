@@ -211,8 +211,7 @@ pub enum HookInput {
         /// start and surfaces newly-discovered `AGENTS.md` content as
         /// synthetic user messages. `None` for callers that don't need
         /// directory-scoped memory.
-        directory_tracker:
-            Option<std::sync::Arc<crate::agents::prompt::memory::DirectoryContextTracker>>,
+        directory_tracker: Option<std::sync::Arc<super::DirectoryContextTracker>>,
     },
 
     /// Async task status check
