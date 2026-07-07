@@ -1720,10 +1720,16 @@ mod tests {
         );
 
         // Total elapsed should be ~120ms (one tool's worth), not
-        // ~240ms (serial). Use 220ms as a generous upper bound to
-        // tolerate scheduler jitter on shared CI runners.
+        // ~240ms (serial). The 300ms upper bound is well below the
+        // ~360ms+ serial-execution floor on the same hardware, while
+        // leaving headroom for the mock-LLM round-trips and other
+        // setup work that `run_with_resume` performs around the tool
+        // execution. Windows CI runners observed 236ms with genuinely
+        // overlapping tools — pure LLM round-trip overhead bumped the
+        // total above the previous 220ms bound even though the fan-out
+        // was correct (the overlap assertion above already passed).
         assert!(
-            total_elapsed < Duration::from_millis(220),
+            total_elapsed < Duration::from_millis(300),
             "total elapsed {total_elapsed:?} suggests serial execution; \
              expected ~120ms with parallel fan-out"
         );
