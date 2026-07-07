@@ -887,11 +887,23 @@ impl AgenticLoop {
                             tc,
                             &self.extension_core,
                             self.agent.name(),
-                            // **Track B**: per-agent `workspace` was
-                            // removed from `AgentConfig`; the
-                            // principal's workspace snapshot lives
-                            // on the agent itself.
-                            self.agent.principal_workspace(),
+                            // **Track B**: per-agent `workspace`
+                            // was removed from `AgentConfig`. The
+                            // principal's workspace still lives on the
+                            // agent via `principal_workspace()`, but
+                            // it is the Agent tool's subagent prompt
+                            // resolution root
+                            // (`<ws>/agents/<name>/AGENT.md`) — not
+                            // the per-call file workspace used by
+                            // `Write`/`Edit`/`Read`/etc. Those tools
+                            // resolve relative paths against their own
+                            // `workspace_dir`, set at construction by
+                            // `ToolRuntime::register_builtins` to
+                            // `<data>/workspaces`. Passing the
+                            // principal home here would make the
+                            // builtin preprocessor rewrite file paths
+                            // against `<principal_home>` instead.
+                            None,
                             &session,
                             &run_id,
                             self.caller_id.as_deref(),
