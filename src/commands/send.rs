@@ -10,6 +10,7 @@
 //!   peko send myprincipal "Hello" --no-stream
 
 use crate::commands::GlobalPaths;
+use crate::common::types::OutputFormat;
 use crate::ipc::packet::PrincipalSendControlMode;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use anyhow::Result;
@@ -48,26 +49,14 @@ pub struct SendArgs {
 pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> Result<()> {
     let message = resolve_message(&args).await?;
 
-    // Escape hatch: `\/prefix` sends the literal `/prefix` text to the LLM.
-    let (message, escaped) = if let Some(rest) = message.strip_prefix("\\\\/") {
-        (format!("/{rest}"), true)
-    } else {
-        (message, false)
-    };
-
-    // Intercept slash commands before contacting the daemon.
-    if !args.no_slash && !escaped {
-        if let Some(()) =
-            crate::commands::slash::maybe_handle_slash(&args.principal, &message, _paths, _json)
-                .await?
-        {
-            return Ok(());
-        }
-    }
-
     info!("Sending message to principal '{}'", args.principal);
 
     let client = DaemonClient::connect().await?;
+    let output_format = if _json {
+        OutputFormat::Json
+    } else {
+        OutputFormat::Human
+    };
     // Always use the streaming request. It emits `PrincipalSentChunk`
     // deltas as the root agent produces text, which (a) lets us print
     // incrementally and (b) keeps the per-packet idle timeout
@@ -76,7 +65,13 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
     // taking longer than the idle window dies with "Stream closed
     // unexpectedly". `--no-stream` still buffers before printing.
     let stream = client
-        .principal_send_stream(&args.principal, message, _paths.user())
+        .principal_send_stream(
+            &args.principal,
+            message,
+            _paths.user(),
+            args.no_slash,
+            output_format,
+        )
         .await?;
 
     // Print the request_id to stderr before reading the stream so

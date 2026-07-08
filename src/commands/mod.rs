@@ -25,7 +25,6 @@ pub mod registry;
 pub mod runtime;
 pub mod search;
 pub mod send;
-pub mod slash;
 pub mod system;
 pub mod tunnel;
 pub mod vault;

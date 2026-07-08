@@ -1,65 +1,98 @@
-//! Built-in `/help` slash command renderer.
+//! Built-in `/help` slash command renderer for the daemon-side slash
+//! dispatcher.
 
-use crate::commands::GlobalPaths;
-use crate::ipc::packet::{ExtensionSummary, ResponsePacket};
-use crate::ipc::{DaemonClient, RequestPacket};
+use crate::common::types::OutputFormat;
+use crate::extensions::framework::manager::ExtensionManager;
+use crate::extensions::framework::services::Services as ExtensionServices;
+use crate::ipc::packet::ExtensionSummary;
 use crate::principal::config::{AllowedExtensions, PrincipalConfig};
-use anyhow::{Context, Result};
+use crate::principal::Principal;
+use anyhow::Result;
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Description shown for the built-in `/help` slash command.
 pub const HELP_DESCRIPTION: &str =
     "Show built-in slash commands, enabled skills, and principal metadata";
 
-/// Handle `/help` by loading the principal config client-side, fetching
-/// the extension list from the daemon, filtering by the principal's
-/// allowlist, and printing grouped output.
-pub async fn handle_help(principal_name: &str, paths: &GlobalPaths, json: bool) -> Result<()> {
-    let config = load_principal_config(principal_name, paths)
-        .with_context(|| format!("Failed to load config for principal '{principal_name}'"))?;
-
-    let client = DaemonClient::connect()
-        .await
-        .context("Failed to connect to daemon; is `peko daemon start` running?")?;
-    let extensions = fetch_enabled_extensions(&client)
-        .await
-        .context("Failed to fetch extension list from daemon")?;
-
+/// Handle `/help` for the given principal and output format.
+pub async fn handle_help(
+    principal: &Principal,
+    extension_manager: &Arc<RwLock<ExtensionManager>>,
+    extension_services: &Arc<ExtensionServices>,
+    format: OutputFormat,
+) -> Result<String> {
+    // Reload config from disk so /help reflects recent edits (e.g. a user
+    // adding an extension to the allowlist while the daemon is running).
+    // If the on-disk file is missing or corrupt, fall back to the cached
+    // in-memory config rather than failing the slash command.
+    let config = match reload_config(principal).await {
+        Some(cfg) => cfg,
+        None => principal.config.read().await.clone(),
+    };
     let allowed = &config.allowed_extensions;
+    let extensions = list_enabled_extensions(extension_manager, extension_services).await?;
     let filtered: Vec<&ExtensionSummary> = extensions
         .iter()
         .filter(|ext| is_extension_allowed(ext, allowed))
         .collect();
 
-    if json {
-        render_json(principal_name, &config, allowed, &filtered)?;
-    } else {
-        render_human(principal_name, &config, allowed, &filtered)?;
+    match format {
+        OutputFormat::Human => Ok(render_human(&config.name,
+            &config,
+            allowed,
+            &filtered,
+        )),
+        OutputFormat::Json => render_json(&config.name, &config, allowed, &filtered),
     }
-
-    Ok(())
 }
 
-fn load_principal_config(principal_name: &str, paths: &GlobalPaths) -> Result<PrincipalConfig> {
-    let config_path = paths.principal_config(principal_name);
-    let content = std::fs::read_to_string(&config_path)
-        .with_context(|| format!("Failed to read principal config at {config_path:?}"))?;
-    let config: PrincipalConfig = toml::from_str(&content)
-        .with_context(|| format!("Failed to parse principal config at {config_path:?}"))?;
-    Ok(config)
-}
-
-async fn fetch_enabled_extensions(client: &DaemonClient) -> Result<Vec<ExtensionSummary>> {
-    let request_id = 0; // request_response assigns its own id internally
-    let packet = RequestPacket::ExtensionList {
-        request_id,
-        enabled_only: true,
-        ext_type: None,
-    };
-    match client.request_response(packet).await? {
-        ResponsePacket::ExtensionList { extensions, .. } => Ok(extensions),
-        other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
+/// Query enabled extensions from the daemon's extension manager and
+/// built-in extension services. Mirrors the IPC `ExtensionList` handler.
+async fn list_enabled_extensions(
+    extension_manager: &Arc<RwLock<ExtensionManager>>,
+    extension_services: &Arc<ExtensionServices>,
+) -> Result<Vec<ExtensionSummary>> {
+    {
+        let mut manager = extension_manager.write().await;
+        if let Err(e) = manager.load_all().await {
+            tracing::warn!("Failed to reload extensions for /help: {e}");
+        }
     }
+    let manager = extension_manager.read().await;
+    let builtins = extension_services.list_builtin_extensions().await;
+    let installed = manager.list_extensions();
+
+    let mut extensions = Vec::new();
+
+    for b in &builtins {
+        extensions.push(ExtensionSummary {
+            id: b.id.clone(),
+            name: b.name.clone(),
+            ext_type: b.ext_type.clone(),
+            version: "n/a".to_string(),
+            source: "built-in".to_string(),
+            enabled: b.enabled,
+            runtime: "n/a".to_string(),
+            description: String::new(),
+        });
+    }
+
+    for ext in installed {
+        extensions.push(ExtensionSummary {
+            id: ext.manifest.id.0.clone(),
+            name: ext.manifest.name.clone(),
+            ext_type: ext.extension_type.clone(),
+            version: ext.manifest.version.clone(),
+            source: "installed".to_string(),
+            enabled: true,
+            runtime: "n/a".to_string(),
+            description: ext.manifest.description.clone(),
+        });
+    }
+
+    Ok(extensions)
 }
 
 /// Returns true if the extension id or name matches any entry in the
@@ -87,14 +120,15 @@ fn render_human(
     config: &PrincipalConfig,
     allowed: &AllowedExtensions,
     extensions: &[&ExtensionSummary],
-) -> Result<()> {
-    println!("Peko /help\n");
-    println!("Principal: {}", principal_name);
+) -> String {
+    let mut out = String::new();
+    out.push_str("Peko /help\n\n");
+    out.push_str(&format!("Principal: {}\n", principal_name));
     if let Some(display) = config.identity.display_name.as_deref().filter(|s| !s.is_empty()) {
-        println!("Display name: {}", display);
+        out.push_str(&format!("Display name: {}\n", display));
     }
     if let Some(desc) = config.identity.description.as_deref().filter(|s| !s.is_empty()) {
-        println!("Description: {}", desc);
+        out.push_str(&format!("Description: {}\n", desc));
     }
 
     let allowed_list = allowed
@@ -103,21 +137,21 @@ fn render_human(
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join(", ");
-    println!(
-        "Allowed extensions ({}): {}",
+    out.push_str(&format!(
+        "Allowed extensions ({}): {}\n",
         allowed.0.len(),
         if allowed_list.is_empty() { "(none)" } else { &allowed_list }
-    );
+    ));
 
-    println!("\nBuilt-in slash commands:");
-    println!("  /help    {}", HELP_DESCRIPTION);
+    out.push_str("\nBuilt-in slash commands:\n");
+    out.push_str(&format!("  /help    {}\n", HELP_DESCRIPTION));
 
     let grouped = group_by_ext_type(extensions);
 
-    print_group("Enabled skills", grouped.get("skill"));
-    print_group("Enabled MCP servers", grouped.get("mcp"));
-    print_group("Enabled gateways", grouped.get("gateway"));
-    print_group("Enabled extensions", grouped.get("tool"));
+    print_group(&mut out, "Enabled skills", grouped.get("skill"));
+    print_group(&mut out, "Enabled MCP servers", grouped.get("mcp"));
+    print_group(&mut out, "Enabled gateways", grouped.get("gateway"));
+    print_group(&mut out, "Enabled extensions", grouped.get("tool"));
 
     // Any other extension types not covered above.
     for (&ext_type, items) in &grouped {
@@ -125,10 +159,10 @@ fn render_human(
             continue;
         }
         let title = format!("Enabled {}", pluralize(ext_type));
-        print_group(&title, Some(items));
+        print_group(&mut out, &title, Some(items));
     }
 
-    Ok(())
+    out
 }
 
 fn render_json(
@@ -136,7 +170,7 @@ fn render_json(
     config: &PrincipalConfig,
     allowed: &AllowedExtensions,
     extensions: &[&ExtensionSummary],
-) -> Result<()> {
+) -> Result<String> {
     let grouped = group_by_ext_type(extensions);
 
     let output = serde_json::json!({
@@ -157,8 +191,7 @@ fn render_json(
             .collect::<serde_json::Map<String, serde_json::Value>>(),
     });
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
-    Ok(())
+    Ok(serde_json::to_string_pretty(&output)?)
 }
 
 fn group_by_ext_type<'a>(
@@ -174,17 +207,17 @@ fn group_by_ext_type<'a>(
     grouped
 }
 
-fn print_group(title: &str, items: Option<&Vec<&ExtensionSummary>>) {
-    println!("\n{}:", title);
+fn print_group(out: &mut String, title: &str, items: Option<&Vec<&ExtensionSummary>>) {
+    out.push_str(&format!("\n{}:\n", title));
     match items {
-        None => println!("  (none)"),
-        Some(items) if items.is_empty() => println!("  (none)"),
+        None => out.push_str("  (none)\n"),
+        Some(items) if items.is_empty() => out.push_str("  (none)\n"),
         Some(items) => {
             for ext in items {
-                println!(
-                    "  {} | {} | {} | {}",
+                out.push_str(&format!(
+                    "  {} | {} | {} | {}\n",
                     ext.id, ext.ext_type, ext.name, ext.source
-                );
+                ));
             }
         }
     }
@@ -214,6 +247,15 @@ fn pluralize(word: &str) -> String {
     } else {
         format!("{word}s")
     }
+}
+
+/// Reload the Principal's config from its on-disk `principal.toml`, if
+/// possible. Returns `None` when the file cannot be read or parsed so the
+/// caller can fall back to the in-memory copy.
+async fn reload_config(principal: &Principal) -> Option<PrincipalConfig> {
+    let path = principal.workspace_path.join("principal.toml");
+    let raw = tokio::fs::read_to_string(&path).await.ok()?;
+    toml::from_str::<PrincipalConfig>(&raw).ok()
 }
 
 #[cfg(test)]

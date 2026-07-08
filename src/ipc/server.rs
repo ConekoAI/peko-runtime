@@ -2211,12 +2211,16 @@ impl IpcServer {
                 name,
                 message,
                 user,
+                no_slash,
+                output_format,
             } => {
                 Self::run_principal_send(
                     request_id,
                     name,
                     message,
                     user,
+                    no_slash,
+                    output_format,
                     state,
                     sink,
                     PrincipalSendResponseKind::OneShot,
@@ -2249,12 +2253,16 @@ impl IpcServer {
                 name,
                 message,
                 user,
+                no_slash,
+                output_format,
             } => {
                 Self::run_principal_send(
                     request_id,
                     name,
                     message,
                     user,
+                    no_slash,
+                    output_format,
                     state,
                     sink,
                     PrincipalSendResponseKind::Streaming,
@@ -3520,6 +3528,8 @@ impl IpcServer {
         name: String,
         message: String,
         user: String,
+        no_slash: bool,
+        output_format: crate::common::types::OutputFormat,
         state: AppState,
         sink: &dyn ResponseSink,
         response_kind: PrincipalSendResponseKind,
@@ -3544,6 +3554,52 @@ impl IpcServer {
                 return Ok(());
             }
         };
+
+        // Intercept slash commands before acquiring the run permit or
+        // building a router context. This keeps the behavior uniform
+        // across CLI, GUI, and tunnel callers.
+        let (slash_response, message) = match state
+            .principal_manager()
+            .preprocess_slash(&principal, message, no_slash, output_format)
+            .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: e.to_string(),
+                };
+                Self::send_sink(sink, response).await?;
+                let done = ResponsePacket::Done {
+                    request_id,
+                    success: false,
+                    error: Some(e.to_string()),
+                };
+                Self::send_sink(sink, done).await?;
+                return Ok(());
+            }
+        };
+
+        if let Some(content) = slash_response {
+            let final_packet = match response_kind {
+                PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
+                    request_id,
+                    content,
+                },
+                PrincipalSendResponseKind::OneShot => ResponsePacket::PrincipalSent {
+                    request_id,
+                    content,
+                },
+            };
+            Self::send_sink(sink, final_packet).await?;
+            let done = ResponsePacket::Done {
+                request_id,
+                success: true,
+                error: None,
+            };
+            Self::send_sink(sink, done).await?;
+            return Ok(());
+        }
 
         let peer = crate::auth::Subject::User(user);
         let channel = ChannelContext {

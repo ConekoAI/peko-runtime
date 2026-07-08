@@ -11,8 +11,11 @@ pub mod agent_legacy;
 pub mod config;
 pub mod extension;
 pub mod message;
+pub mod output_format;
 pub mod provider;
 pub mod task;
+
+pub use output_format::OutputFormat;
 
 pub use agent::{
     AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult, AgentInfo,
