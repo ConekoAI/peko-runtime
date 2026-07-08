@@ -52,6 +52,8 @@ You are {{{{agent_name}}}}, an AI assistant running in the peko agent runtime.
 
 Help the user accomplish their tasks efficiently and safely.
 
+{{{{session_context}}}}
+
 {{{{skills}}}}
 
 {{{{tools}}}}
@@ -150,6 +152,7 @@ mod tests {
         // Check for key sections
         assert!(content.contains("# SYSTEM.md — my-agent"));
         assert!(content.contains("{{agent_name}}"));
+        assert!(content.contains("{{session_context}}"));
         assert!(content.contains("{{tools}}"));
         assert!(content.contains("{{runtime}}"));
         assert!(content.contains("{{workspace}}"));

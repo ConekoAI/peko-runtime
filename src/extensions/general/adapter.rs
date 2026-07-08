@@ -32,6 +32,11 @@
 //!   - point: "event.subscribe"
 //!     topic_pattern: "instance.created"
 //!     handler: "on_instance_created"
+//!
+//!   - point: "session.start"
+//!     handler: "session_start"
+//!     command: "hooks/session-start"
+//!     output: "json"
 //! ```
 //!
 //! # Hook Point Reference
@@ -55,6 +60,7 @@
 //! - `session.state_change` - Session creation/update/compaction
 //! - `session.compaction` - Custom compaction strategies
 //! - `session.context_build` - Modify context window
+//! - `session.start` - Bootstrap context at session start
 //!
 //! ## I/O Lifecycle
 //! - `io.channel_input` - Register input channels
@@ -75,6 +81,9 @@ use crate::extensions::framework::adapters::parsing;
 use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter, HookBinding};
 use crate::extensions::framework::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
 use crate::extensions::framework::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
+use crate::extensions::general::command_handler::{
+    CommandHookConfig, CommandHookHandler, CommandOutputFormat, DEFAULT_COMMAND_TIMEOUT_SECS,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -165,6 +174,7 @@ impl GeneralExtensionAdapter {
             "session.compaction" => Some(HookPoint::SessionCompaction),
             "session.compaction_post" => Some(HookPoint::SessionCompactionPost),
             "session.context_build" => Some(HookPoint::SessionContextBuild),
+            "session.start" => Some(HookPoint::SessionStart),
 
             // I/O lifecycle
             "io.channel_input" => Some(HookPoint::ChannelInput),
@@ -296,14 +306,32 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
 
         for decl in declarations {
             if let Some(hook_point) = self.parse_hook_point(&decl) {
-                bindings.push(HookBinding::new(
-                    hook_point,
+                let factory = if let Some(command) = decl.command {
                     Box::new(GeneralHandlerFactory {
                         handler_name: decl.handler.clone(),
-                        hook_type: decl.point.clone(),
+                        hook_point: hook_point.clone(),
                         manifest: manifest.clone(),
-                    }),
-                ));
+                        command: Some(CommandHookConfig {
+                            command,
+                            args: decl.args.unwrap_or_default(),
+                            env: decl.env.unwrap_or_default(),
+                            timeout_secs: decl.timeout.unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS),
+                            output_format: CommandOutputFormat::from_str_opt(
+                                decl.output.as_deref(),
+                                &hook_point,
+                            ),
+                        }),
+                    })
+                } else {
+                    Box::new(GeneralHandlerFactory {
+                        handler_name: decl.handler.clone(),
+                        hook_point: hook_point.clone(),
+                        manifest: manifest.clone(),
+                        command: None,
+                    })
+                };
+
+                bindings.push(HookBinding::new(hook_point, factory));
             } else {
                 warn!(
                     "Failed to parse hook declaration: {} for handler {}",
@@ -352,8 +380,32 @@ pub struct HookDeclaration {
     /// Hook point name (e.g., "tool.execute", "event.subscribe")
     pub point: String,
 
-    /// Handler identifier (extension-specific)
+    /// Handler identifier (extension-specific), used for logging and
+    /// as a fallback key when no `command` is declared.
     pub handler: String,
+
+    /// Optional command to execute. When present, the hook result is
+    /// produced by running this command instead of by the placeholder
+    /// in-process handler.
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Arguments passed to `command`.
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+
+    /// Extra environment variables for the command.
+    #[serde(default)]
+    pub env: Option<HashMap<String, String>>,
+
+    /// Timeout in seconds. Defaults to `DEFAULT_COMMAND_TIMEOUT_SECS`.
+    #[serde(default)]
+    pub timeout: Option<u64>,
+
+    /// Expected output format: `"text"` or `"json"`. Default is `"json"`
+    /// for `session.start`, `"text"` otherwise.
+    #[serde(default)]
+    pub output: Option<String>,
 
     /// Hook-specific parameters (`tool_name`, section, priority, etc.)
     #[serde(flatten, default)]
@@ -364,16 +416,18 @@ pub struct HookDeclaration {
 #[derive(Clone)]
 struct GeneralHandlerFactory {
     handler_name: String,
-    hook_type: String,
+    hook_point: HookPoint,
     manifest: ExtensionManifest,
+    command: Option<CommandHookConfig>,
 }
 
 impl std::fmt::Debug for GeneralHandlerFactory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GeneralHandlerFactory")
             .field("handler_name", &self.handler_name)
-            .field("hook_type", &self.hook_type)
+            .field("hook_point", &self.hook_point)
             .field("extension", &self.manifest.id)
+            .field("command", &self.command.as_ref().map(|c| &c.command))
             .finish()
     }
 }
@@ -381,9 +435,17 @@ impl std::fmt::Debug for GeneralHandlerFactory {
 #[async_trait]
 impl HookHandlerFactory for GeneralHandlerFactory {
     fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        if let Some(config) = &self.command {
+            return Box::new(CommandHookHandler::new(
+                config.clone(),
+                self.manifest.path.clone(),
+                self.hook_point.clone(),
+            ));
+        }
+
         Box::new(GeneralHandler {
             handler_name: self.handler_name.clone(),
-            hook_type: self.hook_type.clone(),
+            hook_type: self.hook_point.name(),
             extension_id: crate::extensions::framework::types::ExtensionId::new(
                 &self.manifest.id.0,
             ),
@@ -601,6 +663,11 @@ mod tests {
         let decl = HookDeclaration {
             point: "prompt.system_section".to_string(),
             handler: "test_handler".to_string(),
+            command: None,
+            args: None,
+            env: None,
+            timeout: None,
+            output: None,
             params: {
                 let mut map = HashMap::new();
                 map.insert("section".to_string(), serde_json::json!("test"));
@@ -622,6 +689,11 @@ mod tests {
         let decl = HookDeclaration {
             point: "tool.execute".to_string(),
             handler: "test_handler".to_string(),
+            command: None,
+            args: None,
+            env: None,
+            timeout: None,
+            output: None,
             params: {
                 let mut map = HashMap::new();
                 map.insert("tool_name".to_string(), serde_json::json!("my_tool"));
@@ -642,6 +714,11 @@ mod tests {
         let decl = HookDeclaration {
             point: "event.subscribe".to_string(),
             handler: "test_handler".to_string(),
+            command: None,
+            args: None,
+            env: None,
+            timeout: None,
+            output: None,
             params: {
                 let mut map = HashMap::new();
                 map.insert("topic_pattern".to_string(), serde_json::json!("instance.*"));
@@ -657,11 +734,35 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_hook_declaration_session_start() {
+        let adapter = GeneralExtensionAdapter::new();
+        let decl = HookDeclaration {
+            point: "session.start".to_string(),
+            handler: "session_start_handler".to_string(),
+            command: None,
+            args: None,
+            env: None,
+            timeout: None,
+            output: None,
+            params: HashMap::new(),
+        };
+
+        let hook_point = adapter.parse_hook_point(&decl);
+        assert!(hook_point.is_some());
+        assert!(matches!(hook_point.unwrap(), HookPoint::SessionStart));
+    }
+
+    #[test]
     fn test_parse_hook_declaration_unknown() {
         let adapter = GeneralExtensionAdapter::new();
         let decl = HookDeclaration {
             point: "unknown.hook".to_string(),
             handler: "test_handler".to_string(),
+            command: None,
+            args: None,
+            env: None,
+            timeout: None,
+            output: None,
             params: HashMap::new(),
         };
 

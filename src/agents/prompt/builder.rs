@@ -51,6 +51,9 @@ pub struct SystemPromptBuilder {
     /// no section. The principal owns this file and may update it via
     /// `Write`.
     principal_memory: Option<String>,
+    /// Bootstrap context returned by `HookPoint::SessionStart` handlers.
+    /// Rendered at the `{{session_context}}` placeholder.
+    session_context: Option<String>,
 }
 
 impl SystemPromptBuilder {
@@ -71,6 +74,7 @@ impl SystemPromptBuilder {
             extension_core: None,
             principal_id: None,
             principal_memory: None,
+            session_context: None,
         }
     }
 
@@ -102,6 +106,15 @@ impl SystemPromptBuilder {
     /// exist.
     pub fn with_principal_memory(mut self, memory: impl Into<String>) -> Self {
         self.principal_memory = Some(memory.into());
+        self
+    }
+
+    /// Set bootstrap context returned by `HookPoint::SessionStart` handlers.
+    ///
+    /// When set, the builder renders the context at the `{{session_context}}`
+    /// placeholder. Templates that omit `{{session_context}}` get no section.
+    pub fn with_session_context(mut self, context: impl Into<String>) -> Self {
+        self.session_context = Some(context.into());
         self
     }
 
@@ -166,9 +179,29 @@ impl SystemPromptBuilder {
         );
         values.insert(Placeholder::McpContext, self.build_mcp_context_section());
         values.insert(Placeholder::Memory, self.build_memory_section());
+        values.insert(
+            Placeholder::SessionContext,
+            self.build_session_context_section(),
+        );
 
         // 3. Replace placeholders in template
         replace_placeholders(&template, &values, true)
+    }
+
+    /// Build the extension bootstrap context section from SessionStart hooks.
+    ///
+    /// Returns the trimmed context with a leading header when `session_context`
+    /// is set and non-empty; otherwise an empty string so templates that omit
+    /// `{{session_context}}` get no section.
+    fn build_session_context_section(&self) -> String {
+        let Some(context) = self.session_context.as_deref() else {
+            return String::new();
+        };
+        let trimmed = context.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        format!("## Session context\n\n{trimmed}\n")
     }
 
     /// Build the principal long-term memory section from MEMORY.md.
@@ -699,13 +732,56 @@ You are {{agent_name}}.
         );
     }
 
-    /// When `principal_memory` is `None` (e.g. MEMORY.md doesn't exist),
-    /// `{{memory}}` resolves to the empty string — the marker is removed
-    /// by the placeholder regex, leaving a clean prompt rather than a
-    /// dangling `{{memory}}` token.
+    /// When the template omits `{{session_context}}`, the builder must NOT
+    /// append the bootstrap context unconditionally.
     #[test]
-    fn memory_placeholder_removed_when_memory_unset() {
-        let template = "You are {{agent_name}}.\n\n{{memory}}\n";
+    fn session_context_placeholder_omitted_when_not_in_template() {
+        let template = "You are {{agent_name}}.\n";
+
+        let prompt = SystemPromptBuilder::new("test-agent")
+            .with_mode(PromptMode::Full)
+            .with_body(template)
+            .with_session_context("should not appear")
+            .build();
+
+        assert!(
+            !prompt.contains("## Session context"),
+            "session context section leaked into a template that did not opt in: {prompt}"
+        );
+        assert!(
+            !prompt.contains("should not appear"),
+            "session context body leaked into a template that did not opt in: {prompt}"
+        );
+    }
+
+    /// `{{session_context}}` placeholder renders the bootstrap context
+    /// under the standard `## Session context` header.
+    #[test]
+    fn session_context_placeholder_renders_content_when_set() {
+        let template = "You are {{agent_name}}.\n\n{{session_context}}\n";
+
+        let prompt = SystemPromptBuilder::new("test-agent")
+            .with_mode(PromptMode::Full)
+            .with_body(template)
+            .with_session_context("Always use the Superpowers skill pack.")
+            .build();
+
+        assert!(
+            prompt.contains("## Session context"),
+            "expected the session context section header in: {prompt}"
+        );
+        assert!(
+            prompt.contains("Always use the Superpowers skill pack."),
+            "expected the session context body in: {prompt}"
+        );
+        assert!(!prompt.contains("{{session_context}}"));
+    }
+
+    /// When `session_context` is `None`, `{{session_context}}` resolves to the
+    /// empty string.
+    #[test]
+    fn session_context_placeholder_removed_when_context_unset() {
+        let template = "You are {{agent_name}}.\n\n{{session_context}}\n";
 
         let prompt = SystemPromptBuilder::new("test-agent")
             .with_mode(PromptMode::Full)
@@ -713,12 +789,12 @@ You are {{agent_name}}.
             .build();
 
         assert!(
-            !prompt.contains("{{memory}}"),
-            "unreplaced {{memory}} marker leaked into: {prompt}"
+            !prompt.contains("{{session_context}}"),
+            "unreplaced {{session_context}} marker leaked into: {prompt}"
         );
         assert!(
-            !prompt.contains("## Your long-term memory"),
-            "memory section rendered with no memory: {prompt}"
+            !prompt.contains("## Session context"),
+            "session context section rendered with no context: {prompt}"
         );
     }
 }

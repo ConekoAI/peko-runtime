@@ -35,6 +35,8 @@ pub enum Placeholder {
     McpContext,
     /// Principal long-term memory from MEMORY.md - {{memory}}
     Memory,
+    /// Extension bootstrap context from SessionStart hooks - {{session_context}}
+    SessionContext,
 }
 
 impl Placeholder {
@@ -55,6 +57,7 @@ impl Placeholder {
             Self::ThinkingLevel => "{{thinking_level}}",
             Self::McpContext => "{{mcp_context}}",
             Self::Memory => "{{memory}}",
+            Self::SessionContext => "{{session_context}}",
         }
     }
 }
@@ -92,6 +95,7 @@ mod tests {
         assert_eq!(Placeholder::Tools.marker(), "{{tools}}");
         assert_eq!(Placeholder::Runtime.marker(), "{{runtime}}");
         assert_eq!(Placeholder::Memory.marker(), "{{memory}}");
+        assert_eq!(Placeholder::SessionContext.marker(), "{{session_context}}");
     }
 
     #[test]

@@ -17,6 +17,8 @@ use crate::common::types::message::{ContentBlock, LlmMessage};
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
+use crate::extensions::framework::types::SessionSnapshot;
+use crate::extensions::framework::{HookInput, HookPoint};
 use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition};
 use crate::session::Session;
 use anyhow::Result;
@@ -201,6 +203,17 @@ impl AgenticLoop {
         };
         info!("Using session: {}", session_id);
 
+        // Rebuild the system prompt so any bootstrap context returned by
+        // `HookPoint::SessionStart` handlers is included at the
+        // `{{session_context}}` placeholder.
+        let session_context = session.read().await.extension_context().map(String::from);
+        let system_prompt = SystemPromptService::build_fresh_with_session_context(
+            &self.agent,
+            &self.extension_core,
+            session_context,
+        )
+        .await;
+
         // Emit start event
         on_event(AgenticEvent::Lifecycle {
             run_id: run_id.clone(),
@@ -228,7 +241,7 @@ impl AgenticLoop {
                 let mut msgs = vec![LlmMessage {
                     role: MessageRole::System,
                     content: vec![ContentBlock::Text {
-                        text: self.system_prompt.clone(),
+                        text: system_prompt.clone(),
                     }],
                     timestamp: Utc::now(),
                     metadata: HashMap::new(),
@@ -239,7 +252,7 @@ impl AgenticLoop {
                 // Add system prompt to session
                 {
                     let mut s = session.write().await;
-                    s.add_system(&self.system_prompt).await?;
+                    s.add_system(&system_prompt).await?;
                 }
 
                 msgs
@@ -249,7 +262,7 @@ impl AgenticLoop {
             let msgs = vec![LlmMessage {
                 role: MessageRole::System,
                 content: vec![ContentBlock::Text {
-                    text: self.system_prompt.clone(),
+                    text: system_prompt.clone(),
                 }],
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
@@ -259,7 +272,7 @@ impl AgenticLoop {
             // Add system prompt to session
             {
                 let mut s = session.write().await;
-                s.add_system(&self.system_prompt).await?;
+                s.add_system(&system_prompt).await?;
             }
 
             msgs
@@ -304,6 +317,16 @@ impl AgenticLoop {
         };
         info!("Using session: {}", session_id);
 
+        // Rebuild the system prompt so any bootstrap context returned by
+        // `HookPoint::SessionStart` handlers is included.
+        let session_context = session.read().await.extension_context().map(String::from);
+        let system_prompt = SystemPromptService::build_fresh_with_session_context(
+            &self.agent,
+            &self.extension_core,
+            session_context,
+        )
+        .await;
+
         // Emit start event
         on_event(AgenticEvent::Lifecycle {
             run_id: run_id.clone(),
@@ -329,7 +352,7 @@ impl AgenticLoop {
                 let mut msgs = vec![LlmMessage {
                     role: MessageRole::System,
                     content: vec![ContentBlock::Text {
-                        text: self.system_prompt.clone(),
+                        text: system_prompt.clone(),
                     }],
                     timestamp: Utc::now(),
                     metadata: HashMap::new(),
@@ -339,7 +362,7 @@ impl AgenticLoop {
 
                 {
                     let mut s = session.write().await;
-                    s.add_system(&self.system_prompt).await?;
+                    s.add_system(&system_prompt).await?;
                 }
 
                 msgs
@@ -348,7 +371,7 @@ impl AgenticLoop {
             let msgs = vec![LlmMessage {
                 role: MessageRole::System,
                 content: vec![ContentBlock::Text {
-                    text: self.system_prompt.clone(),
+                    text: system_prompt.clone(),
                 }],
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
@@ -357,7 +380,7 @@ impl AgenticLoop {
 
             {
                 let mut s = session.write().await;
-                s.add_system(&self.system_prompt).await?;
+                s.add_system(&system_prompt).await?;
             }
 
             msgs
@@ -400,6 +423,45 @@ impl AgenticLoop {
         let session = session_manager
             .get_or_create_base(self.agent.name(), &peer)
             .await?;
+
+        // Fire the session-start hook for brand-new CLI sessions and persist
+        // the returned bootstrap context on the session.
+        {
+            let is_new_session = session.read().await.message_count == 0;
+            if is_new_session {
+                let workspace = self
+                    .agent
+                    .principal_workspace()
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let resolver = crate::common::paths::PathResolver::new();
+                        resolver.agent_workspace(self.agent.name())
+                    });
+                let mut metadata = HashMap::<String, serde_json::Value>::new();
+                metadata.insert("event".to_string(), serde_json::json!("startup"));
+                metadata.insert(
+                    "workspace".to_string(),
+                    serde_json::json!(workspace.to_string_lossy().to_string()),
+                );
+                let snapshot = SessionSnapshot {
+                    session_id: session.read().await.id.clone(),
+                    message_count: 0,
+                    context_tokens: 0,
+                    metadata,
+                };
+                if let Some(context) = self
+                    .extension_core
+                    .invoke_hook_text_with_principal(
+                        HookPoint::SessionStart,
+                        HookInput::SessionState(snapshot),
+                        Some(&self.agent_principal_id),
+                    )
+                    .await
+                {
+                    session.write().await.extension_context = Some(context);
+                }
+            }
+        }
 
         self.run_with_resume(prompt, on_event, session, None).await
     }
@@ -557,8 +619,13 @@ impl AgenticLoop {
 
             // ADR-019 Phase 3: Rebuild system prompt dynamically
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
-                let fresh_prompt =
-                    SystemPromptService::build_fresh(&self.agent, &self.extension_core).await;
+                let session_context = session.read().await.extension_context().map(String::from);
+                let fresh_prompt = SystemPromptService::build_fresh_with_session_context(
+                    &self.agent,
+                    &self.extension_core,
+                    session_context,
+                )
+                .await;
                 messages[0] = LlmMessage::system(fresh_prompt);
             }
 
@@ -1080,6 +1147,16 @@ impl AgenticLoop {
             run_id
         );
 
+        // Rebuild the system prompt so any bootstrap context returned by
+        // `HookPoint::SessionStart` handlers is included.
+        let session_context = session.read().await.extension_context().map(String::from);
+        let system_prompt = SystemPromptService::build_fresh_with_session_context(
+            &self.agent,
+            &self.extension_core,
+            session_context,
+        )
+        .await;
+
         // Build messages - either from history or fresh start
         let mut messages = if let Some(h) = history {
             info!("Loaded {} messages from history", h.len());
@@ -1094,7 +1171,7 @@ impl AgenticLoop {
                 let mut msgs = vec![LlmMessage {
                     role: MessageRole::System,
                     content: vec![ContentBlock::Text {
-                        text: self.system_prompt.clone(),
+                        text: system_prompt.clone(),
                     }],
                     timestamp: Utc::now(),
                     metadata: HashMap::new(),
@@ -1105,7 +1182,7 @@ impl AgenticLoop {
                 // Add system prompt to session
                 {
                     let mut s = session.write().await;
-                    s.add_system(&self.system_prompt).await?;
+                    s.add_system(&system_prompt).await?;
                 }
 
                 msgs
@@ -1115,7 +1192,7 @@ impl AgenticLoop {
             let msgs = vec![LlmMessage {
                 role: MessageRole::System,
                 content: vec![ContentBlock::Text {
-                    text: self.system_prompt.clone(),
+                    text: system_prompt.clone(),
                 }],
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
@@ -1125,7 +1202,7 @@ impl AgenticLoop {
             // Add system prompt to session
             {
                 let mut s = session.write().await;
-                s.add_system(&self.system_prompt).await?;
+                s.add_system(&system_prompt).await?;
             }
 
             msgs
@@ -1206,6 +1283,102 @@ mod tests {
         if global_core().is_none() {
             init_global_core(Arc::new(ExtensionCore::new()));
         }
+    }
+
+    // ===================================================================
+    // Session-start hook: bootstrap context is injected into the system
+    // prompt for brand-new sessions.
+    // ===================================================================
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn test_session_start_hook_injects_context() {
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("Acknowledged.");
+
+        #[derive(Debug)]
+        struct StartHandler;
+        #[async_trait::async_trait]
+        impl crate::extensions::framework::core::HookHandler for StartHandler {
+            async fn handle(
+                &self,
+                _ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Text(
+                        "Always use the Superpowers skill pack.".to_string(),
+                    ),
+                )
+            }
+
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::SessionStart
+            }
+
+            fn priority(&self) -> i32 {
+                100
+            }
+
+            fn name(&self) -> String {
+                "TestSessionStart".to_string()
+            }
+        }
+
+        let core = global_core().unwrap();
+        let hook_id = core
+            .register_hook(
+                crate::extensions::framework::core::HookPoint::SessionStart,
+                Arc::new(StartHandler),
+                &crate::extensions::framework::types::ExtensionId::new("test-start"),
+            )
+            .await
+            .unwrap()
+            .id;
+
+        let agent_name = format!("session-start-agent-{}", uuid::Uuid::new_v4());
+        let mut config = test_agent_config(&agent_name);
+        config.prompt = Some(
+            "You are {{agent_name}}.\n\n{{session_context}}\n\n{{tools}}\n".to_string(),
+        );
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+
+        let result = loop_.run("Start with context", |_| {}).await;
+
+        println!(
+            "DEBUG hook count for SessionStart: {}",
+            core.hook_count_for_point(
+                &crate::extensions::framework::core::HookPoint::SessionStart,
+            )
+            .await
+        );
+
+        // Clean up the hook so later tests are not affected.
+        let _ = global_core()
+            .unwrap()
+            .unregister_hook(&hook_id)
+            .await;
+
+        assert!(result.is_ok(), "Agentic loop should succeed: {:?}", result.err());
+
+        // The first recorded request's system message should contain the
+        // session-start bootstrap context.
+        let recorded = mock.recorded_requests();
+        assert!(!recorded.is_empty(), "mock should have recorded at least one request");
+        let system_text: String = recorded[0].messages[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            system_text.contains("Always use the Superpowers skill pack."),
+            "expected session-start context in system prompt, got: {system_text}"
+        );
     }
 
     // ===================================================================
