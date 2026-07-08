@@ -361,10 +361,10 @@ impl SystemPromptBuilder {
                         return format!(
                             r"## Skills (mandatory)
 Before replying: scan <available_skills> <description> entries.
-- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
-- If multiple could apply: choose the most specific one, then read/follow it.
-- If none clearly apply: do not read any SKILL.md.
-Constraints: never read more than one skill up front; only read after selecting.
+- If exactly one skill clearly applies: invoke the `Skill` tool with `name` = the skill name, then follow the returned body.
+- If multiple could apply: choose the most specific one, then invoke `Skill` with that name and follow the returned body.
+- If none clearly apply: do not invoke any skill.
+Constraints: never invoke more than one skill up front; only invoke after selecting.
 
 <available_skills>
 {skills_text}

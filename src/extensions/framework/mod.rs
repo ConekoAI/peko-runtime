@@ -68,6 +68,9 @@ pub mod integration;
 /// Extension lifecycle management (install, enable, disable, discover, bundle).
 pub mod manager;
 
+/// Global skill location catalog used by the builtin `Skill` tool.
+pub mod skill_catalog;
+
 /// Shared protocol utilities (process transport, validation, schema filter).
 pub mod protocols;
 
