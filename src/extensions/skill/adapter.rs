@@ -285,16 +285,16 @@ struct SkillPromptHandler {
 #[async_trait]
 impl HookHandler for SkillPromptHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
-        // Filter at handle-time using the principal's enabled-skill allowlist
-        // from `SkillStateRegistry`. The prompt builder injects `principal_id`
+        // Filter at handle-time using the principal's enabled-extension allowlist
+        // from `ExtensionStateRegistry`. The prompt builder injects `principal_id`
         // via `ctx.state["tool_context"]`.
         let principal_id = ctx
             .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
             .and_then(|tc| tc.principal_id.as_ref())
             .map(|pid| crate::principal::PrincipalId(pid.clone()));
 
-        let enabled = crate::principal::SkillStateRegistry::global()
-            .is_skill_enabled(principal_id.as_ref(), &self.skill_name)
+        let enabled = crate::principal::ExtensionStateRegistry::global()
+            .is_extension_enabled(principal_id.as_ref(), &self.skill_name)
             .await;
 
         if !enabled {
@@ -614,10 +614,10 @@ This is the body content.
         );
 
         let principal_id = crate::principal::PrincipalId("test-handler".to_string());
-        crate::principal::SkillStateRegistry::global()
+        crate::principal::ExtensionStateRegistry::global()
             .register(
                 principal_id.clone(),
-                crate::principal::SkillState::new(vec!["docker".to_string()], home.clone()),
+                crate::principal::ExtensionState::new(vec!["docker".to_string()], home.clone()),
             )
             .await;
         ctx.set_state(
@@ -628,7 +628,7 @@ This is the body content.
 
         let result = handler.handle(ctx).await;
 
-        crate::principal::SkillStateRegistry::global()
+        crate::principal::ExtensionStateRegistry::global()
             .unregister(&principal_id)
             .await;
 
@@ -666,10 +666,10 @@ This is the body content.
         );
 
         let principal_id = crate::principal::PrincipalId("test-filter".to_string());
-        crate::principal::SkillStateRegistry::global()
+        crate::principal::ExtensionStateRegistry::global()
             .register(
                 principal_id.clone(),
-                crate::principal::SkillState::new(vec!["other".to_string()], home.clone()),
+                crate::principal::ExtensionState::new(vec!["other".to_string()], home.clone()),
             )
             .await;
         ctx.set_state(
@@ -680,7 +680,7 @@ This is the body content.
 
         let result = handler.handle(ctx).await;
 
-        crate::principal::SkillStateRegistry::global()
+        crate::principal::ExtensionStateRegistry::global()
             .unregister(&principal_id)
             .await;
 

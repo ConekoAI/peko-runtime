@@ -252,7 +252,7 @@ async fn install_principal_tool_bag(
 
     // Register the singleton `Skill` tool once on the global core.
     // Per-principal allowlist and workspace state are resolved at handle
-    // time via `SkillStateRegistry` using the `principal_id` carried in
+    // time via `ExtensionStateRegistry` using the `principal_id` carried in
     // `ToolContext` (P2 audit issue #2).
     if let Err(e) =
         BuiltinToolAdapter::register_tool(core.as_ref(), Arc::new(SkillTool::new())).await

@@ -567,11 +567,11 @@ Be safe.
                 .await
                 .expect("Failed to register skills");
 
-            // Enable the skill for the principal used by the builder.
-            crate::principal::SkillStateRegistry::global()
+            // Enable the extension for the principal used by the builder.
+            crate::principal::ExtensionStateRegistry::global()
                 .register(
                     crate::principal::PrincipalId("test-builder".to_string()),
-                    crate::principal::SkillState::new(
+                    crate::principal::ExtensionState::new(
                         vec!["docker".to_string()],
                         tmp.path().to_path_buf(),
                     ),

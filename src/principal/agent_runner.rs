@@ -264,19 +264,19 @@ where
     // shared core, which is idempotent on tool name.
     install_agent_catalog(&core, available_agents).await?;
 
-    // Register the principal's per-message skill state. The singleton
+    // Register the principal's per-message extension state. The singleton
     // `Skill` tool resolves allowlist/workspace from this registry at
     // handle time using the `principal_id` in `ToolContext` (P2 audit
     // issue #2). The guard unregisters on scope exit so concurrent
     // principals don't leak state.
-    let skill_state = crate::principal::SkillState::new(
+    let extension_state = crate::principal::ExtensionState::new(
         ctx.allowed_extensions.to_vec(),
         ctx.workspace_path.clone(),
     );
-    crate::principal::SkillStateRegistry::global()
-        .register(ctx.principal_id().clone(), skill_state)
+    crate::principal::ExtensionStateRegistry::global()
+        .register(ctx.principal_id().clone(), extension_state)
         .await;
-    let _skill_state_guard = crate::principal::SkillStateGuard::new(ctx.principal_id().clone());
+    let _extension_state_guard = crate::principal::ExtensionStateGuard::new(ctx.principal_id().clone());
 
     // Register the principal's per-message agent state. Agent prompt
     // hooks resolve the allowlist from this registry at handle time using

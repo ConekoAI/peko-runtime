@@ -70,7 +70,7 @@ pub struct AgenticLoop {
     /// Spawning principal's runtime id. Always present for a loop constructed
     /// from an `Agent`. Propagated to `HookInput::ToolCall::principal_id` so
     /// extension-scoped tools such as `Skill` can resolve per-principal state
-    /// via the `SkillStateRegistry` at handle time.
+    /// via the `ExtensionStateRegistry` at handle time.
     agent_principal_id: String,
     /// Per-session queue of completed async tasks, drained at the start
     /// of `run_inner` iteration. Surfaced to the LLM as a

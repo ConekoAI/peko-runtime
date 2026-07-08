@@ -8,7 +8,7 @@ pub mod manager;
 pub mod memory;
 pub mod router;
 pub mod routers;
-pub mod skill_state;
+pub mod extension_state;
 pub mod slash;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
@@ -30,7 +30,7 @@ pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,
     PrincipalRouter, RouteDecision, RouterContext, RouterError,
 };
-pub use skill_state::{SkillState, SkillStateGuard, SkillStateRegistry};
+pub use extension_state::{ExtensionState, ExtensionStateGuard, ExtensionStateRegistry};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
