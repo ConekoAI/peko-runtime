@@ -2,8 +2,8 @@
 //!
 //! Provides `Skill` so the agent can invoke a SKILL.md body on-demand
 //! with argument substitution. The skill list is gated by the principal's
-//! `capabilities.skills` allowlist, resolved at handle time via the global
-//! [`SkillStateRegistry`](crate::principal::SkillStateRegistry).
+//! `allowed_extensions` allowlist, resolved at handle time via the global
+//! [`ExtensionStateRegistry`](crate::principal::ExtensionStateRegistry).
 //!
 //! Argument substitution matches Claude Code's skill syntax:
 //! - `$ARGUMENTS` — the full args array joined with single spaces
@@ -70,7 +70,7 @@ fn scan_max_positional_index(body: &str) -> usize {
 ///
 /// The `Skill` tool is a singleton registered once on the daemon-global
 /// `ExtensionCore`. Per-principal allowlist and workspace state are resolved
-/// at handle time via the global [`SkillStateRegistry`] using the
+/// at handle time via the global [`ExtensionStateRegistry`] using the
 /// `principal_id` carried in `ToolContext`. This avoids the previous
 /// per-message re-registration race (P2 audit issue #2).
 pub struct SkillTool {
@@ -215,7 +215,7 @@ Returns:
             }));
         };
 
-        let state = crate::principal::SkillStateRegistry::global()
+        let state = crate::principal::ExtensionStateRegistry::global()
             .get(&pid)
             .await;
         let Some(state) = state else {
@@ -438,7 +438,7 @@ mod tests {
 
     // ---- SkillTool::execute tests (filesystem-backed) ----
 
-    use crate::principal::{PrincipalId, SkillState, SkillStateRegistry};
+    use crate::principal::{ExtensionState, ExtensionStateRegistry, PrincipalId};
     use crate::tools::ToolContext;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::TempDir;
@@ -457,14 +457,14 @@ mod tests {
     }
 
     async fn register_test_state(pid: &PrincipalId, allowlist: Vec<&str>, workspace: PathBuf) {
-        let state = SkillState::new(allowlist.into_iter().map(String::from).collect(), workspace);
-        SkillStateRegistry::global()
+        let state = ExtensionState::new(allowlist.into_iter().map(String::from).collect(), workspace);
+        ExtensionStateRegistry::global()
             .register(pid.clone(), state)
             .await;
     }
 
     async fn cleanup_test_state(pid: &PrincipalId) {
-        SkillStateRegistry::global().unregister(pid).await;
+        ExtensionStateRegistry::global().unregister(pid).await;
     }
 
     fn write_skill(dir: &std::path::Path, name: &str, body: &str, args: &[&str]) {

@@ -43,7 +43,7 @@ pub async fn execute_tool_via_core(
 /// `caller_id` drives per-user permission checks and audit logging (issue #17).
 /// `principal_id` (P2-audit) is threaded into `ToolContext` so
 /// extension-scoped tools (e.g. `Skill`) can resolve per-principal
-/// state via `SkillStateRegistry` at handle time.
+/// state via `ExtensionStateRegistry` at handle time.
 /// `principal_name` is the human-readable Principal name used by
 /// Principal-scoped tools (e.g. `CronCreate`) to target jobs.
 /// `allowed_extensions` is the principal/agent allowlist used by the
