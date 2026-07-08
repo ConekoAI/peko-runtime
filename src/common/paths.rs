@@ -385,6 +385,14 @@ impl PathResolver {
         self.data_dir.join("agents")
     }
 
+    /// Get the Slash Commands directory
+    ///
+    /// Path: `{data_dir}/commands`
+    #[must_use]
+    pub fn commands_dir(&self) -> PathBuf {
+        self.data_dir.join("commands")
+    }
+
     // ====================================================================================
     // Data Directory Paths (sessions, workspaces, runtime data)
     // ====================================================================================

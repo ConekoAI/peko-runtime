@@ -59,6 +59,9 @@ pub mod skill;
 /// Agent extension adapter — AGENT.md-based prompt extensions with YAML frontmatter.
 pub mod agent;
 
+/// Slash command extension adapter — COMMAND.md-based user-invoked commands with YAML frontmatter.
+pub mod slash;
+
 /// Universal tool extension — external executable tools with manifest.yaml.
 pub mod universal;
 
@@ -96,6 +99,7 @@ impl BuiltInAdapters {
         vec![
             Box::new(skill::adapter::SkillAdapter::new()),
             Box::new(agent::adapter::AgentAdapter::new()),
+            Box::new(slash::adapter::SlashAdapter::new()),
             Box::new(universal::adapter::UniversalToolAdapter::new()),
             Box::new(mcp::adapter::McpAdapter::with_default_manager()),
             Box::new(gateway::adapter::GatewayAdapter::new(Arc::new(
@@ -123,6 +127,9 @@ pub mod extension_types {
     /// MCP server extension type
     pub const MCP: &str = "mcp";
 
+    /// Slash command extension type
+    pub const SLASH: &str = "slash";
+
     /// Universal tool extension type
     pub const UNIVERSAL_TOOL: &str = "universal-tool";
 
@@ -135,14 +142,14 @@ pub mod extension_types {
     /// Check if a type is valid
     #[must_use]
     pub fn is_valid_type(ext_type: &str) -> bool {
-        matches!(ext_type, SKILL | AGENT | MCP | UNIVERSAL_TOOL | GATEWAY)
+        matches!(ext_type, SKILL | AGENT | SLASH | MCP | UNIVERSAL_TOOL | GATEWAY)
             || ext_type.starts_with(CUSTOM_PREFIX)
     }
 
     /// Get all standard extension types
     #[must_use]
     pub fn standard_types() -> Vec<&'static str> {
-        vec![SKILL, AGENT, MCP, UNIVERSAL_TOOL, GATEWAY]
+        vec![SKILL, AGENT, SLASH, MCP, UNIVERSAL_TOOL, GATEWAY]
     }
 }
 
@@ -154,6 +161,7 @@ mod tests {
     fn test_extension_type_constants() {
         assert_eq!(extension_types::SKILL, "skill");
         assert_eq!(extension_types::AGENT, "agent");
+        assert_eq!(extension_types::SLASH, "slash");
         assert_eq!(extension_types::MCP, "mcp");
         assert_eq!(extension_types::UNIVERSAL_TOOL, "universal-tool");
     }
@@ -162,6 +170,7 @@ mod tests {
     fn test_extension_type_validation() {
         assert!(extension_types::is_valid_type("skill"));
         assert!(extension_types::is_valid_type("agent"));
+        assert!(extension_types::is_valid_type("slash"));
         assert!(extension_types::is_valid_type("mcp"));
         assert!(extension_types::is_valid_type("custom:internal"));
         assert!(!extension_types::is_valid_type("invalid"));
@@ -172,6 +181,7 @@ mod tests {
         let types = extension_types::standard_types();
         assert!(types.contains(&"skill"));
         assert!(types.contains(&"agent"));
+        assert!(types.contains(&"slash"));
         assert!(types.contains(&"mcp"));
         assert!(types.contains(&"gateway"));
     }
@@ -181,6 +191,6 @@ mod tests {
         let provider = BuiltInAdapters::new();
         let adapters = provider.adapters();
         assert!(!adapters.is_empty());
-        assert_eq!(adapters.len(), 6);
+        assert_eq!(adapters.len(), 7);
     }
 }

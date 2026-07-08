@@ -38,11 +38,32 @@ pub struct SendArgs {
     /// Disable streaming, wait for full response before output
     #[arg(long)]
     pub no_stream: bool,
+
+    /// Do not treat `/`-prefixed messages as slash commands; pass them to the LLM verbatim
+    #[arg(long)]
+    pub no_slash: bool,
 }
 
 /// Handle the send command
 pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> Result<()> {
     let message = resolve_message(&args).await?;
+
+    // Escape hatch: `\/prefix` sends the literal `/prefix` text to the LLM.
+    let (message, escaped) = if let Some(rest) = message.strip_prefix("\\\\/") {
+        (format!("/{rest}"), true)
+    } else {
+        (message, false)
+    };
+
+    // Intercept slash commands before contacting the daemon.
+    if !args.no_slash && !escaped {
+        if let Some(()) =
+            crate::commands::slash::maybe_handle_slash(&args.principal, &message, _paths, _json)
+                .await?
+        {
+            return Ok(());
+        }
+    }
 
     info!("Sending message to principal '{}'", args.principal);
 
@@ -282,15 +303,15 @@ mod tests {
     }
 
     #[test]
-    fn send_parses_file_flag() {
-        let cli = Cli::try_parse_from(["peko", "send", "myprincipal", "--file", "prompt.txt"])
-            .expect("should parse send command with file");
+    fn send_parses_no_slash_flag() {
+        let cli = Cli::try_parse_from(["peko", "send", "myprincipal", "--no-slash", "/help"])
+            .expect("should parse send command with --no-slash");
 
         match cli.command {
             Commands::Send(args) => {
                 assert_eq!(args.principal, "myprincipal");
-                assert_eq!(args.file, Some("prompt.txt".to_string()));
-                assert!(args.message.is_none());
+                assert!(args.no_slash);
+                assert_eq!(args.message, Some("/help".to_string()));
             }
             _other => panic!("expected Send command"),
         }
