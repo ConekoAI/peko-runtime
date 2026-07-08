@@ -9,6 +9,7 @@ pub mod memory;
 pub mod router;
 pub mod routers;
 pub mod skill_state;
+pub mod slash;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;

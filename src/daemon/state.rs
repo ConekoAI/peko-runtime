@@ -20,6 +20,7 @@ use crate::observability::Observability;
 use crate::principal::{
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
     memory::{DefaultPrincipalMemory, PrincipalMemory},
+    slash::SlashDispatcher,
     PrincipalManager,
 };
 use crate::registry::{load_from_workspace, RegistryConfig};
@@ -509,39 +510,6 @@ impl AppState {
         }
         let resolver = Arc::new(resolver_builder);
 
-        // Initialize the PrincipalManager and load any existing principals.
-        let principal_manager = {
-            let root = path_resolver.principals_root_dir();
-            let _ = std::fs::create_dir_all(&root);
-            let manager = PrincipalManager::with_path_resolver(
-                root.clone(),
-                path_resolver.clone(),
-                Arc::new(DaemonPrincipalMemoryFactory {
-                    data_dir: data_dir.clone(),
-                }),
-                Arc::new(DefaultPrincipalRouterFactory),
-            )
-            .with_resolver(resolver.clone());
-
-            if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let config_path = path.join("principal.toml");
-                        if config_path.exists() {
-                            if let Err(e) = manager.load(&config_path).await {
-                                tracing::warn!(
-                                    "Failed to load principal from {}: {e}",
-                                    config_path.display()
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            Arc::new(manager)
-        };
-
         let path_resolver_clone = path_resolver.clone();
         let agent_service = Arc::new(
             StatelessAgentService::new_with_resolver(
@@ -698,6 +666,46 @@ impl AppState {
         let extension_services = Arc::new(
             crate::extensions::framework::services::Services::with_core(Arc::clone(&global_core)),
         );
+
+        // Initialize the PrincipalManager and load any existing principals.
+        // This happens after the extension manager is built so we can inject
+        // the slash-command dispatcher, which needs extension state.
+        let slash_dispatcher = Arc::new(SlashDispatcher::new(
+            Arc::clone(&extension_manager),
+            Arc::clone(&extension_services),
+        ));
+        let principal_manager = {
+            let root = path_resolver.principals_root_dir();
+            let _ = std::fs::create_dir_all(&root);
+            let manager = PrincipalManager::with_path_resolver(
+                root.clone(),
+                path_resolver.clone(),
+                Arc::new(DaemonPrincipalMemoryFactory {
+                    data_dir: data_dir.clone(),
+                }),
+                Arc::new(DefaultPrincipalRouterFactory),
+            )
+            .with_resolver(resolver.clone())
+            .with_slash_dispatcher(slash_dispatcher);
+
+            if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let config_path = path.join("principal.toml");
+                        if config_path.exists() {
+                            if let Err(e) = manager.load(&config_path).await {
+                                tracing::warn!(
+                                    "Failed to load principal from {}: {e}",
+                                    config_path.display()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Arc::new(manager)
+        };
 
         // ADR-034: Initialize auth components
         let auth_config = crate::auth::config::AuthConfig::load(&path_resolver)?;

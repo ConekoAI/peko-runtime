@@ -7,6 +7,7 @@
 //! Packet size is limited to ~60KB to stay well under UDP MTU.
 //! Larger payloads are chunked at the application layer.
 
+use crate::common::types::OutputFormat;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -356,6 +357,12 @@ pub enum RequestPacket {
         name: String,
         message: String,
         user: String,
+        /// Do not treat `/`-prefixed messages as slash commands.
+        #[serde(default)]
+        no_slash: bool,
+        /// Preferred output format for slash-command responses.
+        #[serde(default)]
+        output_format: OutputFormat,
     },
 
     /// Streaming principal send. The daemon emits a sequence of
@@ -371,6 +378,12 @@ pub enum RequestPacket {
         name: String,
         message: String,
         user: String,
+        /// Do not treat `/`-prefixed messages as slash commands.
+        #[serde(default)]
+        no_slash: bool,
+        /// Preferred output format for slash-command responses.
+        #[serde(default)]
+        output_format: OutputFormat,
     },
 
     /// Soft-cancel or steer an in-flight `PrincipalSendStream` run.
@@ -1334,6 +1347,8 @@ mod tests {
             name: "helper".to_string(),
             message: "Hello".to_string(),
             user: "alice".to_string(),
+            no_slash: true,
+            output_format: OutputFormat::Json,
         };
 
         let bytes = req.to_bytes().unwrap();
@@ -1345,11 +1360,15 @@ mod tests {
                 name,
                 message,
                 user,
+                no_slash,
+                output_format,
             } => {
                 assert_eq!(request_id, 42);
                 assert_eq!(name, "helper");
                 assert_eq!(message, "Hello");
                 assert_eq!(user, "alice");
+                assert!(no_slash);
+                assert_eq!(output_format, OutputFormat::Json);
             }
             _ => panic!("Wrong variant"),
         }
@@ -2898,6 +2917,8 @@ mod tests {
             name: "helper".to_string(),
             message: "hello".to_string(),
             user: "alice".to_string(),
+            no_slash: true,
+            output_format: OutputFormat::Json,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -2907,11 +2928,15 @@ mod tests {
                 name,
                 message,
                 user,
+                no_slash,
+                output_format,
             } => {
                 assert_eq!(request_id, 5000);
                 assert_eq!(name, "helper");
                 assert_eq!(message, "hello");
                 assert_eq!(user, "alice");
+                assert!(no_slash);
+                assert_eq!(output_format, OutputFormat::Json);
             }
             _ => panic!("Wrong variant"),
         }
@@ -2927,6 +2952,8 @@ mod tests {
             name: "helper".to_string(),
             message: "stream please".to_string(),
             user: "alice".to_string(),
+            no_slash: true,
+            output_format: OutputFormat::Json,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -2936,11 +2963,15 @@ mod tests {
                 name,
                 message,
                 user,
+                no_slash,
+                output_format,
             } => {
                 assert_eq!(request_id, 5100);
                 assert_eq!(name, "helper");
                 assert_eq!(message, "stream please");
                 assert_eq!(user, "alice");
+                assert!(no_slash);
+                assert_eq!(output_format, OutputFormat::Json);
             }
             _ => panic!("Wrong variant"),
         }
@@ -3283,6 +3314,8 @@ mod tests {
             name: "p".to_string(),
             message: "m".to_string(),
             user: "u".to_string(),
+            no_slash: false,
+            output_format: OutputFormat::Human,
         };
         assert_eq!(req_send.request_id(), 1);
 

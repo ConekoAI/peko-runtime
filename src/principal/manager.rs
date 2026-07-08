@@ -9,11 +9,13 @@ use super::{
     config::{PrincipalConfig, PrincipalDID},
     factory::{PrincipalMemoryFactory, PrincipalRouterFactory},
     router::{ChannelContext, RouteDecision, RouterContext, RouterError},
+    slash::{SlashDispatcher, SlashError},
     AgentPrompt, Principal, PrincipalId,
 };
 use crate::auth::ownership::{check_permission, Permission, Resource};
 use crate::auth::Subject;
 use crate::common::paths::PathResolver;
+use crate::common::types::OutputFormat;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::async_exec::executor::SteeringMessage;
 use crate::identity::did::DIDScope;
@@ -42,6 +44,8 @@ pub enum PrincipalManagerError {
     Identity(String),
     #[error("permission denied: {0}")]
     PermissionDenied(String),
+    #[error("slash command error: {0}")]
+    Slash(#[from] SlashError),
 }
 
 /// Owns all Principals in a runtime.
@@ -60,6 +64,11 @@ pub struct PrincipalManager {
     /// Per-principal lock guarding first-time session creation/open so
     /// concurrent peers do not race on shared metadata/index writes.
     session_creation_locks: tokio::sync::RwLock<HashMap<PrincipalId, Arc<tokio::sync::Mutex<()>>>>,
+    /// Optional slash-command dispatcher. When set, incoming messages are
+    /// inspected for `/`-prefixed slash commands before reaching the root
+    /// agent. This is optional so tests and non-daemon contexts can build a
+    /// PrincipalManager without extension state.
+    slash_dispatcher: Arc<RwLock<Option<Arc<SlashDispatcher>>>>,
 }
 
 impl PrincipalManager {
@@ -92,11 +101,20 @@ impl PrincipalManager {
             resolver: None,
             inbox_registry: Arc::new(InboxRegistry::new()),
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
+            slash_dispatcher: Arc::new(RwLock::new(None)),
         }
     }
 
     pub fn with_resolver(mut self, resolver: Arc<LlmResolver>) -> Self {
         self.resolver = Some(resolver);
+        self
+    }
+
+    /// Attach a slash-command dispatcher. The dispatcher is shared by all
+    /// principals managed by this instance.
+    #[must_use]
+    pub fn with_slash_dispatcher(mut self, dispatcher: Arc<SlashDispatcher>) -> Self {
+        self.slash_dispatcher = Arc::new(RwLock::new(Some(dispatcher)));
         self
     }
 
@@ -485,6 +503,43 @@ impl PrincipalManager {
         })
     }
 
+    /// Inspect `message` for slash commands. If a slash command is handled,
+    /// returns `(Some(rendered_response), _)`. If the message is not a slash
+    /// command (or is escaped with `\/`, or `no_slash` is true), returns
+    /// `(None, processed_message)` where `processed_message` has the escape
+    /// stripped so the literal `/...` text reaches the root agent.
+    pub async fn preprocess_slash(
+        &self,
+        principal: &Arc<Principal>,
+        message: String,
+        no_slash: bool,
+        format: OutputFormat,
+    ) -> Result<(Option<String>, String), PrincipalManagerError> {
+        let (message, escaped) = if let Some(rest) = message.strip_prefix("\\/") {
+            (format!("/{rest}"), true)
+        } else {
+            (message, false)
+        };
+
+        if escaped || no_slash {
+            return Ok((None, message));
+        }
+
+        let dispatcher = self.slash_dispatcher.read().await;
+        if let Some(dispatcher) = dispatcher.as_ref() {
+            match dispatcher
+                .dispatch(principal, &message, false, format)
+                .await
+            {
+                Ok(Some(response)) => Ok((Some(response.content), message)),
+                Ok(None) => Ok((None, message)),
+                Err(e) => Err(PrincipalManagerError::Slash(e)),
+            }
+        } else {
+            Ok((None, message))
+        }
+    }
+
     /// The main entry point: a message arrives at a Principal boundary.
     pub async fn receive(
         &self,
@@ -497,6 +552,13 @@ impl PrincipalManager {
             .get(principal_id)
             .await
             .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
+
+        let (slash_response, message) = self
+            .preprocess_slash(&principal, message, false, OutputFormat::Human)
+            .await?;
+        if let Some(content) = slash_response {
+            return Ok(PrincipalResponse::text(content));
+        }
 
         let ctx = self
             .build_router_context(&principal, peer, message, channel)
@@ -550,6 +612,18 @@ impl PrincipalManager {
             .get(principal_id)
             .await
             .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
+
+        let (slash_response, message) = self
+            .preprocess_slash(
+                &principal,
+                message,
+                false,
+                OutputFormat::Human,
+            )
+            .await?;
+        if let Some(content) = slash_response {
+            return Ok(PrincipalResponse::text(content));
+        }
 
         let ctx = self
             .build_router_context(&principal, peer, message, channel)
