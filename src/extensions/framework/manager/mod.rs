@@ -371,6 +371,10 @@ impl ExtensionManager {
         let mut report = LoadReport::default();
         let mut scanned_paths = std::collections::HashSet::new();
 
+        // Reset the skill catalog before a full rescan so extension moves and
+        // uninstalls are reflected immediately.
+        crate::extensions::framework::skill_catalog::SkillCatalog::global().clear();
+
         // Collect all paths to scan (discovery paths + storage + legacy skill/agent dirs)
         let mut all_paths = discovery_paths::all();
         if let Some(storage_dir) = self.storage.dir() {
@@ -453,6 +457,7 @@ impl ExtensionManager {
         };
 
         self.extensions.insert(extension_id.clone(), loaded_ext);
+        self.register_skill_catalog(self.extensions.get(&extension_id).expect("just inserted"));
 
         // Try to populate source from .source file if not already set
         self.populate_source_from_storage(&extension_id);
@@ -532,6 +537,7 @@ impl ExtensionManager {
         };
 
         self.extensions.insert(extension_id.clone(), loaded_ext);
+        self.register_skill_catalog(self.extensions.get(&extension_id).expect("just inserted"));
 
         // Expose the persisted registry reference for packaging.
         self.populate_source_from_storage(&extension_id);
@@ -546,6 +552,10 @@ impl ExtensionManager {
             .extensions
             .remove(id)
             .context(format!("Extension '{id}' not found"))?;
+
+        // Remove any skill entries owned by this extension so the builtin
+        // Skill tool stops resolving them.
+        crate::extensions::framework::skill_catalog::SkillCatalog::global().unregister_by_extension(id);
 
         // Unregister all hooks
         for hook_id in &loaded_ext.hook_ids {
@@ -614,6 +624,23 @@ impl ExtensionManager {
         info!("Disabled extension hooks for '{}'", id);
 
         Ok(())
+    }
+
+    /// Register a loaded skill extension in the global `SkillCatalog` so the
+    /// builtin `Skill` tool can resolve its body at handle time.
+    fn register_skill_catalog(&self, loaded: &LoadedExtension) {
+        if loaded.extension_type != "skill" {
+            return;
+        }
+        let Some(skill_file) = loaded.manifest.metadata.get("skill_file").and_then(|v| v.as_str()) else {
+            return;
+        };
+        let name = loaded.manifest.id.0.clone();
+        crate::extensions::framework::skill_catalog::SkillCatalog::global().register(
+            name,
+            PathBuf::from(skill_file),
+            Some(loaded.manifest.id.clone()),
+        );
     }
 
     #[must_use]

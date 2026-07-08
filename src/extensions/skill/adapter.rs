@@ -167,7 +167,8 @@ impl ExtensionTypeAdapter for SkillAdapter {
                 priority: SKILL_HOOK_PRIORITY,
             },
             Box::new(SkillPromptHandlerFactory {
-                manifest: manifest.clone(),
+                skill_name: manifest.name.clone(),
+                description: manifest.description.clone(),
             }),
         )]
     }
@@ -255,21 +256,15 @@ pub struct SkillFrontmatter {
 /// Factory for creating skill prompt handlers
 #[derive(Debug, Clone)]
 struct SkillPromptHandlerFactory {
-    manifest: ExtensionManifest,
+    skill_name: String,
+    description: String,
 }
 
 impl HookHandlerFactory for SkillPromptHandlerFactory {
     fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
         Box::new(SkillPromptHandler {
-            skill_name: self.manifest.name.clone(),
-            description: self.manifest.description.clone(),
-            file_path: PathBuf::from(
-                self.manifest
-                    .get("skill_file")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            ),
+            skill_name: self.skill_name.clone(),
+            description: self.description.clone(),
         })
     }
 }
@@ -279,7 +274,6 @@ impl HookHandlerFactory for SkillPromptHandlerFactory {
 struct SkillPromptHandler {
     skill_name: String,
     description: String,
-    file_path: PathBuf,
 }
 
 #[async_trait]
@@ -301,12 +295,7 @@ impl HookHandler for SkillPromptHandler {
             return HookResult::PassThrough;
         }
 
-        // Compact the path to avoid leaking the absolute home directory layout.
-        let path_display = compact_skill_path(&self.file_path);
-        let text = format!(
-            "- {}: {} (location: {})",
-            self.skill_name, self.description, path_display
-        );
+        let text = format!("{}: {}", self.skill_name, self.description);
 
         HookResult::Continue(HookOutput::Text(text))
     }
@@ -329,26 +318,6 @@ impl HookHandler for SkillPromptHandler {
 
 // parse_frontmatter now uses parsing::parse_yaml_frontmatter from shared utilities
 
-/// Replace home directory with ~ to save tokens.
-///
-/// Always uses `/` as the path separator so the compacted path is
-/// consistent across platforms (especially Windows, where `Path::display`
-/// emits backslashes).
-fn compact_skill_path(path: &Path) -> String {
-    let path_str = path.to_string_lossy();
-    let compacted = if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy();
-        if path_str.starts_with(home_str.as_ref()) {
-            path_str.replacen(home_str.as_ref(), "~", 1)
-        } else {
-            path_str.to_string()
-        }
-    } else {
-        path_str.to_string()
-    };
-    compacted.replace('\\', "/")
-}
-
 /// Read the full content of a skill file
 pub fn read_skill_content(skill_path: &Path) -> Result<String> {
     std::fs::read_to_string(skill_path)
@@ -366,11 +335,9 @@ pub fn format_skills_for_prompt(skills: &[&DiscoveredSkill]) -> String {
     let mut lines = vec!["<available_skills>".to_string()];
 
     for skill in skills {
-        // Use full path (not compacted with ~) so the agent can read the file
-        let path_display = skill.file_path.to_string_lossy();
         lines.push(format!(
-            "- {}: {} (location: {})",
-            skill.manifest.name, skill.manifest.description, path_display
+            "- {}: {}",
+            skill.manifest.name, skill.manifest.description
         ));
     }
 
@@ -389,10 +356,10 @@ pub fn build_skills_prompt(skills: &[&DiscoveredSkill]) -> String {
     format!(
         r"## Skills (mandatory)
 Before replying: scan <available_skills> <description> entries.
-- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
-- If multiple could apply: choose the most specific one, then read/follow it.
-- If none clearly apply: do not read any SKILL.md.
-Constraints: never read more than one skill up front; only read after selecting.
+- If exactly one skill clearly applies: invoke the `Skill` tool with `name` = the skill name, then follow the returned body.
+- If multiple could apply: choose the most specific one, then invoke `Skill` with that name and follow the returned body.
+- If none clearly apply: do not invoke any skill.
+Constraints: never invoke more than one skill up front; only invoke after selecting.
 
 {skills_block}"
     )
@@ -419,7 +386,6 @@ pub async fn register_skills_with_core(
         let handler = Arc::new(SkillPromptHandler {
             skill_name: skill.manifest.name.clone(),
             description: skill.manifest.description.clone(),
-            file_path: skill.file_path,
         });
 
         let registration = core
@@ -583,25 +549,13 @@ This is the body content.
         assert!(prompt.contains("deploy: Deployment workflow"));
     }
 
-    #[test]
-    fn test_compact_skill_path() {
-        let home = dirs::home_dir().expect("Should have home dir");
-        let path = home.join(".peko/skills/docker/SKILL.md");
-
-        let compacted = compact_skill_path(&path);
-        assert!(compacted.starts_with('~'));
-    }
-
     #[tokio::test]
     async fn test_skill_handler() {
-        // Use actual home directory for cross-platform compatibility
         let home = dirs::home_dir().expect("Should have home dir");
-        let skill_path = home.join(".peko/skills/docker/SKILL.md");
 
         let handler = SkillPromptHandler {
             skill_name: "docker".to_string(),
             description: "Docker operations".to_string(),
-            file_path: skill_path,
         };
 
         let mut ctx = HookContext::new(
@@ -634,12 +588,7 @@ This is the body content.
 
         match result {
             HookResult::Continue(HookOutput::Text(text)) => {
-                assert!(text.contains("docker: Docker operations"));
-                // Path should be compacted to use ~ for home directory
-                assert!(
-                    text.contains("location: ~/.peko"),
-                    "Expected compacted path, got: {text}"
-                );
+                assert_eq!(text, "docker: Docker operations");
             }
             _ => panic!("Expected Continue with Text, got {result:?}"),
         }
@@ -648,12 +597,10 @@ This is the body content.
     #[tokio::test]
     async fn test_skill_handler_filters_disabled_skills() {
         let home = dirs::home_dir().expect("Should have home dir");
-        let skill_path = home.join(".peko/skills/docker/SKILL.md");
 
         let handler = SkillPromptHandler {
             skill_name: "docker".to_string(),
             description: "Docker operations".to_string(),
-            file_path: skill_path,
         };
 
         let mut ctx = HookContext::new(
@@ -692,13 +639,9 @@ This is the body content.
 
     #[tokio::test]
     async fn test_skill_handler_fail_closed_without_principal_id() {
-        let home = dirs::home_dir().expect("Should have home dir");
-        let skill_path = home.join(".peko/skills/docker/SKILL.md");
-
         let handler = SkillPromptHandler {
             skill_name: "docker".to_string(),
             description: "Docker operations".to_string(),
-            file_path: skill_path,
         };
 
         let ctx = HookContext::new(

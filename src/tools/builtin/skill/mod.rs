@@ -4,6 +4,8 @@
 //! with argument substitution. The skill list is gated by the principal's
 //! `allowed_extensions` allowlist, resolved at handle time via the global
 //! [`ExtensionStateRegistry`](crate::principal::ExtensionStateRegistry).
+//! Skill locations are resolved through the global [`SkillCatalog`], which is
+//! populated by `ExtensionManager` when skills are loaded.
 //!
 //! Argument substitution matches Claude Code's skill syntax:
 //! - `$ARGUMENTS` — the full args array joined with single spaces
@@ -24,14 +26,15 @@
 
 pub mod preprocess;
 
-use std::path::PathBuf;
-
 use async_trait::async_trait;
 use serde_json::json;
 
 use crate::extensions::framework::adapters::parsing::parse_yaml_frontmatter_typed;
-use crate::extensions::skill::SkillFrontmatter;
+use crate::extensions::skill::{SkillCatalog, SkillFrontmatter};
 use crate::tools::core::traits::Tool;
+
+/// Error variant returned when a skill's SKILL.md cannot be read or parsed.
+const SKILL_UNREADABLE: &str = "skill_unreadable";
 
 /// Sentinel used to escape `\$` placeholders during substitution.
 const ESCAPE_SENTINEL: &str = "\x00ESCAPED_DOLLAR\x00";
@@ -69,52 +72,19 @@ fn scan_max_positional_index(body: &str) -> usize {
 /// Tool for invoking a SKILL.md body with argument substitution.
 ///
 /// The `Skill` tool is a singleton registered once on the daemon-global
-/// `ExtensionCore`. Per-principal allowlist and workspace state are resolved
-/// at handle time via the global [`ExtensionStateRegistry`] using the
-/// `principal_id` carried in `ToolContext`. This avoids the previous
-/// per-message re-registration race (P2 audit issue #2).
-pub struct SkillTool {
-    /// Daemon-global skills directory (`~/.peko/skills/`).
-    ///
-    /// Set on first use so tests can construct a `SkillTool` without a
-    /// real data directory and then point it at a temp dir via
-    /// [`Self::with_skills_dir_for_test`].
-    skills_dir: std::sync::OnceLock<PathBuf>,
-}
+/// `ExtensionCore`. Skill locations are resolved at handle time through the
+/// global [`SkillCatalog`], populated by `ExtensionManager` whenever skills
+/// are discovered or installed. Per-principal allowlist and workspace state
+/// are resolved via the global [`ExtensionStateRegistry`] using the
+/// `principal_id` carried in `ToolContext`.
+#[derive(Debug, Default)]
+pub struct SkillTool;
 
 impl SkillTool {
     /// Build the singleton `SkillTool`.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            skills_dir: std::sync::OnceLock::new(),
-        }
-    }
-
-    /// Override the skills directory for a single test instance.
-    ///
-    /// # Panics
-    /// Panics if the skills directory has already been set.
-    #[cfg(test)]
-    fn with_skills_dir_for_test(self, dir: PathBuf) -> Self {
-        self.skills_dir
-            .set(dir)
-            .expect("skills_dir not already set");
-        self
-    }
-
-    fn skills_dir(&self) -> &PathBuf {
-        self.skills_dir.get_or_init(|| {
-            crate::common::paths::PathResolver::new()
-                .skills_dir()
-                .clone()
-        })
-    }
-}
-
-impl Default for SkillTool {
-    fn default() -> Self {
-        Self::new()
+        Self
     }
 }
 
@@ -232,15 +202,23 @@ Returns:
             }));
         }
 
-        let skill_md = self.skills_dir().join(&name).join("SKILL.md");
-        let content = std::fs::read_to_string(&skill_md).map_err(|e| {
-            anyhow::anyhow!("skill_unreadable: failed to read SKILL.md for skill {name}: {e}")
+        let Some(entry) = SkillCatalog::global().resolve(&name) else {
+            return Ok(json!({
+                "error": "unknown_skill",
+                "skill": name,
+            }));
+        };
+
+        let content = std::fs::read_to_string(&entry.path).map_err(|e| {
+            anyhow::anyhow!(
+                "{SKILL_UNREADABLE}: failed to read SKILL.md for skill {name}: {e}"
+            )
         })?;
 
         let (frontmatter, body): (SkillFrontmatter, String) =
             parse_yaml_frontmatter_typed(&content).map_err(|e| {
                 anyhow::anyhow!(
-                "skill_unreadable: failed to parse frontmatter in SKILL.md for skill {name}: {e}"
+                "{SKILL_UNREADABLE}: failed to parse frontmatter in SKILL.md for skill {name}: {e}"
             )
             })?;
 
@@ -440,6 +418,7 @@ mod tests {
 
     use crate::principal::{ExtensionState, ExtensionStateRegistry, PrincipalId};
     use crate::tools::ToolContext;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::TempDir;
 
@@ -465,6 +444,14 @@ mod tests {
 
     async fn cleanup_test_state(pid: &PrincipalId) {
         ExtensionStateRegistry::global().unregister(pid).await;
+    }
+
+    fn register_test_skill(name: &str, path: &std::path::Path) {
+        SkillCatalog::global().register(name, path, None);
+    }
+
+    fn cleanup_test_skill(name: &str) {
+        SkillCatalog::global().unregister(name);
     }
 
     fn write_skill(dir: &std::path::Path, name: &str, body: &str, args: &[&str]) {
@@ -505,8 +492,9 @@ mod tests {
             "Open issue $issue on branch $branch.\nFull: $ARGUMENTS",
             &["issue", "branch"],
         );
+        register_test_skill("fix", &tmp.path().join("fix").join("SKILL.md"));
         register_test_state(&pid, vec!["fix"], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        let tool = SkillTool::new();
         let result = tool
             .execute_with_context(
                 json!({
@@ -523,6 +511,7 @@ mod tests {
             "Open issue 42 on branch main.\nFull: 42 main"
         );
         cleanup_test_state(&pid).await;
+        cleanup_test_skill("fix");
     }
 
     #[tokio::test]
@@ -531,8 +520,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // Skill exists on disk but the allowlist doesn't include it.
         write_skill(tmp.path(), "fix", "body", &[]);
+        register_test_skill("fix", &tmp.path().join("fix").join("SKILL.md"));
         register_test_state(&pid, vec!["other"], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        let tool = SkillTool::new();
         let result = tool
             .execute_with_context(json!({ "name": "fix" }), &test_ctx(&pid))
             .await
@@ -540,6 +530,7 @@ mod tests {
         assert_eq!(result["error"], "skill_not_enabled");
         assert_eq!(result["skill"], "fix");
         cleanup_test_state(&pid).await;
+        cleanup_test_skill("fix");
     }
 
     #[tokio::test]
@@ -550,7 +541,7 @@ mod tests {
         let pid = next_test_pid();
         let tmp = TempDir::new().unwrap();
         register_test_state(&pid, vec![], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        let tool = SkillTool::new();
         let result = tool
             .execute_with_context(json!({ "name": "docker" }), &test_ctx(&pid))
             .await
@@ -565,7 +556,7 @@ mod tests {
         let pid = next_test_pid();
         let tmp = TempDir::new().unwrap();
         register_test_state(&pid, vec![], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        let tool = SkillTool::new();
         let err = tool.execute(json!({})).await.unwrap_err();
         assert!(err
             .to_string()
@@ -579,8 +570,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // No `arguments:` frontmatter; body still uses $issue.
         write_skill(tmp.path(), "minimal", "Issue $issue", &[]);
+        register_test_skill("minimal", &tmp.path().join("minimal").join("SKILL.md"));
         register_test_state(&pid, vec!["minimal"], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        let tool = SkillTool::new();
         let result = tool
             .execute_with_context(
                 json!({
@@ -594,6 +586,7 @@ mod tests {
         // $issue is undeclared → left literal.
         assert_eq!(result["body"], "Issue $issue");
         cleanup_test_state(&pid).await;
+        cleanup_test_skill("minimal");
     }
 
     #[tokio::test]
@@ -601,8 +594,9 @@ mod tests {
         let pid = next_test_pid();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "Docker", "Docker body", &[]);
+        register_test_skill("Docker", &tmp.path().join("Docker").join("SKILL.md"));
         register_test_state(&pid, vec!["docker"], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        let tool = SkillTool::new();
         let result = tool
             .execute_with_context(json!({ "name": "Docker" }), &test_ctx(&pid))
             .await
@@ -610,6 +604,7 @@ mod tests {
         assert_eq!(result["name"], "Docker");
         assert_eq!(result["body"], "Docker body");
         cleanup_test_state(&pid).await;
+        cleanup_test_skill("Docker");
     }
 
     #[tokio::test]
@@ -617,8 +612,9 @@ mod tests {
         let pid = next_test_pid();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "live", "CWD: !`pwd`", &[]);
+        register_test_skill("live", &tmp.path().join("live").join("SKILL.md"));
         register_test_state(&pid, vec!["live"], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        let tool = SkillTool::new();
         let result = tool
             .execute_with_context(json!({ "name": "live" }), &test_ctx(&pid))
             .await
@@ -634,6 +630,7 @@ mod tests {
         assert!(body.starts_with("CWD: "));
         assert!(body.len() > "CWD: ".len());
         cleanup_test_state(&pid).await;
+        cleanup_test_skill("live");
     }
 
     #[tokio::test]
@@ -643,8 +640,9 @@ mod tests {
         // Opener on its own line per the plan's exact-match rule.
         let body_str = "Intro\n```!\necho alpha\n```\nOutro";
         write_skill(tmp.path(), "fence", body_str, &[]);
+        register_test_skill("fence", &tmp.path().join("fence").join("SKILL.md"));
         register_test_state(&pid, vec!["fence"], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        let tool = SkillTool::new();
         let result = tool
             .execute_with_context(json!({ "name": "fence" }), &test_ctx(&pid))
             .await
@@ -656,6 +654,7 @@ mod tests {
         );
         assert!(!body.contains("```"), "fence markers should be gone");
         cleanup_test_state(&pid).await;
+        cleanup_test_skill("fence");
     }
 
     #[tokio::test]
@@ -664,14 +663,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_skill_with_frontmatter(
             tmp.path(),
-            "guarded",
+            "guarded_block",
             "allowed-tools:\n  - \"echo *\"\n",
             "Got: !`ls /`",
         );
-        register_test_state(&pid, vec!["guarded"], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        register_test_skill("guarded_block", &tmp.path().join("guarded_block").join("SKILL.md"));
+        register_test_state(&pid, vec!["guarded_block"], tmp.path().to_path_buf()).await;
+        let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "guarded" }), &test_ctx(&pid))
+            .execute_with_context(json!({ "name": "guarded_block" }), &test_ctx(&pid))
             .await
             .unwrap();
         let body = result["body"].as_str().unwrap();
@@ -680,6 +680,7 @@ mod tests {
         assert!(body.contains("[shell blocked: command not in allowed-tools]"));
         assert!(body.contains("!`ls /`"));
         cleanup_test_state(&pid).await;
+        cleanup_test_skill("guarded_block");
     }
 
     #[tokio::test]
@@ -688,18 +689,20 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_skill_with_frontmatter(
             tmp.path(),
-            "guarded",
+            "guarded_allow",
             "allowed-tools:\n  - \"echo *\"\n",
             "Got: !`echo hello`",
         );
-        register_test_state(&pid, vec!["guarded"], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        register_test_skill("guarded_allow", &tmp.path().join("guarded_allow").join("SKILL.md"));
+        register_test_state(&pid, vec!["guarded_allow"], tmp.path().to_path_buf()).await;
+        let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "guarded" }), &test_ctx(&pid))
+            .execute_with_context(json!({ "name": "guarded_allow" }), &test_ctx(&pid))
             .await
             .unwrap();
         assert_eq!(result["body"], "Got: hello\n");
         cleanup_test_state(&pid).await;
+        cleanup_test_skill("guarded_allow");
     }
 
     #[tokio::test]
@@ -707,8 +710,9 @@ mod tests {
         let pid = next_test_pid();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "fix", "body", &[]);
+        register_test_skill("fix", &tmp.path().join("fix").join("SKILL.md"));
         register_test_state(&pid, vec!["fix"], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        let tool = SkillTool::new();
         let ctx = ToolContext::for_hook_run("hook_run", "hook", "Skill");
         let result = tool
             .execute_with_context(json!({ "name": "fix" }), &ctx)
@@ -716,6 +720,7 @@ mod tests {
             .unwrap();
         assert_eq!(result["error"], "skill_not_enabled");
         cleanup_test_state(&pid).await;
+        cleanup_test_skill("fix");
     }
 
     #[tokio::test]
@@ -723,29 +728,44 @@ mod tests {
         let pid = next_test_pid();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "fix", "body", &[]);
+        register_test_skill("fix", &tmp.path().join("fix").join("SKILL.md"));
         // No state registered for `pid`.
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
+        let tool = SkillTool::new();
         let result = tool
             .execute_with_context(json!({ "name": "fix" }), &test_ctx(&pid))
             .await
             .unwrap();
         assert_eq!(result["error"], "skill_not_enabled");
+        cleanup_test_skill("fix");
     }
 
     #[tokio::test]
-    async fn execute_error_redacts_disk_path() {
+    async fn execute_resolves_extension_storage_style_path() {
+        // Skills installed via the extension framework live under a path like
+        // ~/.peko/data/extensions/<id>/SKILL.md rather than the legacy
+        // ~/.peko/skills/<name>/SKILL.md layout. The Skill tool should still
+        // resolve them through the catalog.
         let pid = next_test_pid();
         let tmp = TempDir::new().unwrap();
-        register_test_state(&pid, vec!["missing"], tmp.path().to_path_buf()).await;
-        let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
-        let err = tool
-            .execute_with_context(json!({ "name": "missing" }), &test_ctx(&pid))
+        let ext_dir = tmp.path().join("data").join("extensions").join("superpowers");
+        std::fs::create_dir_all(&ext_dir).unwrap();
+        let skill_md = ext_dir.join("SKILL.md");
+        std::fs::write(
+            &skill_md,
+            "---\nname: superpowers\ndescription: Superpowers skill\n---\n\nbody from extension storage\n",
+        )
+        .unwrap();
+        register_test_skill("superpowers", &skill_md);
+        register_test_state(&pid, vec!["superpowers"], tmp.path().to_path_buf()).await;
+
+        let tool = SkillTool::new();
+        let result = tool
+            .execute_with_context(json!({ "name": "superpowers" }), &test_ctx(&pid))
             .await
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("skill_unreadable"));
-        assert!(msg.contains("SKILL.md for skill missing"));
-        assert!(!msg.contains(tmp.path().to_string_lossy().as_ref()));
+            .unwrap();
+        assert_eq!(result["name"], "superpowers");
+        assert_eq!(result["body"], "body from extension storage");
         cleanup_test_state(&pid).await;
+        cleanup_test_skill("superpowers");
     }
 }
