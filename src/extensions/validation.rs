@@ -67,6 +67,7 @@ impl ExtensionValidationService {
         use crate::extensions::general::discover_general_extensions;
         use crate::extensions::mcp::McpAdapter;
         use crate::extensions::skill::SkillAdapter;
+        use crate::extensions::slash::SlashAdapter;
         use crate::extensions::universal::UniversalToolAdapter;
 
         if !path.exists() {
@@ -102,6 +103,33 @@ impl ExtensionValidationService {
 
             return Ok(ValidationReport {
                 detected_type: "skill".to_string(),
+                errors,
+                warnings,
+            });
+        }
+
+        if path.join("COMMAND.md").exists() {
+            if verbose {
+                println!(
+                    "✓ Detected as: slash command extension (COMMAND.md) [Tier 1 ecosystem standard]"
+                );
+            }
+
+            let slash_adapter = SlashAdapter::new();
+            let commands = slash_adapter.discover_commands(path);
+            if commands.is_empty() {
+                errors.push("No valid slash commands found in directory".to_string());
+            } else if verbose {
+                for command in &commands {
+                    println!(
+                        "  ✓ Slash command: {} - {}",
+                        command.manifest.name, command.manifest.description
+                    );
+                }
+            }
+
+            return Ok(ValidationReport {
+                detected_type: "slash".to_string(),
                 errors,
                 warnings,
             });
@@ -276,6 +304,7 @@ impl ExtensionValidationService {
         anyhow::bail!(
             "Could not detect extension type. Expected one of:\n\
              - SKILL.md (skill extension) [Tier 1]\n\
+             - COMMAND.md (slash command extension) [Tier 1]\n\
              - server.json (bare MCP server) [Tier 1]\n\
              - manifest.yaml with extension_type (unified manifest) [Tier 2]"
         );

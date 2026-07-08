@@ -18,6 +18,7 @@ use crate::extensions::gateway::GatewayAdapter;
 use crate::extensions::general::GeneralExtensionAdapter;
 use crate::extensions::mcp::McpAdapter;
 use crate::extensions::skill::SkillAdapter;
+use crate::extensions::slash::SlashAdapter;
 use crate::extensions::universal::UniversalToolAdapter;
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::RegistryConfig;
@@ -66,6 +67,7 @@ impl ExtensionManagementService {
 
         manager.register_adapter(Box::new(SkillAdapter::new()));
         manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+        manager.register_adapter(Box::new(SlashAdapter::new()));
         manager.register_adapter(Box::new(UniversalToolAdapter::new()));
         manager.register_adapter(Box::new(GatewayAdapter::new(core.clone())));
         manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));

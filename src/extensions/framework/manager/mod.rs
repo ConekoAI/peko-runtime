@@ -229,6 +229,12 @@ impl ExtensionManager {
             return Some("agent".to_string());
         }
 
+        // COMMAND.md → slash adapter
+        if path.join("COMMAND.md").exists() {
+            tracing::debug!("Detected Tier 1 ecosystem standard: COMMAND.md -> slash");
+            return Some("slash".to_string());
+        }
+
         // server.json → mcp adapter (bare MCP Registry standard)
         if path.join("server.json").exists() {
             tracing::debug!("Detected Tier 1 ecosystem standard: server.json -> mcp");
@@ -373,6 +379,7 @@ impl ExtensionManager {
         let path_resolver = crate::common::paths::PathResolver::new();
         all_paths.push(path_resolver.skills_dir());
         all_paths.push(path_resolver.agents_dir());
+        all_paths.push(path_resolver.commands_dir());
 
         for base_path in all_paths {
             if !base_path.exists() {

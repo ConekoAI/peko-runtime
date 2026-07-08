@@ -676,10 +676,12 @@ impl AppState {
         use crate::extensions::general::GeneralExtensionAdapter;
         use crate::extensions::mcp::McpAdapter;
         use crate::extensions::skill::SkillAdapter;
+        use crate::extensions::slash::SlashAdapter;
         use crate::extensions::universal::UniversalToolAdapter;
 
         ext_manager.register_adapter(Box::new(SkillAdapter::new()));
         ext_manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+        ext_manager.register_adapter(Box::new(SlashAdapter::new()));
         ext_manager.register_adapter(Box::new(UniversalToolAdapter::new()));
         ext_manager.register_adapter(Box::new(GatewayAdapter::new(Arc::clone(&global_core))));
         ext_manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
