@@ -71,6 +71,9 @@ pub struct Session {
     pub current_model: Option<String>,
     /// Cached metadata controller for index updates
     metadata_controller: Option<MetadataController>,
+    /// Bootstrap context returned by `HookPoint::SessionStart` handlers.
+    /// Persisted on the session so it survives prompt rebuilds.
+    pub extension_context: Option<String>,
 }
 
 impl Session {
@@ -102,6 +105,7 @@ impl Session {
             current_provider: None,
             current_model: None,
             metadata_controller: None,
+            extension_context: None,
         }
     }
 
@@ -206,6 +210,7 @@ impl Session {
             current_provider: None,
             current_model: None,
             metadata_controller: None,
+            extension_context: None,
         })
     }
 
@@ -266,6 +271,12 @@ impl Session {
             (Some(p), Some(m)) => Some((p.as_str(), m.as_str())),
             _ => None,
         }
+    }
+
+    /// Get the bootstrap context returned by `HookPoint::SessionStart` handlers.
+    #[must_use]
+    pub fn extension_context(&self) -> Option<&str> {
+        self.extension_context.as_deref()
     }
 
     // ============================================================

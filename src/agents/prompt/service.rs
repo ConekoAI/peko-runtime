@@ -24,6 +24,16 @@ impl SystemPromptService {
     /// Placeholders in the body are replaced with rendered sections
     /// (tools, skills, agents, runtime).
     pub async fn build(agent: &Agent, extension_core: &Arc<ExtensionCore>) -> String {
+        Self::build_with_session_context(agent, extension_core, None).await
+    }
+
+    /// Build the initial system prompt for an agent, including extension
+    /// bootstrap context returned by `HookPoint::SessionStart` handlers.
+    pub async fn build_with_session_context(
+        agent: &Agent,
+        extension_core: &Arc<ExtensionCore>,
+        session_context: Option<String>,
+    ) -> String {
         info!(
             "Building initial system prompt for agent '{}'",
             agent.name()
@@ -42,6 +52,9 @@ impl SystemPromptService {
         if let Some(memory) = crate::agents::prompt::memory::load_principal_memory(&workspace_dir) {
             builder = builder.with_principal_memory(memory);
         }
+        if let Some(context) = session_context {
+            builder = builder.with_session_context(context);
+        }
 
         builder.build()
     }
@@ -51,16 +64,30 @@ impl SystemPromptService {
     /// Used during the agentic loop to pick up SYSTEM.md changes,
     /// tool list updates, and skill/extension changes.
     pub async fn build_fresh(agent: &Agent, extension_core: &Arc<ExtensionCore>) -> String {
+        Self::build_fresh_with_session_context(agent, extension_core, None).await
+    }
+
+    /// Build a fresh system prompt dynamically, including extension
+    /// bootstrap context returned by `HookPoint::SessionStart` handlers.
+    pub async fn build_fresh_with_session_context(
+        agent: &Agent,
+        extension_core: &Arc<ExtensionCore>,
+        session_context: Option<String>,
+    ) -> String {
         let workspace_dir = Self::resolve_workspace(agent);
 
         let mut builder = SystemPromptBuilder::new(agent.name())
             .with_mode(PromptMode::Full)
             .with_workspace(&workspace_dir)
             .with_extension_core(Arc::clone(extension_core))
-            .with_principal_id(agent.principal_id().to_string());
+            .with_principal_id(agent.principal_id().to_string())
+            .with_body(agent.config.prompt.clone().unwrap_or_default());
 
         if let Some(memory) = crate::agents::prompt::memory::load_principal_memory(&workspace_dir) {
             builder = builder.with_principal_memory(memory);
+        }
+        if let Some(context) = session_context {
+            builder = builder.with_session_context(context);
         }
 
         builder.build()

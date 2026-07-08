@@ -134,6 +134,17 @@ pub enum HookPoint {
     /// Handlers return: `HookOutput::Json` (modified context)
     SessionContextBuild,
 
+    /// Bootstrap context injected at session start
+    ///
+    /// Called once when a new session is created (the `startup` event).
+    /// Extensions can return text that is persisted on the session and
+    /// rendered into the system prompt at the `{{session_context}}`
+    /// placeholder.
+    ///
+    /// Handlers receive: `HookInput::SessionState` with `event` metadata
+    /// Handlers return: `HookOutput::Text` (bootstrap context)
+    SessionStart,
+
     /// Post-compaction augmentation
     ///
     /// Called AFTER compaction completes (whether by built-in or extension).
@@ -250,7 +261,8 @@ impl HookPoint {
             Self::SessionStateChange
             | Self::SessionCompaction
             | Self::SessionContextBuild
-            | Self::SessionCompactionPost => "session",
+            | Self::SessionCompactionPost
+            | Self::SessionStart => "session",
 
             Self::ChannelInput
             | Self::ChannelOutput
@@ -292,6 +304,7 @@ impl HookPoint {
             Self::SessionCompaction => "session.compaction".to_string(),
             Self::SessionContextBuild => "session.context_build".to_string(),
             Self::SessionCompactionPost => "session.compaction_post".to_string(),
+            Self::SessionStart => "session.start".to_string(),
 
             Self::ChannelInput => "io.channel_input".to_string(),
             Self::ChannelOutput => "io.channel_output".to_string(),
@@ -645,12 +658,12 @@ mod tests {
     }
 
     #[test]
-    fn test_session_compaction_post_hook_point() {
-        let hp = HookPoint::SessionCompactionPost;
-        assert_eq!(hp.name(), "session.compaction_post");
+    fn test_session_start_hook_point() {
+        let hp = HookPoint::SessionStart;
+        assert_eq!(hp.name(), "session.start");
         assert_eq!(hp.category(), "session");
-        assert!(hp.matches("session.compaction_post"));
+        assert!(hp.matches("session.start"));
         assert!(hp.matches("session.*"));
-        assert!(!hp.matches("session.compaction"));
+        assert!(!hp.matches("session.state_change"));
     }
 }
