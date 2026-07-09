@@ -560,14 +560,14 @@ impl ExtensionCore {
     /// is only allowed to use a subset.
     pub async fn list_tool_definitions_with_allowlist(
         &self,
-        allowed_extensions: &[String],
+        allowed_extensions: Option<&[String]>,
     ) -> Vec<crate::providers::ToolDefinition> {
         let all = self.list_tools().await;
         let mut filtered = Vec::new();
         for metadata in all {
             if self
                 .tool_registry
-                .is_tool_enabled_with_whitelist(&metadata.name, Some(allowed_extensions))
+                .is_tool_enabled_with_whitelist(&metadata.name, allowed_extensions)
                 .await
             {
                 filtered.push(metadata.to_tool_definition());
@@ -973,12 +973,9 @@ mod tests {
             output: HookResult::Continue(HookOutput::text("executed")),
         });
 
-        // Register the tool with empty whitelist (all tools disabled)
-        let tool_config = crate::common::types::agent_legacy::ExtensionConfig {
-            enabled: vec![], // Empty whitelist = all tools disabled
-            ..Default::default()
-        };
-        core.set_tool_config(tool_config).await;
+        // Execute the tool with an empty per-call allowlist — every tool
+        // should be denied (fail-closed).
+        let allowed_extensions: Option<Vec<String>> = Some(vec![]);
 
         // Try to execute the tool - should be blocked
         let result = core
@@ -995,7 +992,7 @@ mod tests {
                     caller_id: None,
                     principal_id: None,
                     principal_name: None,
-                    allowed_extensions: None,
+                    allowed_extensions,
                     abort_signal: None,
                 },
             )

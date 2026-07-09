@@ -210,9 +210,7 @@ Returns:
         };
 
         let content = std::fs::read_to_string(&entry.path).map_err(|e| {
-            anyhow::anyhow!(
-                "{SKILL_UNREADABLE}: failed to read SKILL.md for skill {name}: {e}"
-            )
+            anyhow::anyhow!("{SKILL_UNREADABLE}: failed to read SKILL.md for skill {name}: {e}")
         })?;
 
         let (frontmatter, body): (SkillFrontmatter, String) =
@@ -436,7 +434,8 @@ mod tests {
     }
 
     async fn register_test_state(pid: &PrincipalId, allowlist: Vec<&str>, workspace: PathBuf) {
-        let state = ExtensionState::new(allowlist.into_iter().map(String::from).collect(), workspace);
+        let state =
+            ExtensionState::new(allowlist.into_iter().map(String::from).collect(), workspace);
         ExtensionStateRegistry::global()
             .register(pid.clone(), state)
             .await;
@@ -667,7 +666,10 @@ mod tests {
             "allowed-tools:\n  - \"echo *\"\n",
             "Got: !`ls /`",
         );
-        register_test_skill("guarded_block", &tmp.path().join("guarded_block").join("SKILL.md"));
+        register_test_skill(
+            "guarded_block",
+            &tmp.path().join("guarded_block").join("SKILL.md"),
+        );
         register_test_state(&pid, vec!["guarded_block"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
@@ -693,7 +695,10 @@ mod tests {
             "allowed-tools:\n  - \"echo *\"\n",
             "Got: !`echo hello`",
         );
-        register_test_skill("guarded_allow", &tmp.path().join("guarded_allow").join("SKILL.md"));
+        register_test_skill(
+            "guarded_allow",
+            &tmp.path().join("guarded_allow").join("SKILL.md"),
+        );
         register_test_state(&pid, vec!["guarded_allow"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
@@ -747,7 +752,11 @@ mod tests {
         // resolve them through the catalog.
         let pid = next_test_pid();
         let tmp = TempDir::new().unwrap();
-        let ext_dir = tmp.path().join("data").join("extensions").join("superpowers");
+        let ext_dir = tmp
+            .path()
+            .join("data")
+            .join("extensions")
+            .join("superpowers");
         std::fs::create_dir_all(&ext_dir).unwrap();
         let skill_md = ext_dir.join("SKILL.md");
         std::fs::write(

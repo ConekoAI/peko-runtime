@@ -3,12 +3,12 @@ pub mod agent_runner;
 pub mod agent_state;
 pub mod config;
 pub mod context;
+pub mod extension_state;
 pub mod factory;
 pub mod manager;
 pub mod memory;
 pub mod router;
 pub mod routers;
-pub mod extension_state;
 pub mod slash;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
@@ -20,6 +20,7 @@ pub use config::{
     PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
 };
 pub use context::PrincipalContext;
+pub use extension_state::{ExtensionState, ExtensionStateGuard, ExtensionStateRegistry};
 pub use factory::{
     DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     PrincipalMemoryFactory, PrincipalRouterFactory,
@@ -30,7 +31,6 @@ pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,
     PrincipalRouter, RouteDecision, RouterContext, RouterError,
 };
-pub use extension_state::{ExtensionState, ExtensionStateGuard, ExtensionStateRegistry};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

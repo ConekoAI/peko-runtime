@@ -80,15 +80,6 @@ impl ToolRegistry {
         let owners = self.tool_owners.read().await;
 
         if let Some(list) = allowed_extensions {
-            // An empty allowlist means "no restrictions" — every
-            // registered tool is visible.  This matches the semantic on
-            // `Agent::with_principal_allowed_extensions` and the field
-            // name (`allowed_extensions` as a permissive list, not a
-            // denylist).  Default principals with no explicit
-            // `[allowed_extensions]` entries see every registered tool.
-            if list.is_empty() {
-                return true;
-            }
             let whitelist = crate::common::types::agent_legacy::ExtensionConfig {
                 enabled: list.to_vec(),
                 ..Default::default()
@@ -101,13 +92,10 @@ impl ToolRegistry {
             return whitelist.is_extension_enabled(tool_name);
         }
 
-        let config = self.tool_config.read().await;
-        if let Some(ext_id) = owners.get(tool_name) {
-            return config.is_extension_enabled(&ext_id.0);
-        }
-        // No owner and no per-call allowlist: deny.  Bare-name fallback to
-        // the mutable global config has been removed as part of leak C.
-        false
+        // No per-call allowlist: the caller is unbound from any principal
+        // (e.g. standalone agents and test fixtures). Permit every registered
+        // tool without consulting the mutable global config.
+        true
     }
 
     /// Register a tool in the index
@@ -246,6 +234,23 @@ mod tests {
             registry
                 .is_tool_enabled_with_whitelist("custom_skill", Some(&["custom_skill".to_string()]))
                 .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_empty_allowlist_denies_all() {
+        let registry = ToolRegistry::new();
+        registry
+            .register_tool("Read", HookId::new(), ExtensionId::new("builtin:tool:Read"))
+            .await
+            .unwrap();
+
+        // An empty per-call allowlist must fail-closed.
+        assert!(
+            !registry
+                .is_tool_enabled_with_whitelist("Read", Some(&[]))
+                .await,
+            "empty allowlist should deny every tool"
         );
     }
 }

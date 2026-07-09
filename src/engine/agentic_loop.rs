@@ -979,13 +979,9 @@ impl AgenticLoop {
                             // **Track B**: per-agent allowlist now
                             // lives on the agent itself, not on
                             // `AgentConfig`.
-                            Some(
-                                self.agent
-                                    .principal_allowed_extensions()
-                                    .iter()
-                                    .cloned()
-                                    .collect::<Vec<_>>(),
-                            ),
+                            self.agent
+                                .principal_allowed_extensions()
+                                .map(|allowed| allowed.iter().cloned().collect::<Vec<_>>()),
                             self.cancel.clone(),
                             &on_event,
                         )
@@ -1082,12 +1078,10 @@ impl AgenticLoop {
         let allowed = self
             .agent
             .principal_allowed_extensions()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+            .map(|allowed| allowed.iter().cloned().collect::<Vec<_>>());
         let defs = self
             .extension_core
-            .list_tool_definitions_with_allowlist(&allowed)
+            .list_tool_definitions_with_allowlist(allowed.as_deref())
             .await;
 
         info!(

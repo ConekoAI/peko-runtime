@@ -115,9 +115,7 @@ impl CommandHookHandler {
     }
 
     /// Build the environment for the child process.
-    fn build_env(&self,
-        ctx: &HookContext,
-    ) -> HashMap<String, String> {
+    fn build_env(&self, ctx: &HookContext) -> HashMap<String, String> {
         let mut env: HashMap<String, String> = std::env::vars().collect();
 
         // Standard Peko hook variables.
@@ -137,8 +135,8 @@ impl CommandHookHandler {
         }
 
         // Principal id from tool context state if available.
-        if let Some(tc) = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+        if let Some(tc) =
+            ctx.get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
         {
             if let Some(pid) = &tc.principal_id {
                 env.insert("PEKO_PRINCIPAL_ID".to_string(), pid.clone());
@@ -160,10 +158,7 @@ impl CommandHookHandler {
     }
 
     /// Pull event/workspace out of the hook input when possible.
-    fn extract_event_and_workspace(
-        &self,
-        ctx: &HookContext,
-    ) -> (Option<String>, Option<String>) {
+    fn extract_event_and_workspace(&self, ctx: &HookContext) -> (Option<String>, Option<String>) {
         match &ctx.input {
             HookInput::SessionState(snapshot) => {
                 let event = snapshot
@@ -188,9 +183,7 @@ impl CommandHookHandler {
 
     /// Run the configured command and return its stdout as a string, or
     /// `None` if the command failed or timed out.
-    async fn run_command(&self,
-        ctx: &HookContext,
-    ) -> Option<String> {
+    async fn run_command(&self, ctx: &HookContext) -> Option<String> {
         let program = self.resolve_command_path();
         let env = self.build_env(ctx);
 
@@ -213,9 +206,8 @@ impl CommandHookHandler {
         match output {
             Ok(Ok(output)) => {
                 if !output.stderr.is_empty() {
-                    let stderr = String::from_utf8_lossy(
-                        &output.stderr[..output.stderr.len().min(2048)]
-                    );
+                    let stderr =
+                        String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(2048)]);
                     debug!(stderr = %stderr, "Hook command stderr");
                 }
 
@@ -246,10 +238,7 @@ impl CommandHookHandler {
         }
     }
 
-    fn parse_output(
-        &self,
-        stdout: &str,
-    ) -> Option<String> {
+    fn parse_output(&self, stdout: &str) -> Option<String> {
         match self.config.output_format {
             CommandOutputFormat::Text => Some(stdout.to_string()),
             CommandOutputFormat::Json => {
@@ -277,9 +266,7 @@ impl CommandHookHandler {
 
 #[async_trait]
 impl HookHandler for CommandHookHandler {
-    async fn handle(&self,
-        ctx: HookContext,
-    ) -> HookResult {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
         match self.run_command(&ctx).await {
             Some(stdout) => match self.parse_output(&stdout) {
                 Some(text) if !text.is_empty() => {
@@ -341,9 +328,7 @@ mod tests {
 
     #[test]
     fn extract_additional_context_missing_returns_none() {
-        let text = CommandHookHandler::extract_additional_context(
-            r#"{"foo": "bar"}"#,
-        );
+        let text = CommandHookHandler::extract_additional_context(r#"{"foo": "bar"}"#);
         assert_eq!(text, None);
     }
 
@@ -508,7 +493,11 @@ echo '{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContex
             let result = handler.handle(session_ctx("startup", "/tmp/ws")).await;
             let elapsed = start.elapsed();
             assert!(matches!(result, HookResult::PassThrough));
-            assert!(elapsed.as_secs() < 5, "timeout should fire quickly, took {:?}", elapsed);
+            assert!(
+                elapsed.as_secs() < 5,
+                "timeout should fire quickly, took {:?}",
+                elapsed
+            );
         }
     }
 }

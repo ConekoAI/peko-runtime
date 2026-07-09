@@ -303,27 +303,27 @@ fn principal_extension_grant_round_trip() {
     let principal_name = "s1_extension_grant_principal";
 
     // Baseline: create the Principal with no extra extension grants.
-    // The default `allowed_extensions` list is empty for a freshly
-    // created Principal.
+    // The default `allowed_extensions` list carries the safe starter
+    // bundle, but does not include `Grep` yet.
     create_mock_principal_with_tools(&cli, principal_name, &mock_url, &[]);
 
     let cfg_path = principal_config_path(&cli, principal_name);
     let before = std::fs::read_to_string(&cfg_path).expect("read principal.toml");
-    // The baseline should NOT carry a `Bash` extension grant yet.
+    // The baseline should NOT carry a `Grep` extension grant yet.
     assert!(
-        !before.contains("Bash"),
-        "baseline principal.toml should not carry a `Bash` extension grant: {before}",
+        !before.contains("Grep"),
+        "baseline principal.toml should not carry a `Grep` extension grant: {before}",
     );
 
-    // Patch the Principal's `allowed_extensions` to grant `Bash`
-    // in both forms. This is what the legacy `peko ext enable Bash
+    // Patch the Principal's `allowed_extensions` to grant `Grep`
+    // in both forms. This is what the legacy `peko ext enable Grep
     // --target <agent>` write did, except the on-disk shape is the
     // Principal's `principal.toml` rather than the agent's
     // `config.toml`.
     let raw = std::fs::read_to_string(&cfg_path).expect("read principal.toml");
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
-    cfg.allowed_extensions.0 = vec!["Bash".into(), "builtin:tool:Bash".into()];
+    cfg.allowed_extensions.0 = vec!["Grep".into(), "builtin:tool:Grep".into()];
     std::fs::write(
         &cfg_path,
         toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
@@ -334,9 +334,9 @@ fn principal_extension_grant_round_trip() {
     // extension grant.
     let after = std::fs::read_to_string(&cfg_path).expect("read principal.toml after grant");
     assert!(
-        after.contains("Bash") && after.contains("builtin:tool:Bash"),
-        "principal.toml should contain both the bare-name `Bash` and the \
-         canonical `builtin:tool:Bash` extension grants after grant: {after}",
+        after.contains("Grep") && after.contains("builtin:tool:Grep"),
+        "principal.toml should contain both the bare-name `Grep` and the \
+         canonical `builtin:tool:Grep` extension grants after grant: {after}",
     );
 }
 

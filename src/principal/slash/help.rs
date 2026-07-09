@@ -39,11 +39,7 @@ pub async fn handle_help(
         .collect();
 
     match format {
-        OutputFormat::Human => Ok(render_human(&config.name,
-            &config,
-            allowed,
-            &filtered,
-        )),
+        OutputFormat::Human => Ok(render_human(&config.name, &config, allowed, &filtered)),
         OutputFormat::Json => render_json(&config.name, &config, allowed, &filtered),
     }
 }
@@ -106,13 +102,10 @@ fn is_extension_allowed(ext: &ExtensionSummary, allowed: &AllowedExtensions) -> 
     let id_lower = ext.id.to_ascii_lowercase();
     let name_lower = ext.name.to_ascii_lowercase();
 
-    allowed
-        .0
-        .iter()
-        .any(|entry| {
-            let entry_lower = entry.to_ascii_lowercase();
-            entry_lower == id_lower || entry_lower == name_lower
-        })
+    allowed.0.iter().any(|entry| {
+        let entry_lower = entry.to_ascii_lowercase();
+        entry_lower == id_lower || entry_lower == name_lower
+    })
 }
 
 fn render_human(
@@ -124,10 +117,20 @@ fn render_human(
     let mut out = String::new();
     out.push_str("Peko /help\n\n");
     out.push_str(&format!("Principal: {}\n", principal_name));
-    if let Some(display) = config.identity.display_name.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(display) = config
+        .identity
+        .display_name
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
         out.push_str(&format!("Display name: {}\n", display));
     }
-    if let Some(desc) = config.identity.description.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(desc) = config
+        .identity
+        .description
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
         out.push_str(&format!("Description: {}\n", desc));
     }
 
@@ -140,7 +143,11 @@ fn render_human(
     out.push_str(&format!(
         "Allowed extensions ({}): {}\n",
         allowed.0.len(),
-        if allowed_list.is_empty() { "(none)" } else { &allowed_list }
+        if allowed_list.is_empty() {
+            "(none)"
+        } else {
+            &allowed_list
+        }
     ));
 
     out.push_str("\nBuilt-in slash commands:\n");
@@ -199,10 +206,7 @@ fn group_by_ext_type<'a>(
 ) -> BTreeMap<&'a str, Vec<&'a ExtensionSummary>> {
     let mut grouped: BTreeMap<&str, Vec<&ExtensionSummary>> = BTreeMap::new();
     for ext in extensions {
-        grouped
-            .entry(ext.ext_type.as_str())
-            .or_default()
-            .push(ext);
+        grouped.entry(ext.ext_type.as_str()).or_default().push(ext);
     }
     grouped
 }

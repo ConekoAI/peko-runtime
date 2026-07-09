@@ -95,11 +95,7 @@ impl SkillCatalog {
     /// Register a skill from a path without an owning extension.
     /// Convenience helper for tests and legacy-path bootstrapping.
     #[cfg(test)]
-    pub fn register_path(
-        &self,
-        name: impl Into<String>,
-        path: impl AsRef<std::path::Path>,
-    ) {
+    pub fn register_path(&self, name: impl Into<String>, path: impl AsRef<std::path::Path>) {
         self.register(name.into(), path.as_ref().to_path_buf(), None);
     }
 }
@@ -134,11 +130,7 @@ mod tests {
             PathBuf::from("/ext/docker/SKILL.md"),
             Some(ExtensionId("ext1".to_string())),
         );
-        catalog.register(
-            "bash",
-            PathBuf::from("/skills/bash/SKILL.md"),
-            None,
-        );
+        catalog.register("bash", PathBuf::from("/skills/bash/SKILL.md"), None);
 
         catalog.unregister_by_extension(&ExtensionId("ext1".to_string()));
         assert!(catalog.resolve("docker").is_none());
