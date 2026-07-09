@@ -320,7 +320,17 @@ pub mod parsing {
                                 }
                             }
                         }
-                    } else if !["id", "name", "version", "description"].contains(&key) {
+                    } else if key == "provides" {
+                        if let Ok(vals) = serde_yaml::from_value::<Vec<String>>(v.clone()) {
+                            manifest.provides = vals;
+                        }
+                    } else if key == "requires" {
+                        if let Ok(vals) = serde_yaml::from_value::<Vec<String>>(v.clone()) {
+                            manifest.requires = vals;
+                        }
+                    } else if !["id", "name", "version", "description", "extension_type"]
+                        .contains(&key)
+                    {
                         manifest.set(key, yaml_to_json(v.clone()));
                     }
                 }
@@ -364,7 +374,21 @@ pub mod parsing {
                             }
                         }
                     }
-                } else if !["id", "name", "version", "description"].contains(&key.as_str()) {
+                } else if key == "provides" {
+                    if let Ok(vals) = serde_json::from_value::<Vec<String>>(
+                        serde_json::to_value(value)?,
+                    ) {
+                        manifest.provides = vals;
+                    }
+                } else if key == "requires" {
+                    if let Ok(vals) = serde_json::from_value::<Vec<String>>(
+                        serde_json::to_value(value)?,
+                    ) {
+                        manifest.requires = vals;
+                    }
+                } else if !["id", "name", "version", "description", "extension_type"]
+                    .contains(&key.as_str())
+                {
                     if let Ok(json_val) = serde_json::to_value(value) {
                         manifest.set(key, json_val);
                     }
@@ -784,13 +808,19 @@ dependencies:
     }
 
     #[test]
-    fn test_build_manifest_from_yaml_no_dependencies() {
+    fn test_build_manifest_from_yaml_parses_capabilities() {
         let yaml = serde_yaml::from_str(
             r#"
 id: test-ext
 name: Test Extension
 version: "1.0.0"
 description: A test extension
+provides:
+  - agent:researcher
+  - skill:briefing
+requires:
+  - tool:Read
+  - network
 "#,
         )
         .unwrap();
@@ -798,6 +828,13 @@ description: A test extension
         let manifest =
             parsing::build_manifest_from_yaml(&yaml, "skill", Path::new("/tmp/test")).unwrap();
 
-        assert!(manifest.dependencies.is_empty());
+        assert_eq!(
+            manifest.provides,
+            vec!["agent:researcher".to_string(), "skill:briefing".to_string()]
+        );
+        assert_eq!(
+            manifest.requires,
+            vec!["tool:Read".to_string(), "network".to_string()]
+        );
     }
 }
