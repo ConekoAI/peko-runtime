@@ -4,6 +4,7 @@ pub mod agent_state;
 pub mod config;
 pub mod context;
 pub mod extension_state;
+pub mod extension_store;
 pub mod factory;
 pub mod manager;
 pub mod memory;
@@ -21,6 +22,7 @@ pub use config::{
 };
 pub use context::PrincipalContext;
 pub use extension_state::{ExtensionState, ExtensionStateGuard, ExtensionStateRegistry};
+pub use extension_store::{ExtensionStore, ExtensionStoreItem};
 pub use factory::{
     DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     PrincipalMemoryFactory, PrincipalRouterFactory,

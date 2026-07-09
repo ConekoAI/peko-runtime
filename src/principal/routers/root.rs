@@ -266,6 +266,7 @@ mod tests {
         AllowedExtensions, PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
     };
     use crate::principal::router::{ChannelContext, ChannelKind, ContextInjectionKind};
+    use crate::principal::ExtensionStore;
     use crate::session::InboxRegistry;
 
     #[test]
@@ -299,10 +300,12 @@ mod tests {
                 id: "primary".to_string(),
                 name: "primary".to_string(),
                 description: Some("Generalist".to_string()),
+                enabled: true,
             }],
             allowed_extensions: AllowedExtensions::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
+            extension_store: ExtensionStore::default(),
             inbox_registry: Arc::new(InboxRegistry::new()),
             session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
         };

@@ -659,7 +659,11 @@ mod tests {
             .await;
 
         let result = tool.resolve_subagent_config("writer", None).await;
-        assert!(result.is_ok(), "enabled subagent should resolve: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "enabled subagent should resolve: {:?}",
+            result.err()
+        );
     }
 
     #[tokio::test]
