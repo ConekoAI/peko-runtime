@@ -143,7 +143,22 @@ impl PrincipalPackager {
         std::fs::create_dir_all(&temp_dir)?;
 
         for name in names {
-            let Some(resolution) = manager.resolve_tool_name(name) else {
+            // Capabilities are typed strings like `skill:github_skill` or
+            // `agent:researcher`. Strip the capability prefix so we can
+            // resolve the underlying extension name/ID; skip wildcards and
+            // built-in tool grants that do not reference an installed
+            // extension package.
+            let normalized = name
+                .strip_prefix("skill:")
+                .or_else(|| name.strip_prefix("agent:"))
+                .or_else(|| name.strip_prefix("tool:"))
+                .or_else(|| name.strip_prefix("mcp:"))
+                .unwrap_or(name);
+            if normalized.contains('*') {
+                continue;
+            }
+
+            let Some(resolution) = manager.resolve_tool_name(normalized) else {
                 tracing::warn!(
                     "Principal extension '{}' does not resolve to an installed extension; skipping embed",
                     name
