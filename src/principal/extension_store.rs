@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use crate::extensions::framework::manager::ExtensionManager;
 use crate::principal::agent_prompt::AgentPrompt;
 use crate::principal::capability::{Capabilities, Capability};
+use crate::principal::capability_evaluator::CapabilityEvaluator;
 
 /// A single row in the principal's extension store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,17 +100,22 @@ impl ExtensionStore {
 
         // Installed extensions from the daemon extension manager.
         if let Some(manager) = extension_manager {
+            let evaluator = CapabilityEvaluator::new();
             for loaded in manager.list_extensions() {
                 let id = loaded.manifest.id.0.clone();
                 if seen.insert(id.clone()) {
                     let kind = capability_kind_for_extension_type(&loaded.extension_type);
+                    let enabled = evaluator.is_extension_active(
+                        &loaded.manifest,
+                        capabilities,
+                        Some(&kind),
+                    );
                     items.push(ExtensionStoreItem {
                         id: id.clone(),
                         name: loaded.manifest.name.clone(),
                         ext_type: loaded.extension_type.clone(),
                         source: loaded.manifest.source.clone(),
-                        enabled: is_allowed_with_kind(&kind, &id)
-                            || is_allowed_with_kind(&kind, &loaded.manifest.name),
+                        enabled,
                     });
                 }
             }
