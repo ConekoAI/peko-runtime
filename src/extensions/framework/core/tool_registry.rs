@@ -8,6 +8,7 @@
 
 use crate::common::registry::SharedRegistry;
 use crate::extensions::framework::types::{ExtensionId, HookId};
+use crate::principal::{Capabilities, Capability};
 use anyhow::Result;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -64,38 +65,20 @@ impl ToolRegistry {
 
     /// Check if a tool is enabled, using a per-call capability set when provided.
     ///
-    /// When `capabilities` is `Some`, the tool's owning canonical
-    /// extension ID must be present in that set.  This avoids the race
-    /// condition caused by mutating the shared global `tool_config`.
+    /// When `capabilities` is `Some`, the capability `tool:{tool_name}` must be
+    /// granted. Wildcards such as `tool:*` are expanded by the capability set.
     ///
-    /// When `capabilities` is `None`, the legacy global `tool_config`
-    /// is consulted for tools with a recorded owner.  Tools with no recorded
-    /// owner are denied rather than falling back to a bare-name match against
-    /// the mutable global config (leak C cleanup).
+    /// When `capabilities` is `None`, the caller is unbound from any principal
+    /// (e.g. standalone/test fixtures). Permit every registered tool.
     pub async fn is_tool_enabled_with_whitelist(
         &self,
         tool_name: &str,
-        capabilities: Option<&[String]>,
+        capabilities: Option<&Capabilities>,
     ) -> bool {
-        let owners = self.tool_owners.read().await;
-
-        if let Some(list) = capabilities {
-            let whitelist = crate::common::types::agent_legacy::ExtensionConfig {
-                enabled: list.to_vec(),
-                ..Default::default()
-            };
-            if let Some(ext_id) = owners.get(tool_name) {
-                return whitelist.is_extension_enabled(&ext_id.0);
-            }
-            // No recorded owner: allow only if the bare name is explicitly
-            // listed.  Do not fall back to the mutable global config.
-            return whitelist.is_extension_enabled(tool_name);
+        match capabilities {
+            Some(caps) => caps.is_granted(&Capability::new(format!("tool:{tool_name}"))),
+            None => true,
         }
-
-        // No per-call allowlist: the caller is unbound from any principal
-        // (e.g. standalone agents and test fixtures). Permit every registered
-        // tool without consulting the mutable global config.
-        true
     }
 
     /// Register a tool in the index
@@ -210,31 +193,27 @@ mod tests {
         };
         registry.set_tool_config(global).await;
 
-        // A per-call allowlist that *enables* Read should still permit it.
-        assert!(
-            registry
-                .is_tool_enabled_with_whitelist("Read", Some(&["builtin:tool:Read".to_string()]))
-                .await
-        );
+        // A per-call capability set that *enables* Read should still permit it.
+        let caps = Capabilities::with_grants(["tool:Read"]);
+        assert!(registry
+            .is_tool_enabled_with_whitelist("Read", Some(&caps))
+            .await);
 
-        // A per-call allowlist without Read should deny it, even though the
-        // global config is unrelated.
-        assert!(
-            !registry
-                .is_tool_enabled_with_whitelist("Read", Some(&["other".to_string()]))
-                .await
-        );
+        // A per-call capability set without Read should deny it.
+        let caps = Capabilities::with_grants(["tool:Other"]);
+        assert!(!registry
+            .is_tool_enabled_with_whitelist("Read", Some(&caps))
+            .await);
     }
 
     #[tokio::test]
-    async fn test_unknown_tool_with_per_call_allowlist_uses_bare_name() {
+    async fn test_unknown_tool_with_per_call_allowlist_uses_capability() {
         let registry = ToolRegistry::new();
         // No registration, so no owner is recorded.
-        assert!(
-            registry
-                .is_tool_enabled_with_whitelist("custom_skill", Some(&["custom_skill".to_string()]))
-                .await
-        );
+        let caps = Capabilities::with_grants(["tool:custom_skill"]);
+        assert!(registry
+            .is_tool_enabled_with_whitelist("custom_skill", Some(&caps))
+            .await);
     }
 
     #[tokio::test]
@@ -245,12 +224,27 @@ mod tests {
             .await
             .unwrap();
 
-        // An empty per-call allowlist must fail-closed.
+        // An empty capability set must fail-closed.
+        let caps = Capabilities::new();
         assert!(
             !registry
-                .is_tool_enabled_with_whitelist("Read", Some(&[]))
+                .is_tool_enabled_with_whitelist("Read", Some(&caps))
                 .await,
-            "empty allowlist should deny every tool"
+            "empty capability set should deny every tool"
         );
+    }
+
+    #[tokio::test]
+    async fn test_wildcard_capability_matches() {
+        let registry = ToolRegistry::new();
+        registry
+            .register_tool("Read", HookId::new(), ExtensionId::new("builtin:tool:Read"))
+            .await
+            .unwrap();
+
+        let caps = Capabilities::with_grants(["tool:*"]);
+        assert!(registry
+            .is_tool_enabled_with_whitelist("Read", Some(&caps))
+            .await);
     }
 }

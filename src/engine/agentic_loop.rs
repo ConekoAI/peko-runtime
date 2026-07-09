@@ -1078,10 +1078,10 @@ impl AgenticLoop {
         let allowed = self
             .agent
             .principal_capabilities()
-            .map(|allowed| allowed.to_strings());
+            .map(|allowed| allowed.as_ref());
         let defs = self
             .extension_core
-            .list_tool_definitions_with_allowlist(allowed.as_deref())
+            .list_tool_definitions_with_allowlist(allowed)
             .await;
 
         info!(

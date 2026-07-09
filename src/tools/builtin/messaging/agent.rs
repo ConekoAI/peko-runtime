@@ -227,18 +227,18 @@ impl AgentTool {
         subagent_type: &str,
         model_override: Option<&str>,
     ) -> anyhow::Result<AgentConfig> {
-        // ADR-019/Track B: enforce the per-principal agent allowlist before
-        // loading any on-disk config. If the principal has a registered
-        // AgentState, the requested subagent must be enabled in it. If no
-        // state is registered (standalone / test path), fail-open to preserve
-        // existing behavior.
-        let registry = crate::principal::AgentStateRegistry::global();
-        let principal_id = self.executor.principal_id();
-        if let Some(state) = registry.get(principal_id).await {
-            if !state.is_enabled(subagent_type) {
+        // ADR-019/Track B: enforce the per-principal agent capability before
+        // loading any on-disk config. If the executor carries a capability
+        // snapshot, the requested subagent must be granted. If no snapshot is
+        // registered (standalone / test path), fail-open to preserve existing
+        // behavior.
+        if let Some(caps) = self.executor.principal_capabilities() {
+            let required = crate::principal::Capability::new(format!("agent:{subagent_type}"));
+            if !caps.is_granted(&required) {
                 anyhow::bail!(
                     "Subagent '{}' is not enabled for this principal. \
-                     Add it to the principal's capabilities and retry.",
+                     Grant 'agent:{}' and retry.",
+                    subagent_type,
                     subagent_type
                 );
             }

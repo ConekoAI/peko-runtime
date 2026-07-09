@@ -12,6 +12,7 @@ use crate::extensions::framework::core::tool_registry::ToolRegistry;
 use crate::extensions::framework::types::{
     ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata, ToolRuntimeContext,
 };
+use crate::principal::Capabilities;
 use crate::tools::core::Tool;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -270,12 +271,12 @@ impl ExtensionCore {
             let capabilities = match &input {
                 HookInput::ToolCall {
                     capabilities, ..
-                } => capabilities.as_deref(),
+                } => capabilities.as_ref().map(|v| Capabilities::with_grants(v.iter().cloned())),
                 _ => None,
             };
             if !self
                 .tool_registry
-                .is_tool_enabled_with_whitelist(tool_name, capabilities)
+                .is_tool_enabled_with_whitelist(tool_name, capabilities.as_ref())
                 .await
             {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
@@ -560,7 +561,7 @@ impl ExtensionCore {
     /// is only allowed to use a subset.
     pub async fn list_tool_definitions_with_allowlist(
         &self,
-        capabilities: Option<&[String]>,
+        capabilities: Option<&Capabilities>,
     ) -> Vec<crate::providers::ToolDefinition> {
         let all = self.list_tools().await;
         let mut filtered = Vec::new();
