@@ -53,6 +53,21 @@ use crate::session::events::SessionEvent;
 
 // ─── peko log read-path types (ADR-042) ──────────────────────────────
 
+/// Preview summary for a `.principal` package, produced server-side
+/// before the destructive import step.
+#[derive(Debug)]
+pub struct PrincipalImportPreview {
+    name: String,
+    version: String,
+    did: String,
+    description: Option<String>,
+    agents: Vec<String>,
+    extensions: Vec<String>,
+    signed: bool,
+    validation_errors: Vec<String>,
+    validation_warnings: Vec<String>,
+}
+
 /// Errors surfaced by `IpcServer::read_principal_log`. The match arm in
 /// `handle_request` maps each variant into a `ResponsePacket::Error`
 /// with a stable error-code prefix so the CLI can render a useful
@@ -2383,13 +2398,61 @@ impl IpcServer {
                 }
             }
 
+            RequestPacket::PrincipalImportPreview {
+                request_id,
+                file_path,
+                name,
+                allow_unsigned: _,
+                force: _,
+            } => {
+                match Self::preview_principal_import(
+                    &state,
+                    std::path::Path::new(&file_path),
+                    name.clone(),
+                )
+                .await
+                {
+                    Ok(preview) => {
+                        let response = ResponsePacket::PrincipalImportPreviewed {
+                            request_id,
+                            name: preview.name,
+                            version: preview.version,
+                            did: preview.did,
+                            description: preview.description,
+                            agents: preview.agents,
+                            extensions: preview.extensions,
+                            signed: preview.signed,
+                            validation_errors: preview.validation_errors,
+                            validation_warnings: preview.validation_warnings,
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal import preview failed: {e}"),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
             RequestPacket::PrincipalImport {
                 request_id,
                 file_path,
                 name,
                 allow_unsigned,
                 force,
+                confirmed,
             } => {
+                if !confirmed {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "Principal import was not confirmed. Use the preview flow or pass --yes.".to_string(),
+                    };
+                    Self::send_sink(sink, response).await?;
+                    return Ok(());
+                }
                 let trust_policy = if force {
                     crate::registry::packaging::TrustPolicy::AllowUntrusted
                 } else {
@@ -3152,6 +3215,94 @@ impl IpcServer {
         packager.export(opts).await
     }
 
+    /// Preview shape extracted from a `.principal` package before import.
+    async fn preview_principal_import(
+        state: &AppState,
+        file_path: &std::path::Path,
+        new_name: Option<String>,
+    ) -> anyhow::Result<PrincipalImportPreview> {
+        let unpackager = crate::registry::packaging::PrincipalUnpackager::new(
+            file_path,
+            state.config_dir.clone(),
+            state.data_dir.clone(),
+        );
+        let (manifest, files, validation) = unpackager.inspect_detailed().await?;
+
+        let signed = !manifest.signatures.manifest.trim().is_empty();
+        let name = new_name.unwrap_or_else(|| manifest.principal.name.clone());
+        let agents = Self::extract_agent_names_from_package(&files);
+        let extensions: Vec<String> = manifest.extensions.iter().map(|r| r.id.clone()).collect();
+
+        let validation_errors: Vec<String> =
+            validation.errors.iter().map(|e| format!("{e:?}")).collect();
+        let validation_warnings: Vec<String> = validation
+            .warnings
+            .iter()
+            .map(|w| format!("{w:?}"))
+            .collect();
+
+        Ok(PrincipalImportPreview {
+            name,
+            version: manifest.principal.version,
+            did: manifest.principal.did,
+            description: manifest.principal.description,
+            agents,
+            extensions,
+            signed,
+            validation_errors,
+            validation_warnings,
+        })
+    }
+
+    /// Extract agent prompt names from the `agents/` layer of a package.
+    fn extract_agent_names_from_package(
+        files: &std::collections::HashMap<String, Vec<u8>>,
+    ) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for path in files.keys() {
+            let Some(rest) = path.strip_prefix("agents/") else {
+                continue;
+            };
+            if rest.is_empty() {
+                continue;
+            }
+            // `agents/<name>.md`  -> `<name>`
+            // `agents/<name>/AGENT.md` -> `<name>`
+            let name = if rest.eq_ignore_ascii_case("AGENT.md") {
+                continue;
+            } else if let Some(parent) = std::path::Path::new(rest).parent() {
+                let file_name = std::path::Path::new(rest)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(rest);
+                if file_name.eq_ignore_ascii_case("AGENT.md") {
+                    parent
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| rest.to_string())
+                } else {
+                    std::path::Path::new(rest)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| rest.to_string())
+                }
+            } else {
+                std::path::Path::new(rest)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| rest.to_string())
+            };
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names.sort();
+        names
+    }
+
     /// Import a `.principal` package and register it with the manager.
     async fn import_principal_package(
         state: &AppState,
@@ -3826,5 +3977,35 @@ impl IpcServer {
         };
 
         (is_builtin, bare_name, canonical_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_agent_names_handles_flat_and_nested_prompts() {
+        let mut files = std::collections::HashMap::new();
+        files.insert("agents/primary.md".to_string(), vec![]);
+        files.insert("agents/researcher/AGENT.md".to_string(), vec![]);
+        files.insert("agents/utils.toml".to_string(), vec![]);
+        files.insert("config/principal.toml".to_string(), vec![]);
+
+        let mut names = IpcServer::extract_agent_names_from_package(&files);
+        names.sort();
+
+        assert_eq!(names, vec!["primary", "researcher", "utils"]);
+    }
+
+    #[test]
+    fn extract_agent_names_ignores_top_level_agent_md() {
+        // A bare `agents/AGENT.md` is not a named prompt; skip it.
+        let mut files = std::collections::HashMap::new();
+        files.insert("agents/AGENT.md".to_string(), vec![]);
+        files.insert("agents/primary.md".to_string(), vec![]);
+
+        let names = IpcServer::extract_agent_names_from_package(&files);
+        assert_eq!(names, vec!["primary"]);
     }
 }

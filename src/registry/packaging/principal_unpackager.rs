@@ -89,10 +89,24 @@ impl PrincipalUnpackager {
 
     /// Inspect a package without importing.
     pub async fn inspect(&self) -> anyhow::Result<(PrincipalManifest, ValidationResult)> {
+        let (manifest, _, validation) = self.inspect_detailed().await?;
+        Ok((manifest, validation))
+    }
+
+    /// Inspect a package and return the extracted files alongside the
+    /// manifest and validation result. Used by the import preview path
+    /// to list bundled agents without re-extracting the archive.
+    pub async fn inspect_detailed(
+        &self,
+    ) -> anyhow::Result<(
+        PrincipalManifest,
+        HashMap<String, Vec<u8>>,
+        ValidationResult,
+    )> {
         let files = self.extract_package().await?;
         let manifest = self.parse_manifest(&files)?;
         let validation = validate_package_for_principal(&manifest, &files);
-        Ok((manifest, validation))
+        Ok((manifest, files, validation))
     }
 
     /// Import the package from a file.
