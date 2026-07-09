@@ -227,6 +227,23 @@ impl AgentTool {
         subagent_type: &str,
         model_override: Option<&str>,
     ) -> anyhow::Result<AgentConfig> {
+        // ADR-019/Track B: enforce the per-principal agent allowlist before
+        // loading any on-disk config. If the principal has a registered
+        // AgentState, the requested subagent must be enabled in it. If no
+        // state is registered (standalone / test path), fail-open to preserve
+        // existing behavior.
+        let registry = crate::principal::AgentStateRegistry::global();
+        let principal_id = self.executor.principal_id();
+        if let Some(state) = registry.get(principal_id).await {
+            if !state.is_enabled(subagent_type) {
+                anyhow::bail!(
+                    "Subagent '{}' is not enabled for this principal. \
+                     Add it to the principal's allowed_extensions and retry.",
+                    subagent_type
+                );
+            }
+        }
+
         let config = if let Some(ref service) = self.agent_service {
             service.resolve_subagent_type(subagent_type).await?
         } else {
@@ -607,9 +624,83 @@ Examples:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::principal::{AgentState, AgentStateRegistry, PrincipalId};
     use crate::session::manager::SessionManager;
     use std::sync::Arc;
     use tokio::sync::RwLock;
+
+    async fn temp_agent_workspace(name: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agents").join(name);
+        tokio::fs::create_dir_all(&agent_dir).await.unwrap();
+        tokio::fs::write(
+            agent_dir.join("AGENT.md"),
+            format!("---\nname: {}\ndescription: test\n---\n\ntest", name),
+        )
+        .await
+        .unwrap();
+        dir
+    }
+
+    fn test_executor(pid: PrincipalId) -> Arc<SubagentExecutor> {
+        let manager = Arc::new(RwLock::new(SessionManager::new()));
+        Arc::new(SubagentExecutor::new(manager, "test_agent", 5, pid))
+    }
+
+    #[tokio::test]
+    async fn test_agent_state_registry_allows_enabled_subagent() {
+        let pid = PrincipalId::generate();
+        let workspace = temp_agent_workspace("writer").await;
+        let service = AgentService::for_principal(workspace.path());
+        let tool = AgentTool::with_agent_service(test_executor(pid.clone()), service);
+
+        AgentStateRegistry::global()
+            .register(pid, AgentState::new(vec!["writer".to_string()]))
+            .await;
+
+        let result = tool.resolve_subagent_config("writer", None).await;
+        assert!(result.is_ok(), "enabled subagent should resolve: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_agent_state_registry_denies_disabled_subagent() {
+        let pid = PrincipalId::generate();
+        let workspace = temp_agent_workspace("writer").await;
+        let service = AgentService::for_principal(workspace.path());
+        let tool = AgentTool::with_agent_service(test_executor(pid.clone()), service);
+
+        AgentStateRegistry::global()
+            .register(pid, AgentState::new(vec!["other".to_string()]))
+            .await;
+
+        let result = tool.resolve_subagent_config("writer", None).await;
+        assert!(
+            result.is_err(),
+            "disabled subagent should be rejected by AgentStateRegistry"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not enabled"),
+            "error should explain allowlist denial: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_agent_state_registry_unregistered_principal_is_fail_open() {
+        let pid = PrincipalId::generate();
+        let workspace = temp_agent_workspace("writer").await;
+        let service = AgentService::for_principal(workspace.path());
+        let tool = AgentTool::with_agent_service(test_executor(pid), service);
+
+        // No AgentState registered for this principal; standalone/test path
+        // should remain usable.
+        let result = tool.resolve_subagent_config("writer", None).await;
+        assert!(
+            result.is_ok(),
+            "unregistered principal should fail-open: {:?}",
+            result.err()
+        );
+    }
 
     #[tokio::test]
     async fn test_agent_tool_creation() {
