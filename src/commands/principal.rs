@@ -87,6 +87,10 @@ pub enum PrincipalCommands {
         /// previously imported package with the same name.
         #[arg(short, long)]
         force: bool,
+
+        /// Skip the preview confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Push a Principal package to a registry
@@ -203,7 +207,8 @@ pub async fn handle_principal(
             name,
             allow_unsigned,
             force,
-        } => import_principal(&file_path, name, allow_unsigned, force).await,
+            yes,
+        } => import_principal(&file_path, name, allow_unsigned, force, yes).await,
         PrincipalCommands::Push {
             name,
             registry_host,
@@ -455,10 +460,71 @@ async fn import_principal(
     name: Option<String>,
     allow_unsigned: bool,
     force: bool,
+    yes: bool,
 ) -> Result<()> {
     let client = DaemonClient::connect().await?;
+
+    // Always preview first. The preview is read-only and surfaces bundled
+    // agents, extensions, signature status, and validation issues.
+    let preview = client
+        .principal_import_preview(file_path, name.clone(), allow_unsigned, force)
+        .await?;
+
+    let preview = match preview {
+        ResponsePacket::PrincipalImportPreviewed {
+            name,
+            version,
+            did,
+            description,
+            agents,
+            extensions,
+            signed,
+            validation_errors,
+            validation_warnings,
+            ..
+        } => PrincipalImportPreview {
+            name,
+            version,
+            did,
+            description,
+            agents,
+            extensions,
+            signed,
+            validation_errors,
+            validation_warnings,
+        },
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to preview principal import: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    };
+
+    render_import_preview(&preview);
+
+    if !preview.validation_errors.is_empty() && !force {
+        anyhow::bail!(
+            "Package has validation errors. Use --force to import anyway, or fix the package."
+        );
+    }
+
+    if !yes {
+        print!("Import this principal? [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())
+            .with_context(|| "failed to flush confirmation prompt")?;
+        let mut answer = String::new();
+        std::io::stdin()
+            .read_line(&mut answer)
+            .with_context(|| "failed to read confirmation")?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("Import cancelled.");
+            return Ok(());
+        }
+    }
+
     let response = client
-        .principal_import(file_path, name, allow_unsigned, force)
+        .principal_import(file_path, name, allow_unsigned, force, true)
         .await?;
 
     match response {
@@ -473,6 +539,66 @@ async fn import_principal(
         }
         other => {
             anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+/// Internal summary of a `PrincipalImportPreviewed` response, used to
+/// keep the rendering code tidy.
+struct PrincipalImportPreview {
+    name: String,
+    version: String,
+    did: String,
+    description: Option<String>,
+    agents: Vec<String>,
+    extensions: Vec<String>,
+    signed: bool,
+    validation_errors: Vec<String>,
+    validation_warnings: Vec<String>,
+}
+
+fn render_import_preview(preview: &PrincipalImportPreview) {
+    println!("Principal import preview:");
+    println!("  Name:        {}", preview.name);
+    println!("  Version:     {}", preview.version);
+    println!("  DID:         {}", preview.did);
+    if let Some(desc) = &preview.description {
+        println!("  Description: {desc}");
+    }
+    println!(
+        "  Signed:      {}",
+        if preview.signed { "yes" } else { "no" }
+    );
+
+    if preview.agents.is_empty() {
+        println!("  Agents:      (none)");
+    } else {
+        println!("  Agents:");
+        for agent in &preview.agents {
+            println!("    - {agent}");
+        }
+    }
+
+    if preview.extensions.is_empty() {
+        println!("  Extensions:  (none)");
+    } else {
+        println!("  Extensions:");
+        for ext in &preview.extensions {
+            println!("    - {ext}");
+        }
+    }
+
+    if !preview.validation_warnings.is_empty() {
+        println!("  Warnings:");
+        for warning in &preview.validation_warnings {
+            println!("    ⚠️  {warning}");
+        }
+    }
+
+    if !preview.validation_errors.is_empty() {
+        println!("  Errors:");
+        for error in &preview.validation_errors {
+            println!("    ❌ {error}");
         }
     }
 }
@@ -858,6 +984,52 @@ mod tests {
                 assert_eq!(permission, "chat");
             }
             _other => panic!("expected Principal permit command"),
+        }
+    }
+
+    #[test]
+    fn principal_import_parses_yes_flag() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "principal",
+            "import",
+            "/tmp/pkg.principal",
+            "--name",
+            "renamed",
+            "--allow-unsigned",
+            "--force",
+            "--yes",
+        ])
+        .expect("should parse principal import with --yes");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Import {
+                file_path,
+                name,
+                allow_unsigned,
+                force,
+                yes,
+            }) => {
+                assert_eq!(file_path, "/tmp/pkg.principal");
+                assert_eq!(name, Some("renamed".to_string()));
+                assert!(allow_unsigned);
+                assert!(force);
+                assert!(yes);
+            }
+            _other => panic!("expected Principal import command"),
+        }
+    }
+
+    #[test]
+    fn principal_import_without_yes_defaults() {
+        let cli = Cli::try_parse_from(["peko", "principal", "import", "/tmp/pkg.principal"])
+            .expect("should parse principal import without --yes");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Import { yes, .. }) => {
+                assert!(!yes);
+            }
+            _other => panic!("expected Principal import command"),
         }
     }
 

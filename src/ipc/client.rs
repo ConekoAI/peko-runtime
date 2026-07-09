@@ -558,6 +558,25 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
+    /// Preview a `.principal` package before importing it.
+    pub async fn principal_import_preview(
+        &self,
+        file_path: impl Into<String>,
+        name: Option<String>,
+        allow_unsigned: bool,
+        force: bool,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalImportPreview {
+            request_id,
+            file_path: file_path.into(),
+            name,
+            allow_unsigned,
+            force,
+        };
+        self.request_response(packet).await
+    }
+
     /// Import a Principal from a package.
     pub async fn principal_import(
         &self,
@@ -565,6 +584,7 @@ impl DaemonClient {
         name: Option<String>,
         allow_unsigned: bool,
         force: bool,
+        confirmed: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalImport {
@@ -573,6 +593,7 @@ impl DaemonClient {
             name,
             allow_unsigned,
             force,
+            confirmed,
         };
         self.request_response(packet).await
     }

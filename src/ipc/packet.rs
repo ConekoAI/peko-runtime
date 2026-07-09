@@ -446,6 +446,20 @@ pub enum RequestPacket {
         allow_unsigned: bool,
         #[serde(default)]
         force: bool,
+        #[serde(default)]
+        confirmed: bool,
+    },
+
+    /// Preview a `.principal` package before importing it.
+    #[serde(rename = "principal_import_preview")]
+    PrincipalImportPreview {
+        request_id: u64,
+        file_path: String,
+        name: Option<String>,
+        #[serde(default)]
+        allow_unsigned: bool,
+        #[serde(default)]
+        force: bool,
     },
 
     #[serde(rename = "principal_push")]
@@ -566,6 +580,7 @@ impl RequestPacket {
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalExport { request_id, .. }
             | Self::PrincipalImport { request_id, .. }
+            | Self::PrincipalImportPreview { request_id, .. }
             | Self::PrincipalPush { request_id, .. }
             | Self::PrincipalPull { request_id, .. }
             | Self::PrincipalGrantPermission { request_id, .. }
@@ -1004,6 +1019,21 @@ pub enum ResponsePacket {
         config_path: String,
     },
 
+    /// Result of previewing a `.principal` package before import.
+    #[serde(rename = "principal_import_previewed")]
+    PrincipalImportPreviewed {
+        request_id: u64,
+        name: String,
+        version: String,
+        did: String,
+        description: Option<String>,
+        agents: Vec<String>,
+        extensions: Vec<String>,
+        signed: bool,
+        validation_errors: Vec<String>,
+        validation_warnings: Vec<String>,
+    },
+
     #[serde(rename = "principal_pushed")]
     PrincipalPushed {
         request_id: u64,
@@ -1235,6 +1265,7 @@ impl ResponsePacket {
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
+            | Self::PrincipalImportPreviewed { request_id, .. }
             | Self::PrincipalPushed { request_id, .. }
             | Self::PrincipalPulled { request_id, .. }
             | Self::PrincipalPermissionGranted { request_id, .. }
@@ -1298,6 +1329,7 @@ impl ResponsePacket {
             Self::PrincipalLog { .. } => "PrincipalLog",
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
+            Self::PrincipalImportPreviewed { .. } => "PrincipalImportPreviewed",
             Self::PrincipalPushed { .. } => "PrincipalPushed",
             Self::PrincipalPulled { .. } => "PrincipalPulled",
             Self::PrincipalPermissionGranted { .. } => "PrincipalPermissionGranted",
@@ -1926,6 +1958,107 @@ mod tests {
             } => {
                 assert_eq!(request_id, 602);
                 assert!(principal.is_none());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_import_preview_request_roundtrip() {
+        let req = RequestPacket::PrincipalImportPreview {
+            request_id: 303,
+            file_path: "/tmp/test.principal".to_string(),
+            name: Some("renamed".to_string()),
+            allow_unsigned: true,
+            force: false,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains("\"type\":\"principal_import_preview\""),
+            "expected principal_import_preview wire tag, got: {json}"
+        );
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalImportPreview {
+                request_id,
+                file_path,
+                name,
+                allow_unsigned,
+                force,
+            } => {
+                assert_eq!(request_id, 303);
+                assert_eq!(file_path, "/tmp/test.principal");
+                assert_eq!(name, Some("renamed".to_string()));
+                assert!(allow_unsigned);
+                assert!(!force);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_import_request_confirmed_defaults_to_false() {
+        // Bare deserialization of the legacy wire shape (no `confirmed`
+        // field) must default to `false` so old CLI / daemon pairs don't
+        // accidentally bypass the confirmation gate.
+        let json = r#"{"type":"principal_import","request_id":304,"file_path":"/tmp/x.principal"}"#;
+        let decoded: RequestPacket = serde_json::from_str(json).unwrap();
+        match decoded {
+            RequestPacket::PrincipalImport { confirmed, .. } => {
+                assert!(!confirmed, "confirmed must default to false");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_import_previewed_response_roundtrip() {
+        let resp = ResponsePacket::PrincipalImportPreviewed {
+            request_id: 603,
+            name: "preview-principal".to_string(),
+            version: "1.0.0".to_string(),
+            did: "did:peko:local:preview".to_string(),
+            description: Some("A preview test principal".to_string()),
+            agents: vec!["primary".to_string(), "researcher".to_string()],
+            extensions: vec!["ext-1".to_string()],
+            signed: true,
+            validation_errors: vec![],
+            validation_warnings: vec!["Unencrypted keys".to_string()],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains("\"type\":\"principal_import_previewed\""),
+            "expected principal_import_previewed wire tag, got: {json}"
+        );
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalImportPreviewed {
+                request_id,
+                name,
+                version,
+                did,
+                description,
+                agents,
+                extensions,
+                signed,
+                validation_errors,
+                validation_warnings,
+            } => {
+                assert_eq!(request_id, 603);
+                assert_eq!(name, "preview-principal");
+                assert_eq!(version, "1.0.0");
+                assert_eq!(did, "did:peko:local:preview");
+                assert_eq!(description, Some("A preview test principal".to_string()));
+                assert_eq!(
+                    agents,
+                    vec!["primary".to_string(), "researcher".to_string()]
+                );
+                assert_eq!(extensions, vec!["ext-1".to_string()]);
+                assert!(signed);
+                assert!(validation_errors.is_empty());
+                assert_eq!(validation_warnings, vec!["Unencrypted keys".to_string()]);
             }
             _ => panic!("Wrong variant"),
         }
@@ -3361,6 +3494,21 @@ mod tests {
         };
         assert_eq!(resp_perms.request_id(), 11);
         assert_eq!(resp_perms.variant_name(), "PrincipalPermissions");
+
+        let resp_preview = ResponsePacket::PrincipalImportPreviewed {
+            request_id: 12,
+            name: "p".to_string(),
+            version: "1.0.0".to_string(),
+            did: "did:peko:local:p".to_string(),
+            description: None,
+            agents: vec![],
+            extensions: vec![],
+            signed: false,
+            validation_errors: vec![],
+            validation_warnings: vec![],
+        };
+        assert_eq!(resp_preview.request_id(), 12);
+        assert_eq!(resp_preview.variant_name(), "PrincipalImportPreviewed");
     }
 
     // ─── Interrupt means stop: Change 3 wire-shape tests ────────────
