@@ -1071,6 +1071,10 @@ pub enum ResponsePacket {
         description: Option<String>,
         agents: Vec<String>,
         extensions: Vec<String>,
+        /// Capabilities required by the bundled extensions. Old daemons that
+        /// omit this field deserialize to an empty list.
+        #[serde(default)]
+        required_capabilities: Vec<String>,
         signed: bool,
         validation_errors: Vec<String>,
         validation_warnings: Vec<String>,
@@ -2070,6 +2074,7 @@ mod tests {
             description: Some("A preview test principal".to_string()),
             agents: vec!["primary".to_string(), "researcher".to_string()],
             extensions: vec!["ext-1".to_string()],
+            required_capabilities: vec!["tool:Read".to_string(), "network".to_string()],
             signed: true,
             validation_errors: vec![],
             validation_warnings: vec!["Unencrypted keys".to_string()],
@@ -2090,6 +2095,7 @@ mod tests {
                 description,
                 agents,
                 extensions,
+                required_capabilities,
                 signed,
                 validation_errors,
                 validation_warnings,
@@ -2104,6 +2110,10 @@ mod tests {
                     vec!["primary".to_string(), "researcher".to_string()]
                 );
                 assert_eq!(extensions, vec!["ext-1".to_string()]);
+                assert_eq!(
+                    required_capabilities,
+                    vec!["tool:Read".to_string(), "network".to_string()]
+                );
                 assert!(signed);
                 assert!(validation_errors.is_empty());
                 assert_eq!(validation_warnings, vec!["Unencrypted keys".to_string()]);
@@ -3543,6 +3553,7 @@ mod tests {
             description: None,
             agents: vec![],
             extensions: vec![],
+            required_capabilities: vec![],
             signed: false,
             validation_errors: vec![],
             validation_warnings: vec![],

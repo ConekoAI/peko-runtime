@@ -63,6 +63,7 @@ pub struct PrincipalImportPreview {
     description: Option<String>,
     agents: Vec<String>,
     extensions: Vec<String>,
+    required_capabilities: Vec<String>,
     signed: bool,
     validation_errors: Vec<String>,
     validation_warnings: Vec<String>,
@@ -2471,6 +2472,7 @@ impl IpcServer {
                             description: preview.description,
                             agents: preview.agents,
                             extensions: preview.extensions,
+                            required_capabilities: preview.required_capabilities,
                             signed: preview.signed,
                             validation_errors: preview.validation_errors,
                             validation_warnings: preview.validation_warnings,
@@ -3282,6 +3284,11 @@ impl IpcServer {
         let name = new_name.unwrap_or_else(|| manifest.principal.name.clone());
         let agents = Self::extract_agent_names_from_package(&files);
         let extensions: Vec<String> = manifest.extensions.iter().map(|r| r.id.clone()).collect();
+        let (required_capabilities, cap_warnings) =
+            crate::registry::packaging::PrincipalUnpackager::extract_extension_capabilities(
+                &manifest,
+                &files,
+            );
 
         let validation_errors: Vec<String> =
             validation.errors.iter().map(|e| format!("{e:?}")).collect();
@@ -3289,6 +3296,7 @@ impl IpcServer {
             .warnings
             .iter()
             .map(|w| format!("{w:?}"))
+            .chain(cap_warnings.into_iter())
             .collect();
 
         Ok(PrincipalImportPreview {
@@ -3298,6 +3306,7 @@ impl IpcServer {
             description: manifest.principal.description,
             agents,
             extensions,
+            required_capabilities,
             signed,
             validation_errors,
             validation_warnings,

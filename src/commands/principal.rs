@@ -478,6 +478,7 @@ async fn import_principal(
             description,
             agents,
             extensions,
+            required_capabilities,
             signed,
             validation_errors,
             validation_warnings,
@@ -489,6 +490,7 @@ async fn import_principal(
             description,
             agents,
             extensions,
+            required_capabilities,
             signed,
             validation_errors,
             validation_warnings,
@@ -552,6 +554,7 @@ struct PrincipalImportPreview {
     description: Option<String>,
     agents: Vec<String>,
     extensions: Vec<String>,
+    required_capabilities: Vec<String>,
     signed: bool,
     validation_errors: Vec<String>,
     validation_warnings: Vec<String>,
@@ -585,6 +588,15 @@ fn render_import_preview(preview: &PrincipalImportPreview) {
         println!("  Extensions:");
         for ext in &preview.extensions {
             println!("    - {ext}");
+        }
+    }
+
+    if preview.required_capabilities.is_empty() {
+        println!("  Required capabilities: (none)");
+    } else {
+        println!("  Required capabilities:");
+        for cap in &preview.required_capabilities {
+            println!("    - {cap}");
         }
     }
 
