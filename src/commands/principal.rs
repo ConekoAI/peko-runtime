@@ -721,6 +721,29 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
     )
 }
 
+/// Minimal safe built-in extension bundle for a freshly-created Principal.
+///
+/// With deny-all semantics an empty allowlist would leave the root agent
+/// unable to do anything useful. This starter set is intentionally small:
+/// file/tools, shell execution, task management, the Agent tool, and the
+/// agent_catalog needed to discover subagents.
+fn starter_extensions() -> AllowedExtensions {
+    let mut list = AllowedExtensions::new();
+    list.extend([
+        "Read",
+        "Write",
+        "Edit",
+        "Bash",
+        "Agent",
+        "agent_catalog",
+        "TaskCreate",
+        "TaskList",
+        "TaskGet",
+        "TaskUpdate",
+    ]);
+    list
+}
+
 fn default_principal_config(name: &str) -> PrincipalConfig {
     PrincipalConfig {
         name: name.to_string(),
@@ -735,7 +758,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         governance: PrincipalGovernanceConfig::default(),
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
-        allowed_extensions: AllowedExtensions::default(),
+        allowed_extensions: starter_extensions(),
         exposure: crate::tunnel::protocol::InstanceExposure::Private,
         status: None,
         permissions: Vec::new(),

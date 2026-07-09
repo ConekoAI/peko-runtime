@@ -555,7 +555,8 @@ impl ExtensionManager {
 
         // Remove any skill entries owned by this extension so the builtin
         // Skill tool stops resolving them.
-        crate::extensions::framework::skill_catalog::SkillCatalog::global().unregister_by_extension(id);
+        crate::extensions::framework::skill_catalog::SkillCatalog::global()
+            .unregister_by_extension(id);
 
         // Unregister all hooks
         for hook_id in &loaded_ext.hook_ids {
@@ -632,7 +633,12 @@ impl ExtensionManager {
         if loaded.extension_type != "skill" {
             return;
         }
-        let Some(skill_file) = loaded.manifest.metadata.get("skill_file").and_then(|v| v.as_str()) else {
+        let Some(skill_file) = loaded
+            .manifest
+            .metadata
+            .get("skill_file")
+            .and_then(|v| v.as_str())
+        else {
             return;
         };
         let name = loaded.manifest.id.0.clone();

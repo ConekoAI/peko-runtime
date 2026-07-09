@@ -5,8 +5,8 @@
 
 pub mod adapter;
 
+pub use crate::extensions::framework::skill_catalog::{SkillCatalog, SkillEntry};
 pub use adapter::{
     load_skills_from_directory, register_skills_with_core, DiscoveredSkill, SkillAdapter,
     SkillFrontmatter,
 };
-pub use crate::extensions::framework::skill_catalog::{SkillCatalog, SkillEntry};

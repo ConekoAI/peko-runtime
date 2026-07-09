@@ -104,8 +104,11 @@ fn allow_extension(cli: &PekoCli, principal_name: &str, ext_id: &str) {
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
     cfg.allowed_extensions.0.push(ext_id.to_string());
-    std::fs::write(&path, toml::to_string_pretty(&cfg).expect("serialize principal.toml"))
-        .expect("write principal.toml");
+    std::fs::write(
+        &path,
+        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
+    )
+    .expect("write principal.toml");
 }
 
 // ---------------------------------------------------------------------------
@@ -220,10 +223,7 @@ fn slash_backslash_escape_sends_literal() {
 
     // The `\/help` argument is stripped to `/help` by send.rs and bypasses
     // the slash handler, so the literal text reaches the LLM.
-    let (stdout, stderr, status) = send(
-        &cli,
-        &["send", "alice", "\\/help", "--no-stream"],
-    );
+    let (stdout, stderr, status) = send(&cli, &["send", "alice", "\\/help", "--no-stream"]);
     assert_ok(&stdout, &stderr, &status);
     assert!(
         stdout.contains("SUCCESS"),

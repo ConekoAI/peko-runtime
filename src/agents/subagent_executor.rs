@@ -36,6 +36,7 @@ use crate::extensions::framework::async_exec::executor::{
     AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
     SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
 };
+use crate::principal::config::AllowedExtensions;
 use crate::principal::PrincipalId;
 use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
@@ -117,6 +118,11 @@ pub struct SubagentExecutor {
     /// The spawning principal's human-readable name. Carried so
     /// Principal-scoped tools (e.g. cron) inherit the correct target.
     principal_name: Option<String>,
+    /// Snapshot of the spawning principal's allowed extension list.
+    /// `None` means unbound (no allowlist filtering). `Some(empty)`
+    /// means deny-all. Propagated to descendant subagents so a
+    /// restricted root agent cannot spawn a more-privileged child.
+    principal_allowed_extensions: Option<Arc<AllowedExtensions>>,
 }
 
 impl SubagentExecutor {
@@ -152,6 +158,7 @@ impl SubagentExecutor {
             principal_workspace: None,
             principal_id,
             principal_name: None,
+            principal_allowed_extensions: None,
         }
     }
 
@@ -172,6 +179,22 @@ impl SubagentExecutor {
     pub fn with_principal_name(mut self, name: impl Into<String>) -> Self {
         self.principal_name = Some(name.into());
         self
+    }
+
+    /// Set the spawning principal's allowed extension list snapshot.
+    #[must_use]
+    pub fn with_principal_allowed_extensions(
+        mut self,
+        allowed: Option<Arc<AllowedExtensions>>,
+    ) -> Self {
+        self.principal_allowed_extensions = allowed;
+        self
+    }
+
+    /// Get the spawning principal's allowed extension list snapshot, if bound.
+    #[must_use]
+    pub fn principal_allowed_extensions(&self) -> Option<&Arc<AllowedExtensions>> {
+        self.principal_allowed_extensions.as_ref()
     }
 
     /// Create an executor with an explicit registry (for testing and nested spawns)
@@ -197,6 +220,7 @@ impl SubagentExecutor {
             principal_workspace: None,
             principal_id,
             principal_name: None,
+            principal_allowed_extensions: None,
         }
     }
 
@@ -223,6 +247,7 @@ impl SubagentExecutor {
             principal_workspace: None,
             principal_id,
             principal_name: None,
+            principal_allowed_extensions: None,
         }
     }
 
@@ -380,6 +405,7 @@ impl SubagentExecutor {
         let session_manager_for_cleanup = self.session_manager.clone();
         let principal_id_clone = self.principal_id.clone();
         let cleanup_policy_clone = config.cleanup;
+        let principal_allowed_extensions_clone = self.principal_allowed_extensions.clone();
         // Derive a child token inside the closure so the sub-agent
         // observes the parent's cancel via `child_cancel` without
         // extending the parent's lifetime past the closure's
@@ -442,6 +468,7 @@ impl SubagentExecutor {
                         registry_for_task,
                         principal_id_clone,
                         principal_workspace_clone,
+                        principal_allowed_extensions_clone,
                         child_cancel_for_closure.clone(),
                     );
                     let result = if timeout > 0 {
@@ -834,6 +861,7 @@ async fn execute_subagent_task(
     async_registry: SharedAsyncTaskRegistry,
     principal_id: PrincipalId,
     principal_workspace: Option<std::path::PathBuf>,
+    principal_allowed_extensions: Option<Arc<AllowedExtensions>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<String> {
     info!(
@@ -907,7 +935,8 @@ async fn execute_subagent_task(
         principal_id.clone(),
     )
     .with_provider(provider.clone())
-    .with_agent_config(config.clone());
+    .with_agent_config(config.clone())
+    .with_principal_allowed_extensions(principal_allowed_extensions.clone());
     if let Some(ref ws) = principal_workspace {
         shared_executor_builder = shared_executor_builder.with_principal_workspace(ws.clone());
     }
@@ -923,6 +952,7 @@ async fn execute_subagent_task(
         session_manager,
         shared_executor,
         Some(provider.clone()),
+        principal_allowed_extensions,
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
@@ -1149,5 +1179,35 @@ mod tests {
             let mgr = manager.read().await;
             assert_eq!(mgr.spawn_overlay_count(), 0);
         }
+    }
+
+    #[tokio::test]
+    async fn test_principal_allowed_extensions_propagation() {
+        let manager = Arc::new(RwLock::new(SessionManager::new()));
+        let allowed = Arc::new(AllowedExtensions(vec![
+            "Read".to_string(),
+            "Write".to_string(),
+        ]));
+
+        let executor = SubagentExecutor::new(
+            manager.clone(),
+            "test_agent",
+            5,
+            crate::principal::PrincipalId::generate(),
+        )
+        .with_principal_allowed_extensions(Some(Arc::clone(&allowed)));
+
+        assert_eq!(
+            executor.principal_allowed_extensions(),
+            Some(&allowed),
+            "builder should store the allowlist snapshot"
+        );
+
+        let cloned = executor.clone();
+        assert_eq!(
+            cloned.principal_allowed_extensions(),
+            Some(&allowed),
+            "clone should preserve the allowlist snapshot"
+        );
     }
 }

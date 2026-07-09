@@ -38,7 +38,8 @@ impl ExtensionState {
 
     /// Case-insensitive membership check.
     pub fn is_enabled(&self, extension_name: &str) -> bool {
-        self.allowlist.contains(&extension_name.to_ascii_lowercase())
+        self.allowlist
+            .contains(&extension_name.to_ascii_lowercase())
     }
 }
 
@@ -57,7 +58,10 @@ impl ExtensionStateRegistry {
 
     /// Register (or overwrite) a principal's extension state.
     pub async fn register(&self, principal_id: PrincipalId, state: ExtensionState) {
-        let mut states = self.states.lock().expect("ExtensionStateRegistry mutex poisoned");
+        let mut states = self
+            .states
+            .lock()
+            .expect("ExtensionStateRegistry mutex poisoned");
         states.insert(principal_id, Arc::new(state));
     }
 
@@ -69,7 +73,10 @@ impl ExtensionStateRegistry {
     /// Synchronous removal used by the RAII guard so cleanup runs even
     /// when `drop` is invoked without a current Tokio runtime.
     fn unregister_sync(&self, principal_id: &PrincipalId) {
-        let mut states = self.states.lock().expect("ExtensionStateRegistry mutex poisoned");
+        let mut states = self
+            .states
+            .lock()
+            .expect("ExtensionStateRegistry mutex poisoned");
         states.remove(principal_id);
     }
 
@@ -151,9 +158,21 @@ mod tests {
         let state = ExtensionState::new(vec!["Docker".to_string()], PathBuf::from("/ws"));
         registry.register(pid("p1"), state).await;
 
-        assert!(registry.is_extension_enabled(Some(&pid("p1")), "docker").await);
-        assert!(registry.is_extension_enabled(Some(&pid("p1")), "DOCKER").await);
-        assert!(!registry.is_extension_enabled(Some(&pid("p1")), "deploy").await);
+        assert!(
+            registry
+                .is_extension_enabled(Some(&pid("p1")), "docker")
+                .await
+        );
+        assert!(
+            registry
+                .is_extension_enabled(Some(&pid("p1")), "DOCKER")
+                .await
+        );
+        assert!(
+            !registry
+                .is_extension_enabled(Some(&pid("p1")), "deploy")
+                .await
+        );
     }
 
     #[tokio::test]

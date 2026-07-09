@@ -382,7 +382,7 @@ where
     // Track B moved the per-agent extension whitelist off
     // `AgentConfig`; the snapshot lives on the agent and is
     // consulted by `init_builtins_async` to prune the tool bag.
-    .with_principal_allowed_extensions(Arc::clone(&ctx.allowed_extensions))
+    .with_principal_allowed_extensions(Some(Arc::clone(&ctx.allowed_extensions)))
     // Phase 4b: bind caller DID so `principal_send` is registered.
     // `None` ⇒ tool is intentionally omitted (no local-only fallback
     // for `principal_send`; it is exclusively cross-runtime).
@@ -404,6 +404,7 @@ where
             ctx.principal_id().clone(),
         )
         .with_principal_name(ctx.name().to_string())
+        .with_principal_allowed_extensions(Some(Arc::clone(&ctx.allowed_extensions)))
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
             // `PathResolver::principal_dir`), so derive the two config files

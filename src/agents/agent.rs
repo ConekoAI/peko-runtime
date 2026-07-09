@@ -82,16 +82,20 @@ pub struct Agent {
     /// `init_builtins_async` to filter the tool registry down to
     /// what this agent's principal can see.
     ///
-    /// Defaults to an empty allow-list when no principal has been
-    /// bound (e.g. test-only `Agent::new` callers). Empty in that
-    /// case means "no allowlist-based filtering" — every registered
-    /// tool stays visible, matching the pre-Track-B behaviour.
+    /// `None` means the agent is unbound from any principal and no
+    /// allowlist-based filtering is applied — every registered tool
+    /// stays visible. This preserves pre-Track-B behaviour for
+    /// test-only `Agent::new` callers and standalone agents.
+    ///
+    /// `Some(empty)` means the principal has an empty allowlist and
+    /// every tool is denied (fail-closed). This matches the
+    /// `AgentStateRegistry` / `ExtensionStateRegistry` semantics.
     ///
     /// **Track B**: this snapshot replaces
     /// `AgentConfig::extensions`/`extension_whitelist` for the
     /// runtime filter. Once `AgentConfig::extensions` is removed
     /// the principal's allowlist is the *only* source of truth.
-    principal_allowed_extensions: Arc<crate::principal::config::AllowedExtensions>,
+    principal_allowed_extensions: Option<Arc<crate::principal::config::AllowedExtensions>>,
 }
 
 impl Clone for Agent {
@@ -116,7 +120,7 @@ impl Clone for Agent {
             caller_principal_did: self.caller_principal_did.clone(),
             principal_id: self.principal_id.clone(),
             principal_name: self.principal_name.clone(),
-            principal_allowed_extensions: Arc::clone(&self.principal_allowed_extensions),
+            principal_allowed_extensions: self.principal_allowed_extensions.clone(),
         }
     }
 }
@@ -252,16 +256,18 @@ impl Agent {
         // Filter against the spawning principal's allowlist. The list
         // is captured at construction from
         // `PrincipalContext::allowed_extensions` (see
-        // `with_principal_allowed_extensions`); an empty list means
-        // "no allowlist-based filtering" — registered tools stay
-        // visible, matching pre-Track-B behaviour for the global
-        // extension core's tool bag.
-        let whitelist = self
+        // `with_principal_allowed_extensions`).
+        //
+        // `None`    => no allowlist bound; every registered tool stays visible
+        //              (standalone / test behaviour).
+        // `Some(_)` => filter to the listed names. An empty inner list means
+        //              deny-all (fail-closed), matching the semantics of
+        //              `AgentStateRegistry` / `ExtensionStateRegistry`.
+        if let Some(whitelist) = self
             .principal_allowed_extensions
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        if !whitelist.is_empty() {
+            .as_ref()
+            .map(|allowed| allowed.iter().cloned().collect::<Vec<_>>())
+        {
             let before_count = tools.len();
             tools.retain(|tool| {
                 let tool_name = tool.name();
@@ -563,9 +569,7 @@ impl Agent {
             caller_principal_did: None,
             principal_id,
             principal_name: None,
-            principal_allowed_extensions: Arc::new(
-                crate::principal::config::AllowedExtensions::default(),
-            ),
+            principal_allowed_extensions: None,
         };
 
         info!(
@@ -635,14 +639,19 @@ impl Agent {
     /// are not picked up by this agent — that is the intended
     /// semantic (the principal-scoping rules bind per-session).
     ///
-    /// An empty allowlist means "no filtering" — all registered tools
-    /// stay visible. Empty is the default when this builder isn't
-    /// called (e.g. plain `Agent::new` test callers).
+    /// `None` means unbound — no allowlist-based filtering is applied.
+    /// `Some(list)` filters to the named tools; an empty inner list
+    /// means deny-all (fail-closed). This matches the
+    /// `AgentStateRegistry` / `ExtensionStateRegistry` semantics.
     #[must_use]
     pub fn with_principal_allowed_extensions(
         mut self,
-        allowed: Arc<crate::principal::config::AllowedExtensions>,
+        allowed: Option<Arc<crate::principal::config::AllowedExtensions>>,
     ) -> Self {
+        let executor = (*self.subagent_executor)
+            .clone()
+            .with_principal_allowed_extensions(allowed.clone());
+        self.subagent_executor = Arc::new(executor);
         self.principal_allowed_extensions = allowed;
         self
     }
@@ -689,6 +698,7 @@ impl Agent {
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<crate::providers::Provider>>,
+        principal_allowed_extensions: Option<Arc<crate::principal::config::AllowedExtensions>>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
         let extension_core = global_core().expect("Global ExtensionCore not initialized");
@@ -760,9 +770,7 @@ impl Agent {
             caller_principal_did: None,
             principal_id,
             principal_name,
-            principal_allowed_extensions: Arc::new(
-                crate::principal::config::AllowedExtensions::default(),
-            ),
+            principal_allowed_extensions,
         };
 
         info!(
@@ -1315,11 +1323,14 @@ impl Agent {
     /// during `init_builtins_async` and when computing per-call
     /// tool definitions. **Track B**: replaces
     /// `AgentConfig::extension_whitelist()` for runtime reads.
+    ///
+    /// `None` means the agent is unbound and no allowlist-based
+    /// filtering is applied.
     #[must_use]
     pub fn principal_allowed_extensions(
         &self,
-    ) -> &Arc<crate::principal::config::AllowedExtensions> {
-        &self.principal_allowed_extensions
+    ) -> Option<&Arc<crate::principal::config::AllowedExtensions>> {
+        self.principal_allowed_extensions.as_ref()
     }
 
     // Session overlay methods
@@ -1629,9 +1640,7 @@ impl Agent {
             caller_principal_did: None,
             principal_id: crate::principal::PrincipalId::generate(),
             principal_name: None,
-            principal_allowed_extensions: Arc::new(
-                crate::principal::config::AllowedExtensions::default(),
-            ),
+            principal_allowed_extensions: None,
         })
     }
 
