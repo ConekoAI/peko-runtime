@@ -25,9 +25,10 @@
 //!     subagent it spawns (subagents share the Principal's permission
 //!     boundary); and
 //!   * write a `worker` subagent prompt at
-//!     `principals/<name>/agents/worker/AGENT.md` (the resolver requires the
-//!     directory form `agents/<type>/AGENT.md` — the default `root.md` is
-//!     a *file* and only serves as the root agent prompt).
+//!     `principals/<name>/agents/worker/AGENT.md` or
+//!     `principals/<name>/agents/worker.md` (the resolver accepts both the
+//!     directory form and the flat-file form). The default `root.md` is a
+//!     *file* and only serves as the root agent prompt.
 //!     A spawned subagent's tool whitelist comes from `ExtensionConfig::default()`
 //!     (which includes `Agent`, `Write`, `Read`, `Bash`, …), so the `worker`
 //!     prompt needs no tool frontmatter — `AGENT.md` has no `tools` field anyway.
@@ -136,13 +137,34 @@ fn workspace_dir(cli: &PekoCli) -> PathBuf {
     cli.peko_dir().join("data").join("workspaces")
 }
 
+/// Write a `worker` subagent prompt for the given Principal using the
+/// flat-file layout (`agents/<worker>.md`).
+fn write_worker_subagent_flat(cli: &PekoCli, principal: &str, worker: &str) {
+    let dir = cli
+        .peko_dir()
+        .join("principals")
+        .join(principal)
+        .join("agents");
+    std::fs::create_dir_all(&dir).expect("create agents dir");
+    let agent_md = format!(
+        "---\n\
+         name: {worker}\n\
+         description: Test subagent for the cli_subagent integration suite (flat file)\n\
+         ---\n\n\
+         You are a test subagent. Follow the task instructions exactly, \
+         using the Write/Read/Agent tools as directed.\n"
+    );
+    std::fs::write(dir.join(format!("{worker}.md")), agent_md).expect("write worker .md");
+}
+
 /// Write a `worker` subagent prompt for the given Principal.
 ///
 /// `AgentService::resolve_principal_agent` resolves a `subagent_type` to
-/// `<workspace>/agents/<type>/AGENT.md` (the directory form). The root
+/// `<workspace>/agents/<type>/AGENT.md` (the directory form) or
+/// `<workspace>/agents/<type>.md` (the flat-file form). The root
 /// prompt `agents/root.md` created by `peko principal create` is a *file*
 /// and is NOT a valid `subagent_type`, so each test creates an explicit
-/// `worker` subagent directory here. The subagent's tool whitelist comes from
+/// `worker` subagent here. The subagent's tool whitelist comes from
 /// `ExtensionConfig::default()` (Agent/Write/Read/Bash/…), so the prompt body
 /// and frontmatter carry no tool grants — `AGENT.md` has no `tools` field.
 fn write_worker_subagent(cli: &PekoCli, principal: &str, worker: &str) {
@@ -174,6 +196,12 @@ fn write_worker_subagent(cli: &PekoCli, principal: &str, worker: &str) {
 fn setup_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
     create_mock_principal_with_tools(cli, name, mock_llm_url, &["Agent", "Write", "Read", "Bash"]);
     write_worker_subagent(cli, name, WORKER);
+}
+
+/// Create the Principal under test and its `worker` subagent as a flat file.
+fn setup_principal_flat(cli: &PekoCli, name: &str, mock_llm_url: &str) {
+    create_mock_principal_with_tools(cli, name, mock_llm_url, &["Agent", "Write", "Read", "Bash"]);
+    write_worker_subagent_flat(cli, name, WORKER);
 }
 
 // ---------------------------------------------------------------------------
@@ -736,6 +764,76 @@ async fn subagent_isolation_t2_isolated_writes_file() {
     assert!(
         out.contains("ISOLATED_OK"),
         "parent did not report ISOLATED_OK: stdout={out} stderr={err}",
+    );
+
+    let path = workspace_dir(&cli).join(file_name);
+    let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        let dump = dump_data_dir(&cli);
+        panic!("child file not written at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}")
+    });
+    assert_eq!(actual, file_content);
+}
+
+/// Flat-file layout variant of `subagent_blocking_t1_write_file`.
+/// Verifies that a subagent prompt at `agents/worker.md` is discovered
+/// and can be spawned using the file stem as `subagent_type`.
+#[tokio::test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
+async fn subagent_blocking_t1_flat_file() {
+    if mock_llm_url().is_none() {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    }
+    let mock_url = mock_llm_url().unwrap();
+
+    let parent_needle = "subagent-block-t1-flat-p-vp7b";
+    let child_needle = "subagent-block-t1-flat-c-vp7b";
+    let agent_name = "subagent_blocking_t1_flat";
+    let file_name = "subagent_blocking_T1_flat.txt";
+    let file_content = "SUBAGENT_WAS_HERE_FLAT";
+
+    let task_for_child = format!(
+        "Write '{file_name}' with content '{file_content}' via Write. \
+         The substring '{child_needle}' is in this task on purpose so the mock \
+         can route the child's LLM call. (test=subagent_blocking_T1_flat)"
+    );
+
+    let script = serde_json::json!({
+        parent_needle: [
+            { "tool_call": { "name": "Agent", "arguments":
+                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER }).to_string()
+            } },
+            "BLOCKING_SUCCESS",
+        ],
+        child_needle: [
+            { "tool_call": { "name": "Write", "arguments":
+                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
+            } },
+            "CHILD_DONE",
+        ],
+    })
+    .to_string();
+    configure_mock(&mock_url, &script).await;
+
+    let cli = PekoCli::new();
+    setup_principal_flat(&cli, agent_name, &mock_url);
+    let _daemon = DaemonGuard::spawn(&cli);
+
+    let prompt = format!(
+        "Spawn a subagent to do a task; the task description is in your system prompt. \
+         When it returns, respond with BLOCKING_SUCCESS if the child wrote the file. \
+         Use the needle '{parent_needle}' in your response."
+    );
+    let (out, err, status) = run(
+        &cli,
+        &["send", agent_name, &prompt, "--no-stream"],
+        Duration::from_secs(30),
+    );
+    assert_ok(&out, &err, &status);
+    assert!(
+        out.contains("BLOCKING_SUCCESS"),
+        "parent did not report BLOCKING_SUCCESS: stdout={out} stderr={err}",
     );
 
     let path = workspace_dir(&cli).join(file_name);

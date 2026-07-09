@@ -1339,9 +1339,8 @@ mod tests {
 
         let agent_name = format!("session-start-agent-{}", uuid::Uuid::new_v4());
         let mut config = test_agent_config(&agent_name);
-        config.prompt = Some(
-            "You are {{agent_name}}.\n\n{{session_context}}\n\n{{tools}}\n".to_string(),
-        );
+        config.prompt =
+            Some("You are {{agent_name}}.\n\n{{session_context}}\n\n{{tools}}\n".to_string());
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
 
@@ -1356,17 +1355,21 @@ mod tests {
         );
 
         // Clean up the hook so later tests are not affected.
-        let _ = global_core()
-            .unwrap()
-            .unregister_hook(&hook_id)
-            .await;
+        let _ = global_core().unwrap().unregister_hook(&hook_id).await;
 
-        assert!(result.is_ok(), "Agentic loop should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Agentic loop should succeed: {:?}",
+            result.err()
+        );
 
         // The first recorded request's system message should contain the
         // session-start bootstrap context.
         let recorded = mock.recorded_requests();
-        assert!(!recorded.is_empty(), "mock should have recorded at least one request");
+        assert!(
+            !recorded.is_empty(),
+            "mock should have recorded at least one request"
+        );
         let system_text: String = recorded[0].messages[0]
             .content
             .iter()

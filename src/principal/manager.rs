@@ -470,8 +470,9 @@ impl PrincipalManager {
             let config = principal.config.read().await;
             let available_agents: Vec<_> = principal
                 .agent_prompts
-                .values()
-                .map(|p| super::router::AgentPromptSummary {
+                .iter()
+                .map(|(id, p)| super::router::AgentPromptSummary {
+                    id: id.clone(),
                     name: p.name.clone(),
                     description: p.frontmatter.description.clone(),
                 })
@@ -614,12 +615,7 @@ impl PrincipalManager {
             .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
 
         let (slash_response, message) = self
-            .preprocess_slash(
-                &principal,
-                message,
-                false,
-                OutputFormat::Human,
-            )
+            .preprocess_slash(&principal, message, false, OutputFormat::Human)
             .await?;
         if let Some(content) = slash_response {
             return Ok(PrincipalResponse::text(content));
@@ -682,9 +678,10 @@ async fn discover_agent_prompts(
         let adapter = AgentAdapter::new();
         let discovered = adapter.discover_agents(&agents_dir);
         for d in discovered {
+            let canonical_id = d.manifest.id.0.clone();
             let prompt = load_agent_prompt(&d.file_path)
-                .map_err(|e| PrincipalManagerError::Config(format!("{}: {e}", d.manifest.name)))?;
-            prompts.insert(d.manifest.name.clone(), prompt);
+                .map_err(|e| PrincipalManagerError::Config(format!("{}: {e}", canonical_id)))?;
+            prompts.insert(canonical_id, prompt);
         }
     }
 

@@ -49,6 +49,7 @@ Returns an array of agents with name and description."
             .iter()
             .map(|a| {
                 json!({
+                    "id": a.id,
                     "name": a.name,
                     "description": a.description,
                 })
@@ -67,18 +68,22 @@ mod tests {
     async fn test_list_all() {
         let tool = AgentCatalogTool::new(vec![
             AgentPromptSummary {
+                id: "math".to_string(),
                 name: "math".to_string(),
                 description: Some("Math specialist".to_string()),
             },
             AgentPromptSummary {
-                name: "primary".to_string(),
+                id: "primary".to_string(),
+                name: "Primary".to_string(),
                 description: Some("Generalist".to_string()),
             },
         ]);
 
         let result = tool.execute(json!({})).await.unwrap();
         assert_eq!(result["total"], 2);
+        assert_eq!(result["agents"][0]["id"], "math");
         assert_eq!(result["agents"][0]["name"], "math");
-        assert_eq!(result["agents"][1]["name"], "primary");
+        assert_eq!(result["agents"][1]["id"], "primary");
+        assert_eq!(result["agents"][1]["name"], "Primary");
     }
 }
