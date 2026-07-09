@@ -31,7 +31,9 @@ impl Tool for AgentCatalogTool {
     fn description(&self) -> String {
         r"List the specialist agents available in this Principal.
 
-Returns an array of agents with name and description."
+Returns an array of agents with `id`, `name`, `description`, and
+`enabled`. Only agents with `enabled: true` may be spawned via the
+`Agent` tool."
             .to_string()
     }
 
@@ -52,6 +54,7 @@ Returns an array of agents with name and description."
                     "id": a.id,
                     "name": a.name,
                     "description": a.description,
+                    "enabled": a.enabled,
                 })
             })
             .collect();
@@ -71,11 +74,13 @@ mod tests {
                 id: "math".to_string(),
                 name: "math".to_string(),
                 description: Some("Math specialist".to_string()),
+                enabled: true,
             },
             AgentPromptSummary {
                 id: "primary".to_string(),
                 name: "Primary".to_string(),
                 description: Some("Generalist".to_string()),
+                enabled: false,
             },
         ]);
 
@@ -83,7 +88,9 @@ mod tests {
         assert_eq!(result["total"], 2);
         assert_eq!(result["agents"][0]["id"], "math");
         assert_eq!(result["agents"][0]["name"], "math");
+        assert_eq!(result["agents"][0]["enabled"], true);
         assert_eq!(result["agents"][1]["id"], "primary");
         assert_eq!(result["agents"][1]["name"], "Primary");
+        assert_eq!(result["agents"][1]["enabled"], false);
     }
 }

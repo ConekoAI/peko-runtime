@@ -686,7 +686,8 @@ impl AppState {
                 Arc::new(DefaultPrincipalRouterFactory),
             )
             .with_resolver(resolver.clone())
-            .with_slash_dispatcher(slash_dispatcher);
+            .with_slash_dispatcher(slash_dispatcher)
+            .with_extension_manager(Arc::clone(&extension_manager));
 
             if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {

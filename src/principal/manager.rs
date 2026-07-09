@@ -69,6 +69,10 @@ pub struct PrincipalManager {
     /// agent. This is optional so tests and non-daemon contexts can build a
     /// PrincipalManager without extension state.
     slash_dispatcher: Arc<RwLock<Option<Arc<SlashDispatcher>>>>,
+    /// Optional daemon extension manager. When present, the per-message
+    /// `ExtensionStore` includes installed extensions as well as built-ins
+    /// and principal-scoped agents.
+    extension_manager: Option<Arc<RwLock<crate::extensions::framework::manager::ExtensionManager>>>,
 }
 
 impl PrincipalManager {
@@ -102,6 +106,7 @@ impl PrincipalManager {
             inbox_registry: Arc::new(InboxRegistry::new()),
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
             slash_dispatcher: Arc::new(RwLock::new(None)),
+            extension_manager: None,
         }
     }
 
@@ -115,6 +120,18 @@ impl PrincipalManager {
     #[must_use]
     pub fn with_slash_dispatcher(mut self, dispatcher: Arc<SlashDispatcher>) -> Self {
         self.slash_dispatcher = Arc::new(RwLock::new(Some(dispatcher)));
+        self
+    }
+
+    /// Attach a daemon extension manager. When present, the per-message
+    /// `ExtensionStore` includes installed extensions alongside built-ins
+    /// and principal-scoped agents.
+    #[must_use]
+    pub fn with_extension_manager(
+        mut self,
+        extension_manager: Arc<RwLock<crate::extensions::framework::manager::ExtensionManager>>,
+    ) -> Self {
+        self.extension_manager = Some(extension_manager);
         self
     }
 
@@ -466,8 +483,17 @@ impl PrincipalManager {
             });
         }
 
-        let (available_agents, routing, allowed_extensions, intent, governance, principal_name) = {
+        let (
+            available_agents,
+            extension_store,
+            routing,
+            allowed_extensions,
+            intent,
+            governance,
+            principal_name,
+        ) = {
             let config = principal.config.read().await;
+            let allowed = &config.allowed_extensions;
             let available_agents: Vec<_> = principal
                 .agent_prompts
                 .iter()
@@ -475,12 +501,25 @@ impl PrincipalManager {
                     id: id.clone(),
                     name: p.name.clone(),
                     description: p.frontmatter.description.clone(),
+                    enabled: allowed
+                        .iter()
+                        .any(|e| e.eq_ignore_ascii_case(id) || e.eq_ignore_ascii_case(&p.name)),
                 })
                 .collect();
+
+            let extension_store = match self.extension_manager.as_ref() {
+                Some(em) => {
+                    let guard = em.read().await;
+                    super::ExtensionStore::build(allowed, &principal.agent_prompts, Some(&*guard))
+                }
+                None => super::ExtensionStore::build(allowed, &principal.agent_prompts, None),
+            };
+
             (
                 available_agents,
+                extension_store,
                 config.routing.clone(),
-                config.allowed_extensions.clone(),
+                allowed.clone(),
                 config.intent.clone(),
                 config.governance.clone(),
                 config.name.clone(),
@@ -496,6 +535,7 @@ impl PrincipalManager {
             routing,
             recalled_context,
             available_agents,
+            extension_store,
             allowed_extensions,
             intent,
             governance,
@@ -742,14 +782,34 @@ mod tests {
     }
 
     async fn create_test_principal(manager: &PrincipalManager, name: &str) -> Arc<Principal> {
+        create_test_principal_with_agents(manager, name, &[]).await
+    }
+
+    async fn create_test_principal_with_agents(
+        manager: &PrincipalManager,
+        name: &str,
+        extra_agents: &[&str],
+    ) -> Arc<Principal> {
         let agents_dir = manager.workspace_root.join(name).join("agents");
         tokio::fs::create_dir_all(&agents_dir).await.unwrap();
-        let prompt_path = agents_dir.join("primary.md");
-        let prompt_body = format!(
+
+        let primary_body = format!(
             "---\ndescription: \"Test assistant for {name}\"\n---\n\n\
              You are {name}, a test assistant. Reply concisely.\n"
         );
-        tokio::fs::write(&prompt_path, prompt_body).await.unwrap();
+        tokio::fs::write(agents_dir.join("primary.md"), primary_body)
+            .await
+            .unwrap();
+
+        for agent in extra_agents {
+            let body = format!(
+                "---\nname: {agent}\ndescription: \"Agent {agent}\"\n---\n\n\
+                 You are {agent}.\n"
+            );
+            tokio::fs::write(agents_dir.join(format!("{agent}.md")), body)
+                .await
+                .unwrap();
+        }
 
         let config = test_config(name);
         manager.create(config).await.unwrap()
@@ -1143,5 +1203,64 @@ mod tests {
             .await
             .expect("grantee should be allowed");
         assert!(response.content.contains("friend reply"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn build_router_context_marks_disabled_agents() {
+        let (temp, manager, _adapter, _id) = setup().await;
+
+        // Re-create a principal with two agents, only one of which is allowed.
+        manager.remove("stressy").await.unwrap();
+
+        let principal = create_test_principal_with_agents(
+            &manager,
+            "stressy",
+            &["enabled_agent", "disabled_agent"],
+        )
+        .await;
+        manager
+            .update_config("stressy", |config| {
+                config.allowed_extensions =
+                    AllowedExtensions(vec!["enabled_agent".to_string(), "Read".to_string()]);
+            })
+            .await
+            .unwrap();
+
+        let ctx = manager
+            .build_router_context(
+                &principal,
+                Subject::User("test-owner".to_string()),
+                "hello".to_string(),
+                cli_channel(),
+            )
+            .await
+            .expect("build_router_context should succeed");
+
+        let enabled = ctx
+            .available_agents
+            .iter()
+            .find(|a| a.id == "enabled_agent")
+            .expect("enabled_agent should be in catalog");
+        assert!(enabled.enabled, "enabled_agent should be enabled");
+
+        let disabled = ctx
+            .available_agents
+            .iter()
+            .find(|a| a.id == "disabled_agent")
+            .expect("disabled_agent should be in catalog");
+        assert!(!disabled.enabled, "disabled_agent should be disabled");
+
+        // The ExtensionStore also surfaces the disabled agent.
+        let store_disabled = ctx
+            .extension_store
+            .items()
+            .iter()
+            .find(|i| i.id == "disabled_agent")
+            .expect("disabled_agent should be in extension store");
+        assert!(!store_disabled.enabled);
+
+        // Suppress unused warning for temp.
+        let _ = temp;
     }
 }

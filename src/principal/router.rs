@@ -44,6 +44,9 @@ pub struct RouterContext {
     pub allowed_extensions: super::AllowedExtensions,
     pub intent: super::PrincipalIntentConfig,
     pub governance: super::PrincipalGovernanceConfig,
+    /// Per-principal snapshot of all detected extensions/agents and their
+    /// enabled state.
+    pub extension_store: super::ExtensionStore,
     /// Shared inbox registry so the router can wire the root agent
     /// to the same inbox the Principal boundary pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,
@@ -59,6 +62,8 @@ pub struct AgentPromptSummary {
     /// Human-readable display name from the frontmatter.
     pub name: String,
     pub description: Option<String>,
+    /// Whether this agent is currently enabled for the principal.
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone)]
