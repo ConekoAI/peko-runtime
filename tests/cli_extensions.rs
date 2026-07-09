@@ -77,7 +77,7 @@
 //! stack.
 
 mod common;
-use common::{run_with_timeout, DaemonGuard, PekoCli};
+use common::{create_mock_principal_with_tools, run_with_timeout, DaemonGuard, PekoCli};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -850,4 +850,95 @@ async fn ext_enable_for_agent_modifies_whitelist() {
         Duration::from_secs(10),
     );
     assert_ok(&out, &err, &status);
+}
+
+/// Principal-scoped `peko ext enable/disable --principal <name>` mutates
+/// the Principal's `principal.toml` `allowed_extensions` list.
+///
+/// This is the Principal-era replacement for the legacy `--target` flow.
+#[tokio::test]
+#[ignore = "requires peko daemon"]
+async fn ext_enable_disable_principal_modifies_allowlist() {
+    // Use a placeholder mock URL — this test never calls peko send.
+    let mock_url = "http://mock-llm.invalid";
+
+    let cli = PekoCli::new();
+    let principal_name = "ext_enable_disable_principal";
+    create_mock_principal_with_tools(&cli, principal_name, mock_url, &[]);
+    let _daemon = DaemonGuard::spawn(&cli);
+
+    let principal_config = cli
+        .peko_dir()
+        .join("principals")
+        .join(principal_name)
+        .join("principal.toml");
+    assert!(
+        principal_config.exists(),
+        "principal config should exist at {principal_config:?}",
+    );
+
+    // Enable a tool that is not in the default starter bundle.
+    let (out, err, status) = run(
+        &cli,
+        &["ext", "enable", "Grep", "--principal", principal_name],
+        Duration::from_secs(10),
+    );
+    assert_ok(&out, &err, &status);
+    assert!(
+        out.contains("Grep"),
+        "enable output should mention the extension id: stdout={out} stderr={err}",
+    );
+
+    let after_enable = std::fs::read_to_string(&principal_config)
+        .unwrap_or_else(|e| panic!("read {principal_config:?}: {e}"));
+    assert!(
+        after_enable.contains("Grep") && after_enable.contains("builtin:tool:Grep"),
+        "principal.toml should contain both bare and canonical Grep grants: {after_enable}",
+    );
+
+    // Disabling the tool removes both forms.
+    let (out, err, status) = run(
+        &cli,
+        &["ext", "disable", "Grep", "--principal", principal_name],
+        Duration::from_secs(10),
+    );
+    assert_ok(&out, &err, &status);
+
+    let after_disable = std::fs::read_to_string(&principal_config)
+        .unwrap_or_else(|e| panic!("read {principal_config:?}: {e}"));
+    assert!(
+        !after_disable.contains("Grep"),
+        "principal.toml should NOT contain Grep after disable: {after_disable}",
+    );
+}
+
+/// `--principal` and `--target` are mutually exclusive on `peko ext enable`
+/// and `peko ext disable`. Passing both makes clap exit before any IPC.
+#[tokio::test]
+async fn ext_enable_principal_target_conflict_fails_parse() {
+    let cli = PekoCli::new();
+    let (_out, err, status) = run(
+        &cli,
+        &[
+            "ext",
+            "enable",
+            "Bash",
+            "--principal",
+            "p1",
+            "--target",
+            "a1",
+        ],
+        Duration::from_secs(5),
+    );
+    assert_ne!(
+        status.code(),
+        Some(0),
+        "expected parse failure when both --principal and --target are supplied",
+    );
+    assert!(
+        err.contains("cannot be used with")
+            || err.contains("--target")
+            || err.contains("--principal"),
+        "stderr should mention the flag conflict: {err}",
+    );
 }
