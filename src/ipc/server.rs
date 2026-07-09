@@ -1360,85 +1360,62 @@ impl IpcServer {
                 request_id,
                 id,
                 target,
-                principal,
             } => {
-                let (_is_builtin, bare_name, canonical_id) = Self::parse_extension_ref(&id);
+                let (_is_builtin, _bare_name, canonical_id) = Self::parse_extension_ref(&id);
 
-                let result = if let Some(principal_name) = principal {
-                    // Principal scope: mutate the principal's capabilities.
-                    let pm = state.principal_manager().clone();
-                    match pm
-                        .update_config(&principal_name, |config| {
-                            let already_enabled = config.capabilities.iter().any(|entry| {
-                                entry.as_str().eq_ignore_ascii_case(&bare_name)
-                                    || entry.as_str().eq_ignore_ascii_case(&canonical_id)
-                            });
-                            if !already_enabled {
-                                config.capabilities.push(bare_name.clone());
-                                config.capabilities.push(canonical_id.clone());
-                            }
-                        })
-                        .await
-                    {
-                        Ok(_) => Ok(format!(
-                            "Extension '{id}' enabled for principal '{principal_name}'"
-                        )),
-                        Err(e) => Err(anyhow::anyhow!(e.to_string())),
-                    }
-                } else {
-                    match target {
-                        None => {
-                            // Global scope: enable extension at daemon level
-                            let is_builtin = crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
-                                || id.starts_with("builtin:");
-                            let mut manager = state.extension_manager().write().await;
-                            let ext_services = state.extension_services();
-                            if is_builtin {
-                                let tool_name = if id.starts_with("builtin:") {
-                                    id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
-                                } else {
-                                    id.clone()
-                                };
-                                ext_services.enable_builtin_hooks(&tool_name).await;
-                                Ok(format!("Built-in tool '{tool_name}' enabled globally"))
+                let result = match target {
+                    None => {
+                        // Global scope: enable extension at daemon level
+                        let is_builtin =
+                            crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(
+                                &id,
+                            ) || id.starts_with("builtin:");
+                        let mut manager = state.extension_manager().write().await;
+                        let ext_services = state.extension_services();
+                        if is_builtin {
+                            let tool_name = if id.starts_with("builtin:") {
+                                id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
                             } else {
-                                let ext_id =
-                                    crate::extensions::framework::types::ExtensionId::new(&id);
-                                match manager.enable(&ext_id).await {
-                                    Ok(()) => Ok(format!("Extension '{id}' enabled globally")),
-                                    Err(e) => Err(e),
-                                }
-                            }
-                        }
-                        Some(ref target_str) if target_str.contains('/') => {
-                            // Legacy compound scope: "namespace/agent" — resolves to agent
-                            let parts: Vec<&str> = target_str.split('/').collect();
-                            let agent_name = if parts.len() == 2 {
-                                parts[1]
-                            } else {
-                                target_str.as_str()
+                                id.clone()
                             };
-                            let config_service = state.config_service();
-                            match config_service.enable_tool_sync(agent_name, &canonical_id) {
-                                Ok(()) => Ok(format!(
-                                    "Extension '{canonical_id}' enabled for agent '{agent_name}'"
-                                )),
-                                Err(e) => Err(anyhow::anyhow!(
-                                    "Failed to enable extension for agent: {e}"
-                                )),
+                            ext_services.enable_builtin_hooks(&tool_name).await;
+                            Ok(format!("Built-in tool '{tool_name}' enabled globally"))
+                        } else {
+                            let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
+                            match manager.enable(&ext_id).await {
+                                Ok(()) => Ok(format!("Extension '{id}' enabled globally")),
+                                Err(e) => Err(e),
                             }
                         }
-                        Some(ref target_str) => {
-                            let config_service = state.config_service();
-                            // Agent scope only; bare names must resolve to an existing agent config.
-                            match config_service.enable_tool_sync(target_str, &canonical_id) {
-                                Ok(()) => Ok(format!(
-                                    "Extension '{canonical_id}' enabled for agent '{target_str}'"
-                                )),
-                                Err(e) => Err(anyhow::anyhow!(
-                                    "Failed to enable extension for agent '{target_str}': {e}"
-                                )),
+                    }
+                    Some(ref target_str) if target_str.contains('/') => {
+                        // Legacy compound scope: "namespace/agent" — resolves to agent
+                        let parts: Vec<&str> = target_str.split('/').collect();
+                        let agent_name = if parts.len() == 2 {
+                            parts[1]
+                        } else {
+                            target_str.as_str()
+                        };
+                        let config_service = state.config_service();
+                        match config_service.enable_tool_sync(agent_name, &canonical_id) {
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' enabled for agent '{agent_name}'"
+                            )),
+                            Err(e) => {
+                                Err(anyhow::anyhow!("Failed to enable extension for agent: {e}"))
                             }
+                        }
+                    }
+                    Some(ref target_str) => {
+                        let config_service = state.config_service();
+                        // Agent scope only; bare names must resolve to an existing agent config.
+                        match config_service.enable_tool_sync(target_str, &canonical_id) {
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' enabled for agent '{target_str}'"
+                            )),
+                            Err(e) => Err(anyhow::anyhow!(
+                                "Failed to enable extension for agent '{target_str}': {e}"
+                            )),
                         }
                     }
                 };
@@ -1466,87 +1443,62 @@ impl IpcServer {
                 request_id,
                 id,
                 target,
-                principal,
             } => {
-                let (_is_builtin, bare_name, canonical_id) = Self::parse_extension_ref(&id);
+                let (_is_builtin, _bare_name, canonical_id) = Self::parse_extension_ref(&id);
 
-                let mut removed = false;
-                let result = if let Some(principal_name) = principal {
-                    // Principal scope: mutate the principal's capabilities.
-                    let pm = state.principal_manager().clone();
-                    match pm
-                        .update_config(&principal_name, |config| {
-                            let before = config.capabilities.len();
-                            config.capabilities.retain(|entry| {
-                                !entry.as_str().eq_ignore_ascii_case(&bare_name)
-                                    && !entry.as_str().eq_ignore_ascii_case(&canonical_id)
-                            });
-                            removed = config.capabilities.len() != before;
-                        })
-                        .await
-                    {
-                        Ok(_) if removed => Ok(format!(
-                            "Extension '{id}' disabled for principal '{principal_name}'"
-                        )),
-                        Ok(_) => Ok(format!(
-                            "Extension '{id}' was not enabled for principal '{principal_name}'"
-                        )),
-                        Err(e) => Err(anyhow::anyhow!(e.to_string())),
-                    }
-                } else {
-                    match target {
-                        None => {
-                            // Global scope: disable extension at daemon level
-                            let is_builtin = crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
-                                || id.starts_with("builtin:");
-                            let mut manager = state.extension_manager().write().await;
-                            let ext_services = state.extension_services();
-                            if is_builtin {
-                                let tool_name = if id.starts_with("builtin:") {
-                                    id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
-                                } else {
-                                    id.clone()
-                                };
-                                ext_services.disable_builtin_hooks(&tool_name).await;
-                                Ok(format!("Built-in tool '{tool_name}' disabled globally"))
+                let result = match target {
+                    None => {
+                        // Global scope: disable extension at daemon level
+                        let is_builtin =
+                            crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(
+                                &id,
+                            ) || id.starts_with("builtin:");
+                        let mut manager = state.extension_manager().write().await;
+                        let ext_services = state.extension_services();
+                        if is_builtin {
+                            let tool_name = if id.starts_with("builtin:") {
+                                id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
                             } else {
-                                let ext_id =
-                                    crate::extensions::framework::types::ExtensionId::new(&id);
-                                match manager.disable(&ext_id).await {
-                                    Ok(()) => Ok(format!("Extension '{id}' disabled globally")),
-                                    Err(e) => Err(e),
-                                }
-                            }
-                        }
-                        Some(ref target_str) if target_str.contains('/') => {
-                            // Legacy compound scope: "namespace/agent" — resolves to agent
-                            let parts: Vec<&str> = target_str.split('/').collect();
-                            let agent_name = if parts.len() == 2 {
-                                parts[1]
-                            } else {
-                                target_str.as_str()
+                                id.clone()
                             };
-                            let config_service = state.config_service();
-                            match config_service.disable_tool_sync(agent_name, &canonical_id) {
-                                Ok(()) => Ok(format!(
-                                    "Extension '{canonical_id}' disabled for agent '{agent_name}'"
-                                )),
-                                Err(e) => Err(anyhow::anyhow!(
-                                    "Failed to disable extension for agent: {e}"
-                                )),
+                            ext_services.disable_builtin_hooks(&tool_name).await;
+                            Ok(format!("Built-in tool '{tool_name}' disabled globally"))
+                        } else {
+                            let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
+                            match manager.disable(&ext_id).await {
+                                Ok(()) => Ok(format!("Extension '{id}' disabled globally")),
+                                Err(e) => Err(e),
                             }
                         }
-                        Some(ref target_str) => {
-                            let config_service = state.config_service();
-                            // Agent scope only; bare names must resolve to an existing agent config.
-                            match config_service.disable_tool_sync(target_str, &canonical_id) {
-                                Ok(()) => Ok(format!(
-                                    "Extension '{canonical_id}' disabled for agent '{target_str}'"
-                                )),
-                                Err(e) => Err(anyhow::anyhow!(
-                                    "Failed to disable extension for agent '{target_str}': {e}"
-                                )),
-                            }
+                    }
+                    Some(ref target_str) if target_str.contains('/') => {
+                        // Legacy compound scope: "namespace/agent" — resolves to agent
+                        let parts: Vec<&str> = target_str.split('/').collect();
+                        let agent_name = if parts.len() == 2 {
+                            parts[1]
+                        } else {
+                            target_str.as_str()
+                        };
+                        let config_service = state.config_service();
+                        match config_service.disable_tool_sync(agent_name, &canonical_id) {
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' disabled for agent '{agent_name}'"
+                            )),
+                            Err(e) => Err(anyhow::anyhow!(
+                                "Failed to disable extension for agent: {e}"
+                            )),
+                        }
+                    }
+                    Some(ref target_str) => {
+                        let config_service = state.config_service();
+                        // Agent scope only; bare names must resolve to an existing agent config.
+                        match config_service.disable_tool_sync(target_str, &canonical_id) {
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' disabled for agent '{target_str}'"
+                            )),
+                            Err(e) => Err(anyhow::anyhow!(
+                                "Failed to disable extension for agent '{target_str}': {e}"
+                            )),
                         }
                     }
                 };

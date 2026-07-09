@@ -266,7 +266,6 @@ pub async fn handle_ext_command(
                     request_id: 1,
                     id: id.clone(),
                     target,
-                    principal: None,
                 };
                 let response = client.request_response(packet).await?;
                 match response {
@@ -300,7 +299,6 @@ pub async fn handle_ext_command(
                     request_id: 1,
                     id: id.clone(),
                     target,
-                    principal: None,
                 };
                 let response = client.request_response(packet).await?;
                 match response {

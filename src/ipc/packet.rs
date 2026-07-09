@@ -234,7 +234,6 @@ pub enum RequestPacket {
         request_id: u64,
         id: String,
         target: Option<String>,
-        principal: Option<String>,
     },
 
     #[serde(rename = "extension_disable")]
@@ -242,7 +241,6 @@ pub enum RequestPacket {
         request_id: u64,
         id: String,
         target: Option<String>,
-        principal: Option<String>,
     },
 
     #[serde(rename = "capability_grant")]
@@ -2306,7 +2304,6 @@ mod tests {
             request_id: 1001,
             id: "ext-1".to_string(),
             target: Some("all".to_string()),
-            principal: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -2315,12 +2312,10 @@ mod tests {
                 request_id,
                 id,
                 target,
-                principal,
             } => {
                 assert_eq!(request_id, 1001);
                 assert_eq!(id, "ext-1");
                 assert_eq!(target, Some("all".to_string()));
-                assert_eq!(principal, None);
             }
             _ => panic!("Wrong variant"),
         }
@@ -2332,7 +2327,6 @@ mod tests {
             request_id: 1002,
             id: "ext-1".to_string(),
             target: None,
-            principal: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -2341,12 +2335,10 @@ mod tests {
                 request_id,
                 id,
                 target,
-                principal,
             } => {
                 assert_eq!(request_id, 1002);
                 assert_eq!(id, "ext-1");
                 assert_eq!(target, None);
-                assert_eq!(principal, None);
             }
             _ => panic!("Wrong variant"),
         }
@@ -2491,7 +2483,6 @@ mod tests {
             request_id: 2,
             id: "e".to_string(),
             target: None,
-            principal: Some("acme".to_string()),
         };
         assert_eq!(req_enable.request_id(), 2);
 
@@ -2499,7 +2490,6 @@ mod tests {
             request_id: 3,
             id: "e".to_string(),
             target: None,
-            principal: None,
         };
         assert_eq!(req_disable.request_id(), 3);
 
