@@ -46,6 +46,16 @@ pub struct ExtensionManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<ExtensionDependency>,
 
+    /// Capabilities this extension provides (e.g. `agent:researcher`, `tool:Read`).
+    /// An extension is active when at least one provided capability is granted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<String>,
+
+    /// Capabilities this extension requires to function (e.g. `tool:Read`, `network`).
+    /// All required capabilities must be granted before the extension is active.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+
     /// Additional metadata (type-specific)
     #[serde(flatten)]
     pub metadata: HashMap<String, serde_json::Value>,
@@ -73,6 +83,8 @@ impl ExtensionManifest {
             version: version.into(),
             path,
             dependencies: Vec::new(),
+            provides: Vec::new(),
+            requires: Vec::new(),
             metadata: HashMap::new(),
             source: None,
         }

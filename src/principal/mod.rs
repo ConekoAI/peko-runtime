@@ -2,6 +2,7 @@ pub mod agent_prompt;
 pub mod agent_runner;
 pub mod agent_state;
 pub mod capability;
+pub mod capability_evaluator;
 pub mod config;
 pub mod context;
 pub mod extension_state;
@@ -17,6 +18,7 @@ pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use agent_state::{AgentState, AgentStateGuard, AgentStateRegistry};
 pub use capability::{Capabilities, Capability};
+pub use capability_evaluator::CapabilityEvaluator;
 pub use config::{
     AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig, PrincipalDID,
     PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
