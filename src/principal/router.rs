@@ -54,6 +54,9 @@ pub struct RouterContext {
 
 #[derive(Debug, Clone)]
 pub struct AgentPromptSummary {
+    /// Canonical agent id used as `subagent_type` when spawning.
+    pub id: String,
+    /// Human-readable display name from the frontmatter.
     pub name: String,
     pub description: Option<String>,
 }

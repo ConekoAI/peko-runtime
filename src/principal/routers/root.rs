@@ -296,6 +296,7 @@ mod tests {
                 content: "previous summary".to_string(),
             }],
             available_agents: vec![AgentPromptSummary {
+                id: "primary".to_string(),
                 name: "primary".to_string(),
                 description: Some("Generalist".to_string()),
             }],

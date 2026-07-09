@@ -55,7 +55,15 @@ impl AgentAdapter {
         Self
     }
 
-    /// Discover agents from a directory
+    /// Discover agents from a directory.
+    ///
+    /// Supports two layouts:
+    /// - Directory layout: `agents/<id>/AGENT.md`
+    /// - Flat layout: `agents/<id>.md`
+    ///
+    /// The canonical agent id is the directory name for directory layouts and
+    /// the file stem for flat layouts. The frontmatter `name` is used only as
+    /// the human-readable display name.
     pub fn discover_agents(&self, path: &Path) -> Vec<DiscoveredAgent> {
         let mut agents = Vec::new();
 
@@ -74,22 +82,40 @@ impl AgentAdapter {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
 
-            let agent_md = path.join("AGENT.md");
-            if agent_md.exists() {
-                match self.parse_agent_manifest(&agent_md) {
+            if path.is_dir() {
+                let agent_md = path.join("AGENT.md");
+                if agent_md.exists() {
+                    match self.parse_agent_manifest(&agent_md) {
+                        Ok(manifest) => {
+                            agents.push(DiscoveredAgent {
+                                manifest,
+                                file_path: agent_md,
+                                base_dir: path,
+                            });
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse agent from {:?}: {}", agent_md, e);
+                        }
+                    }
+                }
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            {
+                match self.parse_agent_manifest(&path) {
                     Ok(manifest) => {
                         agents.push(DiscoveredAgent {
                             manifest,
-                            file_path: agent_md,
-                            base_dir: path,
+                            file_path: path.clone(),
+                            base_dir: path
+                                .parent()
+                                .unwrap_or_else(|| Path::new("."))
+                                .to_path_buf(),
                         });
                     }
                     Err(e) => {
-                        warn!("Failed to parse agent from {:?}: {}", agent_md, e);
+                        warn!("Failed to parse agent from {:?}: {}", path, e);
                     }
                 }
             }
@@ -113,13 +139,18 @@ impl AgentAdapter {
             anyhow::bail!("Agent description cannot be empty");
         }
 
+        let canonical_id = canonical_id_from_path(path);
+        if canonical_id.is_empty() {
+            anyhow::bail!("Agent canonical id cannot be empty for {path:?}");
+        }
+
         let base_dir = path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
 
         let mut manifest = ExtensionManifest::new(
-            &meta.name,
+            &canonical_id,
             AGENT_EXTENSION_TYPE,
             &meta.name,
             &meta.description,
@@ -131,6 +162,28 @@ impl AgentAdapter {
         manifest.set("color", meta.color.unwrap_or_default());
 
         Ok(manifest)
+    }
+}
+
+/// Derive the canonical agent id from its on-disk path.
+///
+/// For the directory layout (`agents/<id>/AGENT.md`) the id is the directory
+/// name. For the flat layout (`agents/<id>.md`) the id is the file stem.
+fn canonical_id_from_path(path: &Path) -> String {
+    let file_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+
+    if file_name.eq_ignore_ascii_case("AGENT.md") {
+        path.parent()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
     }
 }
 
@@ -181,9 +234,14 @@ impl ExtensionTypeAdapter for AgentAdapter {
             anyhow::bail!("Agent description cannot be empty");
         }
 
+        let canonical_id = canonical_id_from_path(path);
+        if canonical_id.is_empty() {
+            anyhow::bail!("Agent canonical id cannot be empty for {path:?}");
+        }
+
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let mut manifest = ExtensionManifest::new(
-            &agent_frontmatter.name,
+            &canonical_id,
             AGENT_EXTENSION_TYPE,
             &agent_frontmatter.name,
             &agent_frontmatter.description,
@@ -229,6 +287,7 @@ struct AgentPromptHandlerFactory {
 impl HookHandlerFactory for AgentPromptHandlerFactory {
     fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
         Box::new(AgentPromptHandler {
+            agent_id: self.manifest.id.0.clone(),
             agent_name: self.manifest.name.clone(),
             description: self.manifest.description.clone(),
             file_path: PathBuf::from(
@@ -245,6 +304,7 @@ impl HookHandlerFactory for AgentPromptHandlerFactory {
 /// Handler that injects agent into prompt
 #[derive(Debug, Clone)]
 struct AgentPromptHandler {
+    agent_id: String,
     agent_name: String,
     description: String,
     file_path: PathBuf,
@@ -262,7 +322,7 @@ impl HookHandler for AgentPromptHandler {
             .map(|pid| crate::principal::PrincipalId(pid.clone()));
 
         let enabled = crate::principal::AgentStateRegistry::global()
-            .is_agent_enabled(principal_id.as_ref(), &self.agent_name)
+            .is_agent_enabled(principal_id.as_ref(), &self.agent_id)
             .await;
 
         if !enabled {
@@ -271,8 +331,8 @@ impl HookHandler for AgentPromptHandler {
 
         let path_display = self.file_path.to_string_lossy();
         let text = format!(
-            "- {}: {} (location: {})",
-            self.agent_name, self.description, path_display
+            "- {} (id: {}): {} (location: {})",
+            self.agent_name, self.agent_id, self.description, path_display
         );
 
         HookResult::Continue(HookOutput::Text(text))
@@ -290,7 +350,7 @@ impl HookHandler for AgentPromptHandler {
     }
 
     fn name(&self) -> String {
-        format!("AgentPromptHandler({})", self.agent_name)
+        format!("AgentPromptHandler({})", self.agent_id)
     }
 }
 
@@ -313,6 +373,7 @@ pub async fn register_agents_with_core(
             ExtensionId::new(format!("{}:{}", AGENT_EXTENSION_TYPE, agent.manifest.id.0));
 
         let handler = Arc::new(AgentPromptHandler {
+            agent_id: agent.manifest.id.0.clone(),
             agent_name: agent.manifest.name.clone(),
             description: agent.manifest.description.clone(),
             file_path: agent.file_path,
@@ -368,6 +429,25 @@ This is a test agent.
         agent_md
     }
 
+    fn create_test_agent_flat(dir: &Path, name: &str, description: &str) -> PathBuf {
+        let content = format!(
+            r"---
+name: {name}
+description: {description}
+color: '#ff0000'
+---
+
+# Test Agent
+
+This is a test agent.
+"
+        );
+
+        let agent_md = dir.join(format!("{name}.md"));
+        std::fs::write(&agent_md, content).unwrap();
+        agent_md
+    }
+
     #[test]
     fn test_agent_adapter_manifest_format() {
         let adapter = AgentAdapter::new();
@@ -390,8 +470,44 @@ This is a test agent.
         let agents = adapter.discover_agents(temp.path());
 
         assert_eq!(agents.len(), 2);
-        assert!(agents.iter().any(|a| a.manifest.name == "agent1"));
-        assert!(agents.iter().any(|a| a.manifest.name == "agent2"));
+        assert!(agents.iter().any(|a| a.manifest.id.0 == "agent1"));
+        assert!(agents.iter().any(|a| a.manifest.id.0 == "agent2"));
+    }
+
+    #[test]
+    fn test_discover_agents_flat_files() {
+        let temp = TempDir::new().unwrap();
+
+        create_test_agent_flat(temp.path(), "agent1", "First agent");
+        create_test_agent_flat(temp.path(), "agent2", "Second agent");
+
+        let adapter = AgentAdapter::new();
+        let agents = adapter.discover_agents(temp.path());
+
+        assert_eq!(agents.len(), 2);
+        assert!(agents.iter().any(|a| a.manifest.id.0 == "agent1"));
+        assert!(agents.iter().any(|a| a.manifest.id.0 == "agent2"));
+        assert!(agents
+            .iter()
+            .any(|a| a.file_path == temp.path().join("agent1.md")));
+        assert!(agents
+            .iter()
+            .any(|a| a.file_path == temp.path().join("agent2.md")));
+    }
+
+    #[test]
+    fn test_discover_agents_mixed_layouts() {
+        let temp = TempDir::new().unwrap();
+
+        create_test_agent(temp.path(), "dir-agent", "Directory layout agent");
+        create_test_agent_flat(temp.path(), "flat-agent", "Flat layout agent");
+
+        let adapter = AgentAdapter::new();
+        let agents = adapter.discover_agents(temp.path());
+
+        assert_eq!(agents.len(), 2);
+        assert!(agents.iter().any(|a| a.manifest.id.0 == "dir-agent"));
+        assert!(agents.iter().any(|a| a.manifest.id.0 == "flat-agent"));
     }
 
     #[test]
@@ -402,9 +518,37 @@ This is a test agent.
         let adapter = AgentAdapter::new();
         let manifest = adapter.parse_agent_manifest(&agent_md).unwrap();
 
+        assert_eq!(manifest.id.0, "math");
         assert_eq!(manifest.name, "math");
         assert_eq!(manifest.description, "Math operations");
         assert_eq!(manifest.extension_type, "agent");
+    }
+
+    #[test]
+    fn test_parse_agent_manifest_uses_canonical_id() {
+        let temp = TempDir::new().unwrap();
+        let agent_dir = temp.path().join("senior-developer");
+        std::fs::create_dir(&agent_dir).unwrap();
+        let agent_md = agent_dir.join("AGENT.md");
+        std::fs::write(
+            &agent_md,
+            r"---
+name: Senior Developer
+description: Premium implementation specialist
+color: '#ff0000'
+---
+
+# Test Agent
+",
+        )
+        .unwrap();
+
+        let adapter = AgentAdapter::new();
+        let manifest = adapter.parse_agent_manifest(&agent_md).unwrap();
+
+        assert_eq!(manifest.id.0, "senior-developer");
+        assert_eq!(manifest.name, "Senior Developer");
+        assert_eq!(manifest.description, "Premium implementation specialist");
     }
 
     #[tokio::test]
@@ -430,6 +574,7 @@ This is a test agent.
         let agent_md = create_test_agent(temp.path(), "math", "Math operations");
 
         let handler = AgentPromptHandler {
+            agent_id: "math".to_string(),
             agent_name: "math".to_string(),
             description: "Math operations".to_string(),
             file_path: agent_md,
@@ -465,7 +610,73 @@ This is a test agent.
 
         match result {
             HookResult::Continue(HookOutput::Text(text)) => {
-                assert!(text.contains("math: Math operations"));
+                assert!(text.contains("math"));
+                assert!(text.contains("Math operations"));
+                assert!(text.contains("(id: math)"));
+            }
+            _ => panic!("Expected Continue with Text, got {result:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_agent_handler_uses_canonical_id_for_allowlist() {
+        let temp = TempDir::new().unwrap();
+        let agent_dir = temp.path().join("senior-developer");
+        std::fs::create_dir(&agent_dir).unwrap();
+        let agent_md = agent_dir.join("AGENT.md");
+        std::fs::write(
+            &agent_md,
+            r"---
+name: Senior Developer
+description: Premium dev
+color: '#ff0000'
+---
+
+# Test Agent
+",
+        )
+        .unwrap();
+
+        let handler = AgentPromptHandler {
+            agent_id: "senior-developer".to_string(),
+            agent_name: "Senior Developer".to_string(),
+            description: "Premium dev".to_string(),
+            file_path: agent_md,
+        };
+
+        let mut ctx = HookContext::new(
+            HookPoint::PromptSystemSection {
+                section: "agents".to_string(),
+                priority: AGENT_HOOK_PRIORITY,
+            },
+            crate::extensions::framework::HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+
+        let principal_id = crate::principal::PrincipalId("test-canonical".to_string());
+        // Allowlist contains the canonical id, not the human-readable name.
+        crate::principal::AgentStateRegistry::global()
+            .register(
+                principal_id.clone(),
+                crate::principal::AgentState::new(vec!["senior-developer".to_string()]),
+            )
+            .await;
+        ctx.set_state(
+            "tool_context",
+            crate::extensions::framework::types::ToolRuntimeContext::new()
+                .with_principal_id(principal_id.0.clone()),
+        );
+
+        let result = handler.handle(ctx).await;
+
+        crate::principal::AgentStateRegistry::global()
+            .unregister(&principal_id)
+            .await;
+
+        match result {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(text.contains("Senior Developer"));
+                assert!(text.contains("(id: senior-developer)"));
             }
             _ => panic!("Expected Continue with Text, got {result:?}"),
         }
@@ -477,6 +688,7 @@ This is a test agent.
         let agent_md = create_test_agent(temp.path(), "math", "Math operations");
 
         let handler = AgentPromptHandler {
+            agent_id: "math".to_string(),
             agent_name: "math".to_string(),
             description: "Math operations".to_string(),
             file_path: agent_md,
@@ -522,6 +734,7 @@ This is a test agent.
         let agent_md = create_test_agent(temp.path(), "math", "Math operations");
 
         let handler = AgentPromptHandler {
+            agent_id: "math".to_string(),
             agent_name: "math".to_string(),
             description: "Math operations".to_string(),
             file_path: agent_md,

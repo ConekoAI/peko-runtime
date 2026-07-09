@@ -276,7 +276,8 @@ where
     crate::principal::ExtensionStateRegistry::global()
         .register(ctx.principal_id().clone(), extension_state)
         .await;
-    let _extension_state_guard = crate::principal::ExtensionStateGuard::new(ctx.principal_id().clone());
+    let _extension_state_guard =
+        crate::principal::ExtensionStateGuard::new(ctx.principal_id().clone());
 
     // Register the principal's per-message agent state. Agent prompt
     // hooks resolve the allowlist from this registry at handle time using

@@ -184,10 +184,25 @@ impl AgentService {
 
     /// Resolve a principal agent from its `AGENT.md` extension.
     async fn resolve_principal_agent(&self, name: &str, workspace: &Path) -> Result<AgentConfig> {
-        let agent_md = workspace.join("agents").join(name).join("AGENT.md");
-        if !agent_md.exists() {
-            anyhow::bail!("No AGENT.md for principal agent '{name}' at {agent_md:?}");
-        }
+        let agents_dir = workspace.join("agents");
+
+        // Prefer the directory layout, then fall back to the flat layout.
+        let agent_md = {
+            let dir_layout = agents_dir.join(name).join("AGENT.md");
+            let flat_layout = agents_dir.join(format!("{name}.md"));
+
+            if dir_layout.exists() {
+                dir_layout
+            } else if flat_layout.exists() {
+                flat_layout
+            } else {
+                anyhow::bail!(
+                    "No agent prompt found for principal agent '{name}' at {:?} or {:?}",
+                    dir_layout,
+                    flat_layout
+                );
+            }
+        };
 
         let prompt = crate::principal::agent_prompt::load_agent_prompt(&agent_md)
             .with_context(|| format!("Failed to load principal agent prompt '{name}'"))?;
@@ -989,5 +1004,68 @@ mod tests {
         let info = service.get_agent("alice", None).await.unwrap().unwrap();
         assert!(info.config.prompt.is_none());
         assert!(info.system_prompt.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_principal_agent_flat_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace = temp_dir.path().join("workspace");
+        let agents_dir = workspace.join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+
+        std::fs::write(
+            agents_dir.join("worker.md"),
+            r"---
+name: Worker Bot
+description: A flat-file worker agent
+---
+
+You are a worker.
+",
+        )
+        .unwrap();
+
+        let service = AgentService::for_principal(&workspace);
+        let config = service.resolve_subagent_type("worker").await.unwrap();
+
+        assert_eq!(config.name, "Worker Bot");
+        assert_eq!(
+            config.description.as_deref(),
+            Some("A flat-file worker agent")
+        );
+        assert!(config
+            .prompt
+            .as_deref()
+            .unwrap()
+            .contains("You are a worker."));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_principal_agent_directory_layout() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace = temp_dir.path().join("workspace");
+        let agent_dir = workspace.join("agents").join("worker");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+
+        std::fs::write(
+            agent_dir.join("AGENT.md"),
+            r"---
+name: Worker Bot
+description: A directory-layout worker agent
+---
+
+You are a worker.
+",
+        )
+        .unwrap();
+
+        let service = AgentService::for_principal(&workspace);
+        let config = service.resolve_subagent_type("worker").await.unwrap();
+
+        assert_eq!(config.name, "Worker Bot");
+        assert_eq!(
+            config.description.as_deref(),
+            Some("A directory-layout worker agent")
+        );
     }
 }
