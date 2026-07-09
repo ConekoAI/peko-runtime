@@ -36,6 +36,7 @@ use crate::extensions::framework::async_exec::executor::{
     AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
     SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
 };
+use crate::observability::Observability;
 use crate::principal::Capabilities;
 use crate::principal::PrincipalId;
 use crate::session::context::SessionContext;
@@ -123,6 +124,9 @@ pub struct SubagentExecutor {
     /// means deny-all. Propagated to descendant subagents so a
     /// restricted root agent cannot spawn a more-privileged child.
     principal_capabilities: Option<Arc<Capabilities>>,
+    /// Optional observability hub for audit/metrics. When set, subagent
+    /// spawns are recorded in the audit log under the parent principal.
+    observability: Option<Arc<Observability>>,
 }
 
 impl SubagentExecutor {
@@ -159,6 +163,7 @@ impl SubagentExecutor {
             principal_id,
             principal_name: None,
             principal_capabilities: None,
+            observability: None,
         }
     }
 
@@ -194,6 +199,19 @@ impl SubagentExecutor {
         self.principal_capabilities.as_ref()
     }
 
+    /// Set the observability hub used to audit subagent spawns.
+    #[must_use]
+    pub fn with_observability(mut self, observability: Option<Arc<Observability>>) -> Self {
+        self.observability = observability;
+        self
+    }
+
+    /// Get the observability hub, if bound.
+    #[must_use]
+    pub fn observability(&self) -> Option<&Arc<Observability>> {
+        self.observability.as_ref()
+    }
+
     /// Create an executor with an explicit registry (for testing and nested spawns)
     #[must_use]
     pub fn with_registry(
@@ -218,6 +236,7 @@ impl SubagentExecutor {
             principal_id,
             principal_name: None,
             principal_capabilities: None,
+            observability: None,
         }
     }
 
@@ -245,6 +264,7 @@ impl SubagentExecutor {
             principal_id,
             principal_name: None,
             principal_capabilities: None,
+            observability: None,
         }
     }
 
@@ -403,6 +423,7 @@ impl SubagentExecutor {
         let principal_id_clone = self.principal_id.clone();
         let cleanup_policy_clone = config.cleanup;
         let principal_capabilities_clone = self.principal_capabilities.clone();
+        let observability_clone = self.observability.clone();
         // Derive a child token inside the closure so the sub-agent
         // observes the parent's cancel via `child_cancel` without
         // extending the parent's lifetime past the closure's
@@ -466,6 +487,7 @@ impl SubagentExecutor {
                         principal_id_clone,
                         principal_workspace_clone,
                         principal_capabilities_clone,
+                        observability_clone,
                         child_cancel_for_closure.clone(),
                     );
                     let result = if timeout > 0 {
@@ -859,6 +881,7 @@ async fn execute_subagent_task(
     principal_id: PrincipalId,
     principal_workspace: Option<std::path::PathBuf>,
     principal_capabilities: Option<Arc<Capabilities>>,
+    observability: Option<Arc<Observability>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<String> {
     info!(
@@ -933,7 +956,8 @@ async fn execute_subagent_task(
     )
     .with_provider(provider.clone())
     .with_agent_config(config.clone())
-    .with_principal_capabilities(principal_capabilities.clone());
+    .with_principal_capabilities(principal_capabilities.clone())
+    .with_observability(observability.clone());
     if let Some(ref ws) = principal_workspace {
         shared_executor_builder = shared_executor_builder.with_principal_workspace(ws.clone());
     }

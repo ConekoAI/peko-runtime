@@ -25,6 +25,7 @@ use std::sync::{Arc, OnceLock};
 use crate::extensions::agent::{register_agents_with_core, AgentAdapter};
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
+use crate::observability::Observability;
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
 use crate::principal::PrincipalId;
@@ -86,6 +87,9 @@ pub struct PrincipalContext {
     /// `Subject::Principal(caller_principal_did)`.
     caller_principal_did: OnceLock<String>,
     caller_runtime_id: OnceLock<String>,
+    /// Optional observability hub. Set from the `RouterContext` by the root
+    /// router so subagent spawns can be audited under the parent principal.
+    observability: OnceLock<Arc<Observability>>,
 }
 
 impl PrincipalContext {
@@ -115,6 +119,7 @@ impl PrincipalContext {
             principal_id,
             caller_principal_did: OnceLock::new(),
             caller_runtime_id: OnceLock::new(),
+            observability: OnceLock::new(),
         }
     }
 
@@ -173,6 +178,20 @@ impl PrincipalContext {
     #[must_use]
     pub fn caller_runtime_id(&self) -> Option<&String> {
         self.caller_runtime_id.get()
+    }
+
+    /// Bind the observability hub for this principal context. Idempotent.
+    pub fn set_observability(
+        &self,
+        observability: Arc<Observability>,
+    ) -> Result<(), Arc<Observability>> {
+        self.observability.set(observability)
+    }
+
+    /// Get the observability hub, if bound.
+    #[must_use]
+    pub fn observability(&self) -> Option<&Arc<Observability>> {
+        self.observability.get()
     }
 
     /// Get the daemon-global `ExtensionCore` and ensure the

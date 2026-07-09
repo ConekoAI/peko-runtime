@@ -284,6 +284,7 @@ impl AgentTool {
     async fn execute_spawn_blocking(
         &self,
         prompt: &str,
+        subagent_type: &str,
         isolated: bool,
         parent_session_key: &str,
         config: ExecutionConfig,
@@ -292,6 +293,31 @@ impl AgentTool {
         ctx: Option<&ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
         let timeout_seconds = config.timeout_seconds;
+
+        // Audit the spawn under the parent principal, if an observability hub
+        // is attached to the executor. Failures are logged but do not block
+        // the spawn.
+        if let Some(obs) = self.executor.observability() {
+            let details = serde_json::json!({
+                "subagent_type": subagent_type,
+                "principal_id": self.executor.principal_id().0,
+                "principal_name": self.executor.principal_name(),
+                "isolated": isolated,
+                "cleanup": match cleanup {
+                    SpawnCleanupPolicy::Keep => "keep",
+                    SpawnCleanupPolicy::Delete => "delete",
+                },
+                "description": description,
+                "parent_session_key": parent_session_key,
+            });
+            if let Err(e) = obs
+                .audit("SubagentSpawn", self.executor.principal_name(), details)
+                .await
+            {
+                tracing::warn!("Failed to audit subagent spawn: {e}");
+            }
+        }
+
         let (parent_cancel, _cancel_guard): (
             Option<tokio_util::sync::CancellationToken>,
             CancellationTokenBridgeGuard,
@@ -331,6 +357,7 @@ impl AgentTool {
                     "run_id": run.run_id,
                     "child_session_key": run.child_session_key,
                     "success": success,
+                    "subagent_type": subagent_type,
                     "description": description,
                     "isolated": isolated,
                     "timeout_seconds": timeout_seconds,
@@ -543,6 +570,7 @@ Examples:
         };
         tool.execute_spawn_blocking(
             &args.prompt,
+            &args.subagent_type,
             args.isolated,
             &parent_session_key,
             config,
@@ -610,6 +638,7 @@ Examples:
         };
         tool.execute_spawn_blocking(
             &args.prompt,
+            &args.subagent_type,
             args.isolated,
             &parent_session_key,
             config,

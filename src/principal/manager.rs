@@ -20,6 +20,7 @@ use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::async_exec::executor::SteeringMessage;
 use crate::identity::did::DIDScope;
 use crate::identity::storage::KeyStorage;
+use crate::observability::Observability;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 
@@ -73,6 +74,9 @@ pub struct PrincipalManager {
     /// `ExtensionStore` includes installed extensions as well as built-ins
     /// and principal-scoped agents.
     extension_manager: Option<Arc<RwLock<crate::extensions::framework::manager::ExtensionManager>>>,
+    /// Optional observability hub. Threaded into `RouterContext` so the root
+    /// agent and subagent spawns can emit audit events.
+    observability: Option<Arc<Observability>>,
 }
 
 impl PrincipalManager {
@@ -107,6 +111,7 @@ impl PrincipalManager {
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
             slash_dispatcher: Arc::new(RwLock::new(None)),
             extension_manager: None,
+            observability: None,
         }
     }
 
@@ -132,6 +137,15 @@ impl PrincipalManager {
         extension_manager: Arc<RwLock<crate::extensions::framework::manager::ExtensionManager>>,
     ) -> Self {
         self.extension_manager = Some(extension_manager);
+        self
+    }
+
+    /// Attach an observability hub. When present, it is threaded into every
+    /// `RouterContext` so the root agent and subagent spawns can emit audit
+    /// events.
+    #[must_use]
+    pub fn with_observability(mut self, observability: Arc<Observability>) -> Self {
+        self.observability = Some(observability);
         self
     }
 
@@ -544,6 +558,7 @@ impl PrincipalManager {
             governance,
             inbox_registry: Arc::clone(&self.inbox_registry),
             session_creation_lock: self.session_creation_lock(principal.id.clone()).await,
+            observability: self.observability.clone(),
         })
     }
 

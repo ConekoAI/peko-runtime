@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::observability::Observability;
 use crate::session::InboxRegistry;
 
 /// A routing decision emitted by a `PrincipalRouter`.
@@ -53,6 +54,9 @@ pub struct RouterContext {
     /// Per-principal lock held during root-agent session creation so concurrent
     /// peers do not race on shared session metadata/index writes.
     pub session_creation_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Optional observability hub for audit/metrics. Threaded through to the
+    /// root agent and the `Agent` tool so subagent spawns are auditable.
+    pub observability: Option<Arc<Observability>>,
 }
 
 #[derive(Debug, Clone)]

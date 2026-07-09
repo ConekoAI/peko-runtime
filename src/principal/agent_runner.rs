@@ -402,6 +402,7 @@ where
         )
         .with_principal_name(ctx.name().to_string())
         .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
+        .with_observability(ctx.observability().cloned())
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
             // `PathResolver::principal_dir`), so derive the two config files

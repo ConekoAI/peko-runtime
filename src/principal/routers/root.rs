@@ -153,6 +153,11 @@ impl RootRouter {
                 tracing::debug!("RootRouter::build_context: {e}");
             }
         }
+        if let Some(ref obs) = ctx.observability {
+            if let Err(_) = principal_ctx.set_observability(Arc::clone(obs)) {
+                tracing::debug!("RootRouter::build_context: observability already set");
+            }
+        }
         principal_ctx
     }
 }
@@ -308,6 +313,7 @@ mod tests {
             extension_store: ExtensionStore::default(),
             inbox_registry: Arc::new(InboxRegistry::new()),
             session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            observability: None,
         };
 
         let message = build_root_message(&ctx);
