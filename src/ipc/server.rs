@@ -47,7 +47,7 @@ use crate::common::services::session_service::HistoryEvent;
 use crate::daemon::state::{AppState, StreamingRunHandle};
 use crate::principal::{
     router::{ChannelContext, ChannelKind},
-    Principal, RouteDecision, RouterError,
+    Capability, Principal, RouteDecision, RouterError,
 };
 use crate::session::events::SessionEvent;
 
@@ -1564,6 +1564,104 @@ impl IpcServer {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::CapabilityGrant {
+                request_id,
+                principal,
+                capability,
+            } => {
+                let cap = Capability::new(capability);
+                let pm = state.principal_manager().clone();
+                let result = pm
+                    .update_config(&principal, |config| {
+                        if !config.capabilities.contains(&cap) {
+                            config.capabilities.push(cap.clone());
+                        }
+                    })
+                    .await;
+
+                match result {
+                    Ok(_) => {
+                        let response = ResponsePacket::CapabilityGranted {
+                            request_id,
+                            capability: cap.to_string(),
+                            message: format!(
+                                "Capability '{}' granted to principal '{}'",
+                                cap, principal
+                            ),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::CapabilityRevoke {
+                request_id,
+                principal,
+                capability,
+            } => {
+                let cap = Capability::new(capability);
+                let pm = state.principal_manager().clone();
+                let result = pm
+                    .update_config(&principal, |config| {
+                        config.capabilities.remove(&cap);
+                    })
+                    .await;
+
+                match result {
+                    Ok(_) => {
+                        let response = ResponsePacket::CapabilityRevoked {
+                            request_id,
+                            capability: cap.to_string(),
+                            message: format!(
+                                "Capability '{}' revoked from principal '{}'",
+                                cap, principal
+                            ),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::CapabilityList {
+                request_id,
+                principal,
+            } => {
+                let pm = state.principal_manager().clone();
+                match pm.get_by_name(&principal).await {
+                    Some(principal_ref) => {
+                        let capabilities =
+                            principal_ref.config.read().await.capabilities.to_strings();
+                        let response = ResponsePacket::CapabilityList {
+                            request_id,
+                            principal,
+                            capabilities,
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal '{principal}' not found"),
                         };
                         Self::send_sink(sink, response).await?;
                     }

@@ -1456,8 +1456,8 @@ mod tests {
     use crate::auth::{Permission, PermissionGrant, Subject};
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
     use crate::principal::config::{
-        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
-        PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
+        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
+        PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
     use crate::principal::Capabilities;
     use crate::tunnel::protocol::{InstanceExposure, InstanceType};

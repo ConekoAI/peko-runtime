@@ -467,6 +467,51 @@ impl DaemonClient {
         }
     }
 
+    // ── Capability authority management ───────────────────────────────
+
+    /// Grant a capability to a Principal.
+    pub async fn capability_grant(
+        &self,
+        principal: impl Into<String>,
+        capability: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::CapabilityGrant {
+            request_id,
+            principal: principal.into(),
+            capability: capability.into(),
+        };
+        self.request_response(packet).await
+    }
+
+    /// Revoke a capability from a Principal.
+    pub async fn capability_revoke(
+        &self,
+        principal: impl Into<String>,
+        capability: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::CapabilityRevoke {
+            request_id,
+            principal: principal.into(),
+            capability: capability.into(),
+        };
+        self.request_response(packet).await
+    }
+
+    /// List capabilities granted to a Principal.
+    pub async fn capability_list(
+        &self,
+        principal: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::CapabilityList {
+            request_id,
+            principal: principal.into(),
+        };
+        self.request_response(packet).await
+    }
+
     // ── Principal operations ─────────────────────────────────────────
 
     /// Send a message to a Principal and stream the response.

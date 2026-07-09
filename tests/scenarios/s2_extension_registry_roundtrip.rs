@@ -57,7 +57,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -214,12 +213,7 @@ fn principal_config_path(cli: &PekoCli, principal_name: &str) -> PathBuf {
 /// owner check is satisfied when the capability set contains the skill's
 /// canonical extension id.
 fn create_collaborator_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
-    common::create_mock_principal_with_tools(
-        cli,
-        name,
-        mock_llm_url,
-        &["skill:calculator-skill"],
-    );
+    common::create_mock_principal_with_tools(cli, name, mock_llm_url, &["skill:calculator-skill"]);
 }
 
 /// Re-pull the same ref. `peko ext pull` writes a temp `.ext` and

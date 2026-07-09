@@ -624,7 +624,7 @@ Examples:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::{AgentState, AgentStateRegistry, PrincipalId};
+    use crate::principal::{Capabilities, PrincipalId};
     use crate::session::manager::SessionManager;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -642,9 +642,15 @@ mod tests {
         dir
     }
 
-    fn test_executor(pid: PrincipalId) -> Arc<SubagentExecutor> {
+    fn test_executor(
+        pid: PrincipalId,
+        capabilities: Option<Arc<Capabilities>>,
+    ) -> Arc<SubagentExecutor> {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        Arc::new(SubagentExecutor::new(manager, "test_agent", 5, pid))
+        Arc::new(
+            SubagentExecutor::new(manager, "test_agent", 5, pid)
+                .with_principal_capabilities(capabilities),
+        )
     }
 
     #[tokio::test]
@@ -652,11 +658,8 @@ mod tests {
         let pid = PrincipalId::generate();
         let workspace = temp_agent_workspace("writer").await;
         let service = AgentService::for_principal(workspace.path());
-        let tool = AgentTool::with_agent_service(test_executor(pid.clone()), service);
-
-        AgentStateRegistry::global()
-            .register(pid, AgentState::new(vec!["writer".to_string()]))
-            .await;
+        let caps = Arc::new(Capabilities::with_grants(["agent:writer"]));
+        let tool = AgentTool::with_agent_service(test_executor(pid.clone(), Some(caps)), service);
 
         let result = tool.resolve_subagent_config("writer", None).await;
         assert!(
@@ -671,16 +674,13 @@ mod tests {
         let pid = PrincipalId::generate();
         let workspace = temp_agent_workspace("writer").await;
         let service = AgentService::for_principal(workspace.path());
-        let tool = AgentTool::with_agent_service(test_executor(pid.clone()), service);
-
-        AgentStateRegistry::global()
-            .register(pid, AgentState::new(vec!["other".to_string()]))
-            .await;
+        let caps = Arc::new(Capabilities::with_grants(["agent:other"]));
+        let tool = AgentTool::with_agent_service(test_executor(pid.clone(), Some(caps)), service);
 
         let result = tool.resolve_subagent_config("writer", None).await;
         assert!(
             result.is_err(),
-            "disabled subagent should be rejected by AgentStateRegistry"
+            "disabled subagent should be rejected by capability snapshot"
         );
         let err = result.unwrap_err().to_string();
         assert!(
@@ -694,10 +694,10 @@ mod tests {
         let pid = PrincipalId::generate();
         let workspace = temp_agent_workspace("writer").await;
         let service = AgentService::for_principal(workspace.path());
-        let tool = AgentTool::with_agent_service(test_executor(pid), service);
+        let tool = AgentTool::with_agent_service(test_executor(pid, None), service);
 
-        // No AgentState registered for this principal; standalone/test path
-        // should remain usable.
+        // No capability snapshot registered for this principal; standalone/test
+        // path should remain usable.
         let result = tool.resolve_subagent_config("writer", None).await;
         assert!(
             result.is_ok(),

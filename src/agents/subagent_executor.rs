@@ -183,10 +183,7 @@ impl SubagentExecutor {
 
     /// Set the spawning principal's capability snapshot.
     #[must_use]
-    pub fn with_principal_capabilities(
-        mut self,
-        capabilities: Option<Arc<Capabilities>>,
-    ) -> Self {
+    pub fn with_principal_capabilities(mut self, capabilities: Option<Arc<Capabilities>>) -> Self {
         self.principal_capabilities = capabilities;
         self
     }
@@ -1184,10 +1181,7 @@ mod tests {
     #[tokio::test]
     async fn test_principal_capabilities_propagation() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let allowed = Arc::new(Capabilities::with_grants([
-            "tool:Read",
-            "tool:Write",
-        ]));
+        let allowed = Arc::new(Capabilities::with_grants(["tool:Read", "tool:Write"]));
 
         let executor = SubagentExecutor::new(
             manager.clone(),

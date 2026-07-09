@@ -195,15 +195,19 @@ mod tests {
 
         // A per-call capability set that *enables* Read should still permit it.
         let caps = Capabilities::with_grants(["tool:Read"]);
-        assert!(registry
-            .is_tool_enabled_with_whitelist("Read", Some(&caps))
-            .await);
+        assert!(
+            registry
+                .is_tool_enabled_with_whitelist("Read", Some(&caps))
+                .await
+        );
 
         // A per-call capability set without Read should deny it.
         let caps = Capabilities::with_grants(["tool:Other"]);
-        assert!(!registry
-            .is_tool_enabled_with_whitelist("Read", Some(&caps))
-            .await);
+        assert!(
+            !registry
+                .is_tool_enabled_with_whitelist("Read", Some(&caps))
+                .await
+        );
     }
 
     #[tokio::test]
@@ -211,9 +215,11 @@ mod tests {
         let registry = ToolRegistry::new();
         // No registration, so no owner is recorded.
         let caps = Capabilities::with_grants(["tool:custom_skill"]);
-        assert!(registry
-            .is_tool_enabled_with_whitelist("custom_skill", Some(&caps))
-            .await);
+        assert!(
+            registry
+                .is_tool_enabled_with_whitelist("custom_skill", Some(&caps))
+                .await
+        );
     }
 
     #[tokio::test]
@@ -243,8 +249,10 @@ mod tests {
             .unwrap();
 
         let caps = Capabilities::with_grants(["tool:*"]);
-        assert!(registry
-            .is_tool_enabled_with_whitelist("Read", Some(&caps))
-            .await);
+        assert!(
+            registry
+                .is_tool_enabled_with_whitelist("Read", Some(&caps))
+                .await
+        );
     }
 }

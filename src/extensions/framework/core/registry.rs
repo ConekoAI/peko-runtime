@@ -269,9 +269,9 @@ impl ExtensionCore {
         // This ensures ALL tools (built-in, MCP, Universal) are checked consistently
         if let HookPoint::ToolExecute { ref tool_name } = point {
             let capabilities = match &input {
-                HookInput::ToolCall {
-                    capabilities, ..
-                } => capabilities.as_ref().map(|v| Capabilities::with_grants(v.iter().cloned())),
+                HookInput::ToolCall { capabilities, .. } => capabilities
+                    .as_ref()
+                    .map(|v| Capabilities::with_grants(v.iter().cloned())),
                 _ => None,
             };
             if !self
@@ -1039,7 +1039,7 @@ mod tests {
         // Enable the tool via the per-call capability set. The tool was registered
         // directly on the hook registry, so it has no recorded owner in the
         // tool index; the capability set therefore uses the bare tool name.
-        let allowed = vec!["enabled_tool".to_string()];
+        let allowed = vec!["tool:enabled_tool".to_string()];
 
         // Execute the tool - should succeed
         let result = core

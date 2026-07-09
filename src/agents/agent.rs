@@ -1301,9 +1301,7 @@ impl Agent {
     /// `None` means the agent is unbound and no capability-based
     /// filtering is applied.
     #[must_use]
-    pub fn principal_capabilities(
-        &self,
-    ) -> Option<&Arc<crate::principal::Capabilities>> {
+    pub fn principal_capabilities(&self) -> Option<&Arc<crate::principal::Capabilities>> {
         self.principal_capabilities.as_ref()
     }
 

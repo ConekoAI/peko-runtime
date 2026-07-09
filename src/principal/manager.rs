@@ -501,9 +501,8 @@ impl PrincipalManager {
                     id: id.clone(),
                     name: p.name.clone(),
                     description: p.frontmatter.description.clone(),
-                    enabled: allowed.is_granted(&crate::principal::Capability::new(format!(
-                        "agent:{id}"
-                    )))
+                    enabled: allowed
+                        .is_granted(&crate::principal::Capability::new(format!("agent:{id}")))
                         || allowed.is_granted(&crate::principal::Capability::new(format!(
                             "agent:{}",
                             p.name

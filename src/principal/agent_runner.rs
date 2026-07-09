@@ -228,12 +228,7 @@ where
     F: Fn(AgenticEvent) + Send + Sync + 'static,
 {
     let provider_hint = resolve_provider_hint(ctx).await;
-    let config = build_agent_config(
-        prompt,
-        &ctx.capabilities,
-        &available_agents,
-        provider_hint,
-    );
+    let config = build_agent_config(prompt, &ctx.capabilities, &available_agents, provider_hint);
 
     // Build the principal's shared core first so we can ask the core
     // to resolve bare extension names into canonical `extension_id`
@@ -256,7 +251,9 @@ where
     // `with_principal_capabilities` so the agent's tool filter
     // (initialized lazily in `init_builtins_async`) only sees
     // canonical extension ids.
-    let _resolved: Vec<String> = core.resolve_canonical_ids(&ctx.capabilities.to_strings()).await;
+    let _resolved: Vec<String> = core
+        .resolve_canonical_ids(&ctx.capabilities.to_strings())
+        .await;
 
     // Agent catalog is the only per-call tool — its `available_agents`
     // snapshot can change between messages if the principal's

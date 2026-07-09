@@ -245,6 +245,23 @@ pub enum RequestPacket {
         principal: Option<String>,
     },
 
+    #[serde(rename = "capability_grant")]
+    CapabilityGrant {
+        request_id: u64,
+        principal: String,
+        capability: String,
+    },
+
+    #[serde(rename = "capability_revoke")]
+    CapabilityRevoke {
+        request_id: u64,
+        principal: String,
+        capability: String,
+    },
+
+    #[serde(rename = "capability_list")]
+    CapabilityList { request_id: u64, principal: String },
+
     #[serde(rename = "extension_validate")]
     ExtensionValidate {
         request_id: u64,
@@ -552,6 +569,9 @@ impl RequestPacket {
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnable { request_id, .. }
             | Self::ExtensionDisable { request_id, .. }
+            | Self::CapabilityGrant { request_id, .. }
+            | Self::CapabilityRevoke { request_id, .. }
+            | Self::CapabilityList { request_id, .. }
             | Self::ExtensionValidate { request_id, .. }
             | Self::ExtensionDebug { request_id, .. }
             | Self::ExtensionInfo { request_id, .. }
@@ -842,6 +862,30 @@ pub enum ResponsePacket {
         request_id: u64,
         id: String,
         message: String,
+    },
+
+    /// Capability granted response
+    #[serde(rename = "capability_granted")]
+    CapabilityGranted {
+        request_id: u64,
+        capability: String,
+        message: String,
+    },
+
+    /// Capability revoked response
+    #[serde(rename = "capability_revoked")]
+    CapabilityRevoked {
+        request_id: u64,
+        capability: String,
+        message: String,
+    },
+
+    /// Capability list response
+    #[serde(rename = "capability_list")]
+    CapabilityList {
+        request_id: u64,
+        principal: String,
+        capabilities: Vec<String>,
     },
 
     /// Extension validated response
@@ -1244,6 +1288,9 @@ impl ResponsePacket {
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnabled { request_id, .. }
             | Self::ExtensionDisabled { request_id, .. }
+            | Self::CapabilityGranted { request_id, .. }
+            | Self::CapabilityRevoked { request_id, .. }
+            | Self::CapabilityList { request_id, .. }
             | Self::ExtensionValidated { request_id, .. }
             | Self::ExtensionDebugInfo { request_id, .. }
             | Self::ExtensionInfoResponse { request_id, .. }
@@ -1308,6 +1355,9 @@ impl ResponsePacket {
             Self::ExtensionList { .. } => "ExtensionList",
             Self::ExtensionEnabled { .. } => "ExtensionEnabled",
             Self::ExtensionDisabled { .. } => "ExtensionDisabled",
+            Self::CapabilityGranted { .. } => "CapabilityGranted",
+            Self::CapabilityRevoked { .. } => "CapabilityRevoked",
+            Self::CapabilityList { .. } => "CapabilityList",
             Self::ExtensionValidated { .. } => "ExtensionValidated",
             Self::ExtensionDebugInfo { .. } => "ExtensionDebugInfo",
             Self::ExtensionInfoResponse { .. } => "ExtensionInfoResponse",

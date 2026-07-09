@@ -111,9 +111,7 @@ impl Capabilities {
 
     /// Create a capability set from an iterable of string-like values.
     #[must_use]
-    pub fn with_grants(
-        grants: impl IntoIterator<Item = impl Into<Capability>>,
-    ) -> Self {
+    pub fn with_grants(grants: impl IntoIterator<Item = impl Into<Capability>>) -> Self {
         Self {
             grants: grants.into_iter().map(Into::into).collect(),
         }

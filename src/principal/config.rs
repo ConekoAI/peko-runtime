@@ -445,7 +445,9 @@ mod tests {
             transport_preference: Default::default(),
         };
         assert!(cfg.capabilities.is_granted(&"tool:Read".into()));
-        assert!(cfg.capabilities.is_granted(&"agent:agency-agents/writer".into()));
+        assert!(cfg
+            .capabilities
+            .is_granted(&"agent:agency-agents/writer".into()));
         assert!(!cfg.capabilities.is_granted(&"agent:other/writer".into()));
     }
 }

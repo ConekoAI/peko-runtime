@@ -301,8 +301,8 @@ pub(crate) async fn install_agent_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::Capabilities;
     use crate::principal::memory::DefaultPrincipalMemory;
+    use crate::principal::Capabilities;
     use crate::principal::PrincipalId;
     use std::sync::Arc;
 

@@ -91,7 +91,8 @@ impl ExtensionStore {
                     name: prompt.name.clone(),
                     ext_type: "agent".to_string(),
                     source: None,
-                    enabled: is_allowed_with_kind("agent", id) || is_allowed_with_kind("agent", &prompt.name),
+                    enabled: is_allowed_with_kind("agent", id)
+                        || is_allowed_with_kind("agent", &prompt.name),
                 });
             }
         }
@@ -107,7 +108,8 @@ impl ExtensionStore {
                         name: loaded.manifest.name.clone(),
                         ext_type: loaded.extension_type.clone(),
                         source: loaded.manifest.source.clone(),
-                        enabled: is_allowed_with_kind(&kind, &id) || is_allowed_with_kind(&kind, &loaded.manifest.name),
+                        enabled: is_allowed_with_kind(&kind, &id)
+                            || is_allowed_with_kind(&kind, &loaded.manifest.name),
                     });
                 }
             }

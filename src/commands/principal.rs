@@ -16,8 +16,8 @@ use crate::common::paths::PathResolver;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use crate::principal::{
     config::{
-        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
-        PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
+        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
+        PrincipalMemoryConfig, PrincipalRoutingConfig,
     },
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
     memory::{DefaultPrincipalMemory, PrincipalMemory},
