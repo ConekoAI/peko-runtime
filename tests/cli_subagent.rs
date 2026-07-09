@@ -194,13 +194,23 @@ fn write_worker_subagent(cli: &PekoCli, principal: &str, worker: &str) {
 /// tool calls and any tool calls a spawned `worker` makes. Must be called
 /// BEFORE `DaemonGuard::spawn` (it only writes files).
 fn setup_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
-    create_mock_principal_with_tools(cli, name, mock_llm_url, &["Agent", "Write", "Read", "Bash"]);
+    create_mock_principal_with_tools(
+        cli,
+        name,
+        mock_llm_url,
+        &["Agent", "Write", "Read", "Bash", WORKER],
+    );
     write_worker_subagent(cli, name, WORKER);
 }
 
 /// Create the Principal under test and its `worker` subagent as a flat file.
 fn setup_principal_flat(cli: &PekoCli, name: &str, mock_llm_url: &str) {
-    create_mock_principal_with_tools(cli, name, mock_llm_url, &["Agent", "Write", "Read", "Bash"]);
+    create_mock_principal_with_tools(
+        cli,
+        name,
+        mock_llm_url,
+        &["Agent", "Write", "Read", "Bash", WORKER],
+    );
     write_worker_subagent_flat(cli, name, WORKER);
 }
 
