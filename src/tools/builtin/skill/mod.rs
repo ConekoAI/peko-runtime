@@ -2,7 +2,7 @@
 //!
 //! Provides `Skill` so the agent can invoke a SKILL.md body on-demand
 //! with argument substitution. The skill list is gated by the principal's
-//! `allowed_extensions` allowlist, resolved at handle time via the global
+//! `capabilities` allowlist, resolved at handle time via the global
 //! [`ExtensionStateRegistry`](crate::principal::ExtensionStateRegistry).
 //! Skill locations are resolved through the global [`SkillCatalog`], which is
 //! populated by `ExtensionManager` when skills are loaded.

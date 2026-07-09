@@ -46,7 +46,7 @@ pub async fn execute_tool_via_core(
 /// state via `ExtensionStateRegistry` at handle time.
 /// `principal_name` is the human-readable Principal name used by
 /// Principal-scoped tools (e.g. `CronCreate`) to target jobs.
-/// `allowed_extensions` is the principal/agent allowlist used by the
+/// `capabilities` is the principal/agent capability set used by the
 /// execution gate instead of the mutable global `tool_config`.
 /// `cancel` is the soft-interrupt `CancellationToken` (PR #128). When
 /// `Some`, this function bridges the token into a `watch::Receiver<bool>`
@@ -66,7 +66,7 @@ pub async fn execute_tool_via_core_with_context(
     caller_id: Option<String>,
     principal_id: Option<String>,
     principal_name: Option<String>,
-    allowed_extensions: Option<Vec<String>>,
+    capabilities: Option<Vec<String>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<(String, serde_json::Value, bool)> {
     let point = HookPoint::ToolExecute {
@@ -89,7 +89,7 @@ pub async fn execute_tool_via_core_with_context(
         caller_id,
         principal_id,
         principal_name,
-        allowed_extensions,
+        capabilities,
         abort_signal,
     };
 

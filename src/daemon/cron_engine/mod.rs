@@ -625,7 +625,7 @@ mod tests {
     use crate::engine::tool_runtime::ToolRuntime;
     use crate::extensions::framework::core::init_global_core;
     use crate::principal::{
-        AllowedExtensions, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
+        Capabilities, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalManager, PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
@@ -712,7 +712,7 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            allowed_extensions: AllowedExtensions::default(),
+            capabilities: Capabilities::default(),
             exposure: InstanceExposure::Private,
             status: None,
             permissions: vec![PermissionGrant {

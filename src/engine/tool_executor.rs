@@ -50,7 +50,7 @@ impl ToolExecutor {
     ///   at the `HookInput::ToolCall` boundary for legacy/standalone callers.
     /// * `principal_name` - Human-readable Principal name for Principal-scoped
     ///   tools (e.g. cron).
-    /// * `allowed_extensions` - Per-call allowlist used by the execution gate
+    /// * `capabilities` - Per-call capability set used by the execution gate
     ///   instead of the mutable global `tool_config`.
     /// * `cancel` - Soft-interrupt `CancellationToken` (PR #128). Bridged
     ///   inside `execute_tool_via_core_with_context` into the tool
@@ -71,7 +71,7 @@ impl ToolExecutor {
         caller_id: Option<&str>,
         principal_id: &str,
         principal_name: &str,
-        allowed_extensions: Option<Vec<String>>,
+        capabilities: Option<Vec<String>>,
         cancel: Option<tokio_util::sync::CancellationToken>,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
     ) -> Result<ToolExecutionResult> {
@@ -111,7 +111,7 @@ impl ToolExecutor {
                 caller_id.map(str::to_string),
                 Some(principal_id.to_string()),
                 Some(principal_name.to_string()),
-                allowed_extensions,
+                capabilities,
                 cancel,
             )
             .await

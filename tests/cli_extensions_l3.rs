@@ -148,16 +148,16 @@ fn fixture_dir(relative: &str) -> PathBuf {
         .join(relative)
 }
 
-/// Write a Principal whose `[capabilities]` whitelist carries the
-/// canonical owner IDs the root agent needs to dispatch MCP / universal
+/// Write a Principal whose `[capabilities] grants` list carries the
+/// canonical capability IDs the root agent needs to dispatch MCP / universal
 /// tool calls. The CLI does not expose a live capability-grant command
 /// — we patch `principal.toml` directly after `peko principal create`
 /// (mirrors `tests/common/agent.rs::create_mock_principal_with_tools`).
 ///
-/// `mcps` lists bare server names (e.g. `standard-echo`); `tools` lists
-/// `universal:<tool_name>` canonical ids (e.g.
+/// `mcps` lists bare server names (e.g. `standard-echo`); they are granted as
+/// `mcp:<name>`. `tools` lists already-typed capability strings (e.g.
 /// `universal:calculator_simple`). Each entry is written verbatim — the
-/// root agent's whitelist extension just concatenates these buckets into
+/// root agent's whitelist extension concatenates these buckets into
 /// the per-execution `enabled` list, which `is_tool_enabled` then
 /// matches against the tool's owner.
 fn write_capability_principal(
@@ -183,8 +183,8 @@ fn write_capability_principal(
     let raw = std::fs::read_to_string(&path).expect("read principal.toml");
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
-    cfg.allowed_extensions
-        .extend(mcps.iter().map(|s| s.to_string()));
+    cfg.capabilities
+        .extend(mcps.iter().map(|s| format!("mcp:{s}")));
     std::fs::write(
         &path,
         toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
@@ -197,8 +197,8 @@ fn write_capability_principal(
 // ---------------------------------------------------------------------------
 
 /// L3 MCP round-trip: install the Tier-1 `standard-echo` MCP server
-/// fixture, create a Principal whose `allowed_extensions` grants the
-/// bare `standard-echo` server id, script a 2-turn
+/// fixture, create a Principal whose `[capabilities] grants` list grants the
+/// bare `standard-echo` server id (as `mcp:standard-echo`), script a 2-turn
 /// `tool_call(echo, "peko-l3-mcp-…") → text("ECHO_DONE …")` dialog,
 /// run `peko send`, and assert the LLM's final text contains both the
 /// sentinel AND the echoed string. The second assertion is the load-
@@ -244,11 +244,9 @@ async fn ext_mcp_standard_echo_roundtrip() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    // Grant the MCP server via `[capabilities] mcps` (the bare
-    // server name is the owner id; the root agent's whitelist
-    // extension concatenates `capabilities.mcps` into the runtime
-    // `enabled` list, which `is_tool_enabled` then matches against
-    // the tool's owner).
+    // Grant the MCP server via `[capabilities] grants` (the server name is
+    // the extension id; the capability kind for MCP is `mcp:`, so the grant
+    // is `mcp:standard-echo`).
     write_capability_principal(&cli, principal_name, &mock_url, &[ext_id], &[]);
 
     let _daemon = DaemonGuard::spawn(&cli);
@@ -296,7 +294,7 @@ async fn ext_mcp_standard_echo_roundtrip() {
 }
 
 /// L3 universal round-trip: install the `calculator_simple` universal
-/// tool fixture, create a Principal whose `[capabilities] tools`
+/// tool fixture, create a Principal whose `[capabilities] grants`
 /// grants the canonical `universal:calculator_simple` id, script a
 /// 2-turn `tool_call(calculator_simple, 7+13) → text("CALC_DONE …")`
 /// dialog, run `peko send`, and assert the LLM's final text contains

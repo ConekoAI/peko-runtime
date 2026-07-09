@@ -189,11 +189,11 @@ pub enum HookInput {
         /// Human-readable Principal name. Cron-scoped tools use this to
         /// create and filter jobs for the current Principal.
         principal_name: Option<String>,
-        /// Allowed extension IDs for this tool call. When present, the
-        /// execution gate checks this list instead of the mutable global
+        /// Capability grants for this tool call. When present, the
+        /// execution gate checks this set instead of the mutable global
         /// `tool_config`, eliminating a TOCTOU race where concurrent
-        /// agents overwrite each other's whitelist on the shared core.
-        allowed_extensions: Option<Vec<String>>,
+        /// agents overwrite each other's capability set on the shared core.
+        capabilities: Option<Vec<String>>,
         /// Optional abort signal receiver for soft-interrupt propagation.
         /// When `Some`, `BuiltinToolAdapter` builds the `ToolContext`
         /// from this receiver (via
@@ -375,7 +375,7 @@ mod tests {
             caller_id: Some("user-42".to_string()),
             principal_id: Some("principal-z".to_string()),
             principal_name: None,
-            allowed_extensions: None,
+            capabilities: None,
             abort_signal: None,
         };
         match input {

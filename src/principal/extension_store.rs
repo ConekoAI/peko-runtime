@@ -4,14 +4,14 @@
 //! extension-related entity the principal could conceivably use: built-in
 //! tools, installed extensions, and principal-scoped agents. Each entry
 //! carries an `enabled` flag derived from the principal's
-//! `allowed_extensions` so callers (notably `agent_catalog`) can surface
+//! `capabilities` so callers (notably `agent_catalog`) can surface
 //! installed-but-disabled entries without claiming they are callable.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::extensions::framework::manager::ExtensionManager;
 use crate::principal::agent_prompt::AgentPrompt;
-use crate::principal::config::AllowedExtensions;
+use crate::principal::capability::{Capabilities, Capability};
 
 /// A single row in the principal's extension store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,22 +38,33 @@ impl ExtensionStore {
     /// Build an `ExtensionStore` from the principal's current authority
     /// snapshot.
     ///
-    /// * `allowed_extensions` — the principal's allowlist.
+    /// * `capabilities` — the principal's capability grants.
     /// * `agent_prompts` — agents discovered under `<workspace>/agents/`.
     /// * `extension_manager` — optional daemon extension manager; when
     ///   absent the store contains only built-ins and principal agents.
     #[must_use]
     pub fn build(
-        allowed_extensions: &AllowedExtensions,
+        capabilities: &Capabilities,
         agent_prompts: &HashMap<String, AgentPrompt>,
         extension_manager: Option<&ExtensionManager>,
     ) -> Self {
-        let allowlist: HashSet<String> = allowed_extensions
-            .iter()
-            .map(|s| s.to_ascii_lowercase())
-            .collect();
+        let has_any_grant = !capabilities.is_empty();
 
-        let is_allowed = |name: &str| allowlist.contains(&name.to_ascii_lowercase());
+        let is_allowed = |name: &str| {
+            if !has_any_grant {
+                return false;
+            }
+            let required = Capability::new(format!("tool:{name}"));
+            capabilities.is_granted(&required)
+        };
+
+        let is_allowed_with_kind = |kind: &str, name: &str| {
+            if !has_any_grant {
+                return false;
+            }
+            let required = Capability::new(format!("{kind}:{name}"));
+            capabilities.is_granted(&required)
+        };
 
         let mut items: Vec<ExtensionStoreItem> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -61,14 +72,13 @@ impl ExtensionStore {
         // Built-in tools.
         for name in crate::extensions::framework::adapters::builtin_tools::all_tool_names() {
             let id = name.to_string();
-            let canonical = format!("builtin:tool:{name}");
             if seen.insert(id.clone()) {
                 items.push(ExtensionStoreItem {
                     id: id.clone(),
                     name: id.clone(),
                     ext_type: "builtin".to_string(),
                     source: None,
-                    enabled: is_allowed(&id) || is_allowed(&canonical),
+                    enabled: is_allowed(&id),
                 });
             }
         }
@@ -81,7 +91,7 @@ impl ExtensionStore {
                     name: prompt.name.clone(),
                     ext_type: "agent".to_string(),
                     source: None,
-                    enabled: is_allowed(id) || is_allowed(&prompt.name),
+                    enabled: is_allowed_with_kind("agent", id) || is_allowed_with_kind("agent", &prompt.name),
                 });
             }
         }
@@ -91,12 +101,13 @@ impl ExtensionStore {
             for loaded in manager.list_extensions() {
                 let id = loaded.manifest.id.0.clone();
                 if seen.insert(id.clone()) {
+                    let kind = capability_kind_for_extension_type(&loaded.extension_type);
                     items.push(ExtensionStoreItem {
                         id: id.clone(),
                         name: loaded.manifest.name.clone(),
                         ext_type: loaded.extension_type.clone(),
                         source: loaded.manifest.source.clone(),
-                        enabled: is_allowed(&id) || is_allowed(&loaded.manifest.name),
+                        enabled: is_allowed_with_kind(&kind, &id) || is_allowed_with_kind(&kind, &loaded.manifest.name),
                     });
                 }
             }
@@ -110,6 +121,19 @@ impl ExtensionStore {
     #[must_use]
     pub fn items(&self) -> &[ExtensionStoreItem] {
         &self.items
+    }
+}
+
+/// Map an extension type string to the capability kind used in grant
+/// requirements.
+pub(crate) fn capability_kind_for_extension_type(ext_type: &str) -> String {
+    match ext_type {
+        "builtin" | "tool" => "tool".to_string(),
+        "agent" => "agent".to_string(),
+        "skill" => "skill".to_string(),
+        "mcp" => "mcp".to_string(),
+        "gateway" => "gateway".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -129,7 +153,7 @@ mod tests {
 
     #[test]
     fn empty_allowlist_marks_everything_disabled() {
-        let store = ExtensionStore::build(&AllowedExtensions::default(), &HashMap::new(), None);
+        let store = ExtensionStore::build(&Capabilities::default(), &HashMap::new(), None);
 
         assert!(
             !store.items().is_empty(),
@@ -142,9 +166,9 @@ mod tests {
     }
 
     #[test]
-    fn builtin_enabled_by_bare_name() {
-        let mut allowed = AllowedExtensions::new();
-        allowed.push("Bash");
+    fn builtin_enabled_by_tool_capability() {
+        let mut allowed = Capabilities::new();
+        allowed.push("tool:Bash");
 
         let store = ExtensionStore::build(&allowed, &HashMap::new(), None);
         let bash = store
@@ -156,9 +180,8 @@ mod tests {
     }
 
     #[test]
-    fn builtin_enabled_by_canonical_id() {
-        let mut allowed = AllowedExtensions::new();
-        allowed.push("builtin:tool:Read");
+    fn builtin_enabled_by_tool_capability_wildcard() {
+        let allowed = Capabilities::with_grants(["tool:*"]);
 
         let store = ExtensionStore::build(&allowed, &HashMap::new(), None);
         let read = store
@@ -170,9 +193,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_enabled_case_insensitive() {
-        let mut allowed = AllowedExtensions::new();
-        allowed.push("MATH");
+    fn agent_enabled_by_name() {
+        let mut allowed = Capabilities::new();
+        allowed.push("agent:math");
 
         let mut agents = HashMap::new();
         agents.insert("math".to_string(), agent("math"));
@@ -189,8 +212,8 @@ mod tests {
 
     #[test]
     fn disabled_agent_surfaces_in_store() {
-        let mut allowed = AllowedExtensions::new();
-        allowed.push("writer");
+        let mut allowed = Capabilities::new();
+        allowed.push("agent:writer");
 
         let mut agents = HashMap::new();
         agents.insert("writer".to_string(), agent("writer"));

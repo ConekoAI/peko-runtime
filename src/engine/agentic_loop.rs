@@ -980,8 +980,8 @@ impl AgenticLoop {
                             // lives on the agent itself, not on
                             // `AgentConfig`.
                             self.agent
-                                .principal_allowed_extensions()
-                                .map(|allowed| allowed.iter().cloned().collect::<Vec<_>>()),
+                                .principal_capabilities()
+                                .map(|allowed| allowed.to_strings()),
                             self.cancel.clone(),
                             &on_event,
                         )
@@ -1077,8 +1077,8 @@ impl AgenticLoop {
         // carried on the agent itself.
         let allowed = self
             .agent
-            .principal_allowed_extensions()
-            .map(|allowed| allowed.iter().cloned().collect::<Vec<_>>());
+            .principal_capabilities()
+            .map(|allowed| allowed.to_strings());
         let defs = self
             .extension_core
             .list_tool_definitions_with_allowlist(allowed.as_deref())
@@ -1247,7 +1247,7 @@ mod tests {
     fn test_agent_config(name: &str) -> AgentConfig {
         // **Track B**: per-agent extension whitelist removed from
         // `AgentConfig`. The `*` placeholder this used to set is
-        // now applied via `Agent::with_principal_allowed_extensions`
+        // now applied via `Agent::with_principal_capabilities`
         // downstream of this fixture.
         AgentConfig {
             name: name.to_string(),

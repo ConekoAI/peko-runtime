@@ -853,7 +853,7 @@ async fn ext_enable_for_agent_modifies_whitelist() {
 }
 
 /// Principal-scoped `peko ext enable/disable --principal <name>` mutates
-/// the Principal's `principal.toml` `allowed_extensions` list.
+/// the Principal's `principal.toml` `[capabilities] grants` list.
 ///
 /// This is the Principal-era replacement for the legacy `--target` flow.
 #[tokio::test]
@@ -892,8 +892,9 @@ async fn ext_enable_disable_principal_modifies_allowlist() {
     let after_enable = std::fs::read_to_string(&principal_config)
         .unwrap_or_else(|e| panic!("read {principal_config:?}: {e}"));
     assert!(
-        after_enable.contains("Grep") && after_enable.contains("builtin:tool:Grep"),
-        "principal.toml should contain both bare and canonical Grep grants: {after_enable}",
+        after_enable.contains("tool:Grep") && !after_enable.contains("builtin:tool:Grep"),
+        "principal.toml should contain the `tool:Grep` capability grant and not \
+         the legacy `builtin:tool:Grep` form: {after_enable}",
     );
 
     // Disabling the tool removes both forms.
@@ -907,8 +908,12 @@ async fn ext_enable_disable_principal_modifies_allowlist() {
     let after_disable = std::fs::read_to_string(&principal_config)
         .unwrap_or_else(|e| panic!("read {principal_config:?}: {e}"));
     assert!(
-        !after_disable.contains("Grep"),
-        "principal.toml should NOT contain Grep after disable: {after_disable}",
+        !after_disable.contains("tool:Grep"),
+        "principal.toml should NOT contain `tool:Grep` after disable: {after_disable}",
+    );
+    assert!(
+        !after_disable.contains("builtin:tool:Grep"),
+        "principal.toml should NOT contain `builtin:tool:Grep` after disable: {after_disable}",
     );
 }
 

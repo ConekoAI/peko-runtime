@@ -202,23 +202,23 @@ impl PrincipalManager {
             .await
             .map_err(PrincipalManagerError::Io)?;
 
-        // Detect the legacy `[capabilities]` table name so we can warn users
-        // to migrate to `allowed_extensions = [...]`. Both keys still parse
-        // because of the serde alias, but new files are written with the new
-        // flat-array form.
+        // Detect the legacy `allowed_extensions` key so we can warn users
+        // to migrate to `[capabilities] grants = [...]`. The old key is no
+        // longer read; Principals that still declare it will get an empty
+        // capability set until the file is migrated.
         let raw_config: toml::Value = toml::from_str(&config_str)
             .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
-        let uses_legacy_capabilities = raw_config.get("capabilities").is_some();
+        let uses_legacy_allowed_extensions = raw_config.get("allowed_extensions").is_some();
 
         let config: PrincipalConfig = raw_config
             .try_into()
             .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
 
-        if uses_legacy_capabilities {
+        if uses_legacy_allowed_extensions {
             tracing::warn!(
                 principal = %config.name,
                 config_path = %config_path.display(),
-                "principal.toml uses legacy [capabilities] table; migrate to allowed_extensions = [...]"
+                "principal.toml uses legacy allowed_extensions; migrate to [capabilities] grants = [...]"
             );
         }
 
@@ -487,13 +487,13 @@ impl PrincipalManager {
             available_agents,
             extension_store,
             routing,
-            allowed_extensions,
+            capabilities,
             intent,
             governance,
             principal_name,
         ) = {
             let config = principal.config.read().await;
-            let allowed = &config.allowed_extensions;
+            let allowed = &config.capabilities;
             let available_agents: Vec<_> = principal
                 .agent_prompts
                 .iter()
@@ -501,9 +501,13 @@ impl PrincipalManager {
                     id: id.clone(),
                     name: p.name.clone(),
                     description: p.frontmatter.description.clone(),
-                    enabled: allowed
-                        .iter()
-                        .any(|e| e.eq_ignore_ascii_case(id) || e.eq_ignore_ascii_case(&p.name)),
+                    enabled: allowed.is_granted(&crate::principal::Capability::new(format!(
+                        "agent:{id}"
+                    )))
+                        || allowed.is_granted(&crate::principal::Capability::new(format!(
+                            "agent:{}",
+                            p.name
+                        ))),
                 })
                 .collect();
 
@@ -536,7 +540,7 @@ impl PrincipalManager {
             recalled_context,
             available_agents,
             extension_store,
-            allowed_extensions,
+            capabilities,
             intent,
             governance,
             inbox_registry: Arc::clone(&self.inbox_registry),
@@ -737,11 +741,11 @@ mod tests {
     use crate::extensions::framework::core::init_global_core;
     use crate::principal::{
         config::{
-            AllowedExtensions, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+            PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
             PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
         },
         router::{ChannelContext, ChannelKind},
-        DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
+        Capabilities, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     };
     use crate::providers::{LlmResolver, MockAdapter};
     use std::sync::Arc;
@@ -829,18 +833,7 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            allowed_extensions: AllowedExtensions(vec![
-                "Read".to_string(),
-                "Write".to_string(),
-                "Edit".to_string(),
-                "Bash".to_string(),
-                "Agent".to_string(),
-                "agent_catalog".to_string(),
-                "TaskCreate".to_string(),
-                "TaskList".to_string(),
-                "TaskGet".to_string(),
-                "TaskUpdate".to_string(),
-            ]),
+            capabilities: Capabilities::starter_bundle(),
             exposure: crate::tunnel::protocol::InstanceExposure::Private,
             status: None,
             permissions: vec![PermissionGrant {
@@ -1221,8 +1214,8 @@ mod tests {
         .await;
         manager
             .update_config("stressy", |config| {
-                config.allowed_extensions =
-                    AllowedExtensions(vec!["enabled_agent".to_string(), "Read".to_string()]);
+                config.capabilities =
+                    Capabilities::with_grants(["agent:enabled_agent", "tool:Read"]);
             })
             .await
             .unwrap();

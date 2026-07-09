@@ -47,7 +47,7 @@ pub struct Agent {
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Daemon-global extension core shared by every agent in the process.
     /// Per-agent/per-principal visibility is enforced via the per-call
-    /// `allowed_extensions` allowlist, not by isolating cores.
+    /// `capabilities` allowlist, not by isolating cores.
     extension_core: Arc<ExtensionCore>,
     /// Optional external inbox registry. When set, the agentic loop drains
     /// this registry's session inbox instead of creating a per-call one,
@@ -76,9 +76,9 @@ pub struct Agent {
     /// `ToolContext` so Principal-scoped tools (e.g. cron) can target
     /// jobs by name.
     principal_name: Option<String>,
-    /// Snapshot of the spawning principal's allowed extension list,
+    /// Snapshot of the spawning principal's capability grants,
     /// captured at construction from
-    /// `PrincipalContext::allowed_extensions`. Used by
+    /// `PrincipalContext::capabilities`. Used by
     /// `init_builtins_async` to filter the tool registry down to
     /// what this agent's principal can see.
     ///
@@ -95,7 +95,7 @@ pub struct Agent {
     /// `AgentConfig::extensions`/`extension_whitelist` for the
     /// runtime filter. Once `AgentConfig::extensions` is removed
     /// the principal's allowlist is the *only* source of truth.
-    principal_allowed_extensions: Option<Arc<crate::principal::config::AllowedExtensions>>,
+    principal_capabilities: Option<Arc<crate::principal::Capabilities>>,
 }
 
 impl Clone for Agent {
@@ -120,7 +120,7 @@ impl Clone for Agent {
             caller_principal_did: self.caller_principal_did.clone(),
             principal_id: self.principal_id.clone(),
             principal_name: self.principal_name.clone(),
-            principal_allowed_extensions: self.principal_allowed_extensions.clone(),
+            principal_capabilities: self.principal_capabilities.clone(),
         }
     }
 }
@@ -253,55 +253,29 @@ impl Agent {
             );
         }
 
-        // Filter against the spawning principal's allowlist. The list
+        // Filter against the spawning principal's capabilities. The set
         // is captured at construction from
-        // `PrincipalContext::allowed_extensions` (see
-        // `with_principal_allowed_extensions`).
+        // `PrincipalContext::capabilities` (see
+        // `with_principal_capabilities`).
         //
         // `None`    => no allowlist bound; every registered tool stays visible
         //              (standalone / test behaviour).
-        // `Some(_)` => filter to the listed names. An empty inner list means
+        // `Some(_)` => filter to the granted tools. An empty inner set means
         //              deny-all (fail-closed), matching the semantics of
         //              `AgentStateRegistry` / `ExtensionStateRegistry`.
-        if let Some(whitelist) = self
-            .principal_allowed_extensions
-            .as_ref()
-            .map(|allowed| allowed.iter().cloned().collect::<Vec<_>>())
-        {
+        if let Some(caps) = self.principal_capabilities.as_ref() {
             let before_count = tools.len();
             tools.retain(|tool| {
-                let tool_name = tool.name();
-                whitelist.iter().any(|pattern: &String| {
-                    // Bare-name match (e.g. "Agent").
-                    if pattern.eq_ignore_ascii_case(tool_name) {
-                        return true;
-                    }
-                    // Canonical-form match (e.g. "builtin:tool:Agent"). Whitelists
-                    // are commonly stored in canonical form, while per-agent tools
-                    // register under their bare name — match the suffix so the
-                    // canonical entry still enables the tool. Without this, spawned
-                    // subagents (whose principal has only canonical IDs in
-                    // `allowed_extensions`) would lose the Agent/session/Task
-                    // tools and cannot delegate to nested subagents.
-                    if let Some(bare) = pattern.strip_prefix("builtin:tool:") {
-                        if bare.eq_ignore_ascii_case(tool_name) {
-                            return true;
-                        }
-                    }
-                    if pattern.ends_with('*') {
-                        let prefix = &pattern[..pattern.len() - 1];
-                        return tool_name.to_lowercase().starts_with(&prefix.to_lowercase());
-                    }
-                    false
-                })
+                let required = crate::principal::Capability::new(format!("tool:{}", tool.name()));
+                caps.is_granted(&required)
             });
             tracing::debug!("Filtered {} tools to {}", before_count, tools.len());
         }
 
         // ADR-020: Per-agent tool configuration is now carried on each
-        // `HookInput::ToolCall` via `allowed_extensions` instead of being
+        // `HookInput::ToolCall` via `capabilities` instead of being
         // written to the shared global `tool_config`. This eliminates a
-        // race where concurrent agents overwrite each other's whitelist
+        // race where concurrent agents overwrite each other's capability set
         // on the daemon-global `ExtensionCore`.
 
         // Load Universal Tools from extensions directory (where `peko ext install` puts them).
@@ -569,7 +543,7 @@ impl Agent {
             caller_principal_did: None,
             principal_id,
             principal_name: None,
-            principal_allowed_extensions: None,
+            principal_capabilities: None,
         };
 
         info!(
@@ -629,30 +603,30 @@ impl Agent {
         self
     }
 
-    /// Bind the spawning principal's allowlist for this agent's tool
+    /// Bind the spawning principal's capabilities for this agent's tool
     /// filter.
     ///
-    /// Captures a snapshot of `PrincipalContext::allowed_extensions` at
+    /// Captures a snapshot of `PrincipalContext::capabilities` at
     /// construction time so `init_builtins_async` can prune the
     /// registered tool bag down to what the principal is allowed to
-    /// see. Mutations to the principal's allowlist after construction
+    /// see. Mutations to the principal's capabilities after construction
     /// are not picked up by this agent — that is the intended
     /// semantic (the principal-scoping rules bind per-session).
     ///
-    /// `None` means unbound — no allowlist-based filtering is applied.
-    /// `Some(list)` filters to the named tools; an empty inner list
+    /// `None` means unbound — no capability-based filtering is applied.
+    /// `Some(set)` filters to the granted tools; an empty inner set
     /// means deny-all (fail-closed). This matches the
     /// `AgentStateRegistry` / `ExtensionStateRegistry` semantics.
     #[must_use]
-    pub fn with_principal_allowed_extensions(
+    pub fn with_principal_capabilities(
         mut self,
-        allowed: Option<Arc<crate::principal::config::AllowedExtensions>>,
+        capabilities: Option<Arc<crate::principal::Capabilities>>,
     ) -> Self {
         let executor = (*self.subagent_executor)
             .clone()
-            .with_principal_allowed_extensions(allowed.clone());
+            .with_principal_capabilities(capabilities.clone());
         self.subagent_executor = Arc::new(executor);
-        self.principal_allowed_extensions = allowed;
+        self.principal_capabilities = capabilities;
         self
     }
 
@@ -698,7 +672,7 @@ impl Agent {
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<crate::providers::Provider>>,
-        principal_allowed_extensions: Option<Arc<crate::principal::config::AllowedExtensions>>,
+        principal_capabilities: Option<Arc<crate::principal::Capabilities>>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
         let extension_core = global_core().expect("Global ExtensionCore not initialized");
@@ -749,7 +723,7 @@ impl Agent {
 
         // Subagents share the daemon-global ExtensionCore with every other
         // agent in the process. There is no per-principal core; per-principal
-        // tool visibility is enforced by the per-call `allowed_extensions`
+        // tool visibility is enforced by the per-call `capabilities`
         // allowlist.
 
         let principal_id = subagent_executor.principal_id().clone();
@@ -770,7 +744,7 @@ impl Agent {
             caller_principal_did: None,
             principal_id,
             principal_name,
-            principal_allowed_extensions,
+            principal_capabilities,
         };
 
         info!(
@@ -1317,20 +1291,20 @@ impl Agent {
         self.principal_name.as_deref()
     }
 
-    /// Snapshot of the principal's allowlist bound at construction.
+    /// Snapshot of the principal's capabilities bound at construction.
     ///
-    /// The engine consults this list when filtering the tool bag
+    /// The engine consults this set when filtering the tool bag
     /// during `init_builtins_async` and when computing per-call
     /// tool definitions. **Track B**: replaces
     /// `AgentConfig::extension_whitelist()` for runtime reads.
     ///
-    /// `None` means the agent is unbound and no allowlist-based
+    /// `None` means the agent is unbound and no capability-based
     /// filtering is applied.
     #[must_use]
-    pub fn principal_allowed_extensions(
+    pub fn principal_capabilities(
         &self,
-    ) -> Option<&Arc<crate::principal::config::AllowedExtensions>> {
-        self.principal_allowed_extensions.as_ref()
+    ) -> Option<&Arc<crate::principal::Capabilities>> {
+        self.principal_capabilities.as_ref()
     }
 
     // Session overlay methods
@@ -1640,7 +1614,7 @@ impl Agent {
             caller_principal_did: None,
             principal_id: crate::principal::PrincipalId::generate(),
             principal_name: None,
-            principal_allowed_extensions: None,
+            principal_capabilities: None,
         })
     }
 

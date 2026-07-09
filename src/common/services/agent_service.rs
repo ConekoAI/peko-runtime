@@ -210,7 +210,7 @@ impl AgentService {
         // **Track B**: per-agent extension whitelist removed from
         // `AgentConfig`. The principal's allowlist is what governs
         // visibility and is bound at agent construction time
-        // (see `Agent::with_principal_allowed_extensions`).
+        // (see `Agent::with_principal_capabilities`).
         Ok(AgentConfig {
             name: prompt.name,
             description: prompt.frontmatter.description,

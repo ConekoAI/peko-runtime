@@ -108,7 +108,7 @@ impl PrincipalPackager {
         self
     }
 
-    /// Resolve all extensions referenced by `config.allowed_extensions` through the
+    /// Resolve all extensions referenced by `config.capabilities` through the
     /// loaded `ExtensionManager`, export each installed extension to a `.ext`
     /// package, and attach the resulting `ExtensionRef`s and embedded bytes.
     ///
@@ -124,7 +124,7 @@ impl PrincipalPackager {
         let mut embedded = HashMap::new();
         let mut seen = HashSet::new();
 
-        let names: Vec<&String> = config.allowed_extensions.iter().collect();
+        let names: Vec<&str> = config.capabilities.iter().map(|c| c.as_str()).collect();
 
         if names.is_empty() {
             return Ok(self);
@@ -582,7 +582,7 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            allowed_extensions: Default::default(),
+            capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
             permissions: Vec::new(),

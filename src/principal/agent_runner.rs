@@ -16,7 +16,7 @@ use crate::session::manager::SessionManager;
 use crate::session::SessionCreateOptions;
 use crate::tools::builtin::{AgentTool, DynamicSessionKeyProvider};
 
-use super::{agent_prompt::AgentPrompt, config::AllowedExtensions};
+use super::{agent_prompt::AgentPrompt, Capabilities};
 
 /// Build an `AgentConfig` from a thin Markdown prompt + the Principal's
 /// allowed extensions.
@@ -31,17 +31,17 @@ use super::{agent_prompt::AgentPrompt, config::AllowedExtensions};
 /// other code path that can recover a provider for the root agent at run
 /// time.
 ///
-/// **Track B**: the `allowed_extensions` / `available_agents` filtering
+/// **Track B**: the `capabilities` / `available_agents` filtering
 /// no longer touches the agent config (the per-agent extension whitelist
 /// is gone from `AgentConfig`). The principal's allowlist is bound
 /// separately at agent construction time via
-/// [`Agent::with_principal_allowed_extensions`]. The filter itself still
+/// [`Agent::with_principal_capabilities`]. The filter itself still
 /// matters at runtime — see
 /// [`run_root_agent_prompt_with_callback`] for the canonical-agent and
 /// install path.
 pub fn build_agent_config(
     prompt: &AgentPrompt,
-    _allowed_extensions: &AllowedExtensions,
+    _capabilities: &Capabilities,
     _available_agents: &[AgentPromptSummary],
     // **Track B**: `provider_hint` is no longer baked into the
     // returned `AgentConfig` (the `preferred_provider_id` /
@@ -54,12 +54,12 @@ pub fn build_agent_config(
     // defaults before this function sees it.
     _provider_hint: (Option<String>, Option<String>),
 ) -> AgentConfig {
-    // The `allowed_extensions` / `available_agents` parameters are
+    // The `capabilities` / `available_agents` parameters are
     // kept for API stability but no longer affect `AgentConfig`
     // construction: the per-agent extension whitelist has been
     // removed from `AgentConfig`. The principal's allowlist is
     // bound separately at agent construction time via
-    // [`Agent::with_principal_allowed_extensions`], and the
+    // [`Agent::with_principal_capabilities`], and the
     // canonical agents/extensions split is computed at runtime in
     // [`run_root_agent_prompt_with_callback`] when the catalogue is
     // installed on the principal's `ExtensionCore`.
@@ -155,7 +155,7 @@ pub(crate) async fn resolve_provider_hint(
 /// The root agent is just another agent of the principal — the same
 /// `PrincipalContext.core()` is used by every agent the principal
 /// spawns. What the root agent can see is governed by the principal's
-/// `allowed_extensions`; what any subagent can see is governed by that
+/// `capabilities`; what any subagent can see is governed by that
 /// subagent's own extension whitelist.
 pub async fn run_root_agent_prompt(
     prompt: &AgentPrompt,
@@ -230,7 +230,7 @@ where
     let provider_hint = resolve_provider_hint(ctx).await;
     let config = build_agent_config(
         prompt,
-        &ctx.allowed_extensions,
+        &ctx.capabilities,
         &available_agents,
         provider_hint,
     );
@@ -238,7 +238,7 @@ where
     // Build the principal's shared core first so we can ask the core
     // to resolve bare extension names into canonical `extension_id`
     // form. Phase 4a: there is no privileged whitelist anymore — the
-    // principal's `allowed_extensions` are the *only* source of truth for
+    // principal's `capabilities` are the *only* source of truth for
     // which tools the root agent (and every subagent that inherits
     // from it) can see. Each subagent's own `AgentConfig.extensions`
     // may further filter that set on a per-agent basis.
@@ -253,14 +253,14 @@ where
     // catalog filter (separating agent-prompt names from extension
     // names) is applied here once for the canonical-agent listing; the
     // principal's allowlist itself is bound below via
-    // `with_principal_allowed_extensions` so the agent's tool filter
+    // `with_principal_capabilities` so the agent's tool filter
     // (initialized lazily in `init_builtins_async`) only sees
     // canonical extension ids.
-    let _resolved: Vec<String> = core.resolve_canonical_ids(&ctx.allowed_extensions).await;
+    let _resolved: Vec<String> = core.resolve_canonical_ids(&ctx.capabilities.to_strings()).await;
 
     // Agent catalog is the only per-call tool — its `available_agents`
     // snapshot can change between messages if the principal's
-    // `allowed_extensions` was edited. We re-register it on the
+    // `capabilities` was edited. We re-register it on the
     // shared core, which is idempotent on tool name.
     install_agent_catalog(&core, available_agents).await?;
 
@@ -270,7 +270,7 @@ where
     // issue #2). The guard unregisters on scope exit so concurrent
     // principals don't leak state.
     let extension_state = crate::principal::ExtensionState::new(
-        ctx.allowed_extensions.to_vec(),
+        ctx.capabilities.to_strings(),
         ctx.workspace_path.clone(),
     );
     crate::principal::ExtensionStateRegistry::global()
@@ -283,7 +283,7 @@ where
     // hooks resolve the allowlist from this registry at handle time using
     // the `principal_id` injected by `build_agents_section` (legacy loader
     // deletion follow-up).
-    let agent_state = crate::principal::AgentState::new(ctx.allowed_extensions.to_vec());
+    let agent_state = crate::principal::AgentState::new(ctx.capabilities.to_strings());
     crate::principal::AgentStateRegistry::global()
         .register(ctx.principal_id().clone(), agent_state)
         .await;
@@ -382,7 +382,7 @@ where
     // Track B moved the per-agent extension whitelist off
     // `AgentConfig`; the snapshot lives on the agent and is
     // consulted by `init_builtins_async` to prune the tool bag.
-    .with_principal_allowed_extensions(Some(Arc::clone(&ctx.allowed_extensions)))
+    .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
     // Phase 4b: bind caller DID so `principal_send` is registered.
     // `None` ⇒ tool is intentionally omitted (no local-only fallback
     // for `principal_send`; it is exclusively cross-runtime).
@@ -404,7 +404,7 @@ where
             ctx.principal_id().clone(),
         )
         .with_principal_name(ctx.name().to_string())
-        .with_principal_allowed_extensions(Some(Arc::clone(&ctx.allowed_extensions)))
+        .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
             // `PathResolver::principal_dir`), so derive the two config files

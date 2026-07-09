@@ -726,7 +726,7 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            allowed_extensions: Default::default(),
+            capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
             permissions: Vec::new(),

@@ -267,15 +267,15 @@ impl ExtensionCore {
         // ADR-019 Phase 1: Tool permission check at ExtensionCore layer
         // This ensures ALL tools (built-in, MCP, Universal) are checked consistently
         if let HookPoint::ToolExecute { ref tool_name } = point {
-            let allowed_extensions = match &input {
+            let capabilities = match &input {
                 HookInput::ToolCall {
-                    allowed_extensions, ..
-                } => allowed_extensions.as_deref(),
+                    capabilities, ..
+                } => capabilities.as_deref(),
                 _ => None,
             };
             if !self
                 .tool_registry
-                .is_tool_enabled_with_whitelist(tool_name, allowed_extensions)
+                .is_tool_enabled_with_whitelist(tool_name, capabilities)
                 .await
             {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
@@ -560,14 +560,14 @@ impl ExtensionCore {
     /// is only allowed to use a subset.
     pub async fn list_tool_definitions_with_allowlist(
         &self,
-        allowed_extensions: Option<&[String]>,
+        capabilities: Option<&[String]>,
     ) -> Vec<crate::providers::ToolDefinition> {
         let all = self.list_tools().await;
         let mut filtered = Vec::new();
         for metadata in all {
             if self
                 .tool_registry
-                .is_tool_enabled_with_whitelist(&metadata.name, allowed_extensions)
+                .is_tool_enabled_with_whitelist(&metadata.name, capabilities)
                 .await
             {
                 filtered.push(metadata.to_tool_definition());
@@ -973,9 +973,9 @@ mod tests {
             output: HookResult::Continue(HookOutput::text("executed")),
         });
 
-        // Execute the tool with an empty per-call allowlist — every tool
+        // Execute the tool with an empty per-call capability set — every tool
         // should be denied (fail-closed).
-        let allowed_extensions: Option<Vec<String>> = Some(vec![]);
+        let capabilities: Option<Vec<String>> = Some(vec![]);
 
         // Try to execute the tool - should be blocked
         let result = core
@@ -992,7 +992,7 @@ mod tests {
                     caller_id: None,
                     principal_id: None,
                     principal_name: None,
-                    allowed_extensions,
+                    capabilities,
                     abort_signal: None,
                 },
             )
@@ -1035,9 +1035,9 @@ mod tests {
         .await
         .unwrap();
 
-        // Enable the tool via the per-call allowlist. The tool was registered
+        // Enable the tool via the per-call capability set. The tool was registered
         // directly on the hook registry, so it has no recorded owner in the
-        // tool index; the allowlist therefore uses the bare tool name.
+        // tool index; the capability set therefore uses the bare tool name.
         let allowed = vec!["enabled_tool".to_string()];
 
         // Execute the tool - should succeed
@@ -1055,7 +1055,7 @@ mod tests {
                     caller_id: None,
                     principal_id: None,
                     principal_name: None,
-                    allowed_extensions: Some(allowed),
+                    capabilities: Some(allowed),
                     abort_signal: None,
                 },
             )

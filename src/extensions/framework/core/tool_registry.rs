@@ -62,24 +62,24 @@ impl ToolRegistry {
         self.is_tool_enabled_with_whitelist(tool_name, None).await
     }
 
-    /// Check if a tool is enabled, using a per-call allowlist when provided.
+    /// Check if a tool is enabled, using a per-call capability set when provided.
     ///
-    /// When `allowed_extensions` is `Some`, the tool's owning canonical
-    /// extension ID must be present in that list.  This avoids the race
+    /// When `capabilities` is `Some`, the tool's owning canonical
+    /// extension ID must be present in that set.  This avoids the race
     /// condition caused by mutating the shared global `tool_config`.
     ///
-    /// When `allowed_extensions` is `None`, the legacy global `tool_config`
+    /// When `capabilities` is `None`, the legacy global `tool_config`
     /// is consulted for tools with a recorded owner.  Tools with no recorded
     /// owner are denied rather than falling back to a bare-name match against
     /// the mutable global config (leak C cleanup).
     pub async fn is_tool_enabled_with_whitelist(
         &self,
         tool_name: &str,
-        allowed_extensions: Option<&[String]>,
+        capabilities: Option<&[String]>,
     ) -> bool {
         let owners = self.tool_owners.read().await;
 
-        if let Some(list) = allowed_extensions {
+        if let Some(list) = capabilities {
             let whitelist = crate::common::types::agent_legacy::ExtensionConfig {
                 enabled: list.to_vec(),
                 ..Default::default()

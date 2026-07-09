@@ -74,7 +74,7 @@ async fn create_test_principal(
         governance: Default::default(),
         memory: Default::default(),
         routing: Default::default(),
-        allowed_extensions: Default::default(),
+        capabilities: Default::default(),
         exposure: InstanceExposure::Public,
         status: None,
         permissions: Vec::new(),

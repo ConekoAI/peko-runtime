@@ -129,7 +129,7 @@ impl RootRouter {
             Arc::clone(&self.memory),
             Arc::clone(&ctx.inbox_registry),
             Arc::clone(&ctx.session_creation_lock),
-            Arc::new(ctx.allowed_extensions.clone()),
+            Arc::new(ctx.capabilities.clone()),
             self.resolver.clone(),
             (
                 self.principal_provider_id.clone(),
@@ -263,10 +263,10 @@ mod tests {
     use super::*;
     use crate::auth::Subject;
     use crate::principal::config::{
-        AllowedExtensions, PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
+        PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
     };
     use crate::principal::router::{ChannelContext, ChannelKind, ContextInjectionKind};
-    use crate::principal::ExtensionStore;
+    use crate::principal::{Capabilities, ExtensionStore};
     use crate::session::InboxRegistry;
 
     #[test]
@@ -302,7 +302,7 @@ mod tests {
                 description: Some("Generalist".to_string()),
                 enabled: true,
             }],
-            allowed_extensions: AllowedExtensions::default(),
+            capabilities: Capabilities::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
             extension_store: ExtensionStore::default(),

@@ -41,7 +41,7 @@ pub struct RouterContext {
     pub routing: super::PrincipalRoutingConfig,
     pub recalled_context: Vec<ContextInjection>,
     pub available_agents: Vec<AgentPromptSummary>,
-    pub allowed_extensions: super::AllowedExtensions,
+    pub capabilities: super::Capabilities,
     pub intent: super::PrincipalIntentConfig,
     pub governance: super::PrincipalGovernanceConfig,
     /// Per-principal snapshot of all detected extensions/agents and their

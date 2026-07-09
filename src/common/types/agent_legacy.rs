@@ -397,10 +397,10 @@ mod tests {
     #[test]
     fn test_agent_config_has_no_per_agent_extensions() {
         // **Track B**: `AgentConfig::extensions` was removed; the
-        // principal's allowlist (`PrincipalContext::allowed_extensions`)
+        // principal's capability set (`PrincipalContext::capabilities`)
         // is the source of truth for tool visibility. What an agent
         // sees is bound at construction via
-        // `Agent::with_principal_allowed_extensions`.
+        // `Agent::with_principal_capabilities`.
         let config = AgentConfig::default();
         // Sanity: the per-agent config no longer carries an
         // extension whitelist field at all (compile-time check via

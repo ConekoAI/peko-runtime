@@ -238,7 +238,7 @@ impl AgentTool {
             if !state.is_enabled(subagent_type) {
                 anyhow::bail!(
                     "Subagent '{}' is not enabled for this principal. \
-                     Add it to the principal's allowed_extensions and retry.",
+                     Add it to the principal's capabilities and retry.",
                     subagent_type
                 );
             }

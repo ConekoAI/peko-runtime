@@ -277,23 +277,17 @@ fn ext_install_and_info_round_trip() {
 /// `peko ext enable <ext> --target <agent>`, which wrote the canonical
 /// extension id into the agent's `config.toml [extensions] enabled`
 /// list. In the Principal model, the equivalent surface is the
-/// Principal's `principal.toml [capabilities] tools`, which
-/// `run_root_agent_prompt` extends with `capabilities.tools` /
-/// `capabilities.skills` / `capabilities.mcps` / `capabilities.agents`
-/// when building the root agent's whitelist. The CLI does not expose a
-/// live grant command for capabilities, so we patch `principal.toml`
-/// directly (mirrors the pattern in
+/// Principal's `principal.toml [capabilities] grants`, which
+/// `run_root_agent_prompt` uses when building the root agent's whitelist.
+/// The CLI does not expose a live grant command for capabilities, so we
+/// patch `principal.toml` directly (mirrors the pattern in
 /// `tests/common/agent.rs::create_mock_principal_with_tools`).
 ///
-/// The on-disk config is the assertion point. We also assert that
-/// the capability is granted in **both** forms — the bare name (so
-/// the agent's per-agent `init_builtins_async` registers the tool)
-/// and the canonical `builtin:tool:<name>` extension id (so the
-/// dispatcher's `is_tool_enabled` owner check passes at execution
-/// time). Granting only one form yields a silently-disabled tool.
+/// The on-disk config is the assertion point. Built-in tools are granted
+/// with the `tool:<name>` capability syntax (e.g. `tool:Grep`).
 #[test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
-fn principal_extension_grant_round_trip() {
+fn principal_capability_grant_round_trip() {
     let Some(mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
@@ -302,53 +296,50 @@ fn principal_extension_grant_round_trip() {
     let cli = PekoCli::new();
     let principal_name = "s1_extension_grant_principal";
 
-    // Baseline: create the Principal with no extra extension grants.
-    // The default `allowed_extensions` list carries the safe starter
-    // bundle, but does not include `Grep` yet.
+    // Baseline: create the Principal with no extra capability grants.
+    // The default `[capabilities] grants` list is empty by default, so it
+    // does not include `tool:Grep` yet.
     create_mock_principal_with_tools(&cli, principal_name, &mock_url, &[]);
 
     let cfg_path = principal_config_path(&cli, principal_name);
     let before = std::fs::read_to_string(&cfg_path).expect("read principal.toml");
-    // The baseline should NOT carry a `Grep` extension grant yet.
+    // The baseline should NOT carry a `tool:Grep` grant yet.
     assert!(
-        !before.contains("Grep"),
-        "baseline principal.toml should not carry a `Grep` extension grant: {before}",
+        !before.contains("tool:Grep"),
+        "baseline principal.toml should not carry a `tool:Grep` grant: {before}",
     );
 
-    // Patch the Principal's `allowed_extensions` to grant `Grep`
-    // in both forms. This is what the legacy `peko ext enable Grep
-    // --target <agent>` write did, except the on-disk shape is the
-    // Principal's `principal.toml` rather than the agent's
-    // `config.toml`.
+    // Patch the Principal's `[capabilities] grants` to grant `tool:Grep`.
     let raw = std::fs::read_to_string(&cfg_path).expect("read principal.toml");
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
-    cfg.allowed_extensions.0 = vec!["Grep".into(), "builtin:tool:Grep".into()];
+    cfg.capabilities = peko::principal::Capabilities::with_grants(["tool:Grep"]);
     std::fs::write(
         &cfg_path,
         toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
     )
     .expect("write principal.toml");
 
-    // The on-disk config now contains the bare-name + canonical-id
-    // extension grant.
+    // The on-disk config now contains the `tool:Grep` capability grant.
     let after = std::fs::read_to_string(&cfg_path).expect("read principal.toml after grant");
     assert!(
-        after.contains("Grep") && after.contains("builtin:tool:Grep"),
-        "principal.toml should contain both the bare-name `Grep` and the \
-         canonical `builtin:tool:Grep` extension grants after grant: {after}",
+        after.contains("tool:Grep"),
+        "principal.toml should contain the `tool:Grep` capability grant after grant: {after}",
+    );
+    assert!(
+        !after.contains("builtin:tool:Grep"),
+        "principal.toml should not contain the legacy `builtin:tool:Grep` grant: {after}",
     );
 }
 
-/// Flow 2c: revoke the extension grant. The bare-name and canonical-id
-/// entries are both removed from the Principal's `principal.toml
-/// allowed_extensions`. Mirrors the test 3 grant assertion in
-/// reverse. We round-trip through the TOML parse/serialize rather
-/// than literal string edits so the test stays robust against
-/// future schema changes.
+/// Flow 2c: revoke the capability. The `tool:Bash` entry is removed from
+/// the Principal's `principal.toml [capabilities] grants`. Mirrors the
+/// test 3 grant assertion in reverse. We round-trip through the TOML
+/// parse/serialize rather than literal string edits so the test stays
+/// robust against future schema changes.
 #[test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
-fn principal_extension_revoke_round_trip() {
+fn principal_capability_revoke_round_trip() {
     let Some(mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
@@ -357,21 +348,25 @@ fn principal_extension_revoke_round_trip() {
     let cli = PekoCli::new();
     let principal_name = "s1_extension_revoke_principal";
 
-    // Start with the extension already granted (via the helper).
+    // Start with the capability already granted (via the helper).
     create_mock_principal_with_tools(&cli, principal_name, &mock_url, &["Bash"]);
 
     let cfg_path = principal_config_path(&cli, principal_name);
     let after_grant = std::fs::read_to_string(&cfg_path).expect("read principal.toml");
     assert!(
-        after_grant.contains("Bash") && after_grant.contains("builtin:tool:Bash"),
-        "baseline (post-grant) should contain both Bash forms: {after_grant}",
+        after_grant.contains("tool:Bash"),
+        "baseline (post-grant) should contain `tool:Bash`: {after_grant}",
+    );
+    assert!(
+        !after_grant.contains("builtin:tool:Bash"),
+        "baseline (post-grant) should not contain legacy `builtin:tool:Bash`: {after_grant}",
     );
 
-    // Revoke: clear the allowed extensions list.
+    // Revoke: clear the capabilities list.
     let raw = std::fs::read_to_string(&cfg_path).expect("read principal.toml");
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
-    cfg.allowed_extensions.clear();
+    cfg.capabilities = peko::principal::Capabilities::new();
     std::fs::write(
         &cfg_path,
         toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
@@ -380,8 +375,8 @@ fn principal_extension_revoke_round_trip() {
 
     let after_revoke = std::fs::read_to_string(&cfg_path).expect("read principal.toml");
     assert!(
-        !after_revoke.contains("Bash"),
-        "principal.toml should NOT contain `Bash` after revoke: {after_revoke}",
+        !after_revoke.contains("tool:Bash"),
+        "principal.toml should NOT contain `tool:Bash` after revoke: {after_revoke}",
     );
     assert!(
         !after_revoke.contains("builtin:tool:Bash"),

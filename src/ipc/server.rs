@@ -1365,17 +1365,17 @@ impl IpcServer {
                 let (_is_builtin, bare_name, canonical_id) = Self::parse_extension_ref(&id);
 
                 let result = if let Some(principal_name) = principal {
-                    // Principal scope: mutate the principal's allowed_extensions.
+                    // Principal scope: mutate the principal's capabilities.
                     let pm = state.principal_manager().clone();
                     match pm
                         .update_config(&principal_name, |config| {
-                            let already_enabled = config.allowed_extensions.iter().any(|entry| {
-                                entry.eq_ignore_ascii_case(&bare_name)
-                                    || entry.eq_ignore_ascii_case(&canonical_id)
+                            let already_enabled = config.capabilities.iter().any(|entry| {
+                                entry.as_str().eq_ignore_ascii_case(&bare_name)
+                                    || entry.as_str().eq_ignore_ascii_case(&canonical_id)
                             });
                             if !already_enabled {
-                                config.allowed_extensions.push(bare_name.clone());
-                                config.allowed_extensions.push(canonical_id.clone());
+                                config.capabilities.push(bare_name.clone());
+                                config.capabilities.push(canonical_id.clone());
                             }
                         })
                         .await
@@ -1472,16 +1472,16 @@ impl IpcServer {
 
                 let mut removed = false;
                 let result = if let Some(principal_name) = principal {
-                    // Principal scope: mutate the principal's allowed_extensions.
+                    // Principal scope: mutate the principal's capabilities.
                     let pm = state.principal_manager().clone();
                     match pm
                         .update_config(&principal_name, |config| {
-                            let before = config.allowed_extensions.len();
-                            config.allowed_extensions.retain(|entry| {
-                                !entry.eq_ignore_ascii_case(&bare_name)
-                                    && !entry.eq_ignore_ascii_case(&canonical_id)
+                            let before = config.capabilities.len();
+                            config.capabilities.retain(|entry| {
+                                !entry.as_str().eq_ignore_ascii_case(&bare_name)
+                                    && !entry.as_str().eq_ignore_ascii_case(&canonical_id)
                             });
-                            removed = config.allowed_extensions.len() != before;
+                            removed = config.capabilities.len() != before;
                         })
                         .await
                     {

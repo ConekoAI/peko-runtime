@@ -176,7 +176,7 @@ impl ExtensionAsyncAdapter {
                     caller_id: None,
                     principal_id: None,
                     principal_name: None,
-                    allowed_extensions: None,
+                    capabilities: None,
                     abort_signal: None,
                 },
             )
@@ -241,7 +241,7 @@ impl ExtensionAsyncAdapter {
                                 caller_id: None,
                                 principal_id: None,
                                 principal_name: None,
-                                allowed_extensions: None,
+                                capabilities: None,
                                 abort_signal: None,
                             },
                         )

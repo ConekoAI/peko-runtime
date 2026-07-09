@@ -32,7 +32,7 @@ use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 
-use super::config::AllowedExtensions;
+use super::Capabilities;
 
 /// Per-principal runtime state shared by the root agent and its
 /// subagents.
@@ -57,9 +57,9 @@ pub struct PrincipalContext {
     /// Held during root-agent session creation so concurrent peers
     /// don't race on shared session metadata.
     pub session_creation_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Principal's allowed extensions — what tools/skills/mcps/agents are
+    /// Principal's capability grants — what tools/skills/mcps/agents are
     /// enabled for this principal.
-    pub allowed_extensions: Arc<AllowedExtensions>,
+    pub capabilities: Arc<Capabilities>,
     /// LLM resolver used to validate provider hints and surface
     /// catalog defaults.
     pub resolver: Option<Arc<LlmResolver>>,
@@ -96,7 +96,7 @@ impl PrincipalContext {
         memory: Arc<dyn PrincipalMemory>,
         inbox_registry: Arc<InboxRegistry>,
         session_creation_lock: Arc<tokio::sync::Mutex<()>>,
-        allowed_extensions: Arc<AllowedExtensions>,
+        capabilities: Arc<Capabilities>,
         resolver: Option<Arc<LlmResolver>>,
         provider_hint: (Option<String>, Option<String>),
         principal_id: PrincipalId,
@@ -108,7 +108,7 @@ impl PrincipalContext {
             memory,
             inbox_registry,
             session_creation_lock,
-            allowed_extensions,
+            capabilities,
             resolver,
             provider_hint,
             root_prompt: OnceLock::new(),
@@ -289,7 +289,7 @@ async fn install_principal_tool_bag(
 ///
 /// The catalog is the *only* per-call tool — its contents are the
 /// currently-available `AgentPromptSummary` list, which can change
-/// between messages if the principal's `allowed_extensions` was
+/// between messages if the principal's `capabilities` was
 /// edited. Everything else on the core is stable.
 pub(crate) async fn install_agent_catalog(
     core: &ExtensionCore,
@@ -301,7 +301,7 @@ pub(crate) async fn install_agent_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::config::AllowedExtensions;
+    use crate::principal::Capabilities;
     use crate::principal::memory::DefaultPrincipalMemory;
     use crate::principal::PrincipalId;
     use std::sync::Arc;
@@ -325,7 +325,7 @@ mod tests {
             memory,
             Arc::new(InboxRegistry::new()),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(AllowedExtensions::default()),
+            Arc::new(Capabilities::default()),
             None,
             (None, None),
             PrincipalId::generate(),
@@ -349,7 +349,7 @@ mod tests {
             memory,
             Arc::new(InboxRegistry::new()),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(AllowedExtensions::default()),
+            Arc::new(Capabilities::default()),
             None,
             (None, None),
             PrincipalId::generate(),
@@ -383,7 +383,7 @@ mod tests {
             memory,
             Arc::new(InboxRegistry::new()),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(AllowedExtensions::default()),
+            Arc::new(Capabilities::default()),
             None,
             (None, None),
             id.clone(),

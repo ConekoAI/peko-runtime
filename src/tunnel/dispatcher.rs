@@ -1456,9 +1456,10 @@ mod tests {
     use crate::auth::{Permission, PermissionGrant, Subject};
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
     use crate::principal::config::{
-        AllowedExtensions, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
         PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
+    use crate::principal::Capabilities;
     use crate::tunnel::protocol::{InstanceExposure, InstanceType};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
@@ -1564,7 +1565,7 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            allowed_extensions: AllowedExtensions::default(),
+            capabilities: Capabilities::default(),
             exposure,
             status: None,
             permissions,

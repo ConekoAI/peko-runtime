@@ -1,4 +1,4 @@
-//! CLI integration tests for the `builtin:tool:Agent` path
+//! CLI integration tests for the `tool:Agent` capability path
 //! (Phase B slice per `docs/integration/TESTING.md` §7).
 //!
 //! Coverage mirrors the mockable `e2e_tests/subagent/*.ps1` scripts that

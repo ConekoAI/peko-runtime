@@ -1,7 +1,7 @@
 //! Principal management commands
 //!
 //! Principals are top-level AI actors that own identity, memory, intent,
-//! governance, allowed extensions, and thin Markdown agent prompts. This module
+//! governance, capabilities, and thin Markdown agent prompts. This module
 //! implements the `peko principal` CLI surface.
 
 use std::path::{Path, PathBuf};
@@ -16,13 +16,13 @@ use crate::common::paths::PathResolver;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use crate::principal::{
     config::{
-        AllowedExtensions, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
         PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
     },
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
     memory::{DefaultPrincipalMemory, PrincipalMemory},
     router::{ChannelContext, ChannelKind},
-    PrincipalManager,
+    Capabilities, PrincipalManager,
 };
 
 /// Subcommands for `peko principal`.
@@ -853,21 +853,8 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
 /// unable to do anything useful. This starter set is intentionally small:
 /// file/tools, shell execution, task management, the Agent tool, and the
 /// agent_catalog needed to discover subagents.
-fn starter_extensions() -> AllowedExtensions {
-    let mut list = AllowedExtensions::new();
-    list.extend([
-        "Read",
-        "Write",
-        "Edit",
-        "Bash",
-        "Agent",
-        "agent_catalog",
-        "TaskCreate",
-        "TaskList",
-        "TaskGet",
-        "TaskUpdate",
-    ]);
-    list
+fn starter_extensions() -> Capabilities {
+    Capabilities::starter_bundle()
 }
 
 fn default_principal_config(name: &str) -> PrincipalConfig {
@@ -884,7 +871,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         governance: PrincipalGovernanceConfig::default(),
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
-        allowed_extensions: starter_extensions(),
+        capabilities: starter_extensions(),
         exposure: crate::tunnel::protocol::InstanceExposure::Private,
         status: None,
         permissions: Vec::new(),

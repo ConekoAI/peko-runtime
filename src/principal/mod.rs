@@ -1,6 +1,7 @@
 pub mod agent_prompt;
 pub mod agent_runner;
 pub mod agent_state;
+pub mod capability;
 pub mod config;
 pub mod context;
 pub mod extension_state;
@@ -15,10 +16,11 @@ pub mod slash;
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use agent_state::{AgentState, AgentStateGuard, AgentStateRegistry};
+pub use capability::{Capabilities, Capability};
 pub use config::{
-    AllowedExtensions, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier,
-    PrincipalConfig, PrincipalDID, PrincipalGovernanceConfig, PrincipalIdentityConfig,
-    PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
+    AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig, PrincipalDID,
+    PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
+    PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
 };
 pub use context::PrincipalContext;
 pub use extension_state::{ExtensionState, ExtensionStateGuard, ExtensionStateRegistry};
@@ -83,9 +85,9 @@ impl Principal {
         self.config.read().await.name.clone()
     }
 
-    /// The extensions allowed for this Principal.
-    pub async fn allowed_extensions(&self) -> AllowedExtensions {
-        self.config.read().await.allowed_extensions.clone()
+    /// The capabilities for this Principal.
+    pub async fn capabilities(&self) -> Capabilities {
+        self.config.read().await.capabilities.clone()
     }
 
     /// The exposure level for this Principal.
@@ -109,7 +111,7 @@ impl Principal {
             description: config.identity.description.clone(),
             exposure: config.exposure.clone(),
             status: config.status.clone(),
-            allowed_extensions: config.allowed_extensions.clone(),
+            capabilities: config.capabilities.clone(),
             agent_prompt_count: self.agent_prompts.len(),
             workspace_path: self.workspace_path.display().to_string(),
         }
@@ -131,7 +133,7 @@ pub struct PrincipalSummary {
     pub description: Option<String>,
     pub exposure: crate::tunnel::protocol::InstanceExposure,
     pub status: Option<crate::tunnel::protocol::InstanceStatus>,
-    pub allowed_extensions: AllowedExtensions,
+    pub capabilities: Capabilities,
     pub agent_prompt_count: usize,
     pub workspace_path: String,
 }
