@@ -52,6 +52,8 @@ impl ToolExecutor {
     ///   tools (e.g. cron).
     /// * `capabilities` - Per-call capability set used by the execution gate
     ///   instead of the mutable global `tool_config`.
+    /// * `active_extensions` - Active extension IDs for the current Principal;
+    ///   the gate verifies the tool's owning extension is active.
     /// * `cancel` - Soft-interrupt `CancellationToken` (PR #128). Bridged
     ///   inside `execute_tool_via_core_with_context` into the tool
     ///   layer's `AbortSignal` so the trait-default `is_aborted()`
@@ -72,6 +74,7 @@ impl ToolExecutor {
         principal_id: &str,
         principal_name: &str,
         capabilities: Option<Vec<String>>,
+        active_extensions: Option<Vec<String>>,
         cancel: Option<tokio_util::sync::CancellationToken>,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
     ) -> Result<ToolExecutionResult> {
@@ -112,6 +115,7 @@ impl ToolExecutor {
                 Some(principal_id.to_string()),
                 Some(principal_name.to_string()),
                 capabilities,
+                active_extensions,
                 cancel,
             )
             .await

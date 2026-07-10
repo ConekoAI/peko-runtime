@@ -90,6 +90,12 @@ pub struct PrincipalContext {
     /// Optional observability hub. Set from the `RouterContext` by the root
     /// router so subagent spawns can be audited under the parent principal.
     observability: OnceLock<Arc<Observability>>,
+    /// Snapshot of the extension IDs that are active for this principal on
+    /// this message. Derived from the `RouterContext::active_extensions`
+    /// snapshot and consulted by the agent's tool gate so a tool is only
+    /// callable when both its capability is granted and its owning extension
+    /// is active.
+    active_extensions: OnceLock<crate::principal::ActiveExtensionSet>,
 }
 
 impl PrincipalContext {
@@ -120,6 +126,7 @@ impl PrincipalContext {
             caller_principal_did: OnceLock::new(),
             caller_runtime_id: OnceLock::new(),
             observability: OnceLock::new(),
+            active_extensions: OnceLock::new(),
         }
     }
 
@@ -192,6 +199,22 @@ impl PrincipalContext {
     #[must_use]
     pub fn observability(&self) -> Option<&Arc<Observability>> {
         self.observability.get()
+    }
+
+    /// Bind the active extension snapshot for this principal context.
+    /// Idempotent.
+    pub fn set_active_extensions(
+        &self,
+        active_extensions: crate::principal::ActiveExtensionSet,
+    ) -> Result<(), crate::principal::ActiveExtensionSet> {
+        self.active_extensions.set(active_extensions)
+    }
+
+    /// Snapshot of extension IDs active for this principal. Returns an empty
+    /// set if no snapshot has been bound.
+    #[must_use]
+    pub fn active_extensions(&self) -> &crate::principal::ActiveExtensionSet {
+        self.active_extensions.get_or_init(crate::principal::ActiveExtensionSet::empty)
     }
 
     /// Get the daemon-global `ExtensionCore` and ensure the
@@ -270,9 +293,8 @@ async fn install_principal_tool_bag(
     }
 
     // Register the singleton `Skill` tool once on the global core.
-    // Per-principal allowlist and workspace state are resolved at handle
-    // time via `ExtensionStateRegistry` using the `principal_id` carried in
-    // `ToolContext` (P2 audit issue #2).
+    // Per-principal enablement and workspace state are resolved at handle
+    // time from the `ToolContext` carried with each invocation.
     if let Err(e) =
         BuiltinToolAdapter::register_tool(core.as_ref(), Arc::new(SkillTool::new())).await
     {

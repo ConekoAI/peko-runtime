@@ -49,6 +49,13 @@ impl SystemPromptService {
             .with_principal_id(agent.principal_id().to_string())
             .with_body(body);
 
+        if let Some(caps) = agent.principal_capabilities() {
+            builder = builder.with_capabilities(caps.to_strings());
+        }
+        if let Some(active) = agent.principal_active_extensions() {
+            builder = builder.with_active_extensions(active.to_vec());
+        }
+
         if let Some(memory) = crate::agents::prompt::memory::load_principal_memory(&workspace_dir) {
             builder = builder.with_principal_memory(memory);
         }

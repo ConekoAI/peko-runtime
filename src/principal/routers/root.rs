@@ -153,6 +153,10 @@ impl RootRouter {
                 tracing::debug!("RootRouter::build_context: {e}");
             }
         }
+        if let Err(e) = principal_ctx.set_active_extensions(ctx.active_extensions.clone()) {
+            tracing::debug!("RootRouter::build_context: active_extensions already set");
+            let _ = e;
+        }
         if let Some(ref obs) = ctx.observability {
             if let Err(_) = principal_ctx.set_observability(Arc::clone(obs)) {
                 tracing::debug!("RootRouter::build_context: observability already set");
@@ -311,6 +315,7 @@ mod tests {
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
             extension_store: ExtensionStore::default(),
+            active_extensions: crate::principal::ActiveExtensionSet::empty(),
             inbox_registry: Arc::new(InboxRegistry::new()),
             session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
             observability: None,

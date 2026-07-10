@@ -203,6 +203,7 @@ fn import_options(
         } else {
             TrustPolicy::Tofu
         },
+        selected_capabilities: Vec::new(),
     }
 }
 

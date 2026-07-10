@@ -108,21 +108,50 @@ pub async fn handle_capability(command: CapabilityCommands, json: bool) -> Resul
         CapabilityCommands::List { principal } => {
             let response = capability_list(&principal).await?;
             match response {
-                ResponsePacket::CapabilityList { capabilities, .. } => {
+                ResponsePacket::CapabilityList {
+                    granted,
+                    detected,
+                    active,
+                    ..
+                } => {
                     if json {
                         println!(
                             "{}",
                             serde_json::json!({
                                 "principal": principal,
-                                "capabilities": capabilities,
+                                "granted": granted,
+                                "detected": detected,
+                                "active": active,
                             })
                         );
                     } else {
                         println!("Capabilities for '{principal}':");
-                        if capabilities.is_empty() {
+                        println!("\nGranted:");
+                        if granted.is_empty() {
                             println!("  (none)");
                         } else {
-                            for cap in &capabilities {
+                            for cap in &granted {
+                                println!("  {cap}");
+                            }
+                        }
+                        println!("\nDetected (not granted):");
+                        let not_granted: Vec<_> = detected
+                            .iter()
+                            .filter(|c| !granted.contains(c))
+                            .cloned()
+                            .collect();
+                        if not_granted.is_empty() {
+                            println!("  (none)");
+                        } else {
+                            for cap in &not_granted {
+                                println!("  {cap}");
+                            }
+                        }
+                        println!("\nActive now:");
+                        if active.is_empty() {
+                            println!("  (none)");
+                        } else {
+                            for cap in &active {
                                 println!("  {cap}");
                             }
                         }

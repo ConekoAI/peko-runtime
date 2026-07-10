@@ -2,10 +2,10 @@
 //!
 //! Provides `Skill` so the agent can invoke a SKILL.md body on-demand
 //! with argument substitution. The skill list is gated by the principal's
-//! `capabilities` allowlist, resolved at handle time via the global
-//! [`ExtensionStateRegistry`](crate::principal::ExtensionStateRegistry).
-//! Skill locations are resolved through the global [`SkillCatalog`], which is
-//! populated by `ExtensionManager` when skills are loaded.
+//! `capabilities` grants and active extension snapshot, both carried in the
+//! tool execution context. Skill locations are resolved through the global
+//! [`SkillCatalog`], which is populated by `ExtensionManager` when skills are
+//! loaded.
 //!
 //! Argument substitution matches Claude Code's skill syntax:
 //! - `$ARGUMENTS` — the full args array joined with single spaces
@@ -74,9 +74,8 @@ fn scan_max_positional_index(body: &str) -> usize {
 /// The `Skill` tool is a singleton registered once on the daemon-global
 /// `ExtensionCore`. Skill locations are resolved at handle time through the
 /// global [`SkillCatalog`], populated by `ExtensionManager` whenever skills
-/// are discovered or installed. Per-principal allowlist and workspace state
-/// are resolved via the global [`ExtensionStateRegistry`] using the
-/// `principal_id` carried in `ToolContext`.
+/// are discovered or installed. Per-principal enablement and workspace state
+/// are resolved from the `ToolContext` carried with each invocation.
 #[derive(Debug, Default)]
 pub struct SkillTool;
 
@@ -172,30 +171,17 @@ Returns:
             })
             .unwrap_or_default();
 
-        // Resolve per-principal state from the global registry. Fail closed:
-        // no registry entry means the skill is not enabled for this caller.
-        let principal_id = ctx
-            .principal_id
-            .as_ref()
-            .map(|pid| crate::principal::PrincipalId(pid.clone()));
-        let Some(pid) = principal_id else {
-            return Ok(json!({
-                "error": "skill_not_enabled",
-                "skill": name,
-            }));
-        };
+        // Resolve per-principal state from the execution context. Fail closed:
+        // no active skill entry means the skill is not enabled for this caller.
+        let enabled = ctx.capabilities.as_ref().map_or(false, |caps| {
+            let required = format!("skill:{name}").to_lowercase();
+            caps.iter()
+                .any(|c| c.to_lowercase() == required)
+        }) || ctx.active_extensions.as_ref().map_or(false, |active| {
+            active.iter().any(|id| id.to_lowercase() == name.to_lowercase())
+        });
 
-        let state = crate::principal::ExtensionStateRegistry::global()
-            .get(&pid)
-            .await;
-        let Some(state) = state else {
-            return Ok(json!({
-                "error": "skill_not_enabled",
-                "skill": name,
-            }));
-        };
-
-        if !state.is_enabled(&name) {
+        if !enabled {
             return Ok(json!({
                 "error": "skill_not_enabled",
                 "skill": name,
@@ -227,8 +213,13 @@ Returns:
 
         // Resolve inline `` !`cmd` `` and fenced `` ```! `` blocks against
         // the principal's workspace before argument substitution runs.
+        let workspace = ctx
+            .workspace
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
         let body =
-            preprocess::preprocess_dynamic_context(body, &frontmatter, &state.workspace).await?;
+            preprocess::preprocess_dynamic_context(body, &frontmatter, &workspace).await?;
 
         let rendered = substitute_args(&body, &frontmatter.arguments, &args);
 
@@ -414,35 +405,24 @@ mod tests {
 
     // ---- SkillTool::execute tests (filesystem-backed) ----
 
-    use crate::principal::{ExtensionState, ExtensionStateRegistry, PrincipalId};
     use crate::tools::ToolContext;
-    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::TempDir;
 
     static TEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    fn next_test_pid() -> PrincipalId {
-        PrincipalId(format!(
+    fn next_test_id() -> String {
+        format!(
             "prin_test_{}",
             TEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst)
-        ))
+        )
     }
 
-    fn test_ctx(pid: &PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("hook_run", "hook", "Skill").with_principal_id(pid.0.clone())
-    }
-
-    async fn register_test_state(pid: &PrincipalId, allowlist: Vec<&str>, workspace: PathBuf) {
-        let state =
-            ExtensionState::new(allowlist.into_iter().map(String::from).collect(), workspace);
-        ExtensionStateRegistry::global()
-            .register(pid.clone(), state)
-            .await;
-    }
-
-    async fn cleanup_test_state(pid: &PrincipalId) {
-        ExtensionStateRegistry::global().unregister(pid).await;
+    fn test_ctx(allowlist: &[&str], workspace: &std::path::Path) -> ToolContext {
+        let caps: Vec<String> = allowlist.iter().map(|s| format!("skill:{s}")).collect();
+        ToolContext::for_hook_run("hook_run", "hook", "Skill")
+            .with_capabilities(caps)
+            .with_workspace(workspace.to_string_lossy().to_string())
     }
 
     fn register_test_skill(name: &str, path: &std::path::Path) {
@@ -483,7 +463,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_returns_substituted_body() {
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(
             tmp.path(),
@@ -492,7 +472,6 @@ mod tests {
             &["issue", "branch"],
         );
         register_test_skill("fix", &tmp.path().join("fix").join("SKILL.md"));
-        register_test_state(&pid, vec!["fix"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
             .execute_with_context(
@@ -500,7 +479,7 @@ mod tests {
                     "name": "fix",
                     "args": ["42", "main"],
                 }),
-                &test_ctx(&pid),
+                &test_ctx(&["fix"], tmp.path()),
             )
             .await
             .unwrap();
@@ -509,26 +488,23 @@ mod tests {
             result["body"],
             "Open issue 42 on branch main.\nFull: 42 main"
         );
-        cleanup_test_state(&pid).await;
         cleanup_test_skill("fix");
     }
 
     #[tokio::test]
     async fn execute_rejects_skill_not_in_allowlist() {
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         // Skill exists on disk but the allowlist doesn't include it.
         write_skill(tmp.path(), "fix", "body", &[]);
         register_test_skill("fix", &tmp.path().join("fix").join("SKILL.md"));
-        register_test_state(&pid, vec!["other"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "fix" }), &test_ctx(&pid))
+            .execute_with_context(json!({ "name": "fix" }), &test_ctx(&["other"], tmp.path()))
             .await
             .unwrap();
         assert_eq!(result["error"], "skill_not_enabled");
         assert_eq!(result["skill"], "fix");
-        cleanup_test_state(&pid).await;
         cleanup_test_skill("fix");
     }
 
@@ -537,40 +513,35 @@ mod tests {
         // Allowlist is empty; even if a file existed, the name would
         // be rejected. We don't create any files on disk here to confirm
         // the allowlist check fires before any disk access.
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
-        register_test_state(&pid, vec![], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "docker" }), &test_ctx(&pid))
+            .execute_with_context(json!({ "name": "docker" }), &test_ctx(&[], tmp.path()))
             .await
             .unwrap();
         assert_eq!(result["error"], "skill_not_enabled");
         assert_eq!(result["skill"], "docker");
-        cleanup_test_state(&pid).await;
     }
 
     #[tokio::test]
     async fn execute_rejects_missing_name_param() {
-        let pid = next_test_pid();
-        let tmp = TempDir::new().unwrap();
-        register_test_state(&pid, vec![], tmp.path().to_path_buf()).await;
+        let _id = next_test_id();
+        let _tmp = TempDir::new().unwrap();
         let tool = SkillTool::new();
         let err = tool.execute(json!({})).await.unwrap_err();
         assert!(err
             .to_string()
             .contains("missing required parameter 'name'"));
-        cleanup_test_state(&pid).await;
     }
 
     #[tokio::test]
     async fn execute_handles_missing_arguments_frontmatter() {
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         // No `arguments:` frontmatter; body still uses $issue.
         write_skill(tmp.path(), "minimal", "Issue $issue", &[]);
         register_test_skill("minimal", &tmp.path().join("minimal").join("SKILL.md"));
-        register_test_state(&pid, vec!["minimal"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
             .execute_with_context(
@@ -578,44 +549,40 @@ mod tests {
                     "name": "minimal",
                     "args": ["42"],
                 }),
-                &test_ctx(&pid),
+                &test_ctx(&["minimal"], tmp.path()),
             )
             .await
             .unwrap();
         // $issue is undeclared → left literal.
         assert_eq!(result["body"], "Issue $issue");
-        cleanup_test_state(&pid).await;
         cleanup_test_skill("minimal");
     }
 
     #[tokio::test]
     async fn execute_is_case_insensitive_on_allowlist() {
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "Docker", "Docker body", &[]);
         register_test_skill("Docker", &tmp.path().join("Docker").join("SKILL.md"));
-        register_test_state(&pid, vec!["docker"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "Docker" }), &test_ctx(&pid))
+            .execute_with_context(json!({ "name": "Docker" }), &test_ctx(&["docker"], tmp.path()))
             .await
             .unwrap();
         assert_eq!(result["name"], "Docker");
         assert_eq!(result["body"], "Docker body");
-        cleanup_test_state(&pid).await;
         cleanup_test_skill("Docker");
     }
 
     #[tokio::test]
     async fn execute_runs_dynamic_context_inline_form() {
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "live", "CWD: !`pwd`", &[]);
         register_test_skill("live", &tmp.path().join("live").join("SKILL.md"));
-        register_test_state(&pid, vec!["live"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "live" }), &test_ctx(&pid))
+            .execute_with_context(json!({ "name": "live" }), &test_ctx(&["live"], tmp.path()))
             .await
             .unwrap();
         // `pwd` resolves to the workspace dir; the exact path varies by
@@ -628,22 +595,20 @@ mod tests {
         );
         assert!(body.starts_with("CWD: "));
         assert!(body.len() > "CWD: ".len());
-        cleanup_test_state(&pid).await;
         cleanup_test_skill("live");
     }
 
     #[tokio::test]
     async fn execute_runs_dynamic_context_fenced_form() {
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         // Opener on its own line per the plan's exact-match rule.
         let body_str = "Intro\n```!\necho alpha\n```\nOutro";
         write_skill(tmp.path(), "fence", body_str, &[]);
         register_test_skill("fence", &tmp.path().join("fence").join("SKILL.md"));
-        register_test_state(&pid, vec!["fence"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "fence" }), &test_ctx(&pid))
+            .execute_with_context(json!({ "name": "fence" }), &test_ctx(&["fence"], tmp.path()))
             .await
             .unwrap();
         let body = result["body"].as_str().unwrap();
@@ -652,13 +617,12 @@ mod tests {
             "fenced output should contain echo'd text, got: {body}"
         );
         assert!(!body.contains("```"), "fence markers should be gone");
-        cleanup_test_state(&pid).await;
         cleanup_test_skill("fence");
     }
 
     #[tokio::test]
     async fn execute_blocks_command_not_in_allowed_tools() {
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill_with_frontmatter(
             tmp.path(),
@@ -670,10 +634,9 @@ mod tests {
             "guarded_block",
             &tmp.path().join("guarded_block").join("SKILL.md"),
         );
-        register_test_state(&pid, vec!["guarded_block"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "guarded_block" }), &test_ctx(&pid))
+            .execute_with_context(json!({ "name": "guarded_block" }), &test_ctx(&["guarded_block"], tmp.path()))
             .await
             .unwrap();
         let body = result["body"].as_str().unwrap();
@@ -681,13 +644,12 @@ mod tests {
         // and the blocked marker is prepended.
         assert!(body.contains("[shell blocked: command not in allowed-tools]"));
         assert!(body.contains("!`ls /`"));
-        cleanup_test_state(&pid).await;
         cleanup_test_skill("guarded_block");
     }
 
     #[tokio::test]
     async fn execute_allows_command_in_allowed_tools_glob() {
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill_with_frontmatter(
             tmp.path(),
@@ -699,24 +661,22 @@ mod tests {
             "guarded_allow",
             &tmp.path().join("guarded_allow").join("SKILL.md"),
         );
-        register_test_state(&pid, vec!["guarded_allow"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "guarded_allow" }), &test_ctx(&pid))
+            .execute_with_context(json!({ "name": "guarded_allow" }), &test_ctx(
+                &["guarded_allow"], tmp.path()))
             .await
             .unwrap();
         assert_eq!(result["body"], "Got: hello\n");
-        cleanup_test_state(&pid).await;
         cleanup_test_skill("guarded_allow");
     }
 
     #[tokio::test]
     async fn execute_fail_closed_without_principal_id() {
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "fix", "body", &[]);
         register_test_skill("fix", &tmp.path().join("fix").join("SKILL.md"));
-        register_test_state(&pid, vec!["fix"], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new();
         let ctx = ToolContext::for_hook_run("hook_run", "hook", "Skill");
         let result = tool
@@ -724,20 +684,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["error"], "skill_not_enabled");
-        cleanup_test_state(&pid).await;
         cleanup_test_skill("fix");
     }
 
     #[tokio::test]
     async fn execute_fail_closed_when_principal_not_registered() {
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "fix", "body", &[]);
         register_test_skill("fix", &tmp.path().join("fix").join("SKILL.md"));
-        // No state registered for `pid`.
+        // No capabilities or active extension provided for this caller.
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "fix" }), &test_ctx(&pid))
+            .execute_with_context(
+                json!({ "name": "fix" }),
+                &ToolContext::for_hook_run("hook_run", "hook", "Skill"),
+            )
             .await
             .unwrap();
         assert_eq!(result["error"], "skill_not_enabled");
@@ -750,7 +712,7 @@ mod tests {
         // ~/.peko/data/extensions/<id>/SKILL.md rather than the legacy
         // ~/.peko/skills/<name>/SKILL.md layout. The Skill tool should still
         // resolve them through the catalog.
-        let pid = next_test_pid();
+        let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         let ext_dir = tmp
             .path()
@@ -765,16 +727,17 @@ mod tests {
         )
         .unwrap();
         register_test_skill("superpowers", &skill_md);
-        register_test_state(&pid, vec!["superpowers"], tmp.path().to_path_buf()).await;
 
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "superpowers" }), &test_ctx(&pid))
+            .execute_with_context(
+                json!({ "name": "superpowers" }),
+                &test_ctx(&["superpowers"], tmp.path()),
+            )
             .await
             .unwrap();
         assert_eq!(result["name"], "superpowers");
         assert_eq!(result["body"], "body from extension storage");
-        cleanup_test_state(&pid).await;
         cleanup_test_skill("superpowers");
     }
 }

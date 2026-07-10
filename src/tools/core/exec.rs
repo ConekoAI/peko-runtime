@@ -120,6 +120,12 @@ pub struct ToolContext {
     /// Human-readable Principal name. Cron-scoped tools use this to
     /// create and filter jobs for the current Principal.
     pub principal_name: Option<String>,
+    /// Principal capability grants carried with the tool call.
+    /// Used by extension-scoped tools (e.g. `Skill`) to decide whether
+    /// the requested entity is enabled.
+    pub capabilities: Option<Vec<String>>,
+    /// IDs of extensions active for the current principal.
+    pub active_extensions: Option<Vec<String>>,
 }
 
 impl ToolContext {
@@ -148,6 +154,8 @@ impl ToolContext {
             workspace: None,
             principal_id: None,
             principal_name: None,
+            capabilities: None,
+            active_extensions: None,
         }
     }
 
@@ -176,6 +184,8 @@ impl ToolContext {
             workspace: None,
             principal_id: None,
             principal_name: None,
+            capabilities: None,
+            active_extensions: None,
         }
     }
 
@@ -206,6 +216,8 @@ impl ToolContext {
             workspace: None,
             principal_id: None,
             principal_name: None,
+            capabilities: None,
+            active_extensions: None,
         }
     }
 
@@ -261,6 +273,8 @@ impl ToolContext {
             workspace: None,
             principal_id: None,
             principal_name: None,
+            capabilities: None,
+            active_extensions: None,
         }
     }
 
@@ -324,6 +338,20 @@ impl ToolContext {
     #[must_use]
     pub fn with_principal_id(mut self, principal_id: impl Into<String>) -> Self {
         self.principal_id = Some(principal_id.into());
+        self
+    }
+
+    /// Set capability grants for extension-scoped tool state resolution.
+    #[must_use]
+    pub fn with_capabilities(mut self, capabilities: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.capabilities = Some(capabilities.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Set active extension IDs for extension-scoped tool state resolution.
+    #[must_use]
+    pub fn with_active_extensions(mut self, active_extensions: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.active_extensions = Some(active_extensions.into_iter().map(Into::into).collect());
         self
     }
 

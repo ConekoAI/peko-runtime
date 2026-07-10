@@ -6,6 +6,7 @@
 //! source of truth for what the Principal is allowed to do.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt;
 
 /// A typed capability grant.
@@ -244,5 +245,85 @@ mod tests {
         assert!(caps.is_granted(&Capability::new("tool:Read")));
         assert!(caps.is_granted(&Capability::new("agent:researcher")));
         assert!(!caps.is_granted(&Capability::new("skill:unknown")));
+    }
+}
+
+/// The set of extension IDs that are active for a Principal under a given
+/// capability snapshot.
+///
+/// An extension is active when it is detected/installed, at least one of its
+/// provided capabilities is granted, and all of its `requires` capabilities
+/// are satisfied. The active set is computed once per message and threaded
+/// through tool execution so the runtime can verify that the owning extension
+/// is active before invoking a tool.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveExtensionSet {
+    ids: HashSet<String>,
+}
+
+impl ActiveExtensionSet {
+    /// Create an empty active set.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            ids: HashSet::new(),
+        }
+    }
+
+    /// Create an active set from an iterable of extension IDs.
+    #[must_use]
+    pub fn with_ids(ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            ids: ids.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Insert an extension ID into the active set.
+    pub fn insert(&mut self, id: impl Into<String>) {
+        self.ids.insert(id.into());
+    }
+
+    /// Whether the given extension ID is active.
+    #[must_use]
+    pub fn is_active(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+
+    /// Iterate over active extension IDs.
+    #[must_use]
+    pub fn iter(&self) -> impl Iterator<Item = &String> {
+        self.ids.iter()
+    }
+
+    /// Convert the active set to a sorted vector of strings.
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.ids.iter().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// Whether the active set contains no IDs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod active_set_tests {
+    use super::*;
+
+    #[test]
+    fn empty_set_is_inactive() {
+        let set = ActiveExtensionSet::empty();
+        assert!(!set.is_active("builtin:tool:Read"));
+    }
+
+    #[test]
+    fn inserted_id_is_active() {
+        let mut set = ActiveExtensionSet::empty();
+        set.insert("builtin:tool:Read");
+        assert!(set.is_active("builtin:tool:Read"));
     }
 }

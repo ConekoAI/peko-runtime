@@ -124,6 +124,10 @@ pub struct SubagentExecutor {
     /// means deny-all. Propagated to descendant subagents so a
     /// restricted root agent cannot spawn a more-privileged child.
     principal_capabilities: Option<Arc<Capabilities>>,
+    /// Snapshot of the spawning principal's active extension IDs.
+    /// `None` means unbound (no active-extension check). Propagated to
+    /// descendant subagents.
+    active_extensions: Option<crate::principal::ActiveExtensionSet>,
     /// Optional observability hub for audit/metrics. When set, subagent
     /// spawns are recorded in the audit log under the parent principal.
     observability: Option<Arc<Observability>>,
@@ -163,6 +167,7 @@ impl SubagentExecutor {
             principal_id,
             principal_name: None,
             principal_capabilities: None,
+            active_extensions: None,
             observability: None,
         }
     }
@@ -193,10 +198,28 @@ impl SubagentExecutor {
         self
     }
 
+    /// Set the active extension set for the spawning principal.
+    #[must_use]
+    pub fn with_active_extensions(
+        mut self,
+        active_extensions: Option<crate::principal::ActiveExtensionSet>,
+    ) -> Self {
+        self.active_extensions = active_extensions;
+        self
+    }
+
     /// Get the spawning principal's capability snapshot, if bound.
     #[must_use]
     pub fn principal_capabilities(&self) -> Option<&Arc<Capabilities>> {
         self.principal_capabilities.as_ref()
+    }
+
+    /// Get the active extension set, if bound.
+    #[must_use]
+    pub fn active_extensions(
+        &self,
+    ) -> Option<&crate::principal::ActiveExtensionSet> {
+        self.active_extensions.as_ref()
     }
 
     /// Set the observability hub used to audit subagent spawns.
@@ -236,6 +259,7 @@ impl SubagentExecutor {
             principal_id,
             principal_name: None,
             principal_capabilities: None,
+            active_extensions: None,
             observability: None,
         }
     }
@@ -264,6 +288,7 @@ impl SubagentExecutor {
             principal_id,
             principal_name: None,
             principal_capabilities: None,
+            active_extensions: None,
             observability: None,
         }
     }
@@ -423,6 +448,7 @@ impl SubagentExecutor {
         let principal_id_clone = self.principal_id.clone();
         let cleanup_policy_clone = config.cleanup;
         let principal_capabilities_clone = self.principal_capabilities.clone();
+        let active_extensions_clone = self.active_extensions.clone();
         let observability_clone = self.observability.clone();
         // Derive a child token inside the closure so the sub-agent
         // observes the parent's cancel via `child_cancel` without
@@ -487,6 +513,7 @@ impl SubagentExecutor {
                         principal_id_clone,
                         principal_workspace_clone,
                         principal_capabilities_clone,
+                        active_extensions_clone,
                         observability_clone,
                         child_cancel_for_closure.clone(),
                     );
@@ -881,6 +908,7 @@ async fn execute_subagent_task(
     principal_id: PrincipalId,
     principal_workspace: Option<std::path::PathBuf>,
     principal_capabilities: Option<Arc<Capabilities>>,
+    active_extensions: Option<crate::principal::ActiveExtensionSet>,
     observability: Option<Arc<Observability>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<String> {
@@ -957,6 +985,7 @@ async fn execute_subagent_task(
     .with_provider(provider.clone())
     .with_agent_config(config.clone())
     .with_principal_capabilities(principal_capabilities.clone())
+    .with_active_extensions(active_extensions.clone())
     .with_observability(observability.clone());
     if let Some(ref ws) = principal_workspace {
         shared_executor_builder = shared_executor_builder.with_principal_workspace(ws.clone());
@@ -974,6 +1003,7 @@ async fn execute_subagent_task(
         shared_executor,
         Some(provider.clone()),
         principal_capabilities,
+        active_extensions,
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;

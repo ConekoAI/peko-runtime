@@ -27,6 +27,9 @@ pub struct ExtensionStoreItem {
     pub source: Option<String>,
     /// Whether this entity is currently enabled for the principal.
     pub enabled: bool,
+    /// Capabilities this entity declares it provides. Empty for entities
+    /// (built-ins, agents) whose capability is implicit.
+    pub provides: Vec<String>,
 }
 
 /// Per-principal snapshot of all detected extensions and their authority state.
@@ -72,14 +75,15 @@ impl ExtensionStore {
 
         // Built-in tools.
         for name in crate::extensions::framework::adapters::builtin_tools::all_tool_names() {
-            let id = name.to_string();
+            let id = format!("builtin:tool:{name}");
             if seen.insert(id.clone()) {
                 items.push(ExtensionStoreItem {
                     id: id.clone(),
-                    name: id.clone(),
+                    name: name.to_string(),
                     ext_type: "builtin".to_string(),
                     source: None,
-                    enabled: is_allowed(&id),
+                    enabled: is_allowed(name),
+                    provides: Vec::new(),
                 });
             }
         }
@@ -94,6 +98,7 @@ impl ExtensionStore {
                     source: None,
                     enabled: is_allowed_with_kind("agent", id)
                         || is_allowed_with_kind("agent", &prompt.name),
+                    provides: Vec::new(),
                 });
             }
         }
@@ -116,6 +121,7 @@ impl ExtensionStore {
                         ext_type: loaded.extension_type.clone(),
                         source: loaded.manifest.source.clone(),
                         enabled,
+                        provides: loaded.manifest.provides.clone(),
                     });
                 }
             }
@@ -129,6 +135,92 @@ impl ExtensionStore {
     #[must_use]
     pub fn items(&self) -> &[ExtensionStoreItem] {
         &self.items
+    }
+
+    /// Return the set of extension IDs that are currently enabled.
+    #[must_use]
+    pub fn active_extensions(&self) -> crate::principal::ActiveExtensionSet {
+        crate::principal::ActiveExtensionSet::with_ids(
+            self.items.iter().filter(|i| i.enabled).map(|i| i.id.clone()),
+        )
+    }
+
+    /// All capabilities declared by detected extensions (installed, built-in,
+    /// and principal-scoped agents), regardless of whether they are granted.
+    #[must_use]
+    pub fn detected_capabilities(&self) -> Vec<String> {
+        let mut set = HashSet::new();
+        for item in &self.items {
+            if item.provides.is_empty() {
+                match item.ext_type.as_str() {
+                    "builtin" => {
+                        set.insert(format!("tool:{}", item.name));
+                    }
+                    "agent" => {
+                        set.insert(format!("agent:{}", item.id));
+                        set.insert(format!("agent:{}", item.name));
+                    }
+                    other => {
+                        let kind = capability_kind_for_extension_type(other);
+                        set.insert(format!("{kind}:{}", item.id));
+                    }
+                }
+            } else {
+                for p in &item.provides {
+                    set.insert(p.clone());
+                }
+            }
+        }
+        let mut v: Vec<String> = set.into_iter().collect();
+        v.sort();
+        v
+    }
+
+    /// Capabilities that are currently active: the entity is enabled and at
+    /// least one of its provided/implied capabilities is granted.
+    #[must_use]
+    pub fn active_capabilities(&self,
+        capabilities: &Capabilities,
+    ) -> Vec<String> {
+        let mut set = HashSet::new();
+        for item in &self.items {
+            if !item.enabled {
+                continue;
+            }
+            if item.provides.is_empty() {
+                match item.ext_type.as_str() {
+                    "builtin" => {
+                        let cap = format!("tool:{}", item.name);
+                        if capabilities.is_granted(&Capability::new(&cap)) {
+                            set.insert(cap);
+                        }
+                    }
+                    "agent" => {
+                        for cap in [format!("agent:{}", item.id), format!("agent:{}", item.name)] {
+                            if capabilities.is_granted(&Capability::new(&cap)) {
+                                set.insert(cap);
+                            }
+                        }
+                    }
+                    other => {
+                        let kind = capability_kind_for_extension_type(other);
+                        let cap = format!("{kind}:{}", item.id);
+                        if capabilities.is_granted(&Capability::new(&cap)) {
+                            set.insert(cap);
+                        }
+                    }
+                }
+            } else {
+                for p in &item.provides {
+                    if capabilities.is_granted(&Capability::new(p)) {
+                        set.insert(p.clone());
+                    }
+                }
+            }
+        }
+        let mut v: Vec<String> = set.into_iter().collect();
+        v.sort();
+        v
     }
 }
 
@@ -182,7 +274,7 @@ mod tests {
         let bash = store
             .items()
             .iter()
-            .find(|i| i.id == "Bash")
+            .find(|i| i.id == "builtin:tool:Bash")
             .expect("Bash should be present");
         assert!(bash.enabled);
     }
@@ -195,7 +287,7 @@ mod tests {
         let read = store
             .items()
             .iter()
-            .find(|i| i.id == "Read")
+            .find(|i| i.id == "builtin:tool:Read")
             .expect("Read should be present");
         assert!(read.enabled);
     }

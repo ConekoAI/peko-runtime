@@ -463,6 +463,9 @@ pub enum RequestPacket {
         force: bool,
         #[serde(default)]
         confirmed: bool,
+        /// Capabilities selected by the user during the preview flow.
+        #[serde(default)]
+        selected_capabilities: Vec<String>,
     },
 
     /// Preview a `.principal` package before importing it.
@@ -475,6 +478,18 @@ pub enum RequestPacket {
         allow_unsigned: bool,
         #[serde(default)]
         force: bool,
+    },
+
+    /// Preview a remote Principal package before pulling it.
+    #[serde(rename = "principal_pull_preview")]
+    PrincipalPullPreview {
+        request_id: u64,
+        registry_ref: String,
+        name: Option<String>,
+        #[serde(default)]
+        force: bool,
+        registry_host: Option<String>,
+        registry_token: Option<String>,
     },
 
     #[serde(rename = "principal_push")]
@@ -490,7 +505,13 @@ pub enum RequestPacket {
         request_id: u64,
         registry_ref: String,
         name: Option<String>,
+        #[serde(default)]
         force: bool,
+        #[serde(default)]
+        confirmed: bool,
+        /// Capabilities selected by the user during the preview flow.
+        #[serde(default)]
+        selected_capabilities: Vec<String>,
         registry_host: Option<String>,
         registry_token: Option<String>,
     },
@@ -599,6 +620,7 @@ impl RequestPacket {
             | Self::PrincipalExport { request_id, .. }
             | Self::PrincipalImport { request_id, .. }
             | Self::PrincipalImportPreview { request_id, .. }
+            | Self::PrincipalPullPreview { request_id, .. }
             | Self::PrincipalPush { request_id, .. }
             | Self::PrincipalPull { request_id, .. }
             | Self::PrincipalGrantPermission { request_id, .. }
@@ -883,7 +905,14 @@ pub enum ResponsePacket {
     CapabilityList {
         request_id: u64,
         principal: String,
-        capabilities: Vec<String>,
+        /// Capabilities explicitly granted in `principal.toml`.
+        granted: Vec<String>,
+        /// Capabilities declared by detected/installed extensions that are
+        /// not currently granted.
+        detected: Vec<String>,
+        /// Capabilities that are currently active (granted + extension
+        /// requirements satisfied).
+        active: Vec<String>,
     },
 
     /// Extension validated response
@@ -1073,6 +1102,24 @@ pub enum ResponsePacket {
         extensions: Vec<String>,
         /// Capabilities required by the bundled extensions. Old daemons that
         /// omit this field deserialize to an empty list.
+        #[serde(default)]
+        required_capabilities: Vec<String>,
+        signed: bool,
+        validation_errors: Vec<String>,
+        validation_warnings: Vec<String>,
+    },
+
+    /// Result of previewing a remote Principal package before pulling it.
+    #[serde(rename = "principal_pull_previewed")]
+    PrincipalPullPreviewed {
+        request_id: u64,
+        name: String,
+        version: String,
+        did: String,
+        description: Option<String>,
+        agents: Vec<String>,
+        extensions: Vec<String>,
+        /// Capabilities required by the bundled extensions.
         #[serde(default)]
         required_capabilities: Vec<String>,
         signed: bool,
@@ -1315,6 +1362,7 @@ impl ResponsePacket {
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
             | Self::PrincipalImportPreviewed { request_id, .. }
+            | Self::PrincipalPullPreviewed { request_id, .. }
             | Self::PrincipalPushed { request_id, .. }
             | Self::PrincipalPulled { request_id, .. }
             | Self::PrincipalPermissionGranted { request_id, .. }
@@ -1382,6 +1430,7 @@ impl ResponsePacket {
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
             Self::PrincipalImportPreviewed { .. } => "PrincipalImportPreviewed",
+            Self::PrincipalPullPreviewed { .. } => "PrincipalPullPreviewed",
             Self::PrincipalPushed { .. } => "PrincipalPushed",
             Self::PrincipalPulled { .. } => "PrincipalPulled",
             Self::PrincipalPermissionGranted { .. } => "PrincipalPermissionGranted",

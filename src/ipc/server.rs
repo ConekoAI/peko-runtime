@@ -1600,14 +1600,31 @@ impl IpcServer {
                 principal,
             } => {
                 let pm = state.principal_manager().clone();
+                let manager = state.extension_manager().clone();
                 match pm.get_by_name(&principal).await {
                     Some(principal_ref) => {
                         let capabilities =
-                            principal_ref.config.read().await.capabilities.to_strings();
+                            principal_ref.config.read().await.capabilities.clone();
+                        let granted = capabilities.to_strings();
+
+                        let store = {
+                            let manager_guard = manager.read().await;
+                            crate::principal::ExtensionStore::build(
+                                &capabilities,
+                                &principal_ref.agent_prompts,
+                                Some(&*manager_guard),
+                            )
+                        };
+
+                        let detected = store.detected_capabilities();
+                        let active = store.active_capabilities(&capabilities);
+
                         let response = ResponsePacket::CapabilityList {
                             request_id,
                             principal,
-                            capabilities,
+                            granted,
+                            detected,
+                            active,
                         };
                         Self::send_sink(sink, response).await?;
                     }
@@ -2496,6 +2513,7 @@ impl IpcServer {
                 allow_unsigned,
                 force,
                 confirmed,
+                selected_capabilities,
             } => {
                 if !confirmed {
                     let response = ResponsePacket::Error {
@@ -2516,6 +2534,7 @@ impl IpcServer {
                     name.clone(),
                     allow_unsigned,
                     trust_policy,
+                    selected_capabilities,
                 )
                 .await
                 {
@@ -2564,7 +2583,7 @@ impl IpcServer {
                 }
             }
 
-            RequestPacket::PrincipalPull {
+            RequestPacket::PrincipalPullPreview {
                 request_id,
                 registry_ref,
                 name,
@@ -2572,11 +2591,66 @@ impl IpcServer {
                 registry_host,
                 registry_token,
             } => {
+                match Self::preview_principal_pull(
+                    &state,
+                    &registry_ref,
+                    name.clone(),
+                    force,
+                    registry_host,
+                    registry_token,
+                )
+                .await
+                {
+                    Ok(preview) => {
+                        let response = ResponsePacket::PrincipalPullPreviewed {
+                            request_id,
+                            name: preview.name,
+                            version: preview.version,
+                            did: preview.did,
+                            description: preview.description,
+                            agents: preview.agents,
+                            extensions: preview.extensions,
+                            required_capabilities: preview.required_capabilities,
+                            signed: preview.signed,
+                            validation_errors: preview.validation_errors,
+                            validation_warnings: preview.validation_warnings,
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal pull preview failed: {e}"),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::PrincipalPull {
+                request_id,
+                registry_ref,
+                name,
+                force,
+                confirmed,
+                selected_capabilities,
+                registry_host,
+                registry_token,
+            } => {
+                if !confirmed {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "Principal pull was not confirmed. Use the preview flow or pass --yes.".to_string(),
+                    };
+                    Self::send_sink(sink, response).await?;
+                    return Ok(());
+                }
                 match Self::pull_principal_package(
                     &state,
                     &registry_ref,
                     name.clone(),
                     force,
+                    selected_capabilities,
                     registry_host,
                     registry_token,
                 )
@@ -3369,6 +3443,7 @@ impl IpcServer {
         new_name: Option<String>,
         allow_unsigned: bool,
         trust_policy: crate::registry::packaging::TrustPolicy,
+        selected_capabilities: Vec<String>,
     ) -> anyhow::Result<crate::registry::packaging::PrincipalImportResult> {
         let unpackager = crate::registry::packaging::PrincipalUnpackager::new(
             file_path,
@@ -3381,6 +3456,7 @@ impl IpcServer {
             force: trust_policy == crate::registry::packaging::TrustPolicy::AllowUntrusted,
             trust_store: Some(state.trust_store().clone()),
             trust_policy,
+            selected_capabilities,
             ..Default::default()
         };
         let mut result = unpackager.import(opts).await?;
@@ -3457,12 +3533,61 @@ impl IpcServer {
         Ok(manifest.digest)
     }
 
+    /// Preview a remote Principal package before pulling it.
+    async fn preview_principal_pull(
+        state: &AppState,
+        registry_ref: &str,
+        new_name: Option<String>,
+        _force: bool,
+        registry_host: Option<String>,
+        registry_token: Option<String>,
+    ) -> anyhow::Result<PrincipalImportPreview> {
+        let host = registry_host.unwrap_or_else(|| {
+            crate::registry::client::RegistryRef::parse_with_default(
+                registry_ref,
+                None,
+                Some(crate::registry::client::ResourceType::Principal),
+            )
+            .map(|r| r.host)
+            .unwrap_or_else(|_| "pekohub.org".to_string())
+        });
+
+        let mut reg_config = crate::registry::config::load_from_workspace(&state.data_dir);
+        if let Some(token) = registry_token {
+            reg_config.add_source(crate::registry::config::RegistrySource {
+                url: host.clone(),
+                priority: 1,
+                auth: None,
+                token: Some(token),
+            });
+        }
+
+        let agent_registry =
+            crate::registry::AgentRegistry::new(crate::registry::AgentRegistry::default_path());
+        agent_registry.init().await?;
+
+        let client = crate::registry::client::RegistryClient::new(reg_config, agent_registry);
+
+        let temp_path = state.cache_dir.join(format!(
+            "peko-pull-principal-preview-{}.principal",
+            std::process::id()
+        ));
+        let _manifest = client
+            .pull_principal(registry_ref, &temp_path, |_| {})
+            .await?;
+
+        let preview = Self::preview_principal_import(state, &temp_path, new_name).await;
+        let _ = std::fs::remove_file(&temp_path);
+        preview
+    }
+
     /// Pull a Principal from a registry and import it.
     async fn pull_principal_package(
         state: &AppState,
         registry_ref: &str,
         new_name: Option<String>,
         force: bool,
+        selected_capabilities: Vec<String>,
         registry_host: Option<String>,
         registry_token: Option<String>,
     ) -> anyhow::Result<(String, String, String)> {
@@ -3512,6 +3637,7 @@ impl IpcServer {
             } else {
                 crate::registry::packaging::TrustPolicy::Tofu
             },
+            selected_capabilities,
         )
         .await;
         let _ = std::fs::remove_file(&temp_path);

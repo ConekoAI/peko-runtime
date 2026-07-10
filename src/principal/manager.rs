@@ -216,25 +216,8 @@ impl PrincipalManager {
             .await
             .map_err(PrincipalManagerError::Io)?;
 
-        // Detect the legacy `allowed_extensions` key so we can warn users
-        // to migrate to `[capabilities] grants = [...]`. The old key is no
-        // longer read; Principals that still declare it will get an empty
-        // capability set until the file is migrated.
-        let raw_config: toml::Value = toml::from_str(&config_str)
+        let config: PrincipalConfig = toml::from_str(&config_str)
             .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
-        let uses_legacy_allowed_extensions = raw_config.get("allowed_extensions").is_some();
-
-        let config: PrincipalConfig = raw_config
-            .try_into()
-            .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
-
-        if uses_legacy_allowed_extensions {
-            tracing::warn!(
-                principal = %config.name,
-                config_path = %config_path.display(),
-                "principal.toml uses legacy allowed_extensions; migrate to [capabilities] grants = [...]"
-            );
-        }
 
         let name = config.name.clone();
         {
@@ -500,6 +483,7 @@ impl PrincipalManager {
         let (
             available_agents,
             extension_store,
+            active_extensions,
             routing,
             capabilities,
             intent,
@@ -531,10 +515,12 @@ impl PrincipalManager {
                 }
                 None => super::ExtensionStore::build(allowed, &principal.agent_prompts, None),
             };
+            let active_extensions = extension_store.active_extensions();
 
             (
                 available_agents,
                 extension_store,
+                active_extensions,
                 config.routing.clone(),
                 allowed.clone(),
                 config.intent.clone(),
@@ -553,6 +539,7 @@ impl PrincipalManager {
             recalled_context,
             available_agents,
             extension_store,
+            active_extensions,
             capabilities,
             intent,
             governance,

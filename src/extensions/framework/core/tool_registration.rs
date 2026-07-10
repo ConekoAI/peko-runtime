@@ -341,6 +341,7 @@ mod tests {
                 principal_id: None,
                 principal_name: None,
                 capabilities: None,
+                active_extensions: None,
                 abort_signal: None,
             },
             Arc::new(ExtensionServices::new()),

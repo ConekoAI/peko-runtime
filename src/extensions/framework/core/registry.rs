@@ -12,7 +12,7 @@ use crate::extensions::framework::core::tool_registry::ToolRegistry;
 use crate::extensions::framework::types::{
     ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata, ToolRuntimeContext,
 };
-use crate::principal::Capabilities;
+use crate::principal::{ActiveExtensionSet, Capabilities};
 use crate::tools::core::Tool;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -274,9 +274,15 @@ impl ExtensionCore {
                     .map(|v| Capabilities::with_grants(v.iter().cloned())),
                 _ => None,
             };
+            let active_extensions = match &input {
+                HookInput::ToolCall { active_extensions, .. } => active_extensions
+                    .as_ref()
+                    .map(|v| ActiveExtensionSet::with_ids(v.iter().cloned())),
+                _ => None,
+            };
             if !self
                 .tool_registry
-                .is_tool_enabled_with_whitelist(tool_name, capabilities.as_ref())
+                .is_tool_enabled_with_whitelist(tool_name, capabilities.as_ref(), active_extensions.as_ref())
                 .await
             {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
@@ -307,11 +313,26 @@ impl ExtensionCore {
         point: HookPoint,
         input: HookInput,
         principal_id: Option<&str>,
+        capabilities: Option<Vec<String>>,
+        active_extensions: Option<Vec<String>>,
+        workspace: Option<String>,
     ) -> Option<String> {
         let mut ctx = HookContext::new(point.clone(), input, self.services.clone());
-        let tool_ctx = ToolRuntimeContext::new().with_run_id("prompt_build");
+        let tool_ctx = ToolRuntimeContext::new()
+            .with_run_id("prompt_build")
+            .with_workspace(workspace.unwrap_or_default());
         let tool_ctx = if let Some(pid) = principal_id {
             tool_ctx.with_principal_id(pid)
+        } else {
+            tool_ctx
+        };
+        let tool_ctx = if let Some(caps) = capabilities {
+            tool_ctx.with_capabilities(caps)
+        } else {
+            tool_ctx
+        };
+        let tool_ctx = if let Some(active) = active_extensions {
+            tool_ctx.with_active_extensions(active)
         } else {
             tool_ctx
         };
@@ -562,13 +583,14 @@ impl ExtensionCore {
     pub async fn list_tool_definitions_with_allowlist(
         &self,
         capabilities: Option<&Capabilities>,
+        active_extensions: Option<&ActiveExtensionSet>,
     ) -> Vec<crate::providers::ToolDefinition> {
         let all = self.list_tools().await;
         let mut filtered = Vec::new();
         for metadata in all {
             if self
                 .tool_registry
-                .is_tool_enabled_with_whitelist(&metadata.name, capabilities)
+                .is_tool_enabled_with_whitelist(&metadata.name, capabilities, active_extensions)
                 .await
             {
                 filtered.push(metadata.to_tool_definition());
@@ -994,6 +1016,7 @@ mod tests {
                     principal_id: None,
                     principal_name: None,
                     capabilities,
+                    active_extensions: None,
                     abort_signal: None,
                 },
             )
@@ -1057,6 +1080,7 @@ mod tests {
                     principal_id: None,
                     principal_name: None,
                     capabilities: Some(allowed),
+                    active_extensions: None,
                     abort_signal: None,
                 },
             )

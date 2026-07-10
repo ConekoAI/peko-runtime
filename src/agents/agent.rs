@@ -96,6 +96,12 @@ pub struct Agent {
     /// runtime filter. Once `AgentConfig::extensions` is removed
     /// the principal's allowlist is the *only* source of truth.
     principal_capabilities: Option<Arc<crate::principal::Capabilities>>,
+    /// Snapshot of the spawning principal's active extension IDs.
+    ///
+    /// When `Some`, tool execution verifies that the tool's owning
+    /// extension is present in this set in addition to the capability
+    /// grant check. Subagents inherit the same snapshot.
+    principal_active_extensions: Option<crate::principal::ActiveExtensionSet>,
 }
 
 impl Clone for Agent {
@@ -121,6 +127,7 @@ impl Clone for Agent {
             principal_id: self.principal_id.clone(),
             principal_name: self.principal_name.clone(),
             principal_capabilities: self.principal_capabilities.clone(),
+            principal_active_extensions: self.principal_active_extensions.clone(),
         }
     }
 }
@@ -544,6 +551,7 @@ impl Agent {
             principal_id,
             principal_name: None,
             principal_capabilities: None,
+            principal_active_extensions: None,
         };
 
         info!(
@@ -630,6 +638,24 @@ impl Agent {
         self
     }
 
+    /// Bind the active extension set for this agent's tool execution gate.
+    ///
+    /// When `Some`, every tool call also verifies that the tool's owning
+    /// extension is active. Propagated to the subagent executor so
+    /// descendant spawns inherit the same set.
+    #[must_use]
+    pub fn with_active_extensions(
+        mut self,
+        active_extensions: Option<crate::principal::ActiveExtensionSet>,
+    ) -> Self {
+        let executor = (*self.subagent_executor)
+            .clone()
+            .with_active_extensions(active_extensions.clone());
+        self.subagent_executor = Arc::new(executor);
+        self.principal_active_extensions = active_extensions;
+        self
+    }
+
     /// Snapshot of the spawning principal's workspace path, if any.
     ///
     /// **Track B**: the principal's `ctx.workspace_path` is the
@@ -673,6 +699,7 @@ impl Agent {
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<crate::providers::Provider>>,
         principal_capabilities: Option<Arc<crate::principal::Capabilities>>,
+        principal_active_extensions: Option<crate::principal::ActiveExtensionSet>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
         let extension_core = global_core().expect("Global ExtensionCore not initialized");
@@ -745,6 +772,7 @@ impl Agent {
             principal_id,
             principal_name,
             principal_capabilities,
+            principal_active_extensions,
         };
 
         info!(
@@ -1305,6 +1333,17 @@ impl Agent {
         self.principal_capabilities.as_ref()
     }
 
+    /// Snapshot of the principal's active extension IDs bound at construction.
+    ///
+    /// The engine consults this set at tool execution time to verify
+    /// that the tool's owning extension is active.
+    #[must_use]
+    pub fn principal_active_extensions(
+        &self,
+    ) -> Option<&crate::principal::ActiveExtensionSet> {
+        self.principal_active_extensions.as_ref()
+    }
+
     // Session overlay methods
 
     /// Get the session manager
@@ -1613,6 +1652,7 @@ impl Agent {
             principal_id: crate::principal::PrincipalId::generate(),
             principal_name: None,
             principal_capabilities: None,
+            principal_active_extensions: None,
         })
     }
 

@@ -194,6 +194,11 @@ pub enum HookInput {
         /// `tool_config`, eliminating a TOCTOU race where concurrent
         /// agents overwrite each other's capability set on the shared core.
         capabilities: Option<Vec<String>>,
+        /// Active extension IDs for this tool call. When present, the
+        /// execution gate also verifies that the tool's owning extension
+        /// is active. This prevents calling tools whose owning extension
+        /// is installed but not authorized for the current Principal.
+        active_extensions: Option<Vec<String>>,
         /// Optional abort signal receiver for soft-interrupt propagation.
         /// When `Some`, `BuiltinToolAdapter` builds the `ToolContext`
         /// from this receiver (via
@@ -376,6 +381,7 @@ mod tests {
             principal_id: Some("principal-z".to_string()),
             principal_name: None,
             capabilities: None,
+            active_extensions: None,
             abort_signal: None,
         };
         match input {

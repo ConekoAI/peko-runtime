@@ -37,6 +37,9 @@ pub struct PrincipalImportOptions {
     pub trust_store: Option<Arc<RwLock<TrustStore>>>,
     /// How to handle trust pinning conflicts.
     pub trust_policy: TrustPolicy,
+    /// Capability grants to add to the imported Principal's
+    /// `[capabilities] grants` list, deduplicated against existing grants.
+    pub selected_capabilities: Vec<String>,
 }
 
 impl Default for PrincipalImportOptions {
@@ -49,6 +52,7 @@ impl Default for PrincipalImportOptions {
             force: false,
             trust_store: None,
             trust_policy: TrustPolicy::Tofu,
+            selected_capabilities: Vec::new(),
         }
     }
 }
@@ -195,6 +199,13 @@ impl PrincipalUnpackager {
             .import_identity(&files, &manifest, &options, &name)
             .await?;
         let mut config = self.import_config(&files, &name, &identity)?;
+
+        // Apply any capabilities chosen during the preview/confirm flow.
+        for cap in &options.selected_capabilities {
+            if !config.capabilities.contains_str(cap) {
+                config.capabilities.push(cap.clone());
+            }
+        }
 
         // Update DID in config to match the imported/rotated identity
         config.did = Some(PrincipalDID(identity.did.clone()));
@@ -799,6 +810,7 @@ mod tests {
         assert!(!opts.rotate_keys);
         assert!(opts.import_sessions);
         assert!(!opts.allow_unsigned);
+        assert!(opts.selected_capabilities.is_empty());
     }
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {

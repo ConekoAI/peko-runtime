@@ -46,8 +46,12 @@ pub struct RouterContext {
     pub intent: super::PrincipalIntentConfig,
     pub governance: super::PrincipalGovernanceConfig,
     /// Per-principal snapshot of all detected extensions/agents and their
-    /// enabled state.
+    /// authority state.
     pub extension_store: super::ExtensionStore,
+    /// Set of extension IDs that are currently active for this Principal.
+    /// Derived from `extension_store.active_extensions()` and carried here
+    /// so routers can thread it into `PrincipalContext` without recomputing.
+    pub active_extensions: super::ActiveExtensionSet,
     /// Shared inbox registry so the router can wire the root agent
     /// to the same inbox the Principal boundary pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,

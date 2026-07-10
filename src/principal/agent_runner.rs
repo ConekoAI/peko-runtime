@@ -261,32 +261,13 @@ where
     // shared core, which is idempotent on tool name.
     install_agent_catalog(&core, available_agents).await?;
 
-    // Register the principal's per-message extension state. The singleton
-    // `Skill` tool resolves allowlist/workspace from this registry at
-    // handle time using the `principal_id` in `ToolContext` (P2 audit
-    // issue #2). The guard unregisters on scope exit so concurrent
-    // principals don't leak state.
-    let extension_state = crate::principal::ExtensionState::new(
-        ctx.capabilities.to_strings(),
-        ctx.workspace_path.clone(),
-    );
-    crate::principal::ExtensionStateRegistry::global()
-        .register(ctx.principal_id().clone(), extension_state)
-        .await;
-    let _extension_state_guard =
-        crate::principal::ExtensionStateGuard::new(ctx.principal_id().clone());
-
-    // Register the principal's per-message agent state. Agent prompt
-    // hooks resolve the allowlist from this registry at handle time using
-    // the `principal_id` injected by `build_agents_section` (legacy loader
-    // deletion follow-up).
-    let agent_state = crate::principal::AgentState::new(ctx.capabilities.to_strings());
-    crate::principal::AgentStateRegistry::global()
-        .register(ctx.principal_id().clone(), agent_state)
-        .await;
-    let _agent_state_guard = crate::principal::AgentStateGuard::new(ctx.principal_id().clone());
-
-    // Build a SessionManager scoped to the principal's sessions directory.
+    // Register the principal-scoped `Agent` tool after `Agent::new*` but
+    // before execution so it is available on the principal's shared
+    // core.
+    let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
+        "agent:{}:cli:default",
+        prompt.name
+    )));
     let session_manager = SessionManager::new()
         .with_sessions_dir_internal(ctx.sessions_dir.clone())
         .with_agent_name(&prompt.name)
@@ -340,6 +321,9 @@ where
                 crate::extensions::framework::HookPoint::SessionStart,
                 crate::extensions::framework::HookInput::SessionState(snapshot),
                 Some(&principal_id),
+                Some(ctx.capabilities.to_strings()),
+                Some(ctx.active_extensions().to_vec()),
+                Some(ctx.workspace_path.to_string_lossy().to_string()),
             )
             .await
         {
@@ -380,18 +364,13 @@ where
     // `AgentConfig`; the snapshot lives on the agent and is
     // consulted by `init_builtins_async` to prune the tool bag.
     .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
+    // Bind the active extension snapshot so the tool gate also verifies
+    // that each tool's owning extension is active.
+    .with_active_extensions(Some(ctx.active_extensions().clone()))
     // Phase 4b: bind caller DID so `principal_send` is registered.
     // `None` ⇒ tool is intentionally omitted (no local-only fallback
     // for `principal_send`; it is exclusively cross-runtime).
     .with_caller_principal_did(ctx.caller_principal_did().cloned());
-
-    // Register the principal-scoped `Agent` tool after `Agent::new*` but
-    // before execution so it is available on the principal's shared
-    // core.
-    let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
-        "agent:{}:cli:default",
-        prompt.name
-    )));
 
     let subagent_executor = Arc::new(
         crate::agents::subagent_executor::SubagentExecutor::new(
@@ -402,6 +381,7 @@ where
         )
         .with_principal_name(ctx.name().to_string())
         .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
+        .with_active_extensions(Some(ctx.active_extensions().clone()))
         .with_observability(ctx.observability().cloned())
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see

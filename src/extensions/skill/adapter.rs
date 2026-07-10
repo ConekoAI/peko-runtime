@@ -279,17 +279,25 @@ struct SkillPromptHandler {
 #[async_trait]
 impl HookHandler for SkillPromptHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
-        // Filter at handle-time using the principal's enabled-extension allowlist
-        // from `ExtensionStateRegistry`. The prompt builder injects `principal_id`
-        // via `ctx.state["tool_context"]`.
-        let principal_id = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
-            .and_then(|tc| tc.principal_id.as_ref())
-            .map(|pid| crate::principal::PrincipalId(pid.clone()));
+        // Filter at handle-time using the principal's capability grants and
+        // active extension snapshot carried in `ctx.state["tool_context"]`.
+        let runtime_ctx = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context");
 
-        let enabled = crate::principal::ExtensionStateRegistry::global()
-            .is_extension_enabled(principal_id.as_ref(), &self.skill_name)
-            .await;
+        let enabled = runtime_ctx.map_or(false, |rtc| {
+            if let Some(ref active) = rtc.active_extensions {
+                if active.iter().any(|id| id == &self.skill_name) {
+                    return true;
+                }
+            }
+            if let Some(ref caps) = rtc.capabilities {
+                let required = format!("skill:{}", self.skill_name);
+                if caps.iter().any(|c| c == &required) {
+                    return true;
+                }
+            }
+            false
+        });
 
         if !enabled {
             return HookResult::PassThrough;
@@ -551,8 +559,6 @@ This is the body content.
 
     #[tokio::test]
     async fn test_skill_handler() {
-        let home = dirs::home_dir().expect("Should have home dir");
-
         let handler = SkillPromptHandler {
             skill_name: "docker".to_string(),
             description: "Docker operations".to_string(),
@@ -567,24 +573,14 @@ This is the body content.
             Arc::new(ExtensionServices::new()),
         );
 
-        let principal_id = crate::principal::PrincipalId("test-handler".to_string());
-        crate::principal::ExtensionStateRegistry::global()
-            .register(
-                principal_id.clone(),
-                crate::principal::ExtensionState::new(vec!["docker".to_string()], home.clone()),
-            )
-            .await;
         ctx.set_state(
             "tool_context",
             crate::extensions::framework::types::ToolRuntimeContext::new()
-                .with_principal_id(principal_id.0.clone()),
+                .with_principal_id("test-handler")
+                .with_capabilities(["skill:docker"]),
         );
 
         let result = handler.handle(ctx).await;
-
-        crate::principal::ExtensionStateRegistry::global()
-            .unregister(&principal_id)
-            .await;
 
         match result {
             HookResult::Continue(HookOutput::Text(text)) => {
@@ -596,8 +592,6 @@ This is the body content.
 
     #[tokio::test]
     async fn test_skill_handler_filters_disabled_skills() {
-        let home = dirs::home_dir().expect("Should have home dir");
-
         let handler = SkillPromptHandler {
             skill_name: "docker".to_string(),
             description: "Docker operations".to_string(),
@@ -612,24 +606,14 @@ This is the body content.
             Arc::new(ExtensionServices::new()),
         );
 
-        let principal_id = crate::principal::PrincipalId("test-filter".to_string());
-        crate::principal::ExtensionStateRegistry::global()
-            .register(
-                principal_id.clone(),
-                crate::principal::ExtensionState::new(vec!["other".to_string()], home.clone()),
-            )
-            .await;
         ctx.set_state(
             "tool_context",
             crate::extensions::framework::types::ToolRuntimeContext::new()
-                .with_principal_id(principal_id.0.clone()),
+                .with_principal_id("test-filter")
+                .with_capabilities(["skill:other"]),
         );
 
         let result = handler.handle(ctx).await;
-
-        crate::principal::ExtensionStateRegistry::global()
-            .unregister(&principal_id)
-            .await;
 
         assert!(
             matches!(result, HookResult::PassThrough),

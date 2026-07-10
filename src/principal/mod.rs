@@ -1,11 +1,9 @@
 pub mod agent_prompt;
 pub mod agent_runner;
-pub mod agent_state;
 pub mod capability;
 pub mod capability_evaluator;
 pub mod config;
 pub mod context;
-pub mod extension_state;
 pub mod extension_store;
 pub mod factory;
 pub mod manager;
@@ -16,8 +14,7 @@ pub mod slash;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
-pub use agent_state::{AgentState, AgentStateGuard, AgentStateRegistry};
-pub use capability::{Capabilities, Capability};
+pub use capability::{ActiveExtensionSet, Capabilities, Capability};
 pub use capability_evaluator::CapabilityEvaluator;
 pub use config::{
     AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig, PrincipalDID,
@@ -25,7 +22,6 @@ pub use config::{
     PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
 };
 pub use context::PrincipalContext;
-pub use extension_state::{ExtensionState, ExtensionStateGuard, ExtensionStateRegistry};
 pub use extension_store::{ExtensionStore, ExtensionStoreItem};
 pub use factory::{
     DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
