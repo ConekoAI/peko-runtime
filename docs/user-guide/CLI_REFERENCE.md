@@ -28,7 +28,7 @@ peko [OPTIONS] <COMMAND>
 ### `principal` — Principal Management
 
 Manage Principals — the top-level AI actor that owns identity, memory,
-intent, governance, allowed extensions, and thin Markdown agent prompts.
+intent, governance, capability grants, and thin Markdown agent prompts.
 
 ```bash
 peko principal <COMMAND>
@@ -296,7 +296,7 @@ peko search <COMMAND>
 
 | Subcommand | Description |
 |-----------|-------------|
-| `query <QUERY>` | Search the registry. Filter by bundle type (`agent`, `team`, `extension`). |
+| `query <QUERY>` | Search the registry. Filter by bundle type (`agent`, `extension`, or `principal`). |
 | `info <BUNDLE>` | Show full metadata for one bundle (`namespace/name`). |
 
 #### Options (query)
@@ -305,7 +305,7 @@ peko search <COMMAND>
 |--------|-------------|
 | `--page <N>` | 1-based page number (default 1). |
 | `--per-page <N>` | Items per page (default 20). |
-| `--type <TYPE>` | Filter to `agent` or `extension`. |
+| `--type <TYPE>` | Filter to `agent`, `extension`, or `principal`. |
 
 #### Examples
 

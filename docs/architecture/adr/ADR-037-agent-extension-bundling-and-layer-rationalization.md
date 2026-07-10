@@ -4,7 +4,7 @@
 |---|---|
 | **ADR** | 037 |
 | **Title** | Agent-Extension Bundling and Package Layer Rationalization |
-| **Status** | Accepted |
+| **Status** | Superseded by [ADR-039](ADR-039-principal-model.md) / [ADR-041](ADR-041-principal-as-container.md) — `peko agent push/pull` and the standalone `.agent` bundle were retired in favor of `.principal` packages |
 | **Date** | 2026-06-10 |
 | **Last Updated** | 2026-06-10 |
 | **Implemented** | Yes |

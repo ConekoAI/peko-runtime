@@ -82,11 +82,11 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-024](architecture/adr/ADR-024-unified-extension-manifest.md) | Unified extension manifest |
 | [ADR-025](architecture/adr/ADR-025-gateway-extension.md) | Gateway extension |
 | [ADR-026](architecture/adr/ADR-026-extension-lifecycle-separation.md) | Extension lifecycle separation |
-| [ADR-027](architecture/adr/ADR-027-unified-packaging.md) | Unified packaging (`.agent`/`.team`/`.ext`) |
+| [ADR-027](architecture/adr/ADR-027-unified-packaging.md) | Unified packaging (superseded by `.principal` packages — ADR-041) |
 | [ADR-028](architecture/adr/ADR-028-top-level-config-cli.md) | Top-level config CLI |
 | [ADR-029](architecture/adr/ADR-029-cli-registry-defaults.md) | CLI registry defaults |
 | [ADR-030](architecture/adr/ADR-030-hybrid-ipc-migration-path.md) | Hybrid IPC migration path |
-| [ADR-031](architecture/adr/ADR-031-agent-team-membership.md) | Agent/team membership |
+| [ADR-031](architecture/adr/ADR-031-agent-team-membership.md) | Agent/team membership (superseded — ADR-039/041) |
 | [ADR-032](architecture/adr/ADR-032-runtime-identity-and-multi-host-awareness.md) | Runtime identity & multi-host awareness |
 | [ADR-033](architecture/adr/ADR-033-ownership-and-permission-model.md) | Ownership & permission model |
 | [ADR-034](architecture/adr/ADR-034-runtime-authentication-and-authorization.md) | Runtime auth/authz |

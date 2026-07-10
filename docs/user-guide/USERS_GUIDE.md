@@ -77,7 +77,7 @@ cargo build --release
 A **Principal** is the top-level AI actor in Peko. It owns:
 
 - **Identity** — A unique DID (decentralized identifier)
-- **Configuration** — Settings including allowed extensions, provider hints, and governance
+- **Configuration** — Settings including capability grants, provider hints, and governance
 - **Memory** — Conversation history stored as JSONL, managed automatically per peer
 - **Agent Prompts** — Thin Markdown files that shape the Principal's behavior
 - **Extensions** — Allowed tools, skills, MCP servers, and gateways
@@ -202,7 +202,10 @@ description = "A helpful assistant"
 # preferred_provider_id = "openai"
 # preferred_model_id = "gpt-4o-mini"
 
-allowed_extensions = ["Bash", "Read", "Write"]
+# Capability grants — the single source of truth for what this Principal
+# may do. See `peko capability grant --help`.
+[capabilities]
+grants = ["tool:Bash", "tool:Read", "tool:Write"]
 ```
 
 ### Environment Variables
