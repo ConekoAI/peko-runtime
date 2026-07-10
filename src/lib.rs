@@ -144,7 +144,6 @@ pub mod agents;
 /// Execution engine and state machine
 pub mod engine;
 
-/// Message queue with lane-aware processing
 /// Session storage (JSONL)
 pub mod session;
 
@@ -167,7 +166,6 @@ pub mod extensions;
 // Data & State
 // ============================================================================
 
-/// Configuration management
 /// Agent identity and key management
 pub mod identity;
 
@@ -208,13 +206,12 @@ pub mod ipc;
 pub mod observability;
 
 // ============================================================================
-// Tools & Skills
+// Tools
 // ============================================================================
 
 /// Tool implementations (filesystem, http, browser, etc.)
 pub mod tools;
 
-/// Skill system
 // ============================================================================
 // CLI & Commands
 // ============================================================================
@@ -232,11 +229,6 @@ pub mod registry;
 /// Runtime-Pekohub tunnel protocol (ADR-035)
 pub mod tunnel;
 
-// ============================================================================
-// Development / Experimental
-// ============================================================================
-
-/// Development and experimental features
 // ============================================================================
 // Public API
 // ============================================================================
