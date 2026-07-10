@@ -1083,44 +1083,6 @@ async fn execute_subagent_task(
     }
 }
 
-/// Background task manager for the executor
-pub struct BackgroundTaskManager {
-    /// Reference to the executor
-    executor: Arc<SubagentExecutor>,
-    /// Cleanup interval
-    cleanup_interval: tokio::time::Duration,
-}
-
-impl BackgroundTaskManager {
-    /// Create a new background task manager
-    #[must_use]
-    pub fn new(executor: Arc<SubagentExecutor>, cleanup_interval_secs: u64) -> Self {
-        Self {
-            executor,
-            cleanup_interval: tokio::time::Duration::from_secs(cleanup_interval_secs),
-        }
-    }
-
-    /// Start the background cleanup loop
-    pub async fn run(&self) {
-        let mut interval = tokio::time::interval(self.cleanup_interval);
-
-        loop {
-            interval.tick().await;
-
-            let cleaned = self.executor.cleanup().await;
-            if cleaned > 0 {
-                tracing::debug!("Cleaned up {} completed subagent tasks", cleaned);
-            }
-        }
-    }
-
-    /// Run cleanup once
-    pub async fn cleanup_once(&self) -> usize {
-        self.executor.cleanup().await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

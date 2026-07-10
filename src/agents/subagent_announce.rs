@@ -4,8 +4,6 @@
 //! When a subagent completes, its result is added as a message to the parent's base session.
 
 use crate::agents::subagent_types::{SubagentRunView, SubagentStatus};
-use crate::session::manager::SessionHandle;
-use anyhow::{Context, Result};
 
 /// Format a subagent result as an announcement message
 #[must_use]
@@ -59,43 +57,6 @@ pub fn format_announcement(run: &SubagentRunView) -> String {
     );
 
     format!("{header}{status_line}{content}{metadata}")
-}
-
-/// Announce a subagent result to its parent session
-///
-/// This adds the result as an assistant message to the parent's base session.
-pub async fn announce_to_parent(
-    parent_handle: &SessionHandle,
-    run: &SubagentRunView,
-) -> Result<()> {
-    if !run.announce_completion {
-        tracing::debug!(
-            "Skipping announcement for run {} (announce_completion=false)",
-            run.run_id
-        );
-        return Ok(());
-    }
-
-    let announcement = format_announcement(run);
-
-    // Add the announcement as an assistant message to the parent session
-    parent_handle
-        .add_assistant(&announcement, None, None)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to add announcement to parent session for run {}",
-                run.run_id
-            )
-        })?;
-
-    tracing::info!(
-        "Announced subagent result to parent session: run={} parent={}",
-        run.run_id,
-        run.parent_session_key
-    );
-
-    Ok(())
 }
 
 /// Build a system prompt for a subagent
@@ -152,54 +113,6 @@ pub fn build_subagent_task_message(task: &str, depth: u32, max_depth: u32) -> St
 ---
 Remember: You are running as a subagent (depth {depth}/{max_depth}). Results auto-announce to your requester; do not busy-poll for status."
     )
-}
-
-/// Handle cleanup of a subagent session based on policy
-pub async fn handle_cleanup(
-    run: &SubagentRunView,
-    cleanup_fn: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    match run.cleanup {
-        crate::session::types::SpawnCleanupPolicy::Delete => {
-            tracing::info!(
-                "Cleaning up subagent session: {} (run: {})",
-                run.child_session_key,
-                run.run_id
-            );
-            cleanup_fn().with_context(|| {
-                format!(
-                    "Failed to cleanup subagent session: {}",
-                    run.child_session_key
-                )
-            })?;
-        }
-        crate::session::types::SpawnCleanupPolicy::Keep => {
-            tracing::debug!(
-                "Keeping subagent session: {} (run: {}, cleanup=keep)",
-                run.child_session_key,
-                run.run_id
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Announce a subagent completion event
-///
-/// This is called when a subagent finishes (successfully or not).
-/// It handles both the announcement to the parent and session cleanup.
-pub async fn on_subagent_complete(
-    parent_handle: &SessionHandle,
-    run: &SubagentRunView,
-    cleanup_fn: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    // First, announce the result to the parent
-    announce_to_parent(parent_handle, run).await?;
-
-    // Then, handle cleanup if needed
-    handle_cleanup(run, cleanup_fn).await?;
-
-    Ok(())
 }
 
 #[cfg(test)]

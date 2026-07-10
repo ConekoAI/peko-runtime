@@ -9,7 +9,6 @@
 //! - `system`: System diagnostics and maintenance
 //! - `daemon`: Daemon mode for cron job execution
 
-pub mod agent_bootstrap;
 pub mod auth;
 pub mod capability;
 pub mod config;
