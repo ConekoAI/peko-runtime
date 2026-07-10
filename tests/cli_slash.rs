@@ -2,7 +2,7 @@
 //!
 //! These tests exercise the client-side slash dispatch added for v0:
 //! - Built-in `/help` lists principal metadata and enabled extensions.
-//! - `/help` filters extensions by the principal's `allowed_extensions` allowlist.
+//! - `/help` filters extensions by the principal's `[capabilities] grants` allowlist.
 //! - Unknown slash commands fail with a clear message.
 //! - `--no-slash` and the `\/...` escape hatch route literal `/`-prefixed
 //!   text to the LLM instead of the slash handler.
@@ -93,7 +93,7 @@ fn assert_err(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     );
 }
 
-/// Add an extension id to the principal's `allowed_extensions` allowlist.
+/// Add a skill id to the principal's `[capabilities] grants` allowlist.
 fn allow_extension(cli: &PekoCli, principal_name: &str, ext_id: &str) {
     let path = cli
         .peko_dir()
@@ -103,7 +103,7 @@ fn allow_extension(cli: &PekoCli, principal_name: &str, ext_id: &str) {
     let raw = std::fs::read_to_string(&path).expect("read principal.toml");
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
-    cfg.allowed_extensions.0.push(ext_id.to_string());
+    cfg.capabilities.push(format!("skill:{ext_id}"));
     std::fs::write(
         &path,
         toml::to_string_pretty(&cfg).expect("serialize principal.toml"),

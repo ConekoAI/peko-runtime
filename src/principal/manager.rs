@@ -20,6 +20,7 @@ use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::async_exec::executor::SteeringMessage;
 use crate::identity::did::DIDScope;
 use crate::identity::storage::KeyStorage;
+use crate::observability::Observability;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 
@@ -73,6 +74,9 @@ pub struct PrincipalManager {
     /// `ExtensionStore` includes installed extensions as well as built-ins
     /// and principal-scoped agents.
     extension_manager: Option<Arc<RwLock<crate::extensions::framework::manager::ExtensionManager>>>,
+    /// Optional observability hub. Threaded into `RouterContext` so the root
+    /// agent and subagent spawns can emit audit events.
+    observability: Option<Arc<Observability>>,
 }
 
 impl PrincipalManager {
@@ -107,6 +111,7 @@ impl PrincipalManager {
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
             slash_dispatcher: Arc::new(RwLock::new(None)),
             extension_manager: None,
+            observability: None,
         }
     }
 
@@ -132,6 +137,15 @@ impl PrincipalManager {
         extension_manager: Arc<RwLock<crate::extensions::framework::manager::ExtensionManager>>,
     ) -> Self {
         self.extension_manager = Some(extension_manager);
+        self
+    }
+
+    /// Attach an observability hub. When present, it is threaded into every
+    /// `RouterContext` so the root agent and subagent spawns can emit audit
+    /// events.
+    #[must_use]
+    pub fn with_observability(mut self, observability: Arc<Observability>) -> Self {
+        self.observability = Some(observability);
         self
     }
 
@@ -202,25 +216,8 @@ impl PrincipalManager {
             .await
             .map_err(PrincipalManagerError::Io)?;
 
-        // Detect the legacy `[capabilities]` table name so we can warn users
-        // to migrate to `allowed_extensions = [...]`. Both keys still parse
-        // because of the serde alias, but new files are written with the new
-        // flat-array form.
-        let raw_config: toml::Value = toml::from_str(&config_str)
+        let config: PrincipalConfig = toml::from_str(&config_str)
             .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
-        let uses_legacy_capabilities = raw_config.get("capabilities").is_some();
-
-        let config: PrincipalConfig = raw_config
-            .try_into()
-            .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
-
-        if uses_legacy_capabilities {
-            tracing::warn!(
-                principal = %config.name,
-                config_path = %config_path.display(),
-                "principal.toml uses legacy [capabilities] table; migrate to allowed_extensions = [...]"
-            );
-        }
 
         let name = config.name.clone();
         {
@@ -486,14 +483,15 @@ impl PrincipalManager {
         let (
             available_agents,
             extension_store,
+            active_extensions,
             routing,
-            allowed_extensions,
+            capabilities,
             intent,
             governance,
             principal_name,
         ) = {
             let config = principal.config.read().await;
-            let allowed = &config.allowed_extensions;
+            let allowed = &config.capabilities;
             let available_agents: Vec<_> = principal
                 .agent_prompts
                 .iter()
@@ -502,8 +500,11 @@ impl PrincipalManager {
                     name: p.name.clone(),
                     description: p.frontmatter.description.clone(),
                     enabled: allowed
-                        .iter()
-                        .any(|e| e.eq_ignore_ascii_case(id) || e.eq_ignore_ascii_case(&p.name)),
+                        .is_granted(&crate::principal::Capability::new(format!("agent:{id}")))
+                        || allowed.is_granted(&crate::principal::Capability::new(format!(
+                            "agent:{}",
+                            p.name
+                        ))),
                 })
                 .collect();
 
@@ -514,10 +515,12 @@ impl PrincipalManager {
                 }
                 None => super::ExtensionStore::build(allowed, &principal.agent_prompts, None),
             };
+            let active_extensions = extension_store.active_extensions();
 
             (
                 available_agents,
                 extension_store,
+                active_extensions,
                 config.routing.clone(),
                 allowed.clone(),
                 config.intent.clone(),
@@ -536,11 +539,13 @@ impl PrincipalManager {
             recalled_context,
             available_agents,
             extension_store,
-            allowed_extensions,
+            active_extensions,
+            capabilities,
             intent,
             governance,
             inbox_registry: Arc::clone(&self.inbox_registry),
             session_creation_lock: self.session_creation_lock(principal.id.clone()).await,
+            observability: self.observability.clone(),
         })
     }
 
@@ -737,11 +742,11 @@ mod tests {
     use crate::extensions::framework::core::init_global_core;
     use crate::principal::{
         config::{
-            AllowedExtensions, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+            PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
             PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
         },
         router::{ChannelContext, ChannelKind},
-        DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
+        Capabilities, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     };
     use crate::providers::{LlmResolver, MockAdapter};
     use std::sync::Arc;
@@ -829,18 +834,7 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            allowed_extensions: AllowedExtensions(vec![
-                "Read".to_string(),
-                "Write".to_string(),
-                "Edit".to_string(),
-                "Bash".to_string(),
-                "Agent".to_string(),
-                "agent_catalog".to_string(),
-                "TaskCreate".to_string(),
-                "TaskList".to_string(),
-                "TaskGet".to_string(),
-                "TaskUpdate".to_string(),
-            ]),
+            capabilities: Capabilities::starter_bundle(),
             exposure: crate::tunnel::protocol::InstanceExposure::Private,
             status: None,
             permissions: vec![PermissionGrant {
@@ -1221,8 +1215,8 @@ mod tests {
         .await;
         manager
             .update_config("stressy", |config| {
-                config.allowed_extensions =
-                    AllowedExtensions(vec!["enabled_agent".to_string(), "Read".to_string()]);
+                config.capabilities =
+                    Capabilities::with_grants(["agent:enabled_agent", "tool:Read"]);
             })
             .await
             .unwrap();

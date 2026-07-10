@@ -102,6 +102,14 @@ pub struct ToolRuntimeContext {
     /// status checks) and for legacy callers that haven't been migrated
     /// to thread a token through.
     pub abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Principal capability grants carried with the tool call. Used by
+    /// extension-scoped tools (e.g. `Skill`) and prompt handlers to
+    /// decide whether a skill/agent is visible without consulting a
+    /// per-principal global registry.
+    pub capabilities: Option<Vec<String>>,
+    /// IDs of extensions that are active for the current principal.
+    /// Prompt handlers filter section entries by membership in this set.
+    pub active_extensions: Option<Vec<String>>,
 }
 
 impl ToolRuntimeContext {
@@ -160,6 +168,20 @@ impl ToolRuntimeContext {
     #[must_use]
     pub fn with_abort_signal(mut self, abort_signal: tokio::sync::watch::Receiver<bool>) -> Self {
         self.abort_signal = Some(abort_signal);
+        self
+    }
+
+    /// Bridge the principal's capability grants into the runtime context.
+    #[must_use]
+    pub fn with_capabilities(mut self, capabilities: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.capabilities = Some(capabilities.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Bridge the active extension snapshot into the runtime context.
+    #[must_use]
+    pub fn with_active_extensions(mut self, active_extensions: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.active_extensions = Some(active_extensions.into_iter().map(Into::into).collect());
         self
     }
 }

@@ -47,7 +47,7 @@ use crate::common::services::session_service::HistoryEvent;
 use crate::daemon::state::{AppState, StreamingRunHandle};
 use crate::principal::{
     router::{ChannelContext, ChannelKind},
-    Principal, RouteDecision, RouterError,
+    Capability, Principal, RouteDecision, RouterError,
 };
 use crate::session::events::SessionEvent;
 
@@ -63,6 +63,7 @@ pub struct PrincipalImportPreview {
     description: Option<String>,
     agents: Vec<String>,
     extensions: Vec<String>,
+    required_capabilities: Vec<String>,
     signed: bool,
     validation_errors: Vec<String>,
     validation_warnings: Vec<String>,
@@ -1360,85 +1361,62 @@ impl IpcServer {
                 request_id,
                 id,
                 target,
-                principal,
             } => {
-                let (_is_builtin, bare_name, canonical_id) = Self::parse_extension_ref(&id);
+                let (_is_builtin, _bare_name, canonical_id) = Self::parse_extension_ref(&id);
 
-                let result = if let Some(principal_name) = principal {
-                    // Principal scope: mutate the principal's allowed_extensions.
-                    let pm = state.principal_manager().clone();
-                    match pm
-                        .update_config(&principal_name, |config| {
-                            let already_enabled = config.allowed_extensions.iter().any(|entry| {
-                                entry.eq_ignore_ascii_case(&bare_name)
-                                    || entry.eq_ignore_ascii_case(&canonical_id)
-                            });
-                            if !already_enabled {
-                                config.allowed_extensions.push(bare_name.clone());
-                                config.allowed_extensions.push(canonical_id.clone());
-                            }
-                        })
-                        .await
-                    {
-                        Ok(_) => Ok(format!(
-                            "Extension '{id}' enabled for principal '{principal_name}'"
-                        )),
-                        Err(e) => Err(anyhow::anyhow!(e.to_string())),
-                    }
-                } else {
-                    match target {
-                        None => {
-                            // Global scope: enable extension at daemon level
-                            let is_builtin = crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
-                                || id.starts_with("builtin:");
-                            let mut manager = state.extension_manager().write().await;
-                            let ext_services = state.extension_services();
-                            if is_builtin {
-                                let tool_name = if id.starts_with("builtin:") {
-                                    id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
-                                } else {
-                                    id.clone()
-                                };
-                                ext_services.enable_builtin_hooks(&tool_name).await;
-                                Ok(format!("Built-in tool '{tool_name}' enabled globally"))
+                let result = match target {
+                    None => {
+                        // Global scope: enable extension at daemon level
+                        let is_builtin =
+                            crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(
+                                &id,
+                            ) || id.starts_with("builtin:");
+                        let mut manager = state.extension_manager().write().await;
+                        let ext_services = state.extension_services();
+                        if is_builtin {
+                            let tool_name = if id.starts_with("builtin:") {
+                                id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
                             } else {
-                                let ext_id =
-                                    crate::extensions::framework::types::ExtensionId::new(&id);
-                                match manager.enable(&ext_id).await {
-                                    Ok(()) => Ok(format!("Extension '{id}' enabled globally")),
-                                    Err(e) => Err(e),
-                                }
-                            }
-                        }
-                        Some(ref target_str) if target_str.contains('/') => {
-                            // Legacy compound scope: "namespace/agent" — resolves to agent
-                            let parts: Vec<&str> = target_str.split('/').collect();
-                            let agent_name = if parts.len() == 2 {
-                                parts[1]
-                            } else {
-                                target_str.as_str()
+                                id.clone()
                             };
-                            let config_service = state.config_service();
-                            match config_service.enable_tool_sync(agent_name, &canonical_id) {
-                                Ok(()) => Ok(format!(
-                                    "Extension '{canonical_id}' enabled for agent '{agent_name}'"
-                                )),
-                                Err(e) => Err(anyhow::anyhow!(
-                                    "Failed to enable extension for agent: {e}"
-                                )),
+                            ext_services.enable_builtin_hooks(&tool_name).await;
+                            Ok(format!("Built-in tool '{tool_name}' enabled globally"))
+                        } else {
+                            let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
+                            match manager.enable(&ext_id).await {
+                                Ok(()) => Ok(format!("Extension '{id}' enabled globally")),
+                                Err(e) => Err(e),
                             }
                         }
-                        Some(ref target_str) => {
-                            let config_service = state.config_service();
-                            // Agent scope only; bare names must resolve to an existing agent config.
-                            match config_service.enable_tool_sync(target_str, &canonical_id) {
-                                Ok(()) => Ok(format!(
-                                    "Extension '{canonical_id}' enabled for agent '{target_str}'"
-                                )),
-                                Err(e) => Err(anyhow::anyhow!(
-                                    "Failed to enable extension for agent '{target_str}': {e}"
-                                )),
+                    }
+                    Some(ref target_str) if target_str.contains('/') => {
+                        // Legacy compound scope: "namespace/agent" — resolves to agent
+                        let parts: Vec<&str> = target_str.split('/').collect();
+                        let agent_name = if parts.len() == 2 {
+                            parts[1]
+                        } else {
+                            target_str.as_str()
+                        };
+                        let config_service = state.config_service();
+                        match config_service.enable_tool_sync(agent_name, &canonical_id) {
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' enabled for agent '{agent_name}'"
+                            )),
+                            Err(e) => {
+                                Err(anyhow::anyhow!("Failed to enable extension for agent: {e}"))
                             }
+                        }
+                    }
+                    Some(ref target_str) => {
+                        let config_service = state.config_service();
+                        // Agent scope only; bare names must resolve to an existing agent config.
+                        match config_service.enable_tool_sync(target_str, &canonical_id) {
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' enabled for agent '{target_str}'"
+                            )),
+                            Err(e) => Err(anyhow::anyhow!(
+                                "Failed to enable extension for agent '{target_str}': {e}"
+                            )),
                         }
                     }
                 };
@@ -1466,87 +1444,62 @@ impl IpcServer {
                 request_id,
                 id,
                 target,
-                principal,
             } => {
-                let (_is_builtin, bare_name, canonical_id) = Self::parse_extension_ref(&id);
+                let (_is_builtin, _bare_name, canonical_id) = Self::parse_extension_ref(&id);
 
-                let mut removed = false;
-                let result = if let Some(principal_name) = principal {
-                    // Principal scope: mutate the principal's allowed_extensions.
-                    let pm = state.principal_manager().clone();
-                    match pm
-                        .update_config(&principal_name, |config| {
-                            let before = config.allowed_extensions.len();
-                            config.allowed_extensions.retain(|entry| {
-                                !entry.eq_ignore_ascii_case(&bare_name)
-                                    && !entry.eq_ignore_ascii_case(&canonical_id)
-                            });
-                            removed = config.allowed_extensions.len() != before;
-                        })
-                        .await
-                    {
-                        Ok(_) if removed => Ok(format!(
-                            "Extension '{id}' disabled for principal '{principal_name}'"
-                        )),
-                        Ok(_) => Ok(format!(
-                            "Extension '{id}' was not enabled for principal '{principal_name}'"
-                        )),
-                        Err(e) => Err(anyhow::anyhow!(e.to_string())),
-                    }
-                } else {
-                    match target {
-                        None => {
-                            // Global scope: disable extension at daemon level
-                            let is_builtin = crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
-                                || id.starts_with("builtin:");
-                            let mut manager = state.extension_manager().write().await;
-                            let ext_services = state.extension_services();
-                            if is_builtin {
-                                let tool_name = if id.starts_with("builtin:") {
-                                    id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
-                                } else {
-                                    id.clone()
-                                };
-                                ext_services.disable_builtin_hooks(&tool_name).await;
-                                Ok(format!("Built-in tool '{tool_name}' disabled globally"))
+                let result = match target {
+                    None => {
+                        // Global scope: disable extension at daemon level
+                        let is_builtin =
+                            crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(
+                                &id,
+                            ) || id.starts_with("builtin:");
+                        let mut manager = state.extension_manager().write().await;
+                        let ext_services = state.extension_services();
+                        if is_builtin {
+                            let tool_name = if id.starts_with("builtin:") {
+                                id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
                             } else {
-                                let ext_id =
-                                    crate::extensions::framework::types::ExtensionId::new(&id);
-                                match manager.disable(&ext_id).await {
-                                    Ok(()) => Ok(format!("Extension '{id}' disabled globally")),
-                                    Err(e) => Err(e),
-                                }
-                            }
-                        }
-                        Some(ref target_str) if target_str.contains('/') => {
-                            // Legacy compound scope: "namespace/agent" — resolves to agent
-                            let parts: Vec<&str> = target_str.split('/').collect();
-                            let agent_name = if parts.len() == 2 {
-                                parts[1]
-                            } else {
-                                target_str.as_str()
+                                id.clone()
                             };
-                            let config_service = state.config_service();
-                            match config_service.disable_tool_sync(agent_name, &canonical_id) {
-                                Ok(()) => Ok(format!(
-                                    "Extension '{canonical_id}' disabled for agent '{agent_name}'"
-                                )),
-                                Err(e) => Err(anyhow::anyhow!(
-                                    "Failed to disable extension for agent: {e}"
-                                )),
+                            ext_services.disable_builtin_hooks(&tool_name).await;
+                            Ok(format!("Built-in tool '{tool_name}' disabled globally"))
+                        } else {
+                            let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
+                            match manager.disable(&ext_id).await {
+                                Ok(()) => Ok(format!("Extension '{id}' disabled globally")),
+                                Err(e) => Err(e),
                             }
                         }
-                        Some(ref target_str) => {
-                            let config_service = state.config_service();
-                            // Agent scope only; bare names must resolve to an existing agent config.
-                            match config_service.disable_tool_sync(target_str, &canonical_id) {
-                                Ok(()) => Ok(format!(
-                                    "Extension '{canonical_id}' disabled for agent '{target_str}'"
-                                )),
-                                Err(e) => Err(anyhow::anyhow!(
-                                    "Failed to disable extension for agent '{target_str}': {e}"
-                                )),
-                            }
+                    }
+                    Some(ref target_str) if target_str.contains('/') => {
+                        // Legacy compound scope: "namespace/agent" — resolves to agent
+                        let parts: Vec<&str> = target_str.split('/').collect();
+                        let agent_name = if parts.len() == 2 {
+                            parts[1]
+                        } else {
+                            target_str.as_str()
+                        };
+                        let config_service = state.config_service();
+                        match config_service.disable_tool_sync(agent_name, &canonical_id) {
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' disabled for agent '{agent_name}'"
+                            )),
+                            Err(e) => Err(anyhow::anyhow!(
+                                "Failed to disable extension for agent: {e}"
+                            )),
+                        }
+                    }
+                    Some(ref target_str) => {
+                        let config_service = state.config_service();
+                        // Agent scope only; bare names must resolve to an existing agent config.
+                        match config_service.disable_tool_sync(target_str, &canonical_id) {
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' disabled for agent '{target_str}'"
+                            )),
+                            Err(e) => Err(anyhow::anyhow!(
+                                "Failed to disable extension for agent '{target_str}': {e}"
+                            )),
                         }
                     }
                 };
@@ -1564,6 +1517,121 @@ impl IpcServer {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::CapabilityGrant {
+                request_id,
+                principal,
+                capability,
+            } => {
+                let cap = Capability::new(capability);
+                let pm = state.principal_manager().clone();
+                let result = pm
+                    .update_config(&principal, |config| {
+                        if !config.capabilities.contains(&cap) {
+                            config.capabilities.push(cap.clone());
+                        }
+                    })
+                    .await;
+
+                match result {
+                    Ok(_) => {
+                        let response = ResponsePacket::CapabilityGranted {
+                            request_id,
+                            capability: cap.to_string(),
+                            message: format!(
+                                "Capability '{}' granted to principal '{}'",
+                                cap, principal
+                            ),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::CapabilityRevoke {
+                request_id,
+                principal,
+                capability,
+            } => {
+                let cap = Capability::new(capability);
+                let pm = state.principal_manager().clone();
+                let result = pm
+                    .update_config(&principal, |config| {
+                        config.capabilities.remove(&cap);
+                    })
+                    .await;
+
+                match result {
+                    Ok(_) => {
+                        let response = ResponsePacket::CapabilityRevoked {
+                            request_id,
+                            capability: cap.to_string(),
+                            message: format!(
+                                "Capability '{}' revoked from principal '{}'",
+                                cap, principal
+                            ),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::CapabilityList {
+                request_id,
+                principal,
+            } => {
+                let pm = state.principal_manager().clone();
+                let manager = state.extension_manager().clone();
+                match pm.get_by_name(&principal).await {
+                    Some(principal_ref) => {
+                        let capabilities =
+                            principal_ref.config.read().await.capabilities.clone();
+                        let granted = capabilities.to_strings();
+
+                        let store = {
+                            let manager_guard = manager.read().await;
+                            crate::principal::ExtensionStore::build(
+                                &capabilities,
+                                &principal_ref.agent_prompts,
+                                Some(&*manager_guard),
+                            )
+                        };
+
+                        let detected = store.detected_capabilities();
+                        let active = store.active_capabilities(&capabilities);
+
+                        let response = ResponsePacket::CapabilityList {
+                            request_id,
+                            principal,
+                            granted,
+                            detected,
+                            active,
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal '{principal}' not found"),
                         };
                         Self::send_sink(sink, response).await?;
                     }
@@ -2421,6 +2489,7 @@ impl IpcServer {
                             description: preview.description,
                             agents: preview.agents,
                             extensions: preview.extensions,
+                            required_capabilities: preview.required_capabilities,
                             signed: preview.signed,
                             validation_errors: preview.validation_errors,
                             validation_warnings: preview.validation_warnings,
@@ -2444,6 +2513,7 @@ impl IpcServer {
                 allow_unsigned,
                 force,
                 confirmed,
+                selected_capabilities,
             } => {
                 if !confirmed {
                     let response = ResponsePacket::Error {
@@ -2464,6 +2534,7 @@ impl IpcServer {
                     name.clone(),
                     allow_unsigned,
                     trust_policy,
+                    selected_capabilities,
                 )
                 .await
                 {
@@ -2512,7 +2583,7 @@ impl IpcServer {
                 }
             }
 
-            RequestPacket::PrincipalPull {
+            RequestPacket::PrincipalPullPreview {
                 request_id,
                 registry_ref,
                 name,
@@ -2520,11 +2591,66 @@ impl IpcServer {
                 registry_host,
                 registry_token,
             } => {
+                match Self::preview_principal_pull(
+                    &state,
+                    &registry_ref,
+                    name.clone(),
+                    force,
+                    registry_host,
+                    registry_token,
+                )
+                .await
+                {
+                    Ok(preview) => {
+                        let response = ResponsePacket::PrincipalPullPreviewed {
+                            request_id,
+                            name: preview.name,
+                            version: preview.version,
+                            did: preview.did,
+                            description: preview.description,
+                            agents: preview.agents,
+                            extensions: preview.extensions,
+                            required_capabilities: preview.required_capabilities,
+                            signed: preview.signed,
+                            validation_errors: preview.validation_errors,
+                            validation_warnings: preview.validation_warnings,
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal pull preview failed: {e}"),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::PrincipalPull {
+                request_id,
+                registry_ref,
+                name,
+                force,
+                confirmed,
+                selected_capabilities,
+                registry_host,
+                registry_token,
+            } => {
+                if !confirmed {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "Principal pull was not confirmed. Use the preview flow or pass --yes.".to_string(),
+                    };
+                    Self::send_sink(sink, response).await?;
+                    return Ok(());
+                }
                 match Self::pull_principal_package(
                     &state,
                     &registry_ref,
                     name.clone(),
                     force,
+                    selected_capabilities,
                     registry_host,
                     registry_token,
                 )
@@ -3232,6 +3358,11 @@ impl IpcServer {
         let name = new_name.unwrap_or_else(|| manifest.principal.name.clone());
         let agents = Self::extract_agent_names_from_package(&files);
         let extensions: Vec<String> = manifest.extensions.iter().map(|r| r.id.clone()).collect();
+        let (required_capabilities, cap_warnings) =
+            crate::registry::packaging::PrincipalUnpackager::extract_extension_capabilities(
+                &manifest,
+                &files,
+            );
 
         let validation_errors: Vec<String> =
             validation.errors.iter().map(|e| format!("{e:?}")).collect();
@@ -3239,6 +3370,7 @@ impl IpcServer {
             .warnings
             .iter()
             .map(|w| format!("{w:?}"))
+            .chain(cap_warnings.into_iter())
             .collect();
 
         Ok(PrincipalImportPreview {
@@ -3248,6 +3380,7 @@ impl IpcServer {
             description: manifest.principal.description,
             agents,
             extensions,
+            required_capabilities,
             signed,
             validation_errors,
             validation_warnings,
@@ -3310,6 +3443,7 @@ impl IpcServer {
         new_name: Option<String>,
         allow_unsigned: bool,
         trust_policy: crate::registry::packaging::TrustPolicy,
+        selected_capabilities: Vec<String>,
     ) -> anyhow::Result<crate::registry::packaging::PrincipalImportResult> {
         let unpackager = crate::registry::packaging::PrincipalUnpackager::new(
             file_path,
@@ -3322,6 +3456,7 @@ impl IpcServer {
             force: trust_policy == crate::registry::packaging::TrustPolicy::AllowUntrusted,
             trust_store: Some(state.trust_store().clone()),
             trust_policy,
+            selected_capabilities,
             ..Default::default()
         };
         let mut result = unpackager.import(opts).await?;
@@ -3398,12 +3533,61 @@ impl IpcServer {
         Ok(manifest.digest)
     }
 
+    /// Preview a remote Principal package before pulling it.
+    async fn preview_principal_pull(
+        state: &AppState,
+        registry_ref: &str,
+        new_name: Option<String>,
+        _force: bool,
+        registry_host: Option<String>,
+        registry_token: Option<String>,
+    ) -> anyhow::Result<PrincipalImportPreview> {
+        let host = registry_host.unwrap_or_else(|| {
+            crate::registry::client::RegistryRef::parse_with_default(
+                registry_ref,
+                None,
+                Some(crate::registry::client::ResourceType::Principal),
+            )
+            .map(|r| r.host)
+            .unwrap_or_else(|_| "pekohub.org".to_string())
+        });
+
+        let mut reg_config = crate::registry::config::load_from_workspace(&state.data_dir);
+        if let Some(token) = registry_token {
+            reg_config.add_source(crate::registry::config::RegistrySource {
+                url: host.clone(),
+                priority: 1,
+                auth: None,
+                token: Some(token),
+            });
+        }
+
+        let agent_registry =
+            crate::registry::AgentRegistry::new(crate::registry::AgentRegistry::default_path());
+        agent_registry.init().await?;
+
+        let client = crate::registry::client::RegistryClient::new(reg_config, agent_registry);
+
+        let temp_path = state.cache_dir.join(format!(
+            "peko-pull-principal-preview-{}.principal",
+            std::process::id()
+        ));
+        let _manifest = client
+            .pull_principal(registry_ref, &temp_path, |_| {})
+            .await?;
+
+        let preview = Self::preview_principal_import(state, &temp_path, new_name).await;
+        let _ = std::fs::remove_file(&temp_path);
+        preview
+    }
+
     /// Pull a Principal from a registry and import it.
     async fn pull_principal_package(
         state: &AppState,
         registry_ref: &str,
         new_name: Option<String>,
         force: bool,
+        selected_capabilities: Vec<String>,
         registry_host: Option<String>,
         registry_token: Option<String>,
     ) -> anyhow::Result<(String, String, String)> {
@@ -3453,6 +3637,7 @@ impl IpcServer {
             } else {
                 crate::registry::packaging::TrustPolicy::Tofu
             },
+            selected_capabilities,
         )
         .await;
         let _ = std::fs::remove_file(&temp_path);

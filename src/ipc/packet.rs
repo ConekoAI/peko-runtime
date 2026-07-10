@@ -234,7 +234,6 @@ pub enum RequestPacket {
         request_id: u64,
         id: String,
         target: Option<String>,
-        principal: Option<String>,
     },
 
     #[serde(rename = "extension_disable")]
@@ -242,8 +241,24 @@ pub enum RequestPacket {
         request_id: u64,
         id: String,
         target: Option<String>,
-        principal: Option<String>,
     },
+
+    #[serde(rename = "capability_grant")]
+    CapabilityGrant {
+        request_id: u64,
+        principal: String,
+        capability: String,
+    },
+
+    #[serde(rename = "capability_revoke")]
+    CapabilityRevoke {
+        request_id: u64,
+        principal: String,
+        capability: String,
+    },
+
+    #[serde(rename = "capability_list")]
+    CapabilityList { request_id: u64, principal: String },
 
     #[serde(rename = "extension_validate")]
     ExtensionValidate {
@@ -448,6 +463,9 @@ pub enum RequestPacket {
         force: bool,
         #[serde(default)]
         confirmed: bool,
+        /// Capabilities selected by the user during the preview flow.
+        #[serde(default)]
+        selected_capabilities: Vec<String>,
     },
 
     /// Preview a `.principal` package before importing it.
@@ -460,6 +478,18 @@ pub enum RequestPacket {
         allow_unsigned: bool,
         #[serde(default)]
         force: bool,
+    },
+
+    /// Preview a remote Principal package before pulling it.
+    #[serde(rename = "principal_pull_preview")]
+    PrincipalPullPreview {
+        request_id: u64,
+        registry_ref: String,
+        name: Option<String>,
+        #[serde(default)]
+        force: bool,
+        registry_host: Option<String>,
+        registry_token: Option<String>,
     },
 
     #[serde(rename = "principal_push")]
@@ -475,7 +505,13 @@ pub enum RequestPacket {
         request_id: u64,
         registry_ref: String,
         name: Option<String>,
+        #[serde(default)]
         force: bool,
+        #[serde(default)]
+        confirmed: bool,
+        /// Capabilities selected by the user during the preview flow.
+        #[serde(default)]
+        selected_capabilities: Vec<String>,
         registry_host: Option<String>,
         registry_token: Option<String>,
     },
@@ -552,6 +588,9 @@ impl RequestPacket {
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnable { request_id, .. }
             | Self::ExtensionDisable { request_id, .. }
+            | Self::CapabilityGrant { request_id, .. }
+            | Self::CapabilityRevoke { request_id, .. }
+            | Self::CapabilityList { request_id, .. }
             | Self::ExtensionValidate { request_id, .. }
             | Self::ExtensionDebug { request_id, .. }
             | Self::ExtensionInfo { request_id, .. }
@@ -581,6 +620,7 @@ impl RequestPacket {
             | Self::PrincipalExport { request_id, .. }
             | Self::PrincipalImport { request_id, .. }
             | Self::PrincipalImportPreview { request_id, .. }
+            | Self::PrincipalPullPreview { request_id, .. }
             | Self::PrincipalPush { request_id, .. }
             | Self::PrincipalPull { request_id, .. }
             | Self::PrincipalGrantPermission { request_id, .. }
@@ -844,6 +884,37 @@ pub enum ResponsePacket {
         message: String,
     },
 
+    /// Capability granted response
+    #[serde(rename = "capability_granted")]
+    CapabilityGranted {
+        request_id: u64,
+        capability: String,
+        message: String,
+    },
+
+    /// Capability revoked response
+    #[serde(rename = "capability_revoked")]
+    CapabilityRevoked {
+        request_id: u64,
+        capability: String,
+        message: String,
+    },
+
+    /// Capability list response
+    #[serde(rename = "capability_list")]
+    CapabilityList {
+        request_id: u64,
+        principal: String,
+        /// Capabilities explicitly granted in `principal.toml`.
+        granted: Vec<String>,
+        /// Capabilities declared by detected/installed extensions that are
+        /// not currently granted.
+        detected: Vec<String>,
+        /// Capabilities that are currently active (granted + extension
+        /// requirements satisfied).
+        active: Vec<String>,
+    },
+
     /// Extension validated response
     #[serde(rename = "extension_validated")]
     ExtensionValidated {
@@ -1029,6 +1100,28 @@ pub enum ResponsePacket {
         description: Option<String>,
         agents: Vec<String>,
         extensions: Vec<String>,
+        /// Capabilities required by the bundled extensions. Old daemons that
+        /// omit this field deserialize to an empty list.
+        #[serde(default)]
+        required_capabilities: Vec<String>,
+        signed: bool,
+        validation_errors: Vec<String>,
+        validation_warnings: Vec<String>,
+    },
+
+    /// Result of previewing a remote Principal package before pulling it.
+    #[serde(rename = "principal_pull_previewed")]
+    PrincipalPullPreviewed {
+        request_id: u64,
+        name: String,
+        version: String,
+        did: String,
+        description: Option<String>,
+        agents: Vec<String>,
+        extensions: Vec<String>,
+        /// Capabilities required by the bundled extensions.
+        #[serde(default)]
+        required_capabilities: Vec<String>,
         signed: bool,
         validation_errors: Vec<String>,
         validation_warnings: Vec<String>,
@@ -1244,6 +1337,9 @@ impl ResponsePacket {
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnabled { request_id, .. }
             | Self::ExtensionDisabled { request_id, .. }
+            | Self::CapabilityGranted { request_id, .. }
+            | Self::CapabilityRevoked { request_id, .. }
+            | Self::CapabilityList { request_id, .. }
             | Self::ExtensionValidated { request_id, .. }
             | Self::ExtensionDebugInfo { request_id, .. }
             | Self::ExtensionInfoResponse { request_id, .. }
@@ -1266,6 +1362,7 @@ impl ResponsePacket {
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
             | Self::PrincipalImportPreviewed { request_id, .. }
+            | Self::PrincipalPullPreviewed { request_id, .. }
             | Self::PrincipalPushed { request_id, .. }
             | Self::PrincipalPulled { request_id, .. }
             | Self::PrincipalPermissionGranted { request_id, .. }
@@ -1308,6 +1405,9 @@ impl ResponsePacket {
             Self::ExtensionList { .. } => "ExtensionList",
             Self::ExtensionEnabled { .. } => "ExtensionEnabled",
             Self::ExtensionDisabled { .. } => "ExtensionDisabled",
+            Self::CapabilityGranted { .. } => "CapabilityGranted",
+            Self::CapabilityRevoked { .. } => "CapabilityRevoked",
+            Self::CapabilityList { .. } => "CapabilityList",
             Self::ExtensionValidated { .. } => "ExtensionValidated",
             Self::ExtensionDebugInfo { .. } => "ExtensionDebugInfo",
             Self::ExtensionInfoResponse { .. } => "ExtensionInfoResponse",
@@ -1330,6 +1430,7 @@ impl ResponsePacket {
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
             Self::PrincipalImportPreviewed { .. } => "PrincipalImportPreviewed",
+            Self::PrincipalPullPreviewed { .. } => "PrincipalPullPreviewed",
             Self::PrincipalPushed { .. } => "PrincipalPushed",
             Self::PrincipalPulled { .. } => "PrincipalPulled",
             Self::PrincipalPermissionGranted { .. } => "PrincipalPermissionGranted",
@@ -1893,7 +1994,7 @@ mod tests {
                 description: Some("test principal".to_string()),
                 exposure: crate::tunnel::protocol::InstanceExposure::default(),
                 status: None,
-                allowed_extensions: crate::principal::config::AllowedExtensions::default(),
+                capabilities: crate::principal::Capabilities::default(),
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
             }],
@@ -1924,7 +2025,7 @@ mod tests {
                 description: None,
                 exposure: crate::tunnel::protocol::InstanceExposure::default(),
                 status: None,
-                allowed_extensions: crate::principal::config::AllowedExtensions::default(),
+                capabilities: crate::principal::Capabilities::default(),
                 agent_prompt_count: 2,
                 workspace_path: "/tmp/helper".to_string(),
             }),
@@ -2022,6 +2123,7 @@ mod tests {
             description: Some("A preview test principal".to_string()),
             agents: vec!["primary".to_string(), "researcher".to_string()],
             extensions: vec!["ext-1".to_string()],
+            required_capabilities: vec!["tool:Read".to_string(), "network".to_string()],
             signed: true,
             validation_errors: vec![],
             validation_warnings: vec!["Unencrypted keys".to_string()],
@@ -2042,6 +2144,7 @@ mod tests {
                 description,
                 agents,
                 extensions,
+                required_capabilities,
                 signed,
                 validation_errors,
                 validation_warnings,
@@ -2056,6 +2159,10 @@ mod tests {
                     vec!["primary".to_string(), "researcher".to_string()]
                 );
                 assert_eq!(extensions, vec!["ext-1".to_string()]);
+                assert_eq!(
+                    required_capabilities,
+                    vec!["tool:Read".to_string(), "network".to_string()]
+                );
                 assert!(signed);
                 assert!(validation_errors.is_empty());
                 assert_eq!(validation_warnings, vec!["Unencrypted keys".to_string()]);
@@ -2256,7 +2363,6 @@ mod tests {
             request_id: 1001,
             id: "ext-1".to_string(),
             target: Some("all".to_string()),
-            principal: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -2265,12 +2371,10 @@ mod tests {
                 request_id,
                 id,
                 target,
-                principal,
             } => {
                 assert_eq!(request_id, 1001);
                 assert_eq!(id, "ext-1");
                 assert_eq!(target, Some("all".to_string()));
-                assert_eq!(principal, None);
             }
             _ => panic!("Wrong variant"),
         }
@@ -2282,7 +2386,6 @@ mod tests {
             request_id: 1002,
             id: "ext-1".to_string(),
             target: None,
-            principal: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -2291,12 +2394,10 @@ mod tests {
                 request_id,
                 id,
                 target,
-                principal,
             } => {
                 assert_eq!(request_id, 1002);
                 assert_eq!(id, "ext-1");
                 assert_eq!(target, None);
-                assert_eq!(principal, None);
             }
             _ => panic!("Wrong variant"),
         }
@@ -2441,7 +2542,6 @@ mod tests {
             request_id: 2,
             id: "e".to_string(),
             target: None,
-            principal: Some("acme".to_string()),
         };
         assert_eq!(req_enable.request_id(), 2);
 
@@ -2449,7 +2549,6 @@ mod tests {
             request_id: 3,
             id: "e".to_string(),
             target: None,
-            principal: None,
         };
         assert_eq!(req_disable.request_id(), 3);
 
@@ -3503,6 +3602,7 @@ mod tests {
             description: None,
             agents: vec![],
             extensions: vec![],
+            required_capabilities: vec![],
             signed: false,
             validation_errors: vec![],
             validation_warnings: vec![],

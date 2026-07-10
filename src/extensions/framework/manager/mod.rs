@@ -590,7 +590,7 @@ impl ExtensionManager {
     /// Enable hooks for an extension at runtime.
     ///
     /// Note: This only affects hook dispatch state, not tool access.
-    /// Tool access is governed by the per-call `allowed_extensions`
+    /// Tool access is governed by the per-call `capabilities`
     /// allowlist carried in `HookInput::ToolCall`.
     pub async fn enable(&mut self, id: &ExtensionId) -> Result<()> {
         let loaded_ext = self
@@ -610,7 +610,7 @@ impl ExtensionManager {
     /// Disable hooks for an extension at runtime.
     ///
     /// Note: This only affects hook dispatch state, not tool access.
-    /// Tool access is governed by the per-call `allowed_extensions`
+    /// Tool access is governed by the per-call `capabilities`
     /// allowlist carried in `HookInput::ToolCall`.
     pub async fn disable(&mut self, id: &ExtensionId) -> Result<()> {
         let loaded_ext = self

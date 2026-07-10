@@ -14,7 +14,7 @@ use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
 use anyhow::Context;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,6 +37,9 @@ pub struct PrincipalImportOptions {
     pub trust_store: Option<Arc<RwLock<TrustStore>>>,
     /// How to handle trust pinning conflicts.
     pub trust_policy: TrustPolicy,
+    /// Capability grants to add to the imported Principal's
+    /// `[capabilities] grants` list, deduplicated against existing grants.
+    pub selected_capabilities: Vec<String>,
 }
 
 impl Default for PrincipalImportOptions {
@@ -49,6 +52,7 @@ impl Default for PrincipalImportOptions {
             force: false,
             trust_store: None,
             trust_policy: TrustPolicy::Tofu,
+            selected_capabilities: Vec::new(),
         }
     }
 }
@@ -195,6 +199,13 @@ impl PrincipalUnpackager {
             .import_identity(&files, &manifest, &options, &name)
             .await?;
         let mut config = self.import_config(&files, &name, &identity)?;
+
+        // Apply any capabilities chosen during the preview/confirm flow.
+        for cap in &options.selected_capabilities {
+            if !config.capabilities.contains_str(cap) {
+                config.capabilities.push(cap.clone());
+            }
+        }
 
         // Update DID in config to match the imported/rotated identity
         config.did = Some(PrincipalDID(identity.did.clone()));
@@ -464,6 +475,91 @@ impl PrincipalUnpackager {
         Ok(installed)
     }
 
+    /// Extract the union of capabilities declared by the embedded extensions
+    /// in a `.principal` package.
+    ///
+    /// Returns `(required_capabilities, warnings)`. The required set is the
+    /// union of each embedded extension manifest's `requires` list.
+    pub fn extract_extension_capabilities(
+        manifest: &PrincipalManifest,
+        files: &HashMap<String, Vec<u8>>,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut required = BTreeSet::new();
+        let mut warnings = Vec::new();
+
+        for ext_ref in &manifest.extensions {
+            let archive_path = format!("extensions/{}.ext", ext_ref.id);
+            let bytes = match files.get(&archive_path) {
+                Some(b) => b,
+                None => {
+                    warnings.push(format!(
+                        "Principal package declares extension '{}' but has no embedded {}",
+                        ext_ref.id, archive_path
+                    ));
+                    continue;
+                }
+            };
+
+            match Self::parse_embedded_extension_capabilities(bytes) {
+                Ok((_, reqs)) => {
+                    required.extend(reqs);
+                }
+                Err(e) => {
+                    warnings.push(format!(
+                        "Could not read capabilities for embedded extension '{}': {e}",
+                        ext_ref.id
+                    ));
+                }
+            }
+        }
+
+        (required.into_iter().collect(), warnings)
+    }
+
+    fn parse_embedded_extension_capabilities(
+        embedded_bytes: &[u8],
+    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        let cursor = std::io::Cursor::new(embedded_bytes);
+        let tar = flate2::read::GzDecoder::new(cursor);
+        let mut archive = tar::Archive::new(tar);
+
+        let mut manifest_yaml: Option<Vec<u8>> = None;
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_string_lossy().to_string();
+            if path == "extension/manifest.yaml" {
+                let mut content = Vec::new();
+                entry.read_to_end(&mut content)?;
+                manifest_yaml = Some(content);
+                break;
+            }
+        }
+
+        let content = manifest_yaml.ok_or_else(|| {
+            anyhow::anyhow!("extension/manifest.yaml not found in embedded .ext package")
+        })?;
+        let s = std::str::from_utf8(&content)?;
+        let value: serde_yaml::Value = serde_yaml::from_str(s)?;
+
+        let string_array = |value: &serde_yaml::Value, key: &str| -> Vec<String> {
+            value
+                .get(key)
+                .and_then(|v| v.as_sequence())
+                .map(|seq| {
+                    seq.iter()
+                        .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let mut provides = string_array(&value, "provides");
+        let mut requires = string_array(&value, "requires");
+        provides.sort();
+        requires.sort();
+        Ok((provides, requires))
+    }
+
     async fn save_config(&self, config: &PrincipalConfig, name: &str) -> anyhow::Result<PathBuf> {
         let principal_dir = self.config_dir.join("principals").join(name);
         tokio::fs::create_dir_all(&principal_dir).await?;
@@ -714,6 +810,7 @@ mod tests {
         assert!(!opts.rotate_keys);
         assert!(opts.import_sessions);
         assert!(!opts.allow_unsigned);
+        assert!(opts.selected_capabilities.is_empty());
     }
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
@@ -726,7 +823,7 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            allowed_extensions: Default::default(),
+            capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
             permissions: Vec::new(),
@@ -820,5 +917,101 @@ mod tests {
             .join("renamed")
             .join("principal.toml")
             .exists());
+    }
+
+    /// Build a minimal `.ext` archive in memory containing an
+    /// `extension/manifest.yaml` with the given `requires` list.
+    fn fake_ext_bytes(requires: &[&str]) -> Vec<u8> {
+        let mut manifest = String::from(
+            "id: test-ext\n\
+             name: Test Extension\n\
+             version: 1.0.0\n\
+             description: A test extension\n\
+             extension_type: skill\n",
+        );
+        if !requires.is_empty() {
+            manifest.push_str("requires:\n");
+            for req in requires {
+                manifest.push_str(&format!("  - {req}\n"));
+            }
+        }
+
+        let buf = Vec::new();
+        let enc = flate2::write::GzEncoder::new(buf, flate2::Compression::default());
+        let mut tar = tar::Builder::new(enc);
+
+        let mut header = tar::Header::new_gnu();
+        header.set_path("extension/manifest.yaml").unwrap();
+        header.set_size(manifest.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append(&header, manifest.as_bytes()).unwrap();
+        tar.finish().unwrap();
+
+        let enc = tar.into_inner().unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn parse_embedded_extension_capabilities_reads_requires() {
+        let bytes = fake_ext_bytes(&["tool:Read", "network"]);
+        let (provides, requires) =
+            PrincipalUnpackager::parse_embedded_extension_capabilities(&bytes).unwrap();
+        assert!(provides.is_empty());
+        assert_eq!(requires, vec!["network".to_string(), "tool:Read".to_string()]);
+    }
+
+    #[test]
+    fn extract_extension_capabilities_aggregates_required_caps() {
+        let mut manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
+        manifest.extensions = vec![
+            crate::registry::packaging::types::ExtensionRef {
+                id: "ext-a".to_string(),
+                registry_ref: "pekohub.com/ext/a".to_string(),
+            },
+            crate::registry::packaging::types::ExtensionRef {
+                id: "ext-b".to_string(),
+                registry_ref: "pekohub.com/ext/b".to_string(),
+            },
+        ];
+
+        let mut files = HashMap::new();
+        files.insert(
+            "extensions/ext-a.ext".to_string(),
+            fake_ext_bytes(&["tool:Read"]),
+        );
+        files.insert(
+            "extensions/ext-b.ext".to_string(),
+            fake_ext_bytes(&["tool:Write", "network"]),
+        );
+
+        let (required, warnings) =
+            PrincipalUnpackager::extract_extension_capabilities(&manifest, &files);
+
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(
+            required,
+            vec![
+                "network".to_string(),
+                "tool:Read".to_string(),
+                "tool:Write".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_extension_capabilities_warns_on_missing_archive() {
+        let mut manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
+        manifest.extensions = vec![crate::registry::packaging::types::ExtensionRef {
+            id: "missing".to_string(),
+            registry_ref: "pekohub.com/ext/missing".to_string(),
+        }];
+
+        let (required, warnings) =
+            PrincipalUnpackager::extract_extension_capabilities(&manifest, &HashMap::new());
+
+        assert!(required.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("missing"));
     }
 }

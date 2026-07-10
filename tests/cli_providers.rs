@@ -101,7 +101,7 @@ fn minimax_api_key() -> Option<String> {
 /// (minimax/kimi) as the sole catalog entry first, so the root agent's
 /// provider resolution falls through to it.
 ///
-/// New Principals are created with an empty `[allowed_extensions]` tool
+/// New Principals are created with an empty `[capabilities] grants`
 /// list by default. Tests that need the root agent to call tools (e.g.
 /// the native-tool-call test below) must grant them separately with
 /// [`grant_tools_to_principal`].
@@ -126,9 +126,7 @@ fn create_provider_principal(cli: &PekoCli, name: &str) {
 /// [`create_provider_principal`].
 ///
 /// Tools are written into `principals/<name>/principal.toml` under
-/// `allowed_extensions` in both bare-name and canonical
-/// `builtin:tool:<name>` forms, matching the pattern used by
-/// `tests/common/agent.rs::create_mock_principal_with_tools`.
+/// `[capabilities] grants` as `tool:<name>` (e.g. `tool:Read`).
 fn grant_tools_to_principal(cli: &PekoCli, name: &str, tools: &[&str]) {
     let path = cli
         .peko_dir()
@@ -140,11 +138,8 @@ fn grant_tools_to_principal(cli: &PekoCli, name: &str, tools: &[&str]) {
         toml::from_str(&raw).expect("parse principal.toml");
 
     for tool in tools {
-        cfg.allowed_extensions.push((*tool).to_string());
-        cfg.allowed_extensions.push(format!("builtin:tool:{tool}"));
+        cfg.capabilities.push(format!("tool:{tool}"));
     }
-    cfg.allowed_extensions.sort();
-    cfg.allowed_extensions.dedup();
 
     std::fs::write(
         &path,

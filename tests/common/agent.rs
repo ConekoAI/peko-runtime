@@ -80,14 +80,16 @@ pub fn create_mock_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
 /// Like [`create_mock_principal`], but additionally grants the Principal a set
 /// of capability tools.
 ///
-/// Newly-created Principals have an empty `[capabilities] tools` list by
+/// Newly-created Principals have an empty `[capabilities] grants` list by
 /// default. Tests that drive the root agent into calling tools (e.g.
 /// `Write`, `Bash`, `Agent`) must grant them here, or the runtime's tool
 /// dispatcher rejects the tool_call.
 ///
-/// `tools` are bare tool names (e.g. `"Write"`, `"Bash"`, `"Agent"`); this
-/// helper writes them into `principals/<name>/principal.toml` under
-/// `[capabilities] tools` after `peko principal create`.
+/// `tools` are bare tool names (e.g. `"Write"`, `"Bash"`, `"Agent"`) or
+/// already-typed capability strings (e.g. `"universal:calculator_simple"`).
+/// Bare names are written as `tool:<name>`; strings that already contain a
+/// `:` are passed through verbatim into `principals/<name>/principal.toml`
+/// under `[capabilities] grants` after `peko principal create`.
 pub fn create_mock_principal_with_tools(
     cli: &PekoCli,
     name: &str,
@@ -112,16 +114,12 @@ pub fn create_mock_principal_with_tools(
         return;
     }
 
-    // Patch the Principal's allowed extensions so the root agent's whitelist
-    // includes them. We rewrite `principal.toml` directly rather than going
+    // Patch the Principal's capabilities so the root agent can see the
+    // requested tools. We rewrite `principal.toml` directly rather than going
     // through a CLI grant path so the helper stays a single, daemon-free
     // setup step (callable before `DaemonGuard::spawn`).
     //
-    // Each tool is granted in BOTH forms — the bare name (so the agent's
-    // per-agent `init_builtins_async` registers the tool) and the canonical
-    // `builtin:tool:<name>` extension ID (so the dispatcher's
-    // `is_tool_enabled` owner check passes at execution time). Granting only
-    // one form yields a silently-disabled tool.
+    // Each tool is granted as `tool:<name>` (e.g. `tool:Read`).
     let path = cli
         .peko_dir()
         .join("principals")
@@ -130,10 +128,13 @@ pub fn create_mock_principal_with_tools(
     let raw = std::fs::read_to_string(&path).expect("read principal.toml");
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
-    cfg.allowed_extensions.0 = tools
-        .iter()
-        .flat_map(|t| [t.to_string(), format!("builtin:tool:{t}")])
-        .collect();
+    cfg.capabilities.extend(tools.iter().map(|t| {
+        if t.contains(':') {
+            t.to_string()
+        } else {
+            format!("tool:{t}")
+        }
+    }));
     std::fs::write(
         &path,
         toml::to_string_pretty(&cfg).expect("serialize principal.toml"),

@@ -6,6 +6,7 @@
 //! - `ipc::client_service::DaemonClientService` — daemon IPC
 //! - `common::services::ConfigAuthorityImpl` — agent whitelist management
 
+use crate::commands::capability;
 use crate::commands::mcp;
 use crate::commands::GlobalPaths;
 use crate::extensions::framework::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
@@ -249,19 +250,30 @@ pub async fn handle_ext_command(
             target,
             principal,
         } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionEnable {
-                request_id: 1,
-                id: id.clone(),
-                target,
-                principal,
-            };
-            let response = client.request_response(packet).await?;
-            match response {
-                crate::ipc::ResponsePacket::ExtensionEnabled { message, .. } => {
-                    println!("{}", message);
+            if let Some(principal_name) = principal {
+                let cap = capability_for_extension(&id);
+                let response = capability::capability_grant(&principal_name, &cap).await?;
+                match response {
+                    crate::ipc::ResponsePacket::CapabilityGranted { message, .. } => {
+                        println!("{}", message);
+                    }
+                    crate::ipc::ResponsePacket::Error { message, .. } => anyhow::bail!(message),
+                    _ => anyhow::bail!("Unexpected response"),
                 }
-                _ => anyhow::bail!("Unexpected response"),
+            } else {
+                let client = crate::ipc::DaemonClient::connect().await?;
+                let packet = crate::ipc::RequestPacket::ExtensionEnable {
+                    request_id: 1,
+                    id: id.clone(),
+                    target,
+                };
+                let response = client.request_response(packet).await?;
+                match response {
+                    crate::ipc::ResponsePacket::ExtensionEnabled { message, .. } => {
+                        println!("{}", message);
+                    }
+                    _ => anyhow::bail!("Unexpected response"),
+                }
             }
             Ok(())
         }
@@ -271,19 +283,30 @@ pub async fn handle_ext_command(
             target,
             principal,
         } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionDisable {
-                request_id: 1,
-                id: id.clone(),
-                target,
-                principal,
-            };
-            let response = client.request_response(packet).await?;
-            match response {
-                crate::ipc::ResponsePacket::ExtensionDisabled { message, .. } => {
-                    println!("{}", message);
+            if let Some(principal_name) = principal {
+                let cap = capability_for_extension(&id);
+                let response = capability::capability_revoke(&principal_name, &cap).await?;
+                match response {
+                    crate::ipc::ResponsePacket::CapabilityRevoked { message, .. } => {
+                        println!("{}", message);
+                    }
+                    crate::ipc::ResponsePacket::Error { message, .. } => anyhow::bail!(message),
+                    _ => anyhow::bail!("Unexpected response"),
                 }
-                _ => anyhow::bail!("Unexpected response"),
+            } else {
+                let client = crate::ipc::DaemonClient::connect().await?;
+                let packet = crate::ipc::RequestPacket::ExtensionDisable {
+                    request_id: 1,
+                    id: id.clone(),
+                    target,
+                };
+                let response = client.request_response(packet).await?;
+                match response {
+                    crate::ipc::ResponsePacket::ExtensionDisabled { message, .. } => {
+                        println!("{}", message);
+                    }
+                    _ => anyhow::bail!("Unexpected response"),
+                }
             }
             Ok(())
         }
@@ -916,4 +939,19 @@ async fn handle_ext_pull(
     }
 
     Ok(())
+}
+
+/// Map an extension/tool ID to the `tool:` capability used for principal-scoped
+/// enable/disable.
+///
+/// Built-in tools are referenced by their bare name (e.g. `Bash` → `tool:Bash`).
+/// The legacy `builtin:tool:` prefix is stripped so the capability matches the
+/// tool-name gate in the registry.
+fn capability_for_extension(id: &str) -> String {
+    if id.starts_with("builtin:tool:") {
+        let tool_name = id.splitn(3, ':').nth(2).unwrap_or(id);
+        format!("tool:{tool_name}")
+    } else {
+        format!("tool:{id}")
+    }
 }

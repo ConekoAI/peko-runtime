@@ -5,7 +5,8 @@ use crate::common::types::OutputFormat;
 use crate::extensions::framework::manager::ExtensionManager;
 use crate::extensions::framework::services::Services as ExtensionServices;
 use crate::ipc::packet::ExtensionSummary;
-use crate::principal::config::{AllowedExtensions, PrincipalConfig};
+use crate::principal::capability::{Capabilities, Capability};
+use crate::principal::config::PrincipalConfig;
 use crate::principal::Principal;
 use anyhow::Result;
 use std::collections::BTreeMap;
@@ -31,7 +32,7 @@ pub async fn handle_help(
         Some(cfg) => cfg,
         None => principal.config.read().await.clone(),
     };
-    let allowed = &config.allowed_extensions;
+    let allowed = &config.capabilities;
     let extensions = list_enabled_extensions(extension_manager, extension_services).await?;
     let filtered: Vec<&ExtensionSummary> = extensions
         .iter()
@@ -91,27 +92,25 @@ async fn list_enabled_extensions(
     Ok(extensions)
 }
 
-/// Returns true if the extension id or name matches any entry in the
-/// principal's allowlist (case-insensitive). An empty allowlist is
-/// treated as allow-nothing, consistent with the rest of the runtime.
-fn is_extension_allowed(ext: &ExtensionSummary, allowed: &AllowedExtensions) -> bool {
-    if allowed.0.is_empty() {
+/// Returns true if the extension id or name is granted by the principal's
+/// capabilities. An empty capability set is treated as allow-nothing,
+/// consistent with the rest of the runtime.
+fn is_extension_allowed(ext: &ExtensionSummary, allowed: &Capabilities) -> bool {
+    if allowed.is_empty() {
         return false;
     }
 
-    let id_lower = ext.id.to_ascii_lowercase();
-    let name_lower = ext.name.to_ascii_lowercase();
+    let kind = crate::principal::extension_store::capability_kind_for_extension_type(&ext.ext_type);
+    let id_required = Capability::new(format!("{kind}:{}", ext.id));
+    let name_required = Capability::new(format!("{kind}:{}", ext.name));
 
-    allowed.0.iter().any(|entry| {
-        let entry_lower = entry.to_ascii_lowercase();
-        entry_lower == id_lower || entry_lower == name_lower
-    })
+    allowed.is_granted(&id_required) || allowed.is_granted(&name_required)
 }
 
 fn render_human(
     principal_name: &str,
     config: &PrincipalConfig,
-    allowed: &AllowedExtensions,
+    allowed: &Capabilities,
     extensions: &[&ExtensionSummary],
 ) -> String {
     let mut out = String::new();
@@ -135,14 +134,14 @@ fn render_human(
     }
 
     let allowed_list = allowed
-        .0
+        .grants
         .iter()
-        .map(String::as_str)
+        .map(Capability::as_str)
         .collect::<Vec<_>>()
         .join(", ");
     out.push_str(&format!(
         "Allowed extensions ({}): {}\n",
-        allowed.0.len(),
+        allowed.len(),
         if allowed_list.is_empty() {
             "(none)"
         } else {
@@ -175,7 +174,7 @@ fn render_human(
 fn render_json(
     principal_name: &str,
     config: &PrincipalConfig,
-    allowed: &AllowedExtensions,
+    allowed: &Capabilities,
     extensions: &[&ExtensionSummary],
 ) -> Result<String> {
     let grouped = group_by_ext_type(extensions);
@@ -184,7 +183,7 @@ fn render_json(
         "principal": principal_name,
         "display_name": config.identity.display_name,
         "description": config.identity.description,
-        "allowed_extensions": allowed.0,
+        "capabilities": allowed.grants,
         "built_in_slash_commands": [
             {
                 "name": "help",
@@ -281,28 +280,28 @@ mod tests {
 
     #[test]
     fn is_extension_allowed_matches_id_case_insensitive() {
-        let allowed = AllowedExtensions(vec!["Docker".to_string()]);
+        let allowed = Capabilities::with_grants(["skill:docker"]);
         let ext = sample_summary("docker", "Docker", "skill");
         assert!(is_extension_allowed(&ext, &allowed));
     }
 
     #[test]
-    fn is_extension_allowed_matches_name_case_insensitive() {
-        let allowed = AllowedExtensions(vec!["docker".to_string()]);
-        let ext = sample_summary("pkg", "Docker", "skill");
+    fn is_extension_allowed_matches_name() {
+        let allowed = Capabilities::with_grants(["skill:docker"]);
+        let ext = sample_summary("pkg", "docker", "skill");
         assert!(is_extension_allowed(&ext, &allowed));
     }
 
     #[test]
     fn is_extension_allowed_empty_allowlist_denies_all() {
-        let allowed = AllowedExtensions::new();
+        let allowed = Capabilities::new();
         let ext = sample_summary("docker", "Docker", "skill");
         assert!(!is_extension_allowed(&ext, &allowed));
     }
 
     #[test]
     fn is_extension_allowed_unlisted_denied() {
-        let allowed = AllowedExtensions(vec!["bash".to_string()]);
+        let allowed = Capabilities::with_grants(["tool:bash"]);
         let ext = sample_summary("docker", "Docker", "skill");
         assert!(!is_extension_allowed(&ext, &allowed));
     }

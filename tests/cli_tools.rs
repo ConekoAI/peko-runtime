@@ -128,24 +128,14 @@ fn ensure_workspace_dir(cli: &PekoCli) {
     std::fs::create_dir_all(workspace_dir(cli)).expect("create workspaces dir");
 }
 
-/// Write a mock-LLM-pointed agent that has all 6 built-in filesystem +
-/// shell tools enabled.
+/// Write a mock-LLM-pointed Principal that has all 6 built-in filesystem +
+/// shell tools granted.
 ///
-/// **`[extensions] enabled` is a special filter.** The agent's
-/// `init_builtins_async` (in `src/agent/agent.rs:121-135`) iterates
-/// the per-agent tools and compares each whitelist pattern to
-/// `tool.name()` (e.g. `"Write"`). The dispatcher check at
-/// `src/extension/core/tool_registry.rs:60-63` does the same lookup
-/// against `tool_owners[tool_name]`, which stores the canonical
-/// extension ID (e.g. `"builtin:tool:Write"`). The whitelist
-/// must therefore contain BOTH the bare tool name AND the canonical
-/// extension ID — the bare name so the per-agent init registers the
-/// tool, and the canonical ID so the dispatcher's `is_tool_enabled`
-/// check at execution time resolves the owner and matches the
-/// whitelist. Omitting either one yields
-/// "Error: Tool 'write_file' is currently disabled..." in the
-/// parent's tool result. See `docs/integration/TESTING.md` §7 for
-/// the context.
+/// Tools are granted with the `tool:<name>` capability syntax in the
+/// Principal's `principal.toml [capabilities] grants` list. The agent's
+/// `init_builtins_async` filters the registered tools against those
+/// capabilities, and the dispatcher's per-call `capabilities` set gates
+/// execution in `is_tool_enabled_with_whitelist`.
 fn write_builtin_agent(cli: &PekoCli, name: &str, mock_llm_url: &str) {
     create_mock_principal_with_tools(
         cli,

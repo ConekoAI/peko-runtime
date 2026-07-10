@@ -140,7 +140,8 @@ exposure = "private"
 [identity]
 display_name = "E2E Test Principal"
 
-allowed_extensions = []
+[capabilities]
+grants = []
 
 # Grant the test user Chat permission so the runtime's private-
 # instance ACL (peko-runtime/src/tunnel/dispatcher.rs::

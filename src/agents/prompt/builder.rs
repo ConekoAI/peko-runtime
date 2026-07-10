@@ -45,6 +45,10 @@ pub struct SystemPromptBuilder {
     extension_core: Option<Arc<crate::extensions::framework::ExtensionCore>>,
     /// Principal runtime id for extension-scoped prompt hooks (P2 audit).
     principal_id: Option<String>,
+    /// Principal capability grants for extension-scoped prompt hooks.
+    capabilities: Option<Vec<String>>,
+    /// Active extension IDs for extension-scoped prompt hooks.
+    active_extensions: Option<Vec<String>>,
     /// Per-principal long-term memory loaded from `<workspace>/MEMORY.md`.
     /// Rendered into the system prompt at the `{{memory}}` placeholder
     /// when the template opts in; templates that omit `{{memory}}` get
@@ -73,6 +77,8 @@ impl SystemPromptBuilder {
             channel: "discord".to_string(),
             extension_core: None,
             principal_id: None,
+            capabilities: None,
+            active_extensions: None,
             principal_memory: None,
             session_context: None,
         }
@@ -95,6 +101,18 @@ impl SystemPromptBuilder {
     /// enabled-skill allowlist at handle time.
     pub fn with_principal_id(mut self, principal_id: impl Into<String>) -> Self {
         self.principal_id = Some(principal_id.into());
+        self
+    }
+
+    /// Set the principal capability grants for extension-scoped prompt hooks.
+    pub fn with_capabilities(mut self, capabilities: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.capabilities = Some(capabilities.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Set the active extension IDs for extension-scoped prompt hooks.
+    pub fn with_active_extensions(mut self, active_extensions: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.active_extensions = Some(active_extensions.into_iter().map(Into::into).collect());
         self
     }
 
@@ -378,12 +396,18 @@ impl SystemPromptBuilder {
                 let core = core.clone();
 
                 let principal_id = self.principal_id.clone();
+                let capabilities = self.capabilities.clone();
+                let active_extensions = self.active_extensions.clone();
+                let workspace = self.workspace.to_string_lossy().to_string();
                 let result = tokio::task::block_in_place(move || {
                     tokio::runtime::Handle::current().block_on(async move {
                         core.invoke_hook_text_with_principal(
                             hook_point,
                             HookInput::Unit,
                             principal_id.as_deref(),
+                            capabilities,
+                            active_extensions,
+                            Some(workspace),
                         )
                         .await
                     })
@@ -428,12 +452,18 @@ Constraints: never invoke more than one skill up front; only invoke after select
                 let core = core.clone();
 
                 let principal_id = self.principal_id.clone();
+                let capabilities = self.capabilities.clone();
+                let active_extensions = self.active_extensions.clone();
+                let workspace = self.workspace.to_string_lossy().to_string();
                 let result = tokio::task::block_in_place(move || {
                     tokio::runtime::Handle::current().block_on(async move {
                         core.invoke_hook_text_with_principal(
                             hook_point,
                             HookInput::Unit,
                             principal_id.as_deref(),
+                            capabilities,
+                            active_extensions,
+                            Some(workspace),
                         )
                         .await
                     })
@@ -599,17 +629,6 @@ Be safe.
             register_skills_with_core(&core, vec![skill])
                 .await
                 .expect("Failed to register skills");
-
-            // Enable the extension for the principal used by the builder.
-            crate::principal::ExtensionStateRegistry::global()
-                .register(
-                    crate::principal::PrincipalId("test-builder".to_string()),
-                    crate::principal::ExtensionState::new(
-                        vec!["docker".to_string()],
-                        tmp.path().to_path_buf(),
-                    ),
-                )
-                .await;
         });
 
         let builder = SystemPromptBuilder::new("test-agent")
@@ -617,7 +636,9 @@ Be safe.
             .with_mode(PromptMode::Full)
             .with_body(template)
             .with_extension_core(Arc::new(core))
-            .with_principal_id("test-builder");
+            .with_principal_id("test-builder")
+            .with_capabilities(["skill:docker"])
+            .with_active_extensions(["docker"]);
 
         // Build needs to run in a tokio context because build_skills_section uses block_on
         let prompt = rt.block_on(async {

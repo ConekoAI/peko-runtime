@@ -84,7 +84,8 @@ name = "integration-principal"
 description = "A test principal for full integration"
 display_name = "Integration Test Principal"
 
-allowed_extensions = []
+[capabilities]
+grants = []
 "#;
     tokio::fs::write(config_dir.join("principal.toml"), principal_toml).await?;
 
@@ -225,8 +226,8 @@ async fn create_manager_with_skill(
     Ok((manager, id.0))
 }
 
-/// Create a minimal principal directory whose `allowed_extensions`
-/// references `skill_name`.
+/// Create a minimal principal directory whose `[capabilities] grants`
+/// references `skill_name` as `skill:<skill_name>`.
 async fn create_test_principal_dir_with_skill(base: &Path, skill_name: &str) -> anyhow::Result<()> {
     create_test_principal_dir(base).await?;
 
@@ -236,7 +237,8 @@ name = "integration-principal"
 description = "A test principal for full integration"
 display_name = "Integration Test Principal"
 
-allowed_extensions = ["{skill_name}"]
+[capabilities]
+grants = ["skill:{skill_name}"]
 "#
     );
     tokio::fs::write(base.join("config").join("principal.toml"), principal_toml).await?;

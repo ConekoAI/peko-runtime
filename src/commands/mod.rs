@@ -11,6 +11,7 @@
 
 pub mod agent_bootstrap;
 pub mod auth;
+pub mod capability;
 pub mod config;
 pub mod credential;
 pub mod cron;
@@ -136,6 +137,10 @@ pub enum Commands {
     /// Extension management commands (skills, MCP, tools, channels, hooks)
     #[command(subcommand)]
     Ext(ext::ExtCommands),
+
+    /// Capability authority management commands (grant, revoke, list)
+    #[command(subcommand)]
+    Capability(capability::CapabilityCommands),
 
     /// Configuration management (advanced / hidden)
     #[command(subcommand, hide = true)]

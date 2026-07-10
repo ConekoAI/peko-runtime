@@ -289,7 +289,8 @@ async fn test_extension_install_tool_registration_and_invocation() {
                 caller_id: None,
                 principal_id: None,
                 principal_name: None,
-                allowed_extensions: None,
+                capabilities: None,
+                active_extensions: None,
                 abort_signal: None,
             },
         )

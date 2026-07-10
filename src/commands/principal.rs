@@ -1,7 +1,7 @@
 //! Principal management commands
 //!
 //! Principals are top-level AI actors that own identity, memory, intent,
-//! governance, allowed extensions, and thin Markdown agent prompts. This module
+//! governance, capabilities, and thin Markdown agent prompts. This module
 //! implements the `peko principal` CLI surface.
 
 use std::path::{Path, PathBuf};
@@ -16,13 +16,13 @@ use crate::common::paths::PathResolver;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use crate::principal::{
     config::{
-        AllowedExtensions, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
-        PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
+        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
+        PrincipalMemoryConfig, PrincipalRoutingConfig,
     },
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
     memory::{DefaultPrincipalMemory, PrincipalMemory},
     router::{ChannelContext, ChannelKind},
-    PrincipalManager,
+    Capabilities, PrincipalManager,
 };
 
 /// Subcommands for `peko principal`.
@@ -119,6 +119,10 @@ pub enum PrincipalCommands {
         /// Overwrite an existing Principal with the same name
         #[arg(short, long)]
         force: bool,
+
+        /// Skip the preview confirmation prompt
+        #[arg(long)]
+        yes: bool,
 
         /// Registry host (defaults to workspace config)
         #[arg(long)]
@@ -218,9 +222,10 @@ pub async fn handle_principal(
             registry_ref,
             name,
             force,
+            yes,
             registry_host,
             registry_token,
-        } => pull_principal(&registry_ref, name, force, registry_host, registry_token).await,
+        } => pull_principal(&registry_ref, name, force, yes, registry_host, registry_token).await,
         PrincipalCommands::Permit {
             name,
             subject,
@@ -465,43 +470,22 @@ async fn import_principal(
     let client = DaemonClient::connect().await?;
 
     // Always preview first. The preview is read-only and surfaces bundled
-    // agents, extensions, signature status, and validation issues.
+    // agents, extensions, signature status, validation issues, and the
+    // capabilities that the package's extensions require.
     let preview = client
         .principal_import_preview(file_path, name.clone(), allow_unsigned, force)
         .await?;
 
-    let preview = match preview {
-        ResponsePacket::PrincipalImportPreviewed {
-            name,
-            version,
-            did,
-            description,
-            agents,
-            extensions,
-            signed,
-            validation_errors,
-            validation_warnings,
-            ..
-        } => PrincipalImportPreview {
-            name,
-            version,
-            did,
-            description,
-            agents,
-            extensions,
-            signed,
-            validation_errors,
-            validation_warnings,
-        },
-        ResponsePacket::Error { message, .. } => {
-            anyhow::bail!("Failed to preview principal import: {message}");
-        }
-        other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
-        }
+    let preview = decode_preview_response(preview, "import")?;
+
+    let default_select_all = preview.signed || allow_unsigned;
+    let selected_capabilities = if yes {
+        apply_capability_defaults(&preview.required_capabilities, default_select_all)
+    } else {
+        prompt_capability_selection(&preview.required_capabilities, default_select_all)?
     };
 
-    render_import_preview(&preview);
+    render_import_preview(&preview, &selected_capabilities);
 
     if !preview.validation_errors.is_empty() && !force {
         anyhow::bail!(
@@ -509,22 +493,20 @@ async fn import_principal(
         );
     }
 
-    if !yes {
-        print!("Import this principal? [y/N] ");
-        std::io::Write::flush(&mut std::io::stdout())
-            .with_context(|| "failed to flush confirmation prompt")?;
-        let mut answer = String::new();
-        std::io::stdin()
-            .read_line(&mut answer)
-            .with_context(|| "failed to read confirmation")?;
-        if !answer.trim().eq_ignore_ascii_case("y") {
-            println!("Import cancelled.");
-            return Ok(());
-        }
+    if !yes && !confirm_prompt("Import this principal?")? {
+        println!("Import cancelled.");
+        return Ok(());
     }
 
     let response = client
-        .principal_import(file_path, name, allow_unsigned, force, true)
+        .principal_import(
+            file_path,
+            name,
+            allow_unsigned,
+            force,
+            true,
+            selected_capabilities,
+        )
         .await?;
 
     match response {
@@ -543,8 +525,8 @@ async fn import_principal(
     }
 }
 
-/// Internal summary of a `PrincipalImportPreviewed` response, used to
-/// keep the rendering code tidy.
+/// Internal summary of a principal package preview response, used to keep
+/// the rendering and selection code tidy.
 struct PrincipalImportPreview {
     name: String,
     version: String,
@@ -552,12 +534,66 @@ struct PrincipalImportPreview {
     description: Option<String>,
     agents: Vec<String>,
     extensions: Vec<String>,
+    required_capabilities: Vec<String>,
     signed: bool,
     validation_errors: Vec<String>,
     validation_warnings: Vec<String>,
 }
 
-fn render_import_preview(preview: &PrincipalImportPreview) {
+/// Decode either a local import preview response or a remote pull preview
+/// response into the shared `PrincipalImportPreview` struct.
+fn decode_preview_response(
+    response: ResponsePacket,
+    operation: &str,
+) -> Result<PrincipalImportPreview> {
+    match response {
+        ResponsePacket::PrincipalImportPreviewed {
+            name,
+            version,
+            did,
+            description,
+            agents,
+            extensions,
+            required_capabilities,
+            signed,
+            validation_errors,
+            validation_warnings,
+            ..
+        }
+        | ResponsePacket::PrincipalPullPreviewed {
+            name,
+            version,
+            did,
+            description,
+            agents,
+            extensions,
+            required_capabilities,
+            signed,
+            validation_errors,
+            validation_warnings,
+            ..
+        } => Ok(PrincipalImportPreview {
+            name,
+            version,
+            did,
+            description,
+            agents,
+            extensions,
+            required_capabilities,
+            signed,
+            validation_errors,
+            validation_warnings,
+        }),
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to preview principal {operation}: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+fn render_import_preview(preview: &PrincipalImportPreview, selected_capabilities: &[String]) {
     println!("Principal import preview:");
     println!("  Name:        {}", preview.name);
     println!("  Version:     {}", preview.version);
@@ -588,6 +624,20 @@ fn render_import_preview(preview: &PrincipalImportPreview) {
         }
     }
 
+    if preview.required_capabilities.is_empty() {
+        println!("  Required capabilities: (none)");
+    } else {
+        println!("  Required capabilities:");
+        for cap in &preview.required_capabilities {
+            let mark = if selected_capabilities.contains(cap) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            println!("    {mark} {cap}");
+        }
+    }
+
     if !preview.validation_warnings.is_empty() {
         println!("  Warnings:");
         for warning in &preview.validation_warnings {
@@ -601,6 +651,62 @@ fn render_import_preview(preview: &PrincipalImportPreview) {
             println!("    ❌ {error}");
         }
     }
+}
+
+/// Return the full required capability list if `select_all` is true,
+/// otherwise an empty list. Used by `--yes` to accept defaults.
+fn apply_capability_defaults(required: &[String], select_all: bool) -> Vec<String> {
+    if select_all {
+        required.to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Interactively prompt the user to toggle each required capability.
+/// `default_enabled` controls the default answer for each item.
+fn prompt_capability_selection(
+    required: &[String],
+    default_enabled: bool,
+) -> Result<Vec<String>> {
+    if required.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    println!("\nSelect capabilities to grant to the imported Principal:");
+    let mut selected = Vec::new();
+    for cap in required {
+        let default_label = if default_enabled { "Y/n" } else { "y/N" };
+        print!("  Grant {cap}? [{default_label}] ");
+        std::io::Write::flush(&mut std::io::stdout())
+            .with_context(|| "failed to flush capability prompt")?;
+        let mut answer = String::new();
+        std::io::stdin()
+            .read_line(&mut answer)
+            .with_context(|| "failed to read capability selection")?;
+        let answer = answer.trim();
+        let enabled = if answer.is_empty() {
+            default_enabled
+        } else {
+            answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
+        };
+        if enabled {
+            selected.push(cap.clone());
+        }
+    }
+    Ok(selected)
+}
+
+/// Ask a yes/no question and return the answer.
+fn confirm_prompt(message: &str) -> Result<bool> {
+    print!("{message} [y/N] ");
+    std::io::Write::flush(&mut std::io::stdout())
+        .with_context(|| "failed to flush confirmation prompt")?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .with_context(|| "failed to read confirmation")?;
+    Ok(answer.trim().eq_ignore_ascii_case("y"))
 }
 
 async fn push_principal(
@@ -631,12 +737,57 @@ async fn pull_principal(
     registry_ref: &str,
     name: Option<String>,
     force: bool,
+    yes: bool,
     registry_host: Option<String>,
     registry_token: Option<String>,
 ) -> Result<()> {
     let client = DaemonClient::connect().await?;
+
+    // Always preview first so the user can review capabilities before the
+    // remote package is imported.
+    let preview = client
+        .principal_pull_preview(
+            registry_ref,
+            name.clone(),
+            force,
+            registry_host.clone(),
+            registry_token.clone(),
+        )
+        .await?;
+
+    let preview = decode_preview_response(preview, "pull")?;
+
+    // Pulled packages are signed at export, so default to granting the
+    // requested capabilities unless the user opts out.
+    let selected_capabilities = if yes {
+        apply_capability_defaults(&preview.required_capabilities, preview.signed)
+    } else {
+        prompt_capability_selection(&preview.required_capabilities, preview.signed)?
+    };
+
+    render_import_preview(&preview, &selected_capabilities);
+
+    if !preview.validation_errors.is_empty() && !force {
+        anyhow::bail!(
+            "Package has validation errors. Use --force to import anyway, or fix the package."
+        );
+    }
+
+    if !yes && !confirm_prompt("Pull and import this principal?")? {
+        println!("Pull cancelled.");
+        return Ok(());
+    }
+
     let response = client
-        .principal_pull(registry_ref, name, force, registry_host, registry_token)
+        .principal_pull(
+            registry_ref,
+            name,
+            force,
+            true,
+            selected_capabilities,
+            registry_host,
+            registry_token,
+        )
         .await?;
 
     match response {
@@ -853,21 +1004,8 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
 /// unable to do anything useful. This starter set is intentionally small:
 /// file/tools, shell execution, task management, the Agent tool, and the
 /// agent_catalog needed to discover subagents.
-fn starter_extensions() -> AllowedExtensions {
-    let mut list = AllowedExtensions::new();
-    list.extend([
-        "Read",
-        "Write",
-        "Edit",
-        "Bash",
-        "Agent",
-        "agent_catalog",
-        "TaskCreate",
-        "TaskList",
-        "TaskGet",
-        "TaskUpdate",
-    ]);
-    list
+fn starter_extensions() -> Capabilities {
+    Capabilities::starter_bundle()
 }
 
 fn default_principal_config(name: &str) -> PrincipalConfig {
@@ -884,7 +1022,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         governance: PrincipalGovernanceConfig::default(),
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
-        allowed_extensions: starter_extensions(),
+        capabilities: starter_extensions(),
         exposure: crate::tunnel::protocol::InstanceExposure::Private,
         status: None,
         permissions: Vec::new(),
@@ -1030,6 +1168,55 @@ mod tests {
                 assert!(!yes);
             }
             _other => panic!("expected Principal import command"),
+        }
+    }
+
+    #[test]
+    fn principal_pull_parses_yes_flag() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "principal",
+            "pull",
+            "owner/principal:1.0.0",
+            "--name",
+            "renamed",
+            "--force",
+            "--yes",
+        ])
+        .expect("should parse principal pull with --yes");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Pull {
+                registry_ref,
+                name,
+                force,
+                yes,
+                ..
+            }) => {
+                assert_eq!(registry_ref, "owner/principal:1.0.0");
+                assert_eq!(name, Some("renamed".to_string()));
+                assert!(force);
+                assert!(yes);
+            }
+            _other => panic!("expected Principal pull command"),
+        }
+    }
+
+    #[test]
+    fn principal_pull_without_yes_defaults() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "principal",
+            "pull",
+            "owner/principal:1.0.0",
+        ])
+        .expect("should parse principal pull without --yes");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Pull { yes, .. }) => {
+                assert!(!yes);
+            }
+            _other => panic!("expected Principal pull command"),
         }
     }
 

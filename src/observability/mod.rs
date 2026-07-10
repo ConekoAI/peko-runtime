@@ -39,6 +39,14 @@ pub struct Observability {
     component: String,
 }
 
+impl std::fmt::Debug for Observability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Observability")
+            .field("component", &self.component)
+            .finish()
+    }
+}
+
 impl Observability {
     /// Create new observability hub
     pub fn new(component: impl Into<String>) -> Self {

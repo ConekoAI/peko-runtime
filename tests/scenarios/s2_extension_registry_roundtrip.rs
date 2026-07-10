@@ -57,8 +57,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use peko::principal::config::PrincipalConfig;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -205,36 +203,17 @@ fn principal_config_path(cli: &PekoCli, principal_name: &str) -> PathBuf {
 }
 
 /// Create a Principal wired to the mock LLM and grant it the
-/// `calculator-skill` extension in `[capabilities] tools` (the
+/// `calculator-skill` extension in `[capabilities] grants` (the
 /// Principal-era equivalent of the legacy
 /// `peko ext enable calculator-skill --target <agent>` flow on a
 /// standalone agent config).
 ///
-/// `calculator-skill` is a Tier 1 SKILL.md, so the dispatcher's
-/// `is_tool_enabled` lookup uses the bare extension id (the same shape
-/// the legacy whitelist accepted). We write it in BOTH the bare form
-/// AND the canonical `builtin:tool:calculator-skill` form — same dual-
-/// form grant pattern as `create_mock_principal_with_tools` — so any
-/// permission check keyed on either form succeeds.
+/// `calculator-skill` is a Tier 1 SKILL.md; skills are granted with the
+/// `skill:<id>` capability syntax. The dispatcher's `is_tool_enabled`
+/// owner check is satisfied when the capability set contains the skill's
+/// canonical extension id.
 fn create_collaborator_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
-    common::create_mock_principal_with_tools(cli, name, mock_llm_url, &["calculator-skill"]);
-
-    // Add the canonical-form alias on top. The root agent's whitelist
-    // extension includes every entry in `allowed_extensions`, so the
-    // dual form is redundant in the root agent case (the base whitelist
-    // already enumerates built-in canonical ids), but keeping the
-    // dispatcher's `is_tool_enabled` happy is the load-bearing concern
-    // here.
-    let path = principal_config_path(cli, name);
-    let raw = std::fs::read_to_string(&path).expect("read principal.toml");
-    let mut cfg: PrincipalConfig = toml::from_str(&raw).expect("parse principal.toml");
-    cfg.allowed_extensions
-        .push("builtin:tool:calculator-skill".to_string());
-    std::fs::write(
-        &path,
-        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
-    )
-    .expect("write principal.toml");
+    common::create_mock_principal_with_tools(cli, name, mock_llm_url, &["skill:calculator-skill"]);
 }
 
 /// Re-pull the same ref. `peko ext pull` writes a temp `.ext` and

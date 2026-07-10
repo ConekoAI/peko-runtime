@@ -455,6 +455,13 @@ impl AgenticLoop {
                         HookPoint::SessionStart,
                         HookInput::SessionState(snapshot),
                         Some(&self.agent_principal_id),
+                        self.agent
+                            .principal_capabilities()
+                            .map(|c| c.to_strings()),
+                        self.agent
+                            .principal_active_extensions()
+                            .map(|a| a.to_vec()),
+                        Some(workspace.to_string_lossy().to_string()),
                     )
                     .await
                 {
@@ -980,8 +987,11 @@ impl AgenticLoop {
                             // lives on the agent itself, not on
                             // `AgentConfig`.
                             self.agent
-                                .principal_allowed_extensions()
-                                .map(|allowed| allowed.iter().cloned().collect::<Vec<_>>()),
+                                .principal_capabilities()
+                                .map(|allowed| allowed.to_strings()),
+                            self.agent
+                                .principal_active_extensions()
+                                .map(|active| active.to_vec()),
                             self.cancel.clone(),
                             &on_event,
                         )
@@ -1077,11 +1087,14 @@ impl AgenticLoop {
         // carried on the agent itself.
         let allowed = self
             .agent
-            .principal_allowed_extensions()
-            .map(|allowed| allowed.iter().cloned().collect::<Vec<_>>());
+            .principal_capabilities()
+            .map(|allowed| allowed.as_ref());
+        let active = self
+            .agent
+            .principal_active_extensions();
         let defs = self
             .extension_core
-            .list_tool_definitions_with_allowlist(allowed.as_deref())
+            .list_tool_definitions_with_allowlist(allowed, active)
             .await;
 
         info!(
@@ -1247,7 +1260,7 @@ mod tests {
     fn test_agent_config(name: &str) -> AgentConfig {
         // **Track B**: per-agent extension whitelist removed from
         // `AgentConfig`. The `*` placeholder this used to set is
-        // now applied via `Agent::with_principal_allowed_extensions`
+        // now applied via `Agent::with_principal_capabilities`
         // downstream of this fixture.
         AgentConfig {
             name: name.to_string(),

@@ -111,7 +111,8 @@ name = "sig-test"
 description = "Signature test principal"
 display_name = "Signature Test Principal"
 
-allowed_extensions = []
+[capabilities]
+grants = []
 "#;
     let config_bytes = config_toml.as_bytes().to_vec();
 
@@ -202,6 +203,7 @@ fn import_options(
         } else {
             TrustPolicy::Tofu
         },
+        selected_capabilities: Vec::new(),
     }
 }
 

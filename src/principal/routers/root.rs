@@ -129,7 +129,7 @@ impl RootRouter {
             Arc::clone(&self.memory),
             Arc::clone(&ctx.inbox_registry),
             Arc::clone(&ctx.session_creation_lock),
-            Arc::new(ctx.allowed_extensions.clone()),
+            Arc::new(ctx.capabilities.clone()),
             self.resolver.clone(),
             (
                 self.principal_provider_id.clone(),
@@ -151,6 +151,15 @@ impl RootRouter {
         if let Some(ref runtime_id) = self.caller_runtime_id.read().ok().and_then(|g| g.clone()) {
             if let Err(e) = principal_ctx.set_caller_runtime_id((*runtime_id).clone()) {
                 tracing::debug!("RootRouter::build_context: {e}");
+            }
+        }
+        if let Err(e) = principal_ctx.set_active_extensions(ctx.active_extensions.clone()) {
+            tracing::debug!("RootRouter::build_context: active_extensions already set");
+            let _ = e;
+        }
+        if let Some(ref obs) = ctx.observability {
+            if let Err(_) = principal_ctx.set_observability(Arc::clone(obs)) {
+                tracing::debug!("RootRouter::build_context: observability already set");
             }
         }
         principal_ctx
@@ -263,10 +272,10 @@ mod tests {
     use super::*;
     use crate::auth::Subject;
     use crate::principal::config::{
-        AllowedExtensions, PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
+        PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
     };
     use crate::principal::router::{ChannelContext, ChannelKind, ContextInjectionKind};
-    use crate::principal::ExtensionStore;
+    use crate::principal::{Capabilities, ExtensionStore};
     use crate::session::InboxRegistry;
 
     #[test]
@@ -302,12 +311,14 @@ mod tests {
                 description: Some("Generalist".to_string()),
                 enabled: true,
             }],
-            allowed_extensions: AllowedExtensions::default(),
+            capabilities: Capabilities::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
             extension_store: ExtensionStore::default(),
+            active_extensions: crate::principal::ActiveExtensionSet::empty(),
             inbox_registry: Arc::new(InboxRegistry::new()),
             session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            observability: None,
         };
 
         let message = build_root_message(&ctx);

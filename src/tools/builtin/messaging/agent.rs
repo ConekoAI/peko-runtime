@@ -227,18 +227,18 @@ impl AgentTool {
         subagent_type: &str,
         model_override: Option<&str>,
     ) -> anyhow::Result<AgentConfig> {
-        // ADR-019/Track B: enforce the per-principal agent allowlist before
-        // loading any on-disk config. If the principal has a registered
-        // AgentState, the requested subagent must be enabled in it. If no
-        // state is registered (standalone / test path), fail-open to preserve
-        // existing behavior.
-        let registry = crate::principal::AgentStateRegistry::global();
-        let principal_id = self.executor.principal_id();
-        if let Some(state) = registry.get(principal_id).await {
-            if !state.is_enabled(subagent_type) {
+        // ADR-019/Track B: enforce the per-principal agent capability before
+        // loading any on-disk config. If the executor carries a capability
+        // snapshot, the requested subagent must be granted. If no snapshot is
+        // registered (standalone / test path), fail-open to preserve existing
+        // behavior.
+        if let Some(caps) = self.executor.principal_capabilities() {
+            let required = crate::principal::Capability::new(format!("agent:{subagent_type}"));
+            if !caps.is_granted(&required) {
                 anyhow::bail!(
                     "Subagent '{}' is not enabled for this principal. \
-                     Add it to the principal's allowed_extensions and retry.",
+                     Grant 'agent:{}' and retry.",
+                    subagent_type,
                     subagent_type
                 );
             }
@@ -284,6 +284,7 @@ impl AgentTool {
     async fn execute_spawn_blocking(
         &self,
         prompt: &str,
+        subagent_type: &str,
         isolated: bool,
         parent_session_key: &str,
         config: ExecutionConfig,
@@ -292,6 +293,31 @@ impl AgentTool {
         ctx: Option<&ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
         let timeout_seconds = config.timeout_seconds;
+
+        // Audit the spawn under the parent principal, if an observability hub
+        // is attached to the executor. Failures are logged but do not block
+        // the spawn.
+        if let Some(obs) = self.executor.observability() {
+            let details = serde_json::json!({
+                "subagent_type": subagent_type,
+                "principal_id": self.executor.principal_id().0,
+                "principal_name": self.executor.principal_name(),
+                "isolated": isolated,
+                "cleanup": match cleanup {
+                    SpawnCleanupPolicy::Keep => "keep",
+                    SpawnCleanupPolicy::Delete => "delete",
+                },
+                "description": description,
+                "parent_session_key": parent_session_key,
+            });
+            if let Err(e) = obs
+                .audit("SubagentSpawn", self.executor.principal_name(), details)
+                .await
+            {
+                tracing::warn!("Failed to audit subagent spawn: {e}");
+            }
+        }
+
         let (parent_cancel, _cancel_guard): (
             Option<tokio_util::sync::CancellationToken>,
             CancellationTokenBridgeGuard,
@@ -331,6 +357,7 @@ impl AgentTool {
                     "run_id": run.run_id,
                     "child_session_key": run.child_session_key,
                     "success": success,
+                    "subagent_type": subagent_type,
                     "description": description,
                     "isolated": isolated,
                     "timeout_seconds": timeout_seconds,
@@ -543,6 +570,7 @@ Examples:
         };
         tool.execute_spawn_blocking(
             &args.prompt,
+            &args.subagent_type,
             args.isolated,
             &parent_session_key,
             config,
@@ -610,6 +638,7 @@ Examples:
         };
         tool.execute_spawn_blocking(
             &args.prompt,
+            &args.subagent_type,
             args.isolated,
             &parent_session_key,
             config,
@@ -624,7 +653,7 @@ Examples:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::{AgentState, AgentStateRegistry, PrincipalId};
+    use crate::principal::{Capabilities, PrincipalId};
     use crate::session::manager::SessionManager;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -642,9 +671,15 @@ mod tests {
         dir
     }
 
-    fn test_executor(pid: PrincipalId) -> Arc<SubagentExecutor> {
+    fn test_executor(
+        pid: PrincipalId,
+        capabilities: Option<Arc<Capabilities>>,
+    ) -> Arc<SubagentExecutor> {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        Arc::new(SubagentExecutor::new(manager, "test_agent", 5, pid))
+        Arc::new(
+            SubagentExecutor::new(manager, "test_agent", 5, pid)
+                .with_principal_capabilities(capabilities),
+        )
     }
 
     #[tokio::test]
@@ -652,11 +687,8 @@ mod tests {
         let pid = PrincipalId::generate();
         let workspace = temp_agent_workspace("writer").await;
         let service = AgentService::for_principal(workspace.path());
-        let tool = AgentTool::with_agent_service(test_executor(pid.clone()), service);
-
-        AgentStateRegistry::global()
-            .register(pid, AgentState::new(vec!["writer".to_string()]))
-            .await;
+        let caps = Arc::new(Capabilities::with_grants(["agent:writer"]));
+        let tool = AgentTool::with_agent_service(test_executor(pid.clone(), Some(caps)), service);
 
         let result = tool.resolve_subagent_config("writer", None).await;
         assert!(
@@ -671,16 +703,13 @@ mod tests {
         let pid = PrincipalId::generate();
         let workspace = temp_agent_workspace("writer").await;
         let service = AgentService::for_principal(workspace.path());
-        let tool = AgentTool::with_agent_service(test_executor(pid.clone()), service);
-
-        AgentStateRegistry::global()
-            .register(pid, AgentState::new(vec!["other".to_string()]))
-            .await;
+        let caps = Arc::new(Capabilities::with_grants(["agent:other"]));
+        let tool = AgentTool::with_agent_service(test_executor(pid.clone(), Some(caps)), service);
 
         let result = tool.resolve_subagent_config("writer", None).await;
         assert!(
             result.is_err(),
-            "disabled subagent should be rejected by AgentStateRegistry"
+            "disabled subagent should be rejected by capability snapshot"
         );
         let err = result.unwrap_err().to_string();
         assert!(
@@ -694,10 +723,10 @@ mod tests {
         let pid = PrincipalId::generate();
         let workspace = temp_agent_workspace("writer").await;
         let service = AgentService::for_principal(workspace.path());
-        let tool = AgentTool::with_agent_service(test_executor(pid), service);
+        let tool = AgentTool::with_agent_service(test_executor(pid, None), service);
 
-        // No AgentState registered for this principal; standalone/test path
-        // should remain usable.
+        // No capability snapshot registered for this principal; standalone/test
+        // path should remain usable.
         let result = tool.resolve_subagent_config("writer", None).await;
         assert!(
             result.is_ok(),

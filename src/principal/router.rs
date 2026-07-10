@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::observability::Observability;
 use crate::session::InboxRegistry;
 
 /// A routing decision emitted by a `PrincipalRouter`.
@@ -41,18 +42,25 @@ pub struct RouterContext {
     pub routing: super::PrincipalRoutingConfig,
     pub recalled_context: Vec<ContextInjection>,
     pub available_agents: Vec<AgentPromptSummary>,
-    pub allowed_extensions: super::AllowedExtensions,
+    pub capabilities: super::Capabilities,
     pub intent: super::PrincipalIntentConfig,
     pub governance: super::PrincipalGovernanceConfig,
     /// Per-principal snapshot of all detected extensions/agents and their
-    /// enabled state.
+    /// authority state.
     pub extension_store: super::ExtensionStore,
+    /// Set of extension IDs that are currently active for this Principal.
+    /// Derived from `extension_store.active_extensions()` and carried here
+    /// so routers can thread it into `PrincipalContext` without recomputing.
+    pub active_extensions: super::ActiveExtensionSet,
     /// Shared inbox registry so the router can wire the root agent
     /// to the same inbox the Principal boundary pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,
     /// Per-principal lock held during root-agent session creation so concurrent
     /// peers do not race on shared session metadata/index writes.
     pub session_creation_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Optional observability hub for audit/metrics. Threaded through to the
+    /// root agent and the `Agent` tool so subagent spawns are auditable.
+    pub observability: Option<Arc<Observability>>,
 }
 
 #[derive(Debug, Clone)]

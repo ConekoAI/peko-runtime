@@ -359,7 +359,9 @@ impl HookHandler for BuiltinExecuteHandler {
                 .with_session_id(runtime_ctx.session_id.clone().unwrap_or_default())
                 .with_workspace(runtime_ctx.workspace.clone().unwrap_or_default())
                 .with_principal_id(runtime_ctx.principal_id.clone().unwrap_or_default())
-                .with_principal_name(runtime_ctx.principal_name.clone().unwrap_or_default());
+                .with_principal_name(runtime_ctx.principal_name.clone().unwrap_or_default())
+                .with_capabilities(runtime_ctx.capabilities.clone().unwrap_or_default())
+                .with_active_extensions(runtime_ctx.active_extensions.clone().unwrap_or_default());
         let tool_ctx = match runtime_ctx.abort_signal.as_ref() {
             Some(rx) => base_ctx.with_abort_signal(rx.clone()),
             None => base_ctx,
@@ -727,7 +729,8 @@ mod tests {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            allowed_extensions: Some(vec!["builtin:tool:Fast".to_string()]),
+            capabilities: Some(vec!["tool:Fast".to_string()]),
+            active_extensions: None,
             abort_signal: Some(rx),
         };
         let point = HookPoint::ToolExecute {
@@ -805,7 +808,8 @@ mod tests {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            allowed_extensions: Some(vec!["builtin:tool:Slow".to_string()]),
+            capabilities: Some(vec!["tool:Slow".to_string()]),
+            active_extensions: None,
             abort_signal: Some(rx),
         };
         let point = HookPoint::ToolExecute {
@@ -896,7 +900,8 @@ mod tests {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            allowed_extensions: Some(vec!["builtin:tool:Enriching".to_string()]),
+            capabilities: Some(vec!["tool:Enriching".to_string()]),
+            active_extensions: None,
             abort_signal: Some(rx),
         };
         let point = HookPoint::ToolExecute {
@@ -1020,7 +1025,8 @@ mod tests {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            allowed_extensions: Some(vec!["builtin:tool:Cleanup".to_string()]),
+            capabilities: Some(vec!["tool:Cleanup".to_string()]),
+            active_extensions: None,
             abort_signal: Some(rx),
         };
         let point = HookPoint::ToolExecute {

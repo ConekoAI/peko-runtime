@@ -25,6 +25,7 @@ use std::sync::{Arc, OnceLock};
 use crate::extensions::agent::{register_agents_with_core, AgentAdapter};
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
+use crate::observability::Observability;
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
 use crate::principal::PrincipalId;
@@ -32,7 +33,7 @@ use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 
-use super::config::AllowedExtensions;
+use super::Capabilities;
 
 /// Per-principal runtime state shared by the root agent and its
 /// subagents.
@@ -57,9 +58,9 @@ pub struct PrincipalContext {
     /// Held during root-agent session creation so concurrent peers
     /// don't race on shared session metadata.
     pub session_creation_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Principal's allowed extensions — what tools/skills/mcps/agents are
+    /// Principal's capability grants — what tools/skills/mcps/agents are
     /// enabled for this principal.
-    pub allowed_extensions: Arc<AllowedExtensions>,
+    pub capabilities: Arc<Capabilities>,
     /// LLM resolver used to validate provider hints and surface
     /// catalog defaults.
     pub resolver: Option<Arc<LlmResolver>>,
@@ -86,6 +87,15 @@ pub struct PrincipalContext {
     /// `Subject::Principal(caller_principal_did)`.
     caller_principal_did: OnceLock<String>,
     caller_runtime_id: OnceLock<String>,
+    /// Optional observability hub. Set from the `RouterContext` by the root
+    /// router so subagent spawns can be audited under the parent principal.
+    observability: OnceLock<Arc<Observability>>,
+    /// Snapshot of the extension IDs that are active for this principal on
+    /// this message. Derived from the `RouterContext::active_extensions`
+    /// snapshot and consulted by the agent's tool gate so a tool is only
+    /// callable when both its capability is granted and its owning extension
+    /// is active.
+    active_extensions: OnceLock<crate::principal::ActiveExtensionSet>,
 }
 
 impl PrincipalContext {
@@ -96,7 +106,7 @@ impl PrincipalContext {
         memory: Arc<dyn PrincipalMemory>,
         inbox_registry: Arc<InboxRegistry>,
         session_creation_lock: Arc<tokio::sync::Mutex<()>>,
-        allowed_extensions: Arc<AllowedExtensions>,
+        capabilities: Arc<Capabilities>,
         resolver: Option<Arc<LlmResolver>>,
         provider_hint: (Option<String>, Option<String>),
         principal_id: PrincipalId,
@@ -108,13 +118,15 @@ impl PrincipalContext {
             memory,
             inbox_registry,
             session_creation_lock,
-            allowed_extensions,
+            capabilities,
             resolver,
             provider_hint,
             root_prompt: OnceLock::new(),
             principal_id,
             caller_principal_did: OnceLock::new(),
             caller_runtime_id: OnceLock::new(),
+            observability: OnceLock::new(),
+            active_extensions: OnceLock::new(),
         }
     }
 
@@ -173,6 +185,36 @@ impl PrincipalContext {
     #[must_use]
     pub fn caller_runtime_id(&self) -> Option<&String> {
         self.caller_runtime_id.get()
+    }
+
+    /// Bind the observability hub for this principal context. Idempotent.
+    pub fn set_observability(
+        &self,
+        observability: Arc<Observability>,
+    ) -> Result<(), Arc<Observability>> {
+        self.observability.set(observability)
+    }
+
+    /// Get the observability hub, if bound.
+    #[must_use]
+    pub fn observability(&self) -> Option<&Arc<Observability>> {
+        self.observability.get()
+    }
+
+    /// Bind the active extension snapshot for this principal context.
+    /// Idempotent.
+    pub fn set_active_extensions(
+        &self,
+        active_extensions: crate::principal::ActiveExtensionSet,
+    ) -> Result<(), crate::principal::ActiveExtensionSet> {
+        self.active_extensions.set(active_extensions)
+    }
+
+    /// Snapshot of extension IDs active for this principal. Returns an empty
+    /// set if no snapshot has been bound.
+    #[must_use]
+    pub fn active_extensions(&self) -> &crate::principal::ActiveExtensionSet {
+        self.active_extensions.get_or_init(crate::principal::ActiveExtensionSet::empty)
     }
 
     /// Get the daemon-global `ExtensionCore` and ensure the
@@ -251,9 +293,8 @@ async fn install_principal_tool_bag(
     }
 
     // Register the singleton `Skill` tool once on the global core.
-    // Per-principal allowlist and workspace state are resolved at handle
-    // time via `ExtensionStateRegistry` using the `principal_id` carried in
-    // `ToolContext` (P2 audit issue #2).
+    // Per-principal enablement and workspace state are resolved at handle
+    // time from the `ToolContext` carried with each invocation.
     if let Err(e) =
         BuiltinToolAdapter::register_tool(core.as_ref(), Arc::new(SkillTool::new())).await
     {
@@ -289,7 +330,7 @@ async fn install_principal_tool_bag(
 ///
 /// The catalog is the *only* per-call tool — its contents are the
 /// currently-available `AgentPromptSummary` list, which can change
-/// between messages if the principal's `allowed_extensions` was
+/// between messages if the principal's `capabilities` was
 /// edited. Everything else on the core is stable.
 pub(crate) async fn install_agent_catalog(
     core: &ExtensionCore,
@@ -301,8 +342,8 @@ pub(crate) async fn install_agent_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::config::AllowedExtensions;
     use crate::principal::memory::DefaultPrincipalMemory;
+    use crate::principal::Capabilities;
     use crate::principal::PrincipalId;
     use std::sync::Arc;
 
@@ -325,7 +366,7 @@ mod tests {
             memory,
             Arc::new(InboxRegistry::new()),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(AllowedExtensions::default()),
+            Arc::new(Capabilities::default()),
             None,
             (None, None),
             PrincipalId::generate(),
@@ -349,7 +390,7 @@ mod tests {
             memory,
             Arc::new(InboxRegistry::new()),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(AllowedExtensions::default()),
+            Arc::new(Capabilities::default()),
             None,
             (None, None),
             PrincipalId::generate(),
@@ -383,7 +424,7 @@ mod tests {
             memory,
             Arc::new(InboxRegistry::new()),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(AllowedExtensions::default()),
+            Arc::new(Capabilities::default()),
             None,
             (None, None),
             id.clone(),

@@ -667,6 +667,10 @@ impl AppState {
             crate::extensions::framework::services::Services::with_core(Arc::clone(&global_core)),
         );
 
+        // Observability hub is constructed early so it can be shared with the
+        // PrincipalManager and threaded through to subagent spawn audit events.
+        let observability = Arc::new(Observability::new("api"));
+
         // Initialize the PrincipalManager and load any existing principals.
         // This happens after the extension manager is built so we can inject
         // the slash-command dispatcher, which needs extension state.
@@ -687,7 +691,8 @@ impl AppState {
             )
             .with_resolver(resolver.clone())
             .with_slash_dispatcher(slash_dispatcher)
-            .with_extension_manager(Arc::clone(&extension_manager));
+            .with_extension_manager(Arc::clone(&extension_manager))
+            .with_observability(Arc::clone(&observability));
 
             if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {
@@ -751,7 +756,7 @@ impl AppState {
             host,
             config,
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
-            observability: Arc::new(Observability::new("api")),
+            observability,
             config_service,
             agent_service,
             resolver,
