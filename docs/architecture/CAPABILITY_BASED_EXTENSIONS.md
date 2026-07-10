@@ -91,7 +91,7 @@ Authority is separated from installation:
 
 The per-Principal `ExtensionStore` indexes both local workspace files and the global cache. Copying into the workspace happens only when needed — for example, during `peko principal export`, which embeds globally referenced extensions so the package remains portable.
 
-This means the old `peko ext enable/disable --principal` commands are deprecated and replaced by `peko capability grant/revoke --principal`.
+This means the old `peko ext enable/disable --principal` commands are removed; use `peko capability grant/revoke --principal` instead.
 
 ### 3.3 Capability Taxonomy
 
@@ -312,7 +312,7 @@ Legacy `allowed_extensions` and `permissions` are read at load time and mapped i
 | `AgentStateRegistry` | Capability grant `agent:<id>` |
 | `ToolRegistry::is_tool_enabled_with_whitelist` | `CapabilityEvaluator` |
 | `allowed_extensions: Vec<String>` and `permissions: Vec<PermissionGrant>` | `capabilities.grants: Vec<Capability>` in `principal.toml` |
-| `peko ext enable/disable --principal` | `peko capability grant/revoke --principal` |
+| `peko ext enable/disable --principal` | Removed; use `peko capability grant/revoke --principal` |
 | `AgentService::resolve_subagent_type` | Capability check for `agent:<id>` + spawn under parent Principal context |
 | `ConfigAuthorityImpl` enable/disable | `CapabilityEvaluator` + `ExtensionStore` |
 | Principal `.principal` archive | Signed package with manifest + bundled extensions |

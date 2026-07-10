@@ -16,7 +16,7 @@ fn unique_name(prefix: &str) -> String {
 }
 
 #[tokio::test]
-async fn import_yes_selects_all_required_capabilities() {
+async fn import_yes_selects_no_required_capabilities() {
     let name = unique_name("imp-yes-");
     let cli = PekoCli::new();
     let _daemon = DaemonGuard::spawn(&cli);
@@ -57,13 +57,13 @@ async fn import_yes_selects_all_required_capabilities() {
         toml::from_str(&config_toml).expect("parse imported principal.toml");
 
     assert!(
-        config.capabilities.contains_str("tool:fixture.exec"),
-        "expected tool:fixture.exec to be granted; got {:?}",
+        !config.capabilities.contains_str("tool:fixture.exec"),
+        "--yes should not grant tool:fixture.exec; got {:?}",
         config.capabilities
     );
     assert!(
-        config.capabilities.contains_str("tool:fixture.read"),
-        "expected tool:fixture.read to be granted; got {:?}",
+        !config.capabilities.contains_str("tool:fixture.read"),
+        "--yes should not grant tool:fixture.read; got {:?}",
         config.capabilities
     );
 }
@@ -84,7 +84,8 @@ async fn import_interactive_partial_capability_selection() {
         .await
         .expect("build signed principal package");
 
-    // Required capabilities are sorted alphabetically:
+    // Required capabilities are sorted alphabetically. Defaults are now
+    // opt-out (y/N), so explicit answers select the partial set:
     //   1. tool:fixture.exec  -> answer "n"
     //   2. tool:fixture.read  -> answer "y"
     // Then confirm the import                       -> answer "y"
