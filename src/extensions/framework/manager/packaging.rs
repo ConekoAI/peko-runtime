@@ -3,7 +3,7 @@
 //! Exports installed extensions to `.ext` files (gzip-compressed tar archives)
 //! that can be shared and installed on other Peko instances.
 
-use crate::extensions::framework::manager::ExtensionManager;
+use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
 use anyhow::Context;
 use std::collections::HashMap;
@@ -91,22 +91,23 @@ impl ExtensionPackager {
     /// Export an installed extension to a `.ext` package.
     ///
     /// # Arguments
-    /// * `manager` - The extension manager containing the installed extension
+    /// * `store` - The extension store containing the installed extension
     /// * `id` - The extension ID to export
     /// * `output_path` - Where to write the `.ext` file
     ///
     /// # Returns
     /// The path to the created `.ext` package
-    pub fn export(
-        manager: &ExtensionManager,
+    pub async fn export(
+        store: &ExtensionStore,
         id: &ExtensionId,
         output_path: impl AsRef<Path>,
     ) -> anyhow::Result<PathBuf> {
         let output_path = output_path.as_ref();
 
         // Look up the extension
-        let ext = manager
+        let ext = store
             .get_extension(id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
 
         let source_path = &ext.path;
@@ -196,15 +197,15 @@ impl ExtensionPackager {
     /// Export an installed extension with its dependencies to a `.ext` package.
     ///
     /// # Arguments
-    /// * `manager` - The extension manager containing the installed extension
+    /// * `store` - The extension store containing the installed extension
     /// * `id` - The extension ID to export
     /// * `dep_ids` - IDs of dependency extensions to bundle
     /// * `output_path` - Where to write the `.ext` file
     ///
     /// # Returns
     /// The path to the created `.ext` package
-    pub fn export_with_deps(
-        manager: &ExtensionManager,
+    pub async fn export_with_deps(
+        store: &ExtensionStore,
         id: &ExtensionId,
         dep_ids: &[ExtensionId],
         output_path: impl AsRef<Path>,
@@ -212,8 +213,9 @@ impl ExtensionPackager {
         let output_path = output_path.as_ref();
 
         // Look up the primary extension
-        let ext = manager
+        let ext = store
             .get_extension(id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
 
         let source_path = &ext.path;
@@ -237,7 +239,7 @@ impl ExtensionPackager {
         // Collect dependency files
         let mut dep_manifests = Vec::new();
         for dep_id in dep_ids {
-            if let Some(dep_ext) = manager.get_extension(dep_id) {
+            if let Some(dep_ext) = store.get_extension(dep_id).await {
                 let dep_path = &dep_ext.path;
                 if dep_path.exists() {
                     Self::collect_files_recursive(
@@ -495,7 +497,7 @@ impl ExtensionUnpackager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::manager::ExtensionManager;
+    use crate::extensions::framework::store::{ExtensionStore, LoadedExtension};
     use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -514,12 +516,12 @@ mod tests {
         ext_dir
     }
 
-    fn create_manager_with_extension(temp: &TempDir, id: &str) -> (ExtensionManager, PathBuf) {
+    async fn create_store_with_extension(temp: &TempDir, id: &str) -> (ExtensionStore, PathBuf) {
         let ext_dir = create_test_extension(temp, id);
         let storage_dir = temp.path().join("storage");
         std::fs::create_dir_all(&storage_dir).unwrap();
 
-        let mut manager = ExtensionManager::new().with_storage_dir(storage_dir);
+        let store = ExtensionStore::new().with_storage_dir(storage_dir);
         // Manually insert the loaded extension since we don't have adapters in unit tests
         let manifest = ExtensionManifest::new(
             id,
@@ -529,49 +531,51 @@ mod tests {
             "1.0.0",
             ext_dir.clone(),
         );
-        let loaded = crate::extensions::framework::manager::LoadedExtension {
+        let loaded = LoadedExtension {
             manifest,
             extension_type: "skill".to_string(),
             hook_ids: Vec::new(),
             path: ext_dir.clone(),
         };
-        manager.extensions.insert(ExtensionId::new(id), loaded);
+        store.insert_test_extension(loaded).await;
 
-        (manager, ext_dir)
+        (store, ext_dir)
     }
 
-    #[test]
-    fn test_extension_packager_export_creates_ext_file() {
+    #[tokio::test]
+    async fn test_extension_packager_export_creates_ext_file() {
         let temp = TempDir::new().unwrap();
-        let (manager, _ext_dir) = create_manager_with_extension(&temp, "test-skill");
+        let (store, _ext_dir) = create_store_with_extension(&temp, "test-skill").await;
 
         let output_path = temp.path().join("test-skill.ext");
         let result =
-            ExtensionPackager::export(&manager, &ExtensionId::new("test-skill"), &output_path);
+            ExtensionPackager::export(&store, &ExtensionId::new("test-skill"), &output_path).await;
         assert!(result.is_ok(), "Export failed: {:?}", result.err());
         assert!(output_path.exists());
     }
 
-    #[test]
-    fn test_extension_packager_export_fails_for_missing_extension() {
+    #[tokio::test]
+    async fn test_extension_packager_export_fails_for_missing_extension() {
         let temp = TempDir::new().unwrap();
-        let (manager, _ext_dir) = create_manager_with_extension(&temp, "test-skill");
+        let (store, _ext_dir) = create_store_with_extension(&temp, "test-skill").await;
 
         let output_path = temp.path().join("missing.ext");
         let result =
-            ExtensionPackager::export(&manager, &ExtensionId::new("nonexistent"), &output_path);
+            ExtensionPackager::export(&store, &ExtensionId::new("nonexistent"), &output_path).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
-    #[test]
-    fn test_extension_unpackager_install_roundtrip() {
+    #[tokio::test]
+    async fn test_extension_unpackager_install_roundtrip() {
         let temp = TempDir::new().unwrap();
-        let (manager, _ext_dir) = create_manager_with_extension(&temp, "test-skill");
+        let (store, _ext_dir) = create_store_with_extension(&temp, "test-skill").await;
 
         // Export
         let output_path = temp.path().join("test-skill.ext");
-        ExtensionPackager::export(&manager, &ExtensionId::new("test-skill"), &output_path).unwrap();
+        ExtensionPackager::export(&store, &ExtensionId::new("test-skill"), &output_path)
+            .await
+            .unwrap();
 
         // Install to new location
         let install_dir = temp.path().join("installed");
@@ -584,13 +588,14 @@ mod tests {
         assert!(installed_path.join("SKILL.md").exists());
     }
 
-    #[test]
-    fn test_extension_unpackager_inspect() {
+    #[tokio::test]
+    async fn test_extension_unpackager_inspect() {
         let temp = TempDir::new().unwrap();
-        let (manager, _ext_dir) = create_manager_with_extension(&temp, "docker-skill");
+        let (store, _ext_dir) = create_store_with_extension(&temp, "docker-skill").await;
 
         let output_path = temp.path().join("docker-skill.ext");
-        ExtensionPackager::export(&manager, &ExtensionId::new("docker-skill"), &output_path)
+        ExtensionPackager::export(&store, &ExtensionId::new("docker-skill"), &output_path)
+            .await
             .unwrap();
 
         let manifest = ExtensionUnpackager::inspect(&output_path).unwrap();
@@ -601,13 +606,15 @@ mod tests {
         assert!(!manifest.packaging.checksums.is_empty());
     }
 
-    #[test]
-    fn test_extension_unpackager_checksum_validation() {
+    #[tokio::test]
+    async fn test_extension_unpackager_checksum_validation() {
         let temp = TempDir::new().unwrap();
-        let (manager, _ext_dir) = create_manager_with_extension(&temp, "test-skill");
+        let (store, _ext_dir) = create_store_with_extension(&temp, "test-skill").await;
 
         let output_path = temp.path().join("test-skill.ext");
-        ExtensionPackager::export(&manager, &ExtensionId::new("test-skill"), &output_path).unwrap();
+        ExtensionPackager::export(&store, &ExtensionId::new("test-skill"), &output_path)
+            .await
+            .unwrap();
 
         // Tamper with the file by recreating it with bad content
         {

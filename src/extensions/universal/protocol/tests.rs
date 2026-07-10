@@ -196,14 +196,14 @@ for line in sys.stdin:
 "#;
     tokio::fs::write(&script_path, script).await.unwrap();
 
-    // Use ExtensionManager for discovery (legacy discovery module removed)
-    use crate::extensions::framework::manager::ExtensionManager;
+    // Use ExtensionStore for discovery.
+    use crate::extensions::framework::store::ExtensionStore;
     use crate::extensions::BuiltInAdapters;
-    let mut manager = ExtensionManager::new();
+    let store = ExtensionStore::new();
     for adapter in BuiltInAdapters::new().adapters() {
-        manager.register_adapter(adapter);
+        store.register_adapter(adapter).await;
     }
-    let discovered = manager.scan_directory(dir).await.unwrap();
+    let discovered = store.scan_directory(dir).await.unwrap();
 
     assert_eq!(discovered.len(), 1);
     // The extension type should be "universal-tool" for manifest.yaml files

@@ -60,7 +60,7 @@ pub struct ExtensionCore {
     /// its tools registered on this core. A fresh `Agent` is built per
     /// execution but they all share the daemon-global core, so without
     /// this guard `Agent::init_builtins_async` re-walks the extensions
-    /// dir and rebuilds an `ExtensionManager` on every single run. Tool
+    /// dir and rebuilds an `ExtensionStore` on every single run. Tool
     /// registration is idempotent, so loading once per core is correct.
     universal_extensions_loaded: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -106,7 +106,7 @@ impl ExtensionCore {
 
     /// Whether the universal extensions directory has already been scanned
     /// and loaded onto this core. Used by `Agent::init_builtins_async` to
-    /// skip the expensive per-execution dir walk + `ExtensionManager`
+    /// skip the expensive per-execution dir walk + `ExtensionStore`
     /// rebuild once the shared core is warm.
     #[must_use]
     pub fn universal_extensions_loaded(&self) -> bool {
@@ -275,14 +275,20 @@ impl ExtensionCore {
                 _ => None,
             };
             let active_extensions = match &input {
-                HookInput::ToolCall { active_extensions, .. } => active_extensions
+                HookInput::ToolCall {
+                    active_extensions, ..
+                } => active_extensions
                     .as_ref()
                     .map(|v| ActiveExtensionSet::with_ids(v.iter().cloned())),
                 _ => None,
             };
             if !self
                 .tool_registry
-                .is_tool_enabled_with_whitelist(tool_name, capabilities.as_ref(), active_extensions.as_ref())
+                .is_tool_enabled_with_whitelist(
+                    tool_name,
+                    capabilities.as_ref(),
+                    active_extensions.as_ref(),
+                )
                 .await
             {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");

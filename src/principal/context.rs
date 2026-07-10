@@ -214,7 +214,8 @@ impl PrincipalContext {
     /// set if no snapshot has been bound.
     #[must_use]
     pub fn active_extensions(&self) -> &crate::principal::ActiveExtensionSet {
-        self.active_extensions.get_or_init(crate::principal::ActiveExtensionSet::empty)
+        self.active_extensions
+            .get_or_init(crate::principal::ActiveExtensionSet::empty)
     }
 
     /// Get the daemon-global `ExtensionCore` and ensure the

@@ -22,7 +22,7 @@ pub use config::{
     PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
 };
 pub use context::PrincipalContext;
-pub use extension_store::{ExtensionStore, ExtensionStoreItem};
+pub use extension_store::{ExtensionCatalog, ExtensionCatalogItem};
 pub use factory::{
     DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     PrincipalMemoryFactory, PrincipalRouterFactory,

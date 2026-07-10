@@ -4,7 +4,7 @@
 //! with argument substitution. The skill list is gated by the principal's
 //! `capabilities` grants and active extension snapshot, both carried in the
 //! tool execution context. Skill locations are resolved through the global
-//! [`SkillCatalog`], which is populated by `ExtensionManager` when skills are
+//! [`SkillCatalog`], which is populated by `ExtensionStore` when skills are
 //! loaded.
 //!
 //! Argument substitution matches Claude Code's skill syntax:
@@ -73,7 +73,7 @@ fn scan_max_positional_index(body: &str) -> usize {
 ///
 /// The `Skill` tool is a singleton registered once on the daemon-global
 /// `ExtensionCore`. Skill locations are resolved at handle time through the
-/// global [`SkillCatalog`], populated by `ExtensionManager` whenever skills
+/// global [`SkillCatalog`], populated by `ExtensionStore` whenever skills
 /// are discovered or installed. Per-principal enablement and workspace state
 /// are resolved from the `ToolContext` carried with each invocation.
 #[derive(Debug, Default)]
@@ -175,10 +175,11 @@ Returns:
         // no active skill entry means the skill is not enabled for this caller.
         let enabled = ctx.capabilities.as_ref().map_or(false, |caps| {
             let required = format!("skill:{name}").to_lowercase();
-            caps.iter()
-                .any(|c| c.to_lowercase() == required)
+            caps.iter().any(|c| c.to_lowercase() == required)
         }) || ctx.active_extensions.as_ref().map_or(false, |active| {
-            active.iter().any(|id| id.to_lowercase() == name.to_lowercase())
+            active
+                .iter()
+                .any(|id| id.to_lowercase() == name.to_lowercase())
         });
 
         if !enabled {
@@ -217,9 +218,10 @@ Returns:
             .workspace
             .as_ref()
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
-        let body =
-            preprocess::preprocess_dynamic_context(body, &frontmatter, &workspace).await?;
+            .unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        let body = preprocess::preprocess_dynamic_context(body, &frontmatter, &workspace).await?;
 
         let rendered = substitute_args(&body, &frontmatter.arguments, &args);
 
@@ -566,7 +568,10 @@ mod tests {
         register_test_skill("Docker", &tmp.path().join("Docker").join("SKILL.md"));
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "Docker" }), &test_ctx(&["docker"], tmp.path()))
+            .execute_with_context(
+                json!({ "name": "Docker" }),
+                &test_ctx(&["docker"], tmp.path()),
+            )
             .await
             .unwrap();
         assert_eq!(result["name"], "Docker");
@@ -608,7 +613,10 @@ mod tests {
         register_test_skill("fence", &tmp.path().join("fence").join("SKILL.md"));
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "fence" }), &test_ctx(&["fence"], tmp.path()))
+            .execute_with_context(
+                json!({ "name": "fence" }),
+                &test_ctx(&["fence"], tmp.path()),
+            )
             .await
             .unwrap();
         let body = result["body"].as_str().unwrap();
@@ -636,7 +644,10 @@ mod tests {
         );
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "guarded_block" }), &test_ctx(&["guarded_block"], tmp.path()))
+            .execute_with_context(
+                json!({ "name": "guarded_block" }),
+                &test_ctx(&["guarded_block"], tmp.path()),
+            )
             .await
             .unwrap();
         let body = result["body"].as_str().unwrap();
@@ -663,8 +674,10 @@ mod tests {
         );
         let tool = SkillTool::new();
         let result = tool
-            .execute_with_context(json!({ "name": "guarded_allow" }), &test_ctx(
-                &["guarded_allow"], tmp.path()))
+            .execute_with_context(
+                json!({ "name": "guarded_allow" }),
+                &test_ctx(&["guarded_allow"], tmp.path()),
+            )
             .await
             .unwrap();
         assert_eq!(result["body"], "Got: hello\n");

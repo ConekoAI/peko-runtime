@@ -691,6 +691,7 @@ impl DaemonClient {
         force: bool,
         confirmed: bool,
         selected_capabilities: Vec<String>,
+        allow_unsigned: bool,
         registry_host: Option<String>,
         registry_token: Option<String>,
     ) -> anyhow::Result<ResponsePacket> {
@@ -702,6 +703,7 @@ impl DaemonClient {
             force,
             confirmed,
             selected_capabilities,
+            allow_unsigned,
             registry_host,
             registry_token,
         };

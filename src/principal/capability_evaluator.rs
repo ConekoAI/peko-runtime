@@ -151,11 +151,7 @@ mod tests {
         let manifest = manifest_with("researcher", &[], &[]);
         let grants = Capabilities::with_grants(["agent:researcher"]);
 
-        assert!(CapabilityEvaluator::new().is_extension_active(
-            &manifest,
-            &grants,
-            Some("agent")
-        ));
+        assert!(CapabilityEvaluator::new().is_extension_active(&manifest, &grants, Some("agent")));
     }
 
     #[test]
@@ -163,9 +159,7 @@ mod tests {
         let manifest = manifest_with("custom-tool", &[], &[]);
         let grants = Capabilities::with_grants(["tool:custom-tool"]);
 
-        assert!(
-            CapabilityEvaluator::new().is_extension_active(&manifest, &grants, None)
-        );
+        assert!(CapabilityEvaluator::new().is_extension_active(&manifest, &grants, None));
     }
 
     #[test]

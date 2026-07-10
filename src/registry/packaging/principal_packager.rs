@@ -3,7 +3,7 @@
 //! Exports Principals to `.principal` files (tar.gz archives with manifest).
 
 use crate::extensions::framework::manager::packaging::ExtensionPackager;
-use crate::extensions::framework::manager::ExtensionManager;
+use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
 use crate::identity::Identity;
 use crate::principal::config::PrincipalConfig;
@@ -109,15 +109,15 @@ impl PrincipalPackager {
     }
 
     /// Resolve all extensions referenced by `config.capabilities` through the
-    /// loaded `ExtensionManager`, export each installed extension to a `.ext`
+    /// loaded `ExtensionStore`, export each installed extension to a `.ext`
     /// package, and attach the resulting `ExtensionRef`s and embedded bytes.
     ///
     /// Names that cannot be resolved to an installed extension are skipped with
     /// a warning; this avoids failing a push because an extension name points
     /// to a not-yet-installed extension.
-    pub fn with_extensions_from_manager(
+    pub async fn with_extensions_from_store(
         mut self,
-        manager: &ExtensionManager,
+        store: &ExtensionStore,
         config: &PrincipalConfig,
     ) -> anyhow::Result<Self> {
         let mut refs = Vec::new();
@@ -158,7 +158,7 @@ impl PrincipalPackager {
                 continue;
             }
 
-            let Some(resolution) = manager.resolve_tool_name(normalized) else {
+            let Some(resolution) = store.resolve_tool_name(normalized).await else {
                 tracing::warn!(
                     "Principal extension '{}' does not resolve to an installed extension; skipping embed",
                     name
@@ -171,7 +171,8 @@ impl PrincipalPackager {
 
             let ext_id = ExtensionId::new(&resolution.id);
             let temp_path = temp_dir.join(format!("{}.ext", resolution.id));
-            ExtensionPackager::export(manager, &ext_id, &temp_path)
+            ExtensionPackager::export(store, &ext_id, &temp_path)
+                .await
                 .with_context(|| format!("Failed to export extension {}", resolution.id))?;
             let bytes = std::fs::read(&temp_path)
                 .with_context(|| format!("Failed to read exported extension {}", resolution.id))?;

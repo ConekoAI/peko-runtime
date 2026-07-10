@@ -4,7 +4,7 @@
 //! rely on a single hard-coded directory because skills may be installed via
 //! the extension framework (under `~/.peko/data/extensions/`) or live in the
 //! legacy `~/.peko/skills/` directory. This catalog is populated by
-//! `ExtensionManager` whenever skills are loaded and provides a single,
+//! `ExtensionStore` whenever skills are loaded and provides a single,
 //! read-only lookup table from skill name to canonical `SKILL.md` path.
 
 use crate::extensions::framework::types::ExtensionId;
@@ -85,7 +85,7 @@ impl SkillCatalog {
         names
     }
 
-    /// Clear the catalog. Called by `ExtensionManager::load_all` before a
+    /// Clear the catalog. Called by `ExtensionStore::load_all` before a
     /// full rescan so reloads do not accumulate stale entries.
     pub fn clear(&self) {
         let mut entries = self.entries.lock().expect("SkillCatalog mutex poisoned");

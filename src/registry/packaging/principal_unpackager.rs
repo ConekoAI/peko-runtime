@@ -6,7 +6,7 @@
 use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::extensions::framework::manager::packaging::ExtensionUnpackager;
-use crate::extensions::framework::manager::ExtensionManager;
+use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::principal::config::{PrincipalConfig, PrincipalDID};
@@ -409,11 +409,11 @@ impl PrincipalUnpackager {
     }
 
     /// Extract the embedded `extensions/` layer and install each `.ext` package
-    /// through `manager`. Returns the IDs of installed extensions.
+    /// through `store`. Returns the IDs of installed extensions.
     pub async fn import_extensions(
         &self,
         manifest: &PrincipalManifest,
-        manager: &mut ExtensionManager,
+        store: &ExtensionStore,
     ) -> anyhow::Result<Vec<ExtensionId>> {
         let files = self.extract_package().await?;
         let mut installed = Vec::new();
@@ -455,18 +455,15 @@ impl PrincipalUnpackager {
             std::fs::write(installed_path.join(".source"), &ext_ref.registry_ref)
                 .with_context(|| format!("Failed to write .source for {}", ext_ref.id))?;
 
-            let id = manager.install(&installed_path).await.with_context(|| {
+            let id = store.install(&installed_path).await.with_context(|| {
                 format!("Failed to load extension {} after extract", ext_ref.id)
             })?;
             installed.push(id.clone());
 
-            // Also persist via the storage backend when configured.
-            if manager.storage().dir().is_some() {
-                manager
-                    .storage()
-                    .write_source(&id, &ext_ref.registry_ref)
-                    .with_context(|| format!("Failed to persist .source for {}", ext_ref.id))?;
-            }
+            store
+                .set_source(&id, &ext_ref.registry_ref)
+                .await
+                .with_context(|| format!("Failed to persist .source for {}", ext_ref.id))?;
         }
 
         // Best-effort cleanup.
@@ -958,7 +955,10 @@ mod tests {
         let (provides, requires) =
             PrincipalUnpackager::parse_embedded_extension_capabilities(&bytes).unwrap();
         assert!(provides.is_empty());
-        assert_eq!(requires, vec!["network".to_string(), "tool:Read".to_string()]);
+        assert_eq!(
+            requires,
+            vec!["network".to_string(), "tool:Read".to_string()]
+        );
     }
 
     #[test]

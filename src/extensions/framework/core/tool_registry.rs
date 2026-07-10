@@ -60,7 +60,8 @@ impl ToolRegistry {
     /// canonical ID is present in the whitelist.  This makes the check
     /// independent of any tool-name naming convention.
     pub async fn is_tool_enabled(&self, tool_name: &str) -> bool {
-        self.is_tool_enabled_with_whitelist(tool_name, None, None).await
+        self.is_tool_enabled_with_whitelist(tool_name, None, None)
+            .await
     }
 
     /// Check if a tool is enabled, using a per-call capability set when provided.

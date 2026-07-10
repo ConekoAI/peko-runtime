@@ -216,9 +216,7 @@ impl SubagentExecutor {
 
     /// Get the active extension set, if bound.
     #[must_use]
-    pub fn active_extensions(
-        &self,
-    ) -> Option<&crate::principal::ActiveExtensionSet> {
+    pub fn active_extensions(&self) -> Option<&crate::principal::ActiveExtensionSet> {
         self.active_extensions.as_ref()
     }
 

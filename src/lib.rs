@@ -34,17 +34,17 @@
 //!
 //! ```rust,ignore
 //! use peko::extensions::framework::{
-//!     ExtensionManager, ExtensionManifest,
+//!     ExtensionStore, ExtensionManifest,
 //! };
 //! use peko::extensions::gateway::adapter::GatewayAdapter;
 //!
 //! async fn example() {
-//!     let manager = ExtensionManager::new();
-//!     manager.register_adapter(Box::new(GatewayAdapter::new(core)));
-//!     
+//!     let store = ExtensionStore::new();
+//!     store.register_adapter(Box::new(GatewayAdapter::new(core))).await;
+//!
 //!     // Install and enable gateway extension
-//!     manager.install("./discord-gateway").await.unwrap();
-//!     manager.enable("discord").await.unwrap();
+//!     store.install("./discord-gateway").await.unwrap();
+//!     store.enable("discord").await.unwrap();
 //! }
 //! ```
 
