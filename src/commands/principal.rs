@@ -494,7 +494,10 @@ async fn import_principal(
 
     let preview = decode_preview_response(preview, "import")?;
 
-    let default_select_all = preview.signed;
+    // Default to granting nothing, even for signed packages. A signature
+    // verifies integrity, not intent; the user must opt in to each requested
+    // capability (or pre-grant them via `peko capability grant`).
+    let default_select_all = false;
     let selected_capabilities = if yes {
         apply_capability_defaults(&preview.required_capabilities, default_select_all)
     } else {
@@ -771,12 +774,13 @@ async fn pull_principal(
 
     let preview = decode_preview_response(preview, "pull")?;
 
-    // Pulled packages are signed at export, so default to granting the
-    // requested capabilities unless the user opts out.
+    // Default to granting nothing, even for signed packages. A signature
+    // verifies integrity, not intent; the user must opt in to each requested
+    // capability (or pre-grant them via `peko capability grant`).
     let selected_capabilities = if yes {
-        apply_capability_defaults(&preview.required_capabilities, preview.signed)
+        apply_capability_defaults(&preview.required_capabilities, false)
     } else {
-        prompt_capability_selection(&preview.required_capabilities, preview.signed)?
+        prompt_capability_selection(&preview.required_capabilities, false)?
     };
 
     render_import_preview(&preview, &selected_capabilities);

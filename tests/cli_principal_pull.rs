@@ -190,7 +190,7 @@ async fn push_unsigned_descriptor(
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 #[serial_test::serial]
-async fn pull_yes_selects_all_required_capabilities() {
+async fn pull_yes_selects_no_required_capabilities() {
     let backend = PekohubBackend::start().await;
     reset_pekohub(&backend.url).await;
 
@@ -241,13 +241,13 @@ async fn pull_yes_selects_all_required_capabilities() {
         toml::from_str(&config_toml).expect("parse pulled principal.toml");
 
     assert!(
-        config.capabilities.contains_str("tool:fixture.exec"),
-        "expected tool:fixture.exec to be granted; got {:?}",
+        !config.capabilities.contains_str("tool:fixture.exec"),
+        "--yes should not grant tool:fixture.exec; got {:?}",
         config.capabilities
     );
     assert!(
-        config.capabilities.contains_str("tool:fixture.read"),
-        "expected tool:fixture.read to be granted; got {:?}",
+        !config.capabilities.contains_str("tool:fixture.read"),
+        "--yes should not grant tool:fixture.read; got {:?}",
         config.capabilities
     );
 }
@@ -285,7 +285,8 @@ async fn pull_interactive_partial_capability_selection() {
     write_registry_config(&cli, &backend.url);
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // Required capabilities are sorted alphabetically:
+    // Required capabilities are sorted alphabetically. Defaults are now
+    // opt-out (y/N), so explicit answers select the partial set:
     //   1. tool:fixture.exec  -> answer "n"
     //   2. tool:fixture.read  -> answer "y"
     // Then confirm the pull                       -> answer "y"
