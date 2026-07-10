@@ -92,7 +92,7 @@ pub struct Principal {
 - `governance: PrincipalGovernanceConfig` — permissions list
 - `memory: PrincipalMemoryConfig` — consolidation / TTL policy
 - `routing: PrincipalRoutingConfig` — `root_prompt: Option<PathBuf>`, `context_window_messages`, `recall_top_k`
-- `allowed_extensions: AllowedExtensions`
+- `capabilities: Capabilities` — `[capabilities] grants` is the single source of truth for extension/tool/agent authority (the earlier `allowed_extensions` field was removed)
 
 ### 2.4 Sessions are internal mechanics
 
@@ -111,7 +111,7 @@ The legacy agent-keyed session store at `<data_dir>/workspaces/<agent>/personal/
 Each `Principal` owns a `PrincipalRouter` built by `DefaultPrincipalRouterFactory` (`src/principal/factory.rs`). The router:
 
 1. Receives an incoming message via `PrincipalManager::receive` or `PrincipalSendStream`.
-2. Builds a `RouterContext` (peer, channel, recalled memory, allowed extensions, etc.).
+2. Builds a `RouterContext` (peer, channel, recalled memory, capability grants, etc.).
 3. Resolves the per-peer session (via `PrincipalMemory::find_latest_session_for_peer`).
 4. Hands off to the root agent (`StatelessAgentService`) for execution.
 

@@ -1,7 +1,9 @@
 # ADR-031: Agent-Team Membership Model — Agents as First-Class Citizens
 
-**Status**: Accepted  
+**Status**: Superseded by [ADR-039](ADR-039-principal-model.md) and [ADR-041](ADR-041-principal-as-container.md)  
 **Date**: 2026-06-06  
+
+> **Supersession note:** the team concept and the `teams/` containment hierarchy were removed; Principals are now the only top-level actor/container. Kept for historical context.
 **Last Updated**: 2026-06-06  
 **Author**: Core team  
 **Deciders**: Core team  

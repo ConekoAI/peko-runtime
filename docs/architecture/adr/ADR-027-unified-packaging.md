@@ -1,7 +1,9 @@
 # ADR-027: Unified Packaging System
 
-**Status**: Accepted  
+**Status**: Superseded by [ADR-039](ADR-039-principal-model.md) and [ADR-041](ADR-041-principal-as-container.md)  
 **Date**: 2026-05-08  
+
+> **Supersession note:** the `.agent` / `.team` package formats and the `peko agent` / `peko team` push/pull surface described in this ADR were retired in favor of `.principal` packages. Kept for historical context.
 **Last Updated**: 2026-05-08  
 **Author**: Core team  
 **Reviewers**: Core team  

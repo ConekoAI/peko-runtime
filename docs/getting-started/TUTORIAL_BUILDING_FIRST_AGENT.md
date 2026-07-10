@@ -81,7 +81,7 @@ You can also customize the Principal's configuration:
 # View current config
 peko principal show my-first-principal
 
-# The configuration includes allowed extensions, governance, provider hints, etc.
+# The configuration includes capability grants, governance, provider hints, etc.
 ```
 
 ---
