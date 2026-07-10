@@ -97,7 +97,7 @@ impl<'de> Deserialize<'de> for ImageDigest {
     }
 }
 
-/// Extension reference for agent/team packages.
+/// Extension reference for agent/principal packages.
 ///
 /// Maps an extension ID to the registry reference used for pull.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,9 +135,6 @@ pub enum LayerType {
     /// this layer, but legacy packages containing `mcp/` can still be
     /// imported.
     Mcp,
-    /// Team config layer (team.toml, manifest.toml, agent index)
-    /// Used for team registry push/pull to enable cross-team agent deduplication.
-    TeamConfig,
     /// Extensions layer — embedded extension packages (optional composite bundle)
     Extensions,
 }
@@ -154,7 +151,6 @@ impl LayerType {
             LayerType::Workspace => "workspace",
             LayerType::Sessions => "sessions",
             LayerType::Mcp => "mcp",
-            LayerType::TeamConfig => "team",
             LayerType::Extensions => "extensions",
         }
     }
@@ -169,7 +165,6 @@ impl LayerType {
             LayerType::Workspace => "application/vnd.peko.layer.workspace.v1.tar+gzip",
             LayerType::Sessions => "application/vnd.peko.layer.sessions.v1.tar+gzip",
             LayerType::Mcp => "application/vnd.peko.layer.mcp.v1.tar+gzip",
-            LayerType::TeamConfig => "application/vnd.peko.layer.team.v1.tar+gzip",
             LayerType::Extensions => "application/vnd.peko.layer.extensions.v1.tar+gzip",
         }
     }
@@ -183,7 +178,6 @@ impl LayerType {
             "application/vnd.peko.layer.workspace.v1.tar+gzip" => LayerType::Workspace,
             "application/vnd.peko.layer.sessions.v1.tar+gzip" => LayerType::Sessions,
             "application/vnd.peko.layer.mcp.v1.tar+gzip" => LayerType::Mcp,
-            "application/vnd.peko.layer.team.v1.tar+gzip" => LayerType::TeamConfig,
             "application/vnd.peko.layer.extensions.v1.tar+gzip" => LayerType::Extensions,
             _ => LayerType::Config,
         }
@@ -329,7 +323,6 @@ mod tests {
         assert_eq!(LayerType::Workspace.dir_name(), "workspace");
         assert_eq!(LayerType::Sessions.dir_name(), "sessions");
         assert_eq!(LayerType::Mcp.dir_name(), "mcp");
-        assert_eq!(LayerType::TeamConfig.dir_name(), "team");
         assert_eq!(LayerType::Extensions.dir_name(), "extensions");
     }
 

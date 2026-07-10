@@ -2,7 +2,7 @@
 # Module Boundary Check Script
 # Usage: ./scripts/check_module_boundaries.sh
 #
-# Enforces the dependency rules from Issue 015 and Issue 020:
+# Enforces the dependency rules from Issue 015, Issue 020, and Issue 021:
 # 1. src/extensions/framework/ must NOT import from concrete extension types
 #    (src/extensions/<type>/ where <type> != framework).
 # 2. src/extensions/<type>/ should NOT import from src/extensions/<other_type>/.
@@ -12,6 +12,7 @@
 #    (hard gate).
 # 5. src/extensions/framework/ must NOT import from src/agents/, src/tunnel/, or
 #    src/daemon/.
+# 6. src/extensions/framework/ must NOT import from src/principal/.
 
 set -e
 
@@ -29,7 +30,7 @@ EXTENSION_TYPES=(builtin gateway general mcp skill universal)
 RULE4_HARD_GATE=1
 
 echo "=========================================="
-echo "Module Boundary Check (Issue 015 / 020)"
+echo "Module Boundary Check (Issue 015 / 020 / 021)"
 echo "=========================================="
 echo ""
 
@@ -235,6 +236,27 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
+# Rule 6: src/extensions/framework/ must NOT import from src/principal/
+# -----------------------------------------------------------------------------
+echo "Rule 6: src/extensions/framework/ must NOT import from src/principal/"
+echo ""
+
+VIOLATIONS_6A=$(grep -rE "crate::principal::" src/extensions/framework/ --include="*.rs" 2>/dev/null || true)
+
+if [ -n "$VIOLATIONS_6A" ]; then
+    echo "  ❌ FAIL: src/extensions/framework/ imports from principal"
+    echo ""
+    echo "$VIOLATIONS_6A" | while read -r line; do
+        echo "     $line"
+    done
+    echo ""
+    EXIT_CODE=1
+else
+    echo "  ✓ PASS: No forbidden principal imports"
+fi
+echo ""
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 echo "=========================================="
@@ -256,6 +278,7 @@ else
     echo "  - src/extensions/framework/core/ must not depend on daemon/ or tools/ (except tools::core)"
     echo "  - Commands should delegate persistence/packaging work to services"
     echo "  - src/extensions/framework/ must not depend on agents/, tunnel/, or daemon/"
+    echo "  - src/extensions/framework/ must not depend on principal/"
 fi
 
 exit $EXIT_CODE

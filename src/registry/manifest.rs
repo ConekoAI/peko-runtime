@@ -46,7 +46,7 @@ pub struct RegistryManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<serde_json::Map<String, serde_json::Value>>,
     // --- Internal fields (not serialized to wire) ---
-    /// Package kind: "agent", "extension", or "team"
+    /// Package kind: "agent", "extension", or "principal"
     #[serde(skip)]
     pub kind: String,
     /// Agent name
@@ -77,7 +77,7 @@ pub struct RegistryManifest {
     /// SPDX license expression
     #[serde(skip)]
     pub license: Option<String>,
-    /// Bundle type: "agent", "team", or "extension"
+    /// Bundle type: "agent", "extension", or "principal"
     #[serde(skip)]
     pub bundle_type: Option<String>,
     /// Extension type: "skill", "mcp", "tool", "channel", etc.
@@ -667,8 +667,8 @@ mod tests {
         let manifest = RegistryManifest::new("test", "1.0.0").with_kind("extension");
         assert_eq!(manifest.kind, "extension");
 
-        let manifest = RegistryManifest::new("test", "1.0.0").with_kind("team");
-        assert_eq!(manifest.kind, "team");
+        let manifest = RegistryManifest::new("test", "1.0.0").with_kind("principal");
+        assert_eq!(manifest.kind, "principal");
     }
 
     #[test]

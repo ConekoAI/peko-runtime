@@ -244,6 +244,43 @@ peko provider get-default
 
 ---
 
+### `capability` — Principal Capability Authority
+
+Manage the fine-grained capability grants that control what a Principal
+is allowed to do. Capabilities are stored in the Principal's
+`principal.toml` under `[capabilities] grants` and are the single source
+of truth for extension/tool/agent authority.
+
+```bash
+peko capability <COMMAND>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `grant --principal <NAME> <CAPABILITY>` | Add a capability grant (e.g. `tool:Read`, `agent:researcher`). |
+| `revoke --principal <NAME> <CAPABILITY>` | Remove a capability grant. |
+| `list --principal <NAME>` | Show granted, detected, and active capabilities. |
+
+#### Examples
+
+```bash
+# Grant a built-in tool
+peko capability grant --principal my-principal tool:Read
+
+# Grant an agent subagent
+peko capability grant --principal my-principal agent:researcher
+
+# Revoke a capability
+peko capability revoke --principal my-principal tool:Bash
+
+# Inspect effective authority
+peko capability list --principal my-principal
+```
+
+---
+
 ### `search` — Search the PekoHub Registry
 
 Search the PekoHub registry for published principals and extensions,
@@ -268,7 +305,7 @@ peko search <COMMAND>
 |--------|-------------|
 | `--page <N>` | 1-based page number (default 1). |
 | `--per-page <N>` | Items per page (default 20). |
-| `--type <TYPE>` | Filter to `agent`, `team`, or `extension`. |
+| `--type <TYPE>` | Filter to `agent` or `extension`. |
 
 #### Examples
 

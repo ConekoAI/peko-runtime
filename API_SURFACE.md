@@ -1,7 +1,7 @@
 # Public API Surface Documentation
 
-> **Version:** 0.1.0 (Post-ADR-017, Post-v3 provider catalog)  
-> **Last Updated:** 2026-06-23  
+> **Version:** 0.1.0 (Post-ADR-017, Post-Issue-021)  
+> **Last Updated:** 2026-07-10  
 
 This document defines the public API surface for Peko, including the new Unified Extension Architecture (ADR-017) APIs.
 
@@ -420,31 +420,39 @@ pub trait HookHandler: Send + Sync + std::fmt::Debug {
 
 ---
 
-## Module: `agent`
+## Module: `agents`
 
 ### Public Types
 
-#### `agent::stateless_manager` (ACTIVE)
+#### `agents::stateless_service` (ACTIVE)
 
 ```rust
-pub struct StatelessAgentManager { ... }
-pub enum StatelessManagerEvent { ... }
+pub struct StatelessAgentService { ... }
 
-impl StatelessAgentManager {
-    pub async fn new() -> Result<(Self, mpsc::Receiver<StatelessManagerEvent>)>
-    pub async fn with_data_dir(data_dir: PathBuf) -> Result<(Self, mpsc::Receiver<StatelessManagerEvent>)>
-    pub async fn register(&self, name: &str, image: &str, team_id: Option<String>) -> Result<AgentConfigEntry>
-    pub async fn unregister(&self, name: &str, team: &str) -> Result<bool>
+impl StatelessAgentService {
+    pub async fn new(
+        config_service: Arc<ConfigAuthorityImpl>,
+        path_resolver: PathResolver,
+    ) -> Result<Self>
+
+    pub async fn new_with_resolver(
+        config_service: Arc<ConfigAuthorityImpl>,
+        path_resolver: PathResolver,
+        resolver: Option<Arc<LlmResolver>>,
+    ) -> Result<Self>
+
+    pub async fn execute_message(&self, request: MessageRequest) -> Result<MessageResult>
     pub async fn execute(&self, request: ExecutionRequest) -> Result<ExecutionResult>
-    pub async fn list(&self) -> Result<Vec<AgentConfigEntry>>
-    pub async fn shutdown(&self) -> Result<()>
+    pub fn resolver(&self) -> Option<&Arc<LlmResolver>>
 }
 ```
 
-#### `agent::manager` (REMOVED in 0.1.0)
+`StatelessAgentService` is the cold-start execution entry point for all agent turns. It resolves the agent configuration through `ConfigAuthority`, builds an `Agent` instance, and runs the turn-based loop. It replaces the legacy `AgentManager`, `MessageService`, and `AgentCreationService`.
+
+#### `agents::manager` (REMOVED in 0.1.0)
 
 **Status:** ❌ REMOVED  
-**Replaced by:** `StatelessAgentManager`
+**Replaced by:** `StatelessAgentService`
 
 ---
 
@@ -495,44 +503,50 @@ pub struct AgentService { ... }
 
 impl AgentService {
     pub fn new(resolver: PathResolver) -> Self
-    pub async fn list_agents(&self, team_filter: Option<&str>) -> Result<Vec<AgentSummary>>
-    pub async fn get_agent(&self, name: &str, team: Option<&str>) -> Result<Option<AgentInfo>>
-    pub async fn create_agent(&self, request: AgentCreateRequest) -> Result<AgentCreationResult>
-    pub async fn delete_agent(&self, name: &str, team: Option<&str>, opts: AgentDeleteOptions) -> Result<AgentDeleteResult>
-    pub async fn rename_agent(&self, old_name: &str, new_name: &str, team: Option<&str>, to_team: Option<&str>) -> Result<AgentRenameResult>
-    pub async fn update_agent(&self, name: &str, team: Option<&str>, update: AgentUpdateRequest) -> Result<AgentInfo>
-    pub async fn export_agent(&self, name: &str, team: Option<&str>, opts: AgentExportOptions) -> Result<AgentExportResult>
-    pub async fn import_agent(&self, file_path: &Path, opts: AgentImportOptions) -> Result<AgentImportResult>
-    pub fn agent_exists(&self, name: &str, team: Option<&str>) -> bool
+    pub fn for_principal(workspace: impl Into<PathBuf>) -> Self
+    pub async fn resolve_subagent_type(&self, name: &str) -> Result<AgentConfig>
+    pub fn agent_exists(&self, name: &str) -> bool
+    pub fn resolver(&self) -> &PathResolver
 }
 ```
 
-#### `common::services::agent_config_service` (ACTIVE)
+`AgentService` is now a **subagent resolution helper** for the built-in `Agent` tool. It no longer implements standalone agent CRUD, export, or import. Given a `subagent_type` name, it resolves the prompt/config from the Principal workspace (`agents/<name>/AGENT.md` or `agents/<name>.md`) and falls back to the global `~/.peko/agents/<name>/config.toml` layout.
+
+#### `common::services::config_authority` (ACTIVE)
 
 ```rust
-pub struct AgentConfigService { ... }
-pub struct AgentConfigEntry { ... }
-
-impl AgentConfigService {
-    pub fn new(path_resolver: PathResolver) -> Self
-    pub async fn get(&self, agent_name: &str, team: Option<&str>) -> Result<Option<AgentConfigEntry>>
-    pub async fn save(&self, agent_name: &str, team: &str, config: &AgentConfig) -> Result<()>
-    pub async fn delete(&self, agent_name: &str, team: &str) -> Result<bool>
-    pub async fn exists(&self, agent_name: &str, team: Option<&str>) -> Result<bool>
-    pub async fn list_in_team(&self, team: &str) -> Result<Vec<AgentConfigEntry>>
-    pub async fn list_all(&self) -> Result<Vec<AgentConfigEntry>>
+#[async_trait]
+pub trait ConfigAuthority: Send + Sync {
+    async fn get(&self, agent_name: &str) -> ConfigResult<Option<AgentConfigEntry>>;
+    async fn save(&self, agent_name: &str, config: &AgentConfig) -> ConfigResult<PathBuf>;
+    async fn exists(&self, agent_name: &str) -> ConfigResult<bool>;
+    async fn list_all(&self) -> ConfigResult<Vec<AgentConfigEntry>>;
+    async fn delete(&self, agent_name: &str) -> ConfigResult<bool>;
+    async fn clear_cache(&self);
+    async fn invalidate_cache(&self, agent_name: &str);
+    fn path_resolver(&self) -> &PathResolver;
 }
+
+pub struct ConfigAuthorityImpl { ... }
+pub struct AgentConfigEntry { ... }
 ```
+
+`ConfigAuthority` is the single interface for loading and persisting standalone agent configurations. It has no team-scoped operations.
+
+#### `common::services::agent_config_service` (REMOVED in 0.1.0)
+
+**Status:** ❌ REMOVED  
+**Replaced by:** `ConfigAuthority` / `StatelessAgentService`
 
 #### `common::services::agent_creation_service` (REMOVED in 0.1.0)
 
 **Status:** ❌ REMOVED  
-**Replaced by:** `AgentService::create_agent()`
+**Replaced by:** `StatelessAgentService`
 
 #### `common::services::agent_config_builder` (REMOVED in 0.1.0)
 
 **Status:** ❌ REMOVED  
-**Replaced by:** `AgentService` methods directly
+**Replaced by:** `ConfigAuthority`
 
 #### `common::services::message_service` (REMOVED in 0.1.0)
 
@@ -570,35 +584,47 @@ impl ToolFactoryConfig {
 
 ### Public Types
 
-#### `session::context::ExecutionContext`
+#### `session::context::SessionContext`
 
-**Status:** ACTIVE (Renamed from SessionContext in 0.1.0)
+**Status:** ACTIVE
 
 ```rust
-pub struct ExecutionContext {
-    pub hybrid: HybridSession,
+pub struct SessionContext {
+    pub session_id: String,
+    pub agent_name: String,
+    pub session_key: String,
+    pub full_session_key: String,
+    pub peer: Subject,
     pub channel_type: Option<ChannelType>,
     pub is_subagent: bool,
+    pub is_isolated: bool,
 }
 ```
+
+Lightweight routing metadata for a resolved session. For actual session operations, use the `SessionHandle` obtained from `SessionManager::resolve_session`.
 
 #### `session::key::SessionKeyContext`
 
-**Status:** ACTIVE (Renamed from SessionContext in 0.1.0)
+**Status:** ACTIVE
 
 ```rust
 pub struct SessionKeyContext {
-    pub agent: String,
-    pub team: String,
-    pub session_type: SessionType,
-    pub identifier: String,
+    pub channel: Option<String>,
+    pub sender_id: Option<String>,
+    pub channel_id: Option<String>,
+    pub account_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub web_token: Option<String>,
+    pub chat_type: ChatType,
 }
 ```
+
+Context for deriving semantic session keys. Not to be confused with the runtime `SessionContext`.
 
 #### `agent::context::AgentContext` (REMOVED in 0.1.0)
 
 **Status:** ❌ REMOVED  
-**Replaced by:** `ExecutionContext`
+**Replaced by:** `SessionContext`
 
 ---
 
@@ -608,13 +634,15 @@ pub struct SessionKeyContext {
 
 | Component | Status | Replacement |
 |-----------|--------|-------------|
-| `AgentManager` | ❌ Removed | `StatelessAgentManager` |
+| `AgentManager` | ❌ Removed | `StatelessAgentService` |
 | `MessageService` | ❌ Removed | `StatelessAgentService` |
-| `AgentCreationService` | ❌ Removed | `AgentService::create_agent()` |
-| `AgentConfigBuilder` | ❌ Removed | `AgentService` methods |
+| `AgentCreationService` | ❌ Removed | `StatelessAgentService` |
+| `AgentConfigService` | ❌ Removed | `ConfigAuthority` |
+| `AgentConfigBuilder` | ❌ Removed | `ConfigAuthority` |
 | `SessionResolver` | ❌ Removed | `SessionManager::resolve_session()` |
-| `AgentContext` | ❌ Removed | `ExecutionContext` |
+| `AgentContext` | ❌ Removed | `SessionContext` |
 | `KimiCodeProvider` | ❌ Removed | `AnthropicProvider` or `KimiProvider` |
+| Standalone `AgentService` CRUD / export / import | ❌ Removed | `ConfigAuthority` (config persistence) and `AgentService::resolve_subagent_type` (subagent lookup) |
 
 ### New APIs (0.1.0)
 
@@ -690,4 +718,4 @@ The following operations must be tested:
 
 ---
 
-*Version 0.1.0 · Post-ADR-017 · Post-Issue-015 · 2026-06-23*
+*Version 0.1.0 · Post-ADR-017 · Post-Issue-015/020/021 · 2026-07-10*

@@ -65,7 +65,7 @@ pub enum HookType {
 pub enum A2AMessageType {
     /// Direct message to agent
     Direct,
-    /// Broadcast to all agents in team
+    /// Broadcast to all agents in a principal
     Broadcast,
     /// Request expecting response
     Request,
@@ -301,14 +301,14 @@ mod tests {
 
     #[test]
     fn test_a2a_message() {
-        let input = AgentInput::a2a_message("agent_1", "Hello team", A2AMessageType::Broadcast);
+        let input = AgentInput::a2a_message("agent_1", "Hello agents", A2AMessageType::Broadcast);
         assert!(!input.is_user_message());
         assert!(!input.is_hook_trigger());
         assert!(input.is_a2a_message());
         assert_eq!(input.source_type(), "a2a");
         let content = input.content_string();
         assert!(content.contains("agent_1"));
-        assert!(content.contains("Hello team"));
+        assert!(content.contains("Hello agents"));
     }
 
     #[test]

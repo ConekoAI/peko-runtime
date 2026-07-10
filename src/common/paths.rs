@@ -107,7 +107,7 @@ pub fn default_cache_dir() -> PathBuf {
 ///
 /// # Path Categories
 ///
-/// - **Config paths** (`config_dir`): Agent configurations, team metadata, credentials
+/// - **Config paths** (`config_dir`): Agent configurations, credentials
 /// - **Data paths** (`data_dir`): Sessions, workspaces, tools, cron database
 /// - **Cache paths** (`cache_dir`): Temporary files, downloaded caches
 #[derive(Debug, Clone)]

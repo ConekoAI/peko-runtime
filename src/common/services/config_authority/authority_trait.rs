@@ -35,7 +35,7 @@ pub type ConfigResult<T> = std::result::Result<T, ConfigError>;
 /// backends and easily mocked for testing.
 ///
 /// Agents are standalone first-class citizens (ADR-031). They live at
-/// `agents/{agent}/config.toml` and team membership is tracked separately.
+/// `agents/{agent}/config.toml`.
 #[async_trait]
 pub trait ConfigAuthority: Send + Sync {
     /// Get agent configuration by name
@@ -50,12 +50,7 @@ pub trait ConfigAuthority: Send + Sync {
     /// Check if an agent exists
     async fn exists(&self, agent_name: &str) -> ConfigResult<bool>;
 
-    /// List all agents in a team
-    ///
-    /// Currently lists all agents (membership filtering will be added later).
-    async fn list_in_team(&self, team: &str) -> ConfigResult<Vec<AgentConfigEntry>>;
-
-    /// List all agents across all teams
+    /// List all agents
     async fn list_all(&self) -> ConfigResult<Vec<AgentConfigEntry>>;
 
     /// Delete an agent configuration

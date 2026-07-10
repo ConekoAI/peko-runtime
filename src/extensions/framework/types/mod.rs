@@ -5,6 +5,7 @@
 
 // Re-export all types to preserve backward compatibility
 pub use self::async_types::AsyncReceipt;
+pub use self::capabilities::{ActiveExtensionSet, Capabilities, Capability};
 pub use self::hook_io::{tool_result_from_hook, HookInput, HookOutput, HookResult};
 pub use self::manifest::{ExtensionDependency, ExtensionManifest};
 pub use self::session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};
@@ -194,6 +195,7 @@ impl ToolRuntimeContext {
 
 // Submodules
 pub mod async_types;
+pub mod capabilities;
 pub mod hook_io;
 pub mod manifest;
 pub mod session;

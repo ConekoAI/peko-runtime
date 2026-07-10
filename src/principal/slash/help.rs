@@ -4,8 +4,8 @@
 use crate::common::types::OutputFormat;
 use crate::extensions::framework::services::Services as ExtensionServices;
 use crate::extensions::framework::store::ExtensionStore;
+use crate::extensions::framework::types::{Capabilities, Capability};
 use crate::ipc::packet::ExtensionSummary;
-use crate::principal::capability::{Capabilities, Capability};
 use crate::principal::config::PrincipalConfig;
 use crate::principal::Principal;
 use anyhow::Result;

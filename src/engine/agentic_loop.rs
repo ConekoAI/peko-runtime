@@ -1078,17 +1078,17 @@ impl AgenticLoop {
     /// list is filtered by the agent's extension whitelist so the LLM only
     /// sees tools the agent is actually allowed to invoke.
     async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
-        // **Track B**: per-agent extension whitelist removed from
-        // `AgentConfig`; the principal's allowlist snapshot is
-        // carried on the agent itself.
-        let allowed = self
+        // The agent carries the principal's capability grant snapshot.
+        // If none is present, treat it as an empty grant set (fail-closed).
+        let capabilities = self
             .agent
             .principal_capabilities()
-            .map(|allowed| allowed.as_ref());
+            .map(|allowed| allowed.as_ref().clone())
+            .unwrap_or_default();
         let active = self.agent.principal_active_extensions();
         let defs = self
             .extension_core
-            .list_tool_definitions_with_allowlist(allowed, active)
+            .list_tool_definitions_with_allowlist(&capabilities, active)
             .await;
 
         info!(
@@ -1780,6 +1780,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_parallel_tool_execution_overlaps_in_time() {
         use crate::extensions::builtin::adapter::BuiltinToolAdapter;
+        use crate::principal::{Capabilities, Capability};
         use crate::providers::MockResponse;
         use crate::tools::Tool;
         use serde_json::json;
@@ -1887,7 +1888,14 @@ mod tests {
         mock.queue_text("Both tools done.");
 
         let config = test_agent_config("para-tools-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path())
+                .await
+                .unwrap()
+                .with_principal_capabilities(Some(std::sync::Arc::new(Capabilities::with_grants(
+                    [Capability::new("tool:ParaA"), Capability::new("tool:ParaB")],
+                )))),
+        );
         let loop_ = AgenticLoop::new(agent.clone(), provider, core).await;
 
         let session = test_session("para-tools-agent", temp_dir.path()).await;

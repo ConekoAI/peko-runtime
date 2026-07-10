@@ -80,7 +80,6 @@ pub struct RegistryRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceType {
     Agent,
-    Team,
     Extension,
     Principal,
 }
@@ -91,7 +90,6 @@ impl ResourceType {
     pub fn path_segment(&self) -> &'static str {
         match self {
             Self::Agent => "agents",
-            Self::Team => "teams",
             Self::Extension => "extensions",
             Self::Principal => "principals",
         }
@@ -1025,9 +1023,9 @@ mod tests {
 
     #[test]
     fn test_registry_ref_parse_nested_path() {
-        let r#ref = RegistryRef::parse("registry.example.com/org/team/agent:v1.0").unwrap();
+        let r#ref = RegistryRef::parse("registry.example.com/org/group/agent:v1.0").unwrap();
         assert_eq!(r#ref.host, "registry.example.com");
-        assert_eq!(r#ref.path, "org/team/agent");
+        assert_eq!(r#ref.path, "org/group/agent");
         assert_eq!(r#ref.tag, "v1.0");
     }
 
@@ -1132,9 +1130,9 @@ mod tests {
         assert_eq!(r#ref.repository(), "pekohub.com/agents/test");
 
         // Test with nested path
-        let r#ref = RegistryRef::parse("registry.io/org/team/agent:latest").unwrap();
-        assert_eq!(r#ref.full_ref(), "registry.io/org/team/agent:latest");
-        assert_eq!(r#ref.repository(), "registry.io/org/team/agent");
+        let r#ref = RegistryRef::parse("registry.io/org/group/agent:latest").unwrap();
+        assert_eq!(r#ref.full_ref(), "registry.io/org/group/agent:latest");
+        assert_eq!(r#ref.repository(), "registry.io/org/group/agent");
     }
 
     #[test]
@@ -1224,9 +1222,9 @@ mod tests {
         assert_eq!(r#ref.tag, "latest");
 
         // domain:port/path:tag
-        let r#ref = RegistryRef::parse("registry.example.com:443/org/team/agent:v2.0").unwrap();
+        let r#ref = RegistryRef::parse("registry.example.com:443/org/group/agent:v2.0").unwrap();
         assert_eq!(r#ref.host, "registry.example.com:443");
-        assert_eq!(r#ref.path, "org/team/agent");
+        assert_eq!(r#ref.path, "org/group/agent");
         assert_eq!(r#ref.tag, "v2.0");
     }
 
@@ -1281,9 +1279,9 @@ mod tests {
                 "v1.0",
             ),
             (
-                "https://registry.example.com:443/org/team/agent:v2.0",
+                "https://registry.example.com:443/org/group/agent:v2.0",
                 "registry.example.com:443",
-                "org/team/agent",
+                "org/group/agent",
                 "v2.0",
             ),
             (

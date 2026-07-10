@@ -170,22 +170,6 @@ impl SessionRecovery {
                 .await?;
         }
 
-        // Check for team sessions
-        let teams_dir = self.workspace_path.join("teams");
-        if teams_dir.exists() {
-            let mut team_entries = fs::read_dir(&teams_dir).await?;
-            while let Some(entry) = team_entries.next_entry().await? {
-                let team_path = entry.path();
-                if team_path.is_dir() {
-                    let agents_dir = team_path.join("agents");
-                    if agents_dir.exists() {
-                        self.find_sessions_in_dir(&agents_dir, &mut directories)
-                            .await?;
-                    }
-                }
-            }
-        }
-
         Ok(directories)
     }
 

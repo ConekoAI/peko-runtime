@@ -158,7 +158,7 @@ impl RootRouter {
             let _ = e;
         }
         if let Some(ref obs) = ctx.observability {
-            if let Err(_) = principal_ctx.set_observability(Arc::clone(obs)) {
+            if principal_ctx.set_observability(Arc::clone(obs)).is_err() {
                 tracing::debug!("RootRouter::build_context: observability already set");
             }
         }

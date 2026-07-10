@@ -4,7 +4,7 @@
 //! owns. Principal-level config ([`PrincipalConfig`](crate::principal::config::PrincipalConfig))
 //! and runtime state ([`PrincipalContext`](crate::principal::context::PrincipalContext))
 //! hold the authority for shared fields (owner, permissions, workspace,
-//! provider/model hint, allowed extensions). What stays here is per-agent:
+//! provider/model hint, capabilities). What stays here is per-agent:
 //!
 //! - `name` / `description` — identity for serialization/routing
 //! - `prompt` — the agent's authored system prompt body (Markdown)
@@ -12,17 +12,6 @@
 //! - `enable_task_tools` / `enable_async_tools` — per-agent toggles that
 //!   control whether the planning-todo and async-execution tool families
 //!   are wired in
-//!
-//! A handful of principal-mirrored fields still live on this struct
-//! (`owner`, `permissions`) because the IPC/CRUD layer and engine
-//! paths read them from here today. The principal ownership refactor
-//! is staged:
-//! - `owner` / `permissions` are slated to move to `PrincipalConfig`
-//!   in a follow-up; the IPC/CRUD handlers will then look up the
-//!   principal instead of reading the mirrored field.
-//!
-//! The doc comments on those fields flag "Track B" / "Track C" so the
-//! next reader knows they're on borrowed time.
 
 use serde::{Deserialize, Serialize};
 
@@ -53,25 +42,6 @@ pub struct AgentConfig {
     ///   (`<workspace>/agents/<name>.md`) — same path; the agent
     ///   runner loads the markdown and the body ends up here.
     pub prompt: Option<String>,
-
-    /// Owner identity for ownership and permission model (ADR-039).
-    ///
-    /// Canonical form is `owner = { kind, id }` (a `Subject`).
-    ///
-    /// **Track C**: read-side authority for ownership / permission
-    /// checks will move to `PrincipalConfig::owner`. This field stays
-    /// for now because the IPC/CRUD layer still stamps it on the
-    /// on-disk agent TOML and consumes it for `transfer_agent_owner`
-    /// style operations.
-    #[serde(default)]
-    pub owner: Subject,
-
-    /// Explicit permission grants on this agent (ADR-033).
-    ///
-    /// **Track C**: read-side authority for permission checks will
-    /// move to `PrincipalConfig::permissions`.
-    #[serde(default)]
-    pub permissions: Vec<crate::auth::ownership::PermissionGrant>,
 
     /// Per-agent stable identifier (DID) — issue #28.
     ///
@@ -109,15 +79,6 @@ fn default_true() -> bool {
 }
 
 impl AgentConfig {
-    /// Resolve the effective `Subject` owner.
-    ///
-    /// Thin alias for `self.owner.clone()`. **Track C** will remove
-    /// this once ownership authority moves to `PrincipalConfig`.
-    #[must_use]
-    pub fn resolved_owner(&self) -> Subject {
-        self.owner.clone()
-    }
-
     /// Wire-side identifier for this agent (issue #28).
     ///
     /// Returns the agent's `agent_did` if it has been backfilled into
@@ -146,8 +107,6 @@ impl Default for AgentConfig {
             name: "unnamed-agent".to_string(),
             description: None,
             prompt: None,
-            owner: Subject::User(String::new()),
-            permissions: Vec::new(),
             // Issue #28: back-filled on first `Agent::new()`.
             agent_did: None,
             enable_task_tools: true,

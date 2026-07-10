@@ -35,12 +35,6 @@ pub enum ExtCommands {
         /// Filter by extension type
         #[arg(long)]
         r#type: Option<String>,
-        /// Show access for a specific agent (format: team/agent or just agent)
-        #[arg(long, value_name = "AGENT")]
-        agent: Option<String>,
-        /// Show access for all agents in a specific team
-        #[arg(long, value_name = "TEAM", conflicts_with = "agent")]
-        team: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -70,7 +64,7 @@ pub enum ExtCommands {
         ids: Vec<String>,
     },
 
-    /// Configure extension settings (global, team, or agent level)
+    /// Configure extension settings (global or agent level)
     Config {
         /// Extension ID
         id: String,
@@ -86,10 +80,7 @@ pub enum ExtCommands {
         /// Apply to global scope (default)
         #[arg(long, group = "scope")]
         global: bool,
-        /// Apply to team scope
-        #[arg(long, value_name = "TEAM", group = "scope")]
-        team: Option<String>,
-        /// Apply to agent scope (format: team/agent or just agent for default team)
+        /// Apply to agent scope
         #[arg(long, value_name = "AGENT", group = "scope")]
         agent: Option<String>,
     },
@@ -182,8 +173,6 @@ pub async fn handle_ext_command(
         ExtCommands::List {
             enabled_only,
             r#type,
-            agent: _,
-            team: _,
             json,
         } => {
             let client = crate::ipc::DaemonClient::connect().await?;
@@ -420,9 +409,8 @@ pub async fn handle_ext_command(
             set,
             unset,
             global,
-            team,
             agent,
-        } => handle_config(paths, id, show, set, unset, global, team, agent).await,
+        } => handle_config(paths, id, show, set, unset, global, agent).await,
 
         ExtCommands::Push {
             id,
@@ -580,37 +568,17 @@ async fn handle_config(
     set_values: Vec<String>,
     unset_keys: Vec<String>,
     _global: bool,
-    team: Option<String>,
     agent: Option<String>,
 ) -> anyhow::Result<()> {
-    let (team_id, agent_id) = match (&team, &agent) {
-        (Some(t), Some(a)) => (Some(t.as_str()), Some(format!("{t}/{a}"))),
-        (None, Some(a)) => {
-            if a.contains('/') {
-                let parts: Vec<&str> = a.split('/').collect();
-                (Some(parts[0]), Some(a.clone()))
-            } else {
-                (Some("default"), Some(format!("default/{a}")))
-            }
-        }
-        (Some(t), None) => (Some(t.as_str()), None),
-        _ => (None, None),
-    };
-
-    let scope_label = match (&team_id, &agent_id) {
-        (Some(_t), Some(a)) => format!("agent '{a}'"),
-        (Some(t), None) => format!("team '{t}'"),
-        _ => "global".to_string(),
+    let scope_label = match &agent {
+        Some(a) => format!("agent '{a}'"),
+        None => "global".to_string(),
     };
 
     let config_service = ExtensionConfigService::new(&paths.data_dir);
-    let scope = match (&team_id, &agent_id) {
-        (Some(_t), Some(a)) => {
-            let parts: Vec<&str> = a.split('/').collect();
-            ConfigScope::Agent(parts[0].to_string(), parts[1].to_string())
-        }
-        (Some(t), None) => ConfigScope::Team(t.to_string()),
-        _ => ConfigScope::Global,
+    let scope = match &agent {
+        Some(a) => ConfigScope::Agent(a.clone()),
+        None => ConfigScope::Global,
     };
 
     // Handle --show (default if no other actions)
@@ -628,7 +596,7 @@ async fn handle_config(
             }
         }
 
-        if team_id.is_some() || agent_id.is_some() {
+        if agent.is_some() {
             println!();
             println!("Inherited from global:");
             let global_config = config_service.global(&id)?;

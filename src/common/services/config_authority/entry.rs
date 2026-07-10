@@ -62,8 +62,7 @@ impl Default for ConfigSource {
 /// metadata such as source and timestamps.
 ///
 /// Agents are standalone first-class citizens (ADR-031). They live at
-/// `agents/{agent}/config.toml` and team membership is tracked separately
-/// via `memberships.toml`. There is no single "team" that an agent belongs to.
+/// `agents/{agent}/config.toml`.
 ///
 /// # Fields
 /// - `name`: Agent name (globally unique)

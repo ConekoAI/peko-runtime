@@ -39,7 +39,6 @@ use crate::common::paths::PathResolver;
 /// useful for dependency injection in both CLI and API contexts.
 #[derive(Debug, Clone)]
 pub struct ServiceContainer {
-    agent: AgentService,
     agent_config: ConfigAuthorityImpl,
     extension_management: ExtensionManagementService,
 }
@@ -49,15 +48,9 @@ impl ServiceContainer {
     #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
         Self {
-            agent: AgentService::new(resolver.clone()),
             agent_config: ConfigAuthorityImpl::new(resolver.clone()),
             extension_management: ExtensionManagementService::new(resolver),
         }
-    }
-
-    /// Get the agent service
-    pub fn agent(&self) -> &AgentService {
-        &self.agent
     }
 
     /// Get the agent configuration service

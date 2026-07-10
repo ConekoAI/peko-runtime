@@ -131,8 +131,7 @@ pub trait AgentDirectory: Send + Sync {
     async fn resolve_by_did(&self, did: &str) -> Result<AgentResolution, DirectoryError>;
 
     /// Resolve a `{owner, principal_name}` handle to its host. The
-    /// `owner` segment is a user namespace today; team-handle resolution
-    /// is gated on pekohub#8.
+    /// `owner` segment is a user namespace today.
     async fn resolve_by_handle(
         &self,
         owner: &str,
@@ -418,7 +417,7 @@ mod tests {
     /// `AgentResolution` decodes from the exact JSON pekohub returns
     /// on a hit. The shape is pinned by pekohub's
     /// `AgentTargetResolution` in `backend/src/services/instances.ts`;
-    /// this test catches the case where the hub team renames a field
+    /// this test catches the case where the hub maintainers rename a field
     /// (e.g. `ownerPrincipal` → `owner`) and the runtime decoder
     /// silently starts erroring.
     #[test]

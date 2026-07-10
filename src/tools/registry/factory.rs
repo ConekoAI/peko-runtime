@@ -147,10 +147,6 @@ pub struct ToolFactoryConfig {
     pub disabled_tools: Vec<String>,
     /// Instance ID for cron persistence
     pub instance_id: Option<String>,
-    /// Team ID for team-scoped tools
-    pub team_id: Option<String>,
-    /// Allow cross-team access (requires explicit grant)
-    pub allow_cross_team: bool,
     /// Path to custom tools directory (defaults to `workspace_dir/tools/`)
     pub custom_tools_dir: Option<PathBuf>,
     /// Enable custom tools from `tools/` directory
@@ -172,8 +168,6 @@ impl Default for ToolFactoryConfig {
             mcp: McpFactoryConfig::default(),
             disabled_tools: Vec::new(),
             instance_id: None,
-            team_id: None,
-            allow_cross_team: false,
             custom_tools_dir: None,
             enable_custom_tools: true,
         }

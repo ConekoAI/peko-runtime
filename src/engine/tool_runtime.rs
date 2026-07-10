@@ -223,24 +223,6 @@ impl ToolRuntime {
             Arc::new(CronListTool::new()),
         ];
 
-        // Enable all built-in tools by default in the daemon context.
-        // Use canonical extension IDs so the whitelist matches the owners stored in ToolRegistry.
-        let ext_ids: Vec<String> = tools
-            .iter()
-            .map(|t| format!("builtin:tool:{}", t.name()))
-            .collect();
-        let ext_config = crate::common::types::agent_legacy::ExtensionConfig {
-            enabled: ext_ids,
-            http: None,
-            custom: None,
-            read_file: None,
-            write_file: None,
-            glob: None,
-            grep: None,
-            edit_tool: None,
-        };
-        extension_core.set_tool_config(ext_config).await;
-
         for tool in &tools {
             if let Err(e) = BuiltinToolAdapter::register_tool(extension_core, tool.clone()).await {
                 tracing::warn!(
@@ -272,11 +254,15 @@ impl ToolRuntime {
         &self.path_resolver
     }
 
-    /// Execute a tool by name with the given parameters
+    /// Execute a tool by name with the given parameters.
     ///
     /// # Arguments
     /// * `tool_name` - Name of the tool to execute
     /// * `params` - JSON parameters for the tool
+    /// * `capabilities` - Optional per-call capability grants. When `None`,
+    ///   the execution gate is fail-closed.
+    /// * `active_extensions` - Optional active extension IDs for the current
+    ///   Principal; when present, the tool's owning extension must be active.
     ///
     /// # Returns
     /// The JSON result of the tool execution
@@ -284,9 +270,17 @@ impl ToolRuntime {
         &self,
         tool_name: &str,
         params: serde_json::Value,
+        capabilities: Option<Vec<String>>,
+        active_extensions: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
-        self.execute_tool_with_workspace(tool_name, params, &self.workspace)
-            .await
+        self.execute_tool_with_workspace(
+            tool_name,
+            params,
+            &self.workspace,
+            capabilities,
+            active_extensions,
+        )
+        .await
     }
 
     /// Execute a tool with an explicit workspace override
@@ -295,12 +289,22 @@ impl ToolRuntime {
         tool_name: &str,
         params: serde_json::Value,
         workspace: &std::path::Path,
+        capabilities: Option<Vec<String>>,
+        active_extensions: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
-        let (display, json, success) = execute_tool_via_core(
+        let (display, json, success) = execute_tool_via_core_with_context(
             &self.extension_core,
             tool_name,
             params,
             Some(workspace.to_string_lossy().to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            capabilities,
+            active_extensions,
+            None,
         )
         .await?;
 
@@ -380,7 +384,12 @@ mod tests {
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
         let result = runtime
-            .execute_tool("Bash", json!({"command": "echo hello"}))
+            .execute_tool(
+                "Bash",
+                json!({"command": "echo hello"}),
+                Some(vec!["tool:Bash".to_string()]),
+                None,
+            )
             .await;
 
         assert!(
@@ -397,7 +406,9 @@ mod tests {
         let resolver = PathResolver::new();
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
-        let result = runtime.execute_tool("nonexistent_tool", json!({})).await;
+        let result = runtime
+            .execute_tool("nonexistent_tool", json!({}), None, None)
+            .await;
 
         assert!(result.is_err());
     }

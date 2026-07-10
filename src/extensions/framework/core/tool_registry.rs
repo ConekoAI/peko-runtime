@@ -1,14 +1,15 @@
 //! Tool Registry
 //!
 //! This module implements the registry for tools and tool policy.
-//! It manages tool registration, metadata, listing, and whitelist enforcement.
+//! It manages tool registration, metadata, and capability-based enablement.
 //!
 //! Built on [`crate::common::registry::SharedRegistry`] to avoid hand-rolling
 //! `Arc<RwLock<HashMap<K, V>>>` patterns.
 
 use crate::common::registry::SharedRegistry;
-use crate::extensions::framework::types::{ExtensionId, HookId};
-use crate::principal::{ActiveExtensionSet, Capabilities, Capability};
+use crate::extensions::framework::types::{
+    ActiveExtensionSet, Capabilities, Capability, ExtensionId, HookId,
+};
 use anyhow::Result;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -16,19 +17,17 @@ use tracing::{debug, instrument, warn};
 
 /// Registry for tools and tool policy
 ///
-/// This component manages tool registrations and enforces the whitelist policy.
-/// The tool index is backed by a [`SharedRegistry`] for thread-safe access.
+/// This component manages tool registrations and enforces the capability-based
+/// enablement policy. The tool index is backed by a [`SharedRegistry`] for
+/// thread-safe access.
 #[derive(Debug)]
 pub struct ToolRegistry {
     /// Tool index: maps tool name to hook ID for O(1) lookup
     pub(crate) tool_index: SharedRegistry<String, HookId>,
 
-    /// Maps tool name to the owning extension ID for whitelist checking.
-    /// This decouples the whitelist from tool-name string parsing.
+    /// Maps tool name to the owning extension ID for capability checking.
+    /// This decouples the check from tool-name string parsing.
     tool_owners: RwLock<HashMap<String, ExtensionId>>,
-
-    /// Tool configuration (whitelist, per-tool settings)
-    tool_config: RwLock<crate::common::types::agent_legacy::ExtensionConfig>,
 }
 
 impl ToolRegistry {
@@ -38,67 +37,40 @@ impl ToolRegistry {
         Self {
             tool_index: SharedRegistry::new(),
             tool_owners: RwLock::new(HashMap::new()),
-            tool_config: RwLock::new(
-                crate::common::types::agent_legacy::ExtensionConfig::default(),
-            ),
         }
     }
 
-    /// Set the tool configuration (whitelist, etc.)
-    pub async fn set_tool_config(
-        &self,
-        config: crate::common::types::agent_legacy::ExtensionConfig,
-    ) {
-        let mut tool_config = self.tool_config.write().await;
-        *tool_config = config;
-        debug!("Updated tool configuration");
-    }
-
-    /// Check if a tool is enabled according to whitelist.
+    /// Check if a tool is enabled under the given capability set.
     ///
-    /// Looks up the tool's owning `extension_id` and checks whether *that*
-    /// canonical ID is present in the whitelist.  This makes the check
-    /// independent of any tool-name naming convention.
-    pub async fn is_tool_enabled(&self, tool_name: &str) -> bool {
-        self.is_tool_enabled_with_whitelist(tool_name, None, None)
-            .await
-    }
-
-    /// Check if a tool is enabled, using a per-call capability set when provided.
+    /// The capability `tool:{tool_name}` must be granted. Wildcards such as
+    /// `tool:*` are expanded by the capability set.
     ///
-    /// When `capabilities` is `Some`, the capability `tool:{tool_name}` must be
-    /// granted. Wildcards such as `tool:*` are expanded by the capability set.
-    ///
-    /// When `active_extensions` is `Some`, the tool's owning extension must be
-    /// present in the active set. Built-in tools are owned by
+    /// When `active_extensions` is provided, the tool's owning extension must
+    /// be present in the active set. Built-in tools are owned by
     /// `builtin:tool:{tool_name}` pseudo-extensions; extension-provided tools
     /// are owned by their canonical extension ID. A tool with no recorded owner
     /// is treated as a built-in/core tool and is gated only by its capability.
-    ///
-    /// When `capabilities` is `None`, the caller is unbound from any principal
-    /// (e.g. standalone/test fixtures). Permit every registered tool.
-    pub async fn is_tool_enabled_with_whitelist(
+    pub async fn is_tool_enabled(
         &self,
         tool_name: &str,
-        capabilities: Option<&Capabilities>,
+        capabilities: &Capabilities,
         active_extensions: Option<&ActiveExtensionSet>,
     ) -> bool {
-        match capabilities {
-            Some(caps) => {
-                if !caps.is_granted(&Capability::new(format!("tool:{tool_name}"))) {
+        if !capabilities.is_granted(&Capability::new(format!("tool:{tool_name}"))) {
+            return false;
+        }
+        if let Some(active) = active_extensions {
+            if let Some(owner) = self.tool_owners.read().await.get(tool_name) {
+                // Built-in tools are owned by pseudo-extensions such as
+                // `builtin:tool:Bash`.  They are always present and are gated
+                // solely by the matching capability grant.
+                let is_builtin = owner.0.starts_with("builtin:tool:");
+                if !is_builtin && !active.is_active(&owner.0) {
                     return false;
                 }
-                if let Some(active) = active_extensions {
-                    if let Some(owner) = self.tool_owners.read().await.get(tool_name) {
-                        if !active.is_active(&owner.0) {
-                            return false;
-                        }
-                    }
-                }
-                true
             }
-            None => true,
         }
+        true
     }
 
     /// Register a tool in the index
@@ -168,12 +140,6 @@ impl ToolRegistry {
     /// canonical form is returned. For unknown names — typically
     /// extension-provided skills or MCPs whose canonical ID is
     /// already the bare name — the bare name is returned unchanged.
-    ///
-    /// This is what the principal's `capabilities` go through before
-    /// they land in `ExtensionConfig.enabled`: the core's whitelist
-    /// check ([`Self::is_tool_enabled`]) prefers the canonical form,
-    /// and the bare-name fallback is a defensive escape hatch the
-    /// Phase-4 cleanup is moving away from.
     pub async fn resolve_canonical_ids(&self, names: &[String]) -> Vec<String> {
         let owners = self.tool_owners.read().await;
         names
@@ -199,47 +165,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_per_call_allowlist_ignores_global_config() {
-        let registry = ToolRegistry::new();
-        registry
-            .register_tool("Read", HookId::new(), ExtensionId::new("builtin:tool:Read"))
-            .await
-            .unwrap();
-
-        // Set a global config that *disables* Read.
-        let global = crate::common::types::agent_legacy::ExtensionConfig {
-            enabled: vec!["other".to_string()],
-            ..Default::default()
-        };
-        registry.set_tool_config(global).await;
-
-        // A per-call capability set that *enables* Read should still permit it.
-        let caps = Capabilities::with_grants(["tool:Read"]);
-        assert!(
-            registry
-                .is_tool_enabled_with_whitelist("Read", Some(&caps), None)
-                .await
-        );
-
-        // A per-call capability set without Read should deny it.
-        let caps = Capabilities::with_grants(["tool:Other"]);
-        assert!(
-            !registry
-                .is_tool_enabled_with_whitelist("Read", Some(&caps), None)
-                .await
-        );
-    }
-
-    #[tokio::test]
     async fn test_unknown_tool_with_per_call_allowlist_uses_capability() {
         let registry = ToolRegistry::new();
         // No registration, so no owner is recorded.
         let caps = Capabilities::with_grants(["tool:custom_skill"]);
-        assert!(
-            registry
-                .is_tool_enabled_with_whitelist("custom_skill", Some(&caps), None)
-                .await
-        );
+        assert!(registry.is_tool_enabled("custom_skill", &caps, None).await);
     }
 
     #[tokio::test]
@@ -253,9 +183,7 @@ mod tests {
         // An empty capability set must fail-closed.
         let caps = Capabilities::new();
         assert!(
-            !registry
-                .is_tool_enabled_with_whitelist("Read", Some(&caps), None)
-                .await,
+            !registry.is_tool_enabled("Read", &caps, None).await,
             "empty capability set should deny every tool"
         );
     }
@@ -269,35 +197,27 @@ mod tests {
             .unwrap();
 
         let caps = Capabilities::with_grants(["tool:*"]);
-        assert!(
-            registry
-                .is_tool_enabled_with_whitelist("Read", Some(&caps), None)
-                .await
-        );
+        assert!(registry.is_tool_enabled("Read", &caps, None).await);
     }
 
     #[tokio::test]
     async fn test_inactive_owning_extension_denies_tool() {
         let registry = ToolRegistry::new();
         registry
-            .register_tool("Read", HookId::new(), ExtensionId::new("builtin:tool:Read"))
+            .register_tool("Read", HookId::new(), ExtensionId::new("universal:read"))
             .await
             .unwrap();
 
         let caps = Capabilities::with_grants(["tool:Read"]);
         let active = ActiveExtensionSet::empty();
         assert!(
-            !registry
-                .is_tool_enabled_with_whitelist("Read", Some(&caps), Some(&active))
-                .await,
+            !registry.is_tool_enabled("Read", &caps, Some(&active)).await,
             "tool whose owning extension is inactive should be denied"
         );
 
-        let active = ActiveExtensionSet::with_ids(["builtin:tool:Read"]);
+        let active = ActiveExtensionSet::with_ids(["universal:read"]);
         assert!(
-            registry
-                .is_tool_enabled_with_whitelist("Read", Some(&caps), Some(&active))
-                .await,
+            registry.is_tool_enabled("Read", &caps, Some(&active)).await,
             "tool whose owning extension is active should be permitted"
         );
     }
