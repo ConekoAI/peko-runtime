@@ -327,7 +327,10 @@ impl HookHandler for AgentPromptHandler {
             if let Some(ref caps) = rtc.capabilities {
                 let required_id = format!("agent:{}", self.agent_id);
                 let required_name = format!("agent:{}", self.agent_name);
-                if caps.iter().any(|c| c == &required_id || c == &required_name) {
+                if caps
+                    .iter()
+                    .any(|c| c == &required_id || c == &required_name)
+                {
                     return true;
                 }
             }

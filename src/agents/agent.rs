@@ -139,7 +139,7 @@ impl Agent {
     /// and registers only agent-specific built-in tools with `ExtensionCore`.
     /// Common built-in tools (Bash, Read, Write, etc.) are already
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
-    /// Extension tools (Universal and MCP) are registered via `ExtensionManager` hooks.
+    /// Extension tools (Universal and MCP) are registered via `ExtensionStore` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::builtin::session::SessionIntrospector;
         use crate::tools::{AgentTool, SessionTool, Tool};
@@ -289,7 +289,7 @@ impl Agent {
         //
         // A fresh `Agent` is constructed per execution but they all share
         // the daemon-global `ExtensionCore`, so this scan only needs to run
-        // once per core. Skip the dir walk + `ExtensionManager` rebuild once
+        // once per core. Skip the dir walk + `ExtensionStore` rebuild once
         // the core is warm — otherwise this re-walks disk on every run.
         if self.extension_core.universal_extensions_loaded() {
             tracing::debug!(
@@ -308,14 +308,14 @@ impl Agent {
                     extensions_dir.display(),
                     self.config.name
                 );
-                // Use ExtensionManager for unified tool discovery
-                use crate::extensions::framework::manager::ExtensionManager;
+                // Use ExtensionStore for unified tool discovery
+                use crate::extensions::framework::store::ExtensionStore;
                 use crate::extensions::BuiltInAdapters;
-                let mut manager = ExtensionManager::with_core(self.extension_core.clone());
+                let store = ExtensionStore::with_core(self.extension_core.clone());
                 for adapter in BuiltInAdapters::new().adapters() {
-                    manager.register_adapter(adapter);
+                    store.register_adapter(adapter).await;
                 }
-                match manager.load_from_directory(&extensions_dir).await {
+                match store.load_from_directory(&extensions_dir).await {
                     Ok(loaded_ids) => {
                         if loaded_ids.is_empty() {
                             tracing::debug!("No extensions found in {}", extensions_dir.display());
@@ -352,7 +352,7 @@ impl Agent {
 
         // ADR-018/019: Register ONLY agent-specific built-in tools with ExtensionCore
         // Common built-in tools are already registered via ToolRuntime::register_builtins
-        // Extension tools (Universal and MCP) are already registered via ExtensionManager hooks
+        // Extension tools (Universal and MCP) are already registered via ExtensionStore hooks
         for tool in &tools {
             if let Err(e) =
                 BuiltinToolAdapter::register_tool(&self.extension_core, tool.clone()).await
@@ -1338,9 +1338,7 @@ impl Agent {
     /// The engine consults this set at tool execution time to verify
     /// that the tool's owning extension is active.
     #[must_use]
-    pub fn principal_active_extensions(
-        &self,
-    ) -> Option<&crate::principal::ActiveExtensionSet> {
+    pub fn principal_active_extensions(&self) -> Option<&crate::principal::ActiveExtensionSet> {
         self.principal_active_extensions.as_ref()
     }
 

@@ -3,7 +3,7 @@
 //! End-to-end: install → export → install from `.ext`
 
 use peko::extensions::framework::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
-use peko::extensions::framework::manager::ExtensionManager;
+use peko::extensions::framework::store::ExtensionStore;
 use peko::extensions::framework::types::ExtensionId;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -32,12 +32,12 @@ fn create_test_extension(temp: &TempDir, id: &str) -> PathBuf {
     ext_dir
 }
 
-fn create_manager_with_adapters() -> ExtensionManager {
+async fn create_store_with_adapters() -> ExtensionStore {
     use peko::extensions::skill::SkillAdapter;
 
-    let mut manager = ExtensionManager::new();
-    manager.register_adapter(Box::new(SkillAdapter::new()));
-    manager
+    let store = ExtensionStore::new();
+    store.register_adapter(Box::new(SkillAdapter::new())).await;
+    store
 }
 
 #[tokio::test]
@@ -45,12 +45,12 @@ async fn test_extension_export_creates_valid_ext_package() {
     let temp = TempDir::new().unwrap();
     let ext_dir = create_test_extension(&temp, "docker-skill");
 
-    let mut manager = create_manager_with_adapters();
-    manager.install(&ext_dir).await.unwrap();
+    let store = create_store_with_adapters().await;
+    store.install(&ext_dir).await.unwrap();
 
     let output_path = temp.path().join("docker-skill.ext");
     let result =
-        ExtensionPackager::export(&manager, &ExtensionId::new("docker-skill"), &output_path);
+        ExtensionPackager::export(&store, &ExtensionId::new("docker-skill"), &output_path).await;
 
     assert!(result.is_ok(), "Export failed: {:?}", result.err());
     assert!(output_path.exists(), "Output file should exist");
@@ -65,11 +65,13 @@ async fn test_extension_export_manifest_contents() {
     let temp = TempDir::new().unwrap();
     let ext_dir = create_test_extension(&temp, "docker-skill");
 
-    let mut manager = create_manager_with_adapters();
-    manager.install(&ext_dir).await.unwrap();
+    let store = create_store_with_adapters().await;
+    store.install(&ext_dir).await.unwrap();
 
     let output_path = temp.path().join("docker-skill.ext");
-    ExtensionPackager::export(&manager, &ExtensionId::new("docker-skill"), &output_path).unwrap();
+    ExtensionPackager::export(&store, &ExtensionId::new("docker-skill"), &output_path)
+        .await
+        .unwrap();
 
     // Inspect the package
     let manifest = ExtensionUnpackager::inspect(&output_path).unwrap();
@@ -99,12 +101,14 @@ async fn test_extension_install_from_ext_roundtrip() {
     let temp = TempDir::new().unwrap();
     let ext_dir = create_test_extension(&temp, "docker-skill");
 
-    let mut manager = create_manager_with_adapters();
-    manager.install(&ext_dir).await.unwrap();
+    let store = create_store_with_adapters().await;
+    store.install(&ext_dir).await.unwrap();
 
     // Export
     let output_path = temp.path().join("docker-skill.ext");
-    ExtensionPackager::export(&manager, &ExtensionId::new("docker-skill"), &output_path).unwrap();
+    ExtensionPackager::export(&store, &ExtensionId::new("docker-skill"), &output_path)
+        .await
+        .unwrap();
 
     // Install to new location
     let install_dir = temp.path().join("installed");
@@ -131,12 +135,12 @@ async fn test_extension_export_fails_for_missing_extension() {
     let temp = TempDir::new().unwrap();
     let ext_dir = create_test_extension(&temp, "docker-skill");
 
-    let mut manager = create_manager_with_adapters();
-    manager.install(&ext_dir).await.unwrap();
+    let store = create_store_with_adapters().await;
+    store.install(&ext_dir).await.unwrap();
 
     let output_path = temp.path().join("missing.ext");
     let result =
-        ExtensionPackager::export(&manager, &ExtensionId::new("nonexistent"), &output_path);
+        ExtensionPackager::export(&store, &ExtensionId::new("nonexistent"), &output_path).await;
 
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -151,11 +155,13 @@ async fn test_extension_install_checksum_mismatch_fails() {
     let temp = TempDir::new().unwrap();
     let ext_dir = create_test_extension(&temp, "docker-skill");
 
-    let mut manager = create_manager_with_adapters();
-    manager.install(&ext_dir).await.unwrap();
+    let store = create_store_with_adapters().await;
+    store.install(&ext_dir).await.unwrap();
 
     let output_path = temp.path().join("docker-skill.ext");
-    ExtensionPackager::export(&manager, &ExtensionId::new("docker-skill"), &output_path).unwrap();
+    ExtensionPackager::export(&store, &ExtensionId::new("docker-skill"), &output_path)
+        .await
+        .unwrap();
 
     // Tamper with the file: overwrite with a package that has wrong checksum
     {
@@ -247,16 +253,18 @@ async fn test_extension_install_tool_registration_and_invocation() {
     let temp = TempDir::new().unwrap();
     let ext_dir = create_test_tool_extension(&temp, "test-echo");
 
-    let mut manager = ExtensionManager::new();
-    manager.register_adapter(Box::new(SkillAdapter::new()));
-    manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+    let store = ExtensionStore::new();
+    store.register_adapter(Box::new(SkillAdapter::new())).await;
+    store
+        .register_adapter(Box::new(UniversalToolAdapter::new()))
+        .await;
 
     // 1. Install the extension
-    let ext_id = manager.install(&ext_dir).await.unwrap();
+    let ext_id = store.install(&ext_dir).await.unwrap();
     assert_eq!(ext_id.0, "test-echo");
 
-    // 2. Get the ExtensionCore from the manager (tools registered during install)
-    let core = manager.core_arc();
+    // 2. Get the ExtensionCore from the store (tools registered during install)
+    let core = store.core_arc();
 
     // 3. Enable the tool in the whitelist
     let tool_config = ExtensionConfig {

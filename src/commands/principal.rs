@@ -124,6 +124,10 @@ pub enum PrincipalCommands {
         #[arg(long)]
         yes: bool,
 
+        /// Allow pulling an unsigned package
+        #[arg(long)]
+        allow_unsigned: bool,
+
         /// Registry host (defaults to workspace config)
         #[arg(long)]
         registry_host: Option<String>,
@@ -223,9 +227,21 @@ pub async fn handle_principal(
             name,
             force,
             yes,
+            allow_unsigned,
             registry_host,
             registry_token,
-        } => pull_principal(&registry_ref, name, force, yes, registry_host, registry_token).await,
+        } => {
+            pull_principal(
+                &registry_ref,
+                name,
+                force,
+                yes,
+                allow_unsigned,
+                registry_host,
+                registry_token,
+            )
+            .await
+        }
         PrincipalCommands::Permit {
             name,
             subject,
@@ -478,7 +494,7 @@ async fn import_principal(
 
     let preview = decode_preview_response(preview, "import")?;
 
-    let default_select_all = preview.signed || allow_unsigned;
+    let default_select_all = preview.signed;
     let selected_capabilities = if yes {
         apply_capability_defaults(&preview.required_capabilities, default_select_all)
     } else {
@@ -665,10 +681,7 @@ fn apply_capability_defaults(required: &[String], select_all: bool) -> Vec<Strin
 
 /// Interactively prompt the user to toggle each required capability.
 /// `default_enabled` controls the default answer for each item.
-fn prompt_capability_selection(
-    required: &[String],
-    default_enabled: bool,
-) -> Result<Vec<String>> {
+fn prompt_capability_selection(required: &[String], default_enabled: bool) -> Result<Vec<String>> {
     if required.is_empty() {
         return Ok(Vec::new());
     }
@@ -738,6 +751,7 @@ async fn pull_principal(
     name: Option<String>,
     force: bool,
     yes: bool,
+    allow_unsigned: bool,
     registry_host: Option<String>,
     registry_token: Option<String>,
 ) -> Result<()> {
@@ -785,6 +799,7 @@ async fn pull_principal(
             force,
             true,
             selected_capabilities,
+            allow_unsigned,
             registry_host,
             registry_token,
         )
@@ -1204,13 +1219,8 @@ mod tests {
 
     #[test]
     fn principal_pull_without_yes_defaults() {
-        let cli = Cli::try_parse_from([
-            "peko",
-            "principal",
-            "pull",
-            "owner/principal:1.0.0",
-        ])
-        .expect("should parse principal pull without --yes");
+        let cli = Cli::try_parse_from(["peko", "principal", "pull", "owner/principal:1.0.0"])
+            .expect("should parse principal pull without --yes");
 
         match cli.command {
             Commands::Principal(PrincipalCommands::Pull { yes, .. }) => {

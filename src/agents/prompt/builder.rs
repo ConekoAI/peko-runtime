@@ -105,13 +105,19 @@ impl SystemPromptBuilder {
     }
 
     /// Set the principal capability grants for extension-scoped prompt hooks.
-    pub fn with_capabilities(mut self, capabilities: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn with_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         self.capabilities = Some(capabilities.into_iter().map(Into::into).collect());
         self
     }
 
     /// Set the active extension IDs for extension-scoped prompt hooks.
-    pub fn with_active_extensions(mut self, active_extensions: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn with_active_extensions(
+        mut self,
+        active_extensions: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         self.active_extensions = Some(active_extensions.into_iter().map(Into::into).collect());
         self
     }

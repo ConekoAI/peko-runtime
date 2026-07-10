@@ -16,6 +16,7 @@ use crate::common::types::config::PekoConfig;
 use crate::cron::IdleDetector;
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
+use crate::extensions::framework::store::ExtensionStore;
 use crate::observability::Observability;
 use crate::principal::{
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
@@ -123,9 +124,8 @@ pub struct AppState {
     /// Extension runtime starter registry — dispatches ext start/stop by type (ADR-025/026)
     runtime_starter_registry: Arc<ExtensionRuntimeStarterRegistry>,
 
-    /// Extension manager for installed extensions (ADR-030 Tier 1)
-    extension_manager:
-        Arc<tokio::sync::RwLock<crate::extensions::framework::manager::ExtensionManager>>,
+    /// Extension store for installed extensions (ADR-030 Tier 1)
+    extension_store: Arc<ExtensionStore>,
 
     /// Extension services for built-in extension operations
     extension_services: Arc<crate::extensions::framework::services::Services>,
@@ -293,7 +293,7 @@ impl std::fmt::Debug for AppState {
                 "runtime_starter_registry",
                 &"<ExtensionRuntimeStarterRegistry>",
             )
-            .field("extension_manager", &"<ExtensionManager>")
+            .field("extension_store", &"<ExtensionStore>")
             .field("extension_services", &"<ExtensionServices>")
             .field("runtime_identity", &self.runtime_identity.runtime_did)
             .field("runtime_metadata", &self.runtime_metadata.display_name)
@@ -630,14 +630,11 @@ impl AppState {
         runtime_starter_registry.register(Box::new(McpRuntimeStarter::new()));
         let runtime_starter_registry = Arc::new(runtime_starter_registry);
 
-        // ADR-030: Initialize ExtensionManager for IPC extension operations
-        let ext_storage = crate::extensions::framework::manager::ExtensionStorage::with_dir(
-            data_dir.join("extensions"),
+        // ADR-030: Initialize the global ExtensionStore for IPC extension operations
+        let extension_store = Arc::new(
+            ExtensionStore::with_core(Arc::clone(&global_core))
+                .with_storage_dir(data_dir.join("extensions")),
         );
-        let mut ext_manager = crate::extensions::framework::manager::ExtensionManager::with_core(
-            Arc::clone(&global_core),
-        )
-        .with_storage_dir(ext_storage.dir().unwrap().to_path_buf());
 
         // Register adapters (same as CLI create_manager_with_adapters)
         use crate::extensions::gateway::GatewayAdapter;
@@ -647,22 +644,32 @@ impl AppState {
         use crate::extensions::slash::SlashAdapter;
         use crate::extensions::universal::UniversalToolAdapter;
 
-        ext_manager.register_adapter(Box::new(SkillAdapter::new()));
-        ext_manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
-        ext_manager.register_adapter(Box::new(SlashAdapter::new()));
-        ext_manager.register_adapter(Box::new(UniversalToolAdapter::new()));
-        ext_manager.register_adapter(Box::new(GatewayAdapter::new(Arc::clone(&global_core))));
-        ext_manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+        extension_store
+            .register_adapter(Box::new(SkillAdapter::new()))
+            .await;
+        extension_store
+            .register_adapter(Box::new(McpAdapter::with_default_manager()))
+            .await;
+        extension_store
+            .register_adapter(Box::new(SlashAdapter::new()))
+            .await;
+        extension_store
+            .register_adapter(Box::new(UniversalToolAdapter::new()))
+            .await;
+        extension_store
+            .register_adapter(Box::new(GatewayAdapter::new(Arc::clone(&global_core))))
+            .await;
+        extension_store
+            .register_adapter(Box::new(GeneralExtensionAdapter::new()))
+            .await;
 
         // Load all extensions (log warnings but don't fail startup)
-        if let Err(e) = ext_manager.load_all().await {
+        if let Err(e) = extension_store.load_all().await {
             tracing::warn!(
                 "Failed to load some extensions during daemon startup: {}",
                 e
             );
         }
-
-        let extension_manager = Arc::new(tokio::sync::RwLock::new(ext_manager));
         let extension_services = Arc::new(
             crate::extensions::framework::services::Services::with_core(Arc::clone(&global_core)),
         );
@@ -675,7 +682,7 @@ impl AppState {
         // This happens after the extension manager is built so we can inject
         // the slash-command dispatcher, which needs extension state.
         let slash_dispatcher = Arc::new(SlashDispatcher::new(
-            Arc::clone(&extension_manager),
+            Arc::clone(&extension_store),
             Arc::clone(&extension_services),
         ));
         let principal_manager = {
@@ -691,7 +698,7 @@ impl AppState {
             )
             .with_resolver(resolver.clone())
             .with_slash_dispatcher(slash_dispatcher)
-            .with_extension_manager(Arc::clone(&extension_manager))
+            .with_extension_store(Arc::clone(&extension_store))
             .with_observability(Arc::clone(&observability));
 
             if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
@@ -772,7 +779,7 @@ impl AppState {
             gateway_router,
             mcp_client_registry,
             runtime_starter_registry,
-            extension_manager,
+            extension_store,
             extension_services,
             shutdown_tx: Arc::new(shutdown_tx),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
@@ -1041,10 +1048,8 @@ impl AppState {
 
     /// Get the extension manager
     #[must_use]
-    pub fn extension_manager(
-        &self,
-    ) -> &Arc<tokio::sync::RwLock<crate::extensions::framework::manager::ExtensionManager>> {
-        &self.extension_manager
+    pub fn extension_store(&self) -> &Arc<ExtensionStore> {
+        &self.extension_store
     }
 
     /// Get the extension services

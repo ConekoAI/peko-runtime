@@ -47,7 +47,7 @@ pub struct RouterContext {
     pub governance: super::PrincipalGovernanceConfig,
     /// Per-principal snapshot of all detected extensions/agents and their
     /// authority state.
-    pub extension_store: super::ExtensionStore,
+    pub extension_store: super::ExtensionCatalog,
     /// Set of extension IDs that are currently active for this Principal.
     /// Derived from `extension_store.active_extensions()` and carried here
     /// so routers can thread it into `PrincipalContext` without recomputing.

@@ -512,6 +512,9 @@ pub enum RequestPacket {
         /// Capabilities selected by the user during the preview flow.
         #[serde(default)]
         selected_capabilities: Vec<String>,
+        /// Allow pulling an unsigned package.
+        #[serde(default)]
+        allow_unsigned: bool,
         registry_host: Option<String>,
         registry_token: Option<String>,
     },

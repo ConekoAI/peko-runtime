@@ -672,7 +672,7 @@ impl ExtensionTypeAdapter for McpAdapter {
         // We use Custom detection because the adapter handles both.
         ManifestFormat::Custom {
             detector: |_path| {
-                // Detection is now handled centrally by ExtensionManager's
+                // Detection is now handled centrally by ExtensionStore's
                 // three-tier hierarchy. This detector is a no-op placeholder.
                 true
             },

@@ -275,7 +275,7 @@ mod tests {
         PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
     };
     use crate::principal::router::{ChannelContext, ChannelKind, ContextInjectionKind};
-    use crate::principal::{Capabilities, ExtensionStore};
+    use crate::principal::{Capabilities, ExtensionCatalog};
     use crate::session::InboxRegistry;
 
     #[test]
@@ -314,7 +314,7 @@ mod tests {
             capabilities: Capabilities::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
-            extension_store: ExtensionStore::default(),
+            extension_store: ExtensionCatalog::default(),
             active_extensions: crate::principal::ActiveExtensionSet::empty(),
             inbox_registry: Arc::new(InboxRegistry::new()),
             session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),

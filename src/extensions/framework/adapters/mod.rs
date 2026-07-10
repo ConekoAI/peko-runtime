@@ -375,15 +375,15 @@ pub mod parsing {
                         }
                     }
                 } else if key == "provides" {
-                    if let Ok(vals) = serde_json::from_value::<Vec<String>>(
-                        serde_json::to_value(value)?,
-                    ) {
+                    if let Ok(vals) =
+                        serde_json::from_value::<Vec<String>>(serde_json::to_value(value)?)
+                    {
                         manifest.provides = vals;
                     }
                 } else if key == "requires" {
-                    if let Ok(vals) = serde_json::from_value::<Vec<String>>(
-                        serde_json::to_value(value)?,
-                    ) {
+                    if let Ok(vals) =
+                        serde_json::from_value::<Vec<String>>(serde_json::to_value(value)?)
+                    {
                         manifest.requires = vals;
                     }
                 } else if !["id", "name", "version", "description", "extension_type"]

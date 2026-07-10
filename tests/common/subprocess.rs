@@ -19,8 +19,8 @@
 
 #![allow(dead_code)]
 
-use std::io::Read;
-use std::process::{Command, Stdio};
+use std::io::{Read, Write};
+use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -38,9 +38,8 @@ pub fn run_with_timeout<F>(
 where
     F: FnOnce() -> Command,
 {
-    run_inner(
-        make_cmd, extra_args, timeout, /*panic_on_timeout=*/ true,
-    )
+    let child = spawn_child(make_cmd, extra_args)?;
+    run_wait_with_timeout(child, extra_args, timeout, /*panic_on_timeout=*/ true)
 }
 
 /// Soft variant: returns `Err(captured_output_message)` on timeout instead
@@ -57,23 +56,45 @@ pub fn try_run_with_timeout<F>(
 where
     F: FnOnce() -> Command,
 {
-    run_inner(
-        make_cmd, extra_args, timeout, /*panic_on_timeout=*/ false,
-    )
+    let child = spawn_child(make_cmd, extra_args)?;
+    run_wait_with_timeout(child, extra_args, timeout, /*panic_on_timeout=*/ false)
 }
 
-fn run_inner<F>(
+fn spawn_child<F>(make_cmd: F, extra_args: &[&str]) -> Result<std::process::Child, String>
+where
+    F: FnOnce() -> Command,
+{
+    let mut cmd = make_cmd();
+    match cmd
+        .args(extra_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => Ok(c),
+        Err(e) => Err(format!("spawn failed: {e}")),
+    }
+}
+
+/// Run a peko subprocess with piped stdin, write `stdin_input` to it, close
+/// stdin, and wait up to `timeout` for the process to exit.
+///
+/// This is the interactive variant of [`run_with_timeout`] for commands that
+/// prompt `stdin` (e.g. capability toggles during `peko principal import`).
+/// On timeout it kills the child and panics with captured output.
+pub fn run_with_stdin<F>(
     make_cmd: F,
     extra_args: &[&str],
+    stdin_input: &[u8],
     timeout: Duration,
-    panic_on_timeout: bool,
-) -> Result<(std::process::Output, Vec<u8>, Vec<u8>), String>
+) -> Result<(Output, Vec<u8>, Vec<u8>), String>
 where
     F: FnOnce() -> Command,
 {
     let mut cmd = make_cmd();
     let mut child = match cmd
         .args(extra_args)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -81,6 +102,25 @@ where
         Ok(c) => c,
         Err(e) => return Err(format!("spawn failed: {e}")),
     };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Err(e) = stdin.write_all(stdin_input) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("failed to write stdin: {e}"));
+        }
+    }
+    // Closing stdin by dropping it lets the child see EOF.
+
+    run_wait_with_timeout(child, extra_args, timeout, /*panic_on_timeout=*/ true)
+}
+
+fn run_wait_with_timeout(
+    mut child: std::process::Child,
+    extra_args: &[&str],
+    timeout: Duration,
+    panic_on_timeout: bool,
+) -> Result<(Output, Vec<u8>, Vec<u8>), String> {
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -93,8 +133,8 @@ where
                 if let Some(p) = child.stderr.as_mut() {
                     let _ = p.read_to_end(&mut stderr);
                 }
-                let out = std::process::Output {
-                    status,
+                let out = Output {
+                    status: status.clone(),
                     stdout: stdout.clone(),
                     stderr: stderr.clone(),
                 };

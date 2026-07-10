@@ -1302,15 +1302,15 @@ impl IpcServer {
                 // gap (test asserts on `peko ext list` after the
                 // auto-ext-pull).
                 {
-                    let mut manager = state.extension_manager().write().await;
-                    if let Err(e) = manager.load_all().await {
+                    let store = state.extension_store();
+                    if let Err(e) = store.load_all().await {
                         tracing::warn!("Failed to reload extensions on list: {e}");
                     }
                 }
-                let manager = state.extension_manager().read().await;
+                let store = state.extension_store();
                 let ext_services = state.extension_services();
 
-                let installed = manager.list_extensions();
+                let installed = store.list_extensions().await;
                 let builtins = ext_services.list_builtin_extensions().await;
 
                 let mut extensions = Vec::new();
@@ -1371,7 +1371,7 @@ impl IpcServer {
                             crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(
                                 &id,
                             ) || id.starts_with("builtin:");
-                        let mut manager = state.extension_manager().write().await;
+                        let store = state.extension_store();
                         let ext_services = state.extension_services();
                         if is_builtin {
                             let tool_name = if id.starts_with("builtin:") {
@@ -1383,7 +1383,7 @@ impl IpcServer {
                             Ok(format!("Built-in tool '{tool_name}' enabled globally"))
                         } else {
                             let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
-                            match manager.enable(&ext_id).await {
+                            match store.enable(&ext_id).await {
                                 Ok(()) => Ok(format!("Extension '{id}' enabled globally")),
                                 Err(e) => Err(e),
                             }
@@ -1454,7 +1454,7 @@ impl IpcServer {
                             crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(
                                 &id,
                             ) || id.starts_with("builtin:");
-                        let mut manager = state.extension_manager().write().await;
+                        let store = state.extension_store();
                         let ext_services = state.extension_services();
                         if is_builtin {
                             let tool_name = if id.starts_with("builtin:") {
@@ -1466,7 +1466,7 @@ impl IpcServer {
                             Ok(format!("Built-in tool '{tool_name}' disabled globally"))
                         } else {
                             let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
-                            match manager.disable(&ext_id).await {
+                            match store.disable(&ext_id).await {
                                 Ok(()) => Ok(format!("Extension '{id}' disabled globally")),
                                 Err(e) => Err(e),
                             }
@@ -1600,24 +1600,21 @@ impl IpcServer {
                 principal,
             } => {
                 let pm = state.principal_manager().clone();
-                let manager = state.extension_manager().clone();
+                let store = state.extension_store().clone();
                 match pm.get_by_name(&principal).await {
                     Some(principal_ref) => {
-                        let capabilities =
-                            principal_ref.config.read().await.capabilities.clone();
+                        let capabilities = principal_ref.config.read().await.capabilities.clone();
                         let granted = capabilities.to_strings();
 
-                        let store = {
-                            let manager_guard = manager.read().await;
-                            crate::principal::ExtensionStore::build(
-                                &capabilities,
-                                &principal_ref.agent_prompts,
-                                Some(&*manager_guard),
-                            )
-                        };
+                        let global_items = store.global_items().await;
+                        let catalog = crate::principal::ExtensionCatalog::build(
+                            &capabilities,
+                            &principal_ref.agent_prompts,
+                            &global_items,
+                        );
 
-                        let detected = store.detected_capabilities();
-                        let active = store.active_capabilities(&capabilities);
+                        let detected = catalog.detected_capabilities();
+                        let active = catalog.active_capabilities(&capabilities);
 
                         let response = ResponsePacket::CapabilityList {
                             request_id,
@@ -1690,7 +1687,7 @@ impl IpcServer {
             // PrincipalMemory rather than legacy SessionService. See
             // ADR-042.)
             RequestPacket::ExtensionInstall { request_id, path } => {
-                let mut manager = state.extension_manager().write().await;
+                let store = state.extension_store();
                 let install_path =
                     match crate::commands::ext::prepare_install_path(std::path::Path::new(&path)) {
                         Ok(p) => p,
@@ -1704,7 +1701,7 @@ impl IpcServer {
                         }
                     };
 
-                match manager.install(&install_path).await {
+                match store.install(&install_path).await {
                     Ok(ext_id) => {
                         let id = ext_id.0;
                         let response = ResponsePacket::ExtensionInstalled {
@@ -1725,10 +1722,10 @@ impl IpcServer {
             }
 
             RequestPacket::ExtensionUninstall { request_id, id } => {
-                let mut manager = state.extension_manager().write().await;
+                let store = state.extension_store();
                 let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
 
-                match manager.uninstall(&ext_id).await {
+                match store.uninstall(&ext_id).await {
                     Ok(()) => {
                         let response = ResponsePacket::ExtensionUninstalled {
                             request_id,
@@ -1785,9 +1782,9 @@ impl IpcServer {
             }
 
             RequestPacket::ExtensionDebug { request_id, id } => {
-                let manager = state.extension_manager().read().await;
+                let store = state.extension_store();
                 let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
-                match manager.get_extension(&ext_id) {
+                match store.get_extension(&ext_id).await {
                     Some(ext) => {
                         let info = serde_json::json!({
                             "id": ext.manifest.id.0,
@@ -1815,9 +1812,9 @@ impl IpcServer {
             }
 
             RequestPacket::ExtensionInfo { request_id, id } => {
-                let manager = state.extension_manager().read().await;
+                let store = state.extension_store();
                 let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
-                match manager.get_extension(&ext_id) {
+                match store.get_extension(&ext_id).await {
                     Some(ext) => {
                         let info = serde_json::json!({
                             "id": ext.manifest.id.0,
@@ -1848,11 +1845,13 @@ impl IpcServer {
                 id,
                 output,
             } => {
-                let manager = state.extension_manager().read().await;
+                let store = state.extension_store();
                 let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                 match crate::extensions::framework::manager::packaging::ExtensionPackager::export(
-                    &manager, &ext_id, &output,
-                ) {
+                    store, &ext_id, &output,
+                )
+                .await
+                {
                     Ok(_) => {
                         let response = ResponsePacket::ExtensionExported {
                             request_id,
@@ -1876,12 +1875,12 @@ impl IpcServer {
                 name,
                 ids,
             } => {
-                let manager = state.extension_manager().read().await;
+                let store = state.extension_store();
                 let ext_ids: Vec<_> = ids
                     .iter()
                     .map(crate::extensions::framework::types::ExtensionId::new)
                     .collect();
-                match manager.create_bundle(ext_ids, &name) {
+                match store.create_bundle(ext_ids, &name).await {
                     Ok(bundle) => {
                         let response = ResponsePacket::ExtensionBundled {
                             request_id,
@@ -2634,13 +2633,16 @@ impl IpcServer {
                 force,
                 confirmed,
                 selected_capabilities,
+                allow_unsigned,
                 registry_host,
                 registry_token,
             } => {
                 if !confirmed {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: "Principal pull was not confirmed. Use the preview flow or pass --yes.".to_string(),
+                        message:
+                            "Principal pull was not confirmed. Use the preview flow or pass --yes."
+                                .to_string(),
                     };
                     Self::send_sink(sink, response).await?;
                     return Ok(());
@@ -2651,6 +2653,7 @@ impl IpcServer {
                     name.clone(),
                     force,
                     selected_capabilities,
+                    allow_unsigned,
                     registry_host,
                     registry_token,
                 )
@@ -3314,8 +3317,8 @@ impl IpcServer {
             .with_sessions_dir(resolver.principal_sessions_dir(name));
 
         if with_extensions {
-            let manager = state.extension_manager().read().await;
-            let packager = packager.with_extensions_from_manager(&manager, &config)?;
+            let store = state.extension_store();
+            let packager = packager.with_extensions_from_store(store, &config).await?;
             Ok(packager)
         } else {
             Ok(packager)
@@ -3360,8 +3363,7 @@ impl IpcServer {
         let extensions: Vec<String> = manifest.extensions.iter().map(|r| r.id.clone()).collect();
         let (required_capabilities, cap_warnings) =
             crate::registry::packaging::PrincipalUnpackager::extract_extension_capabilities(
-                &manifest,
-                &files,
+                &manifest, &files,
             );
 
         let validation_errors: Vec<String> =
@@ -3464,9 +3466,9 @@ impl IpcServer {
         // Install any embedded extension packages.
         let (manifest, _validation) = unpackager.inspect().await?;
         if !manifest.extensions.is_empty() {
-            let mut manager = state.extension_manager().write().await;
+            let store = state.extension_store();
             let installed = unpackager
-                .import_extensions(&manifest, &mut manager)
+                .import_extensions(&manifest, store)
                 .await
                 .with_context(|| "Failed to install embedded extensions")?;
             result.installed_extensions = installed.into_iter().map(|id| id.0).collect();
@@ -3588,6 +3590,7 @@ impl IpcServer {
         new_name: Option<String>,
         force: bool,
         selected_capabilities: Vec<String>,
+        allow_unsigned: bool,
         registry_host: Option<String>,
         registry_token: Option<String>,
     ) -> anyhow::Result<(String, String, String)> {
@@ -3631,7 +3634,7 @@ impl IpcServer {
             new_name,
             // Pulled packages are signed at export; honor force for overwrite
             // and trust pinning override.
-            false,
+            allow_unsigned,
             if force {
                 crate::registry::packaging::TrustPolicy::AllowUntrusted
             } else {

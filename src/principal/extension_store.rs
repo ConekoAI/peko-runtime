@@ -1,22 +1,29 @@
-//! Per-principal extension store.
+//! Per-principal extension catalog.
 //!
-//! The `ExtensionStore` is a lightweight, per-message snapshot of every
+//! The `ExtensionCatalog` is a lightweight, per-message snapshot of every
 //! extension-related entity the principal could conceivably use: built-in
 //! tools, installed extensions, and principal-scoped agents. Each entry
 //! carries an `enabled` flag derived from the principal's
 //! `capabilities` so callers (notably `agent_catalog`) can surface
 //! installed-but-disabled entries without claiming they are callable.
+//!
+//! It is built from plain [`GlobalExtensionItem`] data produced by the
+//! process-wide [`ExtensionStore`](crate::extensions::framework::store::ExtensionStore)
+//! so the per-Principal view does not need to hold a reference to the global
+//! store or acquire its lock.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
-use crate::extensions::framework::manager::ExtensionManager;
+use crate::extensions::framework::store::GlobalExtensionItem;
+use crate::extensions::framework::types::ExtensionManifest;
 use crate::principal::agent_prompt::AgentPrompt;
 use crate::principal::capability::{Capabilities, Capability};
 use crate::principal::capability_evaluator::CapabilityEvaluator;
 
-/// A single row in the principal's extension store.
+/// A single row in the principal's extension catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionStoreItem {
+pub struct ExtensionCatalogItem {
     /// Canonical identifier used when enabling/disabling the entity.
     pub id: String,
     /// Human-readable display name.
@@ -34,23 +41,23 @@ pub struct ExtensionStoreItem {
 
 /// Per-principal snapshot of all detected extensions and their authority state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExtensionStore {
-    items: Vec<ExtensionStoreItem>,
+pub struct ExtensionCatalog {
+    items: Vec<ExtensionCatalogItem>,
 }
 
-impl ExtensionStore {
-    /// Build an `ExtensionStore` from the principal's current authority
+impl ExtensionCatalog {
+    /// Build an `ExtensionCatalog` from the principal's current authority
     /// snapshot.
     ///
     /// * `capabilities` — the principal's capability grants.
     /// * `agent_prompts` — agents discovered under `<workspace>/agents/`.
-    /// * `extension_manager` — optional daemon extension manager; when
-    ///   absent the store contains only built-ins and principal agents.
+    /// * `global_items` — plain data from the process-wide `ExtensionStore`.
+    ///   When empty the catalog contains only built-ins and principal agents.
     #[must_use]
     pub fn build(
         capabilities: &Capabilities,
         agent_prompts: &HashMap<String, AgentPrompt>,
-        extension_manager: Option<&ExtensionManager>,
+        global_items: &[GlobalExtensionItem],
     ) -> Self {
         let has_any_grant = !capabilities.is_empty();
 
@@ -70,14 +77,14 @@ impl ExtensionStore {
             capabilities.is_granted(&required)
         };
 
-        let mut items: Vec<ExtensionStoreItem> = Vec::new();
+        let mut items: Vec<ExtensionCatalogItem> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
 
         // Built-in tools.
         for name in crate::extensions::framework::adapters::builtin_tools::all_tool_names() {
             let id = format!("builtin:tool:{name}");
             if seen.insert(id.clone()) {
-                items.push(ExtensionStoreItem {
+                items.push(ExtensionCatalogItem {
                     id: id.clone(),
                     name: name.to_string(),
                     ext_type: "builtin".to_string(),
@@ -91,7 +98,7 @@ impl ExtensionStore {
         // Principal-scoped agents.
         for (id, prompt) in agent_prompts {
             if seen.insert(id.clone()) {
-                items.push(ExtensionStoreItem {
+                items.push(ExtensionCatalogItem {
                     id: id.clone(),
                     name: prompt.name.clone(),
                     ext_type: "agent".to_string(),
@@ -103,37 +110,41 @@ impl ExtensionStore {
             }
         }
 
-        // Installed extensions from the daemon extension manager.
-        if let Some(manager) = extension_manager {
-            let evaluator = CapabilityEvaluator::new();
-            for loaded in manager.list_extensions() {
-                let id = loaded.manifest.id.0.clone();
-                if seen.insert(id.clone()) {
-                    let kind = capability_kind_for_extension_type(&loaded.extension_type);
-                    let enabled = evaluator.is_extension_active(
-                        &loaded.manifest,
-                        capabilities,
-                        Some(&kind),
-                    );
-                    items.push(ExtensionStoreItem {
-                        id: id.clone(),
-                        name: loaded.manifest.name.clone(),
-                        ext_type: loaded.extension_type.clone(),
-                        source: loaded.manifest.source.clone(),
-                        enabled,
-                        provides: loaded.manifest.provides.clone(),
-                    });
-                }
+        // Installed extensions from the global ExtensionStore.
+        let evaluator = CapabilityEvaluator::new();
+        for loaded in global_items {
+            let id = loaded.id.clone();
+            if seen.insert(id.clone()) {
+                let kind = capability_kind_for_extension_type(&loaded.ext_type);
+                let mut manifest = ExtensionManifest::new(
+                    &loaded.id,
+                    &loaded.ext_type,
+                    &loaded.name,
+                    "",
+                    "0.0.0",
+                    PathBuf::new(),
+                );
+                manifest.provides.clone_from(&loaded.provides);
+                manifest.requires.clone_from(&loaded.requires);
+                let enabled = evaluator.is_extension_active(&manifest, capabilities, Some(&kind));
+                items.push(ExtensionCatalogItem {
+                    id: id.clone(),
+                    name: loaded.name.clone(),
+                    ext_type: loaded.ext_type.clone(),
+                    source: loaded.source.clone(),
+                    enabled,
+                    provides: loaded.provides.clone(),
+                });
             }
         }
 
         Self { items }
     }
 
-    /// All items in the store, ordered built-ins, agents, then installed
+    /// All items in the catalog, ordered built-ins, agents, then installed
     /// extensions.
     #[must_use]
-    pub fn items(&self) -> &[ExtensionStoreItem] {
+    pub fn items(&self) -> &[ExtensionCatalogItem] {
         &self.items
     }
 
@@ -141,7 +152,10 @@ impl ExtensionStore {
     #[must_use]
     pub fn active_extensions(&self) -> crate::principal::ActiveExtensionSet {
         crate::principal::ActiveExtensionSet::with_ids(
-            self.items.iter().filter(|i| i.enabled).map(|i| i.id.clone()),
+            self.items
+                .iter()
+                .filter(|i| i.enabled)
+                .map(|i| i.id.clone()),
         )
     }
 
@@ -179,9 +193,7 @@ impl ExtensionStore {
     /// Capabilities that are currently active: the entity is enabled and at
     /// least one of its provided/implied capabilities is granted.
     #[must_use]
-    pub fn active_capabilities(&self,
-        capabilities: &Capabilities,
-    ) -> Vec<String> {
+    pub fn active_capabilities(&self, capabilities: &Capabilities) -> Vec<String> {
         let mut set = HashSet::new();
         for item in &self.items {
             if !item.enabled {
@@ -253,14 +265,14 @@ mod tests {
 
     #[test]
     fn empty_allowlist_marks_everything_disabled() {
-        let store = ExtensionStore::build(&Capabilities::default(), &HashMap::new(), None);
+        let catalog = ExtensionCatalog::build(&Capabilities::default(), &HashMap::new(), &[]);
 
         assert!(
-            !store.items().is_empty(),
-            "store should still contain built-ins"
+            !catalog.items().is_empty(),
+            "catalog should still contain built-ins"
         );
         assert!(
-            store.items().iter().all(|i| !i.enabled),
+            catalog.items().iter().all(|i| !i.enabled),
             "every entry should be disabled with an empty allowlist"
         );
     }
@@ -270,8 +282,8 @@ mod tests {
         let mut allowed = Capabilities::new();
         allowed.push("tool:Bash");
 
-        let store = ExtensionStore::build(&allowed, &HashMap::new(), None);
-        let bash = store
+        let catalog = ExtensionCatalog::build(&allowed, &HashMap::new(), &[]);
+        let bash = catalog
             .items()
             .iter()
             .find(|i| i.id == "builtin:tool:Bash")
@@ -283,8 +295,8 @@ mod tests {
     fn builtin_enabled_by_tool_capability_wildcard() {
         let allowed = Capabilities::with_grants(["tool:*"]);
 
-        let store = ExtensionStore::build(&allowed, &HashMap::new(), None);
-        let read = store
+        let catalog = ExtensionCatalog::build(&allowed, &HashMap::new(), &[]);
+        let read = catalog
             .items()
             .iter()
             .find(|i| i.id == "builtin:tool:Read")
@@ -300,8 +312,8 @@ mod tests {
         let mut agents = HashMap::new();
         agents.insert("math".to_string(), agent("math"));
 
-        let store = ExtensionStore::build(&allowed, &agents, None);
-        let math = store
+        let catalog = ExtensionCatalog::build(&allowed, &agents, &[]);
+        let math = catalog
             .items()
             .iter()
             .find(|i| i.id == "math")
@@ -311,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_agent_surfaces_in_store() {
+    fn disabled_agent_surfaces_in_catalog() {
         let mut allowed = Capabilities::new();
         allowed.push("agent:writer");
 
@@ -319,12 +331,58 @@ mod tests {
         agents.insert("writer".to_string(), agent("writer"));
         agents.insert("researcher".to_string(), agent("researcher"));
 
-        let store = ExtensionStore::build(&allowed, &agents, None);
-        let researcher = store
+        let catalog = ExtensionCatalog::build(&allowed, &agents, &[]);
+        let researcher = catalog
             .items()
             .iter()
             .find(|i| i.id == "researcher")
             .expect("researcher should be present");
         assert!(!researcher.enabled);
+    }
+
+    #[test]
+    fn global_extension_item_enabled_by_provides() {
+        let mut allowed = Capabilities::new();
+        allowed.push("skill:docker");
+
+        let global = vec![GlobalExtensionItem {
+            id: "docker-skill".to_string(),
+            name: "Docker".to_string(),
+            ext_type: "skill".to_string(),
+            source: None,
+            provides: vec!["skill:docker".to_string()],
+            requires: vec![],
+        }];
+
+        let catalog = ExtensionCatalog::build(&allowed, &HashMap::new(), &global);
+        let docker = catalog
+            .items()
+            .iter()
+            .find(|i| i.id == "docker-skill")
+            .expect("docker skill should be present");
+        assert!(docker.enabled);
+        assert_eq!(docker.ext_type, "skill");
+    }
+
+    #[test]
+    fn global_extension_item_disabled_when_required_missing() {
+        let allowed = Capabilities::new();
+
+        let global = vec![GlobalExtensionItem {
+            id: "net-skill".to_string(),
+            name: "Network".to_string(),
+            ext_type: "skill".to_string(),
+            source: None,
+            provides: vec!["skill:network".to_string()],
+            requires: vec!["tool:Read".to_string()],
+        }];
+
+        let catalog = ExtensionCatalog::build(&allowed, &HashMap::new(), &global);
+        let net = catalog
+            .items()
+            .iter()
+            .find(|i| i.id == "net-skill")
+            .expect("network skill should be present");
+        assert!(!net.enabled);
     }
 }

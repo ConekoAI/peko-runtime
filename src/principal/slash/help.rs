@@ -2,8 +2,8 @@
 //! dispatcher.
 
 use crate::common::types::OutputFormat;
-use crate::extensions::framework::manager::ExtensionManager;
 use crate::extensions::framework::services::Services as ExtensionServices;
+use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::packet::ExtensionSummary;
 use crate::principal::capability::{Capabilities, Capability};
 use crate::principal::config::PrincipalConfig;
@@ -11,7 +11,6 @@ use crate::principal::Principal;
 use anyhow::Result;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Description shown for the built-in `/help` slash command.
 pub const HELP_DESCRIPTION: &str =
@@ -20,7 +19,7 @@ pub const HELP_DESCRIPTION: &str =
 /// Handle `/help` for the given principal and output format.
 pub async fn handle_help(
     principal: &Principal,
-    extension_manager: &Arc<RwLock<ExtensionManager>>,
+    extension_store: &Arc<ExtensionStore>,
     extension_services: &Arc<ExtensionServices>,
     format: OutputFormat,
 ) -> Result<String> {
@@ -33,7 +32,7 @@ pub async fn handle_help(
         None => principal.config.read().await.clone(),
     };
     let allowed = &config.capabilities;
-    let extensions = list_enabled_extensions(extension_manager, extension_services).await?;
+    let extensions = list_enabled_extensions(extension_store, extension_services).await?;
     let filtered: Vec<&ExtensionSummary> = extensions
         .iter()
         .filter(|ext| is_extension_allowed(ext, allowed))
@@ -45,21 +44,19 @@ pub async fn handle_help(
     }
 }
 
-/// Query enabled extensions from the daemon's extension manager and
+/// Query enabled extensions from the daemon's extension store and
 /// built-in extension services. Mirrors the IPC `ExtensionList` handler.
 async fn list_enabled_extensions(
-    extension_manager: &Arc<RwLock<ExtensionManager>>,
+    extension_store: &Arc<ExtensionStore>,
     extension_services: &Arc<ExtensionServices>,
 ) -> Result<Vec<ExtensionSummary>> {
     {
-        let mut manager = extension_manager.write().await;
-        if let Err(e) = manager.load_all().await {
+        if let Err(e) = extension_store.load_all().await {
             tracing::warn!("Failed to reload extensions for /help: {e}");
         }
     }
-    let manager = extension_manager.read().await;
     let builtins = extension_services.list_builtin_extensions().await;
-    let installed = manager.list_extensions();
+    let installed = extension_store.list_extensions().await;
 
     let mut extensions = Vec::new();
 

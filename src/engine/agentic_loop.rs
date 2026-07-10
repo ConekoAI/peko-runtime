@@ -455,12 +455,8 @@ impl AgenticLoop {
                         HookPoint::SessionStart,
                         HookInput::SessionState(snapshot),
                         Some(&self.agent_principal_id),
-                        self.agent
-                            .principal_capabilities()
-                            .map(|c| c.to_strings()),
-                        self.agent
-                            .principal_active_extensions()
-                            .map(|a| a.to_vec()),
+                        self.agent.principal_capabilities().map(|c| c.to_strings()),
+                        self.agent.principal_active_extensions().map(|a| a.to_vec()),
                         Some(workspace.to_string_lossy().to_string()),
                     )
                     .await
@@ -1089,9 +1085,7 @@ impl AgenticLoop {
             .agent
             .principal_capabilities()
             .map(|allowed| allowed.as_ref());
-        let active = self
-            .agent
-            .principal_active_extensions();
+        let active = self.agent.principal_active_extensions();
         let defs = self
             .extension_core
             .list_tool_definitions_with_allowlist(allowed, active)

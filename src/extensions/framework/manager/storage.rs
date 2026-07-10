@@ -97,7 +97,7 @@ fn remove_locked_dir(parent_dir: &Path, dir_name: &str) -> Result<()> {
 }
 
 /// Storage backend for extension metadata
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExtensionStorage {
     storage_dir: Option<PathBuf>,
 }
@@ -210,6 +210,10 @@ impl ExtensionStorage {
             .as_ref()
             .context("Storage directory not configured")?;
         let source_path = storage_dir.join(&extension_id.0).join(".source");
+        if let Some(parent) = source_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create source directory {parent:?}"))?;
+        }
         std::fs::write(&source_path, registry_ref)
             .with_context(|| format!("Failed to write source file at {source_path:?}"))?;
         Ok(())

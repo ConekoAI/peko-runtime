@@ -12,7 +12,7 @@ use crate::common::vault::Vault;
 use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
 use crate::extensions::framework::core::global_core;
 use crate::extensions::framework::manager::packaging::ExtensionPackager;
-use crate::extensions::framework::manager::{DependencyStatus, ExtensionManager};
+use crate::extensions::framework::store::{DependencyStatus, ExtensionStore};
 use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
 use crate::extensions::gateway::GatewayAdapter;
 use crate::extensions::general::GeneralExtensionAdapter;
@@ -50,11 +50,10 @@ impl ExtensionManagementService {
         Self { resolver }
     }
 
-    /// Create an `ExtensionManager` with all default adapters registered
-    async fn create_manager_with_adapters(&self) -> Result<ExtensionManager> {
+    /// Create an `ExtensionStore` with all default adapters registered
+    async fn create_store_with_adapters(&self) -> Result<ExtensionStore> {
         let core = global_core().context("Global ExtensionCore not initialized")?;
-        let mut manager = ExtensionManager::with_core(core.clone());
-        manager = manager.with_storage_dir(self.extensions_dir());
+        let store = ExtensionStore::with_core(core.clone()).with_storage_dir(self.extensions_dir());
 
         if let Err(e) =
             BuiltinToolAdapter::register_all(&core, &BuiltinToolRegistrarConfig::default()).await
@@ -65,16 +64,24 @@ impl ExtensionManagementService {
             );
         }
 
-        manager.register_adapter(Box::new(SkillAdapter::new()));
-        manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
-        manager.register_adapter(Box::new(SlashAdapter::new()));
-        manager.register_adapter(Box::new(UniversalToolAdapter::new()));
-        manager.register_adapter(Box::new(GatewayAdapter::new(core.clone())));
-        manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+        store.register_adapter(Box::new(SkillAdapter::new())).await;
+        store
+            .register_adapter(Box::new(McpAdapter::with_default_manager()))
+            .await;
+        store.register_adapter(Box::new(SlashAdapter::new())).await;
+        store
+            .register_adapter(Box::new(UniversalToolAdapter::new()))
+            .await;
+        store
+            .register_adapter(Box::new(GatewayAdapter::new(core.clone())))
+            .await;
+        store
+            .register_adapter(Box::new(GeneralExtensionAdapter::new()))
+            .await;
 
-        manager.load_all().await?;
+        store.load_all().await?;
 
-        Ok(manager)
+        Ok(store)
     }
 
     /// Push an installed extension to a registry.
@@ -89,18 +96,18 @@ impl ExtensionManagementService {
     where
         F: FnMut(ProgressEvent) + 'static,
     {
-        let manager = self.create_manager_with_adapters().await?;
+        let store = self.create_store_with_adapters().await?;
         let ext_id = ExtensionId::new(id);
 
-        let ext = manager
+        let ext = store
             .get_extension(&ext_id)
-            .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?
-            .clone();
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
 
         // Resolve dependencies if --with-deps
         let mut dep_ids = Vec::new();
         if with_deps {
-            let resolution = manager.resolve_dependencies_root(&ext.manifest)?;
+            let resolution = store.resolve_dependencies_root(&ext.manifest).await?;
             if resolution.has_required_missing() {
                 let missing: Vec<_> = resolution
                     .missing
@@ -126,11 +133,12 @@ impl ExtensionManagementService {
         let temp_path = temp_dir.join(format!("{}.ext", ext.manifest.id.0));
 
         ExtensionPackager::export_with_deps(
-            &manager,
+            &store,
             &ext_id,
             &dep_ids,
             temp_path.to_string_lossy().as_ref(),
-        )?;
+        )
+        .await?;
 
         // Read file bytes and compute digest
         let data = tokio::fs::read(&temp_path).await?;
@@ -211,11 +219,11 @@ impl ExtensionManagementService {
     where
         F: FnMut(ProgressEvent) + 'static,
     {
-        let mut manager = self.create_manager_with_adapters().await?;
+        let store = self.create_store_with_adapters().await?;
         let mut already_pulled = HashSet::new();
         let on_progress: Box<dyn FnMut(ProgressEvent)> = Box::new(on_progress);
         self.pull_extension_inner(
-            &mut manager,
+            &store,
             registry_ref,
             cli_registry,
             no_deps,
@@ -227,7 +235,7 @@ impl ExtensionManagementService {
 
     async fn pull_extension_inner(
         &self,
-        manager: &mut ExtensionManager,
+        store: &ExtensionStore,
         registry_ref: &str,
         cli_registry: Option<&str>,
         no_deps: bool,
@@ -243,12 +251,12 @@ impl ExtensionManagementService {
         }
 
         let (temp_path, manifest) = self
-            .pull_extension_to_temp(manager, registry_ref, cli_registry, &mut on_progress)
+            .pull_extension_to_temp(registry_ref, cli_registry, &mut on_progress)
             .await?;
 
         // Install the main extension
         let install_result = self
-            .install_pulled_extension(manager, registry_ref, &temp_path)
+            .install_pulled_extension(store, registry_ref, &temp_path)
             .await;
 
         let ext_manifest = match install_result {
@@ -260,7 +268,7 @@ impl ExtensionManagementService {
         };
 
         // Resolve dependencies
-        let dep_resolution = manager.resolve_dependencies_root(&ext_manifest)?;
+        let dep_resolution = store.resolve_dependencies_root(&ext_manifest).await?;
         let mut dep_results = Vec::new();
 
         if !no_deps && !dep_resolution.missing.is_empty() {
@@ -268,7 +276,7 @@ impl ExtensionManagementService {
                 if let DependencyStatus::Missing { package, .. } = dep {
                     let dep_progress: Box<dyn FnMut(ProgressEvent)> = Box::new(|_| {});
                     let result = Box::pin(self.pull_extension_inner(
-                        manager,
+                        store,
                         package,
                         cli_registry,
                         false,
@@ -303,11 +311,11 @@ impl ExtensionManagementService {
 
     async fn install_pulled_extension(
         &self,
-        manager: &mut ExtensionManager,
+        store: &ExtensionStore,
         registry_ref: &str,
         temp_path: &Path,
     ) -> Result<ExtensionManifest> {
-        // .ext packages are archives; the manager's type detection only works
+        // .ext packages are archives; the store's type detection only works
         // on an extracted directory. Unpack to a temp dir before installing.
         let install_dir = if temp_path.extension().map_or(false, |e| e == "ext") {
             let temp_dir = std::env::temp_dir().join("PEKO_ext_install").join(
@@ -331,7 +339,7 @@ impl ExtensionManagementService {
             temp_path.to_path_buf()
         };
 
-        let install_result = manager.install(&install_dir).await;
+        let install_result = store.install(&install_dir).await;
 
         if let Err(ref e) = install_result {
             return Err(anyhow::anyhow!("{e}"));
@@ -339,22 +347,17 @@ impl ExtensionManagementService {
 
         let ext_id = install_result.unwrap();
 
-        if manager.storage_dir().is_some() {
-            let _ = manager.storage().write_source(&ext_id, registry_ref);
-        }
-        if let Some(loaded) = manager.get_extension_mut(&ext_id) {
-            loaded.manifest.source = Some(registry_ref.to_string());
-        }
+        store.set_source(&ext_id, registry_ref).await?;
 
-        manager
+        store
             .get_extension(&ext_id)
+            .await
             .map(|e| e.manifest.clone())
-            .context("Installed extension not found in manager")
+            .context("Installed extension not found in store")
     }
 
     async fn pull_extension_to_temp(
         &self,
-        _manager: &mut ExtensionManager,
         registry_ref: &str,
         cli_registry: Option<&str>,
         on_progress: &mut dyn FnMut(ProgressEvent),

@@ -18,6 +18,7 @@ use crate::common::paths::PathResolver;
 use crate::common::types::OutputFormat;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::async_exec::executor::SteeringMessage;
+use crate::extensions::framework::store::ExtensionStore;
 use crate::identity::did::DIDScope;
 use crate::identity::storage::KeyStorage;
 use crate::observability::Observability;
@@ -70,10 +71,10 @@ pub struct PrincipalManager {
     /// agent. This is optional so tests and non-daemon contexts can build a
     /// PrincipalManager without extension state.
     slash_dispatcher: Arc<RwLock<Option<Arc<SlashDispatcher>>>>,
-    /// Optional daemon extension manager. When present, the per-message
-    /// `ExtensionStore` includes installed extensions as well as built-ins
+    /// Optional daemon extension store. When present, the per-message
+    /// `ExtensionCatalog` includes installed extensions as well as built-ins
     /// and principal-scoped agents.
-    extension_manager: Option<Arc<RwLock<crate::extensions::framework::manager::ExtensionManager>>>,
+    extension_store: Option<Arc<ExtensionStore>>,
     /// Optional observability hub. Threaded into `RouterContext` so the root
     /// agent and subagent spawns can emit audit events.
     observability: Option<Arc<Observability>>,
@@ -110,7 +111,7 @@ impl PrincipalManager {
             inbox_registry: Arc::new(InboxRegistry::new()),
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
             slash_dispatcher: Arc::new(RwLock::new(None)),
-            extension_manager: None,
+            extension_store: None,
             observability: None,
         }
     }
@@ -128,15 +129,12 @@ impl PrincipalManager {
         self
     }
 
-    /// Attach a daemon extension manager. When present, the per-message
-    /// `ExtensionStore` includes installed extensions alongside built-ins
+    /// Attach a daemon extension store. When present, the per-message
+    /// `ExtensionCatalog` includes installed extensions alongside built-ins
     /// and principal-scoped agents.
     #[must_use]
-    pub fn with_extension_manager(
-        mut self,
-        extension_manager: Arc<RwLock<crate::extensions::framework::manager::ExtensionManager>>,
-    ) -> Self {
-        self.extension_manager = Some(extension_manager);
+    pub fn with_extension_store(mut self, extension_store: Arc<ExtensionStore>) -> Self {
+        self.extension_store = Some(extension_store);
         self
     }
 
@@ -508,13 +506,12 @@ impl PrincipalManager {
                 })
                 .collect();
 
-            let extension_store = match self.extension_manager.as_ref() {
-                Some(em) => {
-                    let guard = em.read().await;
-                    super::ExtensionStore::build(allowed, &principal.agent_prompts, Some(&*guard))
-                }
-                None => super::ExtensionStore::build(allowed, &principal.agent_prompts, None),
+            let global_items = match self.extension_store.as_ref() {
+                Some(store) => store.global_items().await,
+                None => Vec::new(),
             };
+            let extension_store =
+                super::ExtensionCatalog::build(allowed, &principal.agent_prompts, &global_items);
             let active_extensions = extension_store.active_extensions();
 
             (

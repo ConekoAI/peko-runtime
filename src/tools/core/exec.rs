@@ -343,14 +343,20 @@ impl ToolContext {
 
     /// Set capability grants for extension-scoped tool state resolution.
     #[must_use]
-    pub fn with_capabilities(mut self, capabilities: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn with_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         self.capabilities = Some(capabilities.into_iter().map(Into::into).collect());
         self
     }
 
     /// Set active extension IDs for extension-scoped tool state resolution.
     #[must_use]
-    pub fn with_active_extensions(mut self, active_extensions: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn with_active_extensions(
+        mut self,
+        active_extensions: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         self.active_extensions = Some(active_extensions.into_iter().map(Into::into).collect());
         self
     }

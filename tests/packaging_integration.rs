@@ -51,7 +51,7 @@
 //!     workspace.
 
 use anyhow::Context;
-use peko::extensions::framework::manager::ExtensionManager;
+use peko::extensions::framework::store::ExtensionStore;
 use peko::extensions::skill::SkillAdapter;
 use peko::identity::{did::DIDScope, Identity};
 use peko::principal::config::PrincipalConfig;
@@ -200,30 +200,26 @@ async fn create_skill_fixture(base: &Path, name: &str) -> anyhow::Result<PathBuf
     Ok(ext_dir)
 }
 
-/// Load a skill from `extensions_dir` into an `ExtensionManager` with a
+/// Load a skill from `extensions_dir` into an `ExtensionStore` with a
 /// registered `SkillAdapter`, and set its registry source reference.
-async fn create_manager_with_skill(
+async fn create_store_with_skill(
     extensions_dir: &Path,
     storage_dir: &Path,
     source_ref: &str,
-) -> anyhow::Result<(ExtensionManager, String)> {
-    let mut manager = ExtensionManager::new().with_storage_dir(storage_dir.to_path_buf());
-    manager.register_adapter(Box::new(SkillAdapter::new()));
+) -> anyhow::Result<(ExtensionStore, String)> {
+    let store = ExtensionStore::new().with_storage_dir(storage_dir.to_path_buf());
+    store.register_adapter(Box::new(SkillAdapter::new())).await;
 
-    let loaded = manager.load_from_directory(extensions_dir).await?;
+    let loaded = store.load_from_directory(extensions_dir).await?;
     let id = loaded
         .into_iter()
         .next()
         .context("expected one skill to load")?;
 
     // Make the registry ref available to the principal packager.
-    manager
-        .get_extension_mut(&id)
-        .context("loaded skill disappeared")?
-        .manifest
-        .source = Some(source_ref.to_string());
+    store.set_source(&id, source_ref).await?;
 
-    Ok((manager, id.0))
+    Ok((store, id.0))
 }
 
 /// Create a minimal principal directory whose `[capabilities] grants`
@@ -477,14 +473,14 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
     let ext_source_ref = "pekohub.io/ns/integration-skill:v1.0";
 
     // ═════════════════════════════════════════════════════════════════
-    // 1. Create a skill extension and load it into an ExtensionManager
+    // 1. Create a skill extension and load it into an ExtensionStore
     // ═════════════════════════════════════════════════════════════════
     let extensions_dir = base_dir.join("extensions");
     create_skill_fixture(&extensions_dir, skill_name).await?;
 
     let skill_storage = base_dir.join("skill_storage");
-    let (manager, skill_id) =
-        create_manager_with_skill(&extensions_dir, &skill_storage, ext_source_ref).await?;
+    let (store, skill_id) =
+        create_store_with_skill(&extensions_dir, &skill_storage, ext_source_ref).await?;
 
     // ═════════════════════════════════════════════════════════════════
     // 2. Build a .principal package that embeds the skill
@@ -508,7 +504,8 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
     let agents_dir = principal_dir.join("agents");
     let packager = PrincipalPackager::new(config.clone(), identity)
         .with_agents_dir(&agents_dir)
-        .with_extensions_from_manager(&manager, &config)?;
+        .with_extensions_from_store(&store, &config)
+        .await?;
 
     let export_opts = PrincipalExportOptions {
         output_path: Some(package_path.to_string_lossy().to_string()),
@@ -624,28 +621,31 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
     assert!(import_result.config_path.exists());
 
     // ═════════════════════════════════════════════════════════════════
-    // 6. Install embedded extensions into a fresh target manager
+    // 6. Install embedded extensions into a fresh target store
     // ═════════════════════════════════════════════════════════════════
     let (manifest, _validation) = unpackager.inspect().await?;
 
     let target_storage = base_dir.join("target_ext_storage");
-    let mut target_manager = ExtensionManager::new().with_storage_dir(target_storage);
-    target_manager.register_adapter(Box::new(SkillAdapter::new()));
+    let target_store = ExtensionStore::new().with_storage_dir(target_storage);
+    target_store
+        .register_adapter(Box::new(SkillAdapter::new()))
+        .await;
 
     let installed = unpackager
-        .import_extensions(&manifest, &mut target_manager)
+        .import_extensions(&manifest, &target_store)
         .await
         .context("failed to install embedded extensions after import")?;
     assert!(
         installed.iter().any(|id| id.0 == skill_id),
-        "embedded skill should be installed in target manager"
+        "embedded skill should be installed in target store"
     );
 
     // ═════════════════════════════════════════════════════════════════
     // 7. Verify the skill resolves and its source ref round-tripped
     // ═════════════════════════════════════════════════════════════════
-    let resolution = target_manager
+    let resolution = target_store
         .resolve_tool_name(skill_name)
+        .await
         .context("skill should resolve after import")?;
     assert_eq!(resolution.id, skill_id);
     assert_eq!(resolution.registry_ref, Some(ext_source_ref.to_string()));

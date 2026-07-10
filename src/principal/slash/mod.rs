@@ -6,11 +6,10 @@
 pub mod help;
 
 use crate::common::types::OutputFormat;
-use crate::extensions::framework::manager::ExtensionManager;
 use crate::extensions::framework::services::Services as ExtensionServices;
+use crate::extensions::framework::store::ExtensionStore;
 use crate::principal::Principal;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Result of handling a slash command.
 #[derive(Debug, Clone)]
@@ -34,7 +33,7 @@ pub enum SlashError {
 /// Dispatches slash commands for all callers that reach a Principal.
 #[derive(Debug)]
 pub struct SlashDispatcher {
-    extension_manager: Arc<RwLock<ExtensionManager>>,
+    extension_store: Arc<ExtensionStore>,
     extension_services: Arc<ExtensionServices>,
 }
 
@@ -42,11 +41,11 @@ impl SlashDispatcher {
     /// Create a new dispatcher bound to the daemon's extension state.
     #[must_use]
     pub fn new(
-        extension_manager: Arc<RwLock<ExtensionManager>>,
+        extension_store: Arc<ExtensionStore>,
         extension_services: Arc<ExtensionServices>,
     ) -> Self {
         Self {
-            extension_manager,
+            extension_store,
             extension_services,
         }
     }
@@ -88,7 +87,7 @@ impl SlashDispatcher {
             "help" => {
                 let content = help::handle_help(
                     principal,
-                    &self.extension_manager,
+                    &self.extension_store,
                     &self.extension_services,
                     format,
                 )
