@@ -225,9 +225,8 @@ pub mod commands;
 // Utilities
 // ============================================================================
 
-/// Remote registry client (push/pull) and local `.principal` packaging
-/// (the agent packaging surface was retired in favor of Principal packages).
-/// (export/import/build/push/pull of `.agent` / `.team` archives).
+/// Remote registry client (push/pull) and local `.principal` packaging.
+/// (the standalone agent packaging surface was retired in favor of Principal packages).
 pub mod registry;
 
 /// Runtime-Pekohub tunnel protocol (ADR-035)

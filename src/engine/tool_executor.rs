@@ -50,8 +50,7 @@ impl ToolExecutor {
     ///   at the `HookInput::ToolCall` boundary for legacy/standalone callers.
     /// * `principal_name` - Human-readable Principal name for Principal-scoped
     ///   tools (e.g. cron).
-    /// * `capabilities` - Per-call capability set used by the execution gate
-    ///   instead of the mutable global `tool_config`.
+    /// * `capabilities` - Per-call capability set used by the execution gate.
     /// * `active_extensions` - Active extension IDs for the current Principal;
     ///   the gate verifies the tool's owning extension is active.
     /// * `cancel` - Soft-interrupt `CancellationToken` (PR #128). Bridged

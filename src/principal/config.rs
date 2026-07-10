@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::auth::{Permission, PermissionGrant};
-use crate::principal::capability::Capabilities;
+use crate::extensions::framework::types::Capabilities;
 use crate::tunnel::protocol::{InstanceExposure, InstanceStatus};
 
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.

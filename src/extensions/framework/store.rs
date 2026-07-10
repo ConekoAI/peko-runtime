@@ -6,8 +6,8 @@
 //! internal, so read-heavy paths do not force every consumer to manage an
 //! `RwLock` guard.
 //!
-//! The per-Principal snapshot is [`crate::principal::ExtensionCatalog`], which
-//! merges plain [`GlobalExtensionItem`] data from this store with workspace
+//! The per-Principal snapshot is built by the Principal layer from
+//! [`GlobalExtensionItem`] data returned by this store, merged with workspace
 //! agents and built-ins.
 
 use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter};
@@ -113,9 +113,8 @@ pub struct DependencyResolution {
     pub circular: Vec<Vec<String>>,
 }
 
-/// Plain data snapshot of a globally loaded extension, used by
-/// [`crate::principal::ExtensionCatalog`] to build a per-Principal view
-/// without holding a reference to the store.
+/// Plain data snapshot of a globally loaded extension, used by the Principal
+/// layer to build a per-Principal view without holding a reference to the store.
 #[derive(Debug, Clone)]
 pub struct GlobalExtensionItem {
     pub id: String,

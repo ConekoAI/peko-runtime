@@ -11,7 +11,7 @@ use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
 use crate::agents::lifecycle::LifecycleManager;
 use crate::agents::stateless_service::StatelessAgentService;
-use crate::common::services::{AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService};
+use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl, SessionService};
 use crate::common::types::config::PekoConfig;
 use crate::cron::IdleDetector;
 use crate::engine::tool_runtime::ToolRuntime;
@@ -89,9 +89,6 @@ pub struct AppState {
 
     /// Principal manager (AI Principal container lifecycle)
     principal_manager: Arc<PrincipalManager>,
-
-    /// Agent service (unified for CLI and API)
-    agent_mgmt_service: Arc<AgentService>,
 
     /// Lifecycle manager (tracks active executions only)
     lifecycle: Arc<LifecycleManager>,
@@ -282,7 +279,6 @@ impl std::fmt::Debug for AppState {
             .field("config_service", &"<ConfigAuthorityImpl>")
             .field("agent_service", &"<StatelessAgentService>")
             .field("principal_manager", &"<PrincipalManager>")
-            .field("agent_mgmt_service", &"<AgentService>")
             .field("tool_runtime", &"<ToolRuntime>")
             .field("async_task_executor", &"<AsyncExecutor>")
             .field("inbox_registry", &"<InboxRegistry>")
@@ -486,8 +482,8 @@ impl AppState {
 
         // v3-cleanup: ADR-032 / ADR-033 / provider-catalog migration
         // runners were deleted; the runtime now expects every agent
-        // and team on disk to already have `host_runtime_id` and
-        // `owner` set (which `create_agent` does at v3).
+        // on disk to already have `host_runtime_id` set (which the
+        // principal creation path does at v3).
 
         let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
 
@@ -524,9 +520,6 @@ impl AppState {
         let lifecycle = Arc::new(LifecycleManager::new());
 
         let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
-
-        // Create unified services
-        let agent_mgmt_service = Arc::new(AgentService::new(path_resolver_clone.clone()));
 
         // ADR-021: Initialize global ExtensionCore FIRST so ToolRuntime can register
         // tools with it, and Agent::new() can find them later.
@@ -769,7 +762,6 @@ impl AppState {
             resolver,
             vault: Arc::clone(&vault),
             principal_manager,
-            agent_mgmt_service,
             lifecycle,
             session_service,
             tool_runtime,
@@ -1014,12 +1006,6 @@ impl AppState {
     #[must_use]
     pub fn session_service(&self) -> &Arc<SessionService> {
         &self.session_service
-    }
-
-    /// Get the agent management service (unified)
-    #[must_use]
-    pub fn agent_mgmt_service(&self) -> &Arc<AgentService> {
-        &self.agent_mgmt_service
     }
 
     /// Get the background runtime manager (ADR-025)

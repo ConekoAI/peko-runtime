@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn test_is_valid_ref() {
         assert!(is_valid_ref("pekohub.com/agent:v1.0"));
-        assert!(is_valid_ref("registry.io/org/team/agent:latest"));
+        assert!(is_valid_ref("registry.io/org/group/agent:latest"));
         assert!(!is_valid_ref(""));
         assert!(!is_valid_ref("just-host"));
     }

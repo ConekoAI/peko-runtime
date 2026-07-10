@@ -216,7 +216,6 @@ archive_format = "tar"
     );
 }
 
-use peko::common::types::agent_legacy::ExtensionConfig;
 use peko::extensions::framework::core::HookPoint;
 use peko::extensions::framework::types::{HookInput, HookOutput, HookResult};
 use peko::extensions::skill::SkillAdapter;
@@ -266,14 +265,7 @@ async fn test_extension_install_tool_registration_and_invocation() {
     // 2. Get the ExtensionCore from the store (tools registered during install)
     let core = store.core_arc();
 
-    // 3. Enable the tool in the whitelist
-    let tool_config = ExtensionConfig {
-        enabled: vec!["universal:test-echo".to_string()],
-        ..Default::default()
-    };
-    core.set_tool_config(tool_config).await;
-
-    // 4. Verify the tool is listed
+    // 3. Verify the tool is listed
     let tools = core.list_tools().await;
     let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
     assert!(
@@ -282,7 +274,7 @@ async fn test_extension_install_tool_registration_and_invocation() {
         tool_names
     );
 
-    // 5. Verify the tool can be invoked via ToolExecute
+    // 4. Verify the tool can be invoked via ToolExecute with the right capability.
     let result = core
         .invoke_hook(
             HookPoint::ToolExecute {
@@ -297,8 +289,8 @@ async fn test_extension_install_tool_registration_and_invocation() {
                 caller_id: None,
                 principal_id: None,
                 principal_name: None,
-                capabilities: None,
-                active_extensions: None,
+                capabilities: Some(vec!["tool:test-echo".to_string()]),
+                active_extensions: Some(vec!["universal:test-echo".to_string()]),
                 abort_signal: None,
             },
         )

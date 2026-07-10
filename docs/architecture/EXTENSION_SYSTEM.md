@@ -1,7 +1,7 @@
 # Peko Extension System
 
-**Version:** 0.1.0 (Post-ADR-017 Implementation)
-**Date:** 2026-06-23 (review pass)
+**Version:** 0.1.0 (Post-ADR-017 / Issue-021 Implementation)
+**Date:** 2026-07-10
 **Status:** Current  
 
 ---
@@ -12,15 +12,15 @@ The Peko Extension System provides a unified architecture for adding capabilitie
 
 ### Authorization vs. runtime enforcement
 
-Two separate layers decide which extensions an agent can actually use:
+A single source of truth decides which extensions a Principal can use:
 
-1. **Principal policy (`[allowed_extensions]` in `principal.toml`)**  
-   The principal-level allowlist grouped by kind: `tools`, `skills`, `mcps`, and `agents`. It answers "what is this principal allowed to use?" The root agent and all of its subagents inherit this policy.
+1. **Principal policy (`[capabilities] grants` in `principal.toml`)**  
+   The `capabilities.grants` array is the human-editable, authoritative allowlist for a Principal. It contains typed capability strings such as `tool:Read`, `skill:github`, `agent:researcher`, and `mcp:filesystem`. The root agent and all subagents spawned under the Principal inherit this policy. Runtime checks fail closed: if a capability is not granted, the corresponding tool, skill, agent, or MCP tool is not registered or callable.
 
-2. **Runtime enforcement (`extensions.enabled` in the agent config)**  
-   The flat canonical-ID allowlist checked by `ToolRegistry::is_tool_enabled` at execution time. It answers "is this tool enabled for this agent right now?" For the root agent, the runner builds this list from the principal policy; for legacy direct agent execution it was set by `peko ext enable --target <agent>` (removed — use `peko capability grant --principal <name>`).
+2. **Runtime enforcement (`ToolRegistry::is_tool_enabled`)**  
+   At tool execution time the runtime evaluates the grant set from the running Principal and the active extension set derived from those grants. Built-in tools owned by `builtin:tool:*` are treated as globally active, but still require the matching `tool:*` capability to execute. There is no separate global tool whitelist; all authority flows from `principal.toml`.
 
-The legacy table name `[capabilities]` is still accepted when reading `principal.toml`, but new files should use `[allowed_extensions]`.
+`[allowed_extensions]` and the per-agent `extensions.enabled` list have been removed. Use `peko capability grant --principal <name> <cap>` to add authority and `peko capability revoke` to remove it.
 
 ---
 

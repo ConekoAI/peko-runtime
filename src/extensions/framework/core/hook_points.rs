@@ -200,7 +200,7 @@ pub enum HookPoint {
     /// Handlers return: `HookResult::Handled` to consume, or `PassThrough`
     ///
     /// # Fields
-    /// - `topic_pattern`: Pattern for matching events (e.g., "instance.*", "team.created")
+    /// - `topic_pattern`: Pattern for matching events (e.g., "instance.*", "principal.created")
     EventSubscribe { topic_pattern: String },
 
     /// Emit custom events
@@ -528,14 +528,6 @@ pub mod common {
     pub fn instance_events() -> HookPoint {
         HookPoint::EventSubscribe {
             topic_pattern: "instance.*".to_string(),
-        }
-    }
-
-    /// Subscribe to team events
-    #[must_use]
-    pub fn team_events() -> HookPoint {
-        HookPoint::EventSubscribe {
-            topic_pattern: "team.*".to_string(),
         }
     }
 }

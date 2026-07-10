@@ -1,9 +1,11 @@
-//! Capability model for Principal authority.
+//! Capability model for extension-framework authority.
 //!
 //! A capability is a typed grant such as `tool:Read`, `agent:researcher`,
 //! `skill:github_skill`, `filesystem.read:/path`, or `network`.  A Principal's
 //! `[capabilities] grants = [...]` array in `principal.toml` is the single
-//! source of truth for what the Principal is allowed to do.
+//! source of truth for what the Principal is allowed to do, but the types
+//! themselves are generic authorization primitives used by the extension
+//! framework.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -93,11 +95,11 @@ impl fmt::Display for Capability {
     }
 }
 
-/// A Principal's capability grants.
+/// A capability grant set.
 ///
-/// This is the single human-editable source of truth for what a Principal is
-/// allowed to do.  It serializes as `[capabilities] grants = [...]` in
-/// `principal.toml`.
+/// This serializes as `[capabilities] grants = [...]` in `principal.toml` and
+/// is the single human-editable source of truth for what a Principal is allowed
+/// to do.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
     pub grants: Vec<Capability>,
@@ -158,7 +160,6 @@ impl Capabilities {
     }
 
     /// Iterate over capability grants.
-    #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = &Capability> {
         self.grants.iter()
     }
@@ -290,7 +291,6 @@ impl ActiveExtensionSet {
     }
 
     /// Iterate over active extension IDs.
-    #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = &String> {
         self.ids.iter()
     }

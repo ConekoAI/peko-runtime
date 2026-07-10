@@ -15,7 +15,6 @@ Peko is a Rust-based multi-agent runtime with a unified extension architecture. 
 - **HTTP API daemon** (default `localhost:11435`) with SSE streaming and WebSocket support
 - **Session management** via durable JSONL files with atomic writes
 - **Built-in tools** (Read, Write, Edit, Bash, Agent, CronCreate/CronDelete/CronList, AsyncSpawn/AsyncOutput/AsyncStop/AsyncStatus/AsyncList, TaskCreate/TaskGet/TaskList/TaskUpdate, session, etc.)
-- **Team runtime** with A2A (agent-to-agent) messaging over an event bus
 - **Extension system** with 22 hook points for tools, skills, MCP servers, channels, and gateways
 - **Packaging** — `.principal` build/export/import, `.ext` export, registry push/pull with content-addressable storage
   (the `.agent` and `.team` archive formats were retired when the
@@ -120,7 +119,7 @@ src/
 | `agents` | Agent instance lifecycle, stateless manager, registration, prompts |
 | `auth` | Principal ownership, permission grants, API keys, JWT, rate limiting |
 | `commands` | Clap argument parsing and command handlers (still transitioning to thin service delegation) |
-| `common` | Shared services (`AgentService`, `SessionService`, `ConfigAuthority`, `Vault`, etc.) and core types |
+| `common` | Shared services (`StatelessAgentService`, `ConfigAuthority`, `Vault`, `ExtensionConfigService`, etc.) and core types |
 | `daemon` | Axum HTTP server, REST API, WebSocket, SSE streaming, `AppState` composition root |
 | `engine` | Turn-based agentic loop: input → LLM → tools → response |
 | `extensions::framework` | Generic extension framework (ADR-017) — hook points, registries, types, managers, and shared services. Zero dependencies on concrete extension type implementations. |
@@ -223,7 +222,7 @@ cargo test --all-features
     - `tools::core` does **not** depend on `extensions::framework`. The previous bidirectional loop is broken.
     - `tunnel` depends on `tools::core` (for the `Tool` trait) and **does not** depend on `agents` in production code.
     - `agents` depends on `tunnel` (for the `AgentMessageService` trait used by `PrincipalSendTool`) and does **not** depend on `tunnel::principal_send_tool`'s concrete types.
-    - `extensions::framework` does **not** depend on `agents`, `tunnel`, or `daemon` (enforced by `check_module_boundaries.sh` Rule 5).
+    - `extensions::framework` does **not** depend on `agents`, `tunnel`, `daemon`, or `principal` (enforced by `check_module_boundaries.sh` Rules 5 and 6).
   - Cycles 4 (`tools::core ↔ extension::types`) and 5 (`tunnel ↔ agents`) from `PLAN.md` §2.5 are now actually broken (not reshuffled).
   - `src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `crate::registry::packaging::`, `crate::common::services::config_authority::`, `crate::identity::storage::`, `crate::session::jsonl::`, `crate::session::metadata_controller::`). `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 

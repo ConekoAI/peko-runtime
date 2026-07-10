@@ -2873,7 +2873,13 @@ impl IpcServer {
                     let name = tool_name.clone();
                     let p = params.clone();
                     Box::pin(async move {
-                        match runtime.execute_tool_with_workspace(&name, p, &ws).await {
+                        // TODO: thread the caller's capability grants through the
+                        // async-spawn IPC path.  For now the standalone execution
+                        // surface is fail-closed when no grants are supplied.
+                        match runtime
+                            .execute_tool_with_workspace(&name, p, &ws, None, None)
+                            .await
+                        {
                             Ok(value) => Ok(value),
                             Err(e) => Err(e),
                         }

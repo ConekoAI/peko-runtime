@@ -92,7 +92,7 @@ peko ext debug <mcp-extension-name>
 
 ## Configuration
 
-Extension settings can be configured at global, team, or agent level:
+Extension settings can be configured at global or agent level:
 
 ```bash
 # Configure extension settings

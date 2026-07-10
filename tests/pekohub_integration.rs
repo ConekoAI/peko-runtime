@@ -441,15 +441,15 @@ async fn test_registry_client_bare_ref_resolution() {
     assert_eq!(resolved.tag, "latest");
 
     // ADR-041: the Team resource type is no longer a valid path
-    // segment — Subject::Team was removed in the clean break.
-    // Verify that the resolver still parses the input but the
-    // path uses the legacy `teams` segment for back-compat
-    // reads against pre-#82 hubs. Production writes go through
-    // Principal.
-    let resolved =
-        RegistryRef::parse_with_default("my-team:v2.0", Some(host), Some(ResourceType::Team))
-            .unwrap();
-    assert_eq!(resolved.path, "peko/teams/my-team");
+    // segment — it was removed in the clean break.
+    // Verify that the resolver still parses the input as a Principal.
+    let resolved = RegistryRef::parse_with_default(
+        "my-principal:v2.0",
+        Some(host),
+        Some(ResourceType::Principal),
+    )
+    .unwrap();
+    assert_eq!(resolved.path, "peko/principals/my-principal");
     assert_eq!(resolved.tag, "v2.0");
 }
 

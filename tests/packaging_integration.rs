@@ -30,12 +30,8 @@
 //! `RegistryManifest::kind = "principal"` discriminator distinguishes a
 //! Principal push from a legacy `.agent` push.
 //!
-//! The legacy test exercised `export .agent → push → pull → import
-//! → create team → export .team → import team`. The team export/import
-//! half is covered separately by `s4_publish_running_agent_with_permission`
-//! and the team surface is otherwise unchanged; this file drops the
-//! team half (with the corresponding team-`.toml` fixture) and keeps
-//! the full `.principal` packaging pipeline.
+//! The legacy test exercised `export .agent → push → pull → import`.
+//! This file keeps the full `.principal` packaging pipeline.
 //!
 //! ## Principal package shape
 //!

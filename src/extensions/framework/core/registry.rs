@@ -9,10 +9,10 @@ use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::core::hook_registry::HookRegistry;
 use crate::extensions::framework::core::tool_registry::ToolRegistry;
+use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities};
 use crate::extensions::framework::types::{
     ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata, ToolRuntimeContext,
 };
-use crate::principal::{ActiveExtensionSet, Capabilities};
 use crate::tools::core::Tool;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -137,24 +137,9 @@ impl ExtensionCore {
         self.services.clone()
     }
 
-    /// Set the tool configuration (whitelist, etc.)
-    pub async fn set_tool_config(
-        &self,
-        config: crate::common::types::agent_legacy::ExtensionConfig,
-    ) {
-        self.tool_registry.set_tool_config(config).await;
-    }
-
-    /// Check if a tool is enabled according to whitelist
-    pub async fn is_tool_enabled(&self, tool_name: &str) -> bool {
-        self.tool_registry.is_tool_enabled(tool_name).await
-    }
-
     /// Resolve bare tool names to their canonical `extension_id` form.
     ///
     /// See [`ToolRegistry::resolve_canonical_ids`] for the contract.
-    /// This is what the principal's `capabilities` go through before
-    /// landing in `ExtensionConfig.enabled`.
     pub async fn resolve_canonical_ids(&self, names: &[String]) -> Vec<String> {
         self.tool_registry.resolve_canonical_ids(names).await
     }
@@ -266,12 +251,10 @@ impl ExtensionCore {
         }
 
         // ADR-019 Phase 1: Tool permission check at ExtensionCore layer
-        // This ensures ALL tools (built-in, MCP, Universal) are checked consistently
+        // This ensures ALL tools (built-in, MCP, Universal) are checked consistently.
         if let HookPoint::ToolExecute { ref tool_name } = point {
             let capabilities = match &input {
-                HookInput::ToolCall { capabilities, .. } => capabilities
-                    .as_ref()
-                    .map(|v| Capabilities::with_grants(v.iter().cloned())),
+                HookInput::ToolCall { capabilities, .. } => capabilities.as_ref(),
                 _ => None,
             };
             let active_extensions = match &input {
@@ -282,18 +265,21 @@ impl ExtensionCore {
                     .map(|v| ActiveExtensionSet::with_ids(v.iter().cloned())),
                 _ => None,
             };
+            let Some(caps) = capabilities else {
+                warn!(tool_name = %tool_name, "Tool execution blocked: no capability set provided");
+                return HookResult::Error(anyhow::anyhow!(
+                    "Tool '{tool_name}' is currently disabled. Grant the capability to use it."
+                ));
+            };
+            let caps = Capabilities::with_grants(caps.iter().cloned());
             if !self
                 .tool_registry
-                .is_tool_enabled_with_whitelist(
-                    tool_name,
-                    capabilities.as_ref(),
-                    active_extensions.as_ref(),
-                )
+                .is_tool_enabled(tool_name, &caps, active_extensions.as_ref())
                 .await
             {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
                 return HookResult::Error(anyhow::anyhow!(
-                    "Tool '{tool_name}' is currently disabled. Enable it in agent config to use it."
+                    "Tool '{tool_name}' is currently disabled. Grant the capability to use it."
                 ));
             }
             trace!(tool_name = %tool_name, "Tool execution permitted");
@@ -545,9 +531,9 @@ impl ExtensionCore {
     ///
     /// # Returns
     /// A list of tool metadata for all registered tools.
-    /// Note: This returns ALL registered tools regardless of the agent's whitelist.
-    /// The whitelist is enforced at execution time via `invoke_hook`.  Callers
-    /// that need a caller-scoped view should use
+    /// Note: This returns ALL registered tools regardless of the caller's
+    /// capability grants.  The capability gate is enforced at execution time
+    /// via `invoke_hook`.  Callers that need a caller-scoped view should use
     /// [`Self::list_tool_definitions_with_allowlist`].
     pub async fn list_tools(&self) -> Vec<ToolMetadata> {
         // Collect hook IDs from tool index first
@@ -581,14 +567,14 @@ impl ExtensionCore {
     }
 
     /// List registered tools as `ToolDefinitions`, filtered by a caller
-    /// allowlist.
+    /// capability set.
     ///
     /// This closes leak B: without filtering, the LLM sees every tool
     /// registered on the shared `ExtensionCore` even when the agent/principal
     /// is only allowed to use a subset.
     pub async fn list_tool_definitions_with_allowlist(
         &self,
-        capabilities: Option<&Capabilities>,
+        capabilities: &Capabilities,
         active_extensions: Option<&ActiveExtensionSet>,
     ) -> Vec<crate::providers::ToolDefinition> {
         let all = self.list_tools().await;
@@ -596,7 +582,7 @@ impl ExtensionCore {
         for metadata in all {
             if self
                 .tool_registry
-                .is_tool_enabled_with_whitelist(&metadata.name, capabilities, active_extensions)
+                .is_tool_enabled(&metadata.name, capabilities, active_extensions)
                 .await
             {
                 filtered.push(metadata.to_tool_definition());
@@ -1115,14 +1101,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Set empty whitelist (would block tools, but shouldn't affect ToolRegister)
-        let tool_config = crate::common::types::agent_legacy::ExtensionConfig {
-            enabled: vec![],
-            ..Default::default()
-        };
-        core.set_tool_config(tool_config).await;
-
-        // ToolRegister hook should work normally
+        // ToolRegister hook should work normally without any global tool config.
         let result = core
             .invoke_hook(HookPoint::ToolRegister, HookInput::Unit)
             .await;

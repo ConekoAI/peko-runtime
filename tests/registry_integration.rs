@@ -703,11 +703,14 @@ async fn test_registry_client_bare_ref_resolution() {
         RegistryRef::parse_with_default("my-agent", Some(host), Some(ResourceType::Agent)).unwrap();
     assert_eq!(resolved.tag, "latest");
 
-    // Test team resource type
-    let resolved =
-        RegistryRef::parse_with_default("my-team:v2.0", Some(host), Some(ResourceType::Team))
-            .unwrap();
-    assert_eq!(resolved.path, "peko/teams/my-team");
+    // Test principal resource type
+    let resolved = RegistryRef::parse_with_default(
+        "my-principal:v2.0",
+        Some(host),
+        Some(ResourceType::Principal),
+    )
+    .unwrap();
+    assert_eq!(resolved.path, "peko/principals/my-principal");
     assert_eq!(resolved.tag, "v2.0");
 }
 

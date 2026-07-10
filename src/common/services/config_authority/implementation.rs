@@ -147,12 +147,6 @@ impl ConfigAuthority for ConfigAuthorityImpl {
         }
     }
 
-    async fn list_in_team(&self, _team: &str) -> ConfigResult<Vec<AgentConfigEntry>> {
-        // In the new layout, agents are top-level. For now, list all agents.
-        // Membership filtering will be added later.
-        self.list_all().await
-    }
-
     async fn list_all(&self) -> ConfigResult<Vec<AgentConfigEntry>> {
         let mut all_agents = Vec::new();
 
@@ -294,29 +288,6 @@ mod tests {
         let config = AgentConfig::default();
         authority.save("existing", &config).await.unwrap();
         assert!(authority.exists("existing").await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_list_in_team() {
-        let temp_dir = TempDir::new().unwrap();
-        let resolver = create_test_resolver(&temp_dir);
-        let authority = ConfigAuthorityImpl::new(resolver);
-
-        // Initially empty
-        let agents = authority.list_in_team("default").await.unwrap();
-        assert!(agents.is_empty());
-
-        // Add some agents
-        for i in 0..3 {
-            let config = AgentConfig::default();
-            authority
-                .save(&format!("agent-{i}"), &config)
-                .await
-                .unwrap();
-        }
-
-        let agents = authority.list_in_team("default").await.unwrap();
-        assert_eq!(agents.len(), 3);
     }
 
     #[tokio::test]

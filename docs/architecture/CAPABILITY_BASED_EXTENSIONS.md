@@ -1,7 +1,7 @@
 # North-Star Architecture: Capability-Based Extension Authority
 
-**Status:** Design target — not yet implemented.  
-**Purpose:** Define the long-term architecture for Principal packaging and extension authority in peko. This document is the north star that incremental changes should move toward without requiring an immediate big-bang rewrite.
+**Status:** Implemented (Issue 021).  
+**Purpose:** Define the architecture for Principal packaging and extension authority in peko. `Capability`, `Capabilities`, and `ActiveExtensionSet` now live in `extensions::framework::types`. The legacy global tool whitelist and `allowed_extensions` have been removed; `[capabilities] grants` in `principal.toml` is the single source of truth.
 
 ---
 
@@ -310,10 +310,10 @@ Legacy `allowed_extensions` and `permissions` are read at load time and mapped i
 | `ExtensionManager` | Global `ExtensionStore` |
 | `ExtensionStateRegistry` | Runtime state inside `ExtensionStore` + `CapabilityEvaluator` |
 | `AgentStateRegistry` | Capability grant `agent:<id>` |
-| `ToolRegistry::is_tool_enabled_with_whitelist` | `CapabilityEvaluator` |
-| `allowed_extensions: Vec<String>` and `permissions: Vec<PermissionGrant>` | `capabilities.grants: Vec<Capability>` in `principal.toml` |
+| `ToolRegistry::is_tool_enabled` | Direct `Capabilities` / `ActiveExtensionSet` evaluation |
+| `allowed_extensions: Vec<String>` and global `tool_config` whitelist | `capabilities.grants: Vec<Capability>` in `principal.toml` |
 | `peko ext enable/disable` | Removed; use `peko capability grant/revoke --principal` |
-| `AgentService::resolve_subagent_type` | Capability check for `agent:<id>` + spawn under parent Principal context |
+| `AgentService::resolve_subagent_type` | Capability check for `agent:<id>` + spawn under parent Principal context; `AgentService` is now subagent-resolution only |
 | `ConfigAuthorityImpl` enable/disable | `CapabilityEvaluator` + `ExtensionStore` |
 | Principal `.principal` archive | Signed package with manifest + bundled extensions |
 

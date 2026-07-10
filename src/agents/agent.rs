@@ -279,11 +279,10 @@ impl Agent {
             tracing::debug!("Filtered {} tools to {}", before_count, tools.len());
         }
 
-        // ADR-020: Per-agent tool configuration is now carried on each
-        // `HookInput::ToolCall` via `capabilities` instead of being
-        // written to the shared global `tool_config`. This eliminates a
-        // race where concurrent agents overwrite each other's capability set
-        // on the daemon-global `ExtensionCore`.
+        // `ADR-020: Per-agent tool configuration is now carried on each
+        // `HookInput::ToolCall` via `capabilities` instead of a shared global
+        // whitelist. This eliminates a race where concurrent agents overwrite
+        // each other's capability set on the daemon-global `ExtensionCore`.
 
         // Load Universal Tools from extensions directory (where `peko ext install` puts them).
         //

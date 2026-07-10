@@ -73,14 +73,6 @@ impl ConfigCache {
         debug!("Configuration cache cleared");
     }
 
-    /// Get all cached entries for a team
-    ///
-    /// Currently returns all entries (membership filtering will be added later).
-    pub async fn list_by_team(&self, _team: &str) -> Vec<AgentConfigEntry> {
-        let cache = self.cache.read().await;
-        cache.values().cloned().collect()
-    }
-
     /// Get all cached entries
     pub async fn list_all(&self) -> Vec<AgentConfigEntry> {
         let cache = self.cache.read().await;

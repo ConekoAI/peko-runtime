@@ -1,6 +1,5 @@
 pub mod agent_prompt;
 pub mod agent_runner;
-pub mod capability;
 pub mod capability_evaluator;
 pub mod config;
 pub mod context;
@@ -12,9 +11,9 @@ pub mod router;
 pub mod routers;
 pub mod slash;
 
+pub use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, Capability};
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
-pub use capability::{ActiveExtensionSet, Capabilities, Capability};
 pub use capability_evaluator::CapabilityEvaluator;
 pub use config::{
     AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig, PrincipalDID,

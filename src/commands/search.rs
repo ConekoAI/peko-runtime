@@ -1,6 +1,6 @@
 //! Registry Search Commands
 //!
-//! Search the PekoHub registry for agents, teams, and extensions.
+//! Search the PekoHub registry for agents and extensions.
 //!
 //! Examples:
 //!   peko search researcher
@@ -31,7 +31,7 @@ pub enum SearchCommands {
         #[arg(long, default_value = "20")]
         per_page: u32,
 
-        /// Filter by bundle type (agent, team, extension)
+        /// Filter by bundle type (agent or extension)
         #[arg(long, value_name = "TYPE")]
         r#type: Option<String>,
     },

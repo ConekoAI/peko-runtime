@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Subject;
 
-/// Actions that can be performed on agents and teams
+/// Actions that can be performed on principals
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
@@ -25,7 +25,7 @@ pub enum Permission {
     ManageSettings,
     /// Enable/disable extensions
     ManageExtensions,
-    /// Add/remove team members
+    /// Add/remove principal delegates
     ManageMembers,
     /// Configure private/public exposure
     Expose,

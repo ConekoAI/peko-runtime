@@ -16,9 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::extensions::framework::store::GlobalExtensionItem;
-use crate::extensions::framework::types::ExtensionManifest;
+use crate::extensions::framework::types::{Capabilities, Capability, ExtensionManifest};
 use crate::principal::agent_prompt::AgentPrompt;
-use crate::principal::capability::{Capabilities, Capability};
 use crate::principal::capability_evaluator::CapabilityEvaluator;
 
 /// A single row in the principal's extension catalog.
