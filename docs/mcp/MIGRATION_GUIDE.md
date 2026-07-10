@@ -61,18 +61,18 @@ peko ext list
 peko ext info filesystem-mcp
 ```
 
-### 3. Enable the Extension
+### 3. Grant the Capability
 
 ```bash
-peko ext enable filesystem-mcp
+peko capability grant --principal <principal-name> filesystem-mcp
 ```
 
 ### 4. Use with Agent
 
-MCP tools are automatically available once the extension is enabled:
+MCP tools are automatically available once the capability is granted:
 
 ```bash
-peko send myagent "Read the file README.md"
+peko send my-principal "Read the file README.md"
 ```
 
 ## Configuration
@@ -122,8 +122,8 @@ MCP servers are managed through the extension system:
 # Install an MCP extension
 peko ext install ./my-mcp-extension
 
-# Enable it
-peko ext enable my-mcp-extension
+# Grant the capability to a Principal
+peko capability grant --principal <principal-name> my-mcp-extension
 
 # Check status
 peko ext info my-mcp-extension
@@ -131,8 +131,8 @@ peko ext info my-mcp-extension
 # Debug
 peko ext debug my-mcp-extension
 
-# Disable
-peko ext disable my-mcp-extension
+# Revoke the capability
+peko capability revoke --principal <principal-name> my-mcp-extension
 
 # Uninstall
 peko ext uninstall my-mcp-extension
@@ -152,11 +152,11 @@ peko ext install ./my-mcp-extension
 
 ### "No MCP tools loaded"
 
-**Problem**: Extension is installed but not enabled.
+**Problem**: Extension is installed but the capability has not been granted.
 
 **Solution**:
 ```bash
-peko ext enable my-mcp-extension
+peko capability grant --principal <principal-name> my-mcp-extension
 peko ext info my-mcp-extension
 ```
 

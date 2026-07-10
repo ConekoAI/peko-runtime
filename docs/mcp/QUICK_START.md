@@ -31,19 +31,19 @@ peko ext info filesystem-mcp
 
 You should see the extension listed with type `mcp`.
 
-## 3. Enable the Extension
+## 3. Grant the Capability
 
 ```bash
-# Enable the MCP extension
-peko ext enable filesystem-mcp
+# Grant the MCP capability to a Principal
+peko capability grant --principal <principal-name> filesystem-mcp
 ```
 
 ## 4. Use with Agent
 
-MCP tools are automatically available to agents once the extension is enabled:
+MCP tools are automatically available to a Principal once the capability is granted:
 
 ```bash
-peko send myagent "Read the file README.md"
+peko send <principal-name> "Read the file README.md"
 ```
 
 ## Common Tasks
@@ -107,8 +107,8 @@ peko daemon start --foreground
 ### Tools Not Appearing
 
 ```bash
-# Ensure extension is enabled
-peko ext enable filesystem-mcp
+# Ensure the capability is granted to the Principal
+peko capability grant --principal <principal-name> filesystem-mcp
 
 # Validate extension manifest
 peko ext validate ./mcp-filesystem-server

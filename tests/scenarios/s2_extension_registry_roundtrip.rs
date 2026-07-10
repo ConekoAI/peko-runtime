@@ -31,7 +31,7 @@
 //! Same reasoning as D1: what we are testing is orchestration
 //! plumbing — the runtime successfully authenticates against
 //! pekohub, the OCI push completes, the OCI pull delivers a
-//! `.ext` blob, and the collab can install + enable + chat
+//! `.ext` blob, and the collab can install + grant + chat
 //! end-to-end. The mock LLM provides the chat payload.
 //!
 //! ## The two structural facts this file relies on
@@ -205,7 +205,7 @@ fn principal_config_path(cli: &PekoCli, principal_name: &str) -> PathBuf {
 /// Create a Principal wired to the mock LLM and grant it the
 /// `calculator-skill` extension in `[capabilities] grants` (the
 /// Principal-era equivalent of the legacy
-/// `peko ext enable calculator-skill --target <agent>` flow on a
+/// removed `peko ext enable calculator-skill --target <agent>` flow on a
 /// standalone agent config).
 ///
 /// `calculator-skill` is a Tier 1 SKILL.md; skills are granted with the
@@ -376,7 +376,7 @@ async fn ext_pull_round_trip_two_clis() {
     );
     assert_ok(&out, &err, &status);
 
-    // ── Collaborator side: pull + install + enable + chat ──
+    // ── Collaborator side: pull + install + grant + chat ──
     let collab = PekoCli::new();
     peko_login(&collab, &collab_key, &backend.url);
 
@@ -420,7 +420,7 @@ async fn ext_pull_round_trip_two_clis() {
     // need to re-install. Continue with the chat round-trip.
     //
     // After the "Principal as the single actor" migration, the
-    // standalone-agent `peko ext enable <ext> --target <agent>` flow
+    // removed standalone-agent `peko ext enable <ext> --target <agent>` flow
     // is gone: the chat surface is `peko send <principal>`, and the
     // dispatcher's `is_tool_enabled` whitelist is the union of the
     // root agent's fixed base set plus the Principal's `principal.toml

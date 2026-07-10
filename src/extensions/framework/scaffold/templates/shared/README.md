@@ -28,6 +28,6 @@ Describe how to use this extension after installation.
 # Validate the extension
 peko ext validate ./{{id}}
 
-# Enable for an agent
-peko ext enable {{id}} --target myteam/myagent
+# Grant for a Principal
+peko capability grant --principal <principal-name> <capability>
 ```

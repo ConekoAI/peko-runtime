@@ -229,20 +229,6 @@ pub enum RequestPacket {
         ext_type: Option<String>,
     },
 
-    #[serde(rename = "extension_enable")]
-    ExtensionEnable {
-        request_id: u64,
-        id: String,
-        target: Option<String>,
-    },
-
-    #[serde(rename = "extension_disable")]
-    ExtensionDisable {
-        request_id: u64,
-        id: String,
-        target: Option<String>,
-    },
-
     #[serde(rename = "capability_grant")]
     CapabilityGrant {
         request_id: u64,
@@ -589,8 +575,6 @@ impl RequestPacket {
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::ExtensionList { request_id, .. }
-            | Self::ExtensionEnable { request_id, .. }
-            | Self::ExtensionDisable { request_id, .. }
             | Self::CapabilityGrant { request_id, .. }
             | Self::CapabilityRevoke { request_id, .. }
             | Self::CapabilityList { request_id, .. }
@@ -869,22 +853,6 @@ pub enum ResponsePacket {
         request_id: u64,
         extensions: Vec<ExtensionSummary>,
         total: usize,
-    },
-
-    /// Extension enabled response
-    #[serde(rename = "extension_enabled")]
-    ExtensionEnabled {
-        request_id: u64,
-        id: String,
-        message: String,
-    },
-
-    /// Extension disabled response
-    #[serde(rename = "extension_disabled")]
-    ExtensionDisabled {
-        request_id: u64,
-        id: String,
-        message: String,
     },
 
     /// Capability granted response
@@ -1338,8 +1306,6 @@ impl ResponsePacket {
             | Self::ProviderReloaded { request_id, .. }
             | Self::McpReloaded { request_id, .. }
             | Self::ExtensionList { request_id, .. }
-            | Self::ExtensionEnabled { request_id, .. }
-            | Self::ExtensionDisabled { request_id, .. }
             | Self::CapabilityGranted { request_id, .. }
             | Self::CapabilityRevoked { request_id, .. }
             | Self::CapabilityList { request_id, .. }
@@ -1406,8 +1372,6 @@ impl ResponsePacket {
             Self::ProviderReloaded { .. } => "ProviderReloaded",
             Self::McpReloaded { .. } => "McpReloaded",
             Self::ExtensionList { .. } => "ExtensionList",
-            Self::ExtensionEnabled { .. } => "ExtensionEnabled",
-            Self::ExtensionDisabled { .. } => "ExtensionDisabled",
             Self::CapabilityGranted { .. } => "CapabilityGranted",
             Self::CapabilityRevoked { .. } => "CapabilityRevoked",
             Self::CapabilityList { .. } => "CapabilityList",
@@ -2361,52 +2325,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extension_enable_request_roundtrip() {
-        let req = RequestPacket::ExtensionEnable {
-            request_id: 1001,
-            id: "ext-1".to_string(),
-            target: Some("all".to_string()),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::ExtensionEnable {
-                request_id,
-                id,
-                target,
-            } => {
-                assert_eq!(request_id, 1001);
-                assert_eq!(id, "ext-1");
-                assert_eq!(target, Some("all".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_disable_request_roundtrip() {
-        let req = RequestPacket::ExtensionDisable {
-            request_id: 1002,
-            id: "ext-1".to_string(),
-            target: None,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::ExtensionDisable {
-                request_id,
-                id,
-                target,
-            } => {
-                assert_eq!(request_id, 1002);
-                assert_eq!(id, "ext-1");
-                assert_eq!(target, None);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_system_clean_request_roundtrip() {
         let req = RequestPacket::SystemClean {
             request_id: 1003,
@@ -2464,52 +2382,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extension_enabled_response_roundtrip() {
-        let resp = ResponsePacket::ExtensionEnabled {
-            request_id: 2001,
-            id: "ext-1".to_string(),
-            message: "Extension enabled successfully".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::ExtensionEnabled {
-                request_id,
-                id,
-                message,
-            } => {
-                assert_eq!(request_id, 2001);
-                assert_eq!(id, "ext-1");
-                assert_eq!(message, "Extension enabled successfully");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_disabled_response_roundtrip() {
-        let resp = ResponsePacket::ExtensionDisabled {
-            request_id: 2002,
-            id: "ext-1".to_string(),
-            message: "Extension disabled successfully".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::ExtensionDisabled {
-                request_id,
-                id,
-                message,
-            } => {
-                assert_eq!(request_id, 2002);
-                assert_eq!(id, "ext-1");
-                assert_eq!(message, "Extension disabled successfully");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_system_cleaned_response_roundtrip() {
         let resp = ResponsePacket::SystemCleaned {
             request_id: 2003,
@@ -2541,25 +2413,11 @@ mod tests {
         };
         assert_eq!(req_list.request_id(), 1);
 
-        let req_enable = RequestPacket::ExtensionEnable {
-            request_id: 2,
-            id: "e".to_string(),
-            target: None,
-        };
-        assert_eq!(req_enable.request_id(), 2);
-
-        let req_disable = RequestPacket::ExtensionDisable {
-            request_id: 3,
-            id: "e".to_string(),
-            target: None,
-        };
-        assert_eq!(req_disable.request_id(), 3);
-
         let req_clean = RequestPacket::SystemClean {
-            request_id: 4,
+            request_id: 2,
             scope: None,
         };
-        assert_eq!(req_clean.request_id(), 4);
+        assert_eq!(req_clean.request_id(), 2);
     }
 
     #[test]
@@ -2571,26 +2429,12 @@ mod tests {
         };
         assert_eq!(resp_list.request_id(), 10);
 
-        let resp_enabled = ResponsePacket::ExtensionEnabled {
-            request_id: 11,
-            id: "e".to_string(),
-            message: "m".to_string(),
-        };
-        assert_eq!(resp_enabled.request_id(), 11);
-
-        let resp_disabled = ResponsePacket::ExtensionDisabled {
-            request_id: 12,
-            id: "e".to_string(),
-            message: "m".to_string(),
-        };
-        assert_eq!(resp_disabled.request_id(), 12);
-
         let resp_cleaned = ResponsePacket::SystemCleaned {
-            request_id: 13,
+            request_id: 11,
             cleaned: vec![],
             bytes_freed: 0,
         };
-        assert_eq!(resp_cleaned.request_id(), 13);
+        assert_eq!(resp_cleaned.request_id(), 11);
     }
 
     #[test]

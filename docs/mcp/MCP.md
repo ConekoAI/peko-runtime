@@ -55,11 +55,11 @@ peko ext install <path-or-url>
 peko ext list
 ```
 
-### Enable/Disable Extensions
+### Grant/Revoke MCP Capabilities
 
 ```bash
-peko ext enable <mcp-extension>
-peko ext disable <mcp-extension>
+peko capability grant --principal <principal-name> mcp:<mcp-extension>
+peko capability revoke --principal <principal-name> mcp:<mcp-extension>
 ```
 
 ### Start/Stop MCP Runtimes
@@ -101,20 +101,22 @@ peko ext config <mcp-extension-name>
 
 ## Using MCP Tools with Agents
 
-MCP tools are automatically available to agents when the MCP extension is enabled. When MCP servers are running, their tools are discovered and merged with built-in tools.
+MCP tools are automatically available to a Principal when the corresponding
+`mcp:` capability is granted. When MCP servers are running, their tools are
+discovered and merged with built-in tools.
 
 ### Example Agent Configuration
 
 ```toml
-# ~/.peko/agents/coding-agent/config.toml
-[agent]
-name = "coding-agent"
+# ~/.peko/principals/coding-agent/principal.toml
+[capabilities]
+grants = ["mcp:filesystem-mcp"]
 ```
 
-Enable the MCP extension for the agent:
+Grant the MCP capability to the Principal:
 
 ```bash
-peko ext enable <mcp-extension>
+peko capability grant --principal coding-agent mcp:filesystem-mcp
 ```
 
 ## Available MCP Servers

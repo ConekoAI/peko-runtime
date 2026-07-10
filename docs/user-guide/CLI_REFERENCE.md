@@ -299,8 +299,6 @@ peko ext <COMMAND>
 |-----------|-------------|
 | `install` | Install an extension |
 | `list` | List installed extensions |
-| `enable` | Enable an extension or built-in tool |
-| `disable` | Disable an extension or built-in tool |
 | `uninstall` | Uninstall an extension |
 | `info` | Show extension details |
 | `bundle` | Create a bundle from installed extensions |
@@ -320,9 +318,6 @@ peko ext list
 
 # Install an extension
 peko ext install <path-or-url>
-
-# Enable a built-in tool
-peko ext enable <tool>
 
 # Show extension info
 peko ext info <extension>

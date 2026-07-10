@@ -592,46 +592,6 @@ impl ExtensionStore {
         Ok(())
     }
 
-    /// Enable hooks for an extension at runtime.
-    ///
-    /// Note: This only affects hook dispatch state, not tool access.
-    /// Tool access is governed by the per-call `capabilities` allowlist
-    /// carried in `HookInput::ToolCall`.
-    pub async fn enable(&self, id: &ExtensionId) -> Result<()> {
-        let inner = self.inner.read().await;
-        let loaded_ext = inner
-            .extensions
-            .get(id)
-            .context(format!("Extension '{id}' not found"))?;
-
-        for hook_id in &loaded_ext.hook_ids {
-            self.core.enable_hook(hook_id).await?;
-        }
-
-        info!("Enabled extension hooks for '{}'", id);
-
-        Ok(())
-    }
-
-    /// Disable hooks for an extension at runtime.
-    ///
-    /// Note: This only affects hook dispatch state, not tool access.
-    pub async fn disable(&self, id: &ExtensionId) -> Result<()> {
-        let inner = self.inner.read().await;
-        let loaded_ext = inner
-            .extensions
-            .get(id)
-            .context(format!("Extension '{id}' not found"))?;
-
-        for hook_id in &loaded_ext.hook_ids {
-            self.core.disable_hook(hook_id).await?;
-        }
-
-        info!("Disabled extension hooks for '{}'", id);
-
-        Ok(())
-    }
-
     fn register_skill_catalog(_core: Arc<ExtensionCore>, loaded: &LoadedExtension) {
         if loaded.extension_type != "skill" {
             return;
