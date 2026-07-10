@@ -144,18 +144,19 @@ peko daemon stop
 
 ## Step 5: Explore Extensions
 
-Extensions add tools and skills to your Principal. Try the built-in tools
-first:
+Extensions add tools and skills to your Principal. Built-in tools are
+available automatically; grant capabilities to a Principal to allow
+additional tools:
 
 ```bash
 # List installed extensions
 peko ext list
 
-# Enable a built-in tool
-peko ext enable Bash
+# Grant a built-in tool capability to your Principal
+peko capability grant --principal my-principal tool:Bash
 
-# Disable a tool you don't need
-peko ext disable Bash
+# Revoke a capability you don't need
+peko capability revoke --principal my-principal tool:Bash
 ```
 
 You can also install custom extensions:
@@ -181,8 +182,8 @@ peko ext list
 # Install a new extension
 peko ext install <path-or-url>
 
-# Enable a built-in tool
-peko ext enable <tool>
+# Grant a capability to your Principal
+peko capability grant --principal my-principal tool:<tool-name>
 ```
 
 ### 2. Configure Authentication

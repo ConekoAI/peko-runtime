@@ -15,13 +15,12 @@
 //! | `universal/node/custom.ps1` T1           | `ext_install_universal_node_manifest_parsed`           | L1    |
 //! | `gateway/http_basics/test.ps1` T1        | `ext_install_gateway_manifest_parsed`                  | L1    |
 //! | (cross-cutting, all 9 PS scripts)        | `ext_install_uninstall_roundtrip`                       | L1    |
-//! | (cross-cutting, 6 of 9 PS scripts)       | `ext_enable_for_agent_modifies_whitelist`               | L1    |
 //!
 //! ## Layered design (L1 / L2 / L3)
 //!
 //! The migration is **three-layered**:
 //!
-//! - **L1 (this PR)** — install / list / info / enable / disable / uninstall.
+//! - **L1 (this PR)** — install / list / info / uninstall.
 //!   Purely CLI + IPC + filesystem. No LLM. No Python or Node runtime needed.
 //! - **L2 (deferred)** — start / stop / status / restart for the background
 //!   runtime (`peko ext start` / `stop` / `status` / `restart`). Needs Python
@@ -78,7 +77,7 @@
 
 mod common;
 use common::{run_with_timeout, DaemonGuard, PekoCli};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -139,29 +138,6 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
         Some(0),
         "exited non-zero (status={status:?})\nstdout: {stdout}\nstderr: {stderr}",
     );
-}
-
-/// Write a mock-LLM-pointed agent with an empty `[extensions] enabled` whitelist.
-///
-/// Test #10 (`ext_enable_for_agent_modifies_whitelist`) uses the empty
-/// whitelist to verify that `peko ext enable <id> --target <agent>` adds
-/// the canonical extension ID. The other tests don't use this agent at
-/// all — they only install/uninstall and don't invoke `peko send`.
-fn write_ext_agent(home: &Path, name: &str, _mock_llm_url: &str) -> std::io::Result<()> {
-    use std::path::Path;
-    let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
-    std::fs::create_dir_all(&agent_dir)?;
-    let config_toml = format!(
-        r#"name = "{name}"
-description = "CLI integration test agent for the extensions framework"
-
-enable_task_tools = true
-enable_async_tools = true
-"#
-    );
-    std::fs::write(agent_dir.join("config.toml"), config_toml)?;
-    std::fs::write(agent_dir.join("SYSTEM.md"), "")?;
-    Ok(())
 }
 
 /// Assert that the given text contains all of the given needles. Used for
@@ -736,118 +712,4 @@ async fn ext_install_uninstall_roundtrip() {
         !install_dir.exists(),
         "uninstall should remove the on-disk install dir at {install_dir:?}",
     );
-}
-
-/// Cross-cutting (`peko ext enable --target default/$agentName` pattern
-/// used in 6 of 9 PS scripts). Installs `calculator_simple` and verifies
-/// that `peko ext enable calculator_simple --target <agent>` writes
-/// the canonical extension ID into the agent's `config.toml` at
-/// `[extensions] enabled`. Then verifies `peko ext disable` removes it.
-///
-/// The agent's config path is `<config_dir>/agents/<agent_name>/config.toml`
-/// per [`src/common/paths.rs:179-189`](src/common/paths.rs#L179-L189). In
-/// our test setup `config_dir = <peko_dir>`, so the path is
-/// `<peko_dir>/agents/<agent_name>/config.toml`.
-///
-/// The canonical ID for a non-builtin extension is the extension ID itself
-/// (no `builtin:tool:` prefix). See
-/// [`src/ipc/server.rs:1818-1903`](src/ipc/server.rs#L1818-L1903) — the
-/// `canonical_id` for a non-builtin is just `id`.
-///
-/// We do not actually drive `peko send` against the agent; the L3
-/// (LLM-tier tool execution) tests are deferred to a follow-up.
-#[tokio::test]
-#[ignore = "requires peko daemon"]
-async fn ext_enable_for_agent_modifies_whitelist() {
-    // Use a placeholder mock URL — this test never calls peko send.
-    let mock_url = "http://mock-llm.invalid";
-
-    let cli = PekoCli::new();
-    let agent_name = "ext_enable_test_agent";
-    write_ext_agent(cli.home(), agent_name, mock_url).expect("write ext agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Install the universal tool.
-    let install_path = fixture_dir("universal/python/simple");
-    let (out, err, status) = run(
-        &cli,
-        &[
-            "ext",
-            "install",
-            &install_path.to_string_lossy(),
-            "--type",
-            "universal-tool",
-        ],
-        Duration::from_secs(15),
-    );
-    assert_ok(&out, &err, &status);
-
-    // The agent config path. The peko agent on disk uses
-    // <config_dir>/agents/<name>/config.toml; with PEKO_HOME=<peko_dir>,
-    // config_dir resolves to <peko_dir>.
-    let agent_config = cli
-        .peko_dir()
-        .join("agents")
-        .join(agent_name)
-        .join("config.toml");
-    assert!(
-        agent_config.exists(),
-        "agent config should exist at {agent_config:?} before enable",
-    );
-
-    // peko ext enable writes to the agent's whitelist.
-    let (out, err, status) = run(
-        &cli,
-        &["ext", "enable", "calculator_simple", "--target", agent_name],
-        Duration::from_secs(10),
-    );
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("calculator_simple"),
-        "enable output should mention the extension id: stdout={out} stderr={err}",
-    );
-
-    // The agent's config.toml now contains "calculator_simple" in
-    // [extensions] enabled.
-    let after_enable = std::fs::read_to_string(&agent_config)
-        .unwrap_or_else(|e| panic!("read {agent_config:?}: {e}"));
-    assert!(
-        after_enable.contains("calculator_simple"),
-        "agent config should contain calculator_simple after enable: {after_enable}",
-    );
-    // The agent's [extensions] enabled block should have at least the
-    // calculator_simple entry.
-    assert!(
-        after_enable.contains("enabled") && after_enable.contains("calculator_simple"),
-        "agent config should have calculator_simple in [extensions] enabled: {after_enable}",
-    );
-
-    // peko ext disable removes the entry.
-    let (out, err, status) = run(
-        &cli,
-        &[
-            "ext",
-            "disable",
-            "calculator_simple",
-            "--target",
-            agent_name,
-        ],
-        Duration::from_secs(10),
-    );
-    assert_ok(&out, &err, &status);
-
-    let after_disable = std::fs::read_to_string(&agent_config)
-        .unwrap_or_else(|e| panic!("read {agent_config:?}: {e}"));
-    assert!(
-        !after_disable.contains("calculator_simple"),
-        "agent config should NOT contain calculator_simple after disable: {after_disable}",
-    );
-
-    // Cleanup.
-    let (out, err, status) = run(
-        &cli,
-        &["ext", "uninstall", "calculator_simple"],
-        Duration::from_secs(10),
-    );
-    assert_ok(&out, &err, &status);
 }

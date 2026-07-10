@@ -55,7 +55,7 @@ impl ExtensionRuntimeStarterRegistry {
         let starter = self.starters.get(ext_type).ok_or_else(|| {
             anyhow::anyhow!(
                 "Extension '{}' has type '{}' which does not support background runtimes. \
-                     Use 'peko ext enable' instead.",
+                     Use 'peko capability grant --principal <name>' to grant access instead.",
                 extension_id,
                 ext_type
             )

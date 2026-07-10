@@ -2,10 +2,16 @@
 
 **Status**: Accepted — Phase 2 Complete  
 **Date**: 2026-05-03  
-**Last Updated**: 2026-05-04  
+**Last Updated**: 2026-07-10  
 **Author**: Kimi Code CLI  
 **Depends On**: ADR-017 (Unified Extension Architecture), ADR-021 (Daemon as Central Runtime), ADR-025 (Gateway Extension Architecture)  
 **Replaces / Supersedes**: The overloaded semantics of `peko ext enable` / `peko ext disable` as defined in ADR-017 and ADR-025
+
+> **Subsequent Change (2026-07-10).** The access-control `peko ext enable` and
+> `peko ext disable` commands described in this ADR were later removed entirely
+> in favor of capability-based authorization (`peko capability grant/revoke
+> --principal`). Runtime lifecycle continues to be managed via `peko ext
+> start` / `stop` / `restart` / `status`.
 
 ---
 

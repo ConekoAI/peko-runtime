@@ -46,8 +46,8 @@
 //!   - `tool_timeout.ps1` (1 test) — depends on the LLM reasoning about
 //!     `_timeout: 3` semantics. Real-LLM tier.
 //!   - `tool_update_mid_session.ps1` (4 sub-tests) — tests ADR-019 mid-
-//!     session `peko ext enable/disable --target`. Mostly real-LLM tier;
-//!     the daemon-side enable/disable behavior is a config-level test,
+//!     session capability grant/revoke on a Principal. Mostly real-LLM tier;
+//!     the daemon-side grant/revoke behavior is a config-level test,
 //!     not a tool-dispatch test, and is a better fit for a dedicated
 //!     ADR-019 PR.
 

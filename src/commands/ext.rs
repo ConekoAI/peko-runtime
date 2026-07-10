@@ -4,7 +4,6 @@
 //! - `extension::services::ExtensionConfigService` — config persistence
 //! - `extensions::validation::ExtensionValidationService` — manifest validation
 //! - `ipc::client_service::DaemonClientService` — daemon IPC
-//! - `common::services::ConfigAuthorityImpl` — agent whitelist management
 
 use crate::commands::mcp;
 use crate::commands::GlobalPaths;
@@ -45,24 +44,6 @@ pub enum ExtCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
-    },
-
-    /// Enable an extension or built-in tool
-    Enable {
-        /// Extension ID or built-in tool name (e.g., Bash, Read)
-        id: String,
-        /// Target team or team/agent for built-in tools
-        #[arg(short, long, value_name = "TARGET")]
-        target: Option<String>,
-    },
-
-    /// Disable an extension or built-in tool
-    Disable {
-        /// Extension ID or built-in tool name
-        id: String,
-        /// Target team or team/agent for built-in tools
-        #[arg(short, long, value_name = "TARGET")]
-        target: Option<String>,
     },
 
     /// Uninstall an extension
@@ -232,40 +213,6 @@ pub async fn handle_ext_command(
                             );
                         }
                     }
-                }
-                _ => anyhow::bail!("Unexpected response"),
-            }
-            Ok(())
-        }
-
-        ExtCommands::Enable { id, target } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionEnable {
-                request_id: 1,
-                id: id.clone(),
-                target,
-            };
-            let response = client.request_response(packet).await?;
-            match response {
-                crate::ipc::ResponsePacket::ExtensionEnabled { message, .. } => {
-                    println!("{}", message);
-                }
-                _ => anyhow::bail!("Unexpected response"),
-            }
-            Ok(())
-        }
-
-        ExtCommands::Disable { id, target } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionDisable {
-                request_id: 1,
-                id: id.clone(),
-                target,
-            };
-            let response = client.request_response(packet).await?;
-            match response {
-                crate::ipc::ResponsePacket::ExtensionDisabled { message, .. } => {
-                    println!("{}", message);
                 }
                 _ => anyhow::bail!("Unexpected response"),
             }
@@ -616,9 +563,6 @@ pub fn prepare_install_path(path: &std::path::Path) -> anyhow::Result<std::path:
 }
 
 // --- List ---
-// (handled via IPC in handle_ext_command)
-
-// --- Enable / Disable ---
 // (handled via IPC in handle_ext_command)
 
 // --- Uninstall ---

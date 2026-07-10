@@ -241,16 +241,22 @@ peko ext list
 peko ext install <path-or-url>
 ```
 
-### Enable/Disable Extensions
+### Grant/Revoke Extension Capabilities
+
+Extension access is controlled through capabilities on a Principal:
 
 ```bash
-peko ext enable <extension-id-or-built-in>
-peko ext disable <extension-id-or-built-in>
+# Grant a capability to a Principal
+peko capability grant --principal <principal-name> <capability>
+
+# Revoke a capability from a Principal
+peko capability revoke --principal <principal-name> <capability>
 ```
 
 Principal-scoped authorization is configured in `principal.toml` under
-`[allowed_extensions]`. The `--target` flag on `peko ext enable/disable` scopes
-changes to a single legacy agent prompt's `[extensions] enabled` whitelist.
+`[capabilities] grants`. Capabilities are typed grant strings such as
+`tool:<tool-name>`, `skill:<skill-id>`, `agent:<agent-type>`, or
+`mcp:<server-id>`.
 
 ### MCP Servers
 
@@ -259,7 +265,9 @@ MCP (Model Context Protocol) servers are managed as extensions:
 ```bash
 # MCP servers are installed and managed via the ext command
 peko ext install <mcp-extension>
-peko ext enable <mcp-extension>
+
+# Grant MCP capabilities to a Principal
+peko capability grant --principal <principal-name> mcp:<mcp-extension>
 ```
 
 ---

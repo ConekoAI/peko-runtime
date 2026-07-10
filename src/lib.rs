@@ -42,9 +42,8 @@
 //!     let store = ExtensionStore::new();
 //!     store.register_adapter(Box::new(GatewayAdapter::new(core))).await;
 //!
-//!     // Install and enable gateway extension
+//!     // Install a gateway extension
 //!     store.install("./discord-gateway").await.unwrap();
-//!     store.enable("discord").await.unwrap();
 //! }
 //! ```
 

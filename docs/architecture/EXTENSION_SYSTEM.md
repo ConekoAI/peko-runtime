@@ -18,7 +18,7 @@ Two separate layers decide which extensions an agent can actually use:
    The principal-level allowlist grouped by kind: `tools`, `skills`, `mcps`, and `agents`. It answers "what is this principal allowed to use?" The root agent and all of its subagents inherit this policy.
 
 2. **Runtime enforcement (`extensions.enabled` in the agent config)**  
-   The flat canonical-ID allowlist checked by `ToolRegistry::is_tool_enabled` at execution time. It answers "is this tool enabled for this agent right now?" For the root agent, the runner builds this list from the principal policy; for legacy direct agent execution it is set by `peko ext enable --target <agent>`.
+   The flat canonical-ID allowlist checked by `ToolRegistry::is_tool_enabled` at execution time. It answers "is this tool enabled for this agent right now?" For the root agent, the runner builds this list from the principal policy; for legacy direct agent execution it was set by `peko ext enable --target <agent>` (removed — use `peko capability grant --principal <name>`).
 
 The legacy table name `[capabilities]` is still accepted when reading `principal.toml`, but new files should use `[allowed_extensions]`.
 
@@ -295,9 +295,9 @@ Instructions for the agent...
 EOF
 ```
 
-3. Enable:
+3. Grant the capability to a Principal:
 ```bash
-peko ext enable my-skill
+peko capability grant --principal my-principal skill:my-skill
 ```
 
 #### Quick Start: General Extension
@@ -355,9 +355,13 @@ peko ext list
 peko ext list --enabled-only
 peko ext list --type skill
 
-# Enable/disable
-peko ext enable my-extension
-peko ext disable my-extension
+# Grant/revoke capabilities on a Principal
+peko capability grant --principal my-principal skill:my-extension
+peko capability revoke --principal my-principal skill:my-extension
+
+# Start/stop background runtimes
+peko ext start my-extension
+peko ext stop my-extension
 
 # Get info
 peko ext info my-extension
