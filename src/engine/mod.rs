@@ -10,7 +10,6 @@ pub mod compaction_orchestrator;
 pub mod event_processor;
 pub mod events;
 pub mod execution;
-pub mod input;
 pub mod tool_executor;
 pub mod tool_runtime;
 // Note: SimpleSession merged into Session in src/session/unified.rs
@@ -25,7 +24,6 @@ pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunke
 pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, LifecyclePhase};
 pub use execution::{ExecutionMode, TaskId, TaskStatus, TaskSummary};
-pub use input::{A2AMessageType, AgentInput, HookType, InputContext};
 pub use stream_types::{default_process_stream, ChannelOutput, EventStream, StreamingConfig};
 // SimpleSession now unified - use crate::session::Session
 pub use state::{AgentState, StateMachine};

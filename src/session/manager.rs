@@ -707,12 +707,6 @@ impl SessionManager {
         }
     }
 
-    /// Get the metadata controller (for internal use)
-    #[must_use]
-    pub(crate) fn metadata_controller(&self) -> &Arc<RwLock<MetadataController>> {
-        &self.metadata_controller
-    }
-
     /// Get the path resolver if available
     #[must_use]
     pub fn path_resolver(&self) -> Option<&PathResolver> {

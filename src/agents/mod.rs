@@ -29,10 +29,6 @@ pub use stateless_service::{
 pub mod lifecycle;
 pub use lifecycle::{ExecutionRecord, LifecycleManager};
 
-// Manager submodules
-pub mod context;
-pub mod types;
-
 // System prompt generation (absorbed from src/prompt/ in issue #31a)
 pub mod prompt;
 
@@ -40,7 +36,6 @@ pub mod prompt;
 pub mod agent_config;
 
 // Subagent support
-pub mod announcement_service;
 pub mod subagent_announce;
 pub mod subagent_error;
 pub mod subagent_executor;
@@ -58,12 +53,6 @@ pub use crate::extensions::framework::async_exec::executor::{
     ResultDelivery, SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
     WaitResult,
 };
-
-// Re-export types for backward compatibility
-pub use types::{AgentInfo, IdentityInfo, ManagerEvent};
-
-// Context for agent execution
-pub use context::AgentContext;
 
 #[cfg(test)]
 mod tests;
