@@ -203,7 +203,7 @@ pub mod test_utils {
 pub mod ipc;
 
 /// Observability (metrics, tracing, audit, performance)
-pub mod observability;
+pub(crate) mod observability;
 
 // ============================================================================
 // Tools

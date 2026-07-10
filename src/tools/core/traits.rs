@@ -1,6 +1,5 @@
 //! Tool trait
 
-use crate::observability::performance::GLOBAL_METRICS;
 use crate::tools::core::exec::{ToolContext, ToolError};
 use crate::tools::core::interrupt::ToolInterruptNotice;
 use async_trait::async_trait;
@@ -144,13 +143,10 @@ pub trait Tool: Send + Sync {
         // Report start status
         ctx.report_status(format!("Starting {}", self.name())).await;
 
-        // Execute using the basic method with performance measurement (REQ-PF-004: < 5ms target)
+        // Execute using the basic method with timing captured for the status line
         let tool_name = self.name().to_string();
         let result = self.execute(params).await;
         let elapsed = start_time.elapsed();
-
-        // Record tool latency for performance monitoring
-        GLOBAL_METRICS.record_tool_latency(&tool_name, elapsed);
 
         // Check abort after completion
         if ctx.is_aborted() {

@@ -40,17 +40,6 @@ pub enum SpanStatus {
     Cancelled,
 }
 
-/// Trace context (propagated across calls)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TraceContext {
-    /// Trace ID
-    pub trace_id: String,
-    /// Current span ID
-    pub span_id: String,
-    /// Whether tracing is sampled
-    pub sampled: bool,
-}
-
 impl Tracer {
     /// Create new tracer
     #[must_use]
@@ -73,36 +62,6 @@ impl Tracer {
             duration_ms: None,
             attributes: HashMap::new(),
             status: SpanStatus::Active,
-        }
-    }
-
-    /// End a span
-    pub fn end_span(&self, span: &mut TraceSpan) {
-        span.ended_at = Some(chrono::Utc::now());
-        span.duration_ms = Some(
-            span.ended_at
-                .unwrap()
-                .signed_duration_since(span.started_at)
-                .num_milliseconds() as u64,
-        );
-        span.status = SpanStatus::Completed;
-    }
-
-    /// Create root context
-    pub fn create_root_context(&self) -> TraceContext {
-        TraceContext {
-            trace_id: format!("trace-{}", self.counter.fetch_add(1, Ordering::Relaxed)),
-            span_id: format!("span-{}", self.counter.fetch_add(1, Ordering::Relaxed)),
-            sampled: true,
-        }
-    }
-
-    /// Create child context
-    pub fn create_child_context(&self, parent: &TraceContext) -> TraceContext {
-        TraceContext {
-            trace_id: parent.trace_id.clone(),
-            span_id: format!("span-{}", self.counter.fetch_add(1, Ordering::Relaxed)),
-            sampled: parent.sampled,
         }
     }
 }
@@ -138,40 +97,6 @@ impl TraceSpan {
     }
 }
 
-impl TraceContext {
-    /// Create new root context
-    #[must_use]
-    pub fn new() -> Self {
-        let tracer = Tracer::new();
-        tracer.create_root_context()
-    }
-
-    /// Create with specific trace ID
-    pub fn with_trace_id(trace_id: impl Into<String>) -> Self {
-        Self {
-            trace_id: trace_id.into(),
-            span_id: format!("span-{}", std::process::id()),
-            sampled: true,
-        }
-    }
-
-    /// Propagate to child
-    #[must_use]
-    pub fn child(&self) -> Self {
-        Self {
-            trace_id: self.trace_id.clone(),
-            span_id: format!("span-{}", std::process::id()),
-            sampled: self.sampled,
-        }
-    }
-}
-
-impl Default for TraceContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,14 +117,5 @@ mod tests {
         let child = tracer.start_span("child", Some(&parent.id));
 
         assert_eq!(child.parent_id, Some(parent.id));
-    }
-
-    #[test]
-    fn test_trace_context() {
-        let ctx = TraceContext::new();
-        let child = ctx.child();
-
-        assert_eq!(ctx.trace_id, child.trace_id);
-        assert_ne!(ctx.span_id, child.span_id);
     }
 }

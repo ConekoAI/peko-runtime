@@ -10,26 +10,11 @@ pub struct MetricsCollector {
     counters: HashMap<String, AtomicU64>,
     /// Histograms (simplified as Vec of values)
     histograms: HashMap<String, Vec<u64>>,
-    /// Gauges (current values)
+    /// Gauges (current values). Read by `snapshot` to keep the output
+    /// schema stable; currently no production path writes gauges.
     gauges: HashMap<String, AtomicU64>,
     /// Max histogram samples
     max_samples: usize,
-}
-
-/// Counter metric
-pub struct Counter {
-    value: AtomicU64,
-}
-
-/// Histogram metric
-pub struct Histogram {
-    values: Vec<u64>,
-    max_samples: usize,
-}
-
-/// Gauge metric
-pub struct Gauge {
-    value: AtomicU64,
 }
 
 impl MetricsCollector {
@@ -46,7 +31,6 @@ impl MetricsCollector {
 
     /// Increment counter
     pub fn counter(&mut self, name: &str, value: u64) {
-        let _ = name;
         self.counters
             .entry(name.to_string())
             .or_insert_with(|| AtomicU64::new(0))
@@ -55,7 +39,6 @@ impl MetricsCollector {
 
     /// Record histogram value
     pub fn histogram(&mut self, name: &str, value: u64) {
-        let _ = name;
         let values = self.histograms.entry(name.to_string()).or_default();
 
         values.push(value);
@@ -64,23 +47,6 @@ impl MetricsCollector {
         if values.len() > self.max_samples {
             values.remove(0);
         }
-    }
-
-    /// Set gauge value
-    pub fn gauge(&mut self, name: &str, value: u64) {
-        let _ = name;
-        self.gauges
-            .entry(name.to_string())
-            .or_insert_with(|| AtomicU64::new(0))
-            .store(value, Ordering::Relaxed);
-    }
-
-    /// Get counter value
-    #[must_use]
-    pub fn get_counter(&self, name: &str) -> u64 {
-        self.counters
-            .get(name)
-            .map_or(0, |c| c.load(Ordering::Relaxed))
     }
 
     /// Get histogram stats
@@ -113,14 +79,6 @@ impl MetricsCollector {
             p50,
             p95,
         })
-    }
-
-    /// Get gauge value
-    #[must_use]
-    pub fn get_gauge(&self, name: &str) -> u64 {
-        self.gauges
-            .get(name)
-            .map_or(0, |g| g.load(Ordering::Relaxed))
     }
 
     /// Get all metrics snapshot
@@ -167,65 +125,4 @@ pub struct HistogramStats {
     pub avg: u64,
     pub p50: u64,
     pub p95: u64,
-}
-
-impl Counter {
-    /// Create counter
-    pub fn new(_name: impl Into<String>) -> Self {
-        Self {
-            value: AtomicU64::new(0),
-        }
-    }
-
-    /// Increment
-    pub fn inc(&self) {
-        self.value.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Add value
-    pub fn add(&self, value: u64) {
-        self.value.fetch_add(value, Ordering::Relaxed);
-    }
-
-    /// Get value
-    pub fn get(&self) -> u64 {
-        self.value.load(Ordering::Relaxed)
-    }
-}
-
-impl Gauge {
-    /// Create gauge
-    pub fn new(_name: impl Into<String>) -> Self {
-        Self {
-            value: AtomicU64::new(0),
-        }
-    }
-
-    /// Set value
-    pub fn set(&self, value: u64) {
-        self.value.store(value, Ordering::Relaxed);
-    }
-
-    /// Get value
-    pub fn get(&self) -> u64 {
-        self.value.load(Ordering::Relaxed)
-    }
-}
-
-impl Histogram {
-    /// Create histogram
-    pub fn new(_name: impl Into<String>, max_samples: usize) -> Self {
-        Self {
-            values: Vec::with_capacity(max_samples),
-            max_samples,
-        }
-    }
-
-    /// Record value
-    pub fn record(&mut self, value: u64) {
-        self.values.push(value);
-        if self.values.len() > self.max_samples {
-            self.values.remove(0);
-        }
-    }
 }
