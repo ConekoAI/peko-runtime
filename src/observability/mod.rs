@@ -5,21 +5,12 @@
 //! - Performance metrics (counters, timers)
 //! - Execution traces (request flows)
 
-pub mod async_tool_metrics;
 pub mod audit;
 pub mod metrics;
-pub mod performance;
 pub mod tracer;
 
-pub use async_tool_metrics::{
-    AsyncToolExecutionMetrics, AsyncToolMetricsCollector, TaskExecutionMetrics, ToolSpecificMetrics,
-};
 pub use audit::{AuditEvent, AuditLogger, AuditSeverity};
 pub use metrics::MetricsCollector;
-pub use performance::{
-    start_timer, stop_timer, LatencyStats, MetricsExport, PerformanceGuard, PerformanceMetrics,
-    GLOBAL_METRICS,
-};
 pub use tracer::{TraceSpan, Tracer};
 
 use crate::auth::Subject;
