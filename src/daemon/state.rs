@@ -2176,6 +2176,22 @@ impl crate::ipc::handlers::ext_runtime::ExtRuntimeHost for AppState {
     }
 }
 
+/// F7 eighth narrow handle: the port the `cron` IPC domain handler uses
+/// to read the data dir (cron DB lives at `<data_dir>/cron.json`) and
+/// the principal manager (used to validate `job.principal_name`
+/// resolves before adding a job). Trait lives in
+/// `ipc::handlers::cron`. Both methods are sync (cheap reference /
+/// `PathBuf` clone), so the trait is object-safe without `async_trait`.
+impl crate::ipc::handlers::cron::CronHost for AppState {
+    fn data_dir(&self) -> std::path::PathBuf {
+        self.data_dir.clone()
+    }
+
+    fn principal_manager(&self) -> &Arc<PrincipalManager> {
+        AppState::principal_manager(self)
+    }
+}
+
 /// F7 fourth narrow handle: the port the `tunnel` IPC domain handler uses
 /// to drive the tunnel lifecycle from CLI control packets (`TunnelStop`,
 /// `TunnelStatus`). Trait lives in `ipc::handlers::tunnel`. Both methods
