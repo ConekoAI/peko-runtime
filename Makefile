@@ -27,7 +27,7 @@
 # Principal migration dropped the cli_compaction / cli_a2a /
 # s3_agent_registry_roundtrip suites, and the parity branch added
 # cli_agent_signature for issue #14 (manifest signature verification).
-INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
+INTEGRATION_TESTS := pekohub_integration tunnel_integration \
                      packaging_integration registry_integration \
                      extension_packaging \
                      cli_send cli_basics cli_cron cli_subagent \
@@ -40,6 +40,13 @@ INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      s6_principal_grant_revoke_roundtrip \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
+
+# Inline lib tests gated by `--features test-utils` (F9.4 moved tunnel_e2e
+# inline so `AppState` / `daemon::*` could narrow to `pub(crate)` without a
+# top-level integration harness needing public visibility). These run
+# inside the lib test target, not as their own `--test` bin, so they're
+# passed as filter paths appended after `--`.
+INTEGRATION_LIB_TESTS := daemon::e2e_tests::tunnel_e2e
 
 # Default ports exposed by docker-compose.integration.yml; CI overrides
 # these for in-container runs (e.g. PEKOHUB_URL=http://pekohub-test:3000).
@@ -119,10 +126,16 @@ test-integration: docker-up
 	    PEKOHUB_URL=$(PEKOHUB_URL) \
 	    MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test $(CARGO_TEST_FLAGS) -- --include-ignored
+	@env -u MINIMAX_API_KEY \
+	    PEKOHUB_URL=$(PEKOHUB_URL) \
+	    MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --lib --features test-utils $(INTEGRATION_LIB_TESTS) -- --include-ignored
 
 # ── Tier 2: nightly + [llm] commit tag — adds real-LLM tests ─────────────
-# MOCK_LLM_URL is unset so the dual-mode rule at tunnel_e2e.rs:63-76
-# falls through to the real provider.
+# MOCK_LLM_URL is unset so the dual-mode rule in the inline
+# `daemon::e2e_tests::tunnel_e2e` (`src/daemon/e2e_tests/tunnel_e2e.rs`,
+# the `seed_mock_provider_catalog` vs `seed_minimax_catalog_entry`
+# branch) falls through to the real provider.
 #
 # KIMI_API_KEY is stripped (env -u) because the Kimi API key is
 # temporarily suspended at the provider. Removing the `-u KIMI_API_KEY`
@@ -137,6 +150,9 @@ test-integration-llm: docker-up
 	@env -u MOCK_LLM_URL -u KIMI_API_KEY \
 	    PEKOHUB_URL=$(PEKOHUB_URL) \
 	    cargo test $(CARGO_TEST_FLAGS) -- --include-ignored
+	@env -u MOCK_LLM_URL -u KIMI_API_KEY \
+	    PEKOHUB_URL=$(PEKOHUB_URL) \
+	    cargo test --lib --features test-utils $(INTEGRATION_LIB_TESTS) -- --include-ignored
 
 # ── Everything ───────────────────────────────────────────────────────────
 
@@ -155,7 +171,7 @@ test-tunnel: docker-up
 
 test-tunnel-e2e: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test tunnel_e2e -- --ignored
+	    cargo test --lib --features test-utils daemon::e2e_tests::tunnel_e2e -- --ignored
 
 test-packaging: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
