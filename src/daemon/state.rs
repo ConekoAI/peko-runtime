@@ -2266,3 +2266,18 @@ impl crate::ipc::handlers::extension::ExtensionHost for AppState {
         AppState::extension_services(self)
     }
 }
+
+/// F7 eleventh narrow handle: the port the `provider_mcp` IPC domain
+/// handler uses to live-reload the provider registry and MCP config
+/// from disk. Trait lives in `ipc::handlers::provider_mcp`. Both
+/// methods are async because they drive live config-file reloads.
+#[async_trait::async_trait]
+impl crate::ipc::handlers::provider_mcp::ProviderMcpHost for AppState {
+    async fn reload_providers(&self) -> anyhow::Result<(usize, usize)> {
+        AppState::reload_providers(self).await
+    }
+
+    async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
+        AppState::reload_mcp_config(self).await
+    }
+}

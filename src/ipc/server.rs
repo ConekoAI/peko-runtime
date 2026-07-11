@@ -44,6 +44,7 @@ use crate::ipc::handlers::cron::CronHandler;
 use crate::ipc::handlers::ext_runtime::ExtRuntimeHandler;
 use crate::ipc::handlers::extension::ExtensionHandler;
 use crate::ipc::handlers::instance::InstanceHandler;
+use crate::ipc::handlers::provider_mcp::ProviderMcpHandler;
 use crate::ipc::handlers::runtime::RuntimeHandler;
 use crate::ipc::handlers::system::SystemHandler;
 use crate::ipc::handlers::tool::ToolHandler;
@@ -846,6 +847,7 @@ impl IpcServer {
             Arc::new(CronHandler::new(Arc::new(state.clone()))),
             Arc::new(RuntimeHandler::new(Arc::new(state.clone()))),
             Arc::new(ExtensionHandler::new(Arc::new(state.clone()))),
+            Arc::new(ProviderMcpHandler::new(Arc::new(state.clone()))),
         ];
         for handler in &domain_handlers {
             if handler.matches(&request) {
@@ -936,71 +938,11 @@ impl IpcServer {
             // gone; the only external session read surface is now
             // `RequestPacket::PrincipalLog` (see
             // `handle_principal_log`). See ADR-042 for the contract.)
-            RequestPacket::ProviderList { request_id } => {
-                let registry = crate::providers::ProviderRegistry::new();
-                let mut providers: Vec<crate::ipc::packet::ProviderInfo> = Vec::new();
-                let mut seen_ids = std::collections::HashSet::new();
-                for (_id, meta) in registry.iter() {
-                    if !seen_ids.insert(meta.id) {
-                        continue;
-                    }
-                    providers.push(crate::ipc::packet::ProviderInfo {
-                        id: meta.id.to_string(),
-                        display_name: meta.display_name.to_string(),
-                        api_type: match meta.api_type {
-                            crate::providers::registry::ApiType::OpenAICompletions => {
-                                "openai".to_string()
-                            }
-                            crate::providers::registry::ApiType::AnthropicMessages => {
-                                "anthropic".to_string()
-                            }
-                        },
-                        default_model: meta.default_model.to_string(),
-                        requires_key: !meta.api_key_env.is_empty(),
-                        is_local: meta.api_key_env.is_empty(),
-                    });
-                }
-                let response = ResponsePacket::ProviderList {
-                    request_id,
-                    providers,
-                };
-                send_response(sink, response).await?;
-            }
 
-            RequestPacket::ProviderReload { request_id } => match state.reload_providers().await {
-                Ok((providers_count, keys_count)) => {
-                    let response = ResponsePacket::ProviderReloaded {
-                        request_id,
-                        providers_count,
-                        keys_count,
-                    };
-                    send_response(sink, response).await?;
-                }
-                Err(e) => {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("provider reload failed: {e}"),
-                    };
-                    send_response(sink, response).await?;
-                }
-            },
-
-            RequestPacket::McpReload { request_id } => match state.reload_mcp_config().await {
-                Ok(servers_count) => {
-                    let response = ResponsePacket::McpReloaded {
-                        request_id,
-                        servers_count,
-                    };
-                    send_response(sink, response).await?;
-                }
-                Err(e) => {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("mcp reload failed: {e}"),
-                    };
-                    send_response(sink, response).await?;
-                }
-            },
+            // ── Provider / MCP reload ──
+            // `ProviderList` / `ProviderReload` / `McpReload` are owned
+            // by `ipc::handlers::provider_mcp::ProviderMcpHandler`
+            // (F6.12) — dispatched in the `domain_handlers` loop above.
 
             // ── Extension CRUD (ADR-030 Tier 1) ──
             // `ExtensionList` / `ExtensionInstall` / `ExtensionUninstall` /

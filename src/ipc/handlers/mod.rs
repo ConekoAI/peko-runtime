@@ -24,6 +24,7 @@ pub(crate) mod cron;
 pub(crate) mod ext_runtime;
 pub(crate) mod extension;
 pub(crate) mod instance;
+pub(crate) mod provider_mcp;
 pub(crate) mod runtime;
 pub(crate) mod system;
 pub(crate) mod tool;
