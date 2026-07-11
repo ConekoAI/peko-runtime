@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::auth::{Permission, PermissionGrant};
 use crate::extensions::framework::types::Capabilities;
+use crate::subject::PrincipalDID;
 use crate::tunnel::protocol::{InstanceExposure, InstanceStatus};
 
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.
@@ -80,36 +81,6 @@ pub struct PrincipalConfig {
     /// the directory and respect it.
     #[serde(default)]
     pub transport_preference: crate::tunnel::known_runtimes::TransportPreference,
-}
-
-/// Thin wrapper around a DID string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PrincipalDID(pub String);
-
-impl PrincipalDID {
-    /// Borrow the inner DID string.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for PrincipalDID {
-    fn from(s: String) -> Self {
-        PrincipalDID(s)
-    }
-}
-
-impl From<&str> for PrincipalDID {
-    fn from(s: &str) -> Self {
-        PrincipalDID(s.to_string())
-    }
-}
-
-impl std::fmt::Display for PrincipalDID {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

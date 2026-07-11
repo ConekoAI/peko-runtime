@@ -16,7 +16,7 @@ pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use capability_evaluator::CapabilityEvaluator;
 pub use config::{
-    AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig, PrincipalDID,
+    AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig,
     PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
     PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
 };
@@ -39,21 +39,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Newtype wrapper for a stable principal identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PrincipalId(pub String);
-
-impl PrincipalId {
-    pub fn generate() -> Self {
-        Self(format!("prin_{}", uuid::Uuid::new_v4().simple()))
-    }
-}
-
-impl std::fmt::Display for PrincipalId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+// Actor identifiers are sourced from `subject` (the canonical actor module) so
+// `principal` does not own them and `agents` can reach them without depending
+// on `principal` (F3 cycle break).
+use crate::subject::{PrincipalDID, PrincipalId};
 
 /// Runtime representation of a Principal.
 pub struct Principal {

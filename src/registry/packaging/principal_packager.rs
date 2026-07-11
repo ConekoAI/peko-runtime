@@ -578,7 +578,8 @@ mod tests {
     use super::*;
     use crate::identity::did::DIDScope;
     use crate::identity::Identity;
-    use crate::principal::config::{PrincipalConfig, PrincipalDID};
+    use crate::principal::config::PrincipalConfig;
+    use crate::subject::PrincipalDID;
 
     #[test]
     fn test_export_options_default() {

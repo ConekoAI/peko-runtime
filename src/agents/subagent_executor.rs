@@ -37,8 +37,8 @@ use crate::extensions::framework::async_exec::executor::{
     SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
 };
 use crate::observability::Observability;
-use crate::principal::Capabilities;
-use crate::principal::PrincipalId;
+use crate::extensions::framework::types::Capabilities;
+use crate::subject::PrincipalId;
 use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 use crate::session::types::SpawnCleanupPolicy;
@@ -127,7 +127,7 @@ pub struct SubagentExecutor {
     /// Snapshot of the spawning principal's active extension IDs.
     /// `None` means unbound (no active-extension check). Propagated to
     /// descendant subagents.
-    active_extensions: Option<crate::principal::ActiveExtensionSet>,
+    active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     /// Optional observability hub for audit/metrics. When set, subagent
     /// spawns are recorded in the audit log under the parent principal.
     observability: Option<Arc<Observability>>,
@@ -202,7 +202,7 @@ impl SubagentExecutor {
     #[must_use]
     pub fn with_active_extensions(
         mut self,
-        active_extensions: Option<crate::principal::ActiveExtensionSet>,
+        active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     ) -> Self {
         self.active_extensions = active_extensions;
         self
@@ -216,7 +216,7 @@ impl SubagentExecutor {
 
     /// Get the active extension set, if bound.
     #[must_use]
-    pub fn active_extensions(&self) -> Option<&crate::principal::ActiveExtensionSet> {
+    pub fn active_extensions(&self) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
         self.active_extensions.as_ref()
     }
 
@@ -906,7 +906,7 @@ async fn execute_subagent_task(
     principal_id: PrincipalId,
     principal_workspace: Option<std::path::PathBuf>,
     principal_capabilities: Option<Arc<Capabilities>>,
-    active_extensions: Option<crate::principal::ActiveExtensionSet>,
+    active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     observability: Option<Arc<Observability>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<String> {
@@ -1095,7 +1095,7 @@ mod tests {
             manager,
             "test_agent",
             5,
-            crate::principal::PrincipalId::generate(),
+            crate::subject::PrincipalId::generate(),
         );
 
         assert_eq!(executor.agent_name, "test_agent");
@@ -1118,7 +1118,7 @@ mod tests {
             manager,
             "test_agent",
             5,
-            crate::principal::PrincipalId::generate(),
+            crate::subject::PrincipalId::generate(),
         );
 
         // Initially empty
@@ -1201,7 +1201,7 @@ mod tests {
             manager.clone(),
             "test_agent",
             5,
-            crate::principal::PrincipalId::generate(),
+            crate::subject::PrincipalId::generate(),
         )
         .with_principal_capabilities(Some(Arc::clone(&allowed)));
 

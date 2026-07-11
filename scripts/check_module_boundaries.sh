@@ -13,6 +13,8 @@
 # 5. src/extensions/framework/ must NOT import from src/agents/, src/tunnel/, or
 #    src/daemon/.
 # 6. src/extensions/framework/ must NOT import from src/principal/.
+# 7. src/agents/ must NOT import from src/principal/ (breaks the principal<->agents
+#    cycle; actor ids from subject/, capability types from extensions::framework::types).
 
 set -e
 
@@ -257,6 +259,32 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
+# Rule 7: src/agents/ must NOT import from src/principal/ (breaks the
+#         principal <-> agents cycle; principal may depend on agents, never the
+#         reverse). Actor ids come from subject/, capability types from
+#         extensions::framework::types. Doc-comment links are excluded.
+# -----------------------------------------------------------------------------
+echo "Rule 7: src/agents/ must NOT import from src/principal/"
+echo ""
+
+VIOLATIONS_7A=$(grep -rE "crate::principal" src/agents/ --include="*.rs" 2>/dev/null \
+    | grep -vE ':[[:space:]]*//' \
+    || true)
+
+if [ -n "$VIOLATIONS_7A" ]; then
+    echo "  ❌ FAIL: src/agents/ imports from principal (cycle)"
+    echo ""
+    echo "$VIOLATIONS_7A" | while read -r line; do
+        echo "     $line"
+    done
+    echo ""
+    EXIT_CODE=1
+else
+    echo "  ✓ PASS: No agents -> principal imports"
+fi
+echo ""
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 echo "=========================================="
@@ -279,6 +307,7 @@ else
     echo "  - Commands should delegate persistence/packaging work to services"
     echo "  - src/extensions/framework/ must not depend on agents/, tunnel/, or daemon/"
     echo "  - src/extensions/framework/ must not depend on principal/"
+    echo "  - src/agents/ must not depend on principal/ (use subject/ + extensions::framework::types)"
 fi
 
 exit $EXIT_CODE

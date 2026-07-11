@@ -233,7 +233,7 @@ impl AgentTool {
         // registered (standalone / test path), fail-open to preserve existing
         // behavior.
         if let Some(caps) = self.executor.principal_capabilities() {
-            let required = crate::principal::Capability::new(format!("agent:{subagent_type}"));
+            let required = crate::extensions::framework::types::Capability::new(format!("agent:{subagent_type}"));
             if !caps.is_granted(&required) {
                 anyhow::bail!(
                     "Subagent '{}' is not enabled for this principal. \
@@ -653,7 +653,8 @@ Examples:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::{Capabilities, PrincipalId};
+    use crate::extensions::framework::types::Capabilities;
+    use crate::subject::PrincipalId;
     use crate::session::manager::SessionManager;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -742,7 +743,7 @@ mod tests {
             manager,
             "test_agent",
             5,
-            crate::principal::PrincipalId::generate(),
+            crate::subject::PrincipalId::generate(),
         ));
         let tool = AgentTool::new(executor);
 
@@ -756,7 +757,7 @@ mod tests {
             manager,
             "test_agent",
             5,
-            crate::principal::PrincipalId::generate(),
+            crate::subject::PrincipalId::generate(),
         ));
 
         let provider = Box::new(StaticSessionKeyProvider::new("test:session:key"));

@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn test_build_root_message_includes_context() {
         let ctx = RouterContext {
-            principal_id: crate::principal::PrincipalId::generate(),
+            principal_id: crate::subject::PrincipalId::generate(),
             principal_name: "test".to_string(),
             peer: Subject::User("alice".to_string()),
             message: "hello".to_string(),

@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 
 use super::{
     agent_prompt::load_agent_prompt,
-    config::{PrincipalConfig, PrincipalDID},
+    config::PrincipalConfig,
     factory::{PrincipalMemoryFactory, PrincipalRouterFactory},
     router::{ChannelContext, RouteDecision, RouterContext, RouterError},
     slash::{SlashDispatcher, SlashError},
@@ -16,6 +16,7 @@ use crate::auth::ownership::{check_permission, Permission, Resource};
 use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::common::types::OutputFormat;
+use crate::subject::PrincipalDID;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::async_exec::executor::SteeringMessage;
 use crate::extensions::framework::store::ExtensionStore;

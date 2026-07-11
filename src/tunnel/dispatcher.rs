@@ -1459,7 +1459,7 @@ mod tests {
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
-    use crate::principal::Capabilities;
+    use crate::extensions::framework::types::Capabilities;
     use crate::tunnel::protocol::{InstanceExposure, InstanceType};
     use tempfile::TempDir;
     use tokio::sync::mpsc;

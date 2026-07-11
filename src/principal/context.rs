@@ -28,7 +28,7 @@ use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::observability::Observability;
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
-use crate::principal::PrincipalId;
+use crate::subject::PrincipalId;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
@@ -345,7 +345,7 @@ mod tests {
     use super::*;
     use crate::principal::memory::DefaultPrincipalMemory;
     use crate::principal::Capabilities;
-    use crate::principal::PrincipalId;
+    use crate::subject::PrincipalId;
     use std::sync::Arc;
 
     /// `core()` returns the daemon-global `ExtensionCore`. After the

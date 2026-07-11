@@ -15,7 +15,55 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::principal::PrincipalDID;
+// Actor identifiers live here (not in `principal`) so the actor module is a
+// clean lower layer: both `principal` and `agents` depend on `subject`, and
+// `subject` depends on neither. This breaks the principal↔agents cycle (F3).
+
+/// Newtype wrapper for a stable principal identifier.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PrincipalId(pub String);
+
+impl PrincipalId {
+    pub fn generate() -> Self {
+        Self(format!("prin_{}", uuid::Uuid::new_v4().simple()))
+    }
+}
+
+impl fmt::Display for PrincipalId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Thin wrapper around a DID string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PrincipalDID(pub String);
+
+impl PrincipalDID {
+    /// Borrow the inner DID string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for PrincipalDID {
+    fn from(s: String) -> Self {
+        PrincipalDID(s)
+    }
+}
+
+impl From<&str> for PrincipalDID {
+    fn from(s: &str) -> Self {
+        PrincipalDID(s.to_string())
+    }
+}
+
+impl fmt::Display for PrincipalDID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// A runtime actor: a user, a principal, or the public.
 ///

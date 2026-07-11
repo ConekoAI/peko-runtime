@@ -1727,7 +1727,7 @@ struct DaemonPrincipalMemoryFactory {
 impl PrincipalMemoryFactory for DaemonPrincipalMemoryFactory {
     async fn create(
         &self,
-        _principal_id: &crate::principal::PrincipalId,
+        _principal_id: &crate::subject::PrincipalId,
         workspace_path: &Path,
     ) -> Arc<dyn PrincipalMemory> {
         let name = workspace_path
