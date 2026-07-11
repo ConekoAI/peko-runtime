@@ -40,6 +40,7 @@ use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::auth::AuthHandler;
 use crate::ipc::handlers::capability::CapabilityHandler;
+use crate::ipc::handlers::instance::InstanceHandler;
 use crate::ipc::handlers::system::SystemHandler;
 use crate::ipc::handlers::tool::ToolHandler;
 use crate::ipc::handlers::tunnel::TunnelHandler;
@@ -836,6 +837,7 @@ impl IpcServer {
             Arc::new(ToolHandler::new(Arc::new(state.clone()))),
             Arc::new(TunnelHandler::new(Arc::new(state.clone()))),
             Arc::new(CapabilityHandler::new(Arc::new(state.clone()))),
+            Arc::new(InstanceHandler::new(Arc::new(state.clone()))),
         ];
         for handler in &domain_handlers {
             if handler.matches(&request) {
@@ -1649,108 +1651,9 @@ impl IpcServer {
             // `ipc::handlers::tunnel::TunnelHandler` (F6.4) — dispatched
             // in the `domain_handlers` loop above.
 
-            RequestPacket::InstanceSetStatus {
-                request_id,
-                agent_name,
-                status,
-            } => {
-                let status_enum = match status.as_str() {
-                    "online" => crate::tunnel::protocol::InstanceStatus::Online,
-                    "offline" => crate::tunnel::protocol::InstanceStatus::Offline,
-                    "busy" => crate::tunnel::protocol::InstanceStatus::Busy,
-                    "error" => crate::tunnel::protocol::InstanceStatus::Error,
-                    other => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!(
-                                "Invalid status '{other}'. Expected: online, offline, busy, error"
-                            ),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
-                };
-
-                if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                    match dispatcher
-                        .set_instance_status(&agent_name, status_enum)
-                        .await
-                    {
-                        Ok(()) => {
-                            let response = ResponsePacket::Done {
-                                request_id,
-                                success: true,
-                                error: None,
-                            };
-                            send_response(sink, response).await?;
-                        }
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!("Failed to set instance status: {e}"),
-                            };
-                            send_response(sink, response).await?;
-                        }
-                    }
-                } else {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: "Tunnel is not active".to_string(),
-                    };
-                    send_response(sink, response).await?;
-                }
-            }
-
-            RequestPacket::InstanceSetExposure {
-                request_id,
-                agent_name,
-                exposure,
-            } => {
-                let exposure_enum = match exposure.as_str() {
-                    "unexposed" => crate::tunnel::protocol::InstanceExposure::Unexposed,
-                    "private" => crate::tunnel::protocol::InstanceExposure::Private,
-                    "public" => crate::tunnel::protocol::InstanceExposure::Public,
-                    other => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!(
-                                "Invalid exposure '{other}'. Expected: unexposed, private, public"
-                            ),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
-                };
-
-                if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                    match dispatcher
-                        .set_instance_exposure(&agent_name, exposure_enum)
-                        .await
-                    {
-                        Ok(()) => {
-                            let response = ResponsePacket::Done {
-                                request_id,
-                                success: true,
-                                error: None,
-                            };
-                            send_response(sink, response).await?;
-                        }
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!("Failed to set instance exposure: {e}"),
-                            };
-                            send_response(sink, response).await?;
-                        }
-                    }
-                } else {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: "Tunnel is not active".to_string(),
-                    };
-                    send_response(sink, response).await?;
-                }
-            }
+            // `InstanceSetStatus` / `InstanceSetExposure` are owned by
+            // `ipc::handlers::instance::InstanceHandler` (F6.10) —
+            // dispatched in the `domain_handlers` loop above.
 
             // ── Principal operations ─────────────────────────────────────────
             // Non-streaming `PrincipalSend` — peko-desktop's

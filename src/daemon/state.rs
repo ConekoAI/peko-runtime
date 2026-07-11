@@ -2140,6 +2140,17 @@ impl crate::ipc::handlers::capability::CapabilityHost for AppState {
     }
 }
 
+/// F7 sixth narrow handle: the port the `instance` IPC domain handler
+/// uses to reach the live tunnel dispatcher. Trait lives in
+/// `ipc::handlers::instance`. Async because `tunnel_dispatcher` is
+/// behind a lock; the trait needs `async_trait` for the same reason.
+#[async_trait::async_trait]
+impl crate::ipc::handlers::instance::InstanceHost for AppState {
+    async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {
+        AppState::tunnel_dispatcher(self).await
+    }
+}
+
 /// F7 fourth narrow handle: the port the `tunnel` IPC domain handler uses
 /// to drive the tunnel lifecycle from CLI control packets (`TunnelStop`,
 /// `TunnelStatus`). Trait lives in `ipc::handlers::tunnel`. Both methods
