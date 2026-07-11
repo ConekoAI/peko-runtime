@@ -2873,16 +2873,25 @@ impl IpcServer {
                     let name = tool_name.clone();
                     let p = params.clone();
                     Box::pin(async move {
-                        // TODO: thread the caller's capability grants through the
-                        // async-spawn IPC path.  For now the standalone execution
-                        // surface is fail-closed when no grants are supplied.
-                        match runtime
+                        // Intentionally fail-closed: `capabilities` and
+                        // `active_extensions` are `None`, so any capability-gated
+                        // tool spawned via this IPC path is denied. This matches
+                        // the system-wide invariant (`agents::agent`,
+                        // `framework::core::tool_registry`, `engine::agentic_loop`
+                        // all treat `None`/empty grants as deny-all) and is pinned
+                        // by the `*_fail_closed_without_principal_id` gate tests.
+                        //
+                        // To honor a caller's real grants here, resolve the
+                        // session's owning principal server-side (sessions are
+                        // principal-scoped per ADR-042) via `state.principal_manager()`
+                        // and pass that principal's `config.capabilities` + active
+                        // extensions — never accept grants from the IPC packet (that
+                        // would be privilege escalation). The authenticated `caller`
+                        // is already resolved in `handle_request`; thread it into
+                        // this handler when that mapping is designed.
+                        runtime
                             .execute_tool_with_workspace(&name, p, &ws, None, None)
                             .await
-                        {
-                            Ok(value) => Ok(value),
-                            Err(e) => Err(e),
-                        }
                     })
                 },
             )
