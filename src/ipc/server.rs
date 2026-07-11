@@ -38,6 +38,7 @@ use super::send_response::send_response;
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
 use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::auth::caller::CallerContext;
+use crate::ipc::handlers::auth::AuthHandler;
 use crate::ipc::handlers::system::SystemHandler;
 use crate::ipc::handlers::RequestHandler;
 #[cfg(not(windows))]
@@ -826,9 +827,10 @@ impl IpcServer {
         // doesn't need to know the concrete state type. New domains are
         // added by appending to `domain_handlers`; the legacy match
         // below remains the fallback for variants not yet migrated.
-        let domain_handlers: Vec<Arc<dyn RequestHandler>> = vec![Arc::new(SystemHandler::new(
-            Arc::new(state.clone()),
-        ))];
+        let domain_handlers: Vec<Arc<dyn RequestHandler>> = vec![
+            Arc::new(SystemHandler::new(Arc::new(state.clone()))),
+            Arc::new(AuthHandler::new(Arc::new(state.clone()))),
+        ];
         for handler in &domain_handlers {
             if handler.matches(&request) {
                 trace!("dispatching to {} handler", handler.domain());
@@ -1765,133 +1767,6 @@ impl IpcServer {
                         send_response(sink, response).await?;
                     }
                 }
-            }
-
-            // ── Auth management (ADR-034) ──
-            // API key management is restricted to local-trust (owner) for v0.1.0.
-            RequestPacket::AuthApiKeyCreate {
-                request_id,
-                name,
-                scopes,
-            } => {
-                if !caller.is_local() {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: "API key management requires local access".to_string(),
-                    };
-                    send_response(sink, response).await?;
-                } else if let Some(store) = state.api_key_store() {
-                    let parsed_scopes: Vec<crate::auth::types::ApiKeyScope> =
-                        scopes.iter().filter_map(|s| s.parse().ok()).collect();
-                    match store.create_key(name, parsed_scopes).await {
-                        Ok((full_key, key_id)) => {
-                            let response = ResponsePacket::AuthApiKeyCreated {
-                                request_id,
-                                key_id,
-                                full_key,
-                            };
-                            send_response(sink, response).await?;
-                        }
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: e.to_string(),
-                            };
-                            send_response(sink, response).await?;
-                        }
-                    }
-                } else {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: "API key store not initialized".to_string(),
-                    };
-                    send_response(sink, response).await?;
-                }
-            }
-            RequestPacket::AuthApiKeyList { request_id } => {
-                if !caller.is_local() {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: "API key management requires local access".to_string(),
-                    };
-                    send_response(sink, response).await?;
-                } else if let Some(store) = state.api_key_store() {
-                    let keys = store.list_keys().await;
-                    let summaries: Vec<super::packet::ApiKeySummary> = keys
-                        .into_iter()
-                        .map(|k| super::packet::ApiKeySummary {
-                            id: k.id,
-                            name: k.name,
-                            created_at: k.created_at.to_rfc3339(),
-                            last_used_at: k.last_used_at.map(|t| t.to_rfc3339()),
-                            scopes: k.scopes.iter().map(|s| s.to_string()).collect(),
-                            enabled: k.enabled,
-                        })
-                        .collect();
-                    let response = ResponsePacket::AuthApiKeyList {
-                        request_id,
-                        keys: summaries,
-                    };
-                    send_response(sink, response).await?;
-                } else {
-                    let response = ResponsePacket::AuthApiKeyList {
-                        request_id,
-                        keys: Vec::new(),
-                    };
-                    send_response(sink, response).await?;
-                }
-            }
-            RequestPacket::AuthApiKeyRevoke { request_id, key_id } => {
-                if !caller.is_local() {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: "API key management requires local access".to_string(),
-                    };
-                    send_response(sink, response).await?;
-                } else if let Some(store) = state.api_key_store() {
-                    match store.revoke_key(&key_id).await {
-                        Ok(true) => {
-                            let response = ResponsePacket::AuthApiKeyRevoked { request_id, key_id };
-                            send_response(sink, response).await?;
-                        }
-                        Ok(false) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!("Key '{key_id}' not found"),
-                            };
-                            send_response(sink, response).await?;
-                        }
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: e.to_string(),
-                            };
-                            send_response(sink, response).await?;
-                        }
-                    }
-                } else {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: "API key store not initialized".to_string(),
-                    };
-                    send_response(sink, response).await?;
-                }
-            }
-            RequestPacket::AuthStatus { request_id } => {
-                let auth_config = state.auth_config();
-                let api_key_count = if let Some(store) = state.api_key_store() {
-                    store.list_keys().await.len()
-                } else {
-                    0
-                };
-                let response = ResponsePacket::AuthStatus {
-                    request_id,
-                    local_trust_enabled: auth_config.enable_local_trust(),
-                    pekohub_jwt_enabled: auth_config.enable_pekohub_jwt(),
-                    api_key_enabled: auth_config.enable_api_key(),
-                    api_key_count,
-                };
-                send_response(sink, response).await?;
             }
 
             // ── Tunnel (ADR-035) ──

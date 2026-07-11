@@ -18,6 +18,7 @@ use crate::ipc::packet::RequestPacket;
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::server::PeerAddr;
 
+pub(crate) mod auth;
 pub(crate) mod system;
 
 /// A per-domain IPC request handler.
