@@ -362,9 +362,9 @@ src/
 │   └── universal/      # Universal tool adapter
 ├── identity/           # DID identity system, ed25519 keys, key storage, runtime identity
 ├── ipc/                # Inter-process communication
-├── observability/      # Metrics, logging, tracing, audit
+├── observability/      # Audit logging (pub(crate))
 ├── providers/          # LLM provider integrations (v3 catalog + resolver)
-├── registry/           # Packaging/export/import (.agent/.team/.ext) and remote registry client
+├── registry/           # `.principal` packaging/export/import and remote registry client
 ├── session/            # JSONL persistence, branching, indexing, compaction
 ├── tools/              # Tool framework (core, builtin, registry, factory)
 ├── tunnel/             # Pekohub tunnel protocol, A2A dispatcher, runtime discovery
@@ -421,10 +421,10 @@ MIT
 
 - [Getting Started](docs/getting-started/GETTING_STARTED.md) — Build and run your first agent
 - [Tutorial: Building Your First Agent](docs/getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md) — Step-by-step walkthrough
-- [User's Guide](docs/user-guide/USERS_GUIDE.md) — Concepts, sessions, teams, extensions
+- [User's Guide](docs/user-guide/USERS_GUIDE.md) — Concepts, sessions, principals, extensions
 - [CLI Reference](docs/user-guide/CLI_REFERENCE.md) — Every `peko` command and flag
 - [Extension System](docs/architecture/EXTENSION_SYSTEM.md) — Unified extension architecture
-- [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-039
+- [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-042
 - [MCP Overview](docs/mcp/MCP.md) — Model Context Protocol integration
 - [Agent Guide](AGENTS.md) — Build, test, code-style rules for contributors
 - [API Surface](API_SURFACE.md) — Public Rust API contracts
