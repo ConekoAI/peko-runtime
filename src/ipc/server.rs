@@ -43,6 +43,7 @@ use crate::ipc::handlers::capability::CapabilityHandler;
 use crate::ipc::handlers::cron::CronHandler;
 use crate::ipc::handlers::ext_runtime::ExtRuntimeHandler;
 use crate::ipc::handlers::instance::InstanceHandler;
+use crate::ipc::handlers::runtime::RuntimeHandler;
 use crate::ipc::handlers::system::SystemHandler;
 use crate::ipc::handlers::tool::ToolHandler;
 use crate::ipc::handlers::tunnel::TunnelHandler;
@@ -842,6 +843,7 @@ impl IpcServer {
             Arc::new(InstanceHandler::new(Arc::new(state.clone()))),
             Arc::new(ExtRuntimeHandler::new(Arc::new(state.clone()))),
             Arc::new(CronHandler::new(Arc::new(state.clone()))),
+            Arc::new(RuntimeHandler::new(Arc::new(state.clone()))),
         ];
         for handler in &domain_handlers {
             if handler.matches(&request) {
@@ -1298,146 +1300,10 @@ impl IpcServer {
             }
 
             // ── Runtime (ADR-032) ──
-            RequestPacket::RuntimeId { request_id } => {
-                let did = state.runtime_identity().runtime_did.clone();
-                let response = ResponsePacket::RuntimeId { request_id, did };
-                send_response(sink, response).await?;
-            }
-            RequestPacket::RuntimeInfo { request_id } => {
-                let meta = state.runtime_metadata();
-                let response = ResponsePacket::RuntimeInfo {
-                    request_id,
-                    metadata: super::packet::RuntimeMetadataResponse {
-                        runtime_id: meta.runtime_id.clone(),
-                        display_name: meta.display_name.clone(),
-                        created_at: meta.created_at.to_rfc3339(),
-                        last_seen_at: meta.last_seen_at.to_rfc3339(),
-                        version: meta.version.clone(),
-                        capabilities: meta.capabilities.clone(),
-                        host_info: super::packet::HostInfoResponse {
-                            os: meta.host_info.os.clone(),
-                            arch: meta.host_info.arch.clone(),
-                            hostname: meta.host_info.hostname.clone(),
-                        },
-                    },
-                };
-                send_response(sink, response).await?;
-            }
-            RequestPacket::RuntimeList { request_id } => {
-                let registry = state.known_runtimes().read().await;
-                let runtimes: Vec<super::packet::KnownRuntimeResponse> = registry
-                    .list()
-                    .iter()
-                    .map(|r| super::packet::KnownRuntimeResponse {
-                        runtime_id: r.runtime_id.clone(),
-                        display_name: r.display_name.clone(),
-                        last_seen: Some(r.last_seen.to_rfc3339()),
-                        connection_endpoint: r.connection_endpoint.clone(),
-                        trust_level: format!("{:?}", r.trust_level).to_lowercase(),
-                    })
-                    .collect();
-                let response = ResponsePacket::RuntimeList {
-                    request_id,
-                    runtimes,
-                };
-                send_response(sink, response).await?;
-            }
-            RequestPacket::RuntimeRegister {
-                request_id,
-                runtime_id,
-                display_name,
-            } => {
-                let mut registry = state.known_runtimes().write().await;
-                registry.register(
-                    &runtime_id,
-                    &display_name,
-                    None,
-                    crate::tunnel::known_runtimes::TrustLevel::Untrusted,
-                );
-                let resolver = crate::common::paths::PathResolver::with_dirs(
-                    state.config_dir.clone(),
-                    state.data_dir.clone(),
-                    state.cache_dir.clone(),
-                );
-                match registry.save(&resolver) {
-                    Ok(()) => {
-                        let response = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
-            RequestPacket::RuntimeTrust {
-                request_id,
-                runtime_id,
-            } => {
-                let mut registry = state.known_runtimes().write().await;
-                match registry.trust(
-                    &runtime_id,
-                    crate::tunnel::known_runtimes::TrustLevel::Authorized,
-                ) {
-                    Ok(()) => {
-                        let resolver = crate::common::paths::PathResolver::with_dirs(
-                            state.config_dir.clone(),
-                            state.data_dir.clone(),
-                            state.cache_dir.clone(),
-                        );
-                        let _ = registry.save(&resolver);
-                        let response = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
-            RequestPacket::RuntimeRemove {
-                request_id,
-                runtime_id,
-            } => {
-                let mut registry = state.known_runtimes().write().await;
-                match registry.remove(&runtime_id) {
-                    Ok(()) => {
-                        let resolver = crate::common::paths::PathResolver::with_dirs(
-                            state.config_dir.clone(),
-                            state.data_dir.clone(),
-                            state.cache_dir.clone(),
-                        );
-                        let _ = registry.save(&resolver);
-                        let response = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
+            // `RuntimeId` / `RuntimeInfo` / `RuntimeList` / `RuntimeRegister` /
+            // `RuntimeTrust` / `RuntimeRemove` are owned by
+            // `ipc::handlers::runtime::RuntimeHandler` (F6.9) —
+            // dispatched in the `domain_handlers` loop above.
 
             // `TunnelStop` / `TunnelStatus` are owned by
             // `ipc::handlers::tunnel::TunnelHandler` (F6.4) — dispatched

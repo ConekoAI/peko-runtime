@@ -2192,6 +2192,41 @@ impl crate::ipc::handlers::cron::CronHost for AppState {
     }
 }
 
+/// F7 ninth narrow handle: the port the `runtime` IPC domain handler
+/// uses to surface this runtime's identity / metadata and the
+/// persistent `KnownRuntimes` registry. Trait lives in
+/// `ipc::handlers::runtime`. All methods are sync (cheap references /
+/// `PathBuf` clones), so the trait is object-safe without
+/// `async_trait`. The actual `KnownRuntimes` lock awaits live in the
+/// handler.
+impl crate::ipc::handlers::runtime::RuntimeHost for AppState {
+    fn runtime_identity(&self) -> &crate::identity::runtime::RuntimeIdentity {
+        AppState::runtime_identity(self)
+    }
+
+    fn runtime_metadata(&self) -> &crate::identity::runtime_metadata::RuntimeMetadata {
+        AppState::runtime_metadata(self)
+    }
+
+    fn known_runtimes(
+        &self,
+    ) -> &Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>> {
+        AppState::known_runtimes(self)
+    }
+
+    fn config_dir(&self) -> std::path::PathBuf {
+        self.config_dir.clone()
+    }
+
+    fn data_dir(&self) -> std::path::PathBuf {
+        self.data_dir.clone()
+    }
+
+    fn cache_dir(&self) -> std::path::PathBuf {
+        self.cache_dir.clone()
+    }
+}
+
 /// F7 fourth narrow handle: the port the `tunnel` IPC domain handler uses
 /// to drive the tunnel lifecycle from CLI control packets (`TunnelStop`,
 /// `TunnelStatus`). Trait lives in `ipc::handlers::tunnel`. Both methods
