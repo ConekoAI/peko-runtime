@@ -19,6 +19,7 @@ use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::server::PeerAddr;
 
 pub(crate) mod auth;
+pub(crate) mod capability;
 pub(crate) mod system;
 pub(crate) mod tool;
 pub(crate) mod tunnel;

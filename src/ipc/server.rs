@@ -39,6 +39,7 @@ use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
 use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::auth::AuthHandler;
+use crate::ipc::handlers::capability::CapabilityHandler;
 use crate::ipc::handlers::system::SystemHandler;
 use crate::ipc::handlers::tool::ToolHandler;
 use crate::ipc::handlers::tunnel::TunnelHandler;
@@ -53,7 +54,7 @@ use crate::common::services::session_service::HistoryEvent;
 use crate::daemon::state::{AppState, StreamingRunHandle};
 use crate::principal::{
     router::{ChannelContext, ChannelKind},
-    Capability, Principal, RouteDecision, RouterError,
+    Principal, RouteDecision, RouterError,
 };
 use crate::session::events::SessionEvent;
 
@@ -834,6 +835,7 @@ impl IpcServer {
             Arc::new(AuthHandler::new(Arc::new(state.clone()))),
             Arc::new(ToolHandler::new(Arc::new(state.clone()))),
             Arc::new(TunnelHandler::new(Arc::new(state.clone()))),
+            Arc::new(CapabilityHandler::new(Arc::new(state.clone()))),
         ];
         for handler in &domain_handlers {
             if handler.matches(&request) {
@@ -1276,119 +1278,10 @@ impl IpcServer {
                 send_response(sink, response).await?;
             }
 
-            RequestPacket::CapabilityGrant {
-                request_id,
-                principal,
-                capability,
-            } => {
-                let cap = Capability::new(capability);
-                let pm = state.principal_manager().clone();
-                let result = pm
-                    .update_config(&principal, |config| {
-                        if !config.capabilities.contains(&cap) {
-                            config.capabilities.push(cap.clone());
-                        }
-                    })
-                    .await;
+            // `CapabilityGrant` / `CapabilityList` / `CapabilityRevoke` are owned
+            // by `ipc::handlers::capability::CapabilityHandler` (F6.8) —
+            // dispatched in the `domain_handlers` loop above.
 
-                match result {
-                    Ok(_) => {
-                        let response = ResponsePacket::CapabilityGranted {
-                            request_id,
-                            capability: cap.to_string(),
-                            message: format!(
-                                "Capability '{}' granted to principal '{}'",
-                                cap, principal
-                            ),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::CapabilityRevoke {
-                request_id,
-                principal,
-                capability,
-            } => {
-                let cap = Capability::new(capability);
-                let pm = state.principal_manager().clone();
-                let result = pm
-                    .update_config(&principal, |config| {
-                        config.capabilities.remove(&cap);
-                    })
-                    .await;
-
-                match result {
-                    Ok(_) => {
-                        let response = ResponsePacket::CapabilityRevoked {
-                            request_id,
-                            capability: cap.to_string(),
-                            message: format!(
-                                "Capability '{}' revoked from principal '{}'",
-                                cap, principal
-                            ),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::CapabilityList {
-                request_id,
-                principal,
-            } => {
-                let pm = state.principal_manager().clone();
-                let store = state.extension_store().clone();
-                match pm.get_by_name(&principal).await {
-                    Some(principal_ref) => {
-                        let capabilities = principal_ref.config.read().await.capabilities.clone();
-                        let granted = capabilities.to_strings();
-
-                        let global_items = store.global_items().await;
-                        let catalog = crate::principal::ExtensionCatalog::build(
-                            &capabilities,
-                            &principal_ref.agent_prompts,
-                            &global_items,
-                        );
-
-                        let detected = catalog.detected_capabilities();
-                        let active = catalog.active_capabilities(&capabilities);
-
-                        let response = ResponsePacket::CapabilityList {
-                            request_id,
-                            principal,
-                            granted,
-                            detected,
-                            active,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    None => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal '{principal}' not found"),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
-
-            
             // (SessionBranch / SessionCompact / SessionSteer / SessionSteerList /
             // SessionSteerCancel retired under ADR-042. The legacy `peko session`
             // command tree and `peko session compact` CLI surface that drove

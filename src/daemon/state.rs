@@ -2124,6 +2124,22 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
     }
 }
 
+/// F7 fifth narrow handle: the port the `capability` IPC domain handler
+/// uses for principal-capability grant/list/revoke. Trait lives in
+/// `ipc::handlers::capability`. Both methods are sync (return cheap
+/// references), so the trait is object-safe without `async_trait`. The
+/// actual per-principal mutations happen in the handler against these
+/// accessors.
+impl crate::ipc::handlers::capability::CapabilityHost for AppState {
+    fn principal_manager(&self) -> &Arc<PrincipalManager> {
+        AppState::principal_manager(self)
+    }
+
+    fn extension_store(&self) -> &Arc<ExtensionStore> {
+        AppState::extension_store(self)
+    }
+}
+
 /// F7 fourth narrow handle: the port the `tunnel` IPC domain handler uses
 /// to drive the tunnel lifecycle from CLI control packets (`TunnelStop`,
 /// `TunnelStatus`). Trait lives in `ipc::handlers::tunnel`. Both methods
