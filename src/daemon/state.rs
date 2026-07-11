@@ -2123,3 +2123,24 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
         self.async_task_executor.clone()
     }
 }
+
+/// F7 fourth narrow handle: the port the `tunnel` IPC domain handler uses
+/// to drive the tunnel lifecycle from CLI control packets (`TunnelStop`,
+/// `TunnelStatus`). Trait lives in `ipc::handlers::tunnel`. Both methods
+/// are async because they drive the live outbound tunnel connection.
+///
+/// Note: this trait is distinct from `crate::tunnel::host::TunnelHost`,
+/// which powers inbound-message dispatch (F5). They share a name but
+/// live in different modules and serve different consumers; the F5 +
+/// F7 dependency-inversion pattern intentionally produces two narrow
+/// ports per cross-cutting concern.
+#[async_trait::async_trait]
+impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
+    async fn stop_tunnel(&self) {
+        AppState::stop_tunnel(self).await;
+    }
+
+    async fn tunnel_connected(&self) -> bool {
+        AppState::tunnel_connected(self).await
+    }
+}

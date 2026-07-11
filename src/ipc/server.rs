@@ -41,6 +41,7 @@ use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::auth::AuthHandler;
 use crate::ipc::handlers::system::SystemHandler;
 use crate::ipc::handlers::tool::ToolHandler;
+use crate::ipc::handlers::tunnel::TunnelHandler;
 use crate::ipc::handlers::RequestHandler;
 #[cfg(not(windows))]
 use crate::auth::config::enforce_auth_for_public_bind;
@@ -832,6 +833,7 @@ impl IpcServer {
             Arc::new(SystemHandler::new(Arc::new(state.clone()))),
             Arc::new(AuthHandler::new(Arc::new(state.clone()))),
             Arc::new(ToolHandler::new(Arc::new(state.clone()))),
+            Arc::new(TunnelHandler::new(Arc::new(state.clone()))),
         ];
         for handler in &domain_handlers {
             if handler.matches(&request) {
@@ -1750,29 +1752,10 @@ impl IpcServer {
                 }
             }
 
-            // ── Tunnel (ADR-035) ──
-            RequestPacket::TunnelStop { request_id } => {
-                state.stop_tunnel().await;
-                let response = ResponsePacket::Done {
-                    request_id,
-                    success: true,
-                    error: None,
-                };
-                send_response(sink, response).await?;
-            }
-            RequestPacket::TunnelStatus { request_id } => {
-                let configured = crate::tunnel::credential::has_pekohub_credential();
-                let connected = state.tunnel_connected().await;
-                let response = ResponsePacket::TunnelStatus {
-                    request_id,
-                    configured,
-                    daemon_running: true,
-                    connected,
-                };
-                send_response(sink, response).await?;
-            }
+            // `TunnelStop` / `TunnelStatus` are owned by
+            // `ipc::handlers::tunnel::TunnelHandler` (F6.4) — dispatched
+            // in the `domain_handlers` loop above.
 
-            
             RequestPacket::InstanceSetStatus {
                 request_id,
                 agent_name,
