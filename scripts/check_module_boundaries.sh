@@ -292,18 +292,39 @@ echo ""
 # Rule 8: src/principal/ must NOT import from src/tunnel/. The principal owns
 #         its own exposure/status/transport enums; the tunnel converts to its
 #         wire types at the edge via `From`. Doc-comment links are excluded.
+#         Test code (cfg(test) mods and src/principal/tests/ submodules) is
+#         allowed to cross-import because it sets up cross-module fixtures —
+#         the production main module above must remain clean.
 # -----------------------------------------------------------------------------
 echo "Rule 8: src/principal/ must NOT import from src/tunnel/"
 echo ""
 
-VIOLATIONS_8A=$(grep -rE "crate::tunnel" src/principal/ --include="*.rs" 2>/dev/null \
-    | grep -vE ':[[:space:]]*//' \
-    || true)
+RULE8_FAILED=0
+VIOLATIONS_8=""
 
-if [ -n "$VIOLATIONS_8A" ]; then
+for f in $(find src/principal -name '*.rs'); do
+    case "$f" in
+        src/principal/tests/*) continue ;;   # test code is allowed to cross-import
+        *)
+            hits=$(awk '
+                /^[[:space:]]*#\[cfg\(test\)\]/ { keep=0 }
+                /^[[:space:]]*mod tests \{/     { keep=0 }
+                keep { print }
+            ' "$f" | grep -nE "crate::tunnel" | grep -vE '^[0-9]+:[[:space:]]*//' | sed "s|^|$f:|" || true)
+            if [ -n "$hits" ]; then
+                RULE8_FAILED=1
+                VIOLATIONS_8="${VIOLATIONS_8}${hits}
+"
+            fi
+            ;;
+    esac
+done
+
+if [ "$RULE8_FAILED" -ne 0 ]; then
     echo "  ❌ FAIL: src/principal/ imports from tunnel"
     echo ""
-    echo "$VIOLATIONS_8A" | while read -r line; do
+    echo "$VIOLATIONS_8" | while read -r line; do
+        [ -z "$line" ] && continue
         echo "     $line"
     done
     echo ""

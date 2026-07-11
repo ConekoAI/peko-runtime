@@ -4,30 +4,34 @@
 //! without consulting the hub, and that `PrincipalSendTool::execute`
 //! short-circuits locally via `PrincipalManager::receive`. This test is
 //! self-contained and runs in the regular unit/integration job.
-#![cfg(feature = "test-utils")]
+//!
+//! Originally `tests/principal_send_offline.rs` (gated by `--features
+//! test-utils`). Moved inline as part of F9.3 so the gated surface can
+//! narrow — the test only consumes `crate::principal::*`, `crate::tunnel::*`,
+//! `crate::auth::*`, `crate::providers::*` etc., all of which stay `pub`.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
-use peko::auth::Subject;
-use peko::engine::tool_runtime::ToolRuntime;
-use peko::extensions::framework::core::init_global_core;
-use peko::principal::{
+use crate::auth::Subject;
+use crate::engine::tool_runtime::ToolRuntime;
+use crate::extensions::framework::core::init_global_core;
+use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };
-use peko::subject::PrincipalDID;
-use peko::providers::LlmResolver;
-use peko::tools::Tool;
-use peko::tunnel::a2a_pending::PendingA2aResponses;
-use peko::tunnel::cross_runtime::CrossRuntimeA2aCtx;
-use peko::tunnel::direct::DirectConnectionManager;
-use peko::tunnel::hub_directory::{AgentDirectory, AgentResolution, DirectoryError};
-use peko::tunnel::known_runtimes::KnownRuntimes;
-use peko::tunnel::local_directory::LocalFirstAgentDirectory;
-use peko::tunnel::principal_send_tool::{PrincipalSendResult, PrincipalSendTool};
-use peko::principal::config::{Exposure, TransportPreference};
+use crate::subject::PrincipalDID;
+use crate::providers::LlmResolver;
+use crate::tools::Tool;
+use crate::tunnel::a2a_pending::PendingA2aResponses;
+use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
+use crate::tunnel::direct::DirectConnectionManager;
+use crate::tunnel::hub_directory::{AgentDirectory, AgentResolution, DirectoryError};
+use crate::tunnel::known_runtimes::KnownRuntimes;
+use crate::tunnel::local_directory::LocalFirstAgentDirectory;
+use crate::tunnel::principal_send_tool::{PrincipalSendResult, PrincipalSendTool};
+use crate::principal::config::{Exposure, TransportPreference};
 use tokio::sync::RwLock;
 
 /// A directory client that panics if consulted. Wrapping it inside
@@ -56,7 +60,7 @@ async fn create_test_principal(
     name: &str,
     owner: Subject,
     transport_preference: TransportPreference,
-) -> Arc<peko::principal::Principal> {
+) -> Arc<crate::principal::Principal> {
     let agents_dir = workspace.join(name).join("agents");
     tokio::fs::create_dir_all(&agents_dir).await.unwrap();
     let prompt_path = agents_dir.join("primary.md");
@@ -92,7 +96,7 @@ async fn same_runtime_principal_send_short_circuits_offline() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_var("PEKO_HOME", temp.path());
 
-    let path_resolver = peko::common::paths::PathResolver::with_dirs(
+    let path_resolver = crate::common::paths::PathResolver::with_dirs(
         temp.path().join("config"),
         temp.path().join("data"),
         temp.path().join("cache"),
@@ -108,7 +112,7 @@ async fn same_runtime_principal_send_short_circuits_offline() {
 
     let catalog_path = temp.path().join("providers.toml");
     let (resolver, adapter) =
-        LlmResolver::mock(peko::providers::MockAdapter::new(), &catalog_path).await;
+        LlmResolver::mock(crate::providers::MockAdapter::new(), &catalog_path).await;
 
     let principal_manager = Arc::new(
         PrincipalManager::with_path_resolver(

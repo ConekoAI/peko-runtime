@@ -152,7 +152,7 @@ impl IpcServer {
     /// # Errors
     /// Returns error if all transports fail to bind, or if a UDP bind to
     /// a non-loopback address is attempted without remote auth configured.
-    pub async fn new(app_state: AppState) -> anyhow::Result<Self> {
+    pub(crate) async fn new(app_state: AppState) -> anyhow::Result<Self> {
         // 1. Try Unix socket on Unix platforms
         #[cfg(unix)]
         {
