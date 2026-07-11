@@ -9,25 +9,26 @@ This document defines the public API surface for Peko, including the new Unified
 
 ## Table of Contents
 
-1. [Module: `extension`](#module-extension) - Generic Extension Framework (ADR-017)
+1. [Module: `extensions::framework`](#module-extensionsframework) - Generic Extension Framework (ADR-017)
 2. [Module: `extensions`](#module-extensions) - Extension Type Implementations
-3. [Module: `agent`](#module-agent)
-4. [Module: `providers`](#module-providers)
-5. [Module: `common::services`](#module-commonservices)
-6. [Module: `tools::factory`](#module-toolsfactory)
-7. [Module: `session::context`](#module-sessioncontext)
-8. [Compatibility Notes](#compatibility-notes)
+3. [Module: `principal` / `subject`](#module-principal--subject) - Principal container & actor (ADR-039/041)
+4. [Module: `agent`](#module-agent)
+5. [Module: `providers`](#module-providers)
+6. [Module: `common::services`](#module-commonservices)
+7. [Module: `tools::factory`](#module-toolsfactory)
+8. [Module: `session::context`](#module-sessioncontext)
+9. [Compatibility Notes](#compatibility-notes)
 
 ---
 
-## Module: `extension`
+## Module: `extensions::framework`
 
-**Status:** ACTIVE (New in 0.1.0)  
+**Status:** ACTIVE  
 **ADR:** ADR-017: Unified Extension Architecture
 
-The `extension` module (singular) contains the **generic extension framework** — hook points, registries, types, managers, and shared services. It has **zero dependencies** on extension type implementations.
+The `extensions::framework` module contains the **generic extension framework** — hook points, registries, types, managers, and shared services. It has **zero dependencies** on extension type implementations (which live under the sibling `extensions::<type>/` modules).
 
-### `extension::core`
+### `extensions::framework::core`
 
 #### `ExtensionCore`
 
@@ -121,7 +122,7 @@ pub trait HookHandler: Send + Sync + std::fmt::Debug {
 
 ---
 
-### `extension::manager`
+### `extensions::framework::manager`
 
 #### `ExtensionManager`
 
@@ -163,7 +164,7 @@ impl ExtensionManager {
 
 ---
 
-### `extension::adapters`
+### `extensions::framework::adapters`
 
 #### `ExtensionTypeAdapter` Trait
 
@@ -205,7 +206,7 @@ pub enum ManifestFormat {
 
 ---
 
-### `extension::types`
+### `extensions::framework::types`
 
 #### Core Types
 
@@ -222,7 +223,7 @@ pub enum ToolSource { ... }
 
 ---
 
-### `extension::services`
+### `extensions::framework::services`
 
 #### `ToolExecutionService`
 
@@ -235,7 +236,7 @@ pub enum ParamSource { ... }
 
 ---
 
-### `extension::protocols::shared`
+### `extensions::framework::protocols::shared`
 
 #### Process Transport
 
@@ -420,6 +421,50 @@ pub trait HookHandler: Send + Sync + std::fmt::Debug {
 
 ---
 
+## Module: `principal` / `subject`
+
+**Status:** ACTIVE  
+**ADRs:** ADR-039 (Principal model), ADR-041 (Principal-as-container & session blackboxing), ADR-042 (no external `session` concept in CLI/IPC)
+
+A `Principal` is the top-level container: it owns identity (DID + keys), configuration, capability grants, memory, and the agent prompts that run inside it. A `Subject` is an addressable actor (a Principal or a human user) used for routing and authorization. Sessions are an internal concern of the Principal and are not exposed on the CLI/IPC surface (the only read path is `peko log`).
+
+### Public Types
+
+#### `principal::Principal` (ACTIVE)
+
+```rust
+pub struct Principal { ... }
+```
+
+The loaded runtime instance of a Principal container, produced by the `PrincipalManager`.
+
+#### `principal::PrincipalManager` (ACTIVE)
+
+```rust
+pub struct PrincipalManager { ... }
+```
+
+Owns the lifecycle of Principal containers on disk and in memory — create/load/list and resolution of a session to its owning Principal. Capability checks resolve against the Principal that owns the session (ADR-042); grants are never accepted from the IPC packet.
+
+#### `principal::PrincipalConfig` / `principal::Capabilities` (ACTIVE)
+
+```rust
+pub struct PrincipalConfig { ... }
+pub struct Capabilities { ... }
+```
+
+On-disk configuration and the capability grants derived from it. An empty/absent grant set is fail-closed (deny-all) — see the `*_fail_closed_without_principal_id` tests.
+
+#### `subject::Subject` (ACTIVE)
+
+```rust
+pub struct Subject { ... }
+```
+
+The actor identity attached to a session (peer, caller). Replaces the pre-ADR-039 agent/team-scoped addressing.
+
+---
+
 ## Module: `agents`
 
 ### Public Types
@@ -550,7 +595,7 @@ pub struct AgentConfigEntry { ... }
 
 #### `common::services::message_service` (REMOVED in 0.1.0)
 
-**Status:** ❌ REMOVED in ADR-016  
+**Status:** ❌ REMOVED  
 **Replaced by:** `StatelessAgentService`
 
 ---
@@ -648,12 +693,12 @@ Context for deriving semantic session keys. Not to be confused with the runtime 
 
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
-| `ExtensionCore` | `extension::core` | ✅ New | Central hook registry |
-| `ExtensionManager` | `extension::manager` | ✅ New | Extension lifecycle |
-| `HookPoint` (22 variants) | `extension::core` | ✅ New | Extension hook points |
-| `HookHandler` trait | `extension::core` | ✅ New | Hook implementation |
-| `ExtensionTypeAdapter` trait | `extension::adapters` | ✅ New | Extension type adapter trait |
-| `BuiltInAdapters` | `extension::adapters` | ✅ New | Built-in adapter provider |
+| `ExtensionCore` | `extensions::framework::core` | ✅ New | Central hook registry |
+| `ExtensionManager` | `extensions::framework::manager` | ✅ New | Extension lifecycle |
+| `HookPoint` (22 variants) | `extensions::framework::core` | ✅ New | Extension hook points |
+| `HookHandler` trait | `extensions::framework::core` | ✅ New | Hook implementation |
+| `ExtensionTypeAdapter` trait | `extensions::framework::adapters` | ✅ New | Extension type adapter trait |
+| `BuiltInAdapters` | `extensions::framework::adapters` | ✅ New | Built-in adapter provider |
 | `SkillAdapter` | `extensions::skill::adapter` | ✅ New | SKILL.md-based capabilities |
 | `McpAdapter` | `extensions::mcp::adapter` | ✅ New | MCP server integration |
 | `UniversalToolAdapter` | `extensions::universal::adapter` | ✅ New | Executable tools |

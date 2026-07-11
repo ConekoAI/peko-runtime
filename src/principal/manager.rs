@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 
 use super::{
     agent_prompt::load_agent_prompt,
-    config::{PrincipalConfig, PrincipalDID},
+    config::PrincipalConfig,
     factory::{PrincipalMemoryFactory, PrincipalRouterFactory},
     router::{ChannelContext, RouteDecision, RouterContext, RouterError},
     slash::{SlashDispatcher, SlashError},
@@ -16,6 +16,7 @@ use crate::auth::ownership::{check_permission, Permission, Resource};
 use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::common::types::OutputFormat;
+use crate::subject::PrincipalDID;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::async_exec::executor::SteeringMessage;
 use crate::extensions::framework::store::ExtensionStore;
@@ -832,7 +833,7 @@ mod tests {
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
             capabilities: Capabilities::starter_bundle(),
-            exposure: crate::tunnel::protocol::InstanceExposure::Private,
+            exposure: crate::principal::config::Exposure::Private,
             status: None,
             permissions: vec![PermissionGrant {
                 subject: Subject::Public,
@@ -1120,7 +1121,7 @@ mod tests {
         let (_temp, manager, _adapter, id) = setup().await;
         manager
             .update_config("stressy", |config| {
-                config.exposure = crate::tunnel::protocol::InstanceExposure::Public;
+                config.exposure = crate::principal::config::Exposure::Public;
             })
             .await
             .expect("update_config should succeed");
@@ -1128,7 +1129,7 @@ mod tests {
         let principal = manager.get(id).await.expect("principal should exist");
         assert_eq!(
             principal.exposure().await,
-            crate::tunnel::protocol::InstanceExposure::Public
+            crate::principal::config::Exposure::Public
         );
 
         let toml = tokio::fs::read_to_string(principal.workspace_path.join("principal.toml"))

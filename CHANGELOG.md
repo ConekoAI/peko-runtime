@@ -23,6 +23,26 @@ execution, A2A protocol, and extension system.
 
 - (none — all scoped tools are now in place)
 
+### Architecture cleanup (PRs #153–#156)
+
+#### Removed
+
+- Dead code across the engine, IPC, and extension layers (PR #153).
+- The write-only tool-latency metrics/tracing toolkit that was recorded but
+  never read; the `observability` module is now `pub(crate)` (PR #155).
+- `test-utils` removed from the default feature set, so test plumbing
+  (`pub mod test_utils`, the `peko::daemon` internal re-export, and the
+  resolver/hub-directory test hooks) no longer ships in the production binary.
+  `tests/tunnel_e2e` is gated behind the feature — run it with
+  `cargo test --features test-utils --test tunnel_e2e`.
+
+#### Changed
+
+- Tidied stale section headers in `src/lib.rs` (PR #154).
+- Marked ADR-027 (unified packaging), ADR-031 (agent team membership), and
+  ADR-037 (agent extension bundling) as superseded by ADR-039 / ADR-041, and
+  refreshed capability-grant wording (PR #156).
+
 ### Added
 
 - Planning-todo family `TaskCreate`, `TaskGet`, `TaskList`, and `TaskUpdate`.

@@ -217,7 +217,7 @@ fn write_principal_with_perm(
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
 
-    cfg.exposure = peko::tunnel::protocol::InstanceExposure::Private;
+    cfg.exposure = peko::principal::config::Exposure::Private;
     cfg.owner = peko::auth::Subject::User("local".into());
 
     if let Some(uid) = permitted_user_id {

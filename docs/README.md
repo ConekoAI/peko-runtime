@@ -16,7 +16,7 @@ Complete documentation for the Peko multi-agent runtime.
 
 ### 📚 User Guides
 
-- **[User's Guide](user-guide/USERS_GUIDE.md)** — Concepts, sessions, teams, extensions
+- **[User's Guide](user-guide/USERS_GUIDE.md)** — Concepts, sessions, principals, extensions
 - **[CLI Reference](user-guide/CLI_REFERENCE.md)** — Every `peko` command and flag
 
 ### 🏗️ Architecture
@@ -71,7 +71,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | Range | Topic |
 |-------|-------|
 | [ADR-001](../) — ADR-015 | Early architecture (JSONL sessions, did, providers, tools) |
-| [ADR-016](architecture/adr/ADR-016.md) | Unified session resolution + async completion *(Proposed — never accepted)* |
+| [ADR-016](architecture/adr/ADR-016.md) | Unified session resolution + async completion *(Accepted — implemented in 0.1.0; superseded by ADR-039/041/042)* |
 | [ADR-017](architecture/adr/ADR-017.md) | Unified Extension Architecture |
 | [ADR-018a](architecture/adr/ADR-018a-tool-execution-unification.md) / [018b](architecture/adr/ADR-018b-unified-tool-registry.md) / [018c](architecture/adr/ADR-018c-tool-naming-cleanup.md) | Tool execution unification |
 | [ADR-019](architecture/adr/ADR-019-dynamic-tool-and-prompt-updates.md) | Dynamic tool / prompt updates |

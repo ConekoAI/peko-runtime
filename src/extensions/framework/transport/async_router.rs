@@ -253,7 +253,15 @@ impl AsyncExecutionRouter {
                 Some(AsyncTaskStatus::TimedOut { error }) => {
                     return Err(anyhow::anyhow!(error));
                 }
-                Some(AsyncTaskStatus::Pending | AsyncTaskStatus::Running) => {
+                Some(AsyncTaskStatus::Pending | AsyncTaskStatus::Running) | None => {
+                    // Pending/Running: the task is still in flight.
+                    // None: the transport cannot report a status. This is the
+                    // CLI `DaemonIpcTransport` path, which has no IPC status
+                    // channel and intentionally returns `None` to trigger this
+                    // fallback (see `async_transport.rs`). Treat `None` as
+                    // "still running": keep polling until the deadline, then
+                    // return an honest queued receipt (ADR-020). Never fatal,
+                    // and never fabricate completion.
                     let now = tokio::time::Instant::now();
                     if now >= deadline {
                         break;
@@ -263,12 +271,6 @@ impl AsyncExecutionRouter {
                     tokio::time::sleep(sleep_duration).await;
                     // Double the backoff, capping at 1s.
                     backoff = std::cmp::min(backoff * 2, Duration::from_secs(1));
-                }
-                None => {
-                    return Err(anyhow::anyhow!(
-                        "Task {} not found in transport registry after spawn",
-                        task_id
-                    ));
                 }
             }
         }
@@ -549,5 +551,81 @@ mod tests {
         assert_eq!(value["status"], "running");
         assert_eq!(value["tool_name"], "slow_tool");
         assert_eq!(value["reason"], "timeout");
+    }
+
+    /// Mimics the CLI `DaemonIpcTransport`: `spawn_task` succeeds (returns a
+    /// receipt) but `get_status` has no IPC status channel and returns `None`.
+    #[derive(Debug)]
+    struct NullStatusTransport;
+
+    #[async_trait::async_trait]
+    impl AsyncTaskTransport for NullStatusTransport {
+        async fn spawn_task(
+            &self,
+            task_id: crate::extensions::framework::async_exec::executor::AsyncTaskId,
+            _tool_name: String,
+            _params: Value,
+            _session_key: String,
+            _workspace: std::path::PathBuf,
+            _config: crate::extensions::framework::async_exec::executor::AsyncToolConfig,
+        ) -> Result<crate::extensions::framework::async_exec::executor::AsyncTaskReceipt> {
+            Ok(crate::extensions::framework::async_exec::executor::AsyncTaskReceipt {
+                task_id,
+                status: AsyncTaskStatus::Running,
+                estimated_duration_secs: None,
+                task_file: None,
+                params: None,
+            })
+        }
+
+        async fn get_status(
+            &self,
+            _task_id: &crate::extensions::framework::async_exec::executor::AsyncTaskId,
+        ) -> Result<Option<AsyncTaskStatus>> {
+            Ok(None)
+        }
+
+        async fn cancel_task(
+            &self,
+            _task_id: &crate::extensions::framework::async_exec::executor::AsyncTaskId,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    /// `None` from the transport (the CLI IPC path) must fall back to an honest
+    /// queued receipt at the deadline — never the fatal "task not found in
+    /// transport registry" error. Locks the F1 fix.
+    #[tokio::test]
+    async fn test_router_none_status_falls_back_to_receipt() {
+        let router = AsyncExecutionRouter {
+            default_tool_timeout: Duration::from_secs(1),
+            transport: std::sync::Arc::new(NullStatusTransport),
+        };
+        let exec_service = ToolExecutionService::new();
+        let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
+        let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
+        let mut params = json!({"query": "x"});
+
+        let result = router
+            .route(
+                "ipc_tool",
+                &mut params,
+                &exec_service,
+                &tool_context,
+                &exec_config,
+                |_p| async move { Ok(json!({"result": "should_not_run"})) },
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "None status must not be fatal: {:?}",
+            result
+        );
+        let value = result.unwrap();
+        assert_eq!(value["status"], "running");
+        assert_eq!(value["reason"], "timeout");
+        assert!(value.get("task_id").is_some());
     }
 }

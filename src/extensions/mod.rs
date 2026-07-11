@@ -136,22 +136,28 @@ pub mod extension_types {
     /// Gateway extension type
     pub const GATEWAY: &str = "gateway";
 
+    /// General extension type (full hook access; manifest-declarable via manifest.yaml)
+    pub const GENERAL: &str = "general";
+
     /// Custom extension type prefix
     pub const CUSTOM_PREFIX: &str = "custom:";
+
+    // NOTE: `builtin` is intentionally absent — built-in tools are framework-internal
+    // (compiled-in native `Tool` impls), not a manifest-declarable `extension_type`.
 
     /// Check if a type is valid
     #[must_use]
     pub fn is_valid_type(ext_type: &str) -> bool {
         matches!(
             ext_type,
-            SKILL | AGENT | SLASH | MCP | UNIVERSAL_TOOL | GATEWAY
+            SKILL | AGENT | SLASH | MCP | UNIVERSAL_TOOL | GATEWAY | GENERAL
         ) || ext_type.starts_with(CUSTOM_PREFIX)
     }
 
     /// Get all standard extension types
     #[must_use]
     pub fn standard_types() -> Vec<&'static str> {
-        vec![SKILL, AGENT, SLASH, MCP, UNIVERSAL_TOOL, GATEWAY]
+        vec![SKILL, AGENT, SLASH, MCP, UNIVERSAL_TOOL, GATEWAY, GENERAL]
     }
 }
 
@@ -166,6 +172,8 @@ mod tests {
         assert_eq!(extension_types::SLASH, "slash");
         assert_eq!(extension_types::MCP, "mcp");
         assert_eq!(extension_types::UNIVERSAL_TOOL, "universal-tool");
+        assert_eq!(extension_types::GATEWAY, "gateway");
+        assert_eq!(extension_types::GENERAL, "general");
     }
 
     #[test]

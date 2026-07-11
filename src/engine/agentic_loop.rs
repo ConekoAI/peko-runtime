@@ -1780,7 +1780,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_parallel_tool_execution_overlaps_in_time() {
         use crate::extensions::builtin::adapter::BuiltinToolAdapter;
-        use crate::principal::{Capabilities, Capability};
+        use crate::extensions::framework::types::{Capabilities, Capability};
         use crate::providers::MockResponse;
         use crate::tools::Tool;
         use serde_json::json;

@@ -14,7 +14,7 @@ This document defines every on-disk and in-memory data format used by the Peko r
 1. [Conventions](#1-conventions)
 2. [config.toml — Agent Image Config](#2-configtoml--agent-image-config)
 3. [runtime.toml — Runtime Config](#3-runtimetoml--runtime-config)
-4. [team.toml — Team Definition](#4-teamtoml--team-definition)
+4. [team.toml — Team Definition (RETIRED)](#4-teamtoml--team-definition-retired)
 5. [Session JSONL — Conversation History](#5-session-jsonl--conversation-history)
    - [5.1 File Conventions](#51-file-conventions)
    - [5.2 Event Envelope](#52-event-envelope)
@@ -22,8 +22,8 @@ This document defines every on-disk and in-memory data format used by the Peko r
    - [5.4 Session Index File](#54-session-index-file)
    - [5.5 Context Cache (Derived)](#55-context-cache-derived)
    - [5.6 Compaction](#56-compaction)
-6. [Agent Package Format (.agent)](#6-agent-package-format-agent)
-7. [Team Package Format (.team)](#7-team-package-format-team)
+6. [Agent Package Format (.agent) (RETIRED)](#6-agent-package-format-agent-retired)
+7. [Team Package Format (.team) (RETIRED)](#7-team-package-format-team-retired)
 8. [Extension Package Format (.ext)](#8-extension-package-format-ext)
 9. [Local Registry Store](#9-local-registry-store)
 10. [Instance State](#10-instance-state)
@@ -58,7 +58,7 @@ Runtime-assigned IDs use a `prefix_` + 8-character base36 string:
 |--------|----------|
 | `inst_` | Agent instance |
 | `sess_` | Session |
-| `team_` | Team |
+| `team_` | Team (RETIRED — ADR-039/041) |
 | `evt_` | Session event |
 | `tc_` | Tool call |
 | `msg_` | Message |
@@ -149,7 +149,7 @@ enabled = true
 
 [[hooks]]
 type    = "event"
-topic   = "team.task.assigned"    # Event bus topic pattern (glob supported)
+topic   = "tasks.assigned"        # Event bus topic pattern (glob supported)
 action  = "run"
 session = "active"                # Inject into the running active session
 enabled = true
@@ -324,15 +324,13 @@ openai_api_key_env    = "OPENAI_API_KEY"       # Optional. Default: "OPENAI_API_
 auto_install    = false           # Optional. Default: false (safe for prod)
 install_dir     = "~/.peko/capabilities"  # Optional. Default: as shown
 
-# ── Team defaults ──────────────────────────────────────────────────────────
-
-[teams]
-workspace_root  = ".peko/teams"  # Optional. Default: as shown
-
-# ── Agents defaults ────────────────────────────────────────────────────────
-
-[agents]
-workspace_root  = ".peko/agents" # Optional. Default: as shown
+# ── Principal workspace ──────────────────────────────────────────────────────
+#
+# Teams and the standalone `.peko/agents` / `.peko/teams` roots were RETIRED in
+# favor of the Principal-as-container model (ADR-039/041). Agents are thin
+# Markdown prompts that live inside a Principal (`.peko/principals/<name>/` or
+# bundled in a `.principal` package). The old `[teams]` / `[agents]` config
+# tables and their `workspace_root` keys no longer exist.
 ```
 
 ### 3.2 Auth Types for Registry Sources
@@ -345,11 +343,11 @@ workspace_root  = ".peko/agents" # Optional. Default: as shown
 
 ---
 
-## 4. team.toml — Team Definition
+## 4. team.toml — Team Definition (RETIRED)
 
-Defines the agents, scaling, shared services, and bus configuration for a team.
+> **RETIRED.** Teams were removed in favor of the Principal-as-container model (ADR-039/041). There is no `team.toml` and no `.peko/teams/` directory in the current data model — agents are thin Markdown prompts inside a Principal (`.peko/principals/<name>/` or bundled in a `.principal` package). The schema below is preserved only as historical reference for the pre-ADR-039 layout.
 
-**Location:** `.peko/teams/<team-name>/config.toml`
+**Historical location:** `.peko/teams/<team-name>/config.toml`
 
 ### 4.1 Full Schema
 
@@ -455,7 +453,7 @@ Sessions are stored as JSONL (newline-delimited JSON) files. Each line is exactl
 
 **Location:** `<instance-workspace>/sessions/<session-id>.jsonl`
 
-**Example:** `.peko/teams/research-team/agents/researcher-1/sessions/sess_9nrwbf1v.jsonl`
+**Example (current):** `<principal-workspace>/sessions/sess_9nrwbf1v.jsonl` — sessions are blackboxed under the owning Principal (ADR-041). *(Pre-ADR-039 historical form: `.peko/teams/<team>/agents/<instance>/sessions/...`.)*
 
 ### 5.1 File Conventions
 
@@ -679,7 +677,7 @@ The spawned subagent completed.
 
 #### `a2a.sent`
 
-This agent sent a message to the team event bus.
+This agent sent a message on the A2A event bus.
 
 ```json
 {
@@ -689,7 +687,7 @@ This agent sent a message to the team event bus.
   "ts": "2026-03-16T08:07:00.000Z",
   "seq": 8,
   "message_type": "Task",
-  "topic": "team.research-team.tasks",
+  "topic": "tasks",
   "to": "inst_2nqkrp8x",
   "payload": {
     "task": "Find recent news about ACME Corp",
@@ -702,7 +700,7 @@ This agent sent a message to the team event bus.
 
 #### `a2a.received`
 
-This agent received a message from the team event bus.
+This agent received a message from the A2A event bus.
 
 ```json
 {
@@ -712,7 +710,7 @@ This agent received a message from the team event bus.
   "ts": "2026-03-16T08:07:01.100Z",
   "seq": 9,
   "message_type": "TaskResult",
-  "topic": "team.research-team.results",
+  "topic": "tasks.results",
   "from": "inst_2nqkrp8x",
   "payload": {
     "result": "ACME Corp announced a new product line...",
@@ -1038,9 +1036,11 @@ File operations are tracked across compactions by scanning tool calls in the mes
 
 ---
 
-## 6. Agent Package Format (.agent)
+## 6. Agent Package Format (.agent) (RETIRED)
 
-A `.agent` file is a gzip-compressed tar archive containing a portable agent package. It can be built from a source directory, exported from a running agent, pushed to/pulled from a registry, and imported into a new runtime.
+> **RETIRED.** The `.agent` package format was superseded by the `.principal` package (ADR-041); agents are now thin Markdown prompts bundled inside a Principal, not standalone portable packages. The schema below is preserved only as historical reference.
+
+A `.agent` file was a gzip-compressed tar archive containing a portable agent package. It could be built from a source directory, exported from a running agent, pushed to/pulled from a registry, and imported into a new runtime.
 
 ### 6.1 Package Structure
 
@@ -1132,9 +1132,11 @@ Each layer is stored as a gzip-compressed tar archive in the local registry, ded
 
 ---
 
-## 7. Team Package Format (.team)
+## 7. Team Package Format (.team) (RETIRED)
 
-A `.team` file is a gzip-compressed tar archive containing multiple agents plus team metadata.
+> **RETIRED.** Teams were removed (ADR-039/041); there is no `.team` package format. Use `.principal` packages instead. The schema below is preserved only as historical reference.
+
+A `.team` file was a gzip-compressed tar archive containing multiple agents plus team metadata.
 
 ### 7.1 Package Structure
 
@@ -1302,7 +1304,7 @@ archive_format = "tar"
 
 ## 9. Local Registry Store
 
-The local registry is a content-addressable store for `.agent` layers and manifests.
+The local registry is a content-addressable store for `.principal` layers and manifests.
 
 ### 9.1 Storage Layout
 
@@ -1352,7 +1354,7 @@ Runtime state for a running or stopped instance. Stored in SQLite.
 
 **Location:** `.peko/run/state.db`
 
-This is not a user-editable file. It is the daemon's working state — sessions, instance metadata, team membership. It is rebuilt from the filesystem if deleted. The JSONL session files are the source of truth; the SQLite file is a read-optimised index over them.
+This is not a user-editable file. It is the daemon's working state — sessions and instance metadata. It is rebuilt from the filesystem if deleted. The JSONL session files are the source of truth; the SQLite file is a read-optimised index over them.
 
 ### 7.1 Tables
 
@@ -1365,7 +1367,7 @@ This is not a user-editable file. It is the daemon's working state — sessions,
 | `image_ref` | TEXT | Image ref at creation time |
 | `image_digest` | TEXT | Pinned image digest |
 | `status` | TEXT | Current `InstanceStatus` |
-| `team_id` | TEXT NULL | Foreign key to `teams.id` |
+| `team_id` | TEXT NULL | RETIRED — foreign key to `teams.id` (teams removed, ADR-039/041) |
 | `workspace_path` | TEXT | Absolute path to instance workspace |
 | `active_session_id` | TEXT NULL | Currently active session |
 | `created_at` | TEXT | ISO 8601 timestamp |
@@ -1390,7 +1392,9 @@ This is not a user-editable file. It is the daemon's working state — sessions,
 | `ended` | INTEGER | Boolean (0/1) |
 | `title` | TEXT NULL | Auto-generated or user-set |
 
-#### `teams`
+#### `teams` (RETIRED)
+
+> **RETIRED.** Teams were removed (ADR-039/041); this table no longer exists. Preserved as historical reference.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1510,7 +1514,7 @@ The runtime spawns the tool as a subprocess and writes a single JSON object to i
   "context": {
     "instance_id": "inst_7k2mxp3q",
     "session_id":  "sess_9nrwbf1v",
-    "workspace":   "/home/user/project/.peko/agents/researcher-1/workspace"
+    "workspace":   "/home/user/project/.peko/principals/researcher/workspace"
   }
 }
 ```
@@ -1646,7 +1650,7 @@ Quick-reference table of all primitive types used across formats.
 | `Timestamp` | ISO 8601 UTC, ms precision | `2026-03-16T08:00:00.000Z` |
 | `InstanceId` | `inst_` + 8 base36 chars | `inst_7k2mxp3q` |
 | `SessionId` | `sess_` + 8 base36 chars | `sess_9nrwbf1v` |
-| `TeamId` | `team_` + 8 base36 chars | `team_4hsdcl8e` |
+| `TeamId` | `team_` + 8 base36 chars (RETIRED — ADR-039/041) | `team_4hsdcl8e` |
 | `EventId` | `evt_` + 8 base36 chars | `evt_001` |
 | `ToolCallId` | `tc_` + 6 base36 chars | `tc_4bwmnq` |
 | `MessageId` | `msg_` + 8 base36 chars | `msg_3xpwqr7n` |

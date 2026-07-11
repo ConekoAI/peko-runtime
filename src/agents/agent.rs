@@ -71,7 +71,7 @@ pub struct Agent {
     /// such as `Skill` can resolve per-principal state at handle time
     /// without re-registering themselves on the shared `ExtensionCore`
     /// per principal.
-    principal_id: crate::principal::PrincipalId,
+    principal_id: crate::subject::PrincipalId,
     /// Spawning principal's human-readable name. Threaded into
     /// `ToolContext` so Principal-scoped tools (e.g. cron) can target
     /// jobs by name.
@@ -95,13 +95,13 @@ pub struct Agent {
     /// `AgentConfig::extensions`/`extension_whitelist` for the
     /// runtime filter. Once `AgentConfig::extensions` is removed
     /// the principal's allowlist is the *only* source of truth.
-    principal_capabilities: Option<Arc<crate::principal::Capabilities>>,
+    principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
     /// Snapshot of the spawning principal's active extension IDs.
     ///
     /// When `Some`, tool execution verifies that the tool's owning
     /// extension is present in this set in addition to the capability
     /// grant check. Subagents inherit the same snapshot.
-    principal_active_extensions: Option<crate::principal::ActiveExtensionSet>,
+    principal_active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
 }
 
 impl Clone for Agent {
@@ -273,7 +273,7 @@ impl Agent {
         if let Some(caps) = self.principal_capabilities.as_ref() {
             let before_count = tools.len();
             tools.retain(|tool| {
-                let required = crate::principal::Capability::new(format!("tool:{}", tool.name()));
+                let required = crate::extensions::framework::types::Capability::new(format!("tool:{}", tool.name()));
                 caps.is_granted(&required)
             });
             tracing::debug!("Filtered {} tools to {}", before_count, tools.len());
@@ -436,7 +436,7 @@ impl Agent {
             session_manager,
             llm_resolver,
             None,
-            crate::principal::PrincipalId::generate(),
+            crate::subject::PrincipalId::generate(),
             None,
         )
         .await
@@ -467,7 +467,7 @@ impl Agent {
         // hint — let the resolver pick the catalog default" (test
         // fixtures, non-principal callers).
         provider_hint: Option<(Option<String>, Option<String>)>,
-        principal_id: crate::principal::PrincipalId,
+        principal_id: crate::subject::PrincipalId,
         inbox_registry: Option<Arc<InboxRegistry>>,
     ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
@@ -627,7 +627,7 @@ impl Agent {
     #[must_use]
     pub fn with_principal_capabilities(
         mut self,
-        capabilities: Option<Arc<crate::principal::Capabilities>>,
+        capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
     ) -> Self {
         let executor = (*self.subagent_executor)
             .clone()
@@ -645,7 +645,7 @@ impl Agent {
     #[must_use]
     pub fn with_active_extensions(
         mut self,
-        active_extensions: Option<crate::principal::ActiveExtensionSet>,
+        active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     ) -> Self {
         let executor = (*self.subagent_executor)
             .clone()
@@ -697,8 +697,8 @@ impl Agent {
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<crate::providers::Provider>>,
-        principal_capabilities: Option<Arc<crate::principal::Capabilities>>,
-        principal_active_extensions: Option<crate::principal::ActiveExtensionSet>,
+        principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
+        principal_active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
         let extension_core = global_core().expect("Global ExtensionCore not initialized");
@@ -1308,7 +1308,7 @@ impl Agent {
     /// Threaded through tool execution so extension-scoped tools can
     /// resolve per-principal state at handle time.
     #[must_use]
-    pub fn principal_id(&self) -> &crate::principal::PrincipalId {
+    pub fn principal_id(&self) -> &crate::subject::PrincipalId {
         &self.principal_id
     }
 
@@ -1328,7 +1328,7 @@ impl Agent {
     /// `None` means the agent is unbound and no capability-based
     /// filtering is applied.
     #[must_use]
-    pub fn principal_capabilities(&self) -> Option<&Arc<crate::principal::Capabilities>> {
+    pub fn principal_capabilities(&self) -> Option<&Arc<crate::extensions::framework::types::Capabilities>> {
         self.principal_capabilities.as_ref()
     }
 
@@ -1337,7 +1337,7 @@ impl Agent {
     /// The engine consults this set at tool execution time to verify
     /// that the tool's owning extension is active.
     #[must_use]
-    pub fn principal_active_extensions(&self) -> Option<&crate::principal::ActiveExtensionSet> {
+    pub fn principal_active_extensions(&self) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
         self.principal_active_extensions.as_ref()
     }
 
@@ -1621,7 +1621,7 @@ impl Agent {
             Arc::clone(&session_manager),
             config.name.clone(),
             5,
-            crate::principal::PrincipalId::generate(),
+            crate::subject::PrincipalId::generate(),
         );
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
@@ -1646,7 +1646,7 @@ impl Agent {
             inbox_registry: None,
             principal_workspace: None,
             caller_principal_did: None,
-            principal_id: crate::principal::PrincipalId::generate(),
+            principal_id: crate::subject::PrincipalId::generate(),
             principal_name: None,
             principal_capabilities: None,
             principal_active_extensions: None,

@@ -24,10 +24,10 @@ pub mod kill;
 pub mod spawn;
 
 pub use config::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
-pub use health::{wait_for_healthy, HealthCheckFn, HealthCheckLoop};
+pub use health::wait_for_healthy;
 pub use job_object::JobObject;
 pub use kill::{
     force_kill_child, graceful_shutdown, is_process_running, kill_all_by_name, kill_by_pid,
     wait_for_exit,
 };
-pub use spawn::{resolve_command, spawn_process, ResolvedCommand};
+pub use spawn::spawn_process;

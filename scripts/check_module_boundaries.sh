@@ -13,6 +13,12 @@
 # 5. src/extensions/framework/ must NOT import from src/agents/, src/tunnel/, or
 #    src/daemon/.
 # 6. src/extensions/framework/ must NOT import from src/principal/.
+# 7. src/agents/ must NOT import from src/principal/ (breaks the principal<->agents
+#    cycle; actor ids from subject/, capability types from extensions::framework::types).
+# 8. src/principal/ must NOT import from src/tunnel/ (principal owns its
+#    exposure/status/transport enums; tunnel converts at the edge via From).
+# 9. src/tunnel/ must NOT import from src/daemon/ in production code (the
+#    dispatcher reaches the daemon through the TunnelHost port).
 
 set -e
 
@@ -257,6 +263,97 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
+# Rule 7: src/agents/ must NOT import from src/principal/ (breaks the
+#         principal <-> agents cycle; principal may depend on agents, never the
+#         reverse). Actor ids come from subject/, capability types from
+#         extensions::framework::types. Doc-comment links are excluded.
+# -----------------------------------------------------------------------------
+echo "Rule 7: src/agents/ must NOT import from src/principal/"
+echo ""
+
+VIOLATIONS_7A=$(grep -rE "crate::principal" src/agents/ --include="*.rs" 2>/dev/null \
+    | grep -vE ':[[:space:]]*//' \
+    || true)
+
+if [ -n "$VIOLATIONS_7A" ]; then
+    echo "  ❌ FAIL: src/agents/ imports from principal (cycle)"
+    echo ""
+    echo "$VIOLATIONS_7A" | while read -r line; do
+        echo "     $line"
+    done
+    echo ""
+    EXIT_CODE=1
+else
+    echo "  ✓ PASS: No agents -> principal imports"
+fi
+echo ""
+
+# -----------------------------------------------------------------------------
+# Rule 8: src/principal/ must NOT import from src/tunnel/. The principal owns
+#         its own exposure/status/transport enums; the tunnel converts to its
+#         wire types at the edge via `From`. Doc-comment links are excluded.
+# -----------------------------------------------------------------------------
+echo "Rule 8: src/principal/ must NOT import from src/tunnel/"
+echo ""
+
+VIOLATIONS_8A=$(grep -rE "crate::tunnel" src/principal/ --include="*.rs" 2>/dev/null \
+    | grep -vE ':[[:space:]]*//' \
+    || true)
+
+if [ -n "$VIOLATIONS_8A" ]; then
+    echo "  ❌ FAIL: src/principal/ imports from tunnel"
+    echo ""
+    echo "$VIOLATIONS_8A" | while read -r line; do
+        echo "     $line"
+    done
+    echo ""
+    EXIT_CODE=1
+else
+    echo "  ✓ PASS: No principal -> tunnel imports"
+fi
+echo ""
+
+# -----------------------------------------------------------------------------
+# Rule 9: src/tunnel/ must NOT import from src/daemon/ in production code. The
+#         dispatcher reaches daemon services through the `TunnelHost` port;
+#         AppState is the only implementor. Test modules (which construct an
+#         AppState fixture) are stripped before checking; doc-comment mentions
+#         are ignored.
+# -----------------------------------------------------------------------------
+echo "Rule 9: src/tunnel/ must NOT import from src/daemon/ (production code)"
+echo ""
+
+RULE9_FAILED=0
+VIOLATIONS_9=""
+
+for f in $(find src/tunnel -name '*.rs'); do
+    hits=$(awk '
+        /^[[:space:]]*#\[cfg\(test\)\]/ { keep=0 }
+        /^[[:space:]]*mod tests \{/     { keep=0 }
+        keep { print }
+    ' "$f" | grep -nE "crate::daemon" | grep -vE '^[0-9]+:[[:space:]]*//' | sed "s|^|$f:|" || true)
+    if [ -n "$hits" ]; then
+        RULE9_FAILED=1
+        VIOLATIONS_9="${VIOLATIONS_9}${hits}
+"
+    fi
+done
+
+if [ "$RULE9_FAILED" -ne 0 ]; then
+    echo "  ❌ FAIL: src/tunnel/ imports from daemon in production code (use TunnelHost)"
+    echo ""
+    echo "$VIOLATIONS_9" | while read -r line; do
+        [ -z "$line" ] && continue
+        echo "     $line"
+    done
+    echo ""
+    EXIT_CODE=1
+else
+    echo "  ✓ PASS: No tunnel -> daemon imports"
+fi
+echo ""
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 echo "=========================================="
@@ -279,6 +376,9 @@ else
     echo "  - Commands should delegate persistence/packaging work to services"
     echo "  - src/extensions/framework/ must not depend on agents/, tunnel/, or daemon/"
     echo "  - src/extensions/framework/ must not depend on principal/"
+    echo "  - src/agents/ must not depend on principal/ (use subject/ + extensions::framework::types)"
+    echo "  - src/principal/ must not depend on tunnel/ (edge converts via From)"
+    echo "  - src/tunnel/ must not depend on daemon/ in production code (use the TunnelHost port)"
 fi
 
 exit $EXIT_CODE

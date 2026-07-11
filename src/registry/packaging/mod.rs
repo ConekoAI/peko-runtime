@@ -55,4 +55,4 @@ pub use principal_unpackager::{
 };
 pub use trust_store::{TrustPolicy, TrustStatus, TrustStore};
 pub use types::{compute_digest, ExtensionRef, ImageDigest, Layer, LayerDigest, LayerType};
-pub use validation::{validate_package, ValidationResult};
+pub use validation::ValidationResult;

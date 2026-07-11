@@ -632,7 +632,7 @@ mod tests {
     use crate::providers::mock::MockAdapter;
     use crate::providers::resolver::LlmResolver;
     use crate::subject::Subject;
-    use crate::tunnel::protocol::InstanceExposure;
+    use crate::principal::config::Exposure;
     use chrono::{Duration, Utc};
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -713,7 +713,7 @@ mod tests {
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
             capabilities: Capabilities::default(),
-            exposure: InstanceExposure::Private,
+            exposure: Exposure::Private,
             status: None,
             permissions: vec![PermissionGrant {
                 subject: Subject::Public,

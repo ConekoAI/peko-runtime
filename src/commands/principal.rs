@@ -1042,7 +1042,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
         capabilities: starter_extensions(),
-        exposure: crate::tunnel::protocol::InstanceExposure::Private,
+        exposure: crate::principal::config::Exposure::Private,
         status: None,
         permissions: Vec::new(),
         // Principals inherit the global provider default unless the user
@@ -1077,7 +1077,7 @@ struct CliPrincipalMemoryFactory {
 impl PrincipalMemoryFactory for CliPrincipalMemoryFactory {
     async fn create(
         &self,
-        _principal_id: &crate::principal::PrincipalId,
+        _principal_id: &crate::subject::PrincipalId,
         workspace_path: &Path,
     ) -> Arc<dyn crate::principal::PrincipalMemory> {
         let name = workspace_path
