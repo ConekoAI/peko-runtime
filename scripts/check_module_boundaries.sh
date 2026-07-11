@@ -17,6 +17,8 @@
 #    cycle; actor ids from subject/, capability types from extensions::framework::types).
 # 8. src/principal/ must NOT import from src/tunnel/ (principal owns its
 #    exposure/status/transport enums; tunnel converts at the edge via From).
+# 9. src/tunnel/ must NOT import from src/daemon/ in production code (the
+#    dispatcher reaches the daemon through the TunnelHost port).
 
 set -e
 
@@ -312,6 +314,46 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
+# Rule 9: src/tunnel/ must NOT import from src/daemon/ in production code. The
+#         dispatcher reaches daemon services through the `TunnelHost` port;
+#         AppState is the only implementor. Test modules (which construct an
+#         AppState fixture) are stripped before checking; doc-comment mentions
+#         are ignored.
+# -----------------------------------------------------------------------------
+echo "Rule 9: src/tunnel/ must NOT import from src/daemon/ (production code)"
+echo ""
+
+RULE9_FAILED=0
+VIOLATIONS_9=""
+
+for f in $(find src/tunnel -name '*.rs'); do
+    hits=$(awk '
+        /^[[:space:]]*#\[cfg\(test\)\]/ { keep=0 }
+        /^[[:space:]]*mod tests \{/     { keep=0 }
+        keep { print }
+    ' "$f" | grep -nE "crate::daemon" | grep -vE '^[0-9]+:[[:space:]]*//' | sed "s|^|$f:|" || true)
+    if [ -n "$hits" ]; then
+        RULE9_FAILED=1
+        VIOLATIONS_9="${VIOLATIONS_9}${hits}
+"
+    fi
+done
+
+if [ "$RULE9_FAILED" -ne 0 ]; then
+    echo "  ❌ FAIL: src/tunnel/ imports from daemon in production code (use TunnelHost)"
+    echo ""
+    echo "$VIOLATIONS_9" | while read -r line; do
+        [ -z "$line" ] && continue
+        echo "     $line"
+    done
+    echo ""
+    EXIT_CODE=1
+else
+    echo "  ✓ PASS: No tunnel -> daemon imports"
+fi
+echo ""
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 echo "=========================================="
@@ -336,6 +378,7 @@ else
     echo "  - src/extensions/framework/ must not depend on principal/"
     echo "  - src/agents/ must not depend on principal/ (use subject/ + extensions::framework::types)"
     echo "  - src/principal/ must not depend on tunnel/ (edge converts via From)"
+    echo "  - src/tunnel/ must not depend on daemon/ in production code (use the TunnelHost port)"
 fi
 
 exit $EXIT_CODE

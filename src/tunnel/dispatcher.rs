@@ -22,9 +22,9 @@ const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d
 const MAX_CONCURRENT_DISPATCHES: usize = 64;
 
 use crate::auth::Subject;
-use crate::daemon::state::AppState;
 
 use super::a2a_audit;
+use super::host::TunnelHost;
 use super::protocol::{
     ExposureUpdatePayload, InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload,
     InstanceStatus, InstanceType, StatusUpdatePayload, TunnelMessage,
@@ -194,7 +194,7 @@ pub struct TunnelDispatcherState {
 /// intentional because the dispatcher is moved into spawned tasks.
 #[derive(Clone)]
 pub struct TunnelDispatcher {
-    app_state: AppState,
+    host: Arc<dyn TunnelHost>,
     state: Arc<RwLock<TunnelDispatcherState>>,
     runtime_display_name: String,
     /// Slot the dispatcher writes the live tunnel handle to on
@@ -213,21 +213,22 @@ pub struct TunnelDispatcher {
 }
 
 impl TunnelDispatcher {
-    /// Create a new tunnel dispatcher bound to the daemon's AppState
-    pub fn new(app_state: AppState) -> Self {
+    /// Create a new tunnel dispatcher bound to the given host (the daemon's
+    /// `AppState`, behind the `TunnelHost` seam — F5).
+    pub fn new(host: Arc<dyn TunnelHost>) -> Self {
         // Pull the tunnel handle slot FIRST (clones the `Arc`,
         // not the handle) so the field move into the struct
-        // below is the final use of `app_state`.
-        let tunnel_handle_slot = app_state.tunnel_handle_slot();
-        let runtime_display_name = app_state.runtime_metadata().display_name.clone();
+        // below is the final use of the host for that value.
+        let tunnel_handle_slot = host.tunnel_handle_slot();
+        let runtime_display_name = host.runtime_display_name();
         Self {
-            app_state,
+            host,
             state: Arc::new(RwLock::new(TunnelDispatcherState::default())),
             runtime_display_name,
-            // Mirror the AppState's slot so the dispatcher publishes
+            // Mirror the host's slot so the dispatcher publishes
             // and the ctx reads from the SAME `Arc<RwLock<...>>`. The
-            // getter on AppState (`tunnel_handle_slot`) returns the
-            // exact `Arc`; cloning it here is a no-op refcount bump.
+            // getter (`tunnel_handle_slot`) returns the exact `Arc`;
+            // cloning it here is a no-op refcount bump.
             tunnel_handle_slot,
             inbound_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES)),
         }
@@ -302,7 +303,7 @@ impl TunnelDispatcher {
     fn instance_id(&self, agent_name: &str) -> String {
         let name = format!(
             "{}:{}",
-            self.app_state.runtime_identity().runtime_did,
+            self.host.runtime_did(),
             agent_name
         );
         uuid::Uuid::new_v5(&INSTANCE_ID_NAMESPACE, name.as_bytes()).to_string()
@@ -357,7 +358,7 @@ impl TunnelDispatcher {
 
     /// Send initial instance announcements for all local Principals.
     pub async fn announce_instances(&self, handle: &TunnelHandle) -> anyhow::Result<()> {
-        let principal_manager = self.app_state.principal_manager();
+        let principal_manager = self.host.principal_manager();
         let principals = principal_manager.list_all().await;
 
         for principal in principals {
@@ -386,13 +387,7 @@ impl TunnelDispatcher {
                 capabilities: None,
                 metadata: None,
                 transport_preference: Some(transport_preference),
-                runtime_direct_endpoint: self
-                    .app_state
-                    .peko_config
-                    .network
-                    .direct
-                    .advertise_endpoint
-                    .clone(),
+                runtime_direct_endpoint: self.host.runtime_direct_endpoint(),
             };
 
             // Seed local instance state cache with default Online status and the
@@ -436,7 +431,7 @@ impl TunnelDispatcher {
             }
         };
 
-        let principal_manager = self.app_state.principal_manager();
+        let principal_manager = self.host.principal_manager();
         let principal = match principal_manager.get_by_name(principal_name).await {
             Some(p) => p,
             None => {
@@ -473,13 +468,7 @@ impl TunnelDispatcher {
             capabilities: None,
             metadata: None,
             transport_preference: Some(transport_preference),
-            runtime_direct_endpoint: self
-                .app_state
-                .peko_config
-                .network
-                .direct
-                .advertise_endpoint
-                .clone(),
+            runtime_direct_endpoint: self.host.runtime_direct_endpoint(),
         };
 
         // Seed local instance state cache
@@ -521,7 +510,7 @@ impl TunnelDispatcher {
     }
 
     async fn send_heartbeats(&self, handle: &TunnelHandle) -> anyhow::Result<()> {
-        let principal_manager = self.app_state.principal_manager();
+        let principal_manager = self.host.principal_manager();
         let principals = principal_manager.list_all().await;
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -667,7 +656,7 @@ impl TunnelDispatcher {
 
         // Resolve the calling user from the PekoHub-proxied headers/JWT.
         let caller_user =
-            match resolve_bridge_caller(&bridge_payload, self.app_state.jwt_validator().as_ref())
+            match resolve_bridge_caller(&bridge_payload, self.host.jwt_validator().as_ref())
                 .await
             {
                 Ok(caller) => caller,
@@ -689,7 +678,7 @@ impl TunnelDispatcher {
         // issue). The principal name is the runtime's view of the
         // same identifier — pass it through; downstream audit
         // consumers can re-key on the `caller` Subject kind.
-        self.app_state
+        self.host
             .observability()
             .audit_with_caller(
                 Some(&caller_principal),
@@ -703,7 +692,7 @@ impl TunnelDispatcher {
             .await
             .ok();
 
-        let principal_manager = self.app_state.principal_manager();
+        let principal_manager = self.host.principal_manager();
         let principal = match principal_manager.get_by_name(&principal_name).await {
             Some(p) => p,
             None => {
@@ -983,7 +972,7 @@ impl TunnelDispatcher {
     ) -> anyhow::Result<()> {
         let instance_id = self.instance_id(principal_name);
         let allowed_principals = if exposure == InstanceExposure::Private {
-            let principal_manager = self.app_state.principal_manager();
+            let principal_manager = self.host.principal_manager();
             match principal_manager.get_by_name(principal_name).await {
                 Some(principal) => {
                     let config = principal.config.read().await;
@@ -1058,7 +1047,7 @@ impl TunnelDispatcher {
         drop(state);
 
         // Re-announce the Principal instance to confirm the change.
-        let principal_manager = self.app_state.principal_manager();
+        let principal_manager = self.host.principal_manager();
         let principals = principal_manager.list_all().await;
 
         let handle = {
@@ -1088,13 +1077,7 @@ impl TunnelDispatcher {
                         capabilities: None,
                         metadata: None,
                         transport_preference: Some(transport_preference),
-                        runtime_direct_endpoint: self
-                            .app_state
-                            .peko_config
-                            .network
-                            .direct
-                            .advertise_endpoint
-                            .clone(),
+                        runtime_direct_endpoint: self.host.runtime_direct_endpoint(),
                     };
                     if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce {
                         payload: announce_payload,
@@ -1220,7 +1203,7 @@ impl TunnelDispatcher {
 
         // 3. Look up the local Principal by target_principal_did (which is the
         // Principal's stable DID in the new single-actor model).
-        let principal_manager = self.app_state.principal_manager();
+        let principal_manager = self.host.principal_manager();
         let local_principal = match principal_manager.find_by_did(&target_principal_did).await {
             Some(p) => p,
             None => {
@@ -1239,7 +1222,7 @@ impl TunnelDispatcher {
 
         // Slice D: emit the inbound-receive audit event now that
         // the request has been verified and the Principal has been located.
-        let local_runtime_id = self.app_state.runtime_identity().runtime_did.clone();
+        let local_runtime_id = self.host.runtime_did();
         let received_event = a2a_audit::build_a2a_received_inbound(
             "", // session_id
             &request_id,
@@ -1346,7 +1329,7 @@ impl TunnelDispatcher {
         request_id: String,
         payload: Vec<u8>,
     ) -> anyhow::Result<()> {
-        let pending = self.app_state.pending_a2a_responses();
+        let pending = self.host.pending_a2a_responses();
         let delivered = pending.complete(&request_id, payload);
         if !delivered {
             // The caller already timed out, the request was
@@ -1835,7 +1818,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_message_stores_tunnel_handle_synchronously() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, _rx) = mock_tunnel_handle();
 
         // Before handle_message, tunnel_handle should be None
@@ -1858,7 +1841,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_instance_status_sends_status_update() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, mut rx) = mock_tunnel_handle();
 
         // Seed the tunnel handle
@@ -1887,7 +1870,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_instance_exposure_sends_exposure_update() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, mut rx) = mock_tunnel_handle();
 
         // Seed the tunnel handle
@@ -1915,7 +1898,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_instance_status_returns_default_online_for_unknown() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         let status = dispatcher.get_instance_status("unknown-agent").await;
         assert_eq!(status, InstanceStatus::Online);
@@ -1924,7 +1907,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_exposure_update_updates_local_state() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, _rx) = mock_tunnel_handle();
 
         // Seed the tunnel handle so re-announce can proceed (it will fail
@@ -1959,7 +1942,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_instance_status_updates_local_state() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, _rx) = mock_tunnel_handle();
 
         {
@@ -1979,7 +1962,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_instance_exposure_updates_local_state() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, _rx) = mock_tunnel_handle();
 
         {
@@ -2001,7 +1984,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_request_allowed_public_allows_any_request() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         let instance_id = dispatcher.instance_id("public-agent");
         {
@@ -2026,7 +2009,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_request_allowed_unexposed_denies_any_request() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         let instance_id = dispatcher.instance_id("unexposed-agent");
         {
@@ -2053,7 +2036,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_request_allowed_private_allows_allowed_user() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         let instance_id = dispatcher.instance_id("private-agent");
         {
@@ -2078,7 +2061,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_request_allowed_private_without_user_id_denies() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         let instance_id = dispatcher.instance_id("private-agent");
         {
@@ -2105,7 +2088,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_request_allowed_private_with_non_allowed_user_id_denies() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         let instance_id = dispatcher.instance_id("private-agent");
         {
@@ -2132,7 +2115,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_request_allowed_missing_state_denies() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
         let result = dispatcher
@@ -2152,7 +2135,7 @@ mod tests {
     #[tokio::test]
     async fn test_inbound_agent_to_agent_request_rejects_malformed_caller_did() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, mut rx) = mock_tunnel_handle();
 
         dispatcher
@@ -2197,7 +2180,7 @@ mod tests {
     #[tokio::test]
     async fn test_inbound_agent_to_agent_request_rejects_bad_signature() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, mut rx) = mock_tunnel_handle();
 
         // Use a known-good did:key (from a generated keypair) but
@@ -2251,8 +2234,8 @@ mod tests {
     #[tokio::test]
     async fn test_inbound_agent_to_agent_response_completes_pending() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
-        let pending = dispatcher.app_state.pending_a2a_responses();
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
+        let pending = app_state.pending_a2a_responses();
 
         // Register a waiter for a known request_id, then send
         // the matching response through the dispatcher.
@@ -2276,7 +2259,7 @@ mod tests {
     #[tokio::test]
     async fn test_inbound_agent_to_agent_response_unknown_request_id_is_noop() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state);
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         dispatcher
             .handle_inbound_agent_to_agent_response(
                 "unknown-request-id".to_string(),
@@ -2300,7 +2283,7 @@ mod tests {
             assert!(g.is_none(), "slot must start empty");
         }
 
-        let dispatcher = TunnelDispatcher::new(app_state.clone());
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
         let (handle, _rx) = mock_tunnel_handle();
         dispatcher
             .handle_message(TunnelMessage::Heartbeat { seq: 1 }, handle)
@@ -2322,7 +2305,7 @@ mod tests {
     #[tokio::test]
     async fn announce_principal_instance() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state.clone());
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
         let (handle, mut rx) = mock_tunnel_handle();
 
         let principal = create_test_principal(
@@ -2360,7 +2343,7 @@ mod tests {
     #[tokio::test]
     async fn proxied_request_routes_to_principal() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state.clone());
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
         let (handle, mut rx) = mock_tunnel_handle();
 
         create_test_principal(
@@ -2412,7 +2395,7 @@ mod tests {
     #[tokio::test]
     async fn inbound_a2a_routes_to_principal_by_did() {
         let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(app_state.clone());
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
         let (handle, mut rx) = mock_tunnel_handle();
 
         let kp_caller = crate::identity::keys::KeyPair::generate();

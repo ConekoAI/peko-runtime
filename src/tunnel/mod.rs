@@ -14,6 +14,7 @@ pub mod cross_runtime;
 pub mod did_key;
 pub mod direct;
 pub mod dispatcher;
+pub mod host;
 pub mod hub_directory;
 pub mod known_runtimes;
 pub mod local_directory;
@@ -31,6 +32,7 @@ pub use credential::{load_pekohub_credential, PekoHubCredential};
 pub use cross_runtime::CrossRuntimeA2aCtx;
 pub use did_key::{did_key_to_verifying_key, verifying_key_to_did_key};
 pub use dispatcher::TunnelDispatcher;
+pub use host::TunnelHost;
 pub use hub_directory::{
     AgentDirectory, AgentResolution, DirectoryError, HubAgentDirectoryClient, ResolvedExposure,
 };

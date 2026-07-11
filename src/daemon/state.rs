@@ -1162,7 +1162,7 @@ impl AppState {
             *tc = Some(cancel.clone());
         }
 
-        let dispatcher = TunnelDispatcher::new(self.clone());
+        let dispatcher = TunnelDispatcher::new(Arc::new(self.clone()));
 
         // If direct cross-runtime connections are enabled, start the
         // inbound direct server now. It shares the same dispatcher
@@ -2010,5 +2010,42 @@ mod tests {
         assert!(!state.is_degraded().await);
         assert_eq!(state.tunnel_attempts().await, 0);
         assert_eq!(state.tunnel_last_error().await, None);
+    }
+}
+
+// F5: AppState is the only type that knows both `daemon` and `tunnel`, so it
+// implements the tunnel's narrow host port here. The dispatcher holds an
+// `Arc<dyn TunnelHost>` and never names `AppState` (boundary rule 9).
+impl crate::tunnel::TunnelHost for AppState {
+    fn principal_manager(&self) -> Arc<PrincipalManager> {
+        Arc::clone(&self.principal_manager)
+    }
+
+    fn runtime_did(&self) -> String {
+        self.runtime_identity.runtime_did.clone()
+    }
+
+    fn runtime_display_name(&self) -> String {
+        self.runtime_metadata.display_name.clone()
+    }
+
+    fn runtime_direct_endpoint(&self) -> Option<String> {
+        self.peko_config.network.direct.advertise_endpoint.clone()
+    }
+
+    fn jwt_validator(&self) -> Option<crate::auth::jwt::JwtValidator> {
+        self.jwt_validator.clone()
+    }
+
+    fn pending_a2a_responses(&self) -> Arc<crate::tunnel::PendingA2aResponses> {
+        self.pending_a2a_responses.clone()
+    }
+
+    fn observability(&self) -> Arc<Observability> {
+        self.observability.clone()
+    }
+
+    fn tunnel_handle_slot(&self) -> Arc<RwLock<Option<crate::tunnel::TunnelHandle>>> {
+        self.tunnel_handle_slot.clone()
     }
 }
