@@ -40,6 +40,7 @@ use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::auth::AuthHandler;
 use crate::ipc::handlers::system::SystemHandler;
+use crate::ipc::handlers::tool::ToolHandler;
 use crate::ipc::handlers::RequestHandler;
 #[cfg(not(windows))]
 use crate::auth::config::enforce_auth_for_public_bind;
@@ -830,6 +831,7 @@ impl IpcServer {
         let domain_handlers: Vec<Arc<dyn RequestHandler>> = vec![
             Arc::new(SystemHandler::new(Arc::new(state.clone()))),
             Arc::new(AuthHandler::new(Arc::new(state.clone()))),
+            Arc::new(ToolHandler::new(Arc::new(state.clone()))),
         ];
         for handler in &domain_handlers {
             if handler.matches(&request) {
@@ -852,32 +854,11 @@ impl IpcServer {
             // and `PrincipalSendStream` (streaming) below — both go
             // through `PrincipalManager::receive` and produce
             // principal-scoped sessions and audit trails.
-            RequestPacket::AsyncSpawn {
-                request_id,
-                tool_name,
-                params,
-                session_key,
-                workspace,
-            } => {
-                Self::handle_async_spawn(
-                    request_id,
-                    tool_name,
-                    params,
-                    session_key,
-                    workspace,
-                    state,
-                    sink,
-                    peer,
-                )
-                .await?;
-            }
-
-            RequestPacket::AsyncCancel {
-                request_id,
-                task_id,
-            } => {
-                Self::handle_async_cancel(request_id, task_id, state, sink, peer).await?;
-            }
+            //
+            // `AsyncSpawn` / `AsyncCancel` (tool execution) are owned
+            // by `ipc::handlers::tool::ToolHandler` (F6 step 3 + F8
+            // grant threading) — dispatched in the `domain_handlers`
+            // loop above.
 
             RequestPacket::PrincipalSendControl {
                 request_id,
@@ -2610,70 +2591,11 @@ impl IpcServer {
         Ok(())
     }
 
-    /// Handle an AsyncSpawn request
-    async fn handle_async_spawn(
-        request_id: u64,
-        tool_name: String,
-        params: serde_json::Value,
-        session_key: String,
-        workspace: std::path::PathBuf,
-        state: AppState,
-        sink: &dyn ResponseSink,
-        _peer: &PeerAddr,
-    ) -> anyhow::Result<()> {
-        use crate::extensions::framework::async_exec::executor::{AsyncTaskId, AsyncToolConfig};
-
-        let tool_runtime = state.tool_runtime.clone();
-        let executor = state.async_task_executor.clone();
-
-        let config = AsyncToolConfig::default();
-        let task_id = AsyncTaskId::new();
-
-        let receipt = executor
-            .execute(
-                task_id,
-                tool_name.clone(),
-                params.clone(),
-                session_key,
-                config,
-                move || {
-                    let runtime = tool_runtime.clone();
-                    let ws = workspace.clone();
-                    let name = tool_name.clone();
-                    let p = params.clone();
-                    Box::pin(async move {
-                        // Intentionally fail-closed: `capabilities` and
-                        // `active_extensions` are `None`, so any capability-gated
-                        // tool spawned via this IPC path is denied. This matches
-                        // the system-wide invariant (`agents::agent`,
-                        // `framework::core::tool_registry`, `engine::agentic_loop`
-                        // all treat `None`/empty grants as deny-all) and is pinned
-                        // by the `*_fail_closed_without_principal_id` gate tests.
-                        //
-                        // To honor a caller's real grants here, resolve the
-                        // session's owning principal server-side (sessions are
-                        // principal-scoped per ADR-042) via `state.principal_manager()`
-                        // and pass that principal's `config.capabilities` + active
-                        // extensions — never accept grants from the IPC packet (that
-                        // would be privilege escalation). The authenticated `caller`
-                        // is already resolved in `handle_request`; thread it into
-                        // this handler when that mapping is designed.
-                        runtime
-                            .execute_tool_with_workspace(&name, p, &ws, None, None)
-                            .await
-                    })
-                },
-            )
-            .await?;
-
-        let response = ResponsePacket::AsyncReceipt {
-            request_id,
-            receipt,
-        };
-        send_response(sink, response).await?;
-
-        Ok(())
-    }
+    // (handle_async_spawn / handle_async_cancel retired to
+    // `ipc::handlers::tool::ToolHandler` under F6 step 3. The async
+    // tool execution path now lives behind a narrow `ToolHost` port
+    // and resolves capability grants server-side from the session's
+    // owning Principal — see F8 / ADR-042.)
 
     // (handle_session_steer / handle_session_steer_list /
     // handle_session_steer_cancel retired under ADR-042 along with
@@ -2683,31 +2605,6 @@ impl IpcServer {
     // there is no longer any IPC entrypoint that pushes a steering
     // message onto a peer-keyed session from outside the daemon.
     // See ADR-042.)
-
-    /// Handle an AsyncCancel request
-    async fn handle_async_cancel(
-        request_id: u64,
-        task_id: String,
-        state: AppState,
-        sink: &dyn ResponseSink,
-        _peer: &PeerAddr,
-    ) -> anyhow::Result<()> {
-        let executor = state.async_task_executor.clone();
-        let cancelled = executor.cancel(&task_id).await.unwrap_or(false);
-
-        let response = ResponsePacket::Done {
-            request_id,
-            success: cancelled,
-            error: if cancelled {
-                None
-            } else {
-                Some(format!("Task {} not found or already completed", task_id))
-            },
-        };
-        send_response(sink, response).await?;
-
-        Ok(())
-    }
 
     /// Handle a `PrincipalSendControl` request: soft-interrupt or
     /// steer a running `PrincipalSendStream` identified by

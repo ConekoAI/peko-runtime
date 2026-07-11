@@ -20,6 +20,7 @@ use crate::ipc::server::PeerAddr;
 
 pub(crate) mod auth;
 pub(crate) mod system;
+pub(crate) mod tool;
 
 /// A per-domain IPC request handler.
 ///
