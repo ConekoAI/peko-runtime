@@ -80,17 +80,6 @@ impl CronEngine {
         }
     }
 
-    /// Attach the PrincipalManager used to execute jobs.
-    pub fn set_principal_manager(&mut self, pm: Arc<PrincipalManager>) {
-        self.principal_manager = Some(pm);
-    }
-
-    /// Borrow the cron engine's `AsyncExecutor`.
-    #[must_use]
-    pub fn async_executor(&self) -> &Arc<AsyncExecutor> {
-        &self.async_executor
-    }
-
     /// Snapshot of current cron status.
     pub async fn status(&self) -> CronStatus {
         self.status.lock().await.clone()
