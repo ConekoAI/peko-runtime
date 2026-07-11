@@ -26,7 +26,7 @@ use tracing::{debug, error, info, warn};
 
 /// Daemon configuration
 #[derive(Debug, Clone)]
-pub struct DaemonConfig {
+pub(crate) struct DaemonConfig {
     /// Database path for cron jobs
     pub cron_db_path: PathBuf,
     /// Polling interval for checking due jobs
@@ -62,7 +62,7 @@ impl Default for DaemonConfig {
 
 /// Daemon status
 #[derive(Debug, Clone)]
-pub struct DaemonStatus {
+pub(crate) struct DaemonStatus {
     pub running: bool,
     pub jobs_checked: u64,
     pub jobs_executed: u64,
@@ -70,7 +70,7 @@ pub struct DaemonStatus {
 }
 
 /// The peko daemon
-pub struct Daemon {
+pub(crate) struct Daemon {
     config: DaemonConfig,
     status: Arc<Mutex<DaemonStatus>>,
     event_rx: Option<mpsc::Receiver<SystemEvent>>,

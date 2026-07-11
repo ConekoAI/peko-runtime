@@ -251,7 +251,7 @@ pub(crate) struct AppState {
 /// mode). See `src/ipc/server.rs` for the streaming handler and the
 /// `PrincipalSendControl` IPC handler.
 #[allow(dead_code)] // field-by-field — see DirectHealth note. Kept as public-ish surface for tests.
-pub struct StreamingRunHandle {
+pub(crate) struct StreamingRunHandle {
     /// Principal name — diagnostic only, included in control responses.
     pub principal_name: String,
     /// Peer subject — needed to derive `session_id` for steer pushes.
@@ -1594,7 +1594,8 @@ impl AppState {
 /// High-level snapshot of PekoHub tunnel health, surfaced via
 /// `peko daemon status --json` (issue #8).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TunnelHealth {
+#[allow(dead_code)] // tunnel state surface — used by IPC handler serialisation, not reachable from cargo build's dead-code graph
+pub(crate) enum TunnelHealth {
     /// No PekoHub credentials on disk; tunnel is intentionally off.
     Disabled,
     /// WebSocket tunnel is established and authenticated.
@@ -1648,7 +1649,7 @@ impl TunnelHealth {
 // for tests and the inline e2e harness; cargo build's dead-code pass
 // doesn't see those callers after the F9 narrowing to `pub(crate)`.
 #[allow(dead_code)]
-pub enum DirectHealth {
+pub(crate) enum DirectHealth {
     /// Direct inbound connections are disabled in configuration.
     Disabled,
     /// Server is starting but has not bound a port yet.
