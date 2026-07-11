@@ -20,6 +20,7 @@ use crate::ipc::server::PeerAddr;
 
 pub(crate) mod auth;
 pub(crate) mod capability;
+pub(crate) mod ext_runtime;
 pub(crate) mod instance;
 pub(crate) mod system;
 pub(crate) mod tool;

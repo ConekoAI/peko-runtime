@@ -40,6 +40,7 @@ use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::auth::AuthHandler;
 use crate::ipc::handlers::capability::CapabilityHandler;
+use crate::ipc::handlers::ext_runtime::ExtRuntimeHandler;
 use crate::ipc::handlers::instance::InstanceHandler;
 use crate::ipc::handlers::system::SystemHandler;
 use crate::ipc::handlers::tool::ToolHandler;
@@ -838,6 +839,7 @@ impl IpcServer {
             Arc::new(TunnelHandler::new(Arc::new(state.clone()))),
             Arc::new(CapabilityHandler::new(Arc::new(state.clone()))),
             Arc::new(InstanceHandler::new(Arc::new(state.clone()))),
+            Arc::new(ExtRuntimeHandler::new(Arc::new(state.clone()))),
         ];
         for handler in &domain_handlers {
             if handler.matches(&request) {
@@ -1074,33 +1076,9 @@ impl IpcServer {
             }
 
             // ─── Extension Runtime Lifecycle (ADR-026) ───────────────────────
-            RequestPacket::ExtStart {
-                request_id,
-                extension_id,
-            } => {
-                Self::handle_ext_start(request_id, extension_id, state, sink, peer).await?;
-            }
-
-            RequestPacket::ExtStop {
-                request_id,
-                extension_id,
-            } => {
-                Self::handle_ext_stop(request_id, extension_id, state, sink, peer).await?;
-            }
-
-            RequestPacket::ExtRestart {
-                request_id,
-                extension_id,
-            } => {
-                Self::handle_ext_restart(request_id, extension_id, state, sink, peer).await?;
-            }
-
-            RequestPacket::ExtStatus {
-                request_id,
-                extension_id,
-            } => {
-                Self::handle_ext_status(request_id, extension_id, state, sink, peer).await?;
-            }
+            // `ExtStart` / `ExtStop` / `ExtRestart` / `ExtStatus` are owned by
+            // `ipc::handlers::ext_runtime::ExtRuntimeHandler` (F6.11) —
+            // dispatched in the `domain_handlers` loop above.
 
             // ─── Principal CRUD (post-migration actor surface) ────────────
             // The principal-as-single-actor migration (audit C1) replaced
@@ -2446,140 +2424,11 @@ impl IpcServer {
         Ok(())
     }
 
-    /// Handle an ExtStart request — start a background runtime for an extension
-    async fn handle_ext_start(
-        request_id: u64,
-        extension_id: String,
-        state: AppState,
-        sink: &dyn ResponseSink,
-        _peer: &PeerAddr,
-    ) -> anyhow::Result<()> {
-        let registry = state.runtime_starter_registry().clone();
-        let ctx = state.starter_context();
-
-        match registry.start(&extension_id, &ctx).await {
-            Ok(()) => {
-                let response = ResponsePacket::ExtStarted {
-                    request_id,
-                    extension_id,
-                };
-                send_response(sink, response).await?;
-            }
-            Err(e) => {
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: e.to_string(),
-                };
-                send_response(sink, response).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handle an ExtStop request
-    async fn handle_ext_stop(
-        request_id: u64,
-        extension_id: String,
-        state: AppState,
-        sink: &dyn ResponseSink,
-        _peer: &PeerAddr,
-    ) -> anyhow::Result<()> {
-        let registry = state.runtime_starter_registry().clone();
-        let ctx = state.starter_context();
-
-        match registry.stop(&extension_id, &ctx).await {
-            Ok(()) => {
-                let response = ResponsePacket::ExtStopped {
-                    request_id,
-                    extension_id,
-                };
-                send_response(sink, response).await?;
-            }
-            Err(e) => {
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: e.to_string(),
-                };
-                send_response(sink, response).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handle an ExtRestart request
-    async fn handle_ext_restart(
-        request_id: u64,
-        extension_id: String,
-        state: AppState,
-        sink: &dyn ResponseSink,
-        _peer: &PeerAddr,
-    ) -> anyhow::Result<()> {
-        let registry = state.runtime_starter_registry().clone();
-        let ctx = state.starter_context();
-
-        match registry.restart(&extension_id, &ctx).await {
-            Ok(()) => {
-                let response = ResponsePacket::ExtRestarted {
-                    request_id,
-                    extension_id,
-                };
-                send_response(sink, response).await?;
-            }
-            Err(e) => {
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: e.to_string(),
-                };
-                send_response(sink, response).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handle an ExtStatus request
-    async fn handle_ext_status(
-        request_id: u64,
-        extension_id: String,
-        state: AppState,
-        sink: &dyn ResponseSink,
-        _peer: &PeerAddr,
-    ) -> anyhow::Result<()> {
-        let manager = state.background_runtime_manager().clone();
-
-        match manager.get_state(&extension_id).await {
-            Some(runtime_state) => {
-                // Also get summary for restart_count and last_error
-                let summaries = manager.list().await;
-                let summary = summaries.iter().find(|s| s.id == extension_id);
-                let restart_count = summary.map(|s| s.restart_count).unwrap_or(0);
-                let last_error = summary.and_then(|s| s.last_error.clone());
-
-                let response = ResponsePacket::ExtStatus {
-                    request_id,
-                    extension_id,
-                    state: runtime_state.to_string(),
-                    restart_count,
-                    last_error,
-                };
-                send_response(sink, response).await?;
-            }
-            None => {
-                let response = ResponsePacket::ExtStatus {
-                    request_id,
-                    extension_id,
-                    state: "not_found".to_string(),
-                    restart_count: 0,
-                    last_error: None,
-                };
-                send_response(sink, response).await?;
-            }
-        }
-
-        Ok(())
-    }
+    // (handle_ext_start / handle_ext_stop / handle_ext_restart /
+    // handle_ext_status retired to
+    // `ipc::handlers::ext_runtime::ExtRuntimeHandler` under F6 step 11.
+    // The background extension runtime lifecycle (ADR-025) is now
+    // driven through a narrow `ExtRuntimeHost` port.)
 
     /// Build a PrincipalPackager for export/push, optionally resolving and
     /// embedding the extensions referenced by the principal's capabilities.
