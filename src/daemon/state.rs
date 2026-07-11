@@ -2084,3 +2084,17 @@ impl crate::ipc::handlers::system::SystemHost for AppState {
         AppState::request_shutdown(self, force).await;
     }
 }
+
+/// F7 second narrow handle: the port the `auth` IPC domain handler uses
+/// to reach the API key store and auth configuration. Trait lives in
+/// `ipc::handlers::auth`; both methods are sync (return owned values)
+/// so the trait is object-safe without `async_trait`.
+impl crate::ipc::handlers::auth::AuthHost for AppState {
+    fn auth_config(&self) -> crate::auth::config::AuthConfig {
+        AppState::auth_config(self)
+    }
+
+    fn api_key_store(&self) -> Option<crate::auth::api_key::ApiKeyStore> {
+        AppState::api_key_store(self)
+    }
+}
