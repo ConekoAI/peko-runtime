@@ -30,24 +30,10 @@ use tracing::{error, info, trace, warn};
 
 use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket};
 use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
-use super::send_response::send_response;
 #[cfg(windows)]
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
 use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::auth::caller::CallerContext;
-use crate::ipc::handlers::auth::AuthHandler;
-use crate::ipc::handlers::capability::CapabilityHandler;
-use crate::ipc::handlers::cron::CronHandler;
-use crate::ipc::handlers::ext_runtime::ExtRuntimeHandler;
-use crate::ipc::handlers::extension::ExtensionHandler;
-use crate::ipc::handlers::instance::InstanceHandler;
-use crate::ipc::handlers::principal::PrincipalHandler;
-use crate::ipc::handlers::provider_mcp::ProviderMcpHandler;
-use crate::ipc::handlers::runtime::RuntimeHandler;
-use crate::ipc::handlers::system::SystemHandler;
-use crate::ipc::handlers::tool::ToolHandler;
-use crate::ipc::handlers::tunnel::TunnelHandler;
-use crate::ipc::handlers::RequestHandler;
 #[cfg(not(windows))]
 use crate::auth::config::enforce_auth_for_public_bind;
 use crate::auth::permissions::AuthError;
@@ -695,14 +681,14 @@ impl IpcServer {
         }
     }
 
-    /// Handle a single request
+    /// Handle a single request.
     ///
-    /// The `sink: &dyn ResponseSink` abstraction (ADR-038) lets the giant
-    /// `match` body below be platform-agnostic: Unix/UDP call sites
-    /// construct a per-request `UnixDatagramSink` or `UdpSink` that
-    /// captures the peer address from `recv_from`; Windows call sites
-    /// construct a `PipeSink` over the per-connection `&mut
-    /// NamedPipeServer`. See `response_sink.rs` for the full design.
+    /// The legacy per-domain `match` is retired (F6 sweep): every
+    /// `RequestPacket` variant is now owned by exactly one
+    /// [`crate::ipc::handlers::RequestHandler`], and dispatch is the
+    /// single-purpose [`crate::ipc::handlers::RequestDispatcher::dispatch`]
+    /// call below. The sink abstraction (ADR-038) stays —
+    /// `UnixDatagramSink` / `UdpSink` / `PipeSink` per platform.
     #[allow(clippy::large_futures)]
     async fn handle_request(
         request: RequestPacket,
@@ -711,92 +697,7 @@ impl IpcServer {
         sink: &dyn ResponseSink,
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
-        // For v0.1.0, local trust is treated as owner (all actions allowed).
-        // JWT users have full access.
-        // API key scopes are checked at resolution time.
-        // Future: enforce per-resource ACLs here.
-
-        // F6: try per-domain request handlers first. Handlers own their
-        // own dependencies (captured at construction), so the dispatcher
-        // doesn't need to know the concrete state type. New domains are
-        // added by appending to `domain_handlers`; the legacy match
-        // below remains the fallback for variants not yet migrated.
-        let domain_handlers: Vec<Arc<dyn RequestHandler>> = vec![
-            Arc::new(SystemHandler::new(Arc::new(state.clone()))),
-            Arc::new(AuthHandler::new(Arc::new(state.clone()))),
-            Arc::new(ToolHandler::new(Arc::new(state.clone()))),
-            Arc::new(TunnelHandler::new(Arc::new(state.clone()))),
-            Arc::new(CapabilityHandler::new(Arc::new(state.clone()))),
-            Arc::new(InstanceHandler::new(Arc::new(state.clone()))),
-            Arc::new(ExtRuntimeHandler::new(Arc::new(state.clone()))),
-            Arc::new(CronHandler::new(Arc::new(state.clone()))),
-            Arc::new(RuntimeHandler::new(Arc::new(state.clone()))),
-            Arc::new(ExtensionHandler::new(Arc::new(state.clone()))),
-            Arc::new(ProviderMcpHandler::new(Arc::new(state.clone()))),
-            Arc::new(PrincipalHandler::new(Arc::new(state.clone()))),
-        ];
-        for handler in &domain_handlers {
-            if handler.matches(&request) {
-                trace!("dispatching to {} handler", handler.domain());
-                return handler.handle(request, &caller, sink, peer).await;
-            }
-        }
-
-        // Defense-in-depth: capture the request id so the wildcard
-        // fallback can echo it. Unreachable in normal operation — the
-        // handler loop above dispatches every migrated variant. If a
-        // new `RequestPacket` variant is added without either a handler
-        // or a legacy arm, this surfaces a clear protocol error to the
-        // client instead of dropping the packet silently.
-        let request_id = request.request_id();
-
-        match request {
-            // `RequestPacket::Execute` was retired in audit C4. All
-            // chat traffic now flows through `PrincipalSend` (one-shot)
-            // and `PrincipalSendStream` (streaming) below — both go
-            // through `PrincipalManager::receive` and produce
-            // principal-scoped sessions and audit trails.
-            //
-            // `AsyncSpawn` / `AsyncCancel` (tool execution) are owned
-            // by `ipc::handlers::tool::ToolHandler` (F6 step 3 + F8
-            // grant threading) — dispatched in the `domain_handlers`
-            // loop above.
-
-            // ── Principal lifecycle (17 arms + 13 helpers) ──
-            // `PrincipalList` / `PrincipalGet` / `PrincipalSend*` /
-            // `PrincipalSendControl` / `PrincipalLog` / `PrincipalExport` /
-            // `PrincipalImportPreview` / `PrincipalImport` / `PrincipalPush` /
-            // `PrincipalPullPreview` / `PrincipalPull` /
-            // `PrincipalGrantPermission` / `PrincipalRevokePermission` /
-            // `PrincipalPermissions` / `PrincipalSetStatus` /
-            // `PrincipalSetExposure` are owned by
-            // `ipc::handlers::principal::PrincipalHandler` (F6.5) —
-            // dispatched in the `domain_handlers` loop above. The
-            // helpers (`build_principal_packager`, `export_*`,
-            // `import_*`, `push_*`, `pull_*`, `load_*`, `read_*`,
-            // `run_principal_send`) moved with the handler.
-              // NOTE: Team transfer/grant/revoke packets were removed along with
-              // the team management concept. Only principal-scoped permission ops
-              // remain here.
-
-            // Defense-in-depth fallback for any variant not claimed by
-            // a registered handler and not handled above. In normal
-            // operation the handler loop at the top of `handle_request`
-            // dispatches every migrated variant (currently the `system`
-            // domain); this arm only fires if a new `RequestPacket`
-            // variant is added without registering a handler.
-            _ => {
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: format!(
-                        "no handler registered for request variant (request_id={request_id})"
-                    ),
-                };
-                send_response(sink, response).await?;
-            }
-        }
-
-        Ok(())
+        crate::ipc::handlers::RequestDispatcher::dispatch(state, request, &caller, sink, peer).await
     }
 
     // (handle_async_spawn / handle_async_cancel retired to
