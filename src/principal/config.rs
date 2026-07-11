@@ -4,7 +4,52 @@ use std::path::PathBuf;
 use crate::auth::{Permission, PermissionGrant};
 use crate::extensions::framework::types::Capabilities;
 use crate::subject::PrincipalDID;
-use crate::tunnel::protocol::{InstanceExposure, InstanceStatus};
+
+/// Network exposure level for a Principal (persisted in `principal.toml`).
+///
+/// Principal-owned mirror of `tunnel::protocol::InstanceExposure`; converted
+/// to the wire enum at the tunnel edge via `From`, so the persisted schema
+/// never depends on tunnel types.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Exposure {
+    Private,
+    Public,
+    #[default]
+    Unexposed,
+}
+
+/// Persisted live status for a Principal's tunnel instance.
+///
+/// Principal-owned mirror of `tunnel::protocol::InstanceStatus`; converted at
+/// the tunnel edge. `None` at the `PrincipalConfig` level means the daemon's
+/// runtime state is the source of truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Online,
+    Offline,
+    Busy,
+    Error,
+}
+
+/// Transport preference for cross-runtime principal_send.
+///
+/// Principal-owned mirror of `tunnel::known_runtimes::TransportPreference`;
+/// converted at the tunnel edge, so the persisted config does not depend on
+/// tunnel types.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportPreference {
+    /// Prefer direct if a direct endpoint is configured and trusted,
+    /// otherwise fall back to the PekoHub tunnel.
+    #[default]
+    Auto,
+    /// Always use the PekoHub tunnel.
+    Tunnel,
+    /// Always use the direct endpoint; fail if one is not configured.
+    Direct,
+}
 
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,7 +89,7 @@ pub struct PrincipalConfig {
 
     /// Network exposure level for this Principal.
     #[serde(default)]
-    pub exposure: InstanceExposure,
+    pub exposure: Exposure,
 
     /// Persisted live status for this Principal's tunnel instance.
     /// `None` means the daemon's runtime state is the source of truth
@@ -52,7 +97,7 @@ pub struct PrincipalConfig {
     /// `PrincipalSetStatus` to mark the Principal as `Busy`, `Offline`,
     /// etc., across daemon restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<InstanceStatus>,
+    pub status: Option<Status>,
 
     /// Explicit permission grants on this Principal.
     ///
@@ -80,7 +125,7 @@ pub struct PrincipalConfig {
     /// The principal owns the connection method; callers learn it from
     /// the directory and respect it.
     #[serde(default)]
-    pub transport_preference: crate::tunnel::known_runtimes::TransportPreference,
+    pub transport_preference: TransportPreference,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -231,7 +276,7 @@ mod tests {
         assert_eq!(cfg.preferred_model_id, None);
         assert_eq!(
             cfg.transport_preference,
-            crate::tunnel::known_runtimes::TransportPreference::Auto
+            crate::principal::config::TransportPreference::Auto
         );
     }
 
@@ -252,7 +297,7 @@ mod tests {
             permissions: Vec::new(),
             preferred_provider_id: None,
             preferred_model_id: None,
-            transport_preference: crate::tunnel::known_runtimes::TransportPreference::Tunnel,
+            transport_preference: crate::principal::config::TransportPreference::Tunnel,
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -263,7 +308,7 @@ mod tests {
         let back: PrincipalConfig = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(
             back.transport_preference,
-            crate::tunnel::known_runtimes::TransportPreference::Tunnel
+            crate::principal::config::TransportPreference::Tunnel
         );
     }
 
@@ -286,7 +331,7 @@ mod tests {
             permissions: Vec::new(),
             preferred_provider_id: Some("ollama".into()),
             preferred_model_id: Some("llama3.1".into()),
-            transport_preference: crate::tunnel::known_runtimes::TransportPreference::Direct,
+            transport_preference: crate::principal::config::TransportPreference::Direct,
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -307,7 +352,7 @@ mod tests {
         assert_eq!(back.preferred_model_id.as_deref(), Some("llama3.1"));
         assert_eq!(
             back.transport_preference,
-            crate::tunnel::known_runtimes::TransportPreference::Direct
+            crate::principal::config::TransportPreference::Direct
         );
     }
 

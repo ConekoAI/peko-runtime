@@ -1042,7 +1042,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
         capabilities: starter_extensions(),
-        exposure: crate::tunnel::protocol::InstanceExposure::Private,
+        exposure: crate::principal::config::Exposure::Private,
         status: None,
         permissions: Vec::new(),
         // Principals inherit the global provider default unless the user

@@ -77,8 +77,8 @@ impl Principal {
     }
 
     /// The exposure level for this Principal.
-    pub async fn exposure(&self) -> crate::tunnel::protocol::InstanceExposure {
-        self.config.read().await.exposure.clone()
+    pub async fn exposure(&self) -> crate::principal::config::Exposure {
+        self.config.read().await.exposure
     }
 
     /// Build a lightweight summary for list/show IPC responses.
@@ -117,8 +117,8 @@ pub struct PrincipalSummary {
     pub did: PrincipalDID,
     pub owner: crate::auth::Subject,
     pub description: Option<String>,
-    pub exposure: crate::tunnel::protocol::InstanceExposure,
-    pub status: Option<crate::tunnel::protocol::InstanceStatus>,
+    pub exposure: crate::principal::config::Exposure,
+    pub status: Option<crate::principal::config::Status>,
     pub capabilities: Capabilities,
     pub agent_prompt_count: usize,
     pub workspace_path: String,

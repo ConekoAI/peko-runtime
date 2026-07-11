@@ -11,7 +11,6 @@ use std::sync::Arc;
 use crate::principal::PrincipalManager;
 
 use super::hub_directory::{AgentDirectory, AgentResolution, DirectoryError, ResolvedExposure};
-use super::protocol::InstanceExposure;
 
 /// Directory wrapper that resolves same-runtime principals locally before
 /// falling back to the hub directory.
@@ -52,7 +51,7 @@ impl AgentDirectory for LocalFirstAgentDirectory {
                 agent_did: did.to_string(),
                 owner_principal: owner,
                 exposure: map_instance_exposure(exposure),
-                transport_preference: preference,
+                transport_preference: preference.into(),
                 direct_endpoint: None,
             });
         }
@@ -68,10 +67,10 @@ impl AgentDirectory for LocalFirstAgentDirectory {
     }
 }
 
-fn map_instance_exposure(exposure: InstanceExposure) -> ResolvedExposure {
+fn map_instance_exposure(exposure: crate::principal::config::Exposure) -> ResolvedExposure {
     match exposure {
-        InstanceExposure::Public => ResolvedExposure::Public,
-        InstanceExposure::Private => ResolvedExposure::Private,
-        InstanceExposure::Unexposed => ResolvedExposure::Unexposed,
+        crate::principal::config::Exposure::Public => ResolvedExposure::Public,
+        crate::principal::config::Exposure::Private => ResolvedExposure::Private,
+        crate::principal::config::Exposure::Unexposed => ResolvedExposure::Unexposed,
     }
 }

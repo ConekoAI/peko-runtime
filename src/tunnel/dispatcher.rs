@@ -363,12 +363,12 @@ impl TunnelDispatcher {
         for principal in principals {
             let name = principal.name().await;
             let did = principal.did().await;
-            let exposure = principal.exposure().await;
+            let exposure: InstanceExposure = principal.exposure().await.into();
             let (allowed_principals, transport_preference) = {
                 let config = principal.config.read().await;
                 (
                     Self::compute_allowed_principals(&config),
-                    config.transport_preference,
+                    config.transport_preference.into(),
                 )
             };
             let instance_id = self.instance_id(&name);
@@ -450,12 +450,12 @@ impl TunnelDispatcher {
 
         let name = principal.name().await;
         let did = principal.did().await;
-        let exposure = principal.exposure().await;
+        let exposure: InstanceExposure = principal.exposure().await.into();
         let (allowed_principals, transport_preference) = {
             let config = principal.config.read().await;
             (
                 Self::compute_allowed_principals(&config),
-                config.transport_preference,
+                config.transport_preference.into(),
             )
         };
         let instance_id = self.instance_id(&name);
@@ -1073,7 +1073,7 @@ impl TunnelDispatcher {
                 if instance_id == payload.instance_id {
                     let did = principal.did().await;
                     let status = self.get_instance_status(&name).await;
-                    let transport_preference = principal.config.read().await.transport_preference;
+                    let transport_preference = principal.config.read().await.transport_preference.into();
                     let announce_payload = InstanceAnnouncePayload {
                         id: instance_id,
                         instance_type: InstanceType::Principal,
@@ -1517,7 +1517,7 @@ mod tests {
                     granted_by: Subject::User("user:owner".to_string()),
                 },
             ],
-            InstanceExposure::Private,
+            crate::principal::config::Exposure::Private,
         );
 
         let allowed = TunnelDispatcher::compute_allowed_principals(&config).expect("always Some");
@@ -1550,7 +1550,7 @@ mod tests {
         name: &str,
         owner: Subject,
         permissions: Vec<PermissionGrant>,
-        exposure: InstanceExposure,
+        exposure: crate::principal::config::Exposure,
     ) -> PrincipalConfig {
         PrincipalConfig {
             name: name.to_string(),
@@ -1582,7 +1582,7 @@ mod tests {
         name: &str,
         owner: Subject,
         permissions: Vec<PermissionGrant>,
-        exposure: InstanceExposure,
+        exposure: crate::principal::config::Exposure,
     ) -> std::sync::Arc<crate::principal::Principal> {
         let workspace = app_state.config.data_dir.join("principals").join(name);
         let agents_dir = workspace.join("agents");
@@ -2330,7 +2330,7 @@ mod tests {
             "announce-me",
             Subject::User("user:owner".to_string()),
             vec![],
-            InstanceExposure::Public,
+            crate::principal::config::Exposure::Public,
         )
         .await;
         let did = principal.did().await;
@@ -2368,7 +2368,7 @@ mod tests {
             "web-bound",
             Subject::User("user:test-user".to_string()),
             vec![],
-            InstanceExposure::Public,
+            crate::principal::config::Exposure::Public,
         )
         .await;
 
@@ -2429,7 +2429,7 @@ mod tests {
                 granted_at: "2026-06-27T00:00:00Z".to_string(),
                 granted_by: Subject::User("user:owner".to_string()),
             }],
-            InstanceExposure::Public,
+            crate::principal::config::Exposure::Public,
         )
         .await;
         let target_principal_did = principal.did().await.0;

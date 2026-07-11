@@ -833,7 +833,7 @@ mod tests {
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
             capabilities: Capabilities::starter_bundle(),
-            exposure: crate::tunnel::protocol::InstanceExposure::Private,
+            exposure: crate::principal::config::Exposure::Private,
             status: None,
             permissions: vec![PermissionGrant {
                 subject: Subject::Public,
@@ -1121,7 +1121,7 @@ mod tests {
         let (_temp, manager, _adapter, id) = setup().await;
         manager
             .update_config("stressy", |config| {
-                config.exposure = crate::tunnel::protocol::InstanceExposure::Public;
+                config.exposure = crate::principal::config::Exposure::Public;
             })
             .await
             .expect("update_config should succeed");
@@ -1129,7 +1129,7 @@ mod tests {
         let principal = manager.get(id).await.expect("principal should exist");
         assert_eq!(
             principal.exposure().await,
-            crate::tunnel::protocol::InstanceExposure::Public
+            crate::principal::config::Exposure::Public
         );
 
         let toml = tokio::fs::read_to_string(principal.workspace_path.join("principal.toml"))

@@ -2723,12 +2723,12 @@ impl IpcServer {
                 name,
                 status,
             } => {
-                use crate::tunnel::protocol::InstanceStatus;
+                use crate::principal::config::Status;
                 let status_enum = match status.as_str() {
-                    "online" => InstanceStatus::Online,
-                    "offline" => InstanceStatus::Offline,
-                    "busy" => InstanceStatus::Busy,
-                    "error" => InstanceStatus::Error,
+                    "online" => Status::Online,
+                    "offline" => Status::Offline,
+                    "busy" => Status::Busy,
+                    "error" => Status::Error,
                     other => {
                         let response = ResponsePacket::Error {
                             request_id,
@@ -2752,7 +2752,8 @@ impl IpcServer {
                 {
                     Ok(_) => {
                         if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                            if let Err(e) = dispatcher.set_instance_status(&name, status_enum).await
+                            if let Err(e) =
+                                dispatcher.set_instance_status(&name, status_enum.into()).await
                             {
                                 warn!(
                                     principal = %name,
@@ -2782,11 +2783,11 @@ impl IpcServer {
                 name,
                 exposure,
             } => {
-                use crate::tunnel::protocol::InstanceExposure;
+                use crate::principal::config::Exposure;
                 let exposure_enum = match exposure.as_str() {
-                    "unexposed" => InstanceExposure::Unexposed,
-                    "private" => InstanceExposure::Private,
-                    "public" => InstanceExposure::Public,
+                    "unexposed" => Exposure::Unexposed,
+                    "private" => Exposure::Private,
+                    "public" => Exposure::Public,
                     other => {
                         let response = ResponsePacket::Error {
                             request_id,
@@ -2809,7 +2810,7 @@ impl IpcServer {
                     Ok(_) => {
                         if let Some(dispatcher) = state.tunnel_dispatcher().await {
                             if let Err(e) =
-                                dispatcher.set_instance_exposure(&name, exposure_enum).await
+                                dispatcher.set_instance_exposure(&name, exposure_enum.into()).await
                             {
                                 warn!(
                                     principal = %name,

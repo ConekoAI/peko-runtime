@@ -4,6 +4,7 @@
 //! without consulting the hub, and that `PrincipalSendTool::execute`
 //! short-circuits locally via `PrincipalManager::receive`. This test is
 //! self-contained and runs in the regular unit/integration job.
+#![cfg(feature = "test-utils")]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,19 +15,19 @@ use peko::auth::Subject;
 use peko::engine::tool_runtime::ToolRuntime;
 use peko::extensions::framework::core::init_global_core;
 use peko::principal::{
-    DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalDID,
-    PrincipalManager,
+    DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };
+use peko::subject::PrincipalDID;
 use peko::providers::LlmResolver;
 use peko::tools::Tool;
 use peko::tunnel::a2a_pending::PendingA2aResponses;
 use peko::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use peko::tunnel::direct::DirectConnectionManager;
 use peko::tunnel::hub_directory::{AgentDirectory, AgentResolution, DirectoryError};
-use peko::tunnel::known_runtimes::{KnownRuntimes, TransportPreference};
+use peko::tunnel::known_runtimes::KnownRuntimes;
 use peko::tunnel::local_directory::LocalFirstAgentDirectory;
 use peko::tunnel::principal_send_tool::{PrincipalSendResult, PrincipalSendTool};
-use peko::tunnel::protocol::InstanceExposure;
+use peko::principal::config::{Exposure, TransportPreference};
 use tokio::sync::RwLock;
 
 /// A directory client that panics if consulted. Wrapping it inside
@@ -75,7 +76,7 @@ async fn create_test_principal(
         memory: Default::default(),
         routing: Default::default(),
         capabilities: Default::default(),
-        exposure: InstanceExposure::Public,
+        exposure: Exposure::Public,
         status: None,
         permissions: Vec::new(),
         preferred_provider_id: None,

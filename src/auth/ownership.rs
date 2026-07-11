@@ -77,7 +77,7 @@ pub enum Resource {
         name: String,
         owner: Subject,
         permissions: Vec<PermissionGrant>,
-        exposure: crate::tunnel::protocol::InstanceExposure,
+        exposure: crate::principal::config::Exposure,
     },
 }
 
@@ -184,7 +184,7 @@ mod tests {
             name: "alpha".to_string(),
             owner: owner.clone(),
             permissions: vec![],
-            exposure: crate::tunnel::protocol::InstanceExposure::Private,
+            exposure: crate::principal::config::Exposure::Private,
         };
 
         assert!(check_permission(&resource, Permission::Chat, &owner).is_ok());
@@ -202,7 +202,7 @@ mod tests {
                 granted_at: "2026-06-07T10:00:00Z".to_string(),
                 granted_by: owner.clone(),
             }],
-            exposure: crate::tunnel::protocol::InstanceExposure::Private,
+            exposure: crate::principal::config::Exposure::Private,
         };
         assert!(check_permission(&resource, Permission::Chat, &grantee).is_ok());
         assert!(check_permission(&resource, Permission::Delete, &grantee).is_err());

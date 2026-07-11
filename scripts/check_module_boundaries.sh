@@ -15,6 +15,8 @@
 # 6. src/extensions/framework/ must NOT import from src/principal/.
 # 7. src/agents/ must NOT import from src/principal/ (breaks the principal<->agents
 #    cycle; actor ids from subject/, capability types from extensions::framework::types).
+# 8. src/principal/ must NOT import from src/tunnel/ (principal owns its
+#    exposure/status/transport enums; tunnel converts at the edge via From).
 
 set -e
 
@@ -285,6 +287,31 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
+# Rule 8: src/principal/ must NOT import from src/tunnel/. The principal owns
+#         its own exposure/status/transport enums; the tunnel converts to its
+#         wire types at the edge via `From`. Doc-comment links are excluded.
+# -----------------------------------------------------------------------------
+echo "Rule 8: src/principal/ must NOT import from src/tunnel/"
+echo ""
+
+VIOLATIONS_8A=$(grep -rE "crate::tunnel" src/principal/ --include="*.rs" 2>/dev/null \
+    | grep -vE ':[[:space:]]*//' \
+    || true)
+
+if [ -n "$VIOLATIONS_8A" ]; then
+    echo "  ❌ FAIL: src/principal/ imports from tunnel"
+    echo ""
+    echo "$VIOLATIONS_8A" | while read -r line; do
+        echo "     $line"
+    done
+    echo ""
+    EXIT_CODE=1
+else
+    echo "  ✓ PASS: No principal -> tunnel imports"
+fi
+echo ""
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 echo "=========================================="
@@ -308,6 +335,7 @@ else
     echo "  - src/extensions/framework/ must not depend on agents/, tunnel/, or daemon/"
     echo "  - src/extensions/framework/ must not depend on principal/"
     echo "  - src/agents/ must not depend on principal/ (use subject/ + extensions::framework::types)"
+    echo "  - src/principal/ must not depend on tunnel/ (edge converts via From)"
 fi
 
 exit $EXIT_CODE

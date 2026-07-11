@@ -36,6 +36,32 @@ pub enum InstanceType {
     Principal,
 }
 
+// ── Edge conversions from the principal-owned persisted enums ──────────────
+// `PrincipalConfig` stores its own `Exposure`/`Status` (F4: the persisted
+// schema must not depend on tunnel wire types). The tunnel converts them to
+// its wire enums here, at the boundary — the only place allowed to know both.
+
+impl From<crate::principal::config::Exposure> for InstanceExposure {
+    fn from(e: crate::principal::config::Exposure) -> Self {
+        match e {
+            crate::principal::config::Exposure::Private => Self::Private,
+            crate::principal::config::Exposure::Public => Self::Public,
+            crate::principal::config::Exposure::Unexposed => Self::Unexposed,
+        }
+    }
+}
+
+impl From<crate::principal::config::Status> for InstanceStatus {
+    fn from(s: crate::principal::config::Status) -> Self {
+        match s {
+            crate::principal::config::Status::Online => Self::Online,
+            crate::principal::config::Status::Offline => Self::Offline,
+            crate::principal::config::Status::Busy => Self::Busy,
+            crate::principal::config::Status::Error => Self::Error,
+        }
+    }
+}
+
 /// Payload for `instance_announce` messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
