@@ -2123,3 +2123,221 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
         self.async_task_executor.clone()
     }
 }
+
+/// F7 fifth narrow handle: the port the `capability` IPC domain handler
+/// uses for principal-capability grant/list/revoke. Trait lives in
+/// `ipc::handlers::capability`. Both methods are sync (return cheap
+/// references), so the trait is object-safe without `async_trait`. The
+/// actual per-principal mutations happen in the handler against these
+/// accessors.
+impl crate::ipc::handlers::capability::CapabilityHost for AppState {
+    fn principal_manager(&self) -> &Arc<PrincipalManager> {
+        AppState::principal_manager(self)
+    }
+
+    fn extension_store(&self) -> &Arc<ExtensionStore> {
+        AppState::extension_store(self)
+    }
+}
+
+/// F7 sixth narrow handle: the port the `instance` IPC domain handler
+/// uses to reach the live tunnel dispatcher. Trait lives in
+/// `ipc::handlers::instance`. Async because `tunnel_dispatcher` is
+/// behind a lock; the trait needs `async_trait` for the same reason.
+#[async_trait::async_trait]
+impl crate::ipc::handlers::instance::InstanceHost for AppState {
+    async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {
+        AppState::tunnel_dispatcher(self).await
+    }
+}
+
+/// F7 seventh narrow handle: the port the `ext_runtime` IPC domain
+/// handler uses to drive the background extension runtime manager
+/// (ADR-025). Trait lives in `ipc::handlers::ext_runtime`. All
+/// methods are sync (return cheap references / owned `StarterContext`),
+/// so the trait is object-safe without `async_trait`.
+impl crate::ipc::handlers::ext_runtime::ExtRuntimeHost for AppState {
+    fn runtime_starter_registry(
+        &self,
+    ) -> &Arc<
+        crate::daemon::background_runtime::ExtensionRuntimeStarterRegistry,
+    > {
+        AppState::runtime_starter_registry(self)
+    }
+
+    fn starter_context(
+        &self,
+    ) -> crate::daemon::background_runtime::StarterContext {
+        AppState::starter_context(self)
+    }
+
+    fn background_runtime_manager(&self) -> &Arc<BackgroundRuntimeManager> {
+        AppState::background_runtime_manager(self)
+    }
+}
+
+/// F7 eighth narrow handle: the port the `cron` IPC domain handler uses
+/// to read the data dir (cron DB lives at `<data_dir>/cron.json`) and
+/// the principal manager (used to validate `job.principal_name`
+/// resolves before adding a job). Trait lives in
+/// `ipc::handlers::cron`. Both methods are sync (cheap reference /
+/// `PathBuf` clone), so the trait is object-safe without `async_trait`.
+impl crate::ipc::handlers::cron::CronHost for AppState {
+    fn data_dir(&self) -> std::path::PathBuf {
+        self.data_dir.clone()
+    }
+
+    fn principal_manager(&self) -> &Arc<PrincipalManager> {
+        AppState::principal_manager(self)
+    }
+}
+
+/// F7 ninth narrow handle: the port the `runtime` IPC domain handler
+/// uses to surface this runtime's identity / metadata and the
+/// persistent `KnownRuntimes` registry. Trait lives in
+/// `ipc::handlers::runtime`. All methods are sync (cheap references /
+/// `PathBuf` clones), so the trait is object-safe without
+/// `async_trait`. The actual `KnownRuntimes` lock awaits live in the
+/// handler.
+impl crate::ipc::handlers::runtime::RuntimeHost for AppState {
+    fn runtime_identity(&self) -> &crate::identity::runtime::RuntimeIdentity {
+        AppState::runtime_identity(self)
+    }
+
+    fn runtime_metadata(&self) -> &crate::identity::runtime_metadata::RuntimeMetadata {
+        AppState::runtime_metadata(self)
+    }
+
+    fn known_runtimes(
+        &self,
+    ) -> &Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>> {
+        AppState::known_runtimes(self)
+    }
+
+    fn config_dir(&self) -> std::path::PathBuf {
+        self.config_dir.clone()
+    }
+
+    fn data_dir(&self) -> std::path::PathBuf {
+        self.data_dir.clone()
+    }
+
+    fn cache_dir(&self) -> std::path::PathBuf {
+        self.cache_dir.clone()
+    }
+}
+
+/// F7 fourth narrow handle: the port the `tunnel` IPC domain handler uses
+/// to drive the tunnel lifecycle from CLI control packets (`TunnelStop`,
+/// `TunnelStatus`). Trait lives in `ipc::handlers::tunnel`. Both methods
+/// are async because they drive the live outbound tunnel connection.
+///
+/// Note: this trait is distinct from `crate::tunnel::host::TunnelHost`,
+/// which powers inbound-message dispatch (F5). They share a name but
+/// live in different modules and serve different consumers; the F5 +
+/// F7 dependency-inversion pattern intentionally produces two narrow
+/// ports per cross-cutting concern.
+#[async_trait::async_trait]
+impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
+    async fn stop_tunnel(&self) {
+        AppState::stop_tunnel(self).await;
+    }
+
+    async fn tunnel_connected(&self) -> bool {
+        AppState::tunnel_connected(self).await
+    }
+}
+
+/// F7 tenth narrow handle: the port the `extension` IPC domain handler
+/// uses to read/write the on-disk extension store and to enumerate
+/// built-in extensions via `Services`. Trait lives in
+/// `ipc::handlers::extension`. Both methods are sync (cheap `Arc`
+/// references), so the trait is object-safe without `async_trait`.
+/// The actual store awaits (install / uninstall / list / bundle /
+/// export) happen in the handler against these accessors.
+impl crate::ipc::handlers::extension::ExtensionHost for AppState {
+    fn extension_store(&self) -> &Arc<ExtensionStore> {
+        AppState::extension_store(self)
+    }
+
+    fn extension_services(
+        &self,
+    ) -> &Arc<crate::extensions::framework::services::Services> {
+        AppState::extension_services(self)
+    }
+}
+
+/// F7 eleventh narrow handle: the port the `provider_mcp` IPC domain
+/// handler uses to live-reload the provider registry and MCP config
+/// from disk. Trait lives in `ipc::handlers::provider_mcp`. Both
+/// methods are async because they drive live config-file reloads.
+#[async_trait::async_trait]
+impl crate::ipc::handlers::provider_mcp::ProviderMcpHost for AppState {
+    async fn reload_providers(&self) -> anyhow::Result<(usize, usize)> {
+        AppState::reload_providers(self).await
+    }
+
+    async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
+        AppState::reload_mcp_config(self).await
+    }
+}
+
+/// F7 twelfth narrow handle: the port the `principal` IPC domain
+/// handler uses. Trait lives in `ipc::handlers::principal`. Most
+/// methods are sync (cheap references / `Arc` clones / `PathBuf`
+/// clones); `tunnel_dispatcher` and `record_principal_activity` are
+/// async because they drive live tunnel / activity-write paths. The
+/// trait needs `async_trait` for those two.
+///
+/// The `principal` domain is the largest of the F6 migrations (17
+/// arms + a sizable set of `build_*` / `import_*` / `push_*` /
+/// `pull_*` / `export_*` / `load_*` / `read_*` helpers). Everything
+/// inside `ipc::handlers::principal` reaches daemon state only
+/// through this trait.
+#[async_trait::async_trait]
+impl crate::ipc::handlers::principal::PrincipalHost for AppState {
+    fn principal_manager(&self) -> &Arc<PrincipalManager> {
+        AppState::principal_manager(self)
+    }
+
+    fn streaming_runs(
+        &self,
+    ) -> Arc<std::sync::Mutex<std::collections::HashMap<u64, StreamingRunHandle>>>
+    {
+        AppState::streaming_runs(self)
+    }
+
+    fn inbox_registry(&self) -> &Arc<crate::session::InboxRegistry> {
+        &self.inbox_registry
+    }
+
+    fn extension_store(&self) -> &Arc<ExtensionStore> {
+        AppState::extension_store(self)
+    }
+
+    fn trust_store(
+        &self,
+    ) -> &Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>> {
+        AppState::trust_store(self)
+    }
+
+    fn config_dir(&self) -> std::path::PathBuf {
+        self.config_dir.clone()
+    }
+
+    fn data_dir(&self) -> std::path::PathBuf {
+        self.data_dir.clone()
+    }
+
+    fn cache_dir(&self) -> std::path::PathBuf {
+        self.cache_dir.clone()
+    }
+
+    async fn record_principal_activity(&self, principal_name: &str) {
+        AppState::record_principal_activity(self, principal_name).await;
+    }
+
+    async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {
+        AppState::tunnel_dispatcher(self).await
+    }
+}
