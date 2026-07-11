@@ -2098,3 +2098,28 @@ impl crate::ipc::handlers::auth::AuthHost for AppState {
         AppState::api_key_store(self)
     }
 }
+
+/// F7 third narrow handle: the port the `tool` IPC domain handler uses
+/// to reach the async task executor, tool runtime, principal manager,
+/// and extension store. Trait lives in `ipc::handlers::tool`. All
+/// methods are sync (return cheap references / `Arc` clones) so the
+/// trait is object-safe without `async_trait`. The actual principal
+/// resolution (F8 server-side grant threading) is awaited inside the
+/// handler against these accessors.
+impl crate::ipc::handlers::tool::ToolHost for AppState {
+    fn principal_manager(&self) -> &Arc<PrincipalManager> {
+        AppState::principal_manager(self)
+    }
+
+    fn extension_store(&self) -> &Arc<ExtensionStore> {
+        AppState::extension_store(self)
+    }
+
+    fn tool_runtime(&self) -> Arc<ToolRuntime> {
+        self.tool_runtime.clone()
+    }
+
+    fn async_task_executor(&self) -> Arc<AsyncExecutor> {
+        self.async_task_executor.clone()
+    }
+}
