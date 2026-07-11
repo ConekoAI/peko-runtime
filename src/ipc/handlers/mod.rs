@@ -22,6 +22,7 @@ pub(crate) mod auth;
 pub(crate) mod capability;
 pub(crate) mod cron;
 pub(crate) mod ext_runtime;
+pub(crate) mod extension;
 pub(crate) mod instance;
 pub(crate) mod runtime;
 pub(crate) mod system;

@@ -2247,3 +2247,22 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
         AppState::tunnel_connected(self).await
     }
 }
+
+/// F7 tenth narrow handle: the port the `extension` IPC domain handler
+/// uses to read/write the on-disk extension store and to enumerate
+/// built-in extensions via `Services`. Trait lives in
+/// `ipc::handlers::extension`. Both methods are sync (cheap `Arc`
+/// references), so the trait is object-safe without `async_trait`.
+/// The actual store awaits (install / uninstall / list / bundle /
+/// export) happen in the handler against these accessors.
+impl crate::ipc::handlers::extension::ExtensionHost for AppState {
+    fn extension_store(&self) -> &Arc<ExtensionStore> {
+        AppState::extension_store(self)
+    }
+
+    fn extension_services(
+        &self,
+    ) -> &Arc<crate::extensions::framework::services::Services> {
+        AppState::extension_services(self)
+    }
+}
