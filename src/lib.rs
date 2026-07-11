@@ -185,19 +185,13 @@ pub mod principal;
 /// Cron job scheduling
 pub(crate) mod cron;
 
-/// Daemon mode for background execution (internal, exposed for integration tests)
-#[cfg(not(feature = "test-utils"))]
+/// Daemon mode for background execution (long-running process).
+///
+/// Crate-internal since the F9 cleanup: the only consumers (`Daemon::run` in
+/// `src/daemon/mod.rs`, the integration test that exercises it, and the
+/// `#[cfg(test)]` mod in `src/tunnel/dispatcher.rs`) all live inside the
+/// crate. The release binary never reaches into it.
 pub(crate) mod daemon;
-
-/// Daemon mode for background execution (exposed for integration tests with test-utils feature)
-#[cfg(feature = "test-utils")]
-pub mod daemon;
-
-/// Re-exports for integration tests (only available with `test-utils` feature)
-#[cfg(feature = "test-utils")]
-pub mod test_utils {
-    pub use crate::daemon::state::{AppState, DaemonConfigSnapshot};
-}
 
 /// IPC layer (UDP/Unix socket) for CLI↔daemon communication
 pub mod ipc;

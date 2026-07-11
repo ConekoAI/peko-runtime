@@ -7,9 +7,9 @@
 //! - Session maintenance (prune, cap, rotate)
 //! - Graceful shutdown
 
-pub mod background_runtime;
-pub mod cron_engine;
-pub mod state;
+pub(crate) mod background_runtime;
+pub(crate) mod cron_engine;
+pub(crate) mod state;
 
 use crate::common::paths::PathResolver;
 use crate::cron::events::SystemEvent;

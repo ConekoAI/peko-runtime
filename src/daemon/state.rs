@@ -37,7 +37,7 @@ use tokio::sync::{broadcast, RwLock};
 /// This struct is passed to all route handlers via Axum's State extractor.
 /// All fields are thread-safe and can be accessed concurrently.
 #[derive(Clone)]
-pub struct AppState {
+pub(crate) struct AppState {
     /// Time when the daemon started
     pub started_at: SystemTime,
 
@@ -250,6 +250,7 @@ pub struct AppState {
 /// mode) or push a steering message into its session inbox (Steer
 /// mode). See `src/ipc/server.rs` for the streaming handler and the
 /// `PrincipalSendControl` IPC handler.
+#[allow(dead_code)] // field-by-field — see DirectHealth note. Kept as public-ish surface for tests.
 pub struct StreamingRunHandle {
     /// Principal name — diagnostic only, included in control responses.
     pub principal_name: String,
@@ -315,7 +316,8 @@ struct AppStateInner {
 
 /// Snapshot of daemon configuration
 #[derive(Debug, Clone)]
-pub struct DaemonConfigSnapshot {
+#[allow(dead_code)] // fields on this snapshot are read by tests and inline e2e harnesses; cargo build's pass doesn't see them.
+pub(crate) struct DaemonConfigSnapshot {
     /// Data directory path
     pub data_dir: PathBuf,
     /// Config directory path
@@ -324,6 +326,16 @@ pub struct DaemonConfigSnapshot {
     pub log_level: String,
 }
 
+// Several methods on `AppState` are kept as a deliberate public-ish
+// surface even though `cargo build` doesn't see any in-crate callers:
+// the daemon-side live wiring reaches every service through the
+// `host: SystemHandle` port trait (`src/daemon/host.rs`), so the
+// underlying `AppState` getter methods look unused to the dead-code
+// pass after F9 narrowed the struct to `pub(crate)`. They're real
+// API surface for tests, the `daemon::run` direct field access, and
+// the inline `tunnel_e2e` / `principal_send_offline` tests; future
+// dead-code consolidation can revisit.
+#[allow(dead_code)]
 impl AppState {
     /// Create new application state (async constructor for stateless components)
     pub async fn new(
@@ -1632,6 +1644,10 @@ impl TunnelHealth {
 
 /// High-level snapshot of direct inbound server health.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Same explanation as `impl AppState` above: this is genuine API surface
+// for tests and the inline e2e harness; cargo build's dead-code pass
+// doesn't see those callers after the F9 narrowing to `pub(crate)`.
+#[allow(dead_code)]
 pub enum DirectHealth {
     /// Direct inbound connections are disabled in configuration.
     Disabled,
@@ -1643,6 +1659,7 @@ pub enum DirectHealth {
     Error(String),
 }
 
+#[allow(dead_code)] // JSON formatting helpers — used by IPC handler serialisation; not reachable from cargo build's graph.
 impl DirectHealth {
     /// String discriminator used in JSON output (`direct.state`).
     #[must_use]
