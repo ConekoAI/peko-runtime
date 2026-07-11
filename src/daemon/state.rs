@@ -2049,3 +2049,38 @@ impl crate::tunnel::TunnelHost for AppState {
         self.tunnel_handle_slot.clone()
     }
 }
+
+/// F7 first narrow handle: the port the `system` IPC domain handler uses
+/// to reach daemon state. The trait lives in `ipc::handlers::system` (the
+/// consumer defines the port, the producer implements it — same
+/// dependency-inversion pattern as `TunnelHost`).
+#[async_trait::async_trait]
+impl crate::ipc::handlers::system::SystemHost for AppState {
+    fn uptime_seconds(&self) -> u64 {
+        AppState::uptime_seconds(self)
+    }
+
+    fn cache_dir(&self) -> PathBuf {
+        self.cache_dir.clone()
+    }
+
+    async fn is_degraded(&self) -> bool {
+        AppState::is_degraded(self).await
+    }
+
+    async fn is_ready(&self) -> bool {
+        AppState::is_ready(self).await
+    }
+
+    async fn instance_count(&self) -> u64 {
+        AppState::instance_count(self).await
+    }
+
+    async fn tunnel_health(&self) -> TunnelHealth {
+        AppState::tunnel_health(self).await
+    }
+
+    async fn request_shutdown(&self, force: bool) {
+        AppState::request_shutdown(self, force).await;
+    }
+}

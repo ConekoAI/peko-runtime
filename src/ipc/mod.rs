@@ -26,10 +26,12 @@ pub mod client;
 pub mod client_service;
 pub mod connection;
 pub mod errors;
+pub(crate) mod handlers;
 pub mod packet;
 pub mod pipe_security;
 pub mod response_sink;
 pub mod server;
+pub(crate) mod send_response;
 pub mod stream;
 
 pub use client::DaemonClient;

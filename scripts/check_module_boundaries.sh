@@ -354,6 +354,45 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
+# Rule 10: src/ipc/handlers/*.rs (excluding mod.rs) must NOT import another
+#         handler module. Per F6, each IPC packet domain lives in its own
+#         handler module behind the `RequestHandler` trait; handlers are
+#         independent and may not reach into a sibling. `mod.rs` is the
+#         sole exception (it re-exports the handler submodules).
+# -----------------------------------------------------------------------------
+echo "Rule 10: src/ipc/handlers/ modules must not import each other"
+echo ""
+
+RULE10_FAILED=0
+VIOLATIONS_10=""
+
+for f in $(find src/ipc/handlers -name '*.rs' ! -name 'mod.rs'); do
+    # Match `crate::ipc::handlers::<lowercase>::` — i.e. a path into a
+    # sibling handler module. The bare `crate::ipc::handlers::RequestHandler`
+    # (the trait in mod.rs) is allowed.
+    hits=$(grep -nE "crate::ipc::handlers::[a-z][a-z_]*::" "$f" | sed "s|^|$f:|" || true)
+    if [ -n "$hits" ]; then
+        RULE10_FAILED=1
+        VIOLATIONS_10="${VIOLATIONS_10}${hits}
+"
+    fi
+done
+
+if [ "$RULE10_FAILED" -ne 0 ]; then
+    echo "  ❌ FAIL: ipc/handlers/ has cross-handler imports"
+    echo ""
+    echo "$VIOLATIONS_10" | while read -r line; do
+        [ -z "$line" ] && continue
+        echo "     $line"
+    done
+    echo ""
+    EXIT_CODE=1
+else
+    echo "  ✓ PASS: No cross-handler imports"
+fi
+echo ""
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 echo "=========================================="
@@ -379,6 +418,7 @@ else
     echo "  - src/agents/ must not depend on principal/ (use subject/ + extensions::framework::types)"
     echo "  - src/principal/ must not depend on tunnel/ (edge converts via From)"
     echo "  - src/tunnel/ must not depend on daemon/ in production code (use the TunnelHost port)"
+    echo "  - src/ipc/handlers/ modules must not import each other (each domain is independent)"
 fi
 
 exit $EXIT_CODE
