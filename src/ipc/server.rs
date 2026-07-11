@@ -33,10 +33,13 @@ use super::packet::{
     AuthenticatedRequest, PrincipalSendControlMode, RequestPacket, ResponsePacket,
 };
 use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
+use super::send_response::send_response;
 #[cfg(windows)]
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
 use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::auth::caller::CallerContext;
+use crate::ipc::handlers::system::SystemHandler;
+use crate::ipc::handlers::RequestHandler;
 #[cfg(not(windows))]
 use crate::auth::config::enforce_auth_for_public_bind;
 use crate::auth::ownership::{check_permission, Permission, Resource};
@@ -818,24 +821,30 @@ impl IpcServer {
             Ok(p.clone())
         }
 
+        // F6: try per-domain request handlers first. Handlers own their
+        // own dependencies (captured at construction), so the dispatcher
+        // doesn't need to know the concrete state type. New domains are
+        // added by appending to `domain_handlers`; the legacy match
+        // below remains the fallback for variants not yet migrated.
+        let domain_handlers: Vec<Arc<dyn RequestHandler>> = vec![Arc::new(SystemHandler::new(
+            Arc::new(state.clone()),
+        ))];
+        for handler in &domain_handlers {
+            if handler.matches(&request) {
+                trace!("dispatching to {} handler", handler.domain());
+                return handler.handle(request, &caller, sink, peer).await;
+            }
+        }
+
+        // Defense-in-depth: capture the request id so the wildcard
+        // fallback can echo it. Unreachable in normal operation — the
+        // handler loop above dispatches every migrated variant. If a
+        // new `RequestPacket` variant is added without either a handler
+        // or a legacy arm, this surfaces a clear protocol error to the
+        // client instead of dropping the packet silently.
+        let request_id = request.request_id();
+
         match request {
-            RequestPacket::Ping { request_id } => {
-                let uptime = state.uptime_seconds();
-                let response = ResponsePacket::Pong {
-                    request_id,
-                    uptime_secs: uptime,
-                    version: crate::VERSION.to_string(),
-                };
-                Self::send_sink(sink, response).await?;
-            }
-
-            RequestPacket::Shutdown { request_id, force } => {
-                info!("Shutdown request received via IPC (force={})", force);
-                let response = ResponsePacket::ShuttingDown { request_id };
-                Self::send_sink(sink, response).await?;
-                state.request_shutdown(force).await;
-            }
-
             // `RequestPacket::Execute` was retired in audit C4. All
             // chat traffic now flows through `PrincipalSend` (one-shot)
             // and `PrincipalSendStream` (streaming) below — both go
@@ -900,14 +909,14 @@ impl IpcServer {
                                 jobs
                             };
                             let response = ResponsePacket::CronList { request_id, jobs };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to list jobs: {e}"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                     },
                     Err(e) => {
@@ -915,7 +924,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -931,7 +940,7 @@ impl IpcServer {
                         request_id,
                         message: format!("Principal '{}' is not loaded", job.principal_name),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                     return Ok(());
                 }
 
@@ -943,14 +952,14 @@ impl IpcServer {
                                 request_id,
                                 job_id: job.id,
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to add job: {e}"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                     },
                     Err(e) => {
@@ -958,7 +967,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -969,21 +978,21 @@ impl IpcServer {
                     Ok(scheduler) => match scheduler.delete_job(&job_id) {
                         Ok(true) => {
                             let response = ResponsePacket::CronRemoved { request_id, job_id };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Ok(false) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Job {job_id} not found"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to remove job: {e}"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                     },
                     Err(e) => {
@@ -991,7 +1000,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1009,7 +1018,7 @@ impl IpcServer {
                                     request_id,
                                     message: format!("Failed to trigger job: {e}"),
                                 };
-                                Self::send_sink(sink, response).await?;
+                                send_response(sink, response).await?;
                             } else {
                                 let run_id = uuid::Uuid::new_v4().to_string();
                                 let response = ResponsePacket::CronRunStarted {
@@ -1017,7 +1026,7 @@ impl IpcServer {
                                     job_id,
                                     run_id,
                                 };
-                                Self::send_sink(sink, response).await?;
+                                send_response(sink, response).await?;
                             }
                         }
                         Ok(None) => {
@@ -1025,14 +1034,14 @@ impl IpcServer {
                                 request_id,
                                 message: format!("Job {job_id} not found"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to get job: {e}"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                     },
                     Err(e) => {
@@ -1040,7 +1049,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1055,14 +1064,14 @@ impl IpcServer {
                     Ok(scheduler) => match scheduler.get_run_history(&job_id, limit) {
                         Ok(runs) => {
                             let response = ResponsePacket::CronHistory { request_id, runs };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to get history: {e}"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                     },
                     Err(e) => {
@@ -1070,7 +1079,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1121,7 +1130,7 @@ impl IpcServer {
                     request_id,
                     principals,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
 
             RequestPacket::PrincipalGet { request_id, name } => {
@@ -1134,7 +1143,7 @@ impl IpcServer {
                     request_id,
                     principal,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
 
             // (Session CRUD: SessionList / SessionRemove retired under ADR-042.
@@ -1170,7 +1179,7 @@ impl IpcServer {
                     request_id,
                     providers,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
 
             RequestPacket::ProviderReload { request_id } => match state.reload_providers().await {
@@ -1180,14 +1189,14 @@ impl IpcServer {
                         providers_count,
                         keys_count,
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 }
                 Err(e) => {
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("provider reload failed: {e}"),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 }
             },
 
@@ -1197,94 +1206,19 @@ impl IpcServer {
                         request_id,
                         servers_count,
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 }
                 Err(e) => {
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("mcp reload failed: {e}"),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 }
             },
 
-            RequestPacket::SystemStatus { request_id } => {
-                let response = ResponsePacket::SystemStatus {
-                    request_id,
-                    version: crate::VERSION.to_string(),
-                    uptime_secs: state.uptime_seconds(),
-                    degraded: state.is_degraded().await,
-                    instance_count: state.instance_count().await,
-                    ready: state.is_ready().await,
-                };
-                Self::send_sink(sink, response).await?;
-            }
-
-            RequestPacket::SystemDoctor { request_id } => {
-                let mut checks = Vec::new();
-
-                let ready = state.is_ready().await;
-                checks.push(super::packet::DoctorCheck {
-                    name: "daemon_ready".to_string(),
-                    status: if ready {
-                        "pass".to_string()
-                    } else {
-                        "fail".to_string()
-                    },
-                    message: if ready {
-                        "Daemon is ready to serve requests".to_string()
-                    } else {
-                        "Daemon is not ready".to_string()
-                    },
-                    suggestion: if !ready {
-                        Some("Check daemon logs for startup errors".to_string())
-                    } else {
-                        None
-                    },
-                });
-
-                let degraded = state.is_degraded().await;
-                checks.push(super::packet::DoctorCheck {
-                    name: "not_degraded".to_string(),
-                    status: if !degraded {
-                        "pass".to_string()
-                    } else {
-                        "warn".to_string()
-                    },
-                    message: if !degraded {
-                        "Daemon is operating normally".to_string()
-                    } else {
-                        "Daemon is in degraded mode".to_string()
-                    },
-                    suggestion: if degraded {
-                        Some("Check resource usage and consider restarting".to_string())
-                    } else {
-                        None
-                    },
-                });
-
-                let uptime = state.uptime_seconds();
-                checks.push(super::packet::DoctorCheck {
-                    name: "uptime".to_string(),
-                    status: "pass".to_string(),
-                    message: format!("Daemon uptime: {} seconds", uptime),
-                    suggestion: None,
-                });
-
-                let passed = checks.iter().filter(|c| c.status == "pass").count() as u32;
-                let failed = checks.iter().filter(|c| c.status == "fail").count() as u32;
-                let warnings = checks.iter().filter(|c| c.status == "warn").count() as u32;
-
-                let response = ResponsePacket::SystemDoctor {
-                    request_id,
-                    checks,
-                    passed,
-                    failed,
-                    warnings,
-                };
-                Self::send_sink(sink, response).await?;
-            }
-
+            
+            
             // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
             RequestPacket::ExtensionList {
                 request_id,
@@ -1354,7 +1288,7 @@ impl IpcServer {
                     extensions,
                     total,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
 
             RequestPacket::CapabilityGrant {
@@ -1382,14 +1316,14 @@ impl IpcServer {
                                 cap, principal
                             ),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1417,14 +1351,14 @@ impl IpcServer {
                                 cap, principal
                             ),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1457,61 +1391,19 @@ impl IpcServer {
                             detected,
                             active,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Principal '{principal}' not found"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
 
-            RequestPacket::SystemClean { request_id, scope } => {
-                let cache_dir = &state.cache_dir;
-                let mut cleaned = Vec::new();
-                let mut bytes_freed: u64 = 0;
-
-                let scope = scope.as_deref().unwrap_or("all");
-
-                if (scope == "all" || scope == "cache") && cache_dir.exists() {
-                    match std::fs::read_dir(cache_dir) {
-                        Ok(entries) => {
-                            for entry in entries.flatten() {
-                                let path = entry.path();
-                                if let Ok(meta) = entry.metadata() {
-                                    bytes_freed += meta.len();
-                                }
-                                if path.is_file() {
-                                    let _ = std::fs::remove_file(&path);
-                                    cleaned.push(path.to_string_lossy().to_string());
-                                } else if path.is_dir() {
-                                    let _ = std::fs::remove_dir_all(&path);
-                                    cleaned.push(path.to_string_lossy().to_string());
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!("Failed to clean cache: {e}"),
-                            };
-                            Self::send_sink(sink, response).await?;
-                            return Ok(());
-                        }
-                    }
-                }
-
-                let response = ResponsePacket::SystemCleaned {
-                    request_id,
-                    cleaned,
-                    bytes_freed,
-                };
-                Self::send_sink(sink, response).await?;
-            }
-
+            
             // (SessionBranch / SessionCompact / SessionSteer / SessionSteerList /
             // SessionSteerCancel retired under ADR-042. The legacy `peko session`
             // command tree and `peko session compact` CLI surface that drove
@@ -1530,7 +1422,7 @@ impl IpcServer {
                                 request_id,
                                 message: format!("Failed to prepare extension for install: {e}"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                             return Ok(());
                         }
                     };
@@ -1543,14 +1435,14 @@ impl IpcServer {
                             id: id.clone(),
                             message: format!("Extension '{id}' installed successfully"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Failed to install extension: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1566,14 +1458,14 @@ impl IpcServer {
                             id: id.clone(),
                             message: format!("Extension '{id}' uninstalled"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Failed to uninstall extension: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1603,14 +1495,14 @@ impl IpcServer {
                             errors: report.errors,
                             warnings: report.warnings,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1633,14 +1525,14 @@ impl IpcServer {
                             id,
                             info,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Extension '{id}' not found"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1662,14 +1554,14 @@ impl IpcServer {
                             id,
                             info,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Extension '{id}' not found"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1692,14 +1584,14 @@ impl IpcServer {
                             id,
                             output,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1721,14 +1613,14 @@ impl IpcServer {
                             name,
                             count: bundle.extensions.len(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1737,7 +1629,7 @@ impl IpcServer {
             RequestPacket::RuntimeId { request_id } => {
                 let did = state.runtime_identity().runtime_did.clone();
                 let response = ResponsePacket::RuntimeId { request_id, did };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
             RequestPacket::RuntimeInfo { request_id } => {
                 let meta = state.runtime_metadata();
@@ -1757,7 +1649,7 @@ impl IpcServer {
                         },
                     },
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
             RequestPacket::RuntimeList { request_id } => {
                 let registry = state.known_runtimes().read().await;
@@ -1776,7 +1668,7 @@ impl IpcServer {
                     request_id,
                     runtimes,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
             RequestPacket::RuntimeRegister {
                 request_id,
@@ -1802,14 +1694,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1834,14 +1726,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1863,14 +1755,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -1887,7 +1779,7 @@ impl IpcServer {
                         request_id,
                         message: "API key management requires local access".to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 } else if let Some(store) = state.api_key_store() {
                     let parsed_scopes: Vec<crate::auth::types::ApiKeyScope> =
                         scopes.iter().filter_map(|s| s.parse().ok()).collect();
@@ -1898,14 +1790,14 @@ impl IpcServer {
                                 key_id,
                                 full_key,
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: e.to_string(),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                     }
                 } else {
@@ -1913,7 +1805,7 @@ impl IpcServer {
                         request_id,
                         message: "API key store not initialized".to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 }
             }
             RequestPacket::AuthApiKeyList { request_id } => {
@@ -1922,7 +1814,7 @@ impl IpcServer {
                         request_id,
                         message: "API key management requires local access".to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 } else if let Some(store) = state.api_key_store() {
                     let keys = store.list_keys().await;
                     let summaries: Vec<super::packet::ApiKeySummary> = keys
@@ -1940,13 +1832,13 @@ impl IpcServer {
                         request_id,
                         keys: summaries,
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 } else {
                     let response = ResponsePacket::AuthApiKeyList {
                         request_id,
                         keys: Vec::new(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 }
             }
             RequestPacket::AuthApiKeyRevoke { request_id, key_id } => {
@@ -1955,26 +1847,26 @@ impl IpcServer {
                         request_id,
                         message: "API key management requires local access".to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 } else if let Some(store) = state.api_key_store() {
                     match store.revoke_key(&key_id).await {
                         Ok(true) => {
                             let response = ResponsePacket::AuthApiKeyRevoked { request_id, key_id };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Ok(false) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Key '{key_id}' not found"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: e.to_string(),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                     }
                 } else {
@@ -1982,7 +1874,7 @@ impl IpcServer {
                         request_id,
                         message: "API key store not initialized".to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 }
             }
             RequestPacket::AuthStatus { request_id } => {
@@ -1999,7 +1891,7 @@ impl IpcServer {
                     api_key_enabled: auth_config.enable_api_key(),
                     api_key_count,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
 
             // ── Tunnel (ADR-035) ──
@@ -2010,7 +1902,7 @@ impl IpcServer {
                     success: true,
                     error: None,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
             RequestPacket::TunnelStatus { request_id } => {
                 let configured = crate::tunnel::credential::has_pekohub_credential();
@@ -2021,25 +1913,10 @@ impl IpcServer {
                     daemon_running: true,
                     connected,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
 
-            RequestPacket::Status { request_id } => {
-                // Issue #8: comprehensive status including tunnel health.
-                let health = state.tunnel_health().await;
-                let degraded = state.is_degraded().await;
-                let response = ResponsePacket::Status {
-                    request_id,
-                    uptime_secs: state.uptime_seconds(),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                    tunnel_state: health.state_str().to_string(),
-                    tunnel_reconnect_attempts: health.reconnect_attempts(),
-                    tunnel_last_error: health.last_error().map(str::to_string),
-                    degraded,
-                };
-                Self::send_sink(sink, response).await?;
-            }
-
+            
             RequestPacket::InstanceSetStatus {
                 request_id,
                 agent_name,
@@ -2057,7 +1934,7 @@ impl IpcServer {
                                 "Invalid status '{other}'. Expected: online, offline, busy, error"
                             ),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                         return Ok(());
                     }
                 };
@@ -2073,14 +1950,14 @@ impl IpcServer {
                                 success: true,
                                 error: None,
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to set instance status: {e}"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                     }
                 } else {
@@ -2088,7 +1965,7 @@ impl IpcServer {
                         request_id,
                         message: "Tunnel is not active".to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 }
             }
 
@@ -2108,7 +1985,7 @@ impl IpcServer {
                                 "Invalid exposure '{other}'. Expected: unexposed, private, public"
                             ),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                         return Ok(());
                     }
                 };
@@ -2124,14 +2001,14 @@ impl IpcServer {
                                 success: true,
                                 error: None,
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to set instance exposure: {e}"),
                             };
-                            Self::send_sink(sink, response).await?;
+                            send_response(sink, response).await?;
                         }
                     }
                 } else {
@@ -2139,7 +2016,7 @@ impl IpcServer {
                         request_id,
                         message: "Tunnel is not active".to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                 }
             }
 
@@ -2262,7 +2139,7 @@ impl IpcServer {
                         message: format!("[internal_error] {msg}"),
                     },
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
 
             RequestPacket::PrincipalExport {
@@ -2287,14 +2164,14 @@ impl IpcServer {
                             name,
                             output_path: output_path.display().to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Principal export failed: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -2327,14 +2204,14 @@ impl IpcServer {
                             validation_errors: preview.validation_errors,
                             validation_warnings: preview.validation_warnings,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Principal import preview failed: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -2353,7 +2230,7 @@ impl IpcServer {
                         request_id,
                         message: "Principal import was not confirmed. Use the preview flow or pass --yes.".to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                     return Ok(());
                 }
                 let trust_policy = if force {
@@ -2377,14 +2254,14 @@ impl IpcServer {
                             name: result.name,
                             config_path: result.config_path.display().to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Principal import failed: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -2404,14 +2281,14 @@ impl IpcServer {
                             name,
                             digest,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Principal push failed: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -2448,14 +2325,14 @@ impl IpcServer {
                             validation_errors: preview.validation_errors,
                             validation_warnings: preview.validation_warnings,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Principal pull preview failed: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -2478,7 +2355,7 @@ impl IpcServer {
                             "Principal pull was not confirmed. Use the preview flow or pass --yes."
                                 .to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                     return Ok(());
                 }
                 match Self::pull_principal_package(
@@ -2500,14 +2377,14 @@ impl IpcServer {
                             version,
                             digest,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Principal pull failed: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -2533,7 +2410,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Principal '{}' not found", name),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                         return Ok(());
                     }
                 };
@@ -2551,7 +2428,7 @@ impl IpcServer {
                         request_id,
                         message: denied.to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                     return Ok(());
                 }
                 drop(config);
@@ -2585,14 +2462,14 @@ impl IpcServer {
                             subject,
                             permission,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -2618,7 +2495,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Principal '{}' not found", name),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                         return Ok(());
                     }
                 };
@@ -2636,7 +2513,7 @@ impl IpcServer {
                         request_id,
                         message: denied.to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                     return Ok(());
                 }
                 drop(config);
@@ -2667,14 +2544,14 @@ impl IpcServer {
                             subject,
                             permission,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -2687,7 +2564,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Principal '{}' not found", name),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                         return Ok(());
                     }
                 };
@@ -2705,7 +2582,7 @@ impl IpcServer {
                         request_id,
                         message: denied.to_string(),
                     };
-                    Self::send_sink(sink, response).await?;
+                    send_response(sink, response).await?;
                     return Ok(());
                 }
                 let permissions = config.permissions.clone();
@@ -2715,7 +2592,7 @@ impl IpcServer {
                     request_id,
                     permissions,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
 
             RequestPacket::PrincipalSetStatus {
@@ -2736,7 +2613,7 @@ impl IpcServer {
                                 "Invalid status '{other}'. Expected: online, offline, busy, error"
                             ),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                         return Ok(());
                     }
                 };
@@ -2766,14 +2643,14 @@ impl IpcServer {
                             name,
                             status,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Failed to persist status: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             }
@@ -2795,7 +2672,7 @@ impl IpcServer {
                                 "Invalid exposure '{other}'. Expected: unexposed, private, public"
                             ),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                         return Ok(());
                     }
                 };
@@ -2823,20 +2700,36 @@ impl IpcServer {
                             name,
                             exposure,
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Failed to persist exposure: {e}"),
                         };
-                        Self::send_sink(sink, response).await?;
+                        send_response(sink, response).await?;
                     }
                 }
             } // ── Ownership and Permission (ADR-033) ──
               // NOTE: Team transfer/grant/revoke packets were removed along with
               // the team management concept. Only principal-scoped permission ops
               // remain here.
+
+            // Defense-in-depth fallback for any variant not claimed by
+            // a registered handler and not handled above. In normal
+            // operation the handler loop at the top of `handle_request`
+            // dispatches every migrated variant (currently the `system`
+            // domain); this arm only fires if a new `RequestPacket`
+            // variant is added without registering a handler.
+            _ => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!(
+                        "no handler registered for request variant (request_id={request_id})"
+                    ),
+                };
+                send_response(sink, response).await?;
+            }
         }
 
         Ok(())
@@ -2902,7 +2795,7 @@ impl IpcServer {
             request_id,
             receipt,
         };
-        Self::send_sink(sink, response).await?;
+        send_response(sink, response).await?;
 
         Ok(())
     }
@@ -2936,7 +2829,7 @@ impl IpcServer {
                 Some(format!("Task {} not found or already completed", task_id))
             },
         };
-        Self::send_sink(sink, response).await?;
+        send_response(sink, response).await?;
 
         Ok(())
     }
@@ -2998,7 +2891,7 @@ impl IpcServer {
             success,
             error,
         };
-        Self::send_sink(sink, response).await?;
+        send_response(sink, response).await?;
         Ok(())
     }
 
@@ -3019,14 +2912,14 @@ impl IpcServer {
                     request_id,
                     extension_id,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
             Err(e) => {
                 let response = ResponsePacket::Error {
                     request_id,
                     message: e.to_string(),
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
         }
 
@@ -3050,14 +2943,14 @@ impl IpcServer {
                     request_id,
                     extension_id,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
             Err(e) => {
                 let response = ResponsePacket::Error {
                     request_id,
                     message: e.to_string(),
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
         }
 
@@ -3081,14 +2974,14 @@ impl IpcServer {
                     request_id,
                     extension_id,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
             Err(e) => {
                 let response = ResponsePacket::Error {
                     request_id,
                     message: e.to_string(),
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
         }
 
@@ -3120,7 +3013,7 @@ impl IpcServer {
                     restart_count,
                     last_error,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
             None => {
                 let response = ResponsePacket::ExtStatus {
@@ -3130,7 +3023,7 @@ impl IpcServer {
                     restart_count: 0,
                     last_error: None,
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
             }
         }
 
@@ -3719,20 +3612,6 @@ impl IpcServer {
         manager.get_by_name(name).await
     }
 
-    /// Send a response packet back to the client via the per-request sink.
-    ///
-    /// Replaces the pre-ADR-038 `send_packet(&socket, packet, peer)` which
-    /// needed the peer address explicitly. With `ResponseSink` the
-    /// destination is captured once when the sink is built (Unix/UDP) or
-    /// is the per-connection `NamedPipeServer` (Windows), so this helper
-    /// only needs the packet.
-    async fn send_sink(sink: &dyn ResponseSink, packet: ResponsePacket) -> anyhow::Result<()> {
-        let bytes = packet.to_bytes()?;
-        trace!("Sending response: {:?} ({} bytes)", packet, bytes.len());
-        sink.send_bytes(&bytes).await?;
-        Ok(())
-    }
-
     /// Shared body for `RequestPacket::PrincipalSend` and
     /// `RequestPacket::PrincipalSendStream`. Both IPC variants run the
     /// root agent via the streaming machinery (`router.route_streaming`)
@@ -3764,13 +3643,13 @@ impl IpcServer {
                     request_id,
                     message: format!("Principal '{}' not found", name),
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
                 let done = ResponsePacket::Done {
                     request_id,
                     success: false,
                     error: Some(format!("Principal '{name}' not found")),
                 };
-                Self::send_sink(sink, done).await?;
+                send_response(sink, done).await?;
                 return Ok(());
             }
         };
@@ -3789,13 +3668,13 @@ impl IpcServer {
                     request_id,
                     message: e.to_string(),
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
                 let done = ResponsePacket::Done {
                     request_id,
                     success: false,
                     error: Some(e.to_string()),
                 };
-                Self::send_sink(sink, done).await?;
+                send_response(sink, done).await?;
                 return Ok(());
             }
         };
@@ -3811,13 +3690,13 @@ impl IpcServer {
                     content,
                 },
             };
-            Self::send_sink(sink, final_packet).await?;
+            send_response(sink, final_packet).await?;
             let done = ResponsePacket::Done {
                 request_id,
                 success: true,
                 error: None,
             };
-            Self::send_sink(sink, done).await?;
+            send_response(sink, done).await?;
             return Ok(());
         }
 
@@ -3849,13 +3728,13 @@ impl IpcServer {
                     request_id,
                     message: format!("Failed to build router context: {e}"),
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
                 let done = ResponsePacket::Done {
                     request_id,
                     success: false,
                     error: Some(e.to_string()),
                 };
-                Self::send_sink(sink, done).await?;
+                send_response(sink, done).await?;
                 return Ok(());
             }
         };
@@ -3926,7 +3805,7 @@ impl IpcServer {
             };
             if matches!(response_kind, PrincipalSendResponseKind::Streaming) {
                 let packet = ResponsePacket::PrincipalSentChunk { request_id, delta };
-                if let Err(e) = Self::send_sink(sink, packet).await {
+                if let Err(e) = send_response(sink, packet).await {
                     tracing::warn!("failed to send PrincipalSentChunk: {e}; aborting stream");
                     root_agent_handle.abort();
                     let done = ResponsePacket::Done {
@@ -3934,7 +3813,7 @@ impl IpcServer {
                         success: false,
                         error: Some(format!("sink write failed: {e}")),
                     };
-                    Self::send_sink(sink, done).await?;
+                    send_response(sink, done).await?;
                     return Ok(());
                 }
             }
@@ -3967,13 +3846,13 @@ impl IpcServer {
                         content,
                     },
                 };
-                Self::send_sink(sink, final_packet).await?;
+                send_response(sink, final_packet).await?;
                 let done = ResponsePacket::Done {
                     request_id,
                     success: true,
                     error: None,
                 };
-                Self::send_sink(sink, done).await?;
+                send_response(sink, done).await?;
                 state.record_principal_activity(&name).await;
             }
             Err(e) => {
@@ -3982,13 +3861,13 @@ impl IpcServer {
                     request_id,
                     message: message.clone(),
                 };
-                Self::send_sink(sink, response).await?;
+                send_response(sink, response).await?;
                 let done = ResponsePacket::Done {
                     request_id,
                     success: false,
                     error: Some(message),
                 };
-                Self::send_sink(sink, done).await?;
+                send_response(sink, done).await?;
             }
         }
         Ok(())
