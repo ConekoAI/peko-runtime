@@ -1,3 +1,4 @@
+#![cfg(feature = "test-utils")]
 //! Tunnel End-to-End Integration Test (Layer 3)
 //!
 //! Full E2E test: runtime daemon → tunnel → PekoHub → HTTP proxy → chat → LLM → SSE stream
