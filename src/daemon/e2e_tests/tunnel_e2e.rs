@@ -1,7 +1,13 @@
-#![cfg(feature = "test-utils")]
 //! Tunnel End-to-End Integration Test (Layer 3)
 //!
 //! Full E2E test: runtime daemon → tunnel → PekoHub → HTTP proxy → chat → LLM → SSE stream
+//!
+//! Originally `tests/tunnel_e2e.rs`. Moved inline as part of F9.4 so the
+//! `peko::test_utils` / `peko::daemon::state::AppState` exposure can narrow
+//! once this test reaches `crate::daemon::state::AppState` instead of the
+//! external `peko::test_utils` re-export. The test is gated by
+//! `--features test-utils` (declared at the mod site in `src/daemon/mod.rs`)
+//! so it only builds and runs when the user opts in.
 //!
 //! This test requires:
 //!   - Node.js 22+ with tsx installed  (local mode)
@@ -37,19 +43,35 @@
 //!
 //! Run locally with real LLM:
 //!   cd peko-runtime
-//!   MINIMAX_API_KEY=sk-xxx cargo test --test tunnel_e2e -- --ignored
+//!   MINIMAX_API_KEY=sk-xxx cargo test --lib --features test-utils tunnel_e2e -- --ignored
 //!
 //! Run in container with mock LLM:
 //!   PEKOHUB_URL=http://pekohub-test:3000 MOCK_LLM_URL=http://mock-llm:8080 \
-//!     cargo test --test tunnel_e2e -- --ignored
+//!     cargo test --lib --features test-utils tunnel_e2e -- --ignored
 
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use peko::test_utils::{AppState, DaemonConfigSnapshot};
+use crate::daemon::state::{AppState, DaemonConfigSnapshot};
+use crate::tunnel::PekoHubCredential;
+use crate::common::vault::Vault;
 
-mod common;
-use common::{generate_jwt, generate_runtime_identity, PekohubBackend};
+// Helpers used to live in `tests/common/{crypto,auth,harness}.rs`. They are
+// reused from there via `#[path = ...]` so this test file doesn't have to
+// duplicate their bodies; other integration tests still use the same
+// `tests/common/` versions.
+#[path = "../../../tests/common/crypto.rs"]
+mod crypto_helper;
+use crypto_helper::generate_runtime_identity;
+
+#[path = "../../../tests/common/auth.rs"]
+mod auth_helper;
+use auth_helper::generate_jwt;
+
+#[allow(clippy::manual_assert)]
+#[path = "../../../tests/common/harness.rs"]
+mod harness_helper;
+use harness_helper::PekohubBackend;
 
 // ---------------------------------------------------------------------------
 // Workspace setup
@@ -116,8 +138,8 @@ async fn create_test_workspace(
     // `did` field is absent, so we don't need to provision an ed25519
     // key here — the manager takes care of it.
     let principals_dir = config_dir.join("principals");
-    let principal_dir = principals_dir.join(principal_name);
-    tokio::fs::create_dir_all(&principal_dir).await?;
+    let principal_path = principals_dir.join(principal_name);
+    tokio::fs::create_dir_all(&principal_path).await?;
 
     // TOML key-order trap: top-level scalar keys after a `[section]` block
     // are interpreted as belonging to the most recently opened sub-table,
@@ -156,7 +178,7 @@ granted_by = {{ kind = "user", id = "system" }}
 "#
     );
 
-    tokio::fs::write(principal_dir.join("principal.toml"), principal_toml).await?;
+    tokio::fs::write(principal_path.join("principal.toml"), principal_toml).await?;
 
     Ok(())
 }
@@ -175,7 +197,7 @@ fn seed_mock_provider_catalog(
     mock_llm_url: &str,
     api_key: &str,
 ) -> anyhow::Result<()> {
-    use peko::providers::catalog::{
+    use crate::providers::catalog::{
         ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
     };
     use std::collections::BTreeMap;
@@ -228,7 +250,7 @@ fn seed_minimax_catalog_entry(
     workspace_dir: &std::path::Path,
     api_key: &str,
 ) -> anyhow::Result<()> {
-    use peko::providers::catalog::{
+    use crate::providers::catalog::{
         ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
     };
     use std::collections::BTreeMap;
@@ -306,7 +328,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
         // the first SSE chunk arrived (flaked in CI run #28307811834).
         // The agent's own LLM timeout is 5 minutes, so this is well
         // under that ceiling while leaving room for slow providers.
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_mins(1))
         .no_proxy()
         .build()
         .unwrap();
@@ -367,7 +389,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     tokio::fs::create_dir_all(vault_path.parent().unwrap())
         .await
         .unwrap();
-    let vault = peko::common::vault::Vault::with_passphrase(
+    let vault = Vault::with_passphrase(
         &vault_path,
         &secrecy::SecretString::new(vault_passphrase.clone().into()),
     )
@@ -419,12 +441,12 @@ async fn test_e2e_tunnel_chat_with_llm() {
     // that start_tunnel() can find them. The private key lives in the vault
     // at the AppState's config directory.
     let config_dir = workspace_path.join("config");
-    let cred_path = peko::tunnel::PekoHubCredential::path_for_config_dir(&config_dir);
+    let cred_path = PekoHubCredential::path_for_config_dir(&config_dir);
     tokio::fs::create_dir_all(cred_path.parent().unwrap())
         .await
         .unwrap();
 
-    let cred = peko::tunnel::PekoHubCredential {
+    let cred = PekoHubCredential {
         url: backend.ws_url.clone(),
         runtime_id: did.clone(),
         tls: None,

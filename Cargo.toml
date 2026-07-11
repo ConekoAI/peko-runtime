@@ -122,11 +122,10 @@ toml_edit = "0.25.12"
 jsonwebtoken = "9"
 
 [features]
-# `test-utils` is intentionally NOT in `default`: it exposes internal modules
-# (`pub mod test_utils`, the `peko::daemon` re-export) and resolver/hub-directory
-# test hooks that must not ship in the production binary. Integration tests that
-# need internal access opt in explicitly, e.g.
-#   cargo test --features test-utils --test tunnel_e2e
+# `test-utils` is intentionally NOT in `default`: it exposes resolver/hub-directory
+# test hooks that must not ship in the production binary. Tests that need
+# internal access opt in explicitly, e.g.
+#   cargo test --lib --features test-utils daemon::e2e_tests
 default = []
 # Expose internal modules for integration tests
 test-utils = []
@@ -177,10 +176,6 @@ path = "tests/direct_connection.rs"
 [[test]]
 name = "direct_transport_policy"
 path = "tests/direct_transport_policy.rs"
-
-[[test]]
-name = "principal_send_offline"
-path = "tests/principal_send_offline.rs"
 
 # Core tool parity harness for the Claude Code built-in tool surface.
 [[test]]

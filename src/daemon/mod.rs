@@ -470,3 +470,10 @@ mod tests {
         assert!(!status.running);
     }
 }
+
+// Opt-in layered E2E tests against the daemon (formerly
+// `tests/tunnel_e2e.rs`). Gated by `--features test-utils` so the daemon
+// internals can stay `pub(crate)` rather than being inflated to `pub` just
+// to be reachable from a top-level `tests/*.rs` integration harness.
+#[cfg(all(test, feature = "test-utils"))]
+mod e2e_tests;
