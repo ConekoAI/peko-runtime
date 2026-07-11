@@ -2281,3 +2281,63 @@ impl crate::ipc::handlers::provider_mcp::ProviderMcpHost for AppState {
         AppState::reload_mcp_config(self).await
     }
 }
+
+/// F7 twelfth narrow handle: the port the `principal` IPC domain
+/// handler uses. Trait lives in `ipc::handlers::principal`. Most
+/// methods are sync (cheap references / `Arc` clones / `PathBuf`
+/// clones); `tunnel_dispatcher` and `record_principal_activity` are
+/// async because they drive live tunnel / activity-write paths. The
+/// trait needs `async_trait` for those two.
+///
+/// The `principal` domain is the largest of the F6 migrations (17
+/// arms + a sizable set of `build_*` / `import_*` / `push_*` /
+/// `pull_*` / `export_*` / `load_*` / `read_*` helpers). Everything
+/// inside `ipc::handlers::principal` reaches daemon state only
+/// through this trait.
+#[async_trait::async_trait]
+impl crate::ipc::handlers::principal::PrincipalHost for AppState {
+    fn principal_manager(&self) -> &Arc<PrincipalManager> {
+        AppState::principal_manager(self)
+    }
+
+    fn streaming_runs(
+        &self,
+    ) -> Arc<std::sync::Mutex<std::collections::HashMap<u64, StreamingRunHandle>>>
+    {
+        AppState::streaming_runs(self)
+    }
+
+    fn inbox_registry(&self) -> &Arc<crate::session::InboxRegistry> {
+        &self.inbox_registry
+    }
+
+    fn extension_store(&self) -> &Arc<ExtensionStore> {
+        AppState::extension_store(self)
+    }
+
+    fn trust_store(
+        &self,
+    ) -> &Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>> {
+        AppState::trust_store(self)
+    }
+
+    fn config_dir(&self) -> std::path::PathBuf {
+        self.config_dir.clone()
+    }
+
+    fn data_dir(&self) -> std::path::PathBuf {
+        self.data_dir.clone()
+    }
+
+    fn cache_dir(&self) -> std::path::PathBuf {
+        self.cache_dir.clone()
+    }
+
+    async fn record_principal_activity(&self, principal_name: &str) {
+        AppState::record_principal_activity(self, principal_name).await;
+    }
+
+    async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {
+        AppState::tunnel_dispatcher(self).await
+    }
+}
