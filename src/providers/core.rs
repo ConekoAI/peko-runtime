@@ -136,6 +136,20 @@ impl Provider {
             .await
     }
 
+    /// Like [`chat`] but returns the full [`ChatResponse`] including
+    /// token usage. Used by internal callers that need to account for
+    /// the LLM call's cost (e.g. the background compactor, which would
+    /// otherwise have its summarization LLM call drop on the floor).
+    pub async fn chat_response(
+        &self,
+        message: &str,
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<ChatResponse> {
+        self.chat_response_with_system(None, message, model, temperature)
+            .await
+    }
+
     /// Warm up the HTTP connection pool
     pub async fn warmup(&self) -> anyhow::Result<()> {
         Ok(())
@@ -149,6 +163,33 @@ impl Provider {
         _model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
+        let parsed = self
+            .chat_response_with_system(system_prompt, message, _model, temperature)
+            .await?;
+
+        // Extract text from content
+        let text: String = parsed
+            .content
+            .into_iter()
+            .filter_map(|cb| match cb {
+                ContentBlock::Text { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+
+        Ok(text)
+    }
+
+    /// Like [`chat_with_system`] but returns the full [`ChatResponse`]
+    /// (including usage). Kept private by convention; callers should
+    /// prefer [`chat_response`] when no system prompt is needed.
+    pub async fn chat_response_with_system(
+        &self,
+        system_prompt: Option<&str>,
+        message: &str,
+        _model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<ChatResponse> {
         let messages: Vec<LlmMessage> = if let Some(system) = system_prompt {
             vec![LlmMessage::system(system), LlmMessage::user(message)]
         } else {
@@ -162,23 +203,20 @@ impl Provider {
             headers: std::collections::HashMap::new(),
         };
 
+        // Short-circuit to mock adapter (same pattern as
+        // `chat_with_tools`). The mock has no real HTTP response to
+        // parse; routing through `chat_with_tools` lets the queued
+        // `ChatResponse` — including its synthesised `usage` — reach
+        // the compactor and end-to-end tests.
+        if let AnyAdapter::Mock(mock) = &self.adapter {
+            return mock.chat_with_tools(_model, &messages, Some(&[]), &options);
+        }
+
         let (path, body) = self
             .adapter
             .build_request(_model, &messages, None, &options, false)?;
         let response: serde_json::Value = self.client.post_json(&path, &body).await?;
-        let parsed = self.adapter.parse_response(_model, response)?;
-
-        // Extract text from content
-        let text: String = parsed
-            .content
-            .into_iter()
-            .filter_map(|cb| match cb {
-                ContentBlock::Text { text } => Some(text),
-                _ => None,
-            })
-            .collect();
-
-        Ok(text)
+        self.adapter.parse_response(_model, response)
     }
 
     /// Chat with native tool calling support (blocking)

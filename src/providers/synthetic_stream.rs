@@ -79,11 +79,19 @@ pub fn synthesize_stream_from_blocking(
         }
     }
 
-    // Usage
+    // Usage — forward the full breakdown so the engine accumulator
+    // can fold cache / reasoning into the canonical input/output
+    // buckets and also preserve the raw counts in the session JSONL.
     events.push(Ok(StreamEvent::Usage {
         input: response.usage.input,
         output: response.usage.output,
         total: response.usage.total,
+        cache_creation_input_tokens: response
+            .usage
+            .cache_creation_input_tokens
+            .unwrap_or(0),
+        cache_read_input_tokens: response.usage.cache_read_input_tokens.unwrap_or(0),
+        reasoning_output_tokens: response.usage.reasoning_output_tokens.unwrap_or(0),
     }));
 
     // Done

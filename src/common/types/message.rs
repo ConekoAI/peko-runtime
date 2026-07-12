@@ -52,6 +52,35 @@ pub enum ContentBlock {
     },
 }
 
+impl TokenUsage {
+    /// Accumulate `other` into `self`, folding cache reads/writes
+    /// into the canonical `input` bucket and reasoning tokens into
+    /// `output`. Preserves the raw cache/reasoning sub-fields so the
+    /// audit trail in the JSONL session file retains the breakdown.
+    ///
+    /// This mirrors the folding rule used by the engine loop's
+    /// `iteration_usage` accumulator (`engine/agentic_loop.rs`) — a
+    /// single source of truth for "what counts toward a 1M input
+    /// tokens/day quota".
+    pub fn accumulate(&mut self, other: &TokenUsage) {
+        let cache_creation = other.cache_creation_input_tokens.unwrap_or(0);
+        let cache_read = other.cache_read_input_tokens.unwrap_or(0);
+        let reasoning = other.reasoning_output_tokens.unwrap_or(0);
+        self.input += other.input + cache_creation + cache_read;
+        self.output += other.output + reasoning;
+        self.total += other.total + cache_creation + cache_read + reasoning;
+        if cache_creation > 0 {
+            *self.cache_creation_input_tokens.get_or_insert(0) += cache_creation;
+        }
+        if cache_read > 0 {
+            *self.cache_read_input_tokens.get_or_insert(0) += cache_read;
+        }
+        if reasoning > 0 {
+            *self.reasoning_output_tokens.get_or_insert(0) += reasoning;
+        }
+    }
+}
+
 /// Image source for image content blocks
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "source_type", rename_all = "snake_case")]
@@ -73,11 +102,47 @@ pub enum MessageRole {
 }
 
 /// Token usage statistics
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+///
+/// `input` and `output` are the canonical wire-reported counts
+/// (`input_tokens` / `output_tokens` on Anthropic, `prompt_tokens` /
+/// `completion_tokens` on OpenAI). `total` is the provider's wire
+/// `total_tokens` field when present (OpenAI), or `input + output` when
+/// the provider does not report a separate total (Anthropic).
+///
+/// The three cache/reasoning sub-fields are populated only by adapters
+/// that have the corresponding wire fields. They are folded into the
+/// canonical `input` / `output` fields by the engine loop accumulator
+/// for downstream quota accounting, but preserved verbatim here so the
+/// session JSONL retains the raw breakdown for audit.
+///
+/// `#[serde(default)]` on each sub-field keeps old JSONL files
+/// (pre-F17) loadable — missing fields deserialize as `None`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
+    /// Wire-reported prompt / input tokens (uncached, non-reasoning).
     pub input: u64,
+    /// Wire-reported completion / output tokens (including reasoning /
+    /// thinking tokens, which Anthropic folds into `output_tokens`).
     pub output: u64,
+    /// Wire-reported `total_tokens` when the provider supplies one;
+    /// otherwise the loop sets this to `input + output` after
+    /// accumulation.
     pub total: u64,
+    /// Anthropic `cache_creation_input_tokens`. Tokens billed at the
+    /// cache-write rate for newly cached prompt prefixes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+    /// Anthropic `cache_read_input_tokens` / OpenAI
+    /// `prompt_tokens_details.cached_tokens`. Tokens billed at the
+    /// cache-read rate (typically ~10% of input).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    /// OpenAI `completion_tokens_details.reasoning_tokens`. Subset of
+    /// `output` billed at output rate; tracked separately so quota
+    /// users can distinguish "thinking" from "visible text" output.
+    /// Anthropic folds reasoning into `output_tokens` already.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_output_tokens: Option<u64>,
 }
 
 /// Standard LLM message
@@ -616,6 +681,120 @@ impl ContextTransformer for DefaultContextTransformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `TokenUsage::accumulate` folds cache reads + writes into the
+    /// canonical `input` bucket and reasoning into `output`, while
+    /// preserving the raw sub-fields for audit. Single source of truth
+    /// for "what counts toward a quota limit" — used by both the
+    /// engine loop accumulator and the compactor's multi-call rollup.
+    #[test]
+    fn test_token_usage_accumulate_folds_cache_and_reasoning() {
+        let mut total = TokenUsage::default();
+        let iter1 = TokenUsage {
+            input: 100,
+            output: 50,
+            total: 150,
+            cache_creation_input_tokens: Some(1024),
+            cache_read_input_tokens: Some(4096),
+            reasoning_output_tokens: Some(20),
+        };
+        total.accumulate(&iter1);
+        // input folds cache_creation + cache_read in
+        assert_eq!(total.input, 100 + 1024 + 4096);
+        // output folds reasoning in
+        assert_eq!(total.output, 50 + 20);
+        // total adds the same fold
+        assert_eq!(total.total, 150 + 1024 + 4096 + 20);
+        // raw sub-fields preserved for audit
+        assert_eq!(total.cache_creation_input_tokens, Some(1024));
+        assert_eq!(total.cache_read_input_tokens, Some(4096));
+        assert_eq!(total.reasoning_output_tokens, Some(20));
+
+        let iter2 = TokenUsage {
+            input: 50,
+            output: 30,
+            total: 80,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: Some(2048),
+            reasoning_output_tokens: None,
+        };
+        total.accumulate(&iter2);
+        assert_eq!(total.input, (100 + 1024 + 4096) + (50 + 2048));
+        assert_eq!(total.output, (50 + 20) + 30);
+        assert_eq!(total.cache_read_input_tokens, Some(4096 + 2048));
+    }
+
+    /// Accumulating zero usage (e.g. an empty stream) leaves the
+    /// accumulator unchanged and does not insert `Some(0)` sub-fields.
+    /// Sub-fields stay `None` when the added usage had no cache or
+    /// reasoning tokens, so JSONL serialisation skips them.
+    #[test]
+    fn test_token_usage_accumulate_zero_does_not_promote_subfields() {
+        let mut total = TokenUsage::default();
+        let empty = TokenUsage::default();
+        total.accumulate(&empty);
+        assert_eq!(total, TokenUsage::default());
+        assert_eq!(total.cache_creation_input_tokens, None);
+        assert_eq!(total.cache_read_input_tokens, None);
+        assert_eq!(total.reasoning_output_tokens, None);
+    }
+
+    /// Backwards-compat: serialise the pre-F17 shape (no cache or
+    /// reasoning fields) and deserialise into the F17 struct. The
+    /// sub-fields must load as `None` so old JSONL files keep working.
+    #[test]
+    fn test_token_usage_backwards_compat_serde() {
+        let legacy = serde_json::json!({
+            "input": 100,
+            "output": 50,
+            "total": 150,
+        });
+        let usage: TokenUsage = serde_json::from_value(legacy).unwrap();
+        assert_eq!(usage.input, 100);
+        assert_eq!(usage.output, 50);
+        assert_eq!(usage.total, 150);
+        assert_eq!(usage.cache_creation_input_tokens, None);
+        assert_eq!(usage.cache_read_input_tokens, None);
+        assert_eq!(usage.reasoning_output_tokens, None);
+    }
+
+    /// Round-trip: serialise an F17-shaped struct and deserialise it.
+    /// `skip_serializing_if = "Option::is_none"` keeps the on-disk
+    /// shape identical to pre-F17 when the sub-fields are unset, so
+    /// existing tools that read session JSONL see no change.
+    #[test]
+    fn test_token_usage_roundtrip_with_cache_fields() {
+        let usage = TokenUsage {
+            input: 1000,
+            output: 500,
+            total: 1500,
+            cache_creation_input_tokens: Some(1024),
+            cache_read_input_tokens: Some(4096),
+            reasoning_output_tokens: Some(200),
+        };
+        let json = serde_json::to_value(&usage).unwrap();
+        assert_eq!(json["input"], 1000);
+        assert_eq!(json["cache_read_input_tokens"], 4096);
+        let parsed: TokenUsage = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, usage);
+    }
+
+    /// When no sub-fields are populated, serialisation omits them so
+    /// the JSONL shape stays identical to pre-F17.
+    #[test]
+    fn test_token_usage_serialisation_skips_none_subfields() {
+        let usage = TokenUsage {
+            input: 100,
+            output: 50,
+            total: 150,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&usage).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("cache_creation_input_tokens"));
+        assert!(!obj.contains_key("cache_read_input_tokens"));
+        assert!(!obj.contains_key("reasoning_output_tokens"));
+    }
 
     #[test]
     fn test_agent_message_creation() {

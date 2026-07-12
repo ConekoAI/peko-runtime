@@ -20,8 +20,11 @@ use tracing::debug;
 pub struct AnthropicAdapter {
     base_url: String,
     extra_headers: Vec<(String, String)>,
-    /// Accumulates input tokens from `message_start` for usage tracking
-    pending_input_tokens: Arc<Mutex<Option<u32>>>,
+    /// Accumulates input + cache tokens from `message_start` for usage
+    /// tracking. Carries the full `AnthropicUsage` block so the
+    /// `message_delta` path can pair its `output_tokens` with the
+    /// `input_tokens` / `cache_*_tokens` reported at stream start.
+    pending_input_tokens: Arc<Mutex<Option<AnthropicUsage>>>,
     /// Accumulates tool call parts during streaming
     tool_call_accumulator: ToolCallAccumulator,
 }
@@ -324,6 +327,11 @@ impl super::ApiAdapter for AnthropicAdapter {
                 input: u64::from(result.usage.input_tokens),
                 output: u64::from(result.usage.output_tokens),
                 total: u64::from(result.usage.input_tokens + result.usage.output_tokens),
+                cache_creation_input_tokens: result.usage.cache_creation_input_tokens.map(u64::from),
+                cache_read_input_tokens: result.usage.cache_read_input_tokens.map(u64::from),
+                // Anthropic folds thinking/reasoning into output_tokens already;
+                // no separate `reasoning_output_tokens` from the wire.
+                reasoning_output_tokens: None,
             },
             provider: self.name().to_string(),
             model: model_id.to_string(),
@@ -339,9 +347,10 @@ impl super::ApiAdapter for AnthropicAdapter {
             Some("message_start") => {
                 // Clear accumulator at start of new stream
                 self.tool_call_accumulator.reset();
-                // Store input tokens for later combination with output tokens
+                // Store the full usage block (input + cache) for later
+                // combination with output tokens emitted in `message_delta`.
                 if let Some(usage) = event.message.and_then(|m| m.usage) {
-                    *self.pending_input_tokens.lock().unwrap() = Some(usage.input_tokens);
+                    *self.pending_input_tokens.lock().unwrap() = Some(usage);
                 }
                 Ok(Some(StreamEvent::Start {
                     provider: self.name().to_string(),
@@ -441,12 +450,33 @@ impl super::ApiAdapter for AnthropicAdapter {
             Some("message_delta") => {
                 // Check for usage output tokens first
                 if let Some(delta_usage) = event.usage {
-                    let input = self.pending_input_tokens.lock().unwrap().unwrap_or(0);
+                    // The cached `message_start` usage block carries
+                    // input_tokens + cache_creation + cache_read. Pull
+                    // them and combine with the delta's output_tokens
+                    // (and any cache fields the delta updates).
+                    let pending = self.pending_input_tokens.lock().unwrap().clone();
+                    let (input, cache_creation, cache_read) = match pending {
+                        Some(u) => (
+                            u.input_tokens,
+                            u.cache_creation_input_tokens.unwrap_or(0),
+                            u.cache_read_input_tokens.unwrap_or(0),
+                        ),
+                        None => (0, 0, 0),
+                    };
+                    // Delta may refresh cache fields; prefer delta values
+                    // when present, fall back to `message_start`.
+                    let cache_creation =
+                        delta_usage.cache_creation_input_tokens.unwrap_or(cache_creation);
+                    let cache_read =
+                        delta_usage.cache_read_input_tokens.unwrap_or(cache_read);
                     let output = delta_usage.output_tokens;
                     return Ok(Some(StreamEvent::Usage {
                         input: u64::from(input),
                         output: u64::from(output),
                         total: u64::from(input + output),
+                        cache_creation_input_tokens: u64::from(cache_creation),
+                        cache_read_input_tokens: u64::from(cache_read),
+                        reasoning_output_tokens: 0,
                     }));
                 }
                 if let Some(stop_reason) = event.stop_reason {
@@ -552,10 +582,19 @@ enum AnthropicResponseBlock {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
+    /// Tokens billed at the cache-write rate for newly cached prompt
+    /// prefixes. Optional; only present on requests that opt into
+    /// prompt caching.
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    /// Tokens billed at the cache-read rate for cached prompt prefix
+    /// matches. Optional; only present on cache-hit requests.
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -566,6 +605,13 @@ struct AnthropicMessageStartInfo {
 #[derive(Debug, Deserialize)]
 struct AnthropicDeltaUsage {
     output_tokens: u32,
+    /// Cache fields may be updated on the delta event itself
+    /// (Anthropic's `message_delta.usage` reports the *final* cache
+    /// breakdown, which can differ from the `message_start` snapshot).
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -714,15 +760,22 @@ mod tests {
             event,
             Some(crate::providers::StreamEvent::Start { .. })
         ));
-        // Input tokens should be stored
-        assert_eq!(*adapter.pending_input_tokens.lock().unwrap(), Some(25));
+        // The full usage block should be cached for the matching
+        // `message_delta` to combine with `output_tokens`.
+        let stored = adapter.pending_input_tokens.lock().unwrap().clone();
+        assert_eq!(stored.as_ref().map(|u| u.input_tokens), Some(25));
     }
 
     #[test]
     fn test_message_delta_usage_extraction() {
         let adapter = AnthropicAdapter::new();
         // First set up the input tokens (as if message_start was processed)
-        *adapter.pending_input_tokens.lock().unwrap() = Some(25);
+        *adapter.pending_input_tokens.lock().unwrap() = Some(AnthropicUsage {
+            input_tokens: 25,
+            output_tokens: 0,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        });
 
         // message_delta event with output tokens
         let data = r#"{"type":"message_delta","usage":{"output_tokens":12}}"#;
@@ -733,12 +786,103 @@ mod tests {
                 input,
                 output,
                 total,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+                reasoning_output_tokens,
             }) => {
                 assert_eq!(input, 25);
                 assert_eq!(output, 12);
                 assert_eq!(total, 37);
+                assert_eq!(cache_creation_input_tokens, 0);
+                assert_eq!(cache_read_input_tokens, 0);
+                assert_eq!(reasoning_output_tokens, 0);
             }
             _ => panic!("Expected Usage event, got {event:?}"),
         }
+    }
+
+    /// Cache tokens surface end-to-end through the streaming path.
+    /// `message_start` carries the cache breakdown for the request;
+    /// `message_delta` combines it with output_tokens and may also
+    /// refresh cache fields with final values.
+    #[test]
+    fn test_anthropic_cache_tokens_round_trip() {
+        let adapter = AnthropicAdapter::new();
+
+        // message_start reports cache creation + read counts
+        let start_data = r#"{
+            "type":"message_start",
+            "message":{"usage":{
+                "input_tokens":100,
+                "output_tokens":0,
+                "cache_creation_input_tokens":1024,
+                "cache_read_input_tokens":4096
+            }}
+        }"#;
+        let _ = adapter.parse_sse_event("claude-3-sonnet", start_data).unwrap();
+
+        // message_delta updates output_tokens; cache fields are not in
+        // the delta here, so message_start values carry through.
+        let delta_data = r#"{"type":"message_delta","usage":{"output_tokens":50}}"#;
+        let event = adapter.parse_sse_event("claude-3-sonnet", delta_data).unwrap();
+        match event {
+            Some(crate::providers::StreamEvent::Usage {
+                input,
+                output,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+                ..
+            }) => {
+                assert_eq!(input, 100);
+                assert_eq!(output, 50);
+                assert_eq!(cache_creation_input_tokens, 1024);
+                assert_eq!(cache_read_input_tokens, 4096);
+            }
+            _ => panic!("Expected Usage event"),
+        }
+
+        // A second delta with explicit cache values overrides the
+        // message_start snapshot (Anthropic's contract: the delta
+        // carries the *final* breakdown).
+        let delta2 = r#"{"type":"message_delta","usage":{
+            "output_tokens":10,
+            "cache_creation_input_tokens":2048,
+            "cache_read_input_tokens":8192
+        }}"#;
+        let event = adapter.parse_sse_event("claude-3-sonnet", delta2).unwrap();
+        match event {
+            Some(crate::providers::StreamEvent::Usage {
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+                ..
+            }) => {
+                assert_eq!(cache_creation_input_tokens, 2048);
+                assert_eq!(cache_read_input_tokens, 8192);
+            }
+            _ => panic!("Expected Usage event"),
+        }
+    }
+
+    /// Non-streaming `parse_response` populates cache fields when the
+    /// wire response includes them.
+    #[test]
+    fn test_anthropic_parse_response_cache_fields() {
+        let adapter = AnthropicAdapter::new();
+        let response = json!({
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 50,
+                "output_tokens": 20,
+                "cache_creation_input_tokens": 500,
+                "cache_read_input_tokens": 2000
+            }
+        });
+        let parsed = adapter.parse_response("claude-3-sonnet", response).unwrap();
+        assert_eq!(parsed.usage.input, 50);
+        assert_eq!(parsed.usage.output, 20);
+        assert_eq!(parsed.usage.cache_creation_input_tokens, Some(500));
+        assert_eq!(parsed.usage.cache_read_input_tokens, Some(2000));
+        assert_eq!(parsed.usage.reasoning_output_tokens, None);
     }
 }

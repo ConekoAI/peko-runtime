@@ -93,6 +93,7 @@ impl MockAdapter {
                 input: 0,
                 output: output_tokens,
                 total: output_tokens,
+                ..Default::default()
             },
             provider: "mock".to_string(),
             model: self.model.clone(),
@@ -116,6 +117,9 @@ impl MockAdapter {
                 input: 0,
                 output: output_tokens,
                 total: output_tokens,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                reasoning_output_tokens: 0,
             },
             StreamEvent::Done {
                 stop_reason: StopReason::Stop,
@@ -151,6 +155,7 @@ impl MockAdapter {
                 input: 0,
                 output: output_tokens,
                 total: output_tokens,
+                ..Default::default()
             },
             provider: "mock".to_string(),
             model: self.model.clone(),
@@ -175,6 +180,9 @@ impl MockAdapter {
                 input: 0,
                 output: output_tokens,
                 total: output_tokens,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                reasoning_output_tokens: 0,
             },
             StreamEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -353,6 +361,18 @@ impl MockAdapter {
                     input: response.usage.input,
                     output: response.usage.output,
                     total: response.usage.total,
+                    cache_creation_input_tokens: response
+                        .usage
+                        .cache_creation_input_tokens
+                        .unwrap_or(0),
+                    cache_read_input_tokens: response
+                        .usage
+                        .cache_read_input_tokens
+                        .unwrap_or(0),
+                    reasoning_output_tokens: response
+                        .usage
+                        .reasoning_output_tokens
+                        .unwrap_or(0),
                 });
                 evs.push(StreamEvent::Done {
                     stop_reason: response.stop_reason,
