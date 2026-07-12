@@ -669,6 +669,21 @@ impl AgenticLoop {
                 )
                 .await?;
 
+            // Fold the compaction summarization LLM call's usage
+            // into the run's `total_usage`. Previously dropped on
+            // the floor because the compactor returned only the
+            // summary text; this brings long-session runs back into
+            // parity with what the provider actually billed.
+            if let Some(compaction_usage) =
+                compaction_orchestrator.last_compaction_usage()
+            {
+                debug!(
+                    "Compaction summarization used {} input + {} output tokens; folding into total_usage",
+                    compaction_usage.input, compaction_usage.output
+                );
+                total_usage.accumulate(&compaction_usage);
+            }
+
             if iteration > self.max_iterations {
                 warn!("Max iterations ({}) reached", self.max_iterations);
                 on_event(AgenticEvent::Lifecycle {
@@ -835,10 +850,51 @@ impl AgenticLoop {
                                         input,
                                         output,
                                         total,
+                                        cache_creation_input_tokens,
+                                        cache_read_input_tokens,
+                                        reasoning_output_tokens,
                                     } => {
-                                        iteration_usage.input += input;
-                                        iteration_usage.output += output;
-                                        iteration_usage.total += total;
+                                        // Fold cache and reasoning into
+                                        // the canonical input/output
+                                        // buckets for downstream quota
+                                        // accounting. The provider-billed
+                                        // totals are what matter for
+                                        // cost control — a "1M input
+                                        // tokens/day" quota should
+                                        // include cache reads.
+                                        iteration_usage.input += input
+                                            + cache_creation_input_tokens
+                                            + cache_read_input_tokens;
+                                        iteration_usage.output +=
+                                            output + reasoning_output_tokens;
+                                        iteration_usage.total += total
+                                            + cache_creation_input_tokens
+                                            + cache_read_input_tokens
+                                            + reasoning_output_tokens;
+                                        // Preserve the raw breakdown in
+                                        // the session JSONL for audit
+                                        // (the wire `input` / `output`
+                                        // are the uncached, non-reasoning
+                                        // counts — cache and reasoning
+                                        // land in the dedicated fields).
+                                        if cache_creation_input_tokens > 0 {
+                                            *iteration_usage
+                                                .cache_creation_input_tokens
+                                                .get_or_insert(0) +=
+                                                cache_creation_input_tokens;
+                                        }
+                                        if cache_read_input_tokens > 0 {
+                                            *iteration_usage
+                                                .cache_read_input_tokens
+                                                .get_or_insert(0) +=
+                                                cache_read_input_tokens;
+                                        }
+                                        if reasoning_output_tokens > 0 {
+                                            *iteration_usage
+                                                .reasoning_output_tokens
+                                                .get_or_insert(0) +=
+                                                reasoning_output_tokens;
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -1904,6 +1960,9 @@ mod tests {
                 input: 0,
                 output: 0,
                 total: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                reasoning_output_tokens: 0,
             },
             crate::providers::StreamEvent::Done {
                 stop_reason: StopReason::ToolUse,

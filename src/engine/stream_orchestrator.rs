@@ -565,6 +565,9 @@ mod tests {
             input: 10,
             output: 5,
             total: 15,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+            reasoning_output_tokens: 0,
         });
 
         assert!(events.is_empty(), "Usage event should return empty vec");

@@ -142,6 +142,7 @@ impl SessionMessage {
                     input: 0,
                     output: 0,
                     total: 0,
+                    ..Default::default()
                 },
             },
         }
@@ -300,6 +301,7 @@ mod tests {
             input: 10,
             output: 5,
             total: 15,
+            ..Default::default()
         };
         let msg = SessionMessage::assistant_with_blocks(
             vec![ContentBlock::Text {

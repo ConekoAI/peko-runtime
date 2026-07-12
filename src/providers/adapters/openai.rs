@@ -219,6 +219,21 @@ impl super::ApiAdapter for OpenAiAdapter {
                 input: u64::from(completion.usage.prompt_tokens),
                 output: u64::from(completion.usage.completion_tokens),
                 total: u64::from(completion.usage.total_tokens),
+                // OpenAI does not have cache_creation; only cache reads
+                // via `prompt_tokens_details.cached_tokens`.
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: completion
+                    .usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.cached_tokens)
+                    .map(u64::from),
+                reasoning_output_tokens: completion
+                    .usage
+                    .completion_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.reasoning_tokens)
+                    .map(u64::from),
             },
             provider: self.name().to_string(),
             model: model_id.to_string(),
@@ -243,6 +258,17 @@ impl super::ApiAdapter for OpenAiAdapter {
                 input: u64::from(usage.prompt_tokens),
                 output: u64::from(usage.completion_tokens),
                 total: u64::from(usage.total_tokens),
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.cached_tokens)
+                    .map_or(0, u64::from),
+                reasoning_output_tokens: usage
+                    .completion_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.reasoning_tokens)
+                    .map_or(0, u64::from),
             }));
         }
 
@@ -402,6 +428,27 @@ struct OpenAiUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
+    /// OpenAI `prompt_tokens_details.cached_tokens`. Optional; only
+    /// present on requests that opt into prompt caching. Billed at a
+    /// discounted rate but still consumes input quota.
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+    /// OpenAI `completion_tokens_details.reasoning_tokens`. Subset of
+    /// `completion_tokens` for o-series reasoning. Optional.
+    #[serde(default)]
+    completion_tokens_details: Option<OpenAiCompletionTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiPromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -521,12 +568,77 @@ mod tests {
                 input,
                 output,
                 total,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+                reasoning_output_tokens,
             }) => {
                 assert_eq!(input, 10);
                 assert_eq!(output, 5);
                 assert_eq!(total, 15);
+                // No cache or reasoning fields in this fixture.
+                assert_eq!(cache_creation_input_tokens, 0);
+                assert_eq!(cache_read_input_tokens, 0);
+                assert_eq!(reasoning_output_tokens, 0);
             }
             _ => panic!("Expected Usage event, got {event:?}"),
         }
+    }
+
+    /// `prompt_tokens_details.cached_tokens` and
+    /// `completion_tokens_details.reasoning_tokens` surface in the
+    /// streaming Usage event when the final chunk carries them.
+    #[test]
+    fn test_parse_sse_cached_and_reasoning_tokens() {
+        let adapter = OpenAiAdapter::new();
+        let data = r#"{
+            "choices":[],
+            "usage":{
+                "prompt_tokens":1000,
+                "completion_tokens":500,
+                "total_tokens":1500,
+                "prompt_tokens_details":{"cached_tokens":800},
+                "completion_tokens_details":{"reasoning_tokens":200}
+            }
+        }"#;
+        let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
+        match event {
+            Some(crate::providers::StreamEvent::Usage {
+                input,
+                output,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+                reasoning_output_tokens,
+                ..
+            }) => {
+                assert_eq!(input, 1000);
+                assert_eq!(output, 500);
+                assert_eq!(cache_creation_input_tokens, 0);
+                assert_eq!(cache_read_input_tokens, 800);
+                assert_eq!(reasoning_output_tokens, 200);
+            }
+            _ => panic!("Expected Usage event"),
+        }
+    }
+
+    /// Non-streaming parse_response populates cache + reasoning.
+    #[test]
+    fn test_parse_response_cached_and_reasoning_tokens() {
+        let adapter = OpenAiAdapter::new();
+        let response = json!({
+            "choices": [{"message": {"content": "ok", "role": "assistant"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "total_tokens": 1500,
+                "prompt_tokens_details": {"cached_tokens": 800},
+                "completion_tokens_details": {"reasoning_tokens": 200}
+            }
+        });
+        let parsed = adapter.parse_response("gpt-4o-mini", response).unwrap();
+        assert_eq!(parsed.usage.input, 1000);
+        assert_eq!(parsed.usage.output, 500);
+        assert_eq!(parsed.usage.cache_creation_input_tokens, None);
+        assert_eq!(parsed.usage.cache_read_input_tokens, Some(800));
+        assert_eq!(parsed.usage.reasoning_output_tokens, Some(200));
     }
 }

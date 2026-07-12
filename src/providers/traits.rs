@@ -121,12 +121,21 @@ pub enum StreamEvent {
     },
     /// Token usage information (typically sent at end of stream)
     Usage {
-        /// Input tokens
+        /// Input tokens (uncached, non-reasoning)
         input: u64,
-        /// Output tokens
+        /// Output tokens (includes reasoning/thinking tokens, which the
+        /// provider already folds into `completion_tokens` /
+        /// `output_tokens`)
         output: u64,
-        /// Total tokens
+        /// Total tokens (wire-reported `total_tokens` when present;
+        /// otherwise `input + output`)
         total: u64,
+        /// Tokens billed at cache-write rate (Anthropic only)
+        cache_creation_input_tokens: u64,
+        /// Tokens billed at cache-read rate (Anthropic + OpenAI)
+        cache_read_input_tokens: u64,
+        /// Reasoning tokens within `output` (OpenAI o-series)
+        reasoning_output_tokens: u64,
     },
     /// Error occurred
     Error {

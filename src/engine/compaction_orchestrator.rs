@@ -44,6 +44,12 @@ pub struct CompactionOrchestrator {
     compaction_performed: bool,
     /// Last compaction result for post-hook
     last_compaction_result: Option<CompactionResult>,
+    /// Usage consumed by the most recent compaction's summarization
+    /// LLM call(s). The engine loop reads this via
+    /// [`Self::last_compaction_usage`] and folds it into the run's
+    /// `total_usage` so the cost of compaction is not silently
+    /// dropped on the floor.
+    last_compaction_usage: Option<crate::providers::TokenUsage>,
 }
 
 impl CompactionOrchestrator {
@@ -71,6 +77,7 @@ impl CompactionOrchestrator {
             pending_compaction: None,
             compaction_performed: false,
             last_compaction_result: None,
+            last_compaction_usage: None,
         }
     }
 
@@ -127,6 +134,10 @@ impl CompactionOrchestrator {
                 .await;
             self.compaction_performed = false;
             self.last_compaction_result = None;
+            // `last_compaction_usage` is intentionally NOT cleared
+            // here — the engine loop drains it via `last_compaction_usage()`
+            // after `check_and_compact` returns, so the usage reaches
+            // `total_usage` for this iteration.
         }
 
         Ok(true)
@@ -137,6 +148,16 @@ impl CompactionOrchestrator {
         self.pending_compaction = None;
         self.compaction_performed = false;
         self.last_compaction_result = None;
+        self.last_compaction_usage = None;
+    }
+
+    /// Token usage consumed by the most recent compaction's
+    /// summarization LLM call(s). Returns `None` if no compaction has
+    /// completed yet (or since the last reset). The engine loop
+    /// drains this after `check_and_compact` returns and folds the
+    /// value into its run-level `total_usage`.
+    pub fn last_compaction_usage(&mut self) -> Option<crate::providers::TokenUsage> {
+        self.last_compaction_usage.take()
     }
 
     /// Get the context window size.
@@ -253,6 +274,13 @@ impl CompactionOrchestrator {
                             *messages = result.messages.clone();
                             self.compaction_performed = true;
                             self.last_compaction_result = Some(result.clone());
+                            // Stash the summarization LLM call usage
+                            // so the engine loop can fold it into
+                            // `total_usage` after `check_and_compact`
+                            // returns. Previously this cost was
+                            // silently dropped because the compactor
+                            // returned only the summary text.
+                            self.last_compaction_usage = Some(result.usage);
                             info!(
                                 "Background compaction #{} complete: {} messages → summary, saved {} tokens ({} → {})",
                                 result.entry.compaction_number,

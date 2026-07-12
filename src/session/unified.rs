@@ -500,16 +500,21 @@ impl Session {
                 },
             },
             "assistant" => {
+                // Pass the provider-reported usage through verbatim,
+                // including the wire `total` and any cache/reasoning
+                // sub-fields. The previous implementation recomputed
+                // `total = input + output`, which silently discarded
+                // the wire `total_tokens` (lossy for OpenAI, harmless
+                // for Anthropic) and dropped the new cache fields.
                 let token_usage = usage.as_ref().map_or(
-                    crate::common::types::message::TokenUsage {
-                        input: 0,
-                        output: 0,
-                        total: 0,
-                    },
+                    crate::common::types::message::TokenUsage::default(),
                     |u| crate::common::types::message::TokenUsage {
                         input: u.input,
                         output: u.output,
-                        total: u.input + u.output,
+                        total: u.total,
+                        cache_creation_input_tokens: u.cache_creation_input_tokens,
+                        cache_read_input_tokens: u.cache_read_input_tokens,
+                        reasoning_output_tokens: u.reasoning_output_tokens,
                     },
                 );
 
@@ -1357,6 +1362,91 @@ mod tests {
             context.len(),
             0,
             "SessionCreated events should not appear in context"
+        );
+    }
+
+    /// F17: JSONL rehydration must preserve the wire `total` and
+    /// the cache/reasoning sub-fields on assistant message usage.
+    /// Pre-F17, `add_llm_message` recomputed `total = input + output`,
+    /// silently dropping the wire `total_tokens` (which can be off
+    /// from `input + output` for OpenAI when cached tokens are
+    /// priced into `total_tokens` but not into `prompt_tokens`).
+    /// The fix threads the provider-reported `TokenUsage` through
+    /// verbatim into `RoleMetadata::Assistant.usage`.
+    #[tokio::test]
+    async fn test_jsonl_rehydration_preserves_wire_total_and_cache_subfields() {
+        use crate::session::events::SessionEvent;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let session_id = "test-session-rehydrate";
+
+        storage.create_session(session_id, None).await.unwrap();
+
+        // Build an assistant message with a usage shape that would
+        // be lossy if anyone recomputed `total = input + output`:
+        //   input=100, output=50, total=999 — the wire value, off
+        //   from input+output=150 by 849 (the cache-read tokens
+        //   OpenAI prices into `total_tokens` but not into
+        //   `prompt_tokens`).
+        let wire_usage = crate::common::types::message::TokenUsage {
+            input: 100,
+            output: 50,
+            total: 999,
+            cache_creation_input_tokens: Some(7),
+            cache_read_input_tokens: Some(842),
+            reasoning_output_tokens: Some(20),
+        };
+        let session_msg = crate::session::message::SessionMessage::assistant_with_blocks(
+            vec![crate::common::types::message::ContentBlock::Text {
+                text: "Hello".to_string(),
+            }],
+            "openai",
+            "gpt-4o",
+            wire_usage,
+        );
+
+        storage
+            .append_event(session_id, &SessionEvent::MessageV2(session_msg))
+            .await
+            .unwrap();
+
+        // Reload events from disk and extract the round-tripped usage.
+        let events = storage.load_events(session_id).await.unwrap();
+        let assistant_event = events
+            .iter()
+            .find_map(|e| match e {
+                SessionEvent::MessageV2(m) => Some(m),
+                _ => None,
+            })
+            .expect("assistant message must round-trip");
+
+        let loaded = match &assistant_event.role_metadata {
+            crate::session::message::RoleMetadata::Assistant { usage, .. } => *usage,
+            other => panic!("expected Assistant role_metadata, got {other:?}"),
+        };
+
+        assert_eq!(loaded.input, 100, "input must round-trip");
+        assert_eq!(loaded.output, 50, "output must round-trip");
+        assert_eq!(
+            loaded.total, 999,
+            "wire total (999) must round-trip verbatim — not input+output"
+        );
+        assert_eq!(
+            loaded.cache_creation_input_tokens,
+            Some(7),
+            "cache_creation_input_tokens must round-trip"
+        );
+        assert_eq!(
+            loaded.cache_read_input_tokens,
+            Some(842),
+            "cache_read_input_tokens must round-trip"
+        );
+        assert_eq!(
+            loaded.reasoning_output_tokens,
+            Some(20),
+            "reasoning_output_tokens must round-trip"
         );
     }
 }
