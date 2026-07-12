@@ -4,7 +4,8 @@ use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
 use crate::auth::Subject;
 use crate::common::paths::PathResolver;
-use crate::common::types::agent_legacy::AgentState;
+use crate::engine::state::StateMachine;
+use crate::engine::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
@@ -14,7 +15,7 @@ use crate::session::InboxRegistry;
 use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::{debug, error, info, warn};
 
@@ -22,8 +23,8 @@ use tracing::{debug, error, info, warn};
 pub struct Agent {
     /// Agent configuration
     pub config: AgentConfig,
-    /// Current state
-    state: Arc<RwLock<AgentState>>,
+    /// Current state (atomic, lock-free; see [`crate::engine::state::StateMachine`]).
+    state: Arc<StateMachine>,
     /// Agent identity
     pub identity: Identity,
     /// LLM provider (stored in Arc for sharing with agentic loop).
@@ -540,7 +541,7 @@ impl Agent {
 
         let agent = Self {
             config,
-            state: Arc::new(RwLock::new(AgentState::Idle)),
+            state: Arc::new(StateMachine::new()),
             identity,
             provider,
             llm_resolver,
@@ -763,7 +764,7 @@ impl Agent {
         let principal_name = subagent_executor.principal_name().map(String::from);
         let agent = Self {
             config,
-            state: Arc::new(RwLock::new(AgentState::Idle)),
+            state: Arc::new(StateMachine::new()),
             identity,
             provider,
             llm_resolver,
@@ -821,7 +822,7 @@ impl Agent {
     /// Get current state
     #[must_use]
     pub fn state(&self) -> AgentState {
-        self.state.read().unwrap().clone()
+        self.state.current()
     }
 
     /// Get provider reference
@@ -833,12 +834,12 @@ impl Agent {
     /// Set state
     /// Set agent state (public for channel use)
     pub fn set_state(&self, state: AgentState) {
-        let mut current = self.state.write().unwrap();
-        debug!(
-            "Agent {} state: {:?} -> {:?}",
-            self.config.name, *current, state
-        );
-        *current = state;
+        let prev = self.state.current();
+        match state {
+            AgentState::Idle => self.state.set_idle(),
+            AgentState::Busy => self.state.set_busy(),
+        }
+        debug!("Agent {} state: {:?} -> {:?}", self.config.name, prev, state);
     }
 
     /// Get the provider as an `Arc`.
@@ -877,14 +878,12 @@ impl Agent {
             return Err(anyhow::anyhow!("No provider configured"));
         };
 
-        if self.state() != AgentState::Idle {
+        if !self.state.try_acquire() {
             return Err(anyhow::anyhow!(
                 "Agent is not idle (current state: {:?})",
-                self.state()
+                self.state.current()
             ));
         }
-
-        self.set_state(AgentState::Busy);
 
         if let Err(e) = self.prepare_execution().await {
             self.set_state(AgentState::Idle);
@@ -962,14 +961,12 @@ impl Agent {
             return Err(anyhow::anyhow!("No provider configured"));
         };
 
-        if self.state() != AgentState::Idle {
+        if !self.state.try_acquire() {
             return Err(anyhow::anyhow!(
                 "Agent is not idle (current state: {:?})",
-                self.state()
+                self.state.current()
             ));
         }
-
-        self.set_state(AgentState::Busy);
 
         if let Err(e) = self.prepare_execution().await {
             self.set_state(AgentState::Idle);
@@ -1034,14 +1031,12 @@ impl Agent {
             return Err(anyhow::anyhow!("No provider configured"));
         };
 
-        if self.state() != AgentState::Idle {
+        if !self.state.try_acquire() {
             return Err(anyhow::anyhow!(
                 "Agent is not idle (current state: {:?})",
-                self.state()
+                self.state.current()
             ));
         }
-
-        self.set_state(AgentState::Busy);
 
         // Capture current session ID so session tool can look it up
         {
@@ -1645,7 +1640,7 @@ impl Agent {
 
         Ok(Self {
             config,
-            state: Arc::new(RwLock::new(AgentState::Idle)),
+            state: Arc::new(StateMachine::new()),
             identity,
             provider,
             llm_resolver: None,
