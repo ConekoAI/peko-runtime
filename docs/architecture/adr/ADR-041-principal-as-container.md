@@ -91,7 +91,7 @@ pub struct Principal {
 - `identity: PrincipalIdentityConfig` — display name, description
 - `governance: PrincipalGovernanceConfig` — permissions list
 - `memory: PrincipalMemoryConfig` — consolidation / TTL policy
-- `routing: PrincipalRoutingConfig` — `root_prompt: Option<PathBuf>`, `context_window_messages`, `recall_top_k`
+- `routing: PrincipalRoutingConfig` — `root_prompt: Option<PathBuf>`, `recall_top_k`
 - `capabilities: Capabilities` — `[capabilities] grants` is the single source of truth for extension/tool/agent authority (the earlier `allowed_extensions` field was removed)
 
 ### 2.4 Sessions are internal mechanics

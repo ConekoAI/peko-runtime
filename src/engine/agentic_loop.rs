@@ -19,7 +19,7 @@ use crate::extensions::framework::async_exec::executor::completion_queue::InboxI
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
 use crate::extensions::framework::types::SessionSnapshot;
 use crate::extensions::framework::{HookInput, HookPoint};
-use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition};
+use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS};
 use crate::session::Session;
 use anyhow::Result;
 use chrono::Utc;
@@ -696,7 +696,7 @@ impl AgenticLoop {
             // Chat options
             let options = ChatOptions {
                 temperature: Some(0.7),
-                max_tokens: Some(4096),
+                max_tokens: Some(DEFAULT_MAX_OUTPUT_TOKENS),
                 api_key: None,
                 headers: std::collections::HashMap::new(),
             };

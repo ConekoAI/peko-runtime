@@ -15,6 +15,7 @@ use crate::common::types::provider::{ProviderConfig, ProviderType};
 use crate::providers::{
     adapters::{AnthropicAdapter, AnyAdapter, OpenAiAdapter, OpenAiCompatibleAdapter},
     core::Provider,
+    DEFAULT_MAX_OUTPUT_TOKENS,
 };
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -427,7 +428,7 @@ pub fn create_provider_by_name(name: &str) -> Result<Arc<Provider>> {
         "default".to_string(),
         crate::common::types::provider::ModelConfig {
             name: metadata.default_model.to_string(),
-            max_tokens: 4096,
+            max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
             temperature: 0.7,
             top_p: 1.0,
             presence_penalty: 0.0,

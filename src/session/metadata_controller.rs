@@ -279,36 +279,6 @@ impl MetadataController {
         self.update_entry(entry).await
     }
 
-    /// Record token usage for a session
-    ///
-    /// `last_total_tokens` is the `total_tokens` reported by the
-    /// provider on the last assistant turn. `input_tokens` and
-    /// `output_tokens` are the incremental tokens for this turn.
-    pub async fn record_token_usage(
-        &mut self,
-        session_id: &str,
-        last_total_tokens: usize,
-        input_tokens: usize,
-        output_tokens: usize,
-    ) -> Result<()> {
-        debug!(
-            "Recording token usage for {}: last_total={}, in={}, out={}",
-            session_id, last_total_tokens, input_tokens, output_tokens
-        );
-
-        let mut entry = match self.get_entry(session_id, false).await? {
-            Some(e) => e,
-            None => {
-                return Err(anyhow::anyhow!(
-                    "Cannot record tokens for non-existent session {session_id}"
-                ));
-            }
-        };
-
-        entry.record_tokens(last_total_tokens, input_tokens, output_tokens);
-        self.update_entry(entry).await
-    }
-
     /// Delete metadata
     pub async fn delete_metadata(&mut self, session_id: &str) -> Result<bool> {
         debug!("Deleting metadata for session {}", session_id);

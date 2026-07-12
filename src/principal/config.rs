@@ -224,9 +224,6 @@ pub struct PrincipalRoutingConfig {
     #[serde(default)]
     pub root_prompt: Option<PathBuf>,
 
-    #[serde(default = "default_context_window_messages")]
-    pub context_window_messages: usize,
-
     #[serde(default = "default_recall_top_k")]
     pub recall_top_k: usize,
 
@@ -238,15 +235,10 @@ impl Default for PrincipalRoutingConfig {
     fn default() -> Self {
         Self {
             root_prompt: None,
-            context_window_messages: default_context_window_messages(),
             recall_top_k: default_recall_top_k(),
             max_router_iterations: default_max_router_iterations(),
         }
     }
-}
-
-fn default_context_window_messages() -> usize {
-    50
 }
 
 fn default_recall_top_k() -> usize {

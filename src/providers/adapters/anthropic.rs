@@ -8,6 +8,7 @@ use crate::providers::types::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolDefinition,
 };
+use crate::providers::DEFAULT_MAX_OUTPUT_TOKENS;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -246,7 +247,7 @@ impl super::ApiAdapter for AnthropicAdapter {
         let mut body = json!({
             "model": model_id,
             "messages": anthropic_messages,
-            "max_tokens": options.max_tokens.unwrap_or(4096),
+            "max_tokens": options.max_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
             "stream": stream,
         });
 

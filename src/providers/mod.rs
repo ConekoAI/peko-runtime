@@ -43,3 +43,17 @@ pub use types::{
 
 // Types still defined in traits.rs for historical reasons; imported via types::*
 pub mod traits;
+
+/// Fallback for `ChatOptions::max_tokens` and `ModelConfig::max_tokens`
+/// when neither the caller nor the catalog supplies a value.
+///
+/// 4096 fits the lower bound of every Anthropic and OpenAI model that
+/// supports tool use. The preferred source is
+/// `ProviderCatalog::model_max_output_tokens` (when wired into the
+/// caller) or `ModelInfo::max_output_tokens` from the catalog
+/// directly. This constant exists so the bare `4096` literal does not
+/// drift across `ChatOptions` construction sites.
+///
+/// See `crate::providers::catalog::ProviderCatalog::model_context_length`
+/// for the analogous context-length defaulting pattern (PR-B / F15).
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
