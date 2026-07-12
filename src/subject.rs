@@ -27,6 +27,20 @@ impl PrincipalId {
     pub fn generate() -> Self {
         Self(format!("prin_{}", uuid::Uuid::new_v4().simple()))
     }
+
+    /// Canonical "system" sentinel for tools registered once on the shared
+    /// `ExtensionCore` (built-ins, universal extensions, MCP servers) and
+    /// visible to every principal.
+    ///
+    /// The inner string is prefixed with `__` so generated ids
+    /// (`prin_<uuid>` from [`PrincipalId::generate`]) cannot collide.
+    /// Lookup helpers use this as the fallback target when a principal
+    /// has no `(tool_name, principal_id)` entry of its own.
+    #[must_use]
+    pub fn system() -> &'static Self {
+        static SYSTEM: std::sync::OnceLock<PrincipalId> = std::sync::OnceLock::new();
+        SYSTEM.get_or_init(|| PrincipalId(String::from("__system__")))
+    }
 }
 
 impl fmt::Display for PrincipalId {
@@ -288,6 +302,20 @@ pub fn subject_from_string_with_default_user(s: &str) -> Subject {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_system_id_is_static_and_stable() {
+        // Same address on every call — the &'static guarantee is load-bearing
+        // for hot-path callers that don't want to clone.
+        let a: *const PrincipalId = PrincipalId::system();
+        let b: *const PrincipalId = PrincipalId::system();
+        assert_eq!(a, b, "system() must return the same static address");
+        // Display form is the documented sentinel.
+        assert_eq!(PrincipalId::system().to_string(), "__system__");
+        // Generated ids cannot collide with the sentinel.
+        let generated = PrincipalId::generate().to_string();
+        assert!(!generated.starts_with("__system__"));
+    }
 
     #[test]
     fn test_display_round_trip() {
