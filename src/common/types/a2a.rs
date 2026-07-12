@@ -1,14 +1,28 @@
-//! A2A message request/response types and the `AgentMessageService` trait.
+//! Principal-level message request/response types and the
+//! `AgentMessageService` trait.
 //!
-//! These types were originally defined in `tunnel::a2a_message_types` and the
-//! trait lived in `tunnel::principal_send_tool`. They were promoted to
-//! `common::types::a2a` so `src/extensions/framework/` can hold a trait-object
-//! reference to an agent message service without depending on the concrete
-//! `agents::StatelessAgentService` or on `tunnel` types (Issue 015/020 boundary
-//! Rule 5).
+//! The shapes here describe **principal-to-principal** messaging — the
+//! canonical wire envelope is the protocol's A2A (Agent-to-Agent) envelope
+//! (Google's protocol nomenclature), but the in-process semantic role is
+//! `PrincipalMessageRequest`/`PrincipalMessageResponse`: one principal
+//! invokes another's root agent.
 //!
-//! `tunnel::a2a_message_types` and `tunnel::principal_send_tool` keep thin re-exports
-//! for backward compatibility with existing callers.
+//! Lives here (not in `tunnel` or `agents`) so the extension framework can
+//! hold an `Arc<dyn AgentMessageService>` without depending on either the
+//! concrete `agents::StatelessAgentService` (cycle 5) or `tunnel` types
+//! (Rule 5 of the Issue 015/020 boundary).
+//!
+//! ## Within-principal vs across-principal note
+//!
+//! The same execution engine (`StatelessAgentService`, the sole implementor
+//! of `AgentMessageService`) services both:
+//!   - **across-principal**: tunnel-driven `principal_send` traffic
+//!     (`src/principal/principal_send_tool.rs`); and
+//!   - **within-principal**: synchronous same-runtime agent dispatch (CLI
+//!     frontends, IPC `Execute` path).
+//!
+//! Root-agent → subagent dispatch uses a different shape entirely (the
+//! `AgentTool` and `AgentConfig`), not these envelope types.
 
 use crate::auth::Subject;
 use crate::common::types::message::TokenUsage;
@@ -26,13 +40,15 @@ pub struct ToolCallInfo {
     pub result: Option<String>,
 }
 
-/// Message request for high-level message execution
+/// Message request for high-level (principal-level) message execution
 ///
-/// This type is used by `execute_message()` and `execute_message_streaming()`
-/// to provide a unified interface for message sending.
+/// This type is used by `execute_message()` to describe the principal
+/// message service contract: one principal invokes another's root agent,
+/// carrying the prompt, optional session continuity, caller identity, and
+/// timeout. The on-wire A2A envelope carries the same fields.
 #[derive(Debug, Clone)]
-pub struct A2aMessageRequest {
-    /// Agent name
+pub struct PrincipalMessageRequest {
+    /// Agent name (within the target principal — typically the root agent)
     pub agent_name: String,
     /// Message content
     pub message: String,
@@ -45,27 +61,28 @@ pub struct A2aMessageRequest {
     /// Resolved caller identity for session isolation.
     ///
     /// Empty by default — production callers **must** set this explicitly
-    /// via [`A2aMessageRequest::with_user`] before handing the request to
-    /// the agentic loop. The legacy literal `"default"` was removed
-    /// (issue #17) so that no production path can ever attribute a
+    /// via [`PrincipalMessageRequest::with_user`] before handing the
+    /// request to the agentic loop. The legacy literal `"default"` was
+    /// removed (issue #17) so that no production path can ever attribute a
     /// request to a placeholder user. Tests that don't care about
     /// per-user attribution can leave this empty.
     pub user: String,
-    /// Caller agent name for A2A messaging (optional)
+    /// Caller agent name for principal-to-principal messaging (optional)
     pub caller_agent: Option<String>,
     /// Resolved caller principal for session peer attribution
     /// (issue #24). When set, this takes precedence over
-    /// [`A2aMessageRequest::user`] when constructing the session peer.
+    /// [`PrincipalMessageRequest::user`] when constructing the session
+    /// peer.
     pub caller_principal: Option<Subject>,
 }
 
-impl A2aMessageRequest {
+impl PrincipalMessageRequest {
     /// Create a new message request.
     ///
     /// `user` defaults to the empty string. Production code paths
     /// (tunnel dispatcher, IPC server, CLI frontends) all override this
-    /// via [`A2aMessageRequest::with_user`] so the agentic loop and audit
-    /// log see a real, resolved caller. Tests can leave it empty.
+    /// via [`PrincipalMessageRequest::with_user`] so the agentic loop and
+    /// audit log see a real, resolved caller. Tests can leave it empty.
     pub fn new(agent_name: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             agent_name: agent_name.into(),
@@ -112,7 +129,7 @@ impl A2aMessageRequest {
         self
     }
 
-    /// Set caller agent name for A2A messaging
+    /// Set caller agent name for principal-to-principal messaging
     #[must_use]
     pub fn with_caller_agent(mut self, caller: impl Into<String>) -> Self {
         self.caller_agent = Some(caller.into());
@@ -128,10 +145,10 @@ impl A2aMessageRequest {
 
     /// Set the resolved caller principal (issue #24).
     ///
-    /// Use this for A2A messaging paths where the caller is an agent,
-    /// not a user. The principal is used to construct the session peer
-    /// on the receiving agent so the session is keyed under
-    /// `agent:{caller}` (not `user:{caller}`).
+    /// Use this for principal-to-principal messaging paths where the
+    /// caller is another principal, not a user. The principal is used to
+    /// construct the session peer on the receiving principal so the
+    /// session is keyed under `principal:{caller}` (not `user:{caller}`).
     #[must_use]
     pub fn with_caller_principal(mut self, principal: Subject) -> Self {
         self.caller_principal = Some(principal);
@@ -151,7 +168,7 @@ impl A2aMessageRequest {
 ///
 /// This is the high-level result type returned by `execute_message()`
 #[derive(Debug, Clone)]
-pub struct A2aMessageResponse {
+pub struct PrincipalMessageResponse {
     /// Response content
     pub content: String,
     /// Session ID used
@@ -172,18 +189,19 @@ pub struct A2aMessageResponse {
     pub error: Option<String>,
 }
 
-/// Convenience aliases used by the A2A tool and agent service.
-pub use self::{A2aMessageRequest as MessageRequest, A2aMessageResponse as MessageResult};
-
-/// Minimum interface the A2A send tool needs from a peer agent service.
+/// Minimum interface the principal-send tool needs from a peer principal
+/// message service.
 ///
-/// Lives in `common::types::a2a` (not `agents`) so callers can construct
-/// `Arc<dyn AgentMessageService>` without depending on the concrete
-/// `StatelessAgentService` type. Implementations convert the common
-/// request/response types to whatever internal shape they use.
+/// Lives in `common::types::a2a` (not in `agents` or `tunnel`) so callers
+/// can construct `Arc<dyn AgentMessageService>` without depending on the
+/// concrete `StatelessAgentService` type or on tunnel types. The sole
+/// implementation in this codebase is `StatelessAgentService`.
 ///
 /// Breaking cycle 5 (per `PLAN §2.5`).
 #[async_trait::async_trait]
 pub trait AgentMessageService: Send + Sync {
-    async fn execute_message(&self, req: A2aMessageRequest) -> anyhow::Result<A2aMessageResponse>;
+    async fn execute_message(
+        &self,
+        req: PrincipalMessageRequest,
+    ) -> anyhow::Result<PrincipalMessageResponse>;
 }

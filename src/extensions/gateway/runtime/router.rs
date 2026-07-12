@@ -1,7 +1,7 @@
 //! GatewayRouter — routes incoming messages from gateways to agents
 
 use crate::agents::stateless_service::StatelessAgentService;
-use crate::common::types::a2a::MessageRequest;
+use crate::common::types::a2a::PrincipalMessageRequest;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -195,7 +195,7 @@ impl GatewayRouter {
         // Use '__' as separator instead of ':' for Windows filename compatibility
         let session_id = format!("{}__{}__{}", gateway_id, channel_id, user_id);
 
-        let request = MessageRequest::new(&agent_name, message)
+        let request = PrincipalMessageRequest::new(&agent_name, message)
             .with_session(&session_id)
             .with_user(user_id);
 

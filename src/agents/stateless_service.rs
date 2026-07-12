@@ -31,12 +31,10 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::{debug, info, instrument, warn};
 
-// The MessageRequest/MessageResult types and AgentMessageService trait
-// now live in common::types::a2a. The local names here are re-export
-// aliases for internal ergonomics.
-pub use crate::common::types::a2a::{
-    A2aMessageRequest as MessageRequest, A2aMessageResponse as MessageResult, ToolCallInfo,
-};
+// `PrincipalMessageRequest`/`PrincipalMessageResponse` and the
+// `AgentMessageService` trait live in `common::types::a2a`. No local
+// aliases — use the canonical names directly.
+pub use crate::common::types::a2a::ToolCallInfo;
 
 /// Execution request for stateless agent
 #[derive(Debug, Clone)]
@@ -228,11 +226,8 @@ pub struct StatelessAgentService {
 impl crate::common::types::a2a::AgentMessageService for StatelessAgentService {
     async fn execute_message(
         &self,
-        req: crate::common::types::a2a::A2aMessageRequest,
-    ) -> Result<crate::common::types::a2a::A2aMessageResponse> {
-        // The local `MessageRequest`/`MessageResult` aliases are the
-        // same types as `A2aMessageRequest`/`A2aMessageResponse`, so
-        // we can forward `req` directly without an `.into()`.
+        req: crate::common::types::a2a::PrincipalMessageRequest,
+    ) -> Result<crate::common::types::a2a::PrincipalMessageResponse> {
         StatelessAgentService::execute_message(self, req).await
     }
 }
@@ -342,8 +337,11 @@ impl StatelessAgentService {
     /// * `request` - The message request containing agent name, message, and session options
     ///
     /// # Returns
-    /// A `MessageResult` containing the response, session info, and execution metadata
-    pub async fn execute_message(&self, request: MessageRequest) -> Result<MessageResult> {
+    /// A `PrincipalMessageResponse` containing the response, session info, and execution metadata
+    pub async fn execute_message(
+        &self,
+        request: crate::common::types::a2a::PrincipalMessageRequest,
+    ) -> Result<crate::common::types::a2a::PrincipalMessageResponse> {
         let start = Instant::now();
 
         // Resolve session using SessionManager (single authority)
@@ -400,7 +398,7 @@ impl StatelessAgentService {
                     })
                     .collect();
 
-                Ok(MessageResult {
+                Ok(crate::common::types::a2a::PrincipalMessageResponse {
                     content: result.response,
                     session_id,
                     is_new_session,
@@ -428,7 +426,7 @@ impl StatelessAgentService {
     /// An `EventStream` containing the receiver for events and completion signal
     pub async fn execute_message_streaming(
         &self,
-        request: MessageRequest,
+        request: crate::common::types::a2a::PrincipalMessageRequest,
     ) -> Result<crate::engine::EventStream> {
         let start = Instant::now();
 
@@ -927,7 +925,7 @@ impl StatelessAgentService {
             // Issue #17: thread the resolved caller identity into the
             // agentic loop so every tool call carries the caller through
             // to `HookInput::ToolCall`. The empty placeholder
-            // (`MessageRequest::user` default) and the dispatcher's
+            // (`PrincipalMessageRequest::user` default) and the dispatcher's
             // `"anonymous"` fallback both map to `None` so downstream
             // per-user permission checks (issue #17 follow-up) don't
             // mis-attribute local / unverified invocations to a fake user.
@@ -1178,12 +1176,12 @@ mod tests {
     }
 
     // ====================================================================================
-    // MessageRequest builder tests (ADR-016 Phase 1)
+    // PrincipalMessageRequest builder tests (ADR-016 Phase 1)
     // ====================================================================================
 
     #[test]
     fn test_message_request_builder() {
-        let request = MessageRequest::new("my-agent", "Hello")
+        let request = crate::common::types::a2a::PrincipalMessageRequest::new("my-agent", "Hello")
             .with_session("sess_123")
             .with_new_session(false)
             .with_timeout(60);
@@ -1197,7 +1195,7 @@ mod tests {
 
     #[test]
     fn test_message_request_builder_defaults() {
-        let request = MessageRequest::new("my-agent", "Hello");
+        let request = crate::common::types::a2a::PrincipalMessageRequest::new("my-agent", "Hello");
 
         assert_eq!(request.agent_name, "my-agent");
         assert_eq!(request.message, "Hello");
@@ -1209,12 +1207,14 @@ mod tests {
     #[test]
     fn test_message_request_with_session_opt() {
         // Test with Some
-        let request1 =
-            MessageRequest::new("agent", "hi").with_session_opt(Some("session-id".to_string()));
+        let request1 = crate::common::types::a2a::PrincipalMessageRequest::new("agent", "hi")
+            .with_session_opt(Some("session-id".to_string()));
         assert_eq!(request1.session_id, Some("session-id".to_string()));
 
         // Test with None
-        let request2 = MessageRequest::new("agent", "hi").with_session_opt(None);
+        let request2 =
+            crate::common::types::a2a::PrincipalMessageRequest::new("agent", "hi")
+                .with_session_opt(None);
         assert_eq!(request2.session_id, None);
     }
 
@@ -1224,14 +1224,16 @@ mod tests {
 
     #[test]
     fn test_message_request_caller_agent_opt_filters_empty() {
-        let req1 = MessageRequest::new("agent", "hi")
+        let req1 = crate::common::types::a2a::PrincipalMessageRequest::new("agent", "hi")
             .with_caller_agent_opt(Some("researcher".to_string()));
         assert_eq!(req1.caller_agent, Some("researcher".to_string()));
 
-        let req2 = MessageRequest::new("agent", "hi").with_caller_agent_opt(Some(String::new()));
+        let req2 = crate::common::types::a2a::PrincipalMessageRequest::new("agent", "hi")
+            .with_caller_agent_opt(Some(String::new()));
         assert_eq!(req2.caller_agent, None);
 
-        let req3 = MessageRequest::new("agent", "hi").with_caller_agent_opt(None);
+        let req3 = crate::common::types::a2a::PrincipalMessageRequest::new("agent", "hi")
+            .with_caller_agent_opt(None);
         assert_eq!(req3.caller_agent, None);
     }
 
