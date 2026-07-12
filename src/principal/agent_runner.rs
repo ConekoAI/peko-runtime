@@ -252,14 +252,14 @@ where
     // (initialized lazily in `init_builtins_async`) only sees
     // canonical extension ids.
     let _resolved: Vec<String> = core
-        .resolve_canonical_ids(&ctx.capabilities.to_strings())
+        .resolve_canonical_ids(&ctx.capabilities.to_strings(), ctx.principal_id())
         .await;
 
     // Agent catalog is the only per-call tool — its `available_agents`
     // snapshot can change between messages if the principal's
     // `capabilities` was edited. We re-register it on the
     // shared core, which is idempotent on tool name.
-    install_agent_catalog(&core, available_agents).await?;
+    install_agent_catalog(&core, available_agents, ctx.principal_id()).await?;
 
     // Register the principal-scoped `Agent` tool after `Agent::new*` but
     // before execution so it is available on the principal's shared
@@ -424,7 +424,12 @@ where
         agent_service,
         Box::new(session_key_provider.clone()),
     ));
-    crate::extensions::builtin::BuiltinToolAdapter::register_tool(&core, agent_tool).await?;
+    crate::extensions::builtin::BuiltinToolAdapter::register_tool(
+        &core,
+        agent_tool,
+        ctx.principal_id(),
+    )
+    .await?;
 
     // Stamp the current session key so the Agent tool can auto-detect it.
     {

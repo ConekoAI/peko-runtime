@@ -755,7 +755,7 @@ mod tests {
         let tool: Arc<dyn Tool> = Arc::new(MockTool {
             name: "Fast".to_string(),
         });
-        BuiltinToolAdapter::register_tool(&core, tool.clone())
+        BuiltinToolAdapter::register_tool_system(&core, tool.clone())
             .await
             .unwrap();
 
@@ -834,7 +834,7 @@ mod tests {
 
         let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
         let tool: Arc<dyn Tool> = Arc::new(SlowMockTool);
-        BuiltinToolAdapter::register_tool(&core, tool.clone())
+        BuiltinToolAdapter::register_tool_system(&core, tool.clone())
             .await
             .unwrap();
 
@@ -926,7 +926,7 @@ mod tests {
 
         let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
         let tool: Arc<dyn Tool> = Arc::new(EnrichingMockTool);
-        BuiltinToolAdapter::register_tool(&core, tool.clone())
+        BuiltinToolAdapter::register_tool_system(&core, tool.clone())
             .await
             .unwrap();
 
@@ -1051,7 +1051,7 @@ mod tests {
         let tool: Arc<dyn Tool> = Arc::new(tool_struct);
 
         let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
-        BuiltinToolAdapter::register_tool(&core, tool.clone())
+        BuiltinToolAdapter::register_tool_system(&core, tool.clone())
             .await
             .unwrap();
 

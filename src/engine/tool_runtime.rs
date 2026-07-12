@@ -223,8 +223,13 @@ impl ToolRuntime {
             Arc::new(CronListTool::new()),
         ];
 
+        // Built-in tools are visible to every principal and registered exactly
+        // once per process under PrincipalId::system(). The `register_builtins`
+        // call shape is the daemon-init path.
         for tool in &tools {
-            if let Err(e) = BuiltinToolAdapter::register_tool(extension_core, tool.clone()).await {
+            if let Err(e) = BuiltinToolAdapter::register_tool_system(extension_core, tool.clone())
+                .await
+            {
                 tracing::warn!(
                     "Failed to register built-in tool '{}' with ExtensionCore: {}",
                     tool.name(),
@@ -322,17 +327,22 @@ impl ToolRuntime {
         Ok(json)
     }
 
-    /// List all registered tools
+    /// List all registered tools visible to the system scope
+    /// (built-ins, universal, MCP). The daemon has a single shared
+    /// `ExtensionCore` and `ToolRuntime` is process-scoped, so
+    /// `PrincipalId::system()` is the right scope here.
     #[must_use]
     pub async fn list_tools(&self) -> Vec<crate::extensions::framework::types::ToolMetadata> {
-        self.extension_core.list_tools().await
+        self.extension_core
+            .list_tools(crate::subject::PrincipalId::system())
+            .await
     }
 
-    /// Check if a tool is registered
+    /// Check if a tool is registered under the system scope.
     #[must_use]
     pub async fn has_tool(&self, tool_name: &str) -> bool {
         self.extension_core
-            .get_tool_metadata(tool_name)
+            .get_tool_metadata(tool_name, crate::subject::PrincipalId::system())
             .await
             .is_some()
     }

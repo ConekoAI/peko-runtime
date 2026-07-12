@@ -340,7 +340,7 @@ impl ExtensionStore {
         }
 
         let tool_count = adapter
-            .register_tools(&self.core, &manifest)
+            .register_tools(&self.core, &manifest, crate::subject::PrincipalId::system())
             .await
             .unwrap_or(0);
 

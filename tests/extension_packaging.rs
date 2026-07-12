@@ -5,6 +5,7 @@
 use peko::extensions::framework::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
 use peko::extensions::framework::store::ExtensionStore;
 use peko::extensions::framework::types::ExtensionId;
+use peko::subject::PrincipalId;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -266,7 +267,7 @@ async fn test_extension_install_tool_registration_and_invocation() {
     let core = store.core_arc();
 
     // 3. Verify the tool is listed
-    let tools = core.list_tools().await;
+    let tools = core.list_tools(&PrincipalId::system()).await;
     let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
     assert!(
         tool_names.contains(&"test-echo".to_string()),

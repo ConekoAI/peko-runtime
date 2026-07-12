@@ -929,7 +929,7 @@ impl HookHandler for McpServerInitHandler {
         if let Some(core) = crate::extensions::framework::core::global_core() {
             let adapter = McpAdapter::new(self.manager.clone());
             match adapter
-                .register_server_tools(&core, &self.server_name)
+                .register_server_tools(&core, &self.server_name, crate::subject::PrincipalId::system())
                 .await
             {
                 Ok(count) => {
@@ -1389,7 +1389,7 @@ pub async fn load_and_register_servers(
             let _ = adapter.ensure_server_config(config_path).await;
         }
         match adapter
-            .register_server_tools(core, &server.manifest.name)
+            .register_server_tools(core, &server.manifest.name, crate::subject::PrincipalId::system())
             .await
         {
             Ok(n) => total_tools += n,

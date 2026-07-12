@@ -541,16 +541,19 @@ mod tests {
 
         // Register both tools via the unified registry
         for tool in &tools {
-            adapter.register_tool(&core, &tool.manifest).await.unwrap();
+            adapter
+                .register_tool(&core, &tool.manifest, PrincipalId::system())
+                .await
+                .unwrap();
         }
 
         // Each tool registers 5 hooks (exec, prompt, async, status, cancel)
         // via the unified registry's atomic composite operation
         assert_eq!(core.hook_count().await, 10);
-        assert_eq!(core.tool_count().await, 2);
+        assert_eq!(core.tool_count(PrincipalId::system()).await, 2);
 
         // Verify tool metadata is accessible
-        let meta = core.get_tool_metadata("tool1").await;
+        let meta = core.get_tool_metadata("tool1", PrincipalId::system()).await;
         assert!(meta.is_some());
         assert_eq!(meta.unwrap().name, "tool1");
     }
@@ -561,9 +564,12 @@ mod tests {
         create_test_tool(temp.path(), "tool1", "First tool");
 
         let core = crate::extensions::framework::ExtensionCore::new();
-        let count = load_and_register_tools(&core, temp.path()).await.unwrap();
+        let count =
+            load_and_register_tools(&core, temp.path(), PrincipalId::system())
+                .await
+                .unwrap();
 
         assert_eq!(count, 1);
-        assert_eq!(core.tool_count().await, 1);
+        assert_eq!(core.tool_count(PrincipalId::system()).await, 1);
     }
 }

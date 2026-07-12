@@ -147,9 +147,10 @@ impl Agent {
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
         // AppState::new() calls ToolRuntime::with_workspace_and_core() which registers
         // all common built-ins on the global ExtensionCore before any Agent is created.
+        // Built-ins are under PrincipalId::system(), so the lookup is system-scoped.
         let has_bash = self
             .extension_core
-            .get_tool_metadata("Bash")
+            .get_tool_metadata("Bash", crate::subject::PrincipalId::system())
             .await
             .is_some();
         if !has_bash {
@@ -352,9 +353,15 @@ impl Agent {
         // ADR-018/019: Register ONLY agent-specific built-in tools with ExtensionCore
         // Common built-in tools are already registered via ToolRuntime::register_builtins
         // Extension tools (Universal and MCP) are already registered via ExtensionStore hooks
+        // Agent-specific tools are per-agent and per-principal — each Agent instance
+        // owns its own Async* family scoped to its own principal_id.
         for tool in &tools {
-            if let Err(e) =
-                BuiltinToolAdapter::register_tool(&self.extension_core, tool.clone()).await
+            if let Err(e) = BuiltinToolAdapter::register_tool(
+                &self.extension_core,
+                tool.clone(),
+                &self.principal_id,
+            )
+            .await
             {
                 tracing::warn!(
                     "Failed to register built-in tool '{}' with ExtensionCore: {}",
@@ -1187,10 +1194,12 @@ impl Agent {
 
             // 4. Re-register the per-agent async tools (overwrites any prior
             //    instance). register_tool is idempotent — unregisters first.
+            //    Per-agent async tools are scoped to the owning principal.
             if let Err(e) =
                 crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
                     &extension_core,
                     spawn_tool,
+                    &self.principal_id,
                 )
                 .await
             {
@@ -1200,6 +1209,7 @@ impl Agent {
                 crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
                     &extension_core,
                     output_tool,
+                    &self.principal_id,
                 )
                 .await
             {
@@ -1232,6 +1242,7 @@ impl Agent {
                 if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
                     &extension_core,
                     tool,
+                    &self.principal_id,
                 )
                 .await
                 {
