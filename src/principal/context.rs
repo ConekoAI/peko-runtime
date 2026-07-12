@@ -305,7 +305,7 @@ async fn install_principal_tool_bag(
     if let Err(e) = BuiltinToolAdapter::register_tool(
         core.as_ref(),
         Arc::new(SkillTool::new()),
-        &principal_id,
+        principal_id,
     )
     .await
     {

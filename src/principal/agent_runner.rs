@@ -7,7 +7,6 @@ use tokio::sync::RwLock;
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::Agent;
 use crate::auth::Subject;
-use crate::common::services::AgentService;
 use crate::common::types::message::LlmMessage;
 use crate::engine::AgenticEvent;
 use crate::principal::context::{install_agent_catalog, PrincipalContext};
@@ -418,10 +417,9 @@ where
         .with_agent_config(agent.config.clone()),
     );
 
-    let agent_service = AgentService::for_principal(&ctx.workspace_path);
-    let agent_tool = Arc::new(AgentTool::with_agent_service_and_session_provider(
+    let agent_tool = Arc::new(AgentTool::with_workspace_and_session(
         subagent_executor,
-        agent_service,
+        Some(ctx.workspace_path.clone()),
         Box::new(session_key_provider.clone()),
     ));
     crate::extensions::builtin::BuiltinToolAdapter::register_tool(

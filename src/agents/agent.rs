@@ -54,11 +54,12 @@ pub struct Agent {
     /// so external callers can push steering messages into a running agent.
     inbox_registry: Option<Arc<InboxRegistry>>,
     /// Optional principal workspace. When set, `init_builtins_async` builds the
-    /// `Agent` tool's `AgentService` with `for_principal(workspace)` so the
-    /// root agent resolves subagents from `<workspace>/agents/<name>/AGENT.md`
-    /// instead of the global `<home>/agents/<name>/config.toml`. Without this,
-    /// `init_builtins_async` (run lazily at execution time) would clobber any
-    /// principal-scoped `Agent` tool registered on the core beforehand.
+    /// `Agent` tool with `with_workspace(Some(workspace), …)`, so the root
+    /// agent resolves subagents from `<workspace>/agents/<name>/AGENT.md`
+    /// before falling back to the global `<home>/agents/<name>/config.toml`.
+    /// Without this, `init_builtins_async` (run lazily at execution time)
+    /// would clobber any principal-scoped `Agent` tool registered on the
+    /// core beforehand.
     principal_workspace: Option<std::path::PathBuf>,
     /// Caller principal's stable DID. Bound at construction by
     /// `with_caller_principal_did` so `principal_send` can attribute
@@ -172,18 +173,15 @@ impl Agent {
         tools.push(Arc::new(SessionTool::new(Box::new(session_registry))));
 
         // Add Agent tool with executor and session provider. When this agent
-        // runs as a Principal root agent, build the service scoped to the
-        // principal workspace so subagents resolve from
-        // `<workspace>/agents/<name>/AGENT.md`. Otherwise fall back to the
-        // global agent registry.
-        let agent_service = match self.principal_workspace {
-            Some(ref workspace) => crate::common::services::AgentService::for_principal(workspace),
-            None => crate::common::services::AgentService::new(PathResolver::new()),
-        };
+        // runs as a Principal root agent, scope the tool to the principal
+        // workspace so subagents resolve from
+        // `<workspace>/agents/<name>/AGENT.md`. Otherwise the `Agent` tool
+        // resolves from the global agent registry only.
+        let workspace = self.principal_workspace.clone();
         tools.push(Arc::new(
-            AgentTool::with_agent_service_and_session_provider(
+            AgentTool::with_workspace_and_session(
                 self.subagent_executor.clone(),
-                agent_service,
+                workspace,
                 Box::new(self.session_key_provider.clone()),
             ),
         ));
@@ -570,12 +568,14 @@ impl Agent {
 
     /// Scope this agent's `Agent` tool to a Principal workspace.
     ///
-    /// When set, `init_builtins_async` builds the `Agent` tool's `AgentService`
-    /// with `for_principal(workspace)`, so the root agent resolves subagents
-    /// from `<workspace>/agents/<name>/AGENT.md`. This must be set before the
-    /// agent executes: `init_builtins_async` runs lazily inside
-    /// `prepare_execution`, so a principal-scoped `Agent` tool registered on the
-    /// core beforehand would otherwise be clobbered by the global-scoped one.
+    /// When set, `init_builtins_async` builds the `Agent` tool with
+    /// `with_workspace(Some(workspace), …)`, so the root agent resolves
+    /// subagents from `<workspace>/agents/<name>/AGENT.md` before falling
+    /// back to the global `~/.peko/agents/<name>/config.toml` layout. This
+    /// must be set before the agent executes: `init_builtins_async` runs
+    /// lazily inside `prepare_execution`, so a principal-scoped `Agent`
+    /// tool registered on the core beforehand would otherwise be clobbered
+    /// by the global-scoped one.
     pub fn with_principal_workspace(mut self, workspace: std::path::PathBuf) -> Self {
         // Also scope the subagent executor so depth-1 children (and, via the
         // executor's own propagation, deeper descendants) resolve their

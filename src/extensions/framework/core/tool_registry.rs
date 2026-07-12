@@ -65,7 +65,10 @@ impl ToolRegistry {
         if let Some(ext_id) = owners.get(&(tool_name.to_string(), principal_id.clone())) {
             return Some(ext_id.clone());
         }
-        if !std::ptr::eq(principal_id as *const _, PrincipalId::system() as *const _) {
+        if !std::ptr::eq(
+            std::ptr::from_ref(principal_id),
+            std::ptr::from_ref(PrincipalId::system()),
+        ) {
             if let Some(ext_id) = owners.get(&(tool_name.to_string(), PrincipalId::system().clone())) {
                 return Some(ext_id.clone());
             }
@@ -176,7 +179,10 @@ impl ToolRegistry {
         if per_principal.is_some() {
             return per_principal;
         }
-        if std::ptr::eq(principal_id as *const _, PrincipalId::system() as *const _) {
+        if std::ptr::eq(
+            std::ptr::from_ref(principal_id),
+            std::ptr::from_ref(PrincipalId::system()),
+        ) {
             return None;
         }
         self.tool_index
@@ -242,7 +248,10 @@ impl ToolRegistry {
             .map(|name| {
                 let per_principal = owners.get(&(name.clone(), principal_id.clone()));
                 let ext_id = per_principal.or_else(|| {
-                    if std::ptr::eq(principal_id as *const _, PrincipalId::system() as *const _) {
+                    if std::ptr::eq(
+                        std::ptr::from_ref(principal_id),
+                        std::ptr::from_ref(PrincipalId::system()),
+                    ) {
                         None
                     } else {
                         owners.get(&(name.clone(), PrincipalId::system().clone()))
