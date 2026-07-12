@@ -1135,7 +1135,7 @@ impl TunnelDispatcher {
     ///    hub's source-allowlist is the primary gate; this is
     ///    defense in depth against a hub bug or a stale forwarder.
     /// 3. Look up the local agent by `target_principal_did`.
-    /// 4. Build a `MessageRequest` with `caller_principal =
+    /// 4. Build a `PrincipalMessageRequest` with `caller_principal =
     ///    Subject::Principal(caller_principal_did)` (issue #24 + #28).
     /// 5. Dispatch via `StatelessAgentService`.
     /// 6. Serialize the result to `PrincipalSendResult` and send back via
@@ -1589,7 +1589,7 @@ mod tests {
 
     /// PekoHub sets `x-pekohub-user-id` on every proxied request. When
     /// no JWT validator is configured (the back-compat case), the
-    /// dispatcher uses that value as the `MessageRequest::user` so
+    /// dispatcher uses that value as the `PrincipalMessageRequest::user` so
     /// downstream attribution (audit log, tool hooks) sees the real
     /// pekohub user, not the literal `"web"` placeholder.
     #[tokio::test]

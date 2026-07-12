@@ -4,7 +4,6 @@
 //! enabling remote access to locally-hosted agents behind NAT/firewall.
 
 pub mod a2a_audit;
-pub mod a2a_message_types;
 pub mod a2a_pending;
 pub mod a2a_signature;
 pub mod backoff;
