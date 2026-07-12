@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::auth::{Permission, PermissionGrant};
 use crate::extensions::framework::types::Capabilities;
+use crate::quota::QuotaConfig;
 use crate::subject::PrincipalDID;
 
 /// Network exposure level for a Principal (persisted in `principal.toml`).
@@ -126,6 +127,15 @@ pub struct PrincipalConfig {
     /// the directory and respect it.
     #[serde(default)]
     pub transport_preference: TransportPreference,
+
+    /// Optional per-principal token quota (F18). When present,
+    /// every LLM call routed through this Principal — root agent,
+    /// A2A inbound, subagent spawn — counts against the limits,
+    /// which reset on a calendar-aligned UTC cycle (Hourly /
+    /// Daily / Weekly / Monthly). When `None`, the Principal is
+    /// unquota'd and every call is free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<QuotaConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -290,6 +300,7 @@ mod tests {
             preferred_provider_id: None,
             preferred_model_id: None,
             transport_preference: crate::principal::config::TransportPreference::Tunnel,
+            quota: None,
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -324,6 +335,7 @@ mod tests {
             preferred_provider_id: Some("ollama".into()),
             preferred_model_id: Some("llama3.1".into()),
             transport_preference: crate::principal::config::TransportPreference::Direct,
+            quota: None,
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -369,6 +381,7 @@ mod tests {
             preferred_provider_id: None,
             preferred_model_id: None,
             transport_preference: Default::default(),
+            quota: None,
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -400,6 +413,7 @@ mod tests {
             preferred_provider_id: None,
             preferred_model_id: None,
             transport_preference: Default::default(),
+            quota: None,
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -451,6 +465,7 @@ mod tests {
             preferred_provider_id: None,
             preferred_model_id: None,
             transport_preference: Default::default(),
+            quota: None,
         };
         assert!(cfg.capabilities.is_granted(&"tool:Read".into()));
         assert!(cfg

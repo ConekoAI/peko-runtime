@@ -23,6 +23,7 @@ use crate::principal::memory::{PrincipalMemory, SessionArtifact};
 use crate::principal::router::{
     AgentPromptSummary, PrincipalRouter, RouteDecision, RouterContext, RouterError,
 };
+use crate::quota::QuotaMeter;
 use crate::providers::LlmResolver;
 
 /// Load the compiled-in root agent prompt.
@@ -63,6 +64,11 @@ pub struct RootRouter {
     /// post-`start_tunnel` via [`Self::set_caller_runtime_id`].
     /// When `None`, `principal_send` is not registered.
     caller_runtime_id: StdRwLock<Option<String>>,
+    /// F18: per-principal token quota meter. Captured at factory
+    /// time and threaded into every `PrincipalContext` produced by
+    /// `build_context`, then into the principal's root agent, which
+    /// gates and charges every LLM call.
+    quota_meter: Arc<QuotaMeter>,
 }
 
 impl RootRouter {
@@ -86,6 +92,7 @@ impl RootRouter {
         principal_provider_id: Option<String>,
         principal_model_id: Option<String>,
         principal_caller_did: Option<String>,
+        quota_meter: Arc<QuotaMeter>,
     ) -> Self {
         Self {
             memory,
@@ -96,6 +103,7 @@ impl RootRouter {
             principal_model_id,
             principal_caller_did,
             caller_runtime_id: StdRwLock::new(None),
+            quota_meter,
         }
     }
 
@@ -136,6 +144,7 @@ impl RootRouter {
                 self.principal_model_id.clone(),
             ),
             ctx.principal_id.clone(),
+            Arc::clone(&self.quota_meter),
         );
         principal_ctx.set_root_prompt(self.root_prompt.clone());
         // Phase 4b: bind caller identity so `principal_send` is

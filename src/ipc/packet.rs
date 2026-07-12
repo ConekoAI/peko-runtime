@@ -221,6 +221,29 @@ pub enum RequestPacket {
     #[serde(rename = "mcp_reload")]
     McpReload { request_id: u64 },
 
+    // ─── Quota (F18) ───────────────────────────────────────────────────
+    /// Read the principal's current quota status (used + limits +
+    /// window bounds). Unauthenticated: any local caller can query
+    /// — the daemon's existing trust model is sufficient for F18;
+    /// owner-only authz is a follow-up.
+    #[serde(rename = "quota_get")]
+    QuotaGet { request_id: u64, name: String },
+
+    /// Replace the principal's `QuotaConfig` (input/output/request
+    /// limits + cycle). Persists to `principal.toml` and rebuilds
+    /// the meter so the new limits take effect on the next call.
+    #[serde(rename = "quota_set")]
+    QuotaSet {
+        request_id: u64,
+        name: String,
+        config: crate::quota::QuotaConfig,
+    },
+
+    /// Force-reset the principal's quota meter to a fresh window
+    /// without touching the config. Useful for ops/tests.
+    #[serde(rename = "quota_reset")]
+    QuotaReset { request_id: u64, name: String },
+
     // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
     #[serde(rename = "extension_list")]
     ExtensionList {
@@ -615,7 +638,10 @@ impl RequestPacket {
             | Self::PrincipalSetStatus { request_id, .. }
             | Self::PrincipalSetExposure { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
-            | Self::PrincipalSendControl { request_id, .. } => *request_id,
+            | Self::PrincipalSendControl { request_id, .. }
+            | Self::QuotaGet { request_id, .. }
+            | Self::QuotaSet { request_id, .. }
+            | Self::QuotaReset { request_id, .. } => *request_id,
         }
     }
 
@@ -737,6 +763,21 @@ pub enum ResponsePacket {
     /// Cron job removed response
     #[serde(rename = "cron_removed")]
     CronRemoved { request_id: u64, job_id: String },
+
+    /// Quota status snapshot (F18). Carries the principal's live
+    /// `QuotaState` — used counters, configured limits (via the
+    /// cycle), and the current window's start/end timestamps.
+    /// Returned for `QuotaGet`, `QuotaSet`, and `QuotaReset`.
+    #[serde(rename = "quota_status")]
+    QuotaStatus {
+        request_id: u64,
+        state: crate::quota::QuotaState,
+        /// The principal's effective `QuotaConfig`. Mirrors the
+        /// `state.cycle` and exposes the configured limits so the
+        /// CLI can render "1000 / 5000 input tokens" without a
+        /// second round-trip.
+        config: crate::quota::QuotaConfig,
+    },
 
     /// Cron job run started response
     #[serde(rename = "cron_run_started")]
@@ -1340,7 +1381,8 @@ impl ResponsePacket {
             | Self::PrincipalStatusUpdated { request_id, .. }
             | Self::PrincipalExposureUpdated { request_id, .. }
             | Self::TunnelStatus { request_id, .. }
-            | Self::Status { request_id, .. } => *request_id,
+            | Self::Status { request_id, .. }
+            | Self::QuotaStatus { request_id, .. } => *request_id,
         }
     }
 
@@ -1407,6 +1449,7 @@ impl ResponsePacket {
             Self::PrincipalPermissions { .. } => "PrincipalPermissions",
             Self::TunnelStatus { .. } => "TunnelStatus",
             Self::Status { .. } => "Status",
+            Self::QuotaStatus { .. } => "QuotaStatus",
         }
     }
 

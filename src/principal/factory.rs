@@ -4,6 +4,7 @@ use async_trait::async_trait;
 
 use super::{memory::PrincipalMemory, PrincipalConfig, PrincipalId};
 use crate::providers::LlmResolver;
+use crate::quota::QuotaMeter;
 
 /// Factory for building a Principal's memory store.
 #[async_trait]
@@ -24,6 +25,10 @@ pub trait PrincipalRouterFactory: Send + Sync {
         memory: Arc<dyn PrincipalMemory>,
         workspace_path: &std::path::Path,
         resolver: Option<Arc<LlmResolver>>,
+        // F18: per-principal quota meter. Shared with every LLM call
+        // routed through the principal's root agent and the
+        // subagents it spawns.
+        quota_meter: Arc<QuotaMeter>,
     ) -> Arc<dyn super::router::PrincipalRouter>;
 }
 
@@ -62,6 +67,7 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
         memory: Arc<dyn PrincipalMemory>,
         workspace_path: &std::path::Path,
         resolver: Option<Arc<LlmResolver>>,
+        quota_meter: Arc<QuotaMeter>,
     ) -> Arc<dyn super::router::PrincipalRouter> {
         let prompt = Self::resolve_root_agent_prompt(config, workspace_path);
         // Phase 4b: copy the principal's stable DID into the router
@@ -78,6 +84,7 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
             config.preferred_provider_id.clone(),
             config.preferred_model_id.clone(),
             principal_caller_did,
+            quota_meter,
         ))
     }
 }

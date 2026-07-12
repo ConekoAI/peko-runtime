@@ -20,6 +20,7 @@ pub use config::{
     PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
     PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
 };
+pub use crate::quota::QuotaMeter;
 pub use context::PrincipalContext;
 pub use extension_store::{ExtensionCatalog, ExtensionCatalogItem};
 pub use factory::{
@@ -52,6 +53,12 @@ pub struct Principal {
     pub memory: Arc<dyn PrincipalMemory>,
     pub router: Arc<dyn PrincipalRouter>,
     pub agent_prompts: HashMap<String, AgentPrompt>,
+    /// F18 quota meter. Always present; for unquota'd principals the
+    /// underlying `QuotaConfig` has `None` for every limit, so every
+    /// charge is free. Cloning the `Arc` shares state across the
+    /// engine loop, compactor, subagent executor, and CLI status
+    /// reads.
+    pub quota_meter: Arc<QuotaMeter>,
 }
 
 impl Principal {

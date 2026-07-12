@@ -178,6 +178,11 @@ pub mod subject;
 /// Principal container entity (ADR-041).
 pub mod principal;
 
+/// Per-principal token quota (F18). Cross-cutting concern that
+/// touches principal config, the engine loop, the compactor, and
+/// the IPC layer.
+pub mod quota;
+
 // ============================================================================
 // Infrastructure
 // ============================================================================

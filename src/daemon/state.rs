@@ -2214,6 +2214,17 @@ impl crate::ipc::handlers::cron::CronHost for AppState {
     }
 }
 
+/// F18 narrow handle for the `quota` IPC handler. The trait lives in
+/// `ipc::handlers::quota` and only exposes the principal manager —
+/// the handler reaches the per-principal `QuotaMeter` through
+/// `Principal::quota_meter`. Sync (`&Arc<PrincipalManager>` is cheap)
+/// so the trait is object-safe without `async_trait`.
+impl crate::ipc::handlers::quota::QuotaHost for AppState {
+    fn principal_manager(&self) -> &Arc<PrincipalManager> {
+        AppState::principal_manager(self)
+    }
+}
+
 /// F7 ninth narrow handle: the port the `runtime` IPC domain handler
 /// uses to surface this runtime's identity / metadata and the
 /// persistent `KnownRuntimes` registry. Trait lives in

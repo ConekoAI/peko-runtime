@@ -131,6 +131,11 @@ pub struct SubagentExecutor {
     /// Optional observability hub for audit/metrics. When set, subagent
     /// spawns are recorded in the audit log under the parent principal.
     observability: Option<Arc<Observability>>,
+    /// F18: per-principal quota meter. Propagated to descendant
+    /// subagents so the entire spawn tree counts against the same
+    /// principal-level meter. `None` until the parent root runner
+    /// binds it via [`Self::with_quota_meter`].
+    quota_meter: Option<Arc<crate::quota::QuotaMeter>>,
 }
 
 impl SubagentExecutor {
@@ -169,7 +174,28 @@ impl SubagentExecutor {
             principal_capabilities: None,
             active_extensions: None,
             observability: None,
+            quota_meter: None,
         }
+    }
+
+    /// F18: bind the spawning principal's quota meter. The meter is
+    /// propagated to descendant subagents so every LLM call in the
+    /// spawn tree counts against the same principal-level meter.
+    /// Calling this multiple times replaces the binding (matches the
+    /// behaviour of the other `with_*` setters).
+    #[must_use]
+    pub fn with_quota_meter(mut self, meter: Arc<crate::quota::QuotaMeter>) -> Self {
+        self.quota_meter = Some(meter);
+        self
+    }
+
+    /// F18: read-only view of the bound quota meter. `None` until
+    /// `with_quota_meter` is called; child `Agent` constructors
+    /// fall back to an unlimited meter in that case (the legacy
+    /// pre-F18 behaviour for tests).
+    #[must_use]
+    pub fn quota_meter(&self) -> Option<&Arc<crate::quota::QuotaMeter>> {
+        self.quota_meter.as_ref()
     }
 
     /// Get the spawning principal's runtime id.
@@ -259,6 +285,7 @@ impl SubagentExecutor {
             principal_capabilities: None,
             active_extensions: None,
             observability: None,
+            quota_meter: None,
         }
     }
 
@@ -288,6 +315,7 @@ impl SubagentExecutor {
             principal_capabilities: None,
             active_extensions: None,
             observability: None,
+            quota_meter: None,
         }
     }
 
