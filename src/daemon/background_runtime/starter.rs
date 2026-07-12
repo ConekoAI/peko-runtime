@@ -23,8 +23,8 @@ use std::sync::Arc;
 pub struct StarterContext {
     /// Shared background runtime manager
     pub background_runtime_manager: Arc<BackgroundRuntimeManager>,
-    /// Agent service for executing messages
-    pub agent_service: Arc<StatelessAgentService>,
+    /// Principal message service for executing principal-to-principal messages
+    pub principal_service: Arc<StatelessAgentService>,
     /// Gateway router for channel→agent mapping
     pub gateway_router: Arc<GatewayRouter>,
     /// Shared MCP client registry

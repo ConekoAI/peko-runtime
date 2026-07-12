@@ -626,9 +626,9 @@ impl SessionManager {
     ///
     /// When set, this takes precedence over [`SessionManager::user`]
     /// when [`SessionManager::peer`] constructs the session peer. Use
-    /// this for A2A messaging paths where the caller is an agent
-    /// (so the session is keyed under `agent:{caller}`, not
-    /// `user:{caller}`).
+    /// this for principal-to-principal messaging paths where the caller is
+    /// another principal (so the session is keyed under
+    /// `principal:{caller}`, not `user:{caller}`).
     ///
     /// Callers are responsible for passing a principal that is a
     /// valid session peer (`Subject::is_session_peer`). A

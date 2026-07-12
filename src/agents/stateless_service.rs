@@ -32,9 +32,10 @@ use tokio::time::timeout;
 use tracing::{debug, info, instrument, warn};
 
 // `PrincipalMessageRequest`/`PrincipalMessageResponse` and the
-// `AgentMessageService` trait live in `common::types::a2a`. No local
-// aliases — use the canonical names directly.
-pub use crate::common::types::a2a::ToolCallInfo;
+// `PrincipalMessageService` trait live in
+// `common::types::principal_message`. No local aliases — use the
+// canonical names directly.
+pub use crate::common::types::principal_message::ToolCallInfo;
 
 /// Execution request for stateless agent
 #[derive(Debug, Clone)]
@@ -58,7 +59,7 @@ pub struct ExecutionRequest {
     /// request to a placeholder user. Tests that don't care about
     /// per-user attribution can leave this empty.
     pub user: String,
-    /// Caller agent name for A2A messaging (optional)
+    /// Caller agent name for principal-to-principal messaging (optional)
     pub caller_agent: Option<String>,
     /// Resolved caller principal for session peer attribution.
     ///
@@ -109,7 +110,7 @@ impl ExecutionRequest {
         self
     }
 
-    /// Set caller agent name for A2A messaging
+    /// Set caller agent name for principal-to-principal messaging
     #[must_use]
     pub fn with_caller_agent(mut self, caller: impl Into<String>) -> Self {
         self.caller_agent = Some(caller.into());
@@ -125,8 +126,8 @@ impl ExecutionRequest {
 
     /// Set the resolved caller principal (issue #24).
     ///
-    /// Use this for A2A messaging paths where the caller is an agent,
-    /// not a user. The principal is used to construct the session peer
+    /// Use this for principal-to-principal messaging paths where the
+    /// caller is another principal, not a user. The principal is used to construct the session peer
     /// on the receiving agent so the session is keyed under
     /// `agent:{caller}` (not `user:{caller}`).
     #[must_use]
@@ -215,19 +216,20 @@ pub struct StatelessAgentService {
 }
 
 // Cycle 5 (refactor/clippy-cleanup-rust196): implement the
-// `AgentMessageService` trait defined in `common::types::a2a` so the
-// tool can be constructed via the trait-object factory without
-// depending on the concrete type. Delegates to the existing
-// `execute_message` method; no behavior change. The trait lives in
-// `common::types` and the impl lives in `agents` so the dependency
-// arrow goes `agents → common` (one-way), breaking the cycle that
-// would otherwise form via the concrete-type dependency.
+// `PrincipalMessageService` trait defined in
+// `common::types::principal_message` so the tool can be constructed via
+// the trait-object factory without depending on the concrete type.
+// Delegates to the existing `execute_message` method; no behavior
+// change. The trait lives in `common::types` and the impl lives in
+// `agents` so the dependency arrow goes `agents → common` (one-way),
+// breaking the cycle that would otherwise form via the concrete-type
+// dependency.
 #[async_trait::async_trait]
-impl crate::common::types::a2a::AgentMessageService for StatelessAgentService {
+impl crate::common::types::principal_message::PrincipalMessageService for StatelessAgentService {
     async fn execute_message(
         &self,
-        req: crate::common::types::a2a::PrincipalMessageRequest,
-    ) -> Result<crate::common::types::a2a::PrincipalMessageResponse> {
+        req: crate::common::types::principal_message::PrincipalMessageRequest,
+    ) -> Result<crate::common::types::principal_message::PrincipalMessageResponse> {
         StatelessAgentService::execute_message(self, req).await
     }
 }
@@ -340,8 +342,8 @@ impl StatelessAgentService {
     /// A `PrincipalMessageResponse` containing the response, session info, and execution metadata
     pub async fn execute_message(
         &self,
-        request: crate::common::types::a2a::PrincipalMessageRequest,
-    ) -> Result<crate::common::types::a2a::PrincipalMessageResponse> {
+        request: crate::common::types::principal_message::PrincipalMessageRequest,
+    ) -> Result<crate::common::types::principal_message::PrincipalMessageResponse> {
         let start = Instant::now();
 
         // Resolve session using SessionManager (single authority)
@@ -398,7 +400,7 @@ impl StatelessAgentService {
                     })
                     .collect();
 
-                Ok(crate::common::types::a2a::PrincipalMessageResponse {
+                Ok(crate::common::types::principal_message::PrincipalMessageResponse {
                     content: result.response,
                     session_id,
                     is_new_session,
@@ -426,7 +428,7 @@ impl StatelessAgentService {
     /// An `EventStream` containing the receiver for events and completion signal
     pub async fn execute_message_streaming(
         &self,
-        request: crate::common::types::a2a::PrincipalMessageRequest,
+        request: crate::common::types::principal_message::PrincipalMessageRequest,
     ) -> Result<crate::engine::EventStream> {
         let start = Instant::now();
 
@@ -1181,7 +1183,7 @@ mod tests {
 
     #[test]
     fn test_message_request_builder() {
-        let request = crate::common::types::a2a::PrincipalMessageRequest::new("my-agent", "Hello")
+        let request = crate::common::types::principal_message::PrincipalMessageRequest::new("my-agent", "Hello")
             .with_session("sess_123")
             .with_new_session(false)
             .with_timeout(60);
@@ -1195,7 +1197,7 @@ mod tests {
 
     #[test]
     fn test_message_request_builder_defaults() {
-        let request = crate::common::types::a2a::PrincipalMessageRequest::new("my-agent", "Hello");
+        let request = crate::common::types::principal_message::PrincipalMessageRequest::new("my-agent", "Hello");
 
         assert_eq!(request.agent_name, "my-agent");
         assert_eq!(request.message, "Hello");
@@ -1207,13 +1209,13 @@ mod tests {
     #[test]
     fn test_message_request_with_session_opt() {
         // Test with Some
-        let request1 = crate::common::types::a2a::PrincipalMessageRequest::new("agent", "hi")
+        let request1 = crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
             .with_session_opt(Some("session-id".to_string()));
         assert_eq!(request1.session_id, Some("session-id".to_string()));
 
         // Test with None
         let request2 =
-            crate::common::types::a2a::PrincipalMessageRequest::new("agent", "hi")
+            crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_session_opt(None);
         assert_eq!(request2.session_id, None);
     }
@@ -1224,15 +1226,15 @@ mod tests {
 
     #[test]
     fn test_message_request_caller_agent_opt_filters_empty() {
-        let req1 = crate::common::types::a2a::PrincipalMessageRequest::new("agent", "hi")
+        let req1 = crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
             .with_caller_agent_opt(Some("researcher".to_string()));
         assert_eq!(req1.caller_agent, Some("researcher".to_string()));
 
-        let req2 = crate::common::types::a2a::PrincipalMessageRequest::new("agent", "hi")
+        let req2 = crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
             .with_caller_agent_opt(Some(String::new()));
         assert_eq!(req2.caller_agent, None);
 
-        let req3 = crate::common::types::a2a::PrincipalMessageRequest::new("agent", "hi")
+        let req3 = crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
             .with_caller_agent_opt(None);
         assert_eq!(req3.caller_agent, None);
     }

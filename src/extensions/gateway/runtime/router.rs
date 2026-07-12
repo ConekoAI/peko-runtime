@@ -1,7 +1,7 @@
 //! GatewayRouter — routes incoming messages from gateways to agents
 
 use crate::agents::stateless_service::StatelessAgentService;
-use crate::common::types::a2a::PrincipalMessageRequest;
+use crate::common::types::principal_message::PrincipalMessageRequest;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,17 +38,18 @@ pub struct GatewayRouter {
     routing_table: Arc<RwLock<HashMap<String, GatewayRoutingConfig>>>,
     /// Per-gateway offline queues
     offline_queues: Arc<RwLock<HashMap<String, Vec<QueuedMessage>>>>,
-    /// Agent service for execution
-    agent_service: Arc<StatelessAgentService>,
+    /// Principal message service for execution (handles principal-to-principal
+    /// message dispatch routed via gateway channels).
+    principal_service: Arc<StatelessAgentService>,
 }
 
 impl GatewayRouter {
     /// Create a new gateway router
-    pub fn new(agent_service: Arc<StatelessAgentService>) -> Self {
+    pub fn new(principal_service: Arc<StatelessAgentService>) -> Self {
         Self {
             routing_table: Arc::new(RwLock::new(HashMap::new())),
             offline_queues: Arc::new(RwLock::new(HashMap::new())),
-            agent_service,
+            principal_service,
         }
     }
 
@@ -204,7 +205,7 @@ impl GatewayRouter {
             agent_name, gateway_id
         );
 
-        match self.agent_service.execute_message(request).await {
+        match self.principal_service.execute_message(request).await {
             Ok(result) => {
                 info!(
                     "Agent '{}' executed message successfully, response length: {}",
@@ -263,7 +264,7 @@ impl std::fmt::Debug for GatewayRouter {
         f.debug_struct("GatewayRouter")
             .field("routing_table", &"<HashMap<String, GatewayRoutingConfig>>")
             .field("offline_queues", &"<HashMap<String, Vec<QueuedMessage>>>")
-            .field("agent_service", &"<StatelessAgentService>")
+            .field("principal_service", &"<StatelessAgentService>")
             .finish()
     }
 }

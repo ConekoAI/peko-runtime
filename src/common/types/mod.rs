@@ -5,7 +5,7 @@
 //!
 //! The `src/types/` directory was merged into this module in issue #31e.
 
-pub mod a2a;
+pub mod principal_message;
 pub mod agent_legacy;
 pub mod config;
 pub mod extension;
