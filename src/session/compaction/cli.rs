@@ -25,7 +25,12 @@ pub struct CliCompactionResult {
 #[derive(Debug, Clone)]
 pub struct DryRunReport {
     pub estimated_tokens: usize,
-    pub context_window: usize,
+    /// The model's maximum context window size used as the basis
+    /// for the `percent` calculation. While the hard-coded
+    /// fallback `128_000` is in place, this is always that value;
+    /// once the orchestrator feeds the registry-resolved model
+    /// max through (PR B), this will reflect the actual model.
+    pub model_context_limit: usize,
     pub percent: usize,
     pub message_count: usize,
     pub messages_to_compact: usize,
@@ -58,13 +63,16 @@ impl SessionCompactor {
             .map_err(|e| anyhow::anyhow!("Failed to load context: {e}"))?;
 
         let estimated_tokens = Compactor::estimate_tokens(&messages);
-        let context_window = 128_000usize; // Default for dry-run display
-        let percent = (estimated_tokens * 100) / context_window.max(1);
+        // TODO(PR B): pull the registry-resolved model max instead of
+        // hard-coding. The orchestrator pins this once at run start;
+        // dry-run currently has no orchestrator reference.
+        let model_context_limit = 128_000usize;
+        let percent = (estimated_tokens * 100) / model_context_limit.max(1);
         let messages_to_compact = messages.len().saturating_sub(2);
 
         Ok(DryRunReport {
             estimated_tokens,
-            context_window,
+            model_context_limit,
             percent,
             message_count: messages.len(),
             messages_to_compact,

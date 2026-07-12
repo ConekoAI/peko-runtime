@@ -34,12 +34,19 @@ pub struct SessionInfo {
     pub updated_at: u64,
     pub turn_count: u32,
     pub message_count: usize,
-    /// Current context window size (`total_tokens` from last assistant message)
-    pub context_window: usize,
+    /// `total_tokens` reported by the provider on the most recent
+    /// assistant turn. NOT the model's context window size — see
+    /// `model_context_limit` for that.
+    pub last_total_tokens: usize,
     /// Cumulative input tokens across all assistant messages
     pub total_input_tokens: usize,
     /// Cumulative output tokens across all assistant messages
     pub total_output_tokens: usize,
+    /// The model's maximum context window size, in tokens, if known.
+    /// `None` for legacy entries and sessions opened without a
+    /// provider/model reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_context_limit: Option<usize>,
     pub parent_session_id: Option<String>,
     pub title: Option<String>,
     /// Subject type (`"user"`, `"agent"`, or `"public"`).
@@ -68,9 +75,10 @@ impl From<SessionEntry> for SessionInfo {
             updated_at: entry.updated_at,
             turn_count: entry.turn_count,
             message_count: entry.message_count,
-            context_window: entry.context_window,
+            last_total_tokens: entry.last_total_tokens,
             total_input_tokens: entry.total_input_tokens,
             total_output_tokens: entry.total_output_tokens,
+            model_context_limit: entry.model_context_limit,
             parent_session_id: entry.parent_session_id,
             title: entry.title,
             peer_type: entry.peer_type,

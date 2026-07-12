@@ -326,17 +326,18 @@ impl SessionHandle {
 
     /// Record token usage (via shared controller)
     ///
-    /// `context_window` is the `total_tokens` from the current assistant message.
-    /// `input` and `output` are the incremental tokens for this turn.
+    /// `last_total_tokens` is the `total_tokens` reported by the
+    /// provider on the last assistant turn. `input` and `output` are
+    /// the incremental tokens for this turn.
     pub async fn record_usage(
         &self,
-        context_window: usize,
+        last_total_tokens: usize,
         input: usize,
         output: usize,
     ) -> Result<()> {
         let mut controller = self.metadata.write().await;
         controller
-            .record_token_usage(&self.session_id, context_window, input, output)
+            .record_token_usage(&self.session_id, last_total_tokens, input, output)
             .await
     }
 
@@ -1323,7 +1324,7 @@ impl SessionManager {
         });
         new_metadata.trigger = "branch".to_string();
         new_metadata.message_count = parent_metadata.message_count;
-        new_metadata.context_window = parent_metadata.context_window;
+        new_metadata.last_total_tokens = parent_metadata.last_total_tokens;
         new_metadata.total_input_tokens = parent_metadata.total_input_tokens;
         new_metadata.total_output_tokens = parent_metadata.total_output_tokens;
 
@@ -2669,12 +2670,12 @@ mod tests {
             .await
             .unwrap();
 
-        // Record token usage via handle (context_window=1000, input=100, output=50)
+        // Record token usage via handle (last_total_tokens=1000, input=100, output=50)
         handle.record_usage(1000, 100, 50).await.unwrap();
 
         // Get metadata via handle - should see the updated tokens
         let metadata = handle.get_metadata().await.unwrap();
-        assert_eq!(metadata.context_window, 1000);
+        assert_eq!(metadata.last_total_tokens, 1000);
         assert_eq!(metadata.total_input_tokens, 100);
         assert_eq!(metadata.total_output_tokens, 50);
     }
@@ -2729,12 +2730,12 @@ mod tests {
             .unwrap()
             .expect("Session should exist");
 
-        // Record usage via handle1 (context_window=2000, input=200, output=100)
+        // Record usage via handle1 (last_total_tokens=2000, input=200, output=100)
         handle1.record_usage(2000, 200, 100).await.unwrap();
 
         // Get metadata via handle2 - should see the changes (shared cache)
         let metadata = handle2.get_metadata().await.unwrap();
-        assert_eq!(metadata.context_window, 2000);
+        assert_eq!(metadata.last_total_tokens, 2000);
         assert_eq!(metadata.total_input_tokens, 200);
         assert_eq!(metadata.total_output_tokens, 100);
     }
