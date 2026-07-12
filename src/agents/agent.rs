@@ -848,6 +848,17 @@ impl Agent {
         self.provider.clone()
     }
 
+    /// Reference to the v3+ `LlmResolver` if one is wired to this agent.
+    ///
+    /// The resolver owns the `ProviderCatalog` — the runtime's source
+    /// of truth for provider/model metadata — and the OS keychain
+    /// accessor. Callers that need catalog lookups (e.g.
+    /// `model_context_length` for compaction) consult this.
+    #[must_use]
+    pub fn llm_resolver(&self) -> Option<Arc<crate::providers::LlmResolver>> {
+        self.llm_resolver.clone()
+    }
+
     /// Get the extension core
     #[must_use]
     pub fn extension_core(&self) -> Arc<ExtensionCore> {

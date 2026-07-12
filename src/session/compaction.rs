@@ -10,7 +10,6 @@
 
 pub mod background;
 pub mod cli;
-pub mod registry;
 pub mod summary_format;
 pub mod turn_boundaries;
 
@@ -123,9 +122,12 @@ pub struct CompactionConfig {
     /// Cooldown between compactions in seconds
     #[serde(default = "default_cooldown_seconds")]
     pub cooldown_seconds: u64,
-    /// Per-provider/per-model context window overrides
-    #[serde(default)]
-    pub model_limits: std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
+    // Note: the previous `model_limits` field — per-provider/per-model
+    // context window overrides — has been removed. Model max context
+    // is now sourced from `ProviderCatalog::model_context_length` (see
+    // `crate::providers::catalog`). Existing `~/.peko/config.toml`
+    // files with `[compaction.model_limits]` blocks deserialize
+    // cleanly because this type does not use `deny_unknown_fields`.
 }
 
 fn default_enabled() -> bool {
@@ -161,7 +163,6 @@ impl Default for CompactionConfig {
             keep_recent_tokens: default_keep_recent_tokens(),
             max_compactions_per_session: default_max_compactions_per_session(),
             cooldown_seconds: default_cooldown_seconds(),
-            model_limits: std::collections::HashMap::new(),
         }
     }
 }
@@ -353,7 +354,12 @@ impl Compactor {
     /// Compaction triggers when **either** threshold is met.
     #[must_use]
     pub fn should_compact(&self, estimated_tokens: usize, context_window: usize) -> bool {
-        registry::should_auto_compact(estimated_tokens, context_window, &self.config)
+        if !self.config.enabled {
+            return false;
+        }
+        let ratio_threshold = (context_window * self.config.auto_threshold_percent as usize) / 100;
+        let reserved_threshold = context_window.saturating_sub(self.config.reserve_tokens);
+        estimated_tokens >= ratio_threshold || estimated_tokens >= reserved_threshold
     }
 
     /// Select messages to compact vs keep, respecting turn boundaries.
@@ -773,6 +779,13 @@ mod tests {
 
     #[test]
     fn test_compaction_config_from_toml_section() {
+        // Per-provider/per-model context window overrides used to
+        // live at `[compaction.model_limits]`. Model max context is
+        // now sourced exclusively from `ProviderCatalog::context_length`
+        // (single source of truth). To keep user TOMLs that still
+        // carry a `[compaction.model_limits]` block from breaking,
+        // `CompactionConfig` deserialization accepts and silently
+        // ignores the section.
         let toml_str = r#"
 [compaction]
 enabled = true
@@ -797,9 +810,5 @@ minimax = { "M3" = 4000 }
         assert_eq!(cfg.keep_recent_tokens, 1000);
         assert_eq!(cfg.max_compactions_per_session, 100);
         assert_eq!(cfg.cooldown_seconds, 0);
-        assert_eq!(
-            cfg.model_limits.get("minimax").unwrap().get("M3"),
-            Some(&4000)
-        );
     }
 }

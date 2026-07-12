@@ -1,11 +1,17 @@
 //! Compaction orchestrator for the agentic loop
 //!
 //! Encapsulates the entire compaction lifecycle:
-//! - Config parsing and model context registry setup
 //! - Pre-compaction hook invocation
 //! - Background compactor coordination
 //! - Post-compaction hook invocation
 //! - Session recording and cache updates
+//!
+//! The orchestrator no longer owns a "model context registry". The
+//! single source of truth for the model's max context length is
+//! `ModelInfo::context_length` in the `ProviderCatalog`. The caller
+//! resolves that value once before constructing the orchestrator and
+//! passes it as a concrete `usize` — see `AgenticLoop::run_inner`
+//! where the orchestrator is built.
 
 use crate::common::types::message::LlmMessage;
 use crate::engine::AgenticEvent;
@@ -15,7 +21,6 @@ use crate::extensions::framework::ExtensionCore;
 use crate::providers::Provider;
 use crate::session::compaction::{
     background::{BackgroundCompactor, CompactionResponse},
-    registry::ModelContextRegistry,
     CompactionConfig, CompactionResult,
 };
 use crate::session::Session;
@@ -42,29 +47,20 @@ pub struct CompactionOrchestrator {
 }
 
 impl CompactionOrchestrator {
-    /// Create a new compaction orchestrator for the given provider and agent config.
+    /// Create a new compaction orchestrator for the given provider and
+    /// the model's max context length in tokens.
     ///
-    /// `agent_config` is consulted only for legacy model-context
-    /// overrides; the provider/model identity comes from the resolved
-    /// `Provider` itself (v3 `LlmResolver` output).
-    pub fn new(
-        provider: Arc<Provider>,
-        _agent_config: &crate::agents::agent_config::AgentConfig,
-    ) -> Self {
+    /// `context_window` is the **resolved** model max context — the
+    /// caller consults `ProviderCatalog::model_context_length` (the
+    /// single source of truth) before invoking this. The orchestrator
+    /// does not perform catalog resolution itself; doing so would
+    /// require threading `Arc<ProviderCatalog>` through every call
+    /// site. The value is concrete (a `usize`), not an `Option`, so
+    /// the caller picks a fallback policy at the boundary — typically
+    /// the catalog value or a sane default when the model has no
+    /// declared limit.
+    pub fn new(provider: Arc<Provider>, context_window: usize) -> Self {
         let config = load_compaction_config();
-        let mut registry = ModelContextRegistry::new();
-        let override_registry = ModelContextRegistry {
-            default_limit: registry.default_limit,
-            limits: config.model_limits.clone(),
-        };
-        registry.merge(&override_registry);
-
-        // v3: use the resolved provider/model from the `Provider`
-        // instead of the deprecated inline `[provider]` block on
-        // the agent config.
-        let provider_str = provider.name().to_string();
-        let model_id = provider.model_id();
-        let context_window = registry.get(&provider_str, &model_id);
 
         let background_compactor = BackgroundCompactor::new(provider);
 

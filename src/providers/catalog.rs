@@ -377,6 +377,27 @@ impl ProviderCatalog {
         guard.entries.get(id).filter(|e| e.enabled).cloned()
     }
 
+    /// Resolve the maximum context length in tokens for a given
+    /// `(provider_id, model_id)` pair declared in the catalog.
+    ///
+    /// Returns `None` when the provider is unknown, the model is not
+    /// declared on that provider, the entry is disabled, or the model
+    /// has no `context_length` set (e.g. a user-customised model
+    /// without curated metadata).
+    ///
+    /// This is the **single source of truth** for "the model max
+    /// context". Callers that need a concrete budget (compaction,
+    /// dry-run reporting, request shaping) consult this instead of
+    /// hard-coded fallbacks.
+    pub async fn model_context_length(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Option<u32> {
+        let entry = self.get_enabled(provider_id).await?;
+        entry.model(model_id).and_then(|m| m.context_length)
+    }
+
     /// Add or replace an entry. Bumps `updated_at`.
     pub async fn upsert(&self, entry: ProviderCatalogEntry) -> Result<()> {
         {
@@ -645,6 +666,73 @@ mod tests {
     fn empty_catalog_resolve_default_errors() {
         let (_dir, cat) = temp_catalog();
         assert!(tokio_test::block_on(cat.resolve_default(None, None)).is_err());
+    }
+
+    /// `model_context_length` is the SoT for model max context. Seed
+    /// the catalog from the Anthropic template and verify hit,
+    /// miss-within-provider, unknown-provider, and disabled-entry
+    /// paths.
+    #[test]
+    fn model_context_length_resolves_from_catalog() {
+        let (_dir, cat) = temp_catalog();
+        let tmpl = &templates::find_template("anthropic").unwrap();
+        let entry = ProviderCatalogEntry::from_template(tmpl, "anthropic", None);
+        tokio_test::block_on(cat.upsert(entry)).unwrap();
+
+        // hit
+        let got = tokio_test::block_on(
+            cat.model_context_length("anthropic", "claude-sonnet-4-5"),
+        );
+        assert_eq!(got, Some(200_000));
+
+        // model not declared on this provider
+        assert_eq!(
+            tokio_test::block_on(cat.model_context_length("anthropic", "not-a-real-model")),
+            None
+        );
+
+        // provider unknown
+        assert_eq!(
+            tokio_test::block_on(cat.model_context_length("nope", "claude-sonnet-4-5")),
+            None
+        );
+    }
+
+    /// Disabled entries must NOT report a context length even if they
+    /// declare one — `get_enabled` semantics propagate.
+    #[test]
+    fn model_context_length_returns_none_for_disabled_entry() {
+        let (_dir, cat) = temp_catalog();
+        let tmpl = &templates::find_template("anthropic").unwrap();
+        let mut entry = ProviderCatalogEntry::from_template(tmpl, "anthropic", None);
+        entry.enabled = false;
+        tokio_test::block_on(cat.upsert(entry)).unwrap();
+
+        assert_eq!(
+            tokio_test::block_on(cat.model_context_length("anthropic", "claude-sonnet-4-5")),
+            None
+        );
+    }
+
+    /// A model with no `context_length` (e.g. user-added model without
+    /// curated metadata) reports `None` rather than 0 — the caller
+    /// decides how to handle the unknown.
+    #[test]
+    fn model_context_length_returns_none_when_model_has_no_length() {
+        let (_dir, cat) = temp_catalog();
+        let mut entry = ProviderCatalogEntry::from_template(
+            &templates::find_template("anthropic").unwrap(),
+            "anthropic",
+            None,
+        );
+        // Synthesise a model with no context_length by setting it to None.
+        entry.models[0].context_length = None;
+        tokio_test::block_on(cat.upsert(entry)).unwrap();
+
+        assert_eq!(
+            tokio_test::block_on(cat.model_context_length("anthropic", "claude-sonnet-4-5")),
+            None
+        );
     }
 
     #[test]
