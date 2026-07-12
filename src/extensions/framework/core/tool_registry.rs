@@ -66,7 +66,7 @@ impl ToolRegistry {
             return Some(ext_id.clone());
         }
         if !std::ptr::eq(principal_id as *const _, PrincipalId::system() as *const _) {
-            if let Some(ext_id) = owners.get(&(tool_name.to_string(), PrincipalId::system())) {
+            if let Some(ext_id) = owners.get(&(tool_name.to_string(), PrincipalId::system().clone())) {
                 return Some(ext_id.clone());
             }
         }
@@ -131,7 +131,7 @@ impl ToolRegistry {
         principal_id: &PrincipalId,
     ) -> Result<()> {
         let key = (tool_name.to_string(), principal_id.clone());
-        self.tool_index.insert(key, hook_id).await;
+        self.tool_index.insert(key.clone(), hook_id).await;
         self.tool_owners.write().await.insert(key, extension_id);
         debug!(tool_name = %tool_name, hook_id = %hook_id, principal_id = %principal_id, "Registered tool in index");
         Ok(())
@@ -180,7 +180,7 @@ impl ToolRegistry {
             return None;
         }
         self.tool_index
-            .get(&(tool_name.to_string(), PrincipalId::system()))
+            .get(&(tool_name.to_string(), PrincipalId::system().clone()))
             .await
     }
 
@@ -245,7 +245,7 @@ impl ToolRegistry {
                     if std::ptr::eq(principal_id as *const _, PrincipalId::system() as *const _) {
                         None
                     } else {
-                        owners.get(&(name.clone(), PrincipalId::system()))
+                        owners.get(&(name.clone(), PrincipalId::system().clone()))
                     }
                 });
                 ext_id.map(|id| id.0.clone()).unwrap_or_else(|| name.clone())

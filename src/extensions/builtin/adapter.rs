@@ -14,6 +14,7 @@
 use crate::extensions::framework::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
 use crate::extensions::framework::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
 use crate::extensions::framework::HookResult;
+use crate::subject::PrincipalId;
 use crate::tools::{Tool, ToolInterruptNotice};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -94,7 +95,11 @@ impl BuiltinToolAdapter {
     /// `ExtensionCore::get_tool` reads from so direct callers (e.g.,
     /// `AsyncSpawnTool`) can obtain an `Arc<dyn Tool>` without going
     /// through the hook layer.
-    pub async fn register_tool(core: &ExtensionCore, tool: Arc<dyn Tool>) -> Result<()> {
+    pub async fn register_tool(
+        core: &ExtensionCore,
+        tool: Arc<dyn Tool>,
+        principal_id: &PrincipalId,
+    ) -> Result<()> {
         let tool_name = tool.name().to_string();
         let ext_id = ExtensionId::new(format!("builtin:tool:{tool_name}"));
 
@@ -116,17 +121,40 @@ impl BuiltinToolAdapter {
         let exec_handler = Arc::new(BuiltinExecuteHandler::new(tool));
 
         // Register with unified registry (auto-generates all companion hooks)
-        core.register_tool(metadata, exec_handler, &ext_id).await?;
+        core.register_tool(metadata, exec_handler, &ext_id, principal_id)
+            .await?;
 
         Ok(())
     }
 
-    /// Register multiple tools
-    pub async fn register_tools(core: &ExtensionCore, tools: Vec<Arc<dyn Tool>>) -> Result<()> {
+    /// Register multiple tools under the same principal scope.
+    pub async fn register_tools(
+        core: &ExtensionCore,
+        tools: Vec<Arc<dyn Tool>>,
+        principal_id: &PrincipalId,
+    ) -> Result<()> {
         for tool in tools {
-            Self::register_tool(core, tool).await?;
+            Self::register_tool(core, tool, principal_id).await?;
         }
         Ok(())
+    }
+
+    /// Register a single global built-in tool under
+    /// [`PrincipalId::system`](crate::subject::PrincipalId::system).
+    ///
+    /// This is the canonical call shape for the daemon-init path: built-ins
+    /// are visible to every principal and registered exactly once on the
+    /// shared `ExtensionCore`.
+    pub async fn register_tool_system(core: &ExtensionCore, tool: Arc<dyn Tool>) -> Result<()> {
+        Self::register_tool(core, tool, PrincipalId::system()).await
+    }
+
+    /// Register multiple global built-in tools.
+    pub async fn register_tools_system(
+        core: &ExtensionCore,
+        tools: Vec<Arc<dyn Tool>>,
+    ) -> Result<()> {
+        Self::register_tools(core, tools, PrincipalId::system()).await
     }
 
     /// Register all enabled built-in tools with `ExtensionCore`
@@ -175,7 +203,7 @@ impl BuiltinToolAdapter {
         let bash_disabled = disabled_set.contains("bash");
         if bash_enabled && !bash_disabled {
             let bash = Arc::new(BashTool::new().with_workspace(&workspace));
-            Self::register_tool(core, bash).await?;
+            Self::register_tool_system(core, bash).await?;
         }
 
         // Granular filesystem tools
@@ -183,31 +211,31 @@ impl BuiltinToolAdapter {
             // Read
             if !disabled_set.contains("read") {
                 let tool = Arc::new(ReadTool::new().with_workspace(&workspace));
-                Self::register_tool(core, tool).await?;
+                Self::register_tool_system(core, tool).await?;
             }
 
             // Write
             if config.enable_granular_write && !disabled_set.contains("write") {
                 let tool = Arc::new(WriteTool::new().with_workspace(&workspace));
-                Self::register_tool(core, tool).await?;
+                Self::register_tool_system(core, tool).await?;
             }
 
             // glob
             if !disabled_set.contains("glob") {
                 let tool = Arc::new(GlobTool::new().with_workspace(&workspace));
-                Self::register_tool(core, tool).await?;
+                Self::register_tool_system(core, tool).await?;
             }
 
             // grep
             if !disabled_set.contains("grep") {
                 let tool = Arc::new(GrepTool::new().with_workspace(&workspace));
-                Self::register_tool(core, tool).await?;
+                Self::register_tool_system(core, tool).await?;
             }
 
             // Edit
             if config.enable_granular_write && !disabled_set.contains("edit") {
                 let tool = Arc::new(EditTool::new().with_workspace(&workspace));
-                Self::register_tool(core, tool).await?;
+                Self::register_tool_system(core, tool).await?;
             }
         }
 
@@ -215,20 +243,23 @@ impl BuiltinToolAdapter {
         if config.enable_session_tools && !disabled_set.contains("session") {
             let registry = crate::tools::SessionCache::new("main");
             let tool = Arc::new(SessionTool::new(Box::new(registry)));
-            Self::register_tool(core, tool).await?;
+            Self::register_tool_system(core, tool).await?;
         }
 
         // Cron family for scheduled jobs
         let cron_disabled = disabled_set.contains("cron");
         if config.enable_cron {
             if !cron_disabled && !disabled_set.contains("croncreate") {
-                Self::register_tool(core, Arc::new(CronCreateTool::new())).await?;
+                Self::register_tool_system(core, Arc::new(CronCreateTool::new()))
+                    .await?;
             }
             if !cron_disabled && !disabled_set.contains("crondelete") {
-                Self::register_tool(core, Arc::new(CronDeleteTool::new())).await?;
+                Self::register_tool_system(core, Arc::new(CronDeleteTool::new()))
+                    .await?;
             }
             if !cron_disabled && !disabled_set.contains("cronlist") {
-                Self::register_tool(core, Arc::new(CronListTool::new())).await?;
+                Self::register_tool_system(core, Arc::new(CronListTool::new()))
+                    .await?;
             }
         }
 
@@ -252,23 +283,32 @@ impl BuiltinToolAdapter {
     ///
     /// `AsyncSpawn` requires an `AsyncExecutor` and an `ExtensionCore`
     /// reference (so it can look up the target tool by name and read the
-    /// current session key). Each agent calls this once during initialization
-    /// so spawned tasks land in its own completion queue.
+    /// current session key). Each agent calls this once during
+    /// initialization so spawned tasks land in its own completion queue.
+    ///
+    /// The tool is registered under the calling agent's `principal_id`
+    /// rather than the system scope, so each agent gets its own
+    /// (AsyncSpawn, principal_id) entry — the per-agent async family
+    /// introspection scoping described above.
     pub async fn register_async_spawn_tool(
         core: &ExtensionCore,
         tool: Arc<crate::tools::builtin::AsyncSpawnTool>,
+        principal_id: &PrincipalId,
     ) -> Result<()> {
-        Self::register_tool(core, tool).await
+        Self::register_tool(core, tool, principal_id).await
     }
 
     /// Register `AsyncOutput` with per-agent wiring.
     ///
     /// `AsyncOutput` requires an `AsyncExecutor` for blocking reads.
+    /// Registered under the calling agent's `principal_id` (see
+    /// `register_async_spawn_tool` for rationale).
     pub async fn register_async_output_tool(
         core: &ExtensionCore,
         tool: Arc<crate::tools::builtin::AsyncOutputTool>,
+        principal_id: &PrincipalId,
     ) -> Result<()> {
-        Self::register_tool(core, tool).await
+        Self::register_tool(core, tool, principal_id).await
     }
 
     /// Get list of globally-registered built-in tool names.

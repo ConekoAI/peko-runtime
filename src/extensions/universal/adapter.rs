@@ -28,6 +28,7 @@ use crate::extensions::framework::core::{
     ExtensionCore, HookBinding, HookContext, HookHandler, HookPoint, ToolMetadata, ToolSource,
 };
 use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookResult};
+use crate::subject::PrincipalId;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
@@ -192,6 +193,7 @@ impl UniversalToolAdapter {
         &self,
         core: &ExtensionCore,
         manifest: &ExtensionManifest,
+        principal_id: &PrincipalId,
     ) -> Result<()> {
         let tool_name = manifest.name.clone();
         let ext_id = ExtensionId::new(format!("universal:{tool_name}"));
@@ -250,7 +252,8 @@ impl UniversalToolAdapter {
         });
 
         // Register with unified registry (auto-generates all companion hooks)
-        core.register_tool(metadata, exec_handler, &ext_id).await?;
+        core.register_tool(metadata, exec_handler, &ext_id, principal_id)
+            .await?;
 
         info!(tool_name = %tool_name, "Registered universal tool");
         Ok(())
@@ -361,8 +364,9 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
         &self,
         core: &crate::extensions::framework::core::ExtensionCore,
         manifest: &ExtensionManifest,
+        principal_id: &PrincipalId,
     ) -> Result<usize> {
-        self.register_tool(core, manifest).await?;
+        self.register_tool(core, manifest, principal_id).await?;
         Ok(1)
     }
 }
@@ -449,12 +453,13 @@ pub async fn load_tools_from_directory(path: &Path) -> Vec<DiscoveredUniversalTo
 pub async fn load_and_register_tools(
     core: &crate::extensions::framework::ExtensionCore,
     tools_dir: impl AsRef<Path>,
+    principal_id: &PrincipalId,
 ) -> Result<usize> {
     let adapter = UniversalToolAdapter::new();
     let tools = adapter.discover_tools(tools_dir.as_ref()).await;
     let mut count = 0;
     for tool in tools {
-        if let Err(e) = adapter.register_tool(core, &tool.manifest).await {
+        if let Err(e) = adapter.register_tool(core, &tool.manifest, principal_id).await {
             warn!(tool = %tool.manifest.name, error = %e, "Failed to register universal tool");
         } else {
             count += 1;

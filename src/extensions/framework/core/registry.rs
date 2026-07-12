@@ -13,6 +13,7 @@ use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities};
 use crate::extensions::framework::types::{
     ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata, ToolRuntimeContext,
 };
+use crate::subject::PrincipalId;
 use crate::tools::core::Tool;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -140,8 +141,14 @@ impl ExtensionCore {
     /// Resolve bare tool names to their canonical `extension_id` form.
     ///
     /// See [`ToolRegistry::resolve_canonical_ids`] for the contract.
-    pub async fn resolve_canonical_ids(&self, names: &[String]) -> Vec<String> {
-        self.tool_registry.resolve_canonical_ids(names).await
+    pub async fn resolve_canonical_ids(
+        &self,
+        names: &[String],
+        principal_id: &PrincipalId,
+    ) -> Vec<String> {
+        self.tool_registry
+            .resolve_canonical_ids(names, principal_id)
+            .await
     }
 
     /// Wait for background async tasks to complete
@@ -265,6 +272,17 @@ impl ExtensionCore {
                     .map(|v| ActiveExtensionSet::with_ids(v.iter().cloned())),
                 _ => None,
             };
+            // The dispatch path forwards the caller's principal_id via
+            // HookInput::ToolCall. Map it onto the registry's `PrincipalId`
+            // type so `is_tool_enabled` can probe `(name, principal_id)` then
+            // fall back to `(name, PrincipalId::system())` for built-ins.
+            let call_principal_id: PrincipalId = match &input {
+                HookInput::ToolCall {
+                    principal_id: Some(pid),
+                    ..
+                } => PrincipalId(pid.clone()),
+                _ => PrincipalId::system().clone(),
+            };
             let Some(caps) = capabilities else {
                 warn!(tool_name = %tool_name, "Tool execution blocked: no capability set provided");
                 return HookResult::Error(anyhow::anyhow!(
@@ -274,7 +292,12 @@ impl ExtensionCore {
             let caps = Capabilities::with_grants(caps.iter().cloned());
             if !self
                 .tool_registry
-                .is_tool_enabled(tool_name, &caps, active_extensions.as_ref())
+                .is_tool_enabled(
+                    tool_name,
+                    &caps,
+                    active_extensions.as_ref(),
+                    &call_principal_id,
+                )
                 .await
             {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
@@ -389,12 +412,13 @@ impl ExtensionCore {
     ///
     /// # Returns
     /// A [`ToolRegistration`] composite containing all hook IDs created.
-    #[instrument(skip(self, handler, metadata), fields(extension_id = %extension_id, tool_name = %metadata.name))]
+    #[instrument(skip(self, handler, metadata), fields(extension_id = %extension_id, tool_name = %metadata.name, principal_id = %principal_id))]
     pub async fn register_tool(
         &self,
         metadata: ToolMetadata,
         handler: Arc<dyn super::handler::HookHandler>,
         extension_id: &ExtensionId,
+        principal_id: &PrincipalId,
     ) -> Result<super::tool_registration::ToolRegistration> {
         use super::tool_registration::{
             AutoAsyncHandler, AutoCancelHandler, AutoPromptHandler, AutoStatusHandler,
@@ -406,8 +430,8 @@ impl ExtensionCore {
 
         // ADR-019: Allow re-registration for dynamic enable/disable
         // If tool already registered, unregister it first (idempotent)
-        if self.get_tool_metadata(&tool_name).await.is_some() {
-            let _ = self.unregister_tool(&tool_name).await;
+        if self.get_tool_metadata(&tool_name, principal_id).await.is_some() {
+            let _ = self.unregister_tool(&tool_name, principal_id).await;
         }
 
         let mut hook_ids: Vec<HookId> = Vec::with_capacity(5);
@@ -486,7 +510,7 @@ impl ExtensionCore {
 
         // ── 7. Index in ToolRegistry for O(1) lookup ────────────────────────────
         self.tool_registry
-            .register_tool(&tool_name, exec_hook_id, extension_id.clone())
+            .register_tool(&tool_name, exec_hook_id, extension_id.clone(), principal_id)
             .await?;
 
         debug!(
@@ -507,11 +531,17 @@ impl ExtensionCore {
     ///
     /// # Arguments
     /// * `tool_name` - The name of the tool
+    /// * `principal_id` - The principal scope (use `PrincipalId::system()`
+    ///   for global tools)
     ///
     /// # Returns
     /// The tool metadata if found, None otherwise
-    pub async fn get_tool_metadata(&self, tool_name: &str) -> Option<ToolMetadata> {
-        let hook_id = self.tool_registry.get_tool_hook_id(tool_name).await?;
+    pub async fn get_tool_metadata(
+        &self,
+        tool_name: &str,
+        principal_id: &PrincipalId,
+    ) -> Option<ToolMetadata> {
+        let hook_id = self.tool_registry.get_tool_hook_id(tool_name, principal_id).await?;
         let hooks = self.hook_registry.hooks.read().await;
         hooks.get(&hook_id)?.tool_metadata.clone()
     }
@@ -520,46 +550,63 @@ impl ExtensionCore {
     ///
     /// # Arguments
     /// * `tool_name` - The name of the tool
+    /// * `principal_id` - The principal scope (use `PrincipalId::system()`
+    ///   for global tools)
     ///
     /// # Returns
     /// The hook ID if found, None otherwise
-    pub async fn get_tool_hook_id(&self, tool_name: &str) -> Option<HookId> {
-        self.tool_registry.get_tool_hook_id(tool_name).await
+    pub async fn get_tool_hook_id(
+        &self,
+        tool_name: &str,
+        principal_id: &PrincipalId,
+    ) -> Option<HookId> {
+        self.tool_registry.get_tool_hook_id(tool_name, principal_id).await
     }
 
-    /// List all registered tools
+    /// List all registered tools visible to `principal_id`.
     ///
-    /// # Returns
-    /// A list of tool metadata for all registered tools.
-    /// Note: This returns ALL registered tools regardless of the caller's
-    /// capability grants.  The capability gate is enforced at execution time
-    /// via `invoke_hook`.  Callers that need a caller-scoped view should use
-    /// [`Self::list_tool_definitions_with_allowlist`].
-    pub async fn list_tools(&self) -> Vec<ToolMetadata> {
-        // Collect hook IDs from tool index first
-        let hook_ids: Vec<HookId> = self
-            .tool_registry
-            .tool_index
-            .read(|tool_index| tool_index.values().copied().collect())
-            .await;
+    /// Note: This returns all tools visible to `principal_id` regardless of
+    /// the caller's capability grants. The capability gate is enforced at
+    /// execution time via `invoke_hook`. Callers that need a caller-scoped
+    /// view should use [`Self::list_tool_definitions_with_allowlist`].
+    pub async fn list_tools(&self, principal_id: &PrincipalId) -> Vec<ToolMetadata> {
+        // Collect tool names from tool index first; that gives us the
+        // hook IDs the principal can see.
+        let names = self.tool_registry.list_tool_names(principal_id).await;
 
-        // Then look up metadata in hooks registry
+        // Look up hook IDs and metadata in hooks registry.
         let hooks = self.hook_registry.hooks.read().await;
-
-        hook_ids
-            .into_iter()
-            .filter_map(|hook_id| hooks.get(&hook_id))
-            .filter(|hook| hook.enabled)
-            .filter_map(|hook| hook.tool_metadata.clone())
-            .collect()
+        let mut out = Vec::with_capacity(names.len());
+        for name in names {
+            let Some(hook_id) = self.tool_registry.get_tool_hook_id(&name, principal_id).await
+            else {
+                continue;
+            };
+            let Some(hook) = hooks.get(&hook_id) else {
+                continue;
+            };
+            if !hook.enabled {
+                continue;
+            }
+            if let Some(meta) = hook.tool_metadata.clone() {
+                out.push(meta);
+            }
+        }
+        out
     }
 
-    /// List all registered tools as `ToolDefinitions` (for LLM API)
-    ///
-    /// # Returns
-    /// A list of `ToolDefinition` for all enabled tools
+    /// List all registered tools (visible to `PrincipalId::system()`) as
+    /// `ToolDefinitions` (for LLM API).
     pub async fn list_tool_definitions(&self) -> Vec<crate::providers::ToolDefinition> {
-        self.list_tools()
+        self.list_tool_definitions_for(PrincipalId::system()).await
+    }
+
+    /// List all registered tools visible to `principal_id` as `ToolDefinitions`.
+    pub async fn list_tool_definitions_for(
+        &self,
+        principal_id: &PrincipalId,
+    ) -> Vec<crate::providers::ToolDefinition> {
+        self.list_tools(principal_id)
             .await
             .into_iter()
             .map(|metadata| metadata.to_tool_definition())
@@ -576,13 +623,14 @@ impl ExtensionCore {
         &self,
         capabilities: &Capabilities,
         active_extensions: Option<&ActiveExtensionSet>,
+        principal_id: &PrincipalId,
     ) -> Vec<crate::providers::ToolDefinition> {
-        let all = self.list_tools().await;
+        let all = self.list_tools(principal_id).await;
         let mut filtered = Vec::new();
         for metadata in all {
             if self
                 .tool_registry
-                .is_tool_enabled(&metadata.name, capabilities, active_extensions)
+                .is_tool_enabled(&metadata.name, capabilities, active_extensions, principal_id)
                 .await
             {
                 filtered.push(metadata.to_tool_definition());
@@ -591,16 +639,25 @@ impl ExtensionCore {
         filtered
     }
 
-    /// Unregister a tool by name.
+    /// Unregister a tool by `(name, principal_id)`.
     ///
-    /// Removes **all** hooks associated with the tool (execution, prompt, async,
-    /// status, cancel) atomically.
+    /// Removes **all** hooks associated with the tool (execution, prompt,
+    /// async, status, cancel) atomically.
     ///
     /// # Arguments
     /// * `tool_name` - The name of the tool to unregister
-    #[instrument(skip(self), fields(tool_name = %tool_name))]
-    pub async fn unregister_tool(&self, tool_name: &str) -> Result<()> {
-        let hook_id = self.tool_registry.unregister_tool(tool_name).await?;
+    /// * `principal_id` - The principal scope whose tool entry should be
+    ///   removed (use `PrincipalId::system()` to remove a system-global entry)
+    #[instrument(skip(self), fields(tool_name = %tool_name, principal_id = %principal_id))]
+    pub async fn unregister_tool(
+        &self,
+        tool_name: &str,
+        principal_id: &PrincipalId,
+    ) -> Result<()> {
+        let hook_id = self
+            .tool_registry
+            .unregister_tool(tool_name, principal_id)
+            .await?;
 
         // Mirror the side-table: drop the Arc<dyn Tool> so callers that
         // already hold a weak ref observe the removal on next lookup.
@@ -633,9 +690,9 @@ impl ExtensionCore {
         Ok(())
     }
 
-    /// Get the number of registered tools
-    pub async fn tool_count(&self) -> usize {
-        self.tool_registry.tool_count().await
+    /// Get the number of tools visible to `principal_id`.
+    pub async fn tool_count(&self, principal_id: &PrincipalId) -> usize {
+        self.tool_registry.tool_count(principal_id).await
     }
 
     /// Look up a registered tool by name.
@@ -648,6 +705,10 @@ impl ExtensionCore {
     /// `Arc<dyn Tool>` for direct invocation requires a side-table.
     /// `BuiltinToolAdapter::register_tool` populates this side-table; this
     /// method reads from it.
+    ///
+    /// `tool_instances` is keyed by name only (instances are shared across
+    /// principals for built-ins); the principal scope lives in the registry
+    /// index.
     #[allow(dead_code)]
     pub async fn get_tool(&self, name: &str) -> Option<Arc<dyn crate::tools::core::Tool>> {
         let instances = self.tool_instances.read().await;
@@ -657,6 +718,9 @@ impl ExtensionCore {
     /// Insert a tool instance into the side-table. Called by
     /// `BuiltinToolAdapter::register_tool` so `get_tool` can find the
     /// `Arc<dyn Tool>` for direct invocation (e.g., `AsyncSpawnTool`).
+    ///
+    /// `tool_instances` is keyed by name only — see the field doc on
+    /// `ExtensionCore::tool_instances` for the rationale.
     pub(crate) async fn insert_tool_instance(&self, name: String, tool: Arc<dyn Tool>) {
         let mut instances = self.tool_instances.write().await;
         instances.insert(name, tool);
