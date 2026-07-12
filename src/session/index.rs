@@ -58,6 +58,12 @@ pub const DEFAULT_PRUNE_AFTER_DAYS: u64 = 30;
 pub const DEFAULT_MAX_SESSIONS: usize = 500;
 
 /// Complete session metadata
+///
+/// Persisted to `sessions.json`. New fields added here must
+/// use `#[serde(default)]` so that older `sessions.json` files
+/// continue to deserialize after a runtime upgrade — and when
+/// renaming an existing field, keep the legacy name as an
+/// `alias` so pre-rename JSON stays readable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
     pub session_id: String,
@@ -66,12 +72,21 @@ pub struct SessionEntry {
     pub updated_at: u64,
     pub message_count: usize,
     pub turn_count: u32,
-    /// Current context window size (`total_tokens` from last assistant message)
-    pub context_window: usize,
+    /// `total_tokens` reported by the most recent assistant message.
+    /// This is the model's count of *how many tokens the current turn
+    /// used* — it is NOT the model's maximum context window.
+    #[serde(alias = "context_window")]
+    pub last_total_tokens: usize,
     /// Cumulative input tokens across all assistant messages
     pub total_input_tokens: usize,
     /// Cumulative output tokens across all assistant messages
     pub total_output_tokens: usize,
+    /// The model's maximum context window size, in tokens, if known.
+    /// `None` for legacy entries and sessions opened without a
+    /// provider/model reference. Populated by the engine after the
+    /// compaction orchestrator pins the registry-resolved model max.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_context_limit: Option<usize>,
     pub transcript_file: String,
     pub title: Option<String>,
     pub parent_session_id: Option<String>,
@@ -98,9 +113,10 @@ impl SessionEntry {
             updated_at: now,
             message_count: 0,
             turn_count: 0,
-            context_window: 0,
+            last_total_tokens: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            model_context_limit: None,
             transcript_file,
             title: None,
             parent_session_id: None,
@@ -133,15 +149,41 @@ impl SessionEntry {
             .as_millis() as u64;
     }
 
-    /// Record token usage
+    /// Record token usage for the most recent assistant message.
     ///
-    /// `context_window` is the `total_tokens` from the current assistant message.
-    /// `input` and `output` are the incremental tokens for this turn.
-    pub fn record_tokens(&mut self, context_window: usize, input: usize, output: usize) {
-        self.context_window = context_window;
+    /// `last_total_tokens` is the `total_tokens` reported by the
+    /// provider on the last assistant turn. `input` and `output` are
+    /// the incremental tokens for this turn.
+    pub fn record_tokens(
+        &mut self,
+        last_total_tokens: usize,
+        input: usize,
+        output: usize,
+    ) {
+        self.last_total_tokens = last_total_tokens;
         self.total_input_tokens += input;
         self.total_output_tokens += output;
         self.touch();
+    }
+
+    /// Set the model's maximum context window size (in tokens).
+    ///
+    /// Idempotent. Called by the engine after the orchestrator
+    /// pins the registry-resolved model max for this session.
+    pub fn set_model_context_limit(&mut self, limit: usize) {
+        if self.model_context_limit != Some(limit) {
+            self.model_context_limit = Some(limit);
+            self.touch();
+        }
+    }
+
+    /// Builder-style: same as [`set_model_context_limit`] but returns
+    /// `self` for fluent construction in call sites that already use
+    /// chained builders (e.g. `StatelessAgentService`).
+    #[must_use]
+    pub fn with_model_context_limit(mut self, limit: usize) -> Self {
+        self.set_model_context_limit(limit);
+        self
     }
 
     /// Increment message count

@@ -59,12 +59,18 @@ pub struct Session {
     last_message_id: Option<String>,
     /// Message count
     pub message_count: usize,
-    /// Current context window size (`total_tokens` from last assistant message)
-    pub context_window: usize,
+    /// `total_tokens` reported by the most recent assistant message.
+    /// NOT the model's maximum context window — that lives on
+    /// [`SessionMetadata::model_context_limit`] / the index entry.
+    pub last_total_tokens: usize,
     /// Cumulative input tokens across all assistant messages
     pub total_input_tokens: usize,
     /// Cumulative output tokens across all assistant messages
     pub total_output_tokens: usize,
+    /// The model's maximum context window size, in tokens, if known.
+    /// `None` until the engine pins it from the registry. Mirrors
+    /// `SessionMetadata::model_context_limit`.
+    pub model_context_limit: Option<usize>,
     /// Current provider
     pub current_provider: Option<String>,
     /// Current model
@@ -99,9 +105,10 @@ impl Session {
             storage,
             last_message_id: None,
             message_count: 0,
-            context_window: 0,
+            last_total_tokens: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            model_context_limit: None,
             current_provider: None,
             current_model: None,
             metadata_controller: None,
@@ -204,9 +211,10 @@ impl Session {
             storage,
             last_message_id,
             message_count,
-            context_window: 0,
+            last_total_tokens: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            model_context_limit: None,
             current_provider: None,
             current_model: None,
             metadata_controller: None,
@@ -229,7 +237,7 @@ impl Session {
                 .update_message_counts(
                     &self.id,
                     self.message_count,
-                    self.context_window,
+                    self.last_total_tokens,
                     self.total_input_tokens,
                     self.total_output_tokens,
                 )
@@ -240,12 +248,26 @@ impl Session {
 
     /// Record token usage (in-memory only, persists to index via `MetadataController`)
     ///
-    /// `context_window` is the `total_tokens` from the current assistant message.
-    /// `input` and `output` are the incremental tokens for this turn.
-    pub fn record_usage(&mut self, context_window: usize, input: usize, output: usize) {
-        self.context_window = context_window;
+    /// `last_total_tokens` is the `total_tokens` reported by the
+    /// provider on the last assistant turn. `input` and `output` are
+    /// the incremental tokens for this turn.
+    pub fn record_usage(
+        &mut self,
+        last_total_tokens: usize,
+        input: usize,
+        output: usize,
+    ) {
+        self.last_total_tokens = last_total_tokens;
         self.total_input_tokens += input;
         self.total_output_tokens += output;
+    }
+
+    /// Set the model's maximum context window size (in tokens).
+    /// Idempotent; mirrors the index entry field. The engine
+    /// calls this after the compaction orchestrator pins the
+    /// registry-resolved model max.
+    pub fn set_model_context_limit(&mut self, limit: usize) {
+        self.model_context_limit = Some(limit);
     }
 
     /// Set the current model (in-memory only, persists to index via `MetadataController`)
@@ -255,12 +277,14 @@ impl Session {
     }
 
     /// Get token usage
+    ///
+    /// Returns `(total_input_tokens, total_output_tokens, last_total_tokens)`.
     #[must_use]
     pub fn token_usage(&self) -> (usize, usize, usize) {
         (
             self.total_input_tokens,
             self.total_output_tokens,
-            self.context_window,
+            self.last_total_tokens,
         )
     }
 

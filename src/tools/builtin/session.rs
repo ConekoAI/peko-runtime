@@ -83,12 +83,29 @@ pub struct ToolResultInfo {
     pub error: Option<String>,
 }
 
-/// Usage stats
+/// Token usage stats for a session.
+///
+/// The two cumulative fields reflect what the LLM has reported
+/// across the session's lifetime. The two single-turn fields
+/// describe the most recent turn — `last_total_tokens` is what
+/// the model told us on its last reply, while `model_context_limit`
+/// is the model's maximum context window (or `null` when the
+/// session has not been opened against a known model).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UsageStats {
+    /// Cumulative input tokens across the session (session lifetime).
     pub prompt_tokens: u64,
+    /// Cumulative output tokens across the session (session lifetime).
     pub completion_tokens: u64,
-    pub context_window: usize,
+    /// `total_tokens` reported by the provider on the most recent
+    /// assistant turn. NOT the model's context window size — see
+    /// `model_context_limit` for that.
+    pub last_total_tokens: u64,
+    /// The model's maximum context window size, in tokens. `None`
+    /// for legacy sessions and sessions opened without a provider/
+    /// model reference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_context_limit: Option<usize>,
 }
 
 /// Session status result
@@ -348,7 +365,8 @@ Returns structured data appropriate to the action."
                             usage: UsageStats {
                                 prompt_tokens: 0,
                                 completion_tokens: 0,
-                                context_window: 0,
+                                last_total_tokens: 0,
+                                model_context_limit: None,
                             },
                             peer_type: None,
                             peer_id: None,
@@ -569,7 +587,8 @@ impl SessionRegistry for SessionIntrospector {
             usage: UsageStats {
                 prompt_tokens: metadata.total_input_tokens as u64,
                 completion_tokens: metadata.total_output_tokens as u64,
-                context_window: metadata.context_window,
+                last_total_tokens: metadata.last_total_tokens as u64,
+                model_context_limit: metadata.model_context_limit,
             },
             peer_type: metadata.peer_type,
             peer_id: metadata.peer_id,
@@ -837,7 +856,8 @@ mod tests {
             usage: UsageStats {
                 prompt_tokens: 100,
                 completion_tokens: 50,
-                context_window: 1500,
+                last_total_tokens: 1500,
+                model_context_limit: Some(128_000),
             },
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
@@ -889,7 +909,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["session_id"], "abc123");
-        assert_eq!(result["usage"]["context_window"], 1500);
+        assert_eq!(result["usage"]["last_total_tokens"], 1500);
+        assert_eq!(result["usage"]["model_context_limit"], 128_000);
         assert_eq!(result["peer_type"], "user");
         assert_eq!(result["peer_id"], "alice");
     }
@@ -909,7 +930,8 @@ mod tests {
             usage: UsageStats {
                 prompt_tokens: 50,
                 completion_tokens: 25,
-                context_window: 800,
+                last_total_tokens: 800,
+                model_context_limit: None,
             },
             peer_type: None,
             peer_id: None,
@@ -1051,7 +1073,8 @@ mod tests {
             usage: UsageStats {
                 prompt_tokens: 0,
                 completion_tokens: 0,
-                context_window: 0,
+                last_total_tokens: 0,
+                model_context_limit: None,
             },
             peer_type: None,
             peer_id: None,

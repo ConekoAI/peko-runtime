@@ -21,12 +21,20 @@ pub struct SessionMetadata {
     pub updated_at: u64,
     pub message_count: usize,
     pub turn_count: u32,
-    /// Current context window size (`total_tokens` from last assistant message)
-    pub context_window: usize,
+    /// `total_tokens` reported by the most recent assistant message.
+    /// This is the model's count of *how many tokens the current turn
+    /// used* — it is NOT the model's maximum context window.
+    pub last_total_tokens: usize,
     /// Cumulative input tokens across all assistant messages
     pub total_input_tokens: usize,
     /// Cumulative output tokens across all assistant messages
     pub total_output_tokens: usize,
+    /// The model's maximum context window size, in tokens, if known.
+    /// `None` when the session has not yet been opened against a
+    /// known provider/model — e.g. legacy entries, sessions opened
+    /// without a provider reference. Populated by the engine when
+    /// the orchestrator pins the registry-resolved model max.
+    pub model_context_limit: Option<usize>,
     pub transcript_file: String,
     pub title: Option<String>,
     pub parent_session_id: Option<String>,
@@ -56,9 +64,10 @@ impl SessionMetadata {
             updated_at: now,
             message_count: 0,
             turn_count: 0,
-            context_window: 0,
+            last_total_tokens: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            model_context_limit: None,
             transcript_file: transcript_file.into(),
             title: None,
             parent_session_id: None,
@@ -91,9 +100,10 @@ impl SessionMetadata {
             updated_at: entry.updated_at,
             message_count: entry.message_count,
             turn_count: entry.turn_count,
-            context_window: entry.context_window,
+            last_total_tokens: entry.last_total_tokens,
             total_input_tokens: entry.total_input_tokens,
             total_output_tokens: entry.total_output_tokens,
+            model_context_limit: entry.model_context_limit,
             transcript_file: entry.transcript_file,
             title: entry.title,
             parent_session_id: entry.parent_session_id,
@@ -113,9 +123,10 @@ impl SessionMetadata {
             updated_at: self.updated_at,
             message_count: self.message_count,
             turn_count: self.turn_count,
-            context_window: self.context_window,
+            last_total_tokens: self.last_total_tokens,
             total_input_tokens: self.total_input_tokens,
             total_output_tokens: self.total_output_tokens,
+            model_context_limit: self.model_context_limit,
             transcript_file: self.transcript_file,
             title: self.title,
             parent_session_id: self.parent_session_id,
@@ -133,15 +144,33 @@ impl SessionMetadata {
             .as_millis() as u64;
     }
 
-    /// Record token usage
+    /// Record token usage for the most recent assistant message.
     ///
-    /// `context_window` is the `total_tokens` from the current assistant message.
-    /// `input` and `output` are the incremental tokens for this turn.
-    pub fn record_tokens(&mut self, context_window: usize, input: usize, output: usize) {
-        self.context_window = context_window;
+    /// `last_total_tokens` is the `total_tokens` reported by the
+    /// provider on the last assistant turn. `input` and `output` are
+    /// the incremental tokens for this turn.
+    pub fn record_tokens(
+        &mut self,
+        last_total_tokens: usize,
+        input: usize,
+        output: usize,
+    ) {
+        self.last_total_tokens = last_total_tokens;
         self.total_input_tokens += input;
         self.total_output_tokens += output;
         self.touch();
+    }
+
+    /// Set the model's maximum context window size (in tokens).
+    ///
+    /// Called by the engine when the compaction orchestrator pins the
+    /// registry-resolved model max. Idempotent; calling with a different
+    /// value overwrites the previous one.
+    pub fn set_model_context_limit(&mut self, limit: usize) {
+        if self.model_context_limit != Some(limit) {
+            self.model_context_limit = Some(limit);
+            self.touch();
+        }
     }
 
     /// Set message count from computed value (reconciliation)
@@ -246,14 +275,22 @@ mod tests {
         let mut meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
         meta.set_title(Some("Test Title"));
         meta.set_message_count(10);
-        // record_tokens(context_window, input_tokens, output_tokens)
+        // record_tokens(last_total_tokens, input_tokens, output_tokens)
         meta.record_tokens(1000, 100, 50);
+        meta.set_model_context_limit(200_000);
 
         assert_eq!(meta.title, Some("Test Title".to_string()));
         assert_eq!(meta.message_count, 10);
-        assert_eq!(meta.context_window, 1000);
+        assert_eq!(meta.last_total_tokens, 1000);
         assert_eq!(meta.total_input_tokens, 100);
         assert_eq!(meta.total_output_tokens, 50);
+        assert_eq!(meta.model_context_limit, Some(200_000));
+    }
+
+    #[test]
+    fn test_metadata_context_limit_unknown_by_default() {
+        let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
+        assert_eq!(meta.model_context_limit, None);
     }
 
     #[test]
