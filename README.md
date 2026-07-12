@@ -1,10 +1,12 @@
 # Peko 🐱
 
-**Lightweight Multi-Agent Runtime**
+**Lightweight Multi-Principal Runtime**
 
-Peko is a Rust-based multi-agent runtime that supports local AI Principals with DID identity, A2A protocol messaging, automatic session management, and a unified extension architecture.
+Peko is a Rust-based multi-principal runtime: local AI Principals with DID identity, A2A protocol messaging, per-peer long-running memory, and a unified extension architecture. Principal is the only top-level runtime actor (ADR-041); agent prompts are thin Markdown files inside a Principal. Sessions are an internal storage noun (ADR-042) and are not surfaced in the CLI.
 
 > **Version:** 0.1.0 | **License:** MIT
+>
+> **Terminology:** Principal is the only top-level actor (ADR-041). Sessions are internal storage (ADR-042). See the [terminology map](docs/architecture/adr/ADR-042-no-external-session-concept.md#5-terminology-map-canonical-reference) for the public vs. internal noun glossary.
 
 ## Philosophy
 
@@ -20,7 +22,7 @@ Peko is a Rust-based multi-agent runtime that supports local AI Principals with 
 - ✅ **DID Identity System** — ed25519-based decentralized identifiers
 - ✅ **A2A Protocol** — Agent-to-Agent messaging between Principals
 - ✅ **Principal Orchestration** — Top-level AI actors that own memory, intent, and governance
-- ✅ **Automatic Session Management** — Sessions are created, resumed, and compacted by the Principal
+- ✅ **Per-Peer Long-Running Memory** — Each `(Principal, peer)` pair keeps a long-running thread; the runtime owns lifecycle (no CLI surface)
 - ✅ **Event Router** — Central event routing and subscription system
 
 ### LLM & Providers
@@ -35,7 +37,7 @@ Peko is a Rust-based multi-agent runtime that supports local AI Principals with 
 
 ### Memory & Persistence
 - ✅ **SQLite Memory** — Persistent memory with semantic search
-- ✅ **Session Storage** — JSONL-based session logs managed by the Principal
+- ✅ **Per-Peer JSONL Memory** — Threaded conversation history partitioned by `(Principal, peer)`. Internal storage; read via `peko log`.
 
 ### Scheduling & Execution
 - ✅ **Cron/Daemon** — Scheduled task execution with daemon mode
@@ -109,7 +111,7 @@ Peko uses a hierarchical command structure (`peko <noun> <verb>`).
 -q, --quiet             # Suppress non-error output
 -v, -vv, -vvv           # Verbose logging (repeat for more)
 --debug                 # Show debug information including stack traces
--U, --user <USER>       # User identifier for session isolation
+-U, --user <USER>       # Caller Subject for `peko send` / `peko log` (peer axis on a Principal's thread)
 ```
 
 ### Commands

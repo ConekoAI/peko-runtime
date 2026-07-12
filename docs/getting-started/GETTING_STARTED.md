@@ -109,7 +109,7 @@ You'll see the Principal's response streamed to your terminal.
 
 | Resource | Description |
 |----------|-------------|
-| [Tutorial: Building Your First Agent](TUTORIAL_BUILDING_FIRST_AGENT.md) | Step-by-step deep dive |
+| [Tutorial: Building Your First Principal](TUTORIAL_BUILDING_FIRST_AGENT.md) | Step-by-step deep dive (file keeps its historical name; content follows ADR-041) |
 | [CLI Reference](../user-guide/CLI_REFERENCE.md) | All commands explained |
 | [Extension System](../architecture/EXTENSION_SYSTEM.md) | Unified extension architecture |
 | [User's Guide](../user-guide/USERS_GUIDE.md) | Principals, extensions, troubleshooting |

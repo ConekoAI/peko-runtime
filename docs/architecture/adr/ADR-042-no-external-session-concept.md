@@ -43,3 +43,60 @@ The tension: a Principal is supposed to be an integral actor — a human talking
 - `src/ipc/packet.rs` — `RequestPacket::PrincipalLog` / `ResponsePacket::PrincipalLog` wire shapes.
 - ADR-039 §Rationale: "Session key byte-stability is a non-negotiable contract."
 - ADR-041 §Consequences: "Sessions are blackboxed. Users and external Principals address a Principal; sessions are internal routing/continuity mechanics of the Principal's memory layer."
+
+## 5. Terminology map (canonical reference)
+
+This section is the cross-repo glossary that doc sweeps and reviews in
+both `peko-runtime` and `peko-desktop` align against. It codifies the
+**public surface vocabulary** derived from this ADR and ADR-041. Add
+to it when introducing a new public noun; do not introduce a new term
+that contradicts the map.
+
+### Public nouns (use these in user-facing docs and CLI help)
+
+| Term          | Meaning                                                                          | Source                       |
+|---------------|----------------------------------------------------------------------------------|------------------------------|
+| **Principal** | The top-level runtime actor. Owns identity, memory, capability grants, prompts.  | ADR-039, ADR-041             |
+| **Agent prompt** | A thin Markdown file inside a Principal that names a specialization. *Not* a top-level entity. | ADR-041                      |
+| **Peer**      | The Subject (`user:<id>`, `principal:<did>`, `public`) on the other side of a thread. The runtime enforces `caller == peer || caller == owner` for read access. | ADR-042 §2                   |
+| **Subject**   | The discriminated-union identity form used by auth + privacy code.               | ADR-033, ADR-034             |
+| **Extension** | A plug-in capability (tool, hook, provider, skill). Granted via `capability_grant`. | ADR-024, ADR-026             |
+| **Workspace** | The on-disk directory a Principal owns; contains `principal.toml`, `memory/`, etc. | ADR-041                      |
+
+### Internal nouns (do **not** surface to users)
+
+| Term            | Meaning                                                                | Source    |
+|-----------------|------------------------------------------------------------------------|-----------|
+| **Session**     | `(Principal, peer)`-keyed JSONL thread — the storage layer's atomic unit. Used in CLI help only when describing the underlying file format. | ADR-042   |
+| **Tool call**   | A single in-flight invocation of an extension tool. Internal telemetry only. | —         |
+
+### Forbidden public-noun forms
+
+These shapes leaked the pre-ADR-041/042 model. Do not introduce them
+in user-facing docs, CLI help, or new IPC variants.
+
+- ❌ `peko session …` — no CLI subcommand.
+- ❌ `peko agent …` as a top-level command — `agent` survives only as
+  `peko principal agent list <PRINCIPAL>` / `peko principal agent show <PRINCIPAL> <AGENT>`.
+- ❌ `session_id` / `agent_id` / `session show` / `agent select` in any
+  user-facing form (help text, README, guide, MCP-reserved-params).
+- ❌ IPC variants named `agent_*` or `session_*`. The post-migration
+  names are `principal_*` (see ADR-041 audit C1 / C4).
+- ❌ `extension_enable` / `extension_disable` IPC variants — retired
+  alongside the legacy `agent_*` surface. Lifecycle is `ext_start` /
+  `ext_stop` / `ext_restart` / `ext_status` plus `capability_grant` /
+  `capability_revoke`.
+
+### Idioms the docs **may** keep (they are not violations)
+
+- "session memory" / "session storage" / "session JSONL" when
+  describing the underlying file format or the Principal's
+  per-peer memory layer — these are internal-noun references.
+- "agent prompt" / "agent_prompt" — the post-ADR-041 vocabulary for
+  the Markdown files inside a Principal. Always paired with "inside
+  a Principal" or `peko principal agent list` to make the hierarchy
+  explicit.
+- "session-router" / "session start" inside *implementation* notes
+  (e.g. internal spec docs explaining how the memory layer
+  partitions work) — fine, but the user-facing summary should
+  defer to "Principal's memory layer" or "per-peer memory".
