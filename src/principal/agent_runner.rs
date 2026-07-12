@@ -7,7 +7,6 @@ use tokio::sync::RwLock;
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::Agent;
 use crate::auth::Subject;
-use crate::common::services::AgentService;
 use crate::common::types::message::LlmMessage;
 use crate::engine::AgenticEvent;
 use crate::principal::context::{install_agent_catalog, PrincipalContext};
@@ -252,14 +251,14 @@ where
     // (initialized lazily in `init_builtins_async`) only sees
     // canonical extension ids.
     let _resolved: Vec<String> = core
-        .resolve_canonical_ids(&ctx.capabilities.to_strings())
+        .resolve_canonical_ids(&ctx.capabilities.to_strings(), ctx.principal_id())
         .await;
 
     // Agent catalog is the only per-call tool — its `available_agents`
     // snapshot can change between messages if the principal's
     // `capabilities` was edited. We re-register it on the
     // shared core, which is idempotent on tool name.
-    install_agent_catalog(&core, available_agents).await?;
+    install_agent_catalog(&core, available_agents, ctx.principal_id()).await?;
 
     // Register the principal-scoped `Agent` tool after `Agent::new*` but
     // before execution so it is available on the principal's shared
@@ -418,13 +417,17 @@ where
         .with_agent_config(agent.config.clone()),
     );
 
-    let agent_service = AgentService::for_principal(&ctx.workspace_path);
-    let agent_tool = Arc::new(AgentTool::with_agent_service_and_session_provider(
+    let agent_tool = Arc::new(AgentTool::with_workspace_and_session(
         subagent_executor,
-        agent_service,
+        Some(ctx.workspace_path.clone()),
         Box::new(session_key_provider.clone()),
     ));
-    crate::extensions::builtin::BuiltinToolAdapter::register_tool(&core, agent_tool).await?;
+    crate::extensions::builtin::BuiltinToolAdapter::register_tool(
+        &core,
+        agent_tool,
+        ctx.principal_id(),
+    )
+    .await?;
 
     // Stamp the current session key so the Agent tool can auto-detect it.
     {

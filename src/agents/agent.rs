@@ -54,11 +54,12 @@ pub struct Agent {
     /// so external callers can push steering messages into a running agent.
     inbox_registry: Option<Arc<InboxRegistry>>,
     /// Optional principal workspace. When set, `init_builtins_async` builds the
-    /// `Agent` tool's `AgentService` with `for_principal(workspace)` so the
-    /// root agent resolves subagents from `<workspace>/agents/<name>/AGENT.md`
-    /// instead of the global `<home>/agents/<name>/config.toml`. Without this,
-    /// `init_builtins_async` (run lazily at execution time) would clobber any
-    /// principal-scoped `Agent` tool registered on the core beforehand.
+    /// `Agent` tool with `with_workspace(Some(workspace), …)`, so the root
+    /// agent resolves subagents from `<workspace>/agents/<name>/AGENT.md`
+    /// before falling back to the global `<home>/agents/<name>/config.toml`.
+    /// Without this, `init_builtins_async` (run lazily at execution time)
+    /// would clobber any principal-scoped `Agent` tool registered on the
+    /// core beforehand.
     principal_workspace: Option<std::path::PathBuf>,
     /// Caller principal's stable DID. Bound at construction by
     /// `with_caller_principal_did` so `principal_send` can attribute
@@ -147,9 +148,10 @@ impl Agent {
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
         // AppState::new() calls ToolRuntime::with_workspace_and_core() which registers
         // all common built-ins on the global ExtensionCore before any Agent is created.
+        // Built-ins are under PrincipalId::system(), so the lookup is system-scoped.
         let has_bash = self
             .extension_core
-            .get_tool_metadata("Bash")
+            .get_tool_metadata("Bash", crate::subject::PrincipalId::system())
             .await
             .is_some();
         if !has_bash {
@@ -171,18 +173,15 @@ impl Agent {
         tools.push(Arc::new(SessionTool::new(Box::new(session_registry))));
 
         // Add Agent tool with executor and session provider. When this agent
-        // runs as a Principal root agent, build the service scoped to the
-        // principal workspace so subagents resolve from
-        // `<workspace>/agents/<name>/AGENT.md`. Otherwise fall back to the
-        // global agent registry.
-        let agent_service = match self.principal_workspace {
-            Some(ref workspace) => crate::common::services::AgentService::for_principal(workspace),
-            None => crate::common::services::AgentService::new(PathResolver::new()),
-        };
+        // runs as a Principal root agent, scope the tool to the principal
+        // workspace so subagents resolve from
+        // `<workspace>/agents/<name>/AGENT.md`. Otherwise the `Agent` tool
+        // resolves from the global agent registry only.
+        let workspace = self.principal_workspace.clone();
         tools.push(Arc::new(
-            AgentTool::with_agent_service_and_session_provider(
+            AgentTool::with_workspace_and_session(
                 self.subagent_executor.clone(),
-                agent_service,
+                workspace,
                 Box::new(self.session_key_provider.clone()),
             ),
         ));
@@ -352,9 +351,15 @@ impl Agent {
         // ADR-018/019: Register ONLY agent-specific built-in tools with ExtensionCore
         // Common built-in tools are already registered via ToolRuntime::register_builtins
         // Extension tools (Universal and MCP) are already registered via ExtensionStore hooks
+        // Agent-specific tools are per-agent and per-principal — each Agent instance
+        // owns its own Async* family scoped to its own principal_id.
         for tool in &tools {
-            if let Err(e) =
-                BuiltinToolAdapter::register_tool(&self.extension_core, tool.clone()).await
+            if let Err(e) = BuiltinToolAdapter::register_tool(
+                &self.extension_core,
+                tool.clone(),
+                &self.principal_id,
+            )
+            .await
             {
                 tracing::warn!(
                     "Failed to register built-in tool '{}' with ExtensionCore: {}",
@@ -563,12 +568,14 @@ impl Agent {
 
     /// Scope this agent's `Agent` tool to a Principal workspace.
     ///
-    /// When set, `init_builtins_async` builds the `Agent` tool's `AgentService`
-    /// with `for_principal(workspace)`, so the root agent resolves subagents
-    /// from `<workspace>/agents/<name>/AGENT.md`. This must be set before the
-    /// agent executes: `init_builtins_async` runs lazily inside
-    /// `prepare_execution`, so a principal-scoped `Agent` tool registered on the
-    /// core beforehand would otherwise be clobbered by the global-scoped one.
+    /// When set, `init_builtins_async` builds the `Agent` tool with
+    /// `with_workspace(Some(workspace), …)`, so the root agent resolves
+    /// subagents from `<workspace>/agents/<name>/AGENT.md` before falling
+    /// back to the global `~/.peko/agents/<name>/config.toml` layout. This
+    /// must be set before the agent executes: `init_builtins_async` runs
+    /// lazily inside `prepare_execution`, so a principal-scoped `Agent`
+    /// tool registered on the core beforehand would otherwise be clobbered
+    /// by the global-scoped one.
     pub fn with_principal_workspace(mut self, workspace: std::path::PathBuf) -> Self {
         // Also scope the subagent executor so depth-1 children (and, via the
         // executor's own propagation, deeper descendants) resolve their
@@ -1187,10 +1194,12 @@ impl Agent {
 
             // 4. Re-register the per-agent async tools (overwrites any prior
             //    instance). register_tool is idempotent — unregisters first.
+            //    Per-agent async tools are scoped to the owning principal.
             if let Err(e) =
                 crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
                     &extension_core,
                     spawn_tool,
+                    &self.principal_id,
                 )
                 .await
             {
@@ -1200,6 +1209,7 @@ impl Agent {
                 crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
                     &extension_core,
                     output_tool,
+                    &self.principal_id,
                 )
                 .await
             {
@@ -1232,6 +1242,7 @@ impl Agent {
                 if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
                     &extension_core,
                     tool,
+                    &self.principal_id,
                 )
                 .await
                 {

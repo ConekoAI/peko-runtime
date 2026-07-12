@@ -47,6 +47,7 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
         &self,
         _core: &crate::extensions::framework::core::ExtensionCore,
         _manifest: &crate::extensions::framework::types::ExtensionManifest,
+        _principal_id: &crate::subject::PrincipalId,
     ) -> anyhow::Result<usize> {
         Ok(0)
     }

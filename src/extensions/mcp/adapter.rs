@@ -35,6 +35,7 @@ use crate::extensions::framework::core::{
     ToolMetadata, ToolSource,
 };
 use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookOutput, HookResult};
+use crate::subject::PrincipalId;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
@@ -327,6 +328,7 @@ impl McpAdapter {
         &self,
         core: &ExtensionCore,
         server_name: &str,
+        principal_id: &PrincipalId,
     ) -> Result<usize> {
         let (all_tools, server_config) = {
             let manager = self.manager.read().await;
@@ -396,7 +398,10 @@ impl McpAdapter {
                 tool_name: tool.name,
             });
 
-            match core.register_tool(metadata, exec_handler, &ext_id).await {
+            match core
+                .register_tool(metadata, exec_handler, &ext_id, principal_id)
+                .await
+            {
                 Ok(_) => {
                     debug!(tool_name = %tool_name, "Registered MCP tool");
                     registered_count += 1;
@@ -761,6 +766,7 @@ impl ExtensionTypeAdapter for McpAdapter {
         &self,
         core: &crate::extensions::framework::core::ExtensionCore,
         manifest: &ExtensionManifest,
+        principal_id: &PrincipalId,
     ) -> Result<usize> {
         // Try unified manifest mcp_servers (Tier 2)
         if manifest.get("mcp_servers").is_some() {
@@ -783,7 +789,7 @@ impl ExtensionTypeAdapter for McpAdapter {
             .map(|k| k.as_str())
             .unwrap_or(&manifest.name);
 
-        self.register_server_tools(core, server_name).await
+        self.register_server_tools(core, server_name, principal_id).await
     }
 }
 
@@ -923,7 +929,7 @@ impl HookHandler for McpServerInitHandler {
         if let Some(core) = crate::extensions::framework::core::global_core() {
             let adapter = McpAdapter::new(self.manager.clone());
             match adapter
-                .register_server_tools(&core, &self.server_name)
+                .register_server_tools(&core, &self.server_name, crate::subject::PrincipalId::system())
                 .await
             {
                 Ok(count) => {
@@ -1383,7 +1389,7 @@ pub async fn load_and_register_servers(
             let _ = adapter.ensure_server_config(config_path).await;
         }
         match adapter
-            .register_server_tools(core, &server.manifest.name)
+            .register_server_tools(core, &server.manifest.name, crate::subject::PrincipalId::system())
             .await
         {
             Ok(n) => total_tools += n,

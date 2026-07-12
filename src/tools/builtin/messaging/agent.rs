@@ -10,12 +10,14 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::common::services::AgentService;
+use crate::common::identifiers::parse_agent_name;
+use crate::common::paths::PathResolver;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::core::Tool;
 use crate::tools::{bridge_to_cancellation_token, CancellationTokenBridgeGuard, ToolContext};
@@ -132,8 +134,11 @@ pub struct AgentArgs {
 pub struct AgentTool {
     /// Subagent executor for background execution
     executor: Arc<SubagentExecutor>,
-    /// Agent service for resolving subagent_type to an AgentConfig
-    agent_service: Option<AgentService>,
+    /// Optional principal workspace. When set, `subagent_type` resolution
+    /// prefers principal-scoped `AGENT.md` files at
+    /// `<workspace>/agents/<name>/...` before falling back to the global
+    /// `~/.peko/agents/<name>/config.toml` layout.
+    workspace: Option<PathBuf>,
     /// Session key provider to get current session at execution time
     session_provider: Option<Box<dyn SessionKeyProvider>>,
     /// Maximum spawn depth allowed
@@ -148,22 +153,27 @@ impl AgentTool {
     pub fn new(executor: Arc<SubagentExecutor>) -> Self {
         Self {
             executor,
-            agent_service: None,
+            workspace: None,
             session_provider: None,
             max_depth: DEFAULT_MAX_SPAWN_DEPTH,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
         }
     }
 
-    /// Create an Agent tool with an agent service for subagent_type resolution
+    /// Create an Agent tool with an optional principal workspace.
+    ///
+    /// When the workspace is `Some`, `subagent_type` resolution will
+    /// first look under `<workspace>/agents/<name>/...` before falling
+    /// back to the global layout. Pass `None` for the legacy global-only
+    /// lookup (standalone / test path).
     #[must_use]
-    pub fn with_agent_service(
+    pub fn with_workspace(
         executor: Arc<SubagentExecutor>,
-        agent_service: AgentService,
+        workspace: Option<PathBuf>,
     ) -> Self {
         Self {
             executor,
-            agent_service: Some(agent_service),
+            workspace,
             session_provider: None,
             max_depth: DEFAULT_MAX_SPAWN_DEPTH,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
@@ -178,23 +188,25 @@ impl AgentTool {
     ) -> Self {
         Self {
             executor,
-            agent_service: None,
+            workspace: None,
             session_provider: Some(provider),
             max_depth: DEFAULT_MAX_SPAWN_DEPTH,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
         }
     }
 
-    /// Create an Agent tool with both agent service and session provider
+    /// Create an Agent tool with both a principal workspace and a session
+    /// key provider. This is the production constructor used by the
+    /// principal runner and the root agent.
     #[must_use]
-    pub fn with_agent_service_and_session_provider(
+    pub fn with_workspace_and_session(
         executor: Arc<SubagentExecutor>,
-        agent_service: AgentService,
+        workspace: Option<PathBuf>,
         provider: Box<dyn SessionKeyProvider>,
     ) -> Self {
         Self {
             executor,
-            agent_service: Some(agent_service),
+            workspace,
             session_provider: Some(provider),
             max_depth: DEFAULT_MAX_SPAWN_DEPTH,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
@@ -244,19 +256,22 @@ impl AgentTool {
             }
         }
 
-        let config = if let Some(ref service) = self.agent_service {
-            service.resolve_subagent_type(subagent_type).await?
-        } else {
-            // Fallback: load directly from the filesystem when no service is injected.
-            // This keeps unit tests self-contained.
-            let resolver = crate::common::paths::PathResolver::new();
-            let config_path = resolver.agent_config(subagent_type);
-            if !config_path.exists() {
-                anyhow::bail!("Subagent type '{subagent_type}' not found at {config_path:?}");
+        // Prefer a principal-scoped AGENT.md when a workspace is bound;
+        // fall through to the global agents/ registry on miss.
+        let config = if let Some(ref workspace) = self.workspace {
+            match Self::resolve_principal_agent(subagent_type, workspace) {
+                Ok(config) => config,
+                Err(e) => {
+                    tracing::debug!(
+                        "Principal agent '{subagent_type}' not found in workspace '{}': {e}; falling back to global agent",
+                        workspace.display()
+                    );
+                    Self::resolve_global_agent(subagent_type).await?
+                }
             }
-            let content = tokio::fs::read_to_string(&config_path).await?;
-            toml::from_str(&content)
-                .with_context(|| format!("Failed to parse agent config for '{subagent_type}'"))?
+        } else {
+            // Standalone / test path: resolve from the global layout only.
+            Self::resolve_global_agent(subagent_type).await?
         };
 
         if let Some(model) = model_override {
@@ -271,6 +286,55 @@ impl AgentTool {
         }
 
         Ok(config)
+    }
+
+    /// Load a principal-scoped agent prompt from `<workspace>/agents/<name>/`.
+    ///
+    /// Supports the two on-disk shapes:
+    /// - directory layout: `<workspace>/agents/<name>/AGENT.md`
+    /// - flat layout: `<workspace>/agents/<name>.md`
+    ///
+    /// Returns an error if neither file exists.
+    fn resolve_principal_agent(name: &str, workspace: &Path) -> anyhow::Result<AgentConfig> {
+        let agents_dir = workspace.join("agents");
+        let dir_layout = agents_dir.join(name).join("AGENT.md");
+        let flat_layout = agents_dir.join(format!("{name}.md"));
+
+        let agent_md = if dir_layout.exists() {
+            dir_layout
+        } else if flat_layout.exists() {
+            flat_layout
+        } else {
+            anyhow::bail!(
+                "No agent prompt found for principal agent '{name}' at {:?} or {:?}",
+                dir_layout,
+                flat_layout
+            );
+        };
+
+        let prompt = crate::principal::agent_prompt::load_agent_prompt(&agent_md)
+            .with_context(|| format!("Failed to load principal agent prompt '{name}'"))?;
+
+        Ok(AgentConfig {
+            name: prompt.name,
+            description: prompt.frontmatter.description,
+            prompt: Some(prompt.body),
+            ..AgentConfig::default()
+        })
+    }
+
+    /// Load an agent config from the global `~/.peko/agents/<name>/config.toml`
+    /// layout.
+    async fn resolve_global_agent(name: &str) -> anyhow::Result<AgentConfig> {
+        let agent_name = parse_agent_name(name)?;
+        let resolver = PathResolver::new();
+        let config_path = resolver.agent_config(agent_name);
+        if !config_path.exists() {
+            anyhow::bail!("Subagent type '{name}' not found at {config_path:?}");
+        }
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        toml::from_str(&content)
+            .with_context(|| format!("Failed to parse agent config for '{name}'"))
     }
 
     /// Execute subagent spawn in blocking mode (waits for completion, returns inline result)
@@ -563,7 +627,7 @@ Examples:
         // tool via AsyncSpawn.
         let tool = AgentTool {
             executor: Arc::new(executor),
-            agent_service: self.agent_service.clone(),
+            workspace: self.workspace.clone(),
             session_provider: None,
             max_depth: self.max_depth,
             max_concurrent: self.max_concurrent,
@@ -624,7 +688,7 @@ Examples:
 
         let tool = AgentTool {
             executor: Arc::new(executor),
-            agent_service: self.agent_service.clone(),
+            workspace: self.workspace.clone(),
             session_provider: None,
             max_depth: self.max_depth,
             max_concurrent: self.max_concurrent,
@@ -687,9 +751,11 @@ mod tests {
     async fn test_agent_state_registry_allows_enabled_subagent() {
         let pid = PrincipalId::generate();
         let workspace = temp_agent_workspace("writer").await;
-        let service = AgentService::for_principal(workspace.path());
         let caps = Arc::new(Capabilities::with_grants(["agent:writer"]));
-        let tool = AgentTool::with_agent_service(test_executor(pid.clone(), Some(caps)), service);
+        let tool = AgentTool::with_workspace(
+            test_executor(pid.clone(), Some(caps)),
+            Some(workspace.path().to_path_buf()),
+        );
 
         let result = tool.resolve_subagent_config("writer", None).await;
         assert!(
@@ -703,9 +769,11 @@ mod tests {
     async fn test_agent_state_registry_denies_disabled_subagent() {
         let pid = PrincipalId::generate();
         let workspace = temp_agent_workspace("writer").await;
-        let service = AgentService::for_principal(workspace.path());
         let caps = Arc::new(Capabilities::with_grants(["agent:other"]));
-        let tool = AgentTool::with_agent_service(test_executor(pid.clone(), Some(caps)), service);
+        let tool = AgentTool::with_workspace(
+            test_executor(pid.clone(), Some(caps)),
+            Some(workspace.path().to_path_buf()),
+        );
 
         let result = tool.resolve_subagent_config("writer", None).await;
         assert!(
@@ -723,8 +791,10 @@ mod tests {
     async fn test_agent_state_registry_unregistered_principal_is_fail_open() {
         let pid = PrincipalId::generate();
         let workspace = temp_agent_workspace("writer").await;
-        let service = AgentService::for_principal(workspace.path());
-        let tool = AgentTool::with_agent_service(test_executor(pid, None), service);
+        let tool = AgentTool::with_workspace(
+            test_executor(pid, None),
+            Some(workspace.path().to_path_buf()),
+        );
 
         // No capability snapshot registered for this principal; standalone/test
         // path should remain usable.
@@ -733,6 +803,151 @@ mod tests {
             result.is_ok(),
             "unregistered principal should fail-open: {:?}",
             result.err()
+        );
+    }
+
+    /// Migrated from `agent_service.rs::test_resolve_principal_agent_flat_file`.
+    ///
+    /// Pins the flat-file shape (`<workspace>/agents/<name>.md`).
+    #[tokio::test]
+    async fn test_agent_tool_resolves_principal_agent_flat_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace = temp_dir.path().join("workspace");
+        let agents_dir = workspace.join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+
+        std::fs::write(
+            agents_dir.join("worker.md"),
+            "---\nname: Worker Bot\ndescription: A flat-file worker agent\n---\n\nYou are a worker.\n",
+        )
+        .unwrap();
+
+        let tool = AgentTool::with_workspace(
+            test_executor(PrincipalId::generate(), None),
+            Some(workspace.clone()),
+        );
+
+        let config = tool.resolve_subagent_config("worker", None).await.unwrap();
+
+        assert_eq!(config.name, "Worker Bot");
+        assert_eq!(
+            config.description.as_deref(),
+            Some("A flat-file worker agent")
+        );
+        assert!(config
+            .prompt
+            .as_deref()
+            .unwrap()
+            .contains("You are a worker."));
+    }
+
+    /// Migrated from `agent_service.rs::test_resolve_principal_agent_directory_layout`.
+    ///
+    /// Pins the directory shape (`<workspace>/agents/<name>/AGENT.md`).
+    #[tokio::test]
+    async fn test_agent_tool_resolves_principal_agent_directory_layout() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace = temp_dir.path().join("workspace");
+        let agent_dir = workspace.join("agents").join("worker");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+
+        std::fs::write(
+            agent_dir.join("AGENT.md"),
+            "---\nname: Worker Bot\ndescription: A directory-layout worker agent\n---\n\nYou are a worker.\n",
+        )
+        .unwrap();
+
+        let tool = AgentTool::with_workspace(
+            test_executor(PrincipalId::generate(), None),
+            Some(workspace.clone()),
+        );
+
+        let config = tool.resolve_subagent_config("worker", None).await.unwrap();
+
+        assert_eq!(config.name, "Worker Bot");
+        assert_eq!(
+            config.description.as_deref(),
+            Some("A directory-layout worker agent")
+        );
+    }
+
+    /// New test covering the workspace-not-found → global-fallback path.
+    ///
+    /// When a workspace is bound but contains no AGENT.md for the requested
+    /// subagent, resolution must log a debug message and fall through to the
+    /// global `{PEKO_HOME}/agents/<name>/config.toml` layout. We sandbox
+    /// with the `PEKO_HOME` environment variable (consumed by
+    /// `PathResolver::default_config_dir`) so the global lookup resolves to a
+    /// test-controlled directory.
+    #[tokio::test]
+    async fn test_agent_tool_falls_back_to_global_when_principal_missing() {
+        // Sandbox a temp PEKO_HOME so PathResolver resolves under it.
+        let peko_home = tempfile::tempdir().unwrap();
+        let prev_peko_home = std::env::var_os("PEKO_HOME");
+        // SAFETY: tests run single-threaded for the env var window.
+        unsafe { std::env::set_var("PEKO_HOME", peko_home.path()) };
+
+        let global_agents_dir =
+            peko_home.path().join("agents").join("fallback-agent");
+        std::fs::create_dir_all(&global_agents_dir).unwrap();
+        std::fs::write(
+            global_agents_dir.join("config.toml"),
+            r#"
+name = "Fallback Agent"
+description = "Global fallback for missing principal agent"
+
+[model]
+provider = "openai"
+model_id = "gpt-4o"
+"#,
+        )
+        .unwrap();
+
+        // Workspace with NO matching AGENT.md — directory exists but is empty.
+        let workspace = tempfile::tempdir().unwrap().path().to_path_buf();
+        std::fs::create_dir_all(workspace.join("agents")).unwrap();
+
+        let tool = AgentTool::with_workspace(
+            test_executor(PrincipalId::generate(), None),
+            Some(workspace),
+        );
+
+        let result = tool.resolve_subagent_config("fallback-agent", None).await;
+
+        // Restore PEKO_HOME before asserting so a panic in assert! doesn't
+        // leak state into other tests.
+        unsafe {
+            match prev_peko_home {
+                Some(v) => std::env::set_var("PEKO_HOME", v),
+                None => std::env::remove_var("PEKO_HOME"),
+            }
+        }
+
+        let config = result.unwrap_or_else(|e| panic!("expected global fallback to succeed: {e:?}"));
+        assert_eq!(config.name, "Fallback Agent");
+        assert_eq!(config.description.as_deref(), Some("Global fallback for missing principal agent"));
+    }
+
+    /// Companion to the fallback test: when the workspace is bound but no
+    /// global agent exists either, resolution fails with a clear message.
+    #[tokio::test]
+    async fn test_agent_tool_errors_when_neither_principal_nor_global_exists() {
+        let workspace = tempfile::tempdir().unwrap().path().to_path_buf();
+        std::fs::create_dir_all(workspace.join("agents")).unwrap();
+
+        let tool = AgentTool::with_workspace(
+            test_executor(PrincipalId::generate(), None),
+            Some(workspace),
+        );
+
+        let err = tool
+            .resolve_subagent_config("definitely-not-registered", None)
+            .await
+            .expect_err("expected resolution to fail when neither layer has the agent");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not found"),
+            "expected 'not found' in error, got: {msg}"
         );
     }
 

@@ -1086,9 +1086,10 @@ impl AgenticLoop {
             .map(|allowed| allowed.as_ref().clone())
             .unwrap_or_default();
         let active = self.agent.principal_active_extensions();
+        let principal_id = crate::subject::PrincipalId(self.agent_principal_id.clone());
         let defs = self
             .extension_core
-            .list_tool_definitions_with_allowlist(&capabilities, active)
+            .list_tool_definitions_with_allowlist(&capabilities, active, &principal_id)
             .await;
 
         info!(
@@ -1829,7 +1830,7 @@ mod tests {
         }
 
         let core = global_core().unwrap();
-        BuiltinToolAdapter::register_tool(
+        BuiltinToolAdapter::register_tool_system(
             &core,
             Arc::new(SlowTool {
                 label: "ParaA",
@@ -1838,7 +1839,7 @@ mod tests {
         )
         .await
         .unwrap();
-        BuiltinToolAdapter::register_tool(
+        BuiltinToolAdapter::register_tool_system(
             &core,
             Arc::new(SlowTool {
                 label: "ParaB",

@@ -18,7 +18,7 @@
 //! is the parent that calls the `Agent` tool. The `Agent` tool's `subagent_type`
 //! resolves to a sibling subagent prompt at
 //! `principals/<name>/agents/<type>/AGENT.md` (see
-//! `AgentService::resolve_principal_agent`). These tests therefore:
+//! `AgentTool::resolve_subagent_config`). These tests therefore:
 //!   * create the Principal via [`create_mock_principal_with_tools`], granting
 //!     the capability tools (`Agent`, `Write`, `Read`, `Bash`) that the
 //!     dispatcher's owner check requires for both the root agent and any
@@ -159,9 +159,10 @@ fn write_worker_subagent_flat(cli: &PekoCli, principal: &str, worker: &str) {
 
 /// Write a `worker` subagent prompt for the given Principal.
 ///
-/// `AgentService::resolve_principal_agent` resolves a `subagent_type` to
+/// `AgentTool::resolve_subagent_config` resolves a `subagent_type` to
 /// `<workspace>/agents/<type>/AGENT.md` (the directory form) or
-/// `<workspace>/agents/<type>.md` (the flat-file form). The root
+/// `<workspace>/agents/<type>.md` (the flat-file form), when a
+/// principal workspace is bound to the `Agent` tool. The root
 /// prompt `agents/root.md` created by `peko principal create` is a *file*
 /// and is NOT a valid `subagent_type`, so each test creates an explicit
 /// `worker` subagent here. The subagent's tool whitelist comes from

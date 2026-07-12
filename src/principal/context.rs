@@ -241,8 +241,12 @@ impl PrincipalContext {
             Arc::new(ExtensionCore::new())
         });
         if !core.universal_extensions_loaded() {
-            if let Err(e) =
-                install_principal_tool_bag(Arc::clone(&core), &self.workspace_path).await
+            if let Err(e) = install_principal_tool_bag(
+                Arc::clone(&core),
+                &self.workspace_path,
+                &self.principal_id,
+            )
+            .await
             {
                 tracing::warn!(
                     "failed to install principal-scoped tools on the global core: {e}. \
@@ -284,6 +288,7 @@ impl PrincipalContext {
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
     workspace_path: &Path,
+    principal_id: &crate::subject::PrincipalId,
 ) -> anyhow::Result<()> {
     // Built-in tools.
     let path_resolver = crate::common::paths::PathResolver::new();
@@ -295,9 +300,14 @@ async fn install_principal_tool_bag(
 
     // Register the singleton `Skill` tool once on the global core.
     // Per-principal enablement and workspace state are resolved at handle
-    // time from the `ToolContext` carried with each invocation.
-    if let Err(e) =
-        BuiltinToolAdapter::register_tool(core.as_ref(), Arc::new(SkillTool::new())).await
+    // time from the `ToolContext` carried with each invocation. Scoped to
+    // this principal_id so concurrent principals each see their own Skill.
+    if let Err(e) = BuiltinToolAdapter::register_tool(
+        core.as_ref(),
+        Arc::new(SkillTool::new()),
+        principal_id,
+    )
+    .await
     {
         tracing::warn!("SkillTool registration failed during core build: {e}");
     }
@@ -332,12 +342,21 @@ async fn install_principal_tool_bag(
 /// The catalog is the *only* per-call tool — its contents are the
 /// currently-available `AgentPromptSummary` list, which can change
 /// between messages if the principal's `capabilities` was
-/// edited. Everything else on the core is stable.
+/// edited. Everything else on the core is stable. Scoped to the
+/// owning principal_id so the catalog lives under each principal's
+/// row in the registry and re-registration on each call idempotently
+/// replaces the prior entry.
 pub(crate) async fn install_agent_catalog(
     core: &ExtensionCore,
     available_agents: Vec<AgentPromptSummary>,
+    principal_id: &crate::subject::PrincipalId,
 ) -> anyhow::Result<()> {
-    BuiltinToolAdapter::register_tool(core, Arc::new(AgentCatalogTool::new(available_agents))).await
+    BuiltinToolAdapter::register_tool(
+        core,
+        Arc::new(AgentCatalogTool::new(available_agents)),
+        principal_id,
+    )
+    .await
 }
 
 #[cfg(test)]
