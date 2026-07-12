@@ -1,5 +1,6 @@
 //! LLM Provider configuration types
 
+use crate::providers::DEFAULT_MAX_OUTPUT_TOKENS;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -53,7 +54,7 @@ impl Default for ProviderConfig {
             "default".to_string(),
             ModelConfig {
                 name: "gpt-4o-mini".to_string(),
-                max_tokens: 4096,
+                max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
                 temperature: 0.7,
                 top_p: 1.0,
                 presence_penalty: 0.0,
@@ -140,7 +141,7 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             name: "gpt-4o-mini".to_string(),
-            max_tokens: 4096,
+            max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
             temperature: 0.7,
             top_p: 1.0,
             presence_penalty: 0.0,

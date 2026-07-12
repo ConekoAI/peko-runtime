@@ -84,11 +84,16 @@ impl MockAdapter {
     /// Queue a simple text response for both chat and stream
     pub fn queue_text(&self, text: impl Into<String>) {
         let text = text.into();
+        let output_tokens = Self::estimate_text_tokens(&text);
         let response = ChatResponse {
             content: vec![ContentBlock::Text { text: text.clone() }],
             tool_calls: vec![],
             stop_reason: StopReason::Stop,
-            usage: crate::providers::TokenUsage::default(),
+            usage: crate::providers::TokenUsage {
+                input: 0,
+                output: output_tokens,
+                total: output_tokens,
+            },
             provider: "mock".to_string(),
             model: self.model.clone(),
         };
@@ -109,8 +114,8 @@ impl MockAdapter {
             },
             StreamEvent::Usage {
                 input: 0,
-                output: 0,
-                total: 0,
+                output: output_tokens,
+                total: output_tokens,
             },
             StreamEvent::Done {
                 stop_reason: StopReason::Stop,
@@ -128,6 +133,12 @@ impl MockAdapter {
     ) {
         let id = id.into();
         let name = name.into();
+        // Tool-call "output" tokens reflect the JSON arguments the
+        // model produced — that's the output surface for a tool-use
+        // turn. Serialize to a stable string so the estimate stays
+        // deterministic across queue orderings.
+        let args_json = arguments.to_string();
+        let output_tokens = Self::estimate_text_tokens(&args_json);
         let response = ChatResponse {
             content: vec![],
             tool_calls: vec![ContentBlock::ToolCall {
@@ -136,7 +147,11 @@ impl MockAdapter {
                 arguments: arguments.clone(),
             }],
             stop_reason: StopReason::ToolUse,
-            usage: crate::providers::TokenUsage::default(),
+            usage: crate::providers::TokenUsage {
+                input: 0,
+                output: output_tokens,
+                total: output_tokens,
+            },
             provider: "mock".to_string(),
             model: self.model.clone(),
         };
@@ -158,8 +173,8 @@ impl MockAdapter {
             },
             StreamEvent::Usage {
                 input: 0,
-                output: 0,
-                total: 0,
+                output: output_tokens,
+                total: output_tokens,
             },
             StreamEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -204,6 +219,19 @@ impl MockAdapter {
     /// Pop the next stream response
     fn pop_stream_response(&self) -> Option<MockResponse> {
         self.stream_responses.lock().ok()?.pop_front()
+    }
+
+    /// Rough text-to-token estimate for mock usage synthesis.
+    ///
+    /// Mirrors the char-budget heuristic in
+    /// `crate::session::compaction::Compactor::estimate_tokens`
+    /// (`(s.len() + 20) / 4 + 4`) — duplicated locally to keep the
+    /// providers crate's dependency direction (providers → session
+    /// would invert). Used at queue time to populate
+    /// `TokenUsage::output` and `total`; `input` stays zero since the
+    /// queue API does not see the inbound messages.
+    fn estimate_text_tokens(s: &str) -> u64 {
+        ((s.len() + 20) / 4 + 4) as u64
     }
 
     /// Record a request
@@ -465,6 +493,44 @@ mod tests {
             })
             .collect();
         assert_eq!(texts.join(""), "Streamed text");
+    }
+
+    /// `queue_text` populates a non-zero `output_tokens` / `total` so
+    /// tests exercising compaction through the mock can actually fire
+    /// the trigger logic. See F16 / PR-C.
+    #[test]
+    fn test_mock_queue_text_synthesizes_usage() {
+        let adapter = MockAdapter::new();
+        adapter.queue_text("Hello, world!");
+
+        let response = adapter
+            .chat_with_tools("mock-model", &[], None, &ChatOptions::default())
+            .unwrap();
+        // input stays zero (queue API does not see inbound messages)
+        assert_eq!(response.usage.input, 0);
+        // output reflects the queued text length
+        assert!(response.usage.output > 0);
+        assert_eq!(response.usage.total, response.usage.output);
+    }
+
+    /// `queue_tool_call` reflects the serialized arguments JSON length
+    /// in `output_tokens`, so tool-use turns also exercise usage
+    /// accumulation.
+    #[test]
+    fn test_mock_queue_tool_call_synthesizes_usage() {
+        let adapter = MockAdapter::new();
+        adapter.queue_tool_call(
+            "tc_1",
+            "lookup_user",
+            serde_json::json!({"id": 42, "name": "alice"}),
+        );
+
+        let response = adapter
+            .chat_with_tools("mock-model", &[], None, &ChatOptions::default())
+            .unwrap();
+        assert_eq!(response.usage.input, 0);
+        assert!(response.usage.output > 0);
+        assert_eq!(response.usage.total, response.usage.output);
     }
 
     #[test]

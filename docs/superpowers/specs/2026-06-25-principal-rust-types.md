@@ -243,9 +243,6 @@ pub struct PrincipalRoutingConfig {
     pub default_agent: String,
 
     #[serde(default)]
-    pub context_window_messages: usize,
-
-    #[serde(default)]
     pub recall_top_k: usize,
 }
 
