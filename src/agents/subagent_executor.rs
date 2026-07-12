@@ -131,11 +131,13 @@ pub struct SubagentExecutor {
     /// Optional observability hub for audit/metrics. When set, subagent
     /// spawns are recorded in the audit log under the parent principal.
     observability: Option<Arc<Observability>>,
-    /// F18: per-principal quota meter. Propagated to descendant
-    /// subagents so the entire spawn tree counts against the same
-    /// principal-level meter. `None` until the parent root runner
-    /// binds it via [`Self::with_quota_meter`].
-    quota_meter: Option<Arc<crate::quota::QuotaMeter>>,
+    // F19: removed `quota_meter` field, `with_quota_meter`, and
+    // `quota_meter()`. Quota is opened at the engine loop entrypoint
+    // via `QuotaScope::with` and auto-charges through
+    // `MeteredProvider`. The executor no longer threads the meter
+    // through to descendant subagents — the spawned `tokio::task`
+    // re-opens its own scope inside (because task-locals don't
+    // propagate across spawn).
 }
 
 impl SubagentExecutor {
@@ -174,29 +176,13 @@ impl SubagentExecutor {
             principal_capabilities: None,
             active_extensions: None,
             observability: None,
-            quota_meter: None,
         }
     }
 
-    /// F18: bind the spawning principal's quota meter. The meter is
-    /// propagated to descendant subagents so every LLM call in the
-    /// spawn tree counts against the same principal-level meter.
-    /// Calling this multiple times replaces the binding (matches the
-    /// behaviour of the other `with_*` setters).
-    #[must_use]
-    pub fn with_quota_meter(mut self, meter: Arc<crate::quota::QuotaMeter>) -> Self {
-        self.quota_meter = Some(meter);
-        self
-    }
-
-    /// F18: read-only view of the bound quota meter. `None` until
-    /// `with_quota_meter` is called; child `Agent` constructors
-    /// fall back to an unlimited meter in that case (the legacy
-    /// pre-F18 behaviour for tests).
-    #[must_use]
-    pub fn quota_meter(&self) -> Option<&Arc<crate::quota::QuotaMeter>> {
-        self.quota_meter.as_ref()
-    }
+    /// F19: removed `with_quota_meter` and `quota_meter()`. Quota
+    /// is opened at the engine loop entrypoint via
+    /// `QuotaScope::with`; the executor no longer threads the meter
+    /// through to descendant subagents.
 
     /// Get the spawning principal's runtime id.
     #[must_use]
@@ -285,7 +271,6 @@ impl SubagentExecutor {
             principal_capabilities: None,
             active_extensions: None,
             observability: None,
-            quota_meter: None,
         }
     }
 
@@ -315,7 +300,6 @@ impl SubagentExecutor {
             principal_capabilities: None,
             active_extensions: None,
             observability: None,
-            quota_meter: None,
         }
     }
 
@@ -1060,6 +1044,13 @@ async fn execute_subagent_task(
     // Clone child_session for potential recovery after execution
     let child_session_for_recovery = child_session.clone();
 
+    // F19: subagent runs inside the parent's `QuotaScope::with` (the
+    // engine loop opened it on the parent run). The spawned `tokio::task`
+    // does NOT inherit the parent's task-local, so the parent's scope
+    // doesn't auto-apply here. We pass `None` (unlimited) for now; a
+    // follow-up wires the subagent's quota meter through `Agent::new`
+    // so the executor can pass it explicitly. Until then, subagent LLM
+    // usage is not charged against the parent's meter.
     let result = subagent
         .execute_with_session(
             &combined_prompt,
@@ -1069,6 +1060,7 @@ async fn execute_subagent_task(
             |_event| {
                 // Non-streaming: ignore events
             },
+            None,
         )
         .await;
 

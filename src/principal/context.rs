@@ -96,10 +96,10 @@ pub struct PrincipalContext {
     /// callable when both its capability is granted and its owning extension
     /// is active.
     active_extensions: OnceLock<crate::principal::ActiveExtensionSet>,
-    /// F18: per-principal quota meter. Captured at `RootRouter::build_context`
-    /// time from the principal's `quota_meter` and threaded into the
-    /// principal's root agent, which gates and charges every LLM call.
-    quota_meter: Arc<crate::quota::QuotaMeter>,
+    // F19: removed `quota_meter` field. The engine loop fetches the
+    // principal's meter directly from `Principal.quota_meter` at run
+    // entrypoint and opens `QuotaScope::with` around the run. No
+    // need to thread it through `PrincipalContext`.
 }
 
 impl PrincipalContext {
@@ -114,7 +114,6 @@ impl PrincipalContext {
         resolver: Option<Arc<LlmResolver>>,
         provider_hint: (Option<String>, Option<String>),
         principal_id: PrincipalId,
-        quota_meter: Arc<crate::quota::QuotaMeter>,
     ) -> Self {
         let sessions_dir = memory.sessions_dir().clone();
         Self {
@@ -132,7 +131,6 @@ impl PrincipalContext {
             caller_runtime_id: OnceLock::new(),
             observability: OnceLock::new(),
             active_extensions: OnceLock::new(),
-            quota_meter,
         }
     }
 
@@ -145,13 +143,9 @@ impl PrincipalContext {
         &self.principal_id
     }
 
-    /// F18: per-principal quota meter. The root runner threads this
-    /// into the `Agent` so every LLM call routed through the
-    /// principal's loop counts against the same meter.
-    #[must_use]
-    pub fn quota_meter(&self) -> &Arc<crate::quota::QuotaMeter> {
-        &self.quota_meter
-    }
+    /// F19: removed `quota_meter()` accessor. The engine loop fetches
+    /// the principal's meter directly from `Principal.quota_meter`
+    /// at run entrypoint.
 
     /// Get the principal's human-readable name.
     ///
@@ -404,7 +398,6 @@ mod tests {
             None,
             (None, None),
             PrincipalId::generate(),
-            Arc::new(crate::quota::QuotaMeter::unlimited()),
         );
 
         let a = ctx.core().await;
@@ -429,7 +422,6 @@ mod tests {
             None,
             (None, None),
             PrincipalId::generate(),
-            Arc::new(crate::quota::QuotaMeter::unlimited()),
         );
 
         // `set_root_prompt` requires an `AgentPrompt`; constructing one
@@ -464,7 +456,6 @@ mod tests {
             None,
             (None, None),
             id.clone(),
-            Arc::new(crate::quota::QuotaMeter::unlimited()),
         );
         assert_eq!(ctx.principal_id(), &id);
     }

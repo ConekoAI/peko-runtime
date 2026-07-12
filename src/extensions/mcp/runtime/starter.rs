@@ -255,9 +255,16 @@ impl McpRuntimeStarter {
         ext_dir: &Path,
         ctx: &StarterContext,
     ) -> anyhow::Result<()> {
+        // F19: starter runs without a principal scope (it's daemon-driven
+        // auto-start), so pass an unlimited meter. Tool-call-driven
+        // auto-start builds its own SamplingRequestHandler in
+        // `McpManager::start_server` with the caller's meter.
         let request_handler: Option<Arc<dyn ServerRequestHandler>> =
             ctx.resolver.as_ref().map(|resolver| {
-                Arc::new(SamplingRequestHandler::new(Arc::clone(resolver)))
+                Arc::new(SamplingRequestHandler::new(
+                    Arc::clone(resolver),
+                    Arc::new(crate::quota::QuotaMeter::unlimited()),
+                ))
                     as Arc<dyn ServerRequestHandler>
             });
 

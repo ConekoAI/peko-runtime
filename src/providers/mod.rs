@@ -14,6 +14,7 @@
 pub mod adapters;
 pub mod catalog;
 pub mod core;
+pub mod metered;
 pub mod mock;
 pub mod registry;
 pub mod resolver;
@@ -31,6 +32,7 @@ pub use catalog::{
     ProviderCatalogFile,
 };
 pub use core::Provider;
+pub use metered::MeteredProvider;
 pub use mock::{MockAdapter, MockResponse};
 pub use registry::{create_provider, get_provider_metadata, list_providers, ProviderRegistry};
 pub use resolver::{KeyProbeReport, LlmResolver, ResolveRequest, ResolveSource, ResolvedChoice};

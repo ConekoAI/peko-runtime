@@ -14,12 +14,13 @@
 use crate::agents::prompt::SystemPromptService;
 use crate::agents::Agent;
 use crate::common::types::message::{ContentBlock, LlmMessage};
+use futures::StreamExt;
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
 use crate::extensions::framework::types::SessionSnapshot;
 use crate::extensions::framework::{HookInput, HookPoint};
-use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS};
+use crate::providers::{ChatOptions, MessageRole, MeteredProvider, StopReason, TokenUsage, ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS};
 use crate::session::Session;
 use anyhow::Result;
 use chrono::Utc;
@@ -74,11 +75,12 @@ pub struct AgenticLoop {
     /// extension-scoped tools such as `Skill` can resolve per-principal state
     /// via the `ExtensionStateRegistry` at handle time.
     agent_principal_id: String,
-    /// F18: per-principal token quota meter. Every LLM call routed
-    /// through this loop is gated against the meter before
-    /// dispatch and charged after the response arrives. For
-    /// unquota'd principals (or test fixtures that don't bind a
-    /// meter) this is an unlimited meter — `charge` is a no-op.
+    /// F19: per-principal token quota meter. The loop opens a
+    /// `QuotaScope::with` around `run_inner` so every LLM call routed
+    /// through this loop (or its compactor worker) auto-charges via
+    /// `MeteredProvider`. For unquota'd principals (or test fixtures
+    /// that don't bind a meter) this is an unlimited meter — every
+    /// charge succeeds without persistence.
     quota_meter: Arc<crate::quota::QuotaMeter>,
     /// Per-session queue of completed async tasks, drained at the start
     /// of `run_inner` iteration. Surfaced to the LLM as a
@@ -125,22 +127,16 @@ impl AgenticLoop {
         }
     }
 
-    /// F18: bind a per-principal quota meter. The meter is consulted
-    /// at every LLM call boundary; for unquota'd principals (or test
-    /// fixtures), the unlimited default returned by `new` is
+    /// F19: bind a per-principal quota meter. The loop opens a
+    /// `QuotaScope::with` around `run_inner` so every LLM call
+    /// routed through this loop auto-charges via `MeteredProvider`.
+    /// For unquota'd principals (or test fixtures that don't bind
+    /// a meter), the unlimited default returned by `new` is
     /// sufficient and this method can be skipped.
     #[must_use]
     pub fn with_quota_meter(mut self, meter: Arc<crate::quota::QuotaMeter>) -> Self {
         self.quota_meter = meter;
         self
-    }
-
-    /// Read-only view of the bound quota meter. The compactor
-    /// sub-thread uses this so summarization calls count against
-    /// the same principal.
-    #[must_use]
-    pub fn quota_meter(&self) -> &Arc<crate::quota::QuotaMeter> {
-        &self.quota_meter
     }
 
     /// Set the resolved caller identity for this loop (issue #17).
@@ -501,13 +497,40 @@ impl AgenticLoop {
     /// `DeliveryMode::Live` emits deltas for real-time display.
     async fn run_inner(
         &self,
-        mut messages: Vec<LlmMessage>,
+        messages: Vec<LlmMessage>,
         session: Arc<RwLock<Session>>,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         run_id: String,
         streaming_config: crate::engine::OrchestratorConfig,
     ) -> Result<AgenticResult> {
-        use futures::StreamExt;
+
+        // F19: open a `QuotaScope::with` so every LLM call inside this
+        // run auto-charges `self.quota_meter` via `MeteredProvider`.
+        // The metered provider is built here (inside the scope) so it
+        // picks up the active task-local. We move the entire body into
+        // the scope closure because nested async fns cannot capture
+        // the scope by reference.
+        let meter = Arc::clone(&self.quota_meter);
+        let metered = MeteredProvider::from_current_scope(Arc::clone(&self.provider));
+        crate::quota::QuotaScope::with(meter, async move {
+            self.run_inner_with_meter(messages, session, on_event, run_id, streaming_config, metered).await
+        }).await
+    }
+
+    /// Inner run body. Identical to the pre-F19 body except it goes
+    /// through a `MeteredProvider` for LLM calls (auto-charging) and
+    /// the three F18 manual metering sites (pre-call advance_if_needed
+    /// + check, post-call charge, compactor-usage charge) are gone —
+    /// the wrapper handles all of that.
+    async fn run_inner_with_meter(
+        &self,
+        mut messages: Vec<LlmMessage>,
+        session: Arc<RwLock<Session>>,
+        on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
+        run_id: String,
+        streaming_config: crate::engine::OrchestratorConfig,
+        provider: MeteredProvider,
+    ) -> Result<AgenticResult> {
 
         // Get session_id once at start
         let session_id = {
@@ -541,8 +564,8 @@ impl AgenticLoop {
         // by `LlmResolver` from the agent's `preferred_*` hints), not
         // from the deprecated inline `[provider]` block.
         let model_id = {
-            let provider_name = self.provider.name().to_string();
-            let model_name = self.provider.model_id();
+            let provider_name = provider.name().to_string();
+            let model_name = provider.model_id();
 
             let mut s = session.write().await;
             s.set_model(&provider_name, &model_name);
@@ -566,7 +589,7 @@ impl AgenticLoop {
         let context_window = match self.agent.llm_resolver() {
             Some(resolver) => resolver
                 .catalog()
-                .model_context_length(self.provider.name(), &self.provider.model_id())
+                .model_context_length(provider.name(), &provider.model_id())
                 .await
                 .map(|n| n as usize)
                 .unwrap_or(FALLBACK_CONTEXT_WINDOW_TOKENS),
@@ -574,8 +597,9 @@ impl AgenticLoop {
         };
         let mut compaction_orchestrator =
             crate::engine::compaction_orchestrator::CompactionOrchestrator::new(
-                self.provider.clone(),
+                provider.inner().clone(),
                 context_window,
+                Arc::clone(&self.quota_meter),
             );
 
         // Propagate the resolved model max into the session so the
@@ -700,14 +724,10 @@ impl AgenticLoop {
             // summary text; this brings long-session runs back into
             // parity with what the provider actually billed.
             //
-            // F18: charge the summarization usage against the
-            // principal's quota meter too — otherwise the
-            // summarization LLM call would be free. A returned
-            // `QuotaError` means the summarization pushed the
-            // principal over its limit; surface it as a typed
-            // error so the caller sees the precise reason. The
-            // drain happens after `accumulate` so a tripped quota
-            // doesn't roll back the run's reported totals.
+            // F19: the summarization call is auto-charged by
+            // `MeteredProvider` inside the BackgroundCompactor's
+            // worker task (which opens its own `QuotaScope::with`
+            // around the LLM call). No manual charge here.
             if let Some(compaction_usage) =
                 compaction_orchestrator.last_compaction_usage()
             {
@@ -716,14 +736,6 @@ impl AgenticLoop {
                     compaction_usage.input, compaction_usage.output
                 );
                 total_usage.accumulate(&compaction_usage);
-                if let Err(quota_err) = self.quota_meter.charge(&compaction_usage).await {
-                    on_event(AgenticEvent::Lifecycle {
-                        run_id: run_id.clone(),
-                        phase: LifecyclePhase::Error,
-                        error: Some(quota_err.to_string()),
-                    });
-                    return Err(anyhow::anyhow!(quota_err));
-                }
             }
 
             if iteration > self.max_iterations {
@@ -784,13 +796,15 @@ impl AgenticLoop {
                 debug!("  [{}] {:?}: {}", i, msg.role, content_preview);
             }
 
-            // F18: quota gate. The per-principal meter is consulted *before*
-            // every LLM call so a tripped limit aborts mid-flight with
-            // a typed error. For unquota'd principals the meter is an
-            // unlimited no-op (`is_exhausted` is always false). The
-            // advance-if-needed call also rolls the window forward when
-            // the persisted state is from a previous cycle, so a
-            // long-running daemon doesn't accumulate stale counters.
+            // F19: pre-LLM quota check. The pre-check used to be done
+            // manually via `quota_meter.check()` after `advance_if_needed`.
+            // With `MeteredProvider` handling per-call charges, the only
+            // job left here is the *pre-flight* check — refuse to even
+            // start a call when the principal is already over a limit.
+            // (The wrapper charges after the call completes; the
+            // pre-flight check aborts mid-flight if the persisted state
+            // already shows exhaustion.) For unquota'd principals the
+            // meter is `unlimited()` and this is a no-op.
             self.quota_meter.advance_if_needed(chrono::Utc::now());
             if let Some(existing_err) = self.quota_meter.check() {
                 on_event(AgenticEvent::Lifecycle {
@@ -804,7 +818,13 @@ impl AgenticLoop {
             // Obtain the stream of events from the provider.
             // For providers that don't support native streaming, we synthesize a stream
             // from the blocking response so the rest of the loop stays uniform.
-            let mut stream = if self.provider.supports_native_tools() {
+            //
+            // F19: the provider here is a `MeteredProvider`. Its
+            // `stream_with_tools` charges on each `StreamEvent::Usage`
+            // event; `chat_with_tools` charges once after the call.
+            // Charge failures surface as `Err` stream items / call
+            // errors — the existing error handling catches them.
+            let mut stream = if provider.supports_native_tools() {
                 info!(
                     "Calling stream_with_tools with {} messages and {} tool definitions: {:?}",
                     messages.len(),
@@ -817,8 +837,7 @@ impl AgenticLoop {
                         i, def.name, def.parameters
                     );
                 }
-                match self
-                    .provider
+                match provider
                     .stream_with_tools(&model_id, &messages, &tool_defs, &options)
                     .await
                 {
@@ -835,13 +854,12 @@ impl AgenticLoop {
                 }
             } else {
                 warn!("Provider doesn't support streaming, synthesizing from blocking response");
-                let response = self
-                    .provider
+                let response = provider
                     .chat_with_tools(&model_id, &messages, &tool_defs, &options)
                     .await?;
                 crate::providers::synthetic_stream::synthesize_stream_from_blocking(
                     response,
-                    self.provider.name(),
+                    provider.name(),
                 )
             };
 
@@ -1000,22 +1018,10 @@ impl AgenticLoop {
             total_usage.output += iteration_usage.output;
             total_usage.total += iteration_usage.total;
 
-            // F18: charge the iteration's usage against the
-            // principal's quota meter. `charge` folds input + output
-            // (cache reads and reasoning tokens are already folded
-            // into those buckets by the StreamEvent::Usage arm above)
-            // and increments the request count. A returned
-            // `QuotaError` means the call that just completed pushed
-            // the principal over a limit — surface it as a typed
-            // error so the caller sees the precise reason.
-            if let Err(quota_err) = self.quota_meter.charge(&iteration_usage).await {
-                on_event(AgenticEvent::Lifecycle {
-                    run_id: run_id.clone(),
-                    phase: LifecyclePhase::Error,
-                    error: Some(quota_err.to_string()),
-                });
-                return Err(anyhow::anyhow!(quota_err));
-            }
+            // F19: per-iteration usage is already charged by
+            // `MeteredProvider` — either inline (streaming: on the
+            // `Usage` event) or once at the end of the blocking call.
+            // No manual charge here.
 
             // Handle tool calls
             if !tool_calls.is_empty() {

@@ -622,12 +622,9 @@ impl AppState {
         // Ensure the global MCP manager uses the daemon-wide shared resources.
         // This unifies the runtime paths so `ext start` / `ext stop` control the
         // same processes that agent-init and tool-proxy code paths see.
-        crate::extensions::mcp::init_global_mcp_manager_with_shared_resources(
-            Arc::clone(&background_runtime_manager),
-            Arc::clone(&mcp_client_registry),
-            Some(Arc::clone(&resolver)),
-            Some(Arc::clone(&vault)),
-        );
+        // F19: we forward the principal_manager so MCP sampling can charge
+        // the calling principal's quota meter. The MCP init is wired below
+        // (after `principal_manager` is built) for this reason.
 
         // ADR-025/026: Extension runtime starter registry
         let mut runtime_starter_registry = ExtensionRuntimeStarterRegistry::new();
@@ -724,6 +721,17 @@ impl AppState {
             }
             Arc::new(manager)
         };
+
+        // F19: now that `principal_manager` is built, wire it into the
+        // global MCP manager so MCP sampling can resolve per-principal
+        // quota meters for the server's `SamplingRequestHandler`.
+        crate::extensions::mcp::init_global_mcp_manager_with_shared_resources(
+            Arc::clone(&background_runtime_manager),
+            Arc::clone(&mcp_client_registry),
+            Some(Arc::clone(&resolver)),
+            Some(Arc::clone(&vault)),
+            Some(Arc::clone(&principal_manager)),
+        );
 
         // ADR-034: Initialize auth components
         let auth_config = crate::auth::config::AuthConfig::load(&path_resolver)?;
@@ -950,7 +958,7 @@ impl AppState {
         for name in auto_start_names {
             let m = manager.clone();
             let name_owned = name.clone();
-            if let Err(e) = async move { m.read().await.start_server(&name_owned).await }.await {
+            if let Err(e) = async move { m.read().await.start_server(&name_owned, None).await }.await {
                 tracing::warn!(server = %name, error = %e, "Failed to auto-start MCP server after reload");
             } else {
                 tracing::info!(server = %name, "Auto-started MCP server after reload");

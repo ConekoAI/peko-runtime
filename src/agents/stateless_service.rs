@@ -636,11 +636,22 @@ impl StatelessAgentService {
 
         // 7. Execute agent with session and history
         // Use the new execute_with_session method that properly handles session resumption
+        //
+        // F19: stateless service runs outside any principal context,
+        // so pass `None` (unlimited meter). The HTTP daemon can wire
+        // a per-API-key meter here in a follow-up.
         let execute_result = agent
-            .execute_with_session(&prompt, session.clone(), Some(history), None, |_event| {
-                // Events are ignored for non-streaming execution
-                // All data comes from the AgenticResult
-            })
+            .execute_with_session(
+                &prompt,
+                session.clone(),
+                Some(history),
+                None,
+                |_event| {
+                    // Events are ignored for non-streaming execution
+                    // All data comes from the AgenticResult
+                },
+                None,
+            )
             .await;
 
         let (success, final_response, token_usage, iterations, tool_calls, error_msg) =
@@ -942,6 +953,10 @@ impl StatelessAgentService {
                     Some(history.clone()),
                     caller_id,
                     on_event,
+                    None,
+                    // F19: HTTP daemon doesn't carry a principal meter
+                    // through this path. Pass `None` (unlimited) until a
+                    // per-API-key meter is wired in a follow-up.
                     None,
                 )
                 .await;

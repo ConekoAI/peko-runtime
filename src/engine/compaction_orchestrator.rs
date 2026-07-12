@@ -65,10 +65,20 @@ impl CompactionOrchestrator {
     /// the caller picks a fallback policy at the boundary — typically
     /// the catalog value or a sane default when the model has no
     /// declared limit.
-    pub fn new(provider: Arc<Provider>, context_window: usize) -> Self {
+    ///
+    /// F19: `meter` is the principal's quota meter. The orchestrator
+    /// forwards it to the spawned [`BackgroundCompactor`] worker,
+    /// which opens a `QuotaScope::with` around every summarization
+    /// LLM call. Pass [`QuotaMeter::unlimited()`] for unquota'd
+    /// sessions (CLI / tests).
+    pub fn new(
+        provider: Arc<Provider>,
+        context_window: usize,
+        meter: Arc<crate::quota::QuotaMeter>,
+    ) -> Self {
         let config = load_compaction_config();
 
-        let background_compactor = BackgroundCompactor::new(provider);
+        let background_compactor = BackgroundCompactor::new(provider, meter);
 
         Self {
             background_compactor,

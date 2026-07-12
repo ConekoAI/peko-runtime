@@ -200,7 +200,6 @@ impl PrincipalManager {
                 memory.clone(),
                 &workspace_path,
                 self.resolver.clone(),
-                Arc::clone(&quota_meter),
             )
             .await;
 
@@ -257,8 +256,11 @@ impl PrincipalManager {
         let id = PrincipalId::generate();
         let memory = self.memory_factory.create(&id, &workspace_path).await;
 
-        // F18: build / restore the quota meter from disk so a
-        // daemon restart preserves the principal's accumulated usage.
+        // F19: build / restore the quota meter from disk so a daemon
+        // restart preserves the principal's accumulated usage. The
+        // meter is owned by `Principal` directly — the engine loop
+        // fetches it via `Principal.quota_meter` and opens
+        // `QuotaScope::with` at run entrypoint.
         let quota_config = config.quota.clone().unwrap_or_default();
         let quota_state_path = workspace_path.join("quota_state.json");
         let quota_meter = crate::quota::QuotaMeter::load_or_init(
@@ -277,7 +279,6 @@ impl PrincipalManager {
                 memory.clone(),
                 &workspace_path,
                 self.resolver.clone(),
-                Arc::clone(&quota_meter),
             )
             .await;
         let agent_prompts = discover_agent_prompts(&workspace_path).await?;

@@ -26,9 +26,11 @@
 pub mod config;
 pub mod error;
 pub mod meter;
+pub mod scope;
 pub mod state;
 
 pub use config::{QuotaConfig, QuotaCycle};
 pub use error::QuotaError;
 pub use meter::QuotaMeter;
+pub use scope::QuotaScope;
 pub use state::QuotaState;

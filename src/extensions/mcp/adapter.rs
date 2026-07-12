@@ -81,6 +81,10 @@ pub fn init_global_mcp_manager_with_shared_resources(
     client_registry: Arc<crate::extensions::mcp::runtime::McpClientRegistry>,
     llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
     vault: Option<Arc<crate::common::vault::Vault>>,
+    // F19: principal manager so the MCP manager can resolve per-
+    // principal quota meters for sampling attribution. Optional so
+    // tests can omit it.
+    principal_manager: Option<Arc<crate::principal::manager::PrincipalManager>>,
 ) {
     let config = crate::extensions::mcp::protocol::config::McpConfig::default();
     let manager = crate::extensions::mcp::protocol::manager::McpManager::with_shared_resources(
@@ -90,6 +94,10 @@ pub fn init_global_mcp_manager_with_shared_resources(
         llm_resolver,
         vault,
     );
+    let mut manager = manager;
+    if let Some(pm) = principal_manager {
+        manager = manager.with_principal_manager(pm);
+    }
     let _ = GLOBAL_MCP_MANAGER.set(Arc::new(RwLock::new(manager)));
 }
 
@@ -1262,6 +1270,16 @@ impl HookHandler for McpToolExecuteHandler {
         let server_name = self.server_name.clone();
         let actual_tool = self.tool_name.clone();
 
+        // F19: capture principal_id from the framework-injected
+        // `ToolRuntimeContext` so tool-call-driven auto-start can hand
+        // the principal's quota meter to the MCP server's sampling
+        // handler. None means the call originated from a non-principal
+        // scope (CLI, tests, internal auto-start) — the server gets an
+        // unlimited meter.
+        let calling_principal_id: Option<String> = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            .and_then(|tc| tc.principal_id.clone());
+
         let exec_config = crate::extensions::framework::services::ToolExecutionConfig::new(
             reserved_params,
             serde_json::json!({"type": "object"}),
@@ -1277,6 +1295,7 @@ impl HookHandler for McpToolExecuteHandler {
                     let manager = manager.clone();
                     let server = server_name.clone();
                     let tool = actual_tool.clone();
+                    let principal_id = calling_principal_id.clone();
                     async move {
                         // Phase 2: on-demand server start. If the MCP server is not
                         // running when the tool is invoked, attempt to start it once.
@@ -1291,7 +1310,13 @@ impl HookHandler for McpToolExecuteHandler {
                         if needs_start {
                             info!(server_name = %server, "MCP server not running; starting on demand");
                             let mgr = manager.write().await;
-                            match mgr.start_server(&server).await {
+                            // F19: tool-call-driven auto-start. The
+                            // server's sampling handler will charge
+                            // the calling principal's meter.
+                            match mgr
+                                .start_server(&server, principal_id.as_deref())
+                                .await
+                            {
                                 Ok(()) => {
                                     info!(server_name = %server, "MCP server started on demand");
                                 }
