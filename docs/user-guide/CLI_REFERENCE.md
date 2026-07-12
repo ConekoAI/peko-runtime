@@ -19,7 +19,7 @@ peko [OPTIONS] <COMMAND>
 | `-q, --quiet` | Suppress non-error output |
 | `-v, --verbose...` | Enable verbose logging (-v=info, -vv=debug, -vvv=trace) |
 | `--debug` | Show debug information including stack traces |
-| `-U, --user <USER>` | User identifier for session isolation |
+| `-U, --user <USER>` | Caller Subject for `peko send` / `peko log` (peer axis on a Principal's thread) |
 
 ---
 
