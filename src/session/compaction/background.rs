@@ -9,13 +9,33 @@
 //! - Result notification via callback
 
 use crate::common::types::message::LlmMessage;
-use crate::session::compaction::registry::should_auto_compact;
 use crate::session::compaction::{CompactionConfig, CompactionResult, Compactor};
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, error, info, warn};
+
+/// Returns true if compaction should trigger based on dual-threshold logic.
+///
+/// Triggers when **either** condition is met:
+/// - Ratio-based: `estimated_tokens >= (context_window * auto_threshold_percent / 100)`
+/// - Reserved-based: `estimated_tokens >= (context_window - reserve_tokens)`
+#[must_use]
+fn should_auto_compact(
+    estimated_tokens: usize,
+    context_window: usize,
+    config: &CompactionConfig,
+) -> bool {
+    if !config.enabled {
+        return false;
+    }
+    // Ratio-based: catches large models early
+    let ratio_threshold = (context_window * config.auto_threshold_percent as usize) / 100;
+    // Reserved-based: ensures LLM response headroom
+    let reserved_threshold = context_window.saturating_sub(config.reserve_tokens);
+    estimated_tokens >= ratio_threshold || estimated_tokens >= reserved_threshold
+}
 
 /// Quota configuration for background compaction
 #[derive(Debug, Clone, Copy)]
@@ -383,5 +403,45 @@ mod tests {
         assert_eq!(quota.cooldown_seconds, 60);
         assert_eq!(quota.max_compactions_per_session, 100);
         assert_eq!(quota.max_consecutive_auto, 5);
+    }
+
+    #[test]
+    fn should_auto_compact_ratio_threshold_fires() {
+        let config = CompactionConfig {
+            enabled: true,
+            auto_threshold_percent: 85,
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+            ..CompactionConfig::default()
+        };
+        // Large model: 1M context, 860K tokens → 86% → ratio threshold fires.
+        assert!(should_auto_compact(860_000, 1_000_000, &config));
+        // Well under ratio.
+        assert!(!should_auto_compact(500_000, 1_000_000, &config));
+    }
+
+    #[test]
+    fn should_auto_compact_reserved_threshold_fires() {
+        let config = CompactionConfig {
+            enabled: true,
+            auto_threshold_percent: 85,
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+            ..CompactionConfig::default()
+        };
+        // Standard model: 128K context, 115K tokens → below 85% ratio
+        // (108.8K) but above reserved threshold (128K - 16K = 112K).
+        assert!(should_auto_compact(115_000, 128_000, &config));
+        // Well under both.
+        assert!(!should_auto_compact(100_000, 128_000, &config));
+    }
+
+    #[test]
+    fn should_auto_compact_respects_enabled_flag() {
+        let config = CompactionConfig {
+            enabled: false,
+            ..CompactionConfig::default()
+        };
+        assert!(!should_auto_compact(1_000_000, 128_000, &config));
     }
 }

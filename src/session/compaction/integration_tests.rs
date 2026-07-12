@@ -9,8 +9,9 @@
 //! - Cache validation and invalidation
 
 use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole};
+use crate::providers::catalog::{ProviderCatalog, ProviderCatalogEntry};
+use crate::providers::templates;
 use crate::session::compaction::{
-    registry::ModelContextRegistry,
     summary_format::{
         extract_file_ops_from_messages, format_summary_with_file_ops, CompactionDetails,
     },
@@ -24,8 +25,8 @@ use crate::session::compaction::{
 // Success Criterion: Built-in compactor triggers using dual-threshold
 // ============================================================================
 
-#[test]
-fn test_dual_threshold_ratio_fires() {
+#[tokio::test]
+async fn test_dual_threshold_ratio_fires() {
     let config = CompactionConfig {
         enabled: true,
         auto_threshold_percent: 85,
@@ -33,11 +34,14 @@ fn test_dual_threshold_ratio_fires() {
         keep_recent_tokens: 20_000,
         cooldown_seconds: 60,
         max_compactions_per_session: 10,
-        model_limits: std::collections::HashMap::new(),
     };
 
-    let registry = ModelContextRegistry::new();
-    let context_window = registry.get("openai", "gpt-4o");
+    let catalog = catalog_with_known_providers().await;
+    let context_window = catalog
+        .model_context_length("openai", "gpt-4o")
+        .await
+        .expect("gpt-4o context length is known")
+        as usize;
 
     let threshold = context_window.saturating_sub(config.reserve_tokens);
     let ratio = (threshold as f64 / context_window as f64) * 100.0;
@@ -50,12 +54,46 @@ fn test_dual_threshold_ratio_fires() {
     );
 }
 
-#[test]
-fn test_registry_known_models() {
-    let reg = ModelContextRegistry::new();
-    assert_eq!(reg.get("openai", "gpt-4o"), 128_000);
-    assert_eq!(reg.get("anthropic", "claude-3-5-sonnet"), 200_000);
-    assert_eq!(reg.get("unknown", "unknown"), 128_000); // default
+#[tokio::test]
+async fn test_catalog_known_models() {
+    let catalog = catalog_with_known_providers().await;
+    assert_eq!(
+        catalog.model_context_length("openai", "gpt-4o").await,
+        Some(128_000)
+    );
+    assert_eq!(
+        catalog
+            .model_context_length("anthropic", "claude-sonnet-4-5")
+            .await,
+        Some(200_000)
+    );
+    // Unknown provider/model pair → None.
+    assert_eq!(catalog.model_context_length("nope", "nope").await, None);
+}
+
+/// Build a transient in-memory catalog seeded with the built-in OpenAI
+/// and Anthropic templates. Used by the integration tests below; not
+/// production code.
+async fn catalog_with_known_providers() -> std::sync::Arc<ProviderCatalog> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("providers.toml");
+    let catalog = ProviderCatalog::load_or_init(&path).await.expect("catalog");
+
+    let anthropic = ProviderCatalogEntry::from_template(
+        templates::find_template("anthropic").expect("anthropic template"),
+        "anthropic",
+        None,
+    );
+    catalog.upsert(anthropic).await.expect("upsert anthropic");
+
+    let openai = ProviderCatalogEntry::from_template(
+        templates::find_template("openai").expect("openai template"),
+        "openai",
+        None,
+    );
+    catalog.upsert(openai).await.expect("upsert openai");
+
+    catalog
 }
 
 // ============================================================================

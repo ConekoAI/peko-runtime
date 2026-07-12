@@ -26,10 +26,9 @@ pub struct CliCompactionResult {
 pub struct DryRunReport {
     pub estimated_tokens: usize,
     /// The model's maximum context window size used as the basis
-    /// for the `percent` calculation. While the hard-coded
-    /// fallback `128_000` is in place, this is always that value;
-    /// once the orchestrator feeds the registry-resolved model
-    /// max through (PR B), this will reflect the actual model.
+    /// for the `percent` calculation. Resolved from
+    /// `ProviderCatalog::model_context_length` by the caller — the
+    /// compactor does not consult the catalog itself.
     pub model_context_limit: usize,
     pub percent: usize,
     pub message_count: usize,
@@ -51,10 +50,18 @@ impl SessionCompactor {
         Self
     }
 
-    /// Perform a dry-run and return a preview report
+    /// Perform a dry-run and return a preview report.
+    ///
+    /// `model_context_limit` is the resolved model's max context
+    /// length in tokens. Callers obtain it via
+    /// `ProviderCatalog::model_context_length` (or, when the session
+    /// was previously run through the agentic loop, from
+    /// `Session::model_context_limit`). The compactor treats the value
+    /// as opaque authoritative input.
     pub async fn dry_run(
         &self,
         session: &Session,
+        model_context_limit: usize,
         _instruction: Option<String>,
     ) -> Result<DryRunReport> {
         let messages = session
@@ -63,10 +70,6 @@ impl SessionCompactor {
             .map_err(|e| anyhow::anyhow!("Failed to load context: {e}"))?;
 
         let estimated_tokens = Compactor::estimate_tokens(&messages);
-        // TODO(PR B): pull the registry-resolved model max instead of
-        // hard-coding. The orchestrator pins this once at run start;
-        // dry-run currently has no orchestrator reference.
-        let model_context_limit = 128_000usize;
         let percent = (estimated_tokens * 100) / model_context_limit.max(1);
         let messages_to_compact = messages.len().saturating_sub(2);
 
@@ -216,7 +219,10 @@ mod tests {
             .unwrap();
 
         let compactor = SessionCompactor::new();
-        let report = compactor.dry_run(&session, None).await.unwrap();
+        let report = compactor
+            .dry_run(&session, 128_000, None)
+            .await
+            .unwrap();
 
         assert_eq!(report.message_count, 0);
         assert_eq!(report.messages_to_compact, 0);

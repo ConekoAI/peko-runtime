@@ -531,12 +531,36 @@ impl AgenticLoop {
         let mut iteration = 0;
         let mut total_usage = TokenUsage::default();
 
-        // Initialize compaction orchestrator
+        // Initialize compaction orchestrator. The model's max context
+        // length is the single source of truth from `ProviderCatalog`
+        // (resolved via the agent's `LlmResolver`). When the catalog
+        // has no entry, we fall back to a sane default — the same
+        // 128K figure the legacy `ModelContextRegistry` defaulted to.
+        // The orchestrator pins the value once at run start.
+        const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 128_000;
+        let context_window = match self.agent.llm_resolver() {
+            Some(resolver) => resolver
+                .catalog()
+                .model_context_length(self.provider.name(), &self.provider.model_id())
+                .await
+                .map(|n| n as usize)
+                .unwrap_or(FALLBACK_CONTEXT_WINDOW_TOKENS),
+            None => FALLBACK_CONTEXT_WINDOW_TOKENS,
+        };
         let mut compaction_orchestrator =
             crate::engine::compaction_orchestrator::CompactionOrchestrator::new(
                 self.provider.clone(),
-                &self.agent.config,
+                context_window,
             );
+
+        // Propagate the resolved model max into the session so the
+        // `session` tool and IPC layer can surface it (used by the
+        // CLI dry-run and external status surfaces). The orchestrator
+        // pins this same value at run start.
+        {
+            let mut s = session.write().await;
+            s.set_model_context_limit(context_window);
+        }
 
         // Initialize tool executor
         let tool_executor = crate::engine::tool_executor::ToolExecutor;

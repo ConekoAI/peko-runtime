@@ -325,7 +325,6 @@ mod tests {
         assert_eq!(config.keep_recent_tokens, 20_000);
         assert_eq!(config.max_compactions_per_session, 100);
         assert_eq!(config.cooldown_seconds, 60);
-        assert!(config.model_limits.is_empty());
     }
 
     #[test]
