@@ -74,6 +74,12 @@ pub struct AgenticLoop {
     /// extension-scoped tools such as `Skill` can resolve per-principal state
     /// via the `ExtensionStateRegistry` at handle time.
     agent_principal_id: String,
+    /// F18: per-principal token quota meter. Every LLM call routed
+    /// through this loop is gated against the meter before
+    /// dispatch and charged after the response arrives. For
+    /// unquota'd principals (or test fixtures that don't bind a
+    /// meter) this is an unlimited meter — `charge` is a no-op.
+    quota_meter: Arc<crate::quota::QuotaMeter>,
     /// Per-session queue of completed async tasks, drained at the start
     /// of `run_inner` iteration. Surfaced to the LLM as a
     /// synthetic user-role message containing all queued completions.
@@ -115,7 +121,26 @@ impl AgenticLoop {
             agent_principal_id,
             async_completion_queue: None,
             cancel: None,
+            quota_meter: Arc::new(crate::quota::QuotaMeter::unlimited()),
         }
+    }
+
+    /// F18: bind a per-principal quota meter. The meter is consulted
+    /// at every LLM call boundary; for unquota'd principals (or test
+    /// fixtures), the unlimited default returned by `new` is
+    /// sufficient and this method can be skipped.
+    #[must_use]
+    pub fn with_quota_meter(mut self, meter: Arc<crate::quota::QuotaMeter>) -> Self {
+        self.quota_meter = meter;
+        self
+    }
+
+    /// Read-only view of the bound quota meter. The compactor
+    /// sub-thread uses this so summarization calls count against
+    /// the same principal.
+    #[must_use]
+    pub fn quota_meter(&self) -> &Arc<crate::quota::QuotaMeter> {
+        &self.quota_meter
     }
 
     /// Set the resolved caller identity for this loop (issue #17).
@@ -674,6 +699,15 @@ impl AgenticLoop {
             // the floor because the compactor returned only the
             // summary text; this brings long-session runs back into
             // parity with what the provider actually billed.
+            //
+            // F18: charge the summarization usage against the
+            // principal's quota meter too — otherwise the
+            // summarization LLM call would be free. A returned
+            // `QuotaError` means the summarization pushed the
+            // principal over its limit; surface it as a typed
+            // error so the caller sees the precise reason. The
+            // drain happens after `accumulate` so a tripped quota
+            // doesn't roll back the run's reported totals.
             if let Some(compaction_usage) =
                 compaction_orchestrator.last_compaction_usage()
             {
@@ -682,6 +716,14 @@ impl AgenticLoop {
                     compaction_usage.input, compaction_usage.output
                 );
                 total_usage.accumulate(&compaction_usage);
+                if let Err(quota_err) = self.quota_meter.charge(&compaction_usage).await {
+                    on_event(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Error,
+                        error: Some(quota_err.to_string()),
+                    });
+                    return Err(anyhow::anyhow!(quota_err));
+                }
             }
 
             if iteration > self.max_iterations {
@@ -740,6 +782,23 @@ impl AgenticLoop {
                     })
                     .collect();
                 debug!("  [{}] {:?}: {}", i, msg.role, content_preview);
+            }
+
+            // F18: quota gate. The per-principal meter is consulted *before*
+            // every LLM call so a tripped limit aborts mid-flight with
+            // a typed error. For unquota'd principals the meter is an
+            // unlimited no-op (`is_exhausted` is always false). The
+            // advance-if-needed call also rolls the window forward when
+            // the persisted state is from a previous cycle, so a
+            // long-running daemon doesn't accumulate stale counters.
+            self.quota_meter.advance_if_needed(chrono::Utc::now());
+            if let Some(existing_err) = self.quota_meter.check() {
+                on_event(AgenticEvent::Lifecycle {
+                    run_id: run_id.clone(),
+                    phase: LifecyclePhase::Error,
+                    error: Some(existing_err.to_string()),
+                });
+                return Err(anyhow::anyhow!(existing_err));
             }
 
             // Obtain the stream of events from the provider.
@@ -940,6 +999,23 @@ impl AgenticLoop {
             total_usage.input += iteration_usage.input;
             total_usage.output += iteration_usage.output;
             total_usage.total += iteration_usage.total;
+
+            // F18: charge the iteration's usage against the
+            // principal's quota meter. `charge` folds input + output
+            // (cache reads and reasoning tokens are already folded
+            // into those buckets by the StreamEvent::Usage arm above)
+            // and increments the request count. A returned
+            // `QuotaError` means the call that just completed pushed
+            // the principal over a limit — surface it as a typed
+            // error so the caller sees the precise reason.
+            if let Err(quota_err) = self.quota_meter.charge(&iteration_usage).await {
+                on_event(AgenticEvent::Lifecycle {
+                    run_id: run_id.clone(),
+                    phase: LifecyclePhase::Error,
+                    error: Some(quota_err.to_string()),
+                });
+                return Err(anyhow::anyhow!(quota_err));
+            }
 
             // Handle tool calls
             if !tool_calls.is_empty() {

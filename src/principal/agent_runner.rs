@@ -369,7 +369,11 @@ where
     // Phase 4b: bind caller DID so `principal_send` is registered.
     // `None` ⇒ tool is intentionally omitted (no local-only fallback
     // for `principal_send`; it is exclusively cross-runtime).
-    .with_caller_principal_did(ctx.caller_principal_did().cloned());
+    .with_caller_principal_did(ctx.caller_principal_did().cloned())
+    // F18: bind the principal's quota meter so the agentic loop
+    // gates and charges every LLM call against the same
+    // principal-level meter.
+    .with_quota_meter(Arc::clone(ctx.quota_meter()));
 
     let subagent_executor = Arc::new(
         crate::agents::subagent_executor::SubagentExecutor::new(
@@ -382,6 +386,9 @@ where
         .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
         .with_active_extensions(Some(ctx.active_extensions().clone()))
         .with_observability(ctx.observability().cloned())
+        // F18: thread the principal's quota meter into the
+        // executor so descendant subagents inherit it.
+        .with_quota_meter(Arc::clone(ctx.quota_meter()))
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
             // `PathResolver::principal_dir`), so derive the two config files

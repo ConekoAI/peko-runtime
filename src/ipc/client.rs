@@ -788,6 +788,53 @@ impl DaemonClient {
         };
         self.request_response(packet).await
     }
+
+    // ------------------------------------------------------------------
+    // Quota management (F18)
+    // ------------------------------------------------------------------
+
+    /// Fetch a principal's live quota status (counters + window).
+    pub async fn quota_get(
+        &self,
+        name: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::QuotaGet {
+            request_id,
+            name: name.into(),
+        };
+        self.request_response(packet).await
+    }
+
+    /// Replace a principal's quota configuration. Persists to
+    /// `PrincipalConfig` and updates the live meter so the next
+    /// `charge` consults the new limits.
+    pub async fn quota_set(
+        &self,
+        name: impl Into<String>,
+        config: crate::quota::QuotaConfig,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::QuotaSet {
+            request_id,
+            name: name.into(),
+            config,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Force-reset the meter's counters and roll a fresh window.
+    pub async fn quota_reset(
+        &self,
+        name: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::QuotaReset {
+            request_id,
+            name: name.into(),
+        };
+        self.request_response(packet).await
+    }
 }
 
 #[cfg(test)]

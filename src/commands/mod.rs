@@ -21,6 +21,7 @@ pub mod log;
 pub mod mcp;
 pub mod principal;
 pub mod provider;
+pub mod quota;
 pub mod registry;
 pub mod runtime;
 pub mod search;
@@ -176,6 +177,19 @@ pub enum Commands {
     /// PekoHub tunnel management (advanced / hidden)
     #[command(subcommand, hide = true)]
     Tunnel(tunnel::TunnelCommands),
+
+    /// Per-principal token quota management (F18)
+    ///
+    /// Inspect or replace a Principal's input / output / request
+    /// limits. The daemon owns the live counters; the CLI is a thin
+    /// IPC client.
+    ///
+    /// Examples:
+    ///   peko quota status myprincipal
+    ///   peko quota set myprincipal --input 1000000 --output 500000 --cycle daily
+    ///   peko quota reset myprincipal
+    #[command(subcommand)]
+    Quota(quota::QuotaCommands),
 
     /// Log in to the PekoHub registry
     Login {

@@ -175,6 +175,24 @@ impl PrincipalManager {
         self.persist_config(&workspace_path, &config).await?;
 
         let memory = self.memory_factory.create(&id, &workspace_path).await;
+
+        // F18: build the quota meter first so the router can capture
+        // the same Arc. The meter is built before the router because
+        // `RouterFactory::create` takes `Arc<QuotaMeter>` — both the
+        // root router and the principal carry the same handle so an
+        // `update_config` call that mutates `config.quota` only
+        // needs to swap the meter on the principal.
+        let quota_config = config.quota.clone().unwrap_or_default();
+        let quota_state_path = workspace_path.join("quota_state.json");
+        let quota_meter = crate::quota::QuotaMeter::load_or_init(
+            quota_config,
+            Some(quota_state_path),
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| PrincipalManagerError::Config(format!("quota meter init: {e}")))?;
+        let quota_meter = Arc::new(quota_meter);
+
         let router = self
             .router_factory
             .create(
@@ -182,6 +200,7 @@ impl PrincipalManager {
                 memory.clone(),
                 &workspace_path,
                 self.resolver.clone(),
+                Arc::clone(&quota_meter),
             )
             .await;
 
@@ -194,6 +213,7 @@ impl PrincipalManager {
             memory,
             router,
             agent_prompts,
+            quota_meter,
         });
 
         self.principals
@@ -236,6 +256,20 @@ impl PrincipalManager {
 
         let id = PrincipalId::generate();
         let memory = self.memory_factory.create(&id, &workspace_path).await;
+
+        // F18: build / restore the quota meter from disk so a
+        // daemon restart preserves the principal's accumulated usage.
+        let quota_config = config.quota.clone().unwrap_or_default();
+        let quota_state_path = workspace_path.join("quota_state.json");
+        let quota_meter = crate::quota::QuotaMeter::load_or_init(
+            quota_config,
+            Some(quota_state_path),
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| PrincipalManagerError::Config(format!("quota meter init: {e}")))?;
+        let quota_meter = Arc::new(quota_meter);
+
         let router = self
             .router_factory
             .create(
@@ -243,6 +277,7 @@ impl PrincipalManager {
                 memory.clone(),
                 &workspace_path,
                 self.resolver.clone(),
+                Arc::clone(&quota_meter),
             )
             .await;
         let agent_prompts = discover_agent_prompts(&workspace_path).await?;
@@ -254,6 +289,7 @@ impl PrincipalManager {
             memory,
             router,
             agent_prompts,
+            quota_meter,
         });
 
         self.principals
@@ -844,6 +880,7 @@ mod tests {
             preferred_provider_id: None,
             preferred_model_id: None,
             transport_preference: Default::default(),
+            quota: None,
         }
     }
 

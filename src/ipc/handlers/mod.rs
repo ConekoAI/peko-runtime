@@ -31,6 +31,7 @@ pub(crate) mod extension;
 pub(crate) mod instance;
 pub(crate) mod principal;
 pub(crate) mod provider_mcp;
+pub(crate) mod quota;
 pub(crate) mod runtime;
 pub(crate) mod system;
 pub(crate) mod tool;
@@ -44,6 +45,7 @@ use extension::ExtensionHandler;
 use instance::InstanceHandler;
 use principal::PrincipalHandler;
 use provider_mcp::ProviderMcpHandler;
+use quota::QuotaHandler;
 use runtime::RuntimeHandler;
 use system::SystemHandler;
 use tool::ToolHandler;
@@ -107,7 +109,7 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 12] = [
+        let handlers: [Arc<dyn RequestHandler>; 13] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
@@ -119,6 +121,7 @@ impl RequestDispatcher {
             Arc::new(RuntimeHandler::new(host.clone())),
             Arc::new(ExtensionHandler::new(host.clone())),
             Arc::new(ProviderMcpHandler::new(host.clone())),
+            Arc::new(QuotaHandler::new(host.clone())),
             Arc::new(PrincipalHandler::new(host)),
         ];
 
