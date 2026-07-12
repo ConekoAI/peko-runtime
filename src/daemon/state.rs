@@ -72,7 +72,7 @@ pub(crate) struct AppState {
     config_service: Arc<ConfigAuthorityImpl>,
 
     /// Stateless agent execution service
-    agent_service: Arc<StatelessAgentService>,
+    principal_service: Arc<StatelessAgentService>,
 
     /// Shared LLM resolver. Re-read in place via
     /// `ProviderCatalog::reload` after `peko provider {add,remove,
@@ -278,7 +278,7 @@ impl std::fmt::Debug for AppState {
             .field("host", &self.host)
             .field("config", &self.config)
             .field("config_service", &"<ConfigAuthorityImpl>")
-            .field("agent_service", &"<StatelessAgentService>")
+            .field("principal_service", &"<StatelessAgentService>")
             .field("principal_manager", &"<PrincipalManager>")
             .field("tool_runtime", &"<ToolRuntime>")
             .field("async_task_executor", &"<AsyncExecutor>")
@@ -519,7 +519,7 @@ impl AppState {
         let resolver = Arc::new(resolver_builder);
 
         let path_resolver_clone = path_resolver.clone();
-        let agent_service = Arc::new(
+        let principal_service = Arc::new(
             StatelessAgentService::new_with_resolver(
                 config_service.clone(),
                 path_resolver.clone(),
@@ -543,8 +543,8 @@ impl AppState {
         //
         // Trait-object clone for the framework (avoids a framework → agents
         // dependency while keeping the concrete arc for other consumers).
-        let agent_service_dyn: Arc<dyn crate::common::types::a2a::AgentMessageService> =
-            agent_service.clone();
+        let principal_service_dyn: Arc<dyn crate::common::types::principal_message::PrincipalMessageService> =
+            principal_service.clone();
 
         // For tests, always create a fresh core to avoid shared mutable state
         // between concurrent tests.
@@ -554,9 +554,9 @@ impl AppState {
             let router = AsyncExecutionRouter::with_transport(
                 crate::extensions::framework::services::async_transport::create_local_transport(),
             );
-            let services = ExtensionServices::with_async_router_and_agent_service(
+            let services = ExtensionServices::with_async_router_and_principal_message_service(
                 router,
-                Arc::clone(&agent_service_dyn),
+                Arc::clone(&principal_service_dyn),
             );
             Arc::new(ExtensionCore::with_services(Arc::new(services)))
         } else if let Some(existing) = crate::extensions::framework::core::global_core() {
@@ -570,20 +570,20 @@ impl AppState {
             let router = AsyncExecutionRouter::with_transport(
                 crate::extensions::framework::services::async_transport::create_local_transport(),
             );
-            let services = ExtensionServices::with_async_router_and_agent_service(
+            let services = ExtensionServices::with_async_router_and_principal_message_service(
                 router,
-                Arc::clone(&agent_service_dyn),
+                Arc::clone(&principal_service_dyn),
             );
             let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
             init_global_core(Arc::clone(&core));
             core
         };
 
-        // ADR-023: Ensure the agent service is set on the ExtensionCore for A2A messaging.
-        // If we reused an existing global core, it may not have the agent service yet.
+        // ADR-023: Ensure the principal message service is set on the ExtensionCore.
+        // If we reused an existing global core, it may not have the service yet.
         global_core
             .services()
-            .set_agent_service(Arc::clone(&agent_service_dyn));
+            .set_principal_message_service(Arc::clone(&principal_service_dyn));
 
         // Make the LLM resolver available to extension hooks (e.g. MCP sampling).
         global_core
@@ -614,7 +614,7 @@ impl AppState {
 
         // ADR-025: Initialize BackgroundRuntimeManager and GatewayRouter
         let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
-        let gateway_router = Arc::new(GatewayRouter::new(Arc::clone(&agent_service)));
+        let gateway_router = Arc::new(GatewayRouter::new(Arc::clone(&principal_service)));
 
         // ADR-025: Shared MCP client registry — populated by McpRuntimeAdapter
         let mcp_client_registry = Arc::new(McpClientRegistry::new());
@@ -770,7 +770,7 @@ impl AppState {
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             observability,
             config_service,
-            agent_service,
+            principal_service,
             resolver,
             vault: Arc::clone(&vault),
             principal_manager,
@@ -1002,10 +1002,10 @@ impl AppState {
         &self.config_service
     }
 
-    /// Get the agent service
+    /// Get the principal message service
     #[must_use]
-    pub fn agent_service(&self) -> &Arc<StatelessAgentService> {
-        &self.agent_service
+    pub fn principal_service(&self) -> &Arc<StatelessAgentService> {
+        &self.principal_service
     }
 
     /// Get the principal manager
@@ -1093,7 +1093,7 @@ impl AppState {
     pub fn starter_context(&self) -> StarterContext {
         StarterContext {
             background_runtime_manager: Arc::clone(&self.background_runtime_manager),
-            agent_service: Arc::clone(&self.agent_service),
+            principal_service: Arc::clone(&self.principal_service),
             gateway_router: Arc::clone(&self.gateway_router),
             mcp_client_registry: Arc::clone(&self.mcp_client_registry),
             data_dir: self.data_dir.clone(),

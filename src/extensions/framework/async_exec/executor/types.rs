@@ -251,7 +251,7 @@ pub enum DeliveryTarget {
     DirectChannel,
 }
 
-/// Message types for session-to-session communication (A2A)
+/// Message types for principal-to-principal communication
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum SessionMessageType {
     /// Initial request to another agent

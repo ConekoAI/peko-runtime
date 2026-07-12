@@ -28,10 +28,12 @@ pub struct ExtensionServices {
     /// Async execution router
     async_router: crate::extensions::framework::transport::AsyncExecutionRouter,
 
-    /// Stateless agent service for A2A messaging (set by AppState after initialization).
+    /// Stateless principal message service (set by AppState after initialization).
+    /// Implements principal-to-principal message dispatch
+    /// ([`crate::common::types::principal_message::PrincipalMessageService`]).
     /// Held as a trait object to avoid a framework → agents dependency.
-    agent_service:
-        std::sync::RwLock<Option<Arc<dyn crate::common::types::a2a::AgentMessageService>>>,
+    principal_message_service:
+        std::sync::RwLock<Option<Arc<dyn crate::common::types::principal_message::PrincipalMessageService>>>,
 
     /// Cross-runtime a2a dispatch context (issue #29). Set by the
     /// daemon-state after the tunnel client is built and the
@@ -61,8 +63,8 @@ impl std::fmt::Debug for ExtensionServices {
             .field("telemetry", &self.telemetry)
             .field("async_router", &self.async_router)
             .field(
-                "agent_service",
-                &"<RwLock<Option<Arc<dyn AgentMessageService>>>>",
+                "principal_message_service",
+                &"<RwLock<Option<Arc<dyn PrincipalMessageService>>>>",
             )
             .field(
                 "cross_runtime_a2a_ctx",
@@ -82,14 +84,16 @@ impl ExtensionServices {
         )
     }
 
-    /// Create with a custom async execution router and agent service
+    /// Create with a custom async execution router and principal message service
     #[must_use]
-    pub fn with_async_router_and_agent_service(
+    pub fn with_async_router_and_principal_message_service(
         async_router: crate::extensions::framework::transport::AsyncExecutionRouter,
-        agent_service: Arc<dyn crate::common::types::a2a::AgentMessageService>,
+        principal_message_service: Arc<
+            dyn crate::common::types::principal_message::PrincipalMessageService,
+        >,
     ) -> Self {
         let s = Self::with_async_router(async_router);
-        s.set_agent_service(agent_service);
+        s.set_principal_message_service(principal_message_service);
         s
     }
 
@@ -104,7 +108,7 @@ impl ExtensionServices {
             tool_execution: crate::extensions::framework::services::ToolExecutionService::new(),
             reserved_params: crate::extensions::framework::services::ReservedParamsService::new(),
             async_router,
-            agent_service: std::sync::RwLock::new(None),
+            principal_message_service: std::sync::RwLock::new(None),
             // Issue #29: cross-runtime a2a ctx starts as None and
             // is filled in by the daemon-state after the tunnel
             // client is wired. Until then, every per-agent
@@ -142,20 +146,22 @@ impl ExtensionServices {
         &self.async_router
     }
 
-    /// Set the stateless agent service (for A2A messaging)
-    pub fn set_agent_service(
+    /// Set the stateless principal message service
+    pub fn set_principal_message_service(
         &self,
-        service: Arc<dyn crate::common::types::a2a::AgentMessageService>,
+        service: Arc<dyn crate::common::types::principal_message::PrincipalMessageService>,
     ) {
-        if let Ok(mut guard) = self.agent_service.write() {
+        if let Ok(mut guard) = self.principal_message_service.write() {
             *guard = Some(service);
         }
     }
 
-    /// Get the stateless agent service (for A2A messaging)
+    /// Get the stateless principal message service
     #[must_use]
-    pub fn agent_service(&self) -> Option<Arc<dyn crate::common::types::a2a::AgentMessageService>> {
-        self.agent_service.read().ok().and_then(|g| g.clone())
+    pub fn principal_message_service(
+        &self,
+    ) -> Option<Arc<dyn crate::common::types::principal_message::PrincipalMessageService>> {
+        self.principal_message_service.read().ok().and_then(|g| g.clone())
     }
 
     /// Set the cross-runtime a2a dispatch context (issue #29). The

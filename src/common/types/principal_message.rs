@@ -1,5 +1,5 @@
 //! Principal-level message request/response types and the
-//! `AgentMessageService` trait.
+//! `PrincipalMessageService` trait.
 //!
 //! The shapes here describe **principal-to-principal** messaging — the
 //! canonical wire envelope is the protocol's A2A (Agent-to-Agent) envelope
@@ -8,14 +8,14 @@
 //! invokes another's root agent.
 //!
 //! Lives here (not in `tunnel` or `agents`) so the extension framework can
-//! hold an `Arc<dyn AgentMessageService>` without depending on either the
+//! hold an `Arc<dyn PrincipalMessageService>` without depending on either the
 //! concrete `agents::StatelessAgentService` (cycle 5) or `tunnel` types
 //! (Rule 5 of the Issue 015/020 boundary).
 //!
 //! ## Within-principal vs across-principal note
 //!
 //! The same execution engine (`StatelessAgentService`, the sole implementor
-//! of `AgentMessageService`) services both:
+//! of `PrincipalMessageService`) services both:
 //!   - **across-principal**: tunnel-driven `principal_send` traffic
 //!     (`src/principal/principal_send_tool.rs`); and
 //!   - **within-principal**: synchronous same-runtime agent dispatch (CLI
@@ -192,14 +192,15 @@ pub struct PrincipalMessageResponse {
 /// Minimum interface the principal-send tool needs from a peer principal
 /// message service.
 ///
-/// Lives in `common::types::a2a` (not in `agents` or `tunnel`) so callers
-/// can construct `Arc<dyn AgentMessageService>` without depending on the
-/// concrete `StatelessAgentService` type or on tunnel types. The sole
-/// implementation in this codebase is `StatelessAgentService`.
+/// Lives in `common::types::principal_message` (not in `agents` or
+/// `tunnel`) so callers can construct `Arc<dyn PrincipalMessageService>`
+/// without depending on the concrete `StatelessAgentService` type or on
+/// tunnel types. The sole implementation in this codebase is
+/// `StatelessAgentService`.
 ///
 /// Breaking cycle 5 (per `PLAN §2.5`).
 #[async_trait::async_trait]
-pub trait AgentMessageService: Send + Sync {
+pub trait PrincipalMessageService: Send + Sync {
     async fn execute_message(
         &self,
         req: PrincipalMessageRequest,

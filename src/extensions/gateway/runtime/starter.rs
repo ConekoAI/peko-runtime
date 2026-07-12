@@ -58,7 +58,7 @@ impl ExtensionRuntimeStarter for GatewayRuntimeStarter {
             .and_then(|v| v.as_str())
             .unwrap_or("out-of-process");
 
-        let router = GatewayRouter::new(Arc::clone(&ctx.agent_service));
+        let router = GatewayRouter::new(Arc::clone(&ctx.principal_service));
 
         // Parse and register routing configuration from manifest
         let routing_config = parse_gateway_routing_config(config);
