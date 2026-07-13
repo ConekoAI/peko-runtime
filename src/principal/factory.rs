@@ -4,7 +4,8 @@ use async_trait::async_trait;
 
 use super::{memory::PrincipalMemory, PrincipalConfig, PrincipalId};
 use crate::providers::LlmResolver;
-use crate::quota::QuotaMeter;
+// F19: removed `use crate::quota::QuotaMeter;` — the factory no
+// longer threads the meter through to the router.
 
 /// Factory for building a Principal's memory store.
 #[async_trait]
@@ -25,10 +26,6 @@ pub trait PrincipalRouterFactory: Send + Sync {
         memory: Arc<dyn PrincipalMemory>,
         workspace_path: &std::path::Path,
         resolver: Option<Arc<LlmResolver>>,
-        // F18: per-principal quota meter. Shared with every LLM call
-        // routed through the principal's root agent and the
-        // subagents it spawns.
-        quota_meter: Arc<QuotaMeter>,
     ) -> Arc<dyn super::router::PrincipalRouter>;
 }
 
@@ -67,7 +64,6 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
         memory: Arc<dyn PrincipalMemory>,
         workspace_path: &std::path::Path,
         resolver: Option<Arc<LlmResolver>>,
-        quota_meter: Arc<QuotaMeter>,
     ) -> Arc<dyn super::router::PrincipalRouter> {
         let prompt = Self::resolve_root_agent_prompt(config, workspace_path);
         // Phase 4b: copy the principal's stable DID into the router
@@ -76,6 +72,9 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
         // bootstrap sets it once `start_tunnel` finishes and the
         // `CrossRuntimeA2aCtx` is installed.
         let principal_caller_did = config.did.clone().map(|d| d.0);
+        // F19: removed `quota_meter` parameter — the engine loop
+        // fetches the principal's meter directly from
+        // `Principal.quota_meter` at run entrypoint.
         Arc::new(super::routers::RootRouter::new(
             memory,
             resolver,
@@ -84,7 +83,6 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
             config.preferred_provider_id.clone(),
             config.preferred_model_id.clone(),
             principal_caller_did,
-            quota_meter,
         ))
     }
 }

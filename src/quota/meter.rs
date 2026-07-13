@@ -298,6 +298,41 @@ impl QuotaMeter {
             .lock()
             .expect("quota config poisoned") = new_config;
     }
+
+    /// F19: sync version of [`Self::charge`]. Used by the streaming
+    /// metering path (`MeteredProvider::stream_with_tools` intercepts
+    /// `StreamEvent::Usage` events inside the stream `map` closure,
+    /// which is sync). Skips persistence — the next blocking
+    /// `charge` (e.g. the following iteration's LLM call) writes
+    /// the in-memory state to disk. The on-disk counters may lag by
+    /// one streaming call at most, which is acceptable.
+    ///
+    /// Folds usage, advances the window, increments `request_count`,
+    /// and returns the first limit crossed (if any). **No I/O.**
+    pub fn try_charge(&self, usage: &TokenUsage) -> Result<(), QuotaError> {
+        let mut state = self.state.lock().expect("quota state mutex poisoned");
+        let config_cycle = self.config.lock().expect("quota config poisoned").cycle;
+        let drift = state.cycle != config_cycle;
+        let now = Utc::now();
+        if drift || now >= state.window_end {
+            let (start, end) = config_cycle.window_bounds(now);
+            state.window_start = start;
+            state.window_end = end;
+            state.cycle = config_cycle;
+            state.input_tokens = 0;
+            state.output_tokens = 0;
+            state.request_count = 0;
+        }
+        state.input_tokens = state.input_tokens.saturating_add(usage.input);
+        state.output_tokens = state.output_tokens.saturating_add(usage.output);
+        state.request_count = state.request_count.saturating_add(1);
+        let config = self.config.lock().expect("quota config poisoned");
+        if let Some(err) = Self::check_inner(&config, &state) {
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

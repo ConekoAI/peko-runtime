@@ -90,10 +90,15 @@ impl McpToolProxy {
     /// Internal method to call the tool with auto-start if needed
     ///
     /// This handles the case where the server is not running by attempting
-    /// to start it and retrying the call.
+    /// to start it and retrying the call. `principal_id` is forwarded to
+    /// `McpManager::start_server` when auto-start kicks in so the server's
+    /// sampling handler is bound to the calling principal's quota meter
+    /// (F19). Pass `None` from contexts that have no principal scope
+    /// (CLI, tests).
     async fn call_with_auto_start(
         &self,
         params: serde_json::Value,
+        principal_id: Option<&str>,
     ) -> anyhow::Result<CallToolResult> {
         let manager = self.manager.read().await;
 
@@ -107,7 +112,12 @@ impl McpToolProxy {
                 // Server not running, try to start it
                 drop(manager); // Drop read lock before starting server
                 let manager = self.manager.write().await;
-                if let Err(e) = manager.start_server(&self.server_name).await {
+                // F19: forward the calling principal to the auto-started
+                // server so its sampling handler charges the right meter.
+                if let Err(e) = manager
+                    .start_server(&self.server_name, principal_id)
+                    .await
+                {
                     return Err(anyhow::anyhow!(
                         "MCP server '{}' failed to start: {}",
                         self.server_name,
@@ -163,14 +173,18 @@ impl McpToolProxy {
     }
 
     /// Execute the tool and convert the result
-    async fn do_execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn do_execute(
+        &self,
+        params: serde_json::Value,
+        principal_id: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
         trace!(
             "Executing MCP tool '{}' on server '{}'",
             self.tool.name,
             self.server_name
         );
 
-        let result = self.call_with_auto_start(params).await?;
+        let result = self.call_with_auto_start(params, principal_id).await?;
 
         debug!(
             "MCP tool '{}' completed (is_error: {})",
@@ -202,7 +216,7 @@ impl Tool for McpToolProxy {
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        self.do_execute(params).await
+        self.do_execute(params, None).await
     }
 
     async fn execute_with_context(
@@ -210,9 +224,12 @@ impl Tool for McpToolProxy {
         params: serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
+        // F19: forward the calling principal from `ToolContext` so the
+        // MCP server's sampling handler is bound to the right quota meter.
+        let principal_id = ctx.principal_id.as_deref();
         // Use the shared context handling utility to eliminate duplication
         execute_with_context_handling(ctx, &self.tool.name, Some(&self.server_name), || async {
-            self.do_execute(params).await
+            self.do_execute(params, principal_id).await
         })
         .await
     }

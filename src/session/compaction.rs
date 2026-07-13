@@ -450,7 +450,16 @@ impl Compactor {
 
         // Use `chat_response` (returns full `ChatResponse` including
         // usage) so we can account for the summarization call's cost.
-        let response = provider
+        //
+        // F19: build a `MeteredProvider` from the active task-local
+        // scope (the BackgroundCompactor worker opens a `QuotaScope::with`
+        // around this call). The metered wrapper auto-charges after
+        // the call returns. If no scope is active (CLI / tests /
+        // passthrough wrappers), `from_current_scope` returns a
+        // passthrough wrapper with an unlimited meter — same behavior
+        // as F18's no-op charge.
+        let metered = crate::providers::MeteredProvider::from_current_scope(provider.clone());
+        let response = metered
             .chat_response(&prompt, "default", 0.3)
             .await
             .context("Failed to generate compaction summary")?;

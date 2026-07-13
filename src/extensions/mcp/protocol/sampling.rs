@@ -4,6 +4,14 @@
 //! the host model for a completion. The request is translated into Peko's
 //! `LlmResolver` / `Provider::chat_with_tools` path and the response is mapped
 //! back to the MCP `CreateMessageResult` format.
+//!
+//! F19: `SamplingRequestHandler` carries the principal's quota meter
+//! (captured at server-start time) and opens a `QuotaScope::with`
+//! around the LLM call so a `MeteredProvider` constructed inside
+//! auto-charges the right principal. Daemon-level auto-start passes
+//! an unlimited meter (no principal); tool-call-driven auto-start
+//! captures the principal from `ToolContext::principal_id` and passes
+//! the matching `Arc<QuotaMeter>`.
 
 use crate::common::types::message::{ContentBlock, ImageSource, MessageRole};
 use crate::extensions::mcp::protocol::{
@@ -15,6 +23,8 @@ use crate::extensions::mcp::protocol::{
 };
 use crate::providers::resolver::{LlmResolver, ResolveRequest};
 use crate::providers::traits::{ChatOptions, StopReason, ToolDefinition};
+use crate::providers::MeteredProvider;
+use crate::quota::{QuotaMeter, QuotaScope};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::debug;
@@ -22,13 +32,18 @@ use tracing::debug;
 /// Handles MCP `sampling/createMessage` requests from an MCP server.
 pub struct SamplingRequestHandler {
     resolver: Arc<LlmResolver>,
+    /// F19: principal's quota meter for this server. Built once at
+    /// `McpManager::start_server` time — either the principal's real
+    /// meter (tool-call-driven auto-start with a `principal_id`) or an
+    /// unlimited meter (daemon-level auto-start with `None`).
+    meter: Arc<QuotaMeter>,
 }
 
 impl SamplingRequestHandler {
     /// Create a new sampling handler backed by the given resolver.
     #[must_use]
-    pub fn new(resolver: Arc<LlmResolver>) -> Self {
-        Self { resolver }
+    pub fn new(resolver: Arc<LlmResolver>, meter: Arc<QuotaMeter>) -> Self {
+        Self { resolver, meter }
     }
 }
 
@@ -102,7 +117,9 @@ impl ServerRequestHandler for SamplingRequestHandler {
             .map(convert_mcp_tool)
             .collect();
 
-        // Resolve the default provider/model and complete.
+        // Resolve the default provider/model first. `resolver.build`
+        // is not metered (it just resolves config) and we need `choice`
+        // outside the QuotaScope to fill `CreateMessageResult::model`.
         let (provider, choice) = self
             .resolver
             .build(ResolveRequest::default())
@@ -112,20 +129,32 @@ impl ServerRequestHandler for SamplingRequestHandler {
                 message: format!("Failed to resolve host model: {}", e),
                 data: None,
             })?;
+        let model_id = choice.model.id.clone();
 
+        // F19: open `QuotaScope::with` so the `MeteredProvider` built
+        // below auto-charges this server's principal. We move the
+        // provider into the closure (consumed) and rebuild it as
+        // metered; the unwrapped response is what we return.
+        let meter = Arc::clone(&self.meter);
         let options = ChatOptions {
             max_tokens: req.max_tokens,
             ..Default::default()
         };
 
-        let response = provider
-            .chat_with_tools(&choice.model.id, &messages, &tools, &options)
-            .await
-            .map_err(|e| JsonRpcError {
-                code: JsonRpcError::INTERNAL_ERROR,
-                message: format!("Host model completion failed: {}", e),
-                data: None,
-            })?;
+        let response_result = QuotaScope::with(meter, async move {
+            let metered = MeteredProvider::from_current_scope(provider);
+            metered
+                .chat_with_tools(&model_id, &messages, &tools, &options)
+                .await
+                .map_err(|e| JsonRpcError {
+                    code: JsonRpcError::INTERNAL_ERROR,
+                    message: format!("Host model completion failed: {}", e),
+                    data: None,
+                })
+        })
+        .await;
+
+        let response = response_result?;
 
         // Extract the assistant-facing content. If the model returned tool calls
         // instead of text, serialize them as JSON text so the server still gets a
@@ -210,7 +239,10 @@ mod tests {
         let catalog_path = tmp.path().join("providers.toml");
         let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog_path).await;
 
-        let handler = SamplingRequestHandler::new(resolver);
+        let handler = SamplingRequestHandler::new(
+            resolver,
+            Arc::new(crate::quota::QuotaMeter::unlimited()),
+        );
         let req = CreateMessageRequest {
             messages: vec![SamplingMessage {
                 role: SamplingRole::User,
@@ -260,5 +292,82 @@ mod tests {
         let def = convert_mcp_tool(&tool);
         assert_eq!(def.name, "test");
         assert_eq!(def.description, "desc");
+    }
+
+    /// F19: a `SamplingRequestHandler` built with a real
+    /// (non-unlimited) `QuotaMeter` must charge that meter on every
+    /// sampling request — the quota scope is opened inside
+    /// `handle_request`, so a `MeteredProvider` constructed there auto-
+    /// charges the right meter.
+    #[tokio::test]
+    async fn test_sampling_handler_charges_principal_meter() {
+        let adapter = crate::providers::MockAdapter::new();
+        // Queue two completions so we can run two sampling requests
+        // and verify each charges the meter independently.
+        adapter.queue_text("first");
+        adapter.queue_text("second");
+        let tmp = tempfile::tempdir().unwrap();
+        let catalog_path = tmp.path().join("providers.toml");
+        let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog_path).await;
+
+        // Build a meter with a high input-token limit so a successful
+        // charge is observable via `snapshot()` without tripping.
+        let meter = Arc::new(
+            crate::quota::QuotaMeter::load_or_init(
+                crate::quota::QuotaConfig {
+                    input_tokens: Some(1_000_000),
+                    ..Default::default()
+                },
+                None,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        let handler = SamplingRequestHandler::new(Arc::clone(&resolver), Arc::clone(&meter));
+        let req = CreateMessageRequest {
+            messages: vec![SamplingMessage {
+                role: SamplingRole::User,
+                content: SamplingContent::Text {
+                    text: "Say hi".to_string(),
+                },
+            }],
+            model_preferences: None,
+            system_prompt: None,
+            max_tokens: Some(50),
+            tools: None,
+            include_context: None,
+        };
+
+        let before = meter.snapshot();
+        assert_eq!(before.output_tokens, 0);
+
+        handler
+            .handle_request("sampling/createMessage", Some(json!(req.clone())))
+            .await
+            .unwrap();
+        let after_first = meter.snapshot();
+        assert!(
+            after_first.output_tokens > before.output_tokens,
+            "expected meter to be charged after first sampling request: before={}, after={}",
+            before.output_tokens,
+            after_first.output_tokens
+        );
+        // request_count should always increment by 1 per call.
+        assert_eq!(after_first.request_count, 1);
+
+        handler
+            .handle_request("sampling/createMessage", Some(json!(req)))
+            .await
+            .unwrap();
+        let after_second = meter.snapshot();
+        assert!(
+            after_second.output_tokens > after_first.output_tokens,
+            "expected meter to accumulate across sampling requests: first={}, second={}",
+            after_first.output_tokens,
+            after_second.output_tokens
+        );
+        assert_eq!(after_second.request_count, 2);
     }
 }

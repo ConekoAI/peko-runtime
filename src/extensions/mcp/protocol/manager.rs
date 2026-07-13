@@ -144,6 +144,12 @@ pub struct McpManager {
     owned_client_registry: Arc<McpClientRegistry>,
     /// Optional LLM resolver used to handle server-to-client sampling requests.
     llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+    /// F19: principal manager for per-server sampling attribution.
+    /// When set, `sampling_handler_for(principal_id)` looks up the
+    /// principal's quota meter and binds it to the
+    /// `SamplingRequestHandler`. When unset, all sampling runs
+    /// against an unlimited meter (no charging).
+    principal_manager: Option<Arc<crate::principal::manager::PrincipalManager>>,
     /// Optional encrypted vault used for OAuth token storage.
     vault: Option<Arc<Vault>>,
 }
@@ -164,6 +170,7 @@ impl McpManager {
             shared_client_registry: None,
             owned_client_registry: Arc::new(McpClientRegistry::new()),
             llm_resolver: None,
+            principal_manager: None,
             vault: None,
         }
     }
@@ -179,6 +186,7 @@ impl McpManager {
             shared_client_registry: None,
             owned_client_registry: Arc::new(McpClientRegistry::new()),
             llm_resolver: None,
+            principal_manager: None,
             vault: None,
         }
     }
@@ -194,6 +202,9 @@ impl McpManager {
     /// * `runtime_manager` — Shared background runtime manager from `AppState`
     /// * `client_registry` — Shared client registry from `AppState`
     /// * `llm_resolver` — Optional resolver for `sampling/createMessage` requests
+    /// * `principal_manager` — F19: optional principal manager so the
+    ///   manager can build per-server sampling handlers bound to the
+    ///   right quota meter.
     /// * `vault` — Optional encrypted vault for OAuth token storage
     #[must_use]
     pub fn with_shared_resources(
@@ -212,6 +223,7 @@ impl McpManager {
             shared_client_registry: Some(client_registry),
             owned_client_registry: Arc::new(McpClientRegistry::new()),
             llm_resolver,
+            principal_manager: None,
             vault,
         }
     }
@@ -235,11 +247,53 @@ impl McpManager {
     }
 
     /// Build a server-request handler for sampling when a resolver is configured.
-    fn sampling_handler(&self) -> Option<Arc<dyn ServerRequestHandler>> {
-        self.llm_resolver.as_ref().map(|resolver| {
-            Arc::new(SamplingRequestHandler::new(Arc::clone(resolver)))
-                as Arc<dyn ServerRequestHandler>
-        })
+    ///
+    /// F19: per-server handler. The meter is resolved from the
+    /// principal when `principal_id` is `Some`; otherwise an
+    /// unlimited meter is used (daemon-level auto-start). The
+    /// handler is constructed fresh on every call so each server
+    /// gets its own binding.
+    async fn sampling_handler(
+        &self,
+        principal_id: Option<&str>,
+    ) -> Option<Arc<dyn ServerRequestHandler>> {
+        let resolver = self.llm_resolver.as_ref()?;
+        let meter = self.resolve_quota_meter(principal_id).await;
+        Some(Arc::new(SamplingRequestHandler::new(
+            Arc::clone(resolver),
+            meter,
+        )) as Arc<dyn ServerRequestHandler>)
+    }
+
+    /// F19: resolve the principal's quota meter from
+    /// `principal_manager`. When the manager isn't configured, or the
+    /// principal can't be found, fall back to an unlimited meter so
+    /// sampling keeps working without charging.
+    async fn resolve_quota_meter(
+        &self,
+        principal_id: Option<&str>,
+    ) -> Arc<crate::quota::QuotaMeter> {
+        let Some(pm) = &self.principal_manager else {
+            return Arc::new(crate::quota::QuotaMeter::unlimited());
+        };
+        let Some(pid) = principal_id else {
+            return Arc::new(crate::quota::QuotaMeter::unlimited());
+        };
+        match pm.get_by_name(pid).await {
+            Some(p) => Arc::clone(&p.quota_meter),
+            None => Arc::new(crate::quota::QuotaMeter::unlimited()),
+        }
+    }
+
+    /// F19: bind a principal manager so the manager can resolve per-
+    /// principal quota meters for sampling attribution. Builder-style.
+    #[must_use]
+    pub fn with_principal_manager(
+        mut self,
+        pm: Arc<crate::principal::manager::PrincipalManager>,
+    ) -> Self {
+        self.principal_manager = Some(pm);
+        self
     }
 
     /// Initialize the manager and start auto-start servers
@@ -290,7 +344,11 @@ impl McpManager {
         info!("Auto-starting {} MCP servers...", servers_to_start.len());
         for name in servers_to_start {
             info!("Starting MCP server '{}'...", name);
-            if let Err(e) = self.start_server(&name).await {
+            // F19: daemon-level auto-start has no principal scope, so
+            // sampling runs with an unlimited meter. Tool-call-driven
+            // auto-start (McpToolProxy / McpToolExecuteHandler) passes
+            // a `Some(principal_id)` instead.
+            if let Err(e) = self.start_server(&name, None).await {
                 warn!("Failed to auto-start server '{}': {}", name, e);
             } else {
                 info!("MCP server '{}' started successfully", name);
@@ -316,8 +374,19 @@ impl McpManager {
         Ok(())
     }
 
-    /// Start a specific server
-    pub async fn start_server(&self, name: &str) -> Result<()> {
+    /// Start a specific server.
+    ///
+    /// F19: `principal_id` is the principal whose quota meter should
+    /// be used for sampling calls issued by this server. Pass `None`
+    /// when starting outside any principal scope (daemon-level
+    /// auto-start, `peko ext start`, etc.) — sampling will run
+    /// without charging. Tool-call-driven auto-start passes the
+    /// caller's `principal_id` so sampling charges the right meter.
+    pub async fn start_server(
+        &self,
+        name: &str,
+        principal_id: Option<&str>,
+    ) -> Result<()> {
         // First, check and fix stale state without holding a long-lived borrow.
         let is_managed: bool;
         {
@@ -370,7 +439,7 @@ impl McpManager {
                 // Delegate to BackgroundRuntimeManager via McpRuntimeAdapter
                 let config = handle.config.clone();
                 drop(servers); // release lock before async call
-                self.start_managed_server(name, &config).await?;
+                self.start_managed_server(name, &config, principal_id).await?;
                 let mut servers = self.servers.write().await;
                 if let Some(handle) = servers.get_mut(name) {
                     handle.state.running = true;
@@ -384,7 +453,8 @@ impl McpManager {
                     // SSE server is supervised by the shared BackgroundRuntimeManager
                     let config = handle.config.clone();
                     drop(servers); // release lock before async call
-                    self.start_managed_external_server(name, &config).await?;
+                    self.start_managed_external_server(name, &config, principal_id)
+                        .await?;
                     let mut servers = self.servers.write().await;
                     if let Some(handle) = servers.get_mut(name) {
                         handle.state.running = true;
@@ -394,7 +464,7 @@ impl McpManager {
                     }
                 } else {
                     // Standalone mode: handle SSE connection directly
-                    let mut client = self.start_sse_client(&handle.config).await?;
+                    let mut client = self.start_sse_client(&handle.config, principal_id).await?;
 
                     let init_timeout = Duration::from_secs(handle.config.init_timeout_secs);
                     let server_info =
@@ -523,7 +593,9 @@ impl McpManager {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Start again
-        self.start_server(name).await
+        // F19: `restart_server` is invoked from CLI (`peko ext restart`)
+        // and external supervisors — neither carries a principal scope.
+        self.start_server(name, None).await
     }
 
     /// Get client for a specific server
@@ -868,7 +940,12 @@ impl McpManager {
     // =========================================================================
 
     /// Start a managed (stdio) server via BackgroundRuntimeManager
-    async fn start_managed_server(&self, name: &str, config: &McpServerConfig) -> Result<()> {
+    async fn start_managed_server(
+        &self,
+        name: &str,
+        config: &McpServerConfig,
+        principal_id: Option<&str>,
+    ) -> Result<()> {
         use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
 
         let command = config
@@ -887,7 +964,7 @@ impl McpManager {
         let adapter = Arc::new(McpRuntimeAdapter::new(
             config.clone(),
             self.client_registry(),
-            self.sampling_handler(),
+            self.sampling_handler(principal_id).await,
             self.vault.clone(),
         ));
 
@@ -913,6 +990,7 @@ impl McpManager {
         &self,
         name: &str,
         config: &McpServerConfig,
+        principal_id: Option<&str>,
     ) -> Result<()> {
         use crate::common::process::RestartPolicy;
         use crate::common::process::RuntimeSpawnConfig;
@@ -930,7 +1008,7 @@ impl McpManager {
         let adapter = Arc::new(McpRuntimeAdapter::new(
             config.clone(),
             self.client_registry(),
-            self.sampling_handler(),
+            self.sampling_handler(principal_id).await,
             self.vault.clone(),
         ));
 
@@ -951,7 +1029,11 @@ impl McpManager {
         Ok(())
     }
     /// Start an SSE transport client
-    async fn start_sse_client(&self, config: &McpServerConfig) -> Result<McpClient> {
+    async fn start_sse_client(
+        &self,
+        config: &McpServerConfig,
+        principal_id: Option<&str>,
+    ) -> Result<McpClient> {
         let endpoint = config
             .endpoint
             .as_ref()
@@ -966,7 +1048,7 @@ impl McpManager {
         .await
         .map_err(|e| ManagerError::Transport(e.to_string()))?;
 
-        Ok(match self.sampling_handler() {
+        Ok(match self.sampling_handler(principal_id).await {
             Some(handler) => McpClient::with_handler(Box::new(transport), handler),
             None => McpClient::new(Box::new(transport)),
         })

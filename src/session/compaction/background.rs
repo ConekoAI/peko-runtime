@@ -9,6 +9,7 @@
 //! - Result notification via callback
 
 use crate::common::types::message::LlmMessage;
+use crate::quota::{QuotaMeter, QuotaScope};
 use crate::session::compaction::{CompactionConfig, CompactionResult, Compactor};
 use anyhow::Result;
 use std::sync::Arc;
@@ -109,8 +110,14 @@ struct WorkerState {
 }
 
 impl BackgroundCompactor {
-    /// Create a new background compactor with the given provider
-    pub fn new(provider: Arc<crate::providers::Provider>) -> Self {
+    /// Create a new background compactor with the given provider.
+    ///
+    /// F19: `meter` is the principal's quota meter. The spawned worker
+    /// task opens a [`QuotaScope::with`] around every LLM call so the
+    /// summarization call goes through a [`MeteredProvider`] and
+    /// auto-charges. Pass [`QuotaMeter::unlimited()`] for unquota'd
+    /// sessions (CLI / tests / legacy one-shots).
+    pub fn new(provider: Arc<crate::providers::Provider>, meter: Arc<QuotaMeter>) -> Self {
         let (request_tx, mut request_rx) = mpsc::channel::<CompactionRequest>(4);
         let state = Arc::new(Mutex::new(WorkerState {
             last_compaction: None,
@@ -120,24 +127,32 @@ impl BackgroundCompactor {
         }));
 
         let state_clone = state.clone();
+        let meter_clone = Arc::clone(&meter);
 
-        // Spawn background worker task
+        // Spawn background worker task. We wrap the loop body in
+        // `QuotaScope::with` because `tokio::spawn` does NOT inherit
+        // the parent task's task-local — see `quota::scope` docstring.
         tokio::spawn(async move {
-            debug!("Background compaction worker started");
+            QuotaScope::with(meter_clone, async move {
+                debug!("Background compaction worker started");
 
-            while let Some(request) = request_rx.recv().await {
-                let provider = provider.clone();
-                let state = state_clone.clone();
+                while let Some(request) = request_rx.recv().await {
+                    let provider = provider.clone();
+                    let state = state_clone.clone();
 
-                // Process compaction request
-                let result = process_compaction_request(request, provider, state).await;
+                    // Process compaction request — the inner
+                    // `Compactor::compact` builds a metered provider
+                    // via `MeteredProvider::from_current_scope` so the
+                    // summarization LLM call auto-charges.
+                    let result = process_compaction_request(request, provider, state).await;
 
-                if let Err(e) = result {
-                    error!("Background compaction error: {}", e);
+                    if let Err(e) = result {
+                        error!("Background compaction error: {}", e);
+                    }
                 }
-            }
 
-            debug!("Background compaction worker stopped");
+                debug!("Background compaction worker stopped");
+            }).await;
         });
 
         Self {
@@ -153,6 +168,7 @@ impl BackgroundCompactor {
         provider: Arc<crate::providers::Provider>,
         config: CompactionConfig,
         quota: CompactionQuota,
+        meter: Arc<QuotaMeter>,
     ) -> Self {
         let (request_tx, mut request_rx) = mpsc::channel::<CompactionRequest>(4);
         let state = Arc::new(Mutex::new(WorkerState {
@@ -163,26 +179,32 @@ impl BackgroundCompactor {
         }));
 
         let state_clone = state.clone();
+        let meter_clone = Arc::clone(&meter);
 
-        // Spawn background worker task with custom config
+        // Spawn background worker task with custom config. Same
+        // `QuotaScope::with` wrap as `new` — see comment there.
         tokio::spawn(async move {
-            debug!("Background compaction worker started (custom config)");
+            QuotaScope::with(meter_clone, async move {
+                debug!("Background compaction worker started (custom config)");
 
-            while let Some(request) = request_rx.recv().await {
-                let provider = provider.clone();
-                let state = state_clone.clone();
-                let config = config.clone();
+                while let Some(request) = request_rx.recv().await {
+                    let provider = provider.clone();
+                    let state = state_clone.clone();
+                    let config = config.clone();
 
-                // Process compaction request with custom config
-                let result =
-                    process_compaction_request_with_config(request, provider, state, config).await;
+                    // Process compaction request with custom config
+                    let result =
+                        process_compaction_request_with_config(request, provider, state, config)
+                            .await;
 
-                if let Err(e) = result {
-                    error!("Background compaction error: {}", e);
+                    if let Err(e) = result {
+                        error!("Background compaction error: {}", e);
+                    }
                 }
-            }
 
-            debug!("Background compaction worker stopped");
+                debug!("Background compaction worker stopped");
+            })
+            .await;
         });
 
         Self {
@@ -199,11 +221,12 @@ impl BackgroundCompactor {
         provider: Arc<crate::providers::Provider>,
         config: CompactionConfig,
         quota: CompactionQuota,
+        meter: Arc<QuotaMeter>,
         _context_window: usize,
     ) -> Self {
         // For now, the context window is used by the caller when calling
         // should_request(). The compactor itself uses the config values.
-        Self::with_config(provider, config, quota)
+        Self::with_config(provider, config, quota, meter)
     }
 
     /// Request compaction (non-blocking)
@@ -360,7 +383,11 @@ async fn process_compaction_request_with_config(
         return Ok(());
     }
 
-    // Perform compaction
+    // Perform compaction. The worker task is already inside a
+    // `QuotaScope::with` (see `BackgroundCompactor::new`/`with_config`),
+    // so `Compactor::compact` builds its own `MeteredProvider` from
+    // the active task-local inside `generate_summary_with_llm`. The
+    // summarization LLM call then auto-charges.
     let mut compactor = Compactor::with_config(config, request.previous_summary.clone());
 
     match compactor.compact(&request.messages, &provider).await {

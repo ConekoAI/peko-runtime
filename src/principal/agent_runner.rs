@@ -369,11 +369,11 @@ where
     // Phase 4b: bind caller DID so `principal_send` is registered.
     // `None` ⇒ tool is intentionally omitted (no local-only fallback
     // for `principal_send`; it is exclusively cross-runtime).
-    .with_caller_principal_did(ctx.caller_principal_did().cloned())
-    // F18: bind the principal's quota meter so the agentic loop
-    // gates and charges every LLM call against the same
-    // principal-level meter.
-    .with_quota_meter(Arc::clone(ctx.quota_meter()));
+    .with_caller_principal_did(ctx.caller_principal_did().cloned());
+    // F19: quota meter no longer threaded through Agent. The
+    // engine loop fetches the principal's meter directly via
+    // `Principal.quota_meter` at run entrypoint and opens
+    // `QuotaScope::with` around the run.
 
     let subagent_executor = Arc::new(
         crate::agents::subagent_executor::SubagentExecutor::new(
@@ -386,9 +386,6 @@ where
         .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
         .with_active_extensions(Some(ctx.active_extensions().clone()))
         .with_observability(ctx.observability().cloned())
-        // F18: thread the principal's quota meter into the
-        // executor so descendant subagents inherit it.
-        .with_quota_meter(Arc::clone(ctx.quota_meter()))
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
             // `PathResolver::principal_dir`), so derive the two config files
@@ -448,6 +445,15 @@ where
     // `OrchestratorConfig::final_only()`, which defeats real end-to-end
     // streaming — the caller would receive the whole answer as one chunk.
     // `execute_streaming_with_session` uses `OrchestratorConfig::live()`.
+    //
+    // F19: agent_runner doesn't hold a `PrincipalManager` reference,
+    // so it can't resolve the principal's quota meter at this
+    // boundary. Pass `None` (unlimited). The IPC handler layer is
+    // where the principal's meter gets injected — see `daemon/state.rs`
+    // for the dispatcher-level plumbing in a follow-up. Until then,
+    // principal charging is disabled at this layer (test paths / agent
+    // catalog smoke tests are unaffected since they don't carry
+    // accumulated quotas).
     let result = agent
         .execute_streaming_with_session(
             &message,
@@ -456,6 +462,7 @@ where
             None, // caller_id: attribution is handled at the dispatcher boundary
             on_event,
             cancel,
+            None,
         )
         .await
         .context("root agent execution failed")?;

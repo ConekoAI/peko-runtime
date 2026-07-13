@@ -104,13 +104,6 @@ pub struct Agent {
     /// extension is present in this set in addition to the capability
     /// grant check. Subagents inherit the same snapshot.
     principal_active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
-    /// F18: per-principal token quota meter. Always present (unquota'd
-    /// principals get a meter with no limits — `QuotaMeter::charge` is
-    /// a no-op when every `QuotaConfig` field is `None`). The Arc is
-    /// shared across the agentic loop, the compactor, and descendant
-    /// subagent spawns so all LLM usage from one principal counts
-    /// against the same meter.
-    quota_meter: Arc<crate::quota::QuotaMeter>,
 }
 
 impl Clone for Agent {
@@ -137,7 +130,6 @@ impl Clone for Agent {
             principal_name: self.principal_name.clone(),
             principal_capabilities: self.principal_capabilities.clone(),
             principal_active_extensions: self.principal_active_extensions.clone(),
-            quota_meter: Arc::clone(&self.quota_meter),
         }
     }
 }
@@ -565,10 +557,6 @@ impl Agent {
             principal_name: None,
             principal_capabilities: None,
             principal_active_extensions: None,
-            // F18: defaults to an unlimited meter; the production path
-            // calls `with_quota_meter` after construction to bind the
-            // principal's real meter.
-            quota_meter: Arc::new(crate::quota::QuotaMeter::unlimited()),
         };
 
         info!(
@@ -675,28 +663,11 @@ impl Agent {
         self
     }
 
-    /// Bind the spawning principal's quota meter (F18). The Arc is
-    /// shared with the subagent executor and the agentic loop, so
-    /// every LLM call routed through this agent — root, subagent,
-    /// compactor — counts against the same principal-level
-    /// `QuotaMeter`. When unset, the agent carries an unlimited
-    /// meter (every call is free) — this matches the pre-F18
-    /// behaviour for tests and one-off CLI invocations.
-    #[must_use]
-    pub fn with_quota_meter(
-        mut self,
-        meter: Arc<crate::quota::QuotaMeter>,
-    ) -> Self {
-        self.quota_meter = meter;
-        self
-    }
-
-    /// Read-only view of this agent's quota meter. The engine loop
-    /// and the compactor consult this to gate and charge LLM usage.
-    #[must_use]
-    pub fn quota_meter(&self) -> &Arc<crate::quota::QuotaMeter> {
-        &self.quota_meter
-    }
+    /// F19: removed `with_quota_meter` and `quota_meter()` from Agent.
+    /// Quota is opened via `QuotaScope::with` at the engine loop
+    /// entrypoint. The agent no longer carries a meter field; the
+    /// principal's meter is fetched from `Principal.quota_meter`
+    /// directly by the run entrypoint.
 
     /// Snapshot of the spawning principal's workspace path, if any.
     ///
@@ -797,14 +768,10 @@ impl Agent {
 
         let principal_id = subagent_executor.principal_id().clone();
         let principal_name = subagent_executor.principal_name().map(String::from);
-        // F18: capture the parent's quota meter before moving the
-        // executor into `Self`. When the executor hasn't been bound
-        // (test fixtures), fall back to an unlimited meter — matches
-        // the legacy pre-F18 behaviour.
-        let quota_meter = subagent_executor
-            .quota_meter()
-            .cloned()
-            .unwrap_or_else(|| Arc::new(crate::quota::QuotaMeter::unlimited()));
+        // F19: quota meter no longer carried on `Agent`. The
+        // principal's meter is fetched from `Principal.quota_meter`
+        // at run entrypoint by the engine loop. The agent just
+        // carries identity and principal_id.
         let agent = Self {
             config,
             state: Arc::new(StateMachine::new()),
@@ -823,7 +790,6 @@ impl Agent {
             principal_name,
             principal_capabilities,
             principal_active_extensions,
-            quota_meter,
         };
 
         info!(
@@ -977,8 +943,11 @@ impl Agent {
         //   `execute_with_session` — the session id is stamped into
         //   `current_session_id` and the core before the helper runs.
         let session_key = self.current_session_id.read().await.clone();
+        // F19: CLI one-shot path — no principal in scope, default to
+        // an unlimited meter (no charging, no persistence).
+        let quota_meter = Arc::new(crate::quota::QuotaMeter::unlimited());
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, session_key, None, None)
+            .build_agentic_loop(agent_arc, provider, session_key, None, None, quota_meter)
             .await?;
 
         let result = match loop_.run(prompt, on_event).await {
@@ -1011,6 +980,7 @@ impl Agent {
         history: Option<Vec<crate::common::types::message::LlmMessage>>,
         cancel: Option<tokio_util::sync::CancellationToken>,
         on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
+        quota_meter: Option<Arc<crate::quota::QuotaMeter>>,
     ) -> Result<crate::engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
@@ -1041,8 +1011,13 @@ impl Agent {
             let mut current = self.current_session_id.write().await;
             *current = Some(session_id.clone());
         }
+        // F19: tunnel/pekohub path. Caller (agent_runner / IPC handler)
+        // supplies the principal's quota meter via the optional
+        // `quota_meter` parameter; default to unlimited when omitted.
+        let quota_meter =
+            quota_meter.unwrap_or_else(|| Arc::new(crate::quota::QuotaMeter::unlimited()));
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, Some(session_id), None, cancel)
+            .build_agentic_loop(agent_arc, provider, Some(session_id), None, cancel, quota_meter)
             .await?;
 
         let result = match loop_
@@ -1069,6 +1044,11 @@ impl Agent {
     /// propagated to every `HookInput::ToolCall` so per-user permission
     /// checks and audit logging can attribute tool calls to a real user
     /// (issue #17).
+    ///
+    /// F19: optional `quota_meter` is the principal's quota meter
+    /// from `Principal::quota_meter`. When supplied, every LLM call
+    /// auto-charges via `MeteredProvider`; when omitted, defaults to
+    /// an unlimited meter (test / CLI paths).
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_streaming_with_session<F>(
         &self,
@@ -1078,6 +1058,7 @@ impl Agent {
         caller_id: Option<String>,
         on_event: F,
         cancel: Option<tokio_util::sync::CancellationToken>,
+        quota_meter: Option<Arc<crate::quota::QuotaMeter>>,
     ) -> Result<crate::engine::AgenticResult>
     where
         F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
@@ -1113,8 +1094,12 @@ impl Agent {
         // `Agent::execute` for how the three `execute_*` paths cooperate
         // to ensure mid-iteration `AsyncSpawn` calls see a real session key.
         let session_id = self.current_session_id.read().await.clone();
+        // F19: tunnel/pekohub streaming path. Caller supplies the
+        // principal's quota meter; default to unlimited when omitted.
+        let quota_meter =
+            quota_meter.unwrap_or_else(|| Arc::new(crate::quota::QuotaMeter::unlimited()));
         let loop_ = match self
-            .build_agentic_loop(agent_arc, provider, session_id, caller_id, cancel)
+            .build_agentic_loop(agent_arc, provider, session_id, caller_id, cancel, quota_meter)
             .await
         {
             Ok(loop_) => loop_,
@@ -1168,8 +1153,10 @@ impl Agent {
 
         let agent_arc = Arc::new(self.clone());
         let session_id = self.current_session_id.read().await.clone();
+        // F19: same unlimited fallback as the other `execute_*` paths.
+        let quota_meter = Arc::new(crate::quota::QuotaMeter::unlimited());
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, session_id, caller_id, None)
+            .build_agentic_loop(agent_arc, provider, session_id, caller_id, None, quota_meter)
             .await?;
 
         let streaming_config = crate::engine::OrchestratorConfig::live();
@@ -1194,6 +1181,11 @@ impl Agent {
     /// Returns the constructed `AgenticLoop` ready to run. The session
     /// key is pushed onto the core so `AsyncSpawn` can stamp
     /// `parent_session_key` correctly.
+    ///
+    /// F19: `quota_meter` is the principal's quota meter. The loop
+    /// opens a `QuotaScope::with` around the run so every LLM call
+    /// auto-charges via `MeteredProvider`. Pass
+    /// `Arc::new(QuotaMeter::unlimited())` for unquota'd / test paths.
     pub async fn build_agentic_loop(
         &self,
         agent_arc: Arc<Agent>,
@@ -1201,6 +1193,7 @@ impl Agent {
         session_key: Option<String>,
         caller_id: Option<String>,
         cancel: Option<tokio_util::sync::CancellationToken>,
+        quota_meter: Arc<crate::quota::QuotaMeter>,
     ) -> Result<crate::engine::agentic_loop::AgenticLoop> {
         let extension_core = self.extension_core();
 
@@ -1315,12 +1308,17 @@ impl Agent {
             .await;
 
         // 6. Construct AgenticLoop with the queue.
+        //
+        // F19: `quota_meter` is bound here from the principal the
+        // agent belongs to. The loop opens a `QuotaScope::with` at
+        // run entrypoint and `MeteredProvider` auto-charges every
+        // LLM call against this meter.
         let mut loop_ =
             crate::engine::agentic_loop::AgenticLoop::new(agent_arc, provider, extension_core)
                 .await
                 .with_async_completion_queue(async_completion_queue)
                 .with_caller_id(caller_id)
-                .with_quota_meter(Arc::clone(&self.quota_meter));
+                .with_quota_meter(quota_meter);
         if let Some(token) = cancel {
             loop_ = loop_.with_cancel_token(token);
         }
@@ -1712,9 +1710,6 @@ impl Agent {
             principal_name: None,
             principal_capabilities: None,
             principal_active_extensions: None,
-            // F18: standalone test-only agent — defaults to an
-            // unlimited meter (matches the legacy pre-F18 behaviour).
-            quota_meter: Arc::new(crate::quota::QuotaMeter::unlimited()),
         })
     }
 
