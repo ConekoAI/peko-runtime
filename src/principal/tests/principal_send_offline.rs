@@ -86,6 +86,7 @@ async fn create_test_principal(
         preferred_provider_id: None,
         preferred_model_id: None,
         transport_preference,
+        quota: None,
     };
     manager.create(config).await.unwrap()
 }
