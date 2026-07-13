@@ -65,12 +65,43 @@ Run these once before starting the tests below.
 |---|---|---|---|---|---|
 | T-001 | From `peko-runtime/`: `cargo build --release` | Build succeeds, binary at `./target/release/peko` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-002 | Move `peko` onto your PATH (or export it) | `which peko` prints a path | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-003 | `peko provider add openai --template openai` (or anthropic/kimi/etc.) | Provider added, no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-003 | `peko provider add --template openai` (or anthropic/kimi/etc.) | Provider added, no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-004 | `peko credential set openai` (paste API key when prompted) | No error; key stored | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-005 | `peko credential test openai` | Prints success (✓ / ok) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-006 | From `peko-desktop/`: `pnpm install` | Install completes | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-007 | `peko daemon stop` (leave it stopped for T-101) | Daemon stops cleanly | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-008 | `pnpm tauri dev` (first run is slow — 5–10 min) | App window opens, shows Dashboard | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+
+---
+
+## 0a. Reset to first-run state (run only when reproducing)
+
+> **First-time testers can skip this section.** Run these steps only if you've used peko on this machine before, or if you hit a failure mid-test and want to start over from a clean install.
+>
+> The commands back up any existing state to `<original>.bak.<unix-timestamp>` so you can roll back if needed.
+
+Peko stores state in three places plus the OS keychain. Defaults:
+
+| What | Default location (macOS) | Default location (Linux) |
+|---|---|---|
+| Config dir (includes `vault.enc`, `providers.toml`) | `~/.peko` | `~/.peko` |
+| Data dir (agents, sessions, principals, etc.) | `~/Library/Application Support/peko` | `~/.local/share/peko` |
+| Cache dir | `~/Library/Caches/peko` | `~/.cache/peko` |
+| Vault DEK in keychain | service `peko`, account `vault-key` (Keychain Access.app) | service `peko`, account `vault-key` (GNOME Keyring / KWallet via `libsecret`) |
+| Vault unlock env vars (in your shell) | `PEKO_UNLOCK_METHOD`, `PEKO_MASTER_PASSPHRASE` | same |
+
+If you set `PEKO_HOME`, `PEKO_CONFIG_DIR`, or `PEKO_DATA_DIR` earlier, swap those paths in instead of the defaults above.
+
+| # | Step | Expected | Result | Severity | Notes |
+|---|---|---|---|---|---|
+| T-009 | Stop the daemon: `peko daemon stop` (no-op if not running) | Daemon stops cleanly | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-010 | Unset vault env vars if you have them exported: `unset PEKO_UNLOCK_METHOD PEKO_MASTER_PASSPHRASE`. Verify with `env \| grep PEKO_` showing no output | No output | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-011 | **(macOS)** Run: `mv ~/.peko ~/.peko.bak.$(date +%s); mv ~/Library/Application\ Support/peko ~/Library/Application\ Support/peko.bak.$(date +%s); mv ~/Library/Caches/peko ~/Library/Caches/peko.bak.$(date +%s); security delete-generic-password -s peko -a vault-key 2>/dev/null; true` | No error; original dirs are gone (backed up) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-012 | **(Linux)** Run: `mv ~/.peko ~/.peko.bak.$(date +%s); mv ~/.local/share/peko ~/.local/share/peko.bak.$(date +%s); mv ~/.cache/peko ~/.cache/peko.bak.$(date +%s); (secret-tool clear service peko account vault-key 2>/dev/null \|\| true)` | No error; original dirs are gone (backed up) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If `secret-tool` isn't installed, clear via your desktop keyring app (Seahorse / KWallet) — search for service `peko`, account `vault-key` |
+| T-013 | Confirm clean state: `ls ~/.peko/vault.enc 2>&1 \| grep -q 'No such' && echo CLEAN` | Prints `CLEAN` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-014 | (Optional) Restart the desktop app: re-run T-008 | App re-opens with empty state | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+
+> ⚠️ **Why this matters:** without resetting, a vault created in a previous session may live in a different mode (keychain vs. passphrase) than what your current `PEKO_UNLOCK_METHOD` requests, producing `PEKO_UNLOCK_METHOD=… does not match the vault's current mode` — the exact failure mode this test plan avoids by assuming first-run conditions.
 
 ---
 
