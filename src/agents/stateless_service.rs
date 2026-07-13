@@ -640,6 +640,9 @@ impl StatelessAgentService {
         // F19: stateless service runs outside any principal context,
         // so pass `None` (unlimited meter). The HTTP daemon can wire
         // a per-API-key meter here in a follow-up.
+        //
+        // F20: peer_meter — same situation, no peer registry in this
+        // path. Pass `None`.
         let execute_result = agent
             .execute_with_session(
                 &prompt,
@@ -650,7 +653,8 @@ impl StatelessAgentService {
                     // Events are ignored for non-streaming execution
                     // All data comes from the AgenticResult
                 },
-                None,
+                None, // quota_meter
+                None, // peer_meter
             )
             .await;
 
@@ -957,6 +961,11 @@ impl StatelessAgentService {
                     // F19: HTTP daemon doesn't carry a principal meter
                     // through this path. Pass `None` (unlimited) until a
                     // per-API-key meter is wired in a follow-up.
+                    None,
+                    // F20: peer_meter — HTTP daemon's stateless path
+                    // doesn't have a peer registry in scope. Pass
+                    // `None` until the daemon's `AppState` plumbing is
+                    // wired in a follow-up.
                     None,
                 )
                 .await;

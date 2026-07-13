@@ -458,8 +458,13 @@ impl Compactor {
         // passthrough wrappers), `from_current_scope` returns a
         // passthrough wrapper with an unlimited meter — same behavior
         // as F18's no-op charge.
-        let metered = crate::providers::MeteredProvider::from_current_scope(provider.clone());
-        let response = metered
+        //
+        // F20: use `StackedMeteredProvider` so when both a principal
+        // AND a peer scope are active, both meters charge this
+        // summarization call. With a 1-element stack the behavior is
+        // identical to `MeteredProvider`.
+        let stacked = crate::providers::StackedMeteredProvider::from_current_scope(provider.clone());
+        let response = stacked
             .chat_response(&prompt, "default", 0.3)
             .await
             .context("Failed to generate compaction summary")?;

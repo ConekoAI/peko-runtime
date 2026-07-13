@@ -90,6 +90,14 @@ pub(crate) struct AppState {
     /// Principal manager (AI Principal container lifecycle)
     principal_manager: Arc<PrincipalManager>,
 
+    /// F20: peer quota registry. `Some` after daemon startup loads
+    /// `<runtime>/peers/` and materializes each peer's meter. The
+    /// quota handler reads this to resolve `is_peer=true` requests;
+    /// the engine loop reads it to resolve a peer's quota meter at
+    /// run time. `None` means peer attribution is disabled (tests /
+    /// slim daemon builds).
+    peer_registry: Option<Arc<crate::principal::peer::PeerRegistry>>,
+
     /// Lifecycle manager (tracks active executions only)
     lifecycle: Arc<LifecycleManager>,
 
@@ -719,7 +727,36 @@ impl AppState {
                     }
                 }
             }
-            Arc::new(manager)
+            manager
+        };
+
+        // F20: build the peer registry by scanning `<runtime>/peers/`.
+        // Mirrors `PrincipalManager::load` — every directory is a
+        // peer's home, every `peer.toml` is that peer's quota config.
+        // We attach the registry to the freshly-built
+        // `PrincipalManager` (before wrapping in `Arc`) so
+        // `get_or_create_peer` can resolve peer meters without taking
+        // a separate dependency.
+        let (principal_manager, peer_registry) = {
+            let root = path_resolver.peers_root_dir();
+            match crate::principal::peer::PeerRegistry::load_or_init(
+                root.clone(),
+                chrono::Utc::now(),
+            )
+            .await
+            {
+                Ok(reg) => {
+                    let mgr = principal_manager.with_peer_registry(Arc::clone(&reg));
+                    (Arc::new(mgr), Some(reg))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to load peer registry from {}: {e}",
+                        root.display()
+                    );
+                    (Arc::new(principal_manager), None)
+                }
+            }
         };
 
         // F19: now that `principal_manager` is built, wire it into the
@@ -782,6 +819,7 @@ impl AppState {
             resolver,
             vault: Arc::clone(&vault),
             principal_manager,
+            peer_registry,
             lifecycle,
             session_service,
             tool_runtime,
@@ -1020,6 +1058,13 @@ impl AppState {
     #[must_use]
     pub fn principal_manager(&self) -> &Arc<PrincipalManager> {
         &self.principal_manager
+    }
+
+    /// F20: get the peer quota registry. `None` when the daemon
+    /// failed to load peer state at startup (logged as a warning).
+    #[must_use]
+    pub fn peer_registry(&self) -> Option<&Arc<crate::principal::peer::PeerRegistry>> {
+        self.peer_registry.as_ref()
     }
 
     /// Get the session service
@@ -2230,6 +2275,10 @@ impl crate::ipc::handlers::cron::CronHost for AppState {
 impl crate::ipc::handlers::quota::QuotaHost for AppState {
     fn principal_manager(&self) -> &Arc<PrincipalManager> {
         AppState::principal_manager(self)
+    }
+
+    fn peer_registry(&self) -> Option<&Arc<crate::principal::peer::PeerRegistry>> {
+        self.peer_registry.as_ref()
     }
 }
 

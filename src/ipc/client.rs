@@ -794,14 +794,18 @@ impl DaemonClient {
     // ------------------------------------------------------------------
 
     /// Fetch a principal's live quota status (counters + window).
+    ///
+    /// F20: pass `is_peer: true` to fetch a peer's quota instead.
     pub async fn quota_get(
         &self,
         name: impl Into<String>,
+        is_peer: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::QuotaGet {
             request_id,
             name: name.into(),
+            is_peer,
         };
         self.request_response(packet).await
     }
@@ -809,29 +813,37 @@ impl DaemonClient {
     /// Replace a principal's quota configuration. Persists to
     /// `PrincipalConfig` and updates the live meter so the next
     /// `charge` consults the new limits.
+    ///
+    /// F20: pass `is_peer: true` to set a peer's quota.
     pub async fn quota_set(
         &self,
         name: impl Into<String>,
         config: crate::quota::QuotaConfig,
+        is_peer: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::QuotaSet {
             request_id,
             name: name.into(),
+            is_peer,
             config,
         };
         self.request_response(packet).await
     }
 
     /// Force-reset the meter's counters and roll a fresh window.
+    ///
+    /// F20: pass `is_peer: true` to reset a peer's quota.
     pub async fn quota_reset(
         &self,
         name: impl Into<String>,
+        is_peer: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::QuotaReset {
             request_id,
             name: name.into(),
+            is_peer,
         };
         self.request_response(packet).await
     }

@@ -1051,6 +1051,11 @@ async fn execute_subagent_task(
     // follow-up wires the subagent's quota meter through `Agent::new`
     // so the executor can pass it explicitly. Until then, subagent LLM
     // usage is not charged against the parent's meter.
+    //
+    // F20: peer_meter is `None` for subagents — subagents inherit the
+    // parent's peer attribution via the parent's `QuotaScope`, but
+    // since that scope doesn't cross `tokio::spawn`, this code path
+    // is single-meter for now (matches the F19 limitation above).
     let result = subagent
         .execute_with_session(
             &combined_prompt,
@@ -1060,7 +1065,8 @@ async fn execute_subagent_task(
             |_event| {
                 // Non-streaming: ignore events
             },
-            None,
+            None, // quota_meter: see F19 comment above
+            None, // peer_meter: F20 subagent limitation
         )
         .await;
 

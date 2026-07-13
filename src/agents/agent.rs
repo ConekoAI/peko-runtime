@@ -947,7 +947,7 @@ impl Agent {
         // an unlimited meter (no charging, no persistence).
         let quota_meter = Arc::new(crate::quota::QuotaMeter::unlimited());
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, session_key, None, None, quota_meter)
+            .build_agentic_loop(agent_arc, provider, session_key, None, None, quota_meter, None)
             .await?;
 
         let result = match loop_.run(prompt, on_event).await {
@@ -981,6 +981,7 @@ impl Agent {
         cancel: Option<tokio_util::sync::CancellationToken>,
         on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
         quota_meter: Option<Arc<crate::quota::QuotaMeter>>,
+        peer_meter: Option<Arc<crate::quota::QuotaMeter>>,
     ) -> Result<crate::engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
@@ -1017,7 +1018,7 @@ impl Agent {
         let quota_meter =
             quota_meter.unwrap_or_else(|| Arc::new(crate::quota::QuotaMeter::unlimited()));
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, Some(session_id), None, cancel, quota_meter)
+            .build_agentic_loop(agent_arc, provider, Some(session_id), None, cancel, quota_meter, peer_meter)
             .await?;
 
         let result = match loop_
@@ -1049,6 +1050,13 @@ impl Agent {
     /// from `Principal::quota_meter`. When supplied, every LLM call
     /// auto-charges via `MeteredProvider`; when omitted, defaults to
     /// an unlimited meter (test / CLI paths).
+    ///
+    /// F20: optional `peer_meter` is the per-peer quota meter
+    /// (channel that triggered the run). When `Some`, the agentic
+    /// loop opens a nested `QuotaScope::with(peer_meter, ...)` inside
+    /// the principal scope so both meters charge every LLM call. Pass
+    /// `None` for callers that don't have peer attribution (CLI
+    /// one-shots, legacy tests).
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_streaming_with_session<F>(
         &self,
@@ -1059,6 +1067,7 @@ impl Agent {
         on_event: F,
         cancel: Option<tokio_util::sync::CancellationToken>,
         quota_meter: Option<Arc<crate::quota::QuotaMeter>>,
+        peer_meter: Option<Arc<crate::quota::QuotaMeter>>,
     ) -> Result<crate::engine::AgenticResult>
     where
         F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
@@ -1099,7 +1108,7 @@ impl Agent {
         let quota_meter =
             quota_meter.unwrap_or_else(|| Arc::new(crate::quota::QuotaMeter::unlimited()));
         let loop_ = match self
-            .build_agentic_loop(agent_arc, provider, session_id, caller_id, cancel, quota_meter)
+            .build_agentic_loop(agent_arc, provider, session_id, caller_id, cancel, quota_meter, peer_meter)
             .await
         {
             Ok(loop_) => loop_,
@@ -1156,7 +1165,7 @@ impl Agent {
         // F19: same unlimited fallback as the other `execute_*` paths.
         let quota_meter = Arc::new(crate::quota::QuotaMeter::unlimited());
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, session_id, caller_id, None, quota_meter)
+            .build_agentic_loop(agent_arc, provider, session_id, caller_id, None, quota_meter, None)
             .await?;
 
         let streaming_config = crate::engine::OrchestratorConfig::live();
@@ -1186,6 +1195,13 @@ impl Agent {
     /// opens a `QuotaScope::with` around the run so every LLM call
     /// auto-charges via `MeteredProvider`. Pass
     /// `Arc::new(QuotaMeter::unlimited())` for unquota'd / test paths.
+    ///
+    /// F20: `peer_meter` is the per-peer quota meter. When `Some`,
+    /// the loop opens a nested `QuotaScope::with(peer_meter, ...)`
+    /// inside the principal scope so both meters charge every LLM
+    /// call (peer innermost, principal outermost — peer trip fires
+    /// first). `None` skips peer attribution (CLI one-shots, legacy
+    /// tests).
     pub async fn build_agentic_loop(
         &self,
         agent_arc: Arc<Agent>,
@@ -1194,6 +1210,7 @@ impl Agent {
         caller_id: Option<String>,
         cancel: Option<tokio_util::sync::CancellationToken>,
         quota_meter: Arc<crate::quota::QuotaMeter>,
+        peer_meter: Option<Arc<crate::quota::QuotaMeter>>,
     ) -> Result<crate::engine::agentic_loop::AgenticLoop> {
         let extension_core = self.extension_core();
 
@@ -1318,7 +1335,8 @@ impl Agent {
                 .await
                 .with_async_completion_queue(async_completion_queue)
                 .with_caller_id(caller_id)
-                .with_quota_meter(quota_meter);
+                .with_quota_meter(quota_meter)
+                .with_peer_meter(peer_meter);
         if let Some(token) = cancel {
             loop_ = loop_.with_cancel_token(token);
         }

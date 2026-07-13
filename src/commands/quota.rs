@@ -24,9 +24,15 @@ use std::str::FromStr;
 #[command(disable_version_flag = true)]
 pub enum QuotaCommands {
     /// Show a principal's live quota counters and window.
+    ///
+    /// F20: pass `--peer` to query a peer's quota instead of a
+    /// principal's. The `name` is then interpreted as a peer id.
     Status {
-        /// Principal name
+        /// Principal name (or peer id when `--peer` is set)
         name: String,
+        /// Query a peer's quota instead of a principal's
+        #[arg(long)]
+        peer: bool,
     },
 
     /// Replace a principal's quota configuration.
@@ -34,8 +40,12 @@ pub enum QuotaCommands {
     /// All four flags are optional; any flag you omit keeps its
     /// current value. Pass `--clear` to remove the quota entirely
     /// (the principal becomes unlimited).
+    ///
+    /// F20: pass `--peer` to set a peer's quota. The `name` is then
+    /// interpreted as a peer id and the config is persisted to
+    /// `<config_dir>/peers/<peer_id>/peer.toml`.
     Set {
-        /// Principal name
+        /// Principal name (or peer id when `--peer` is set)
         name: String,
         /// Input token limit per window (omit to keep current)
         #[arg(long)]
@@ -52,12 +62,20 @@ pub enum QuotaCommands {
         /// Remove the quota (principal becomes unlimited)
         #[arg(long)]
         clear: bool,
+        /// Set a peer's quota instead of a principal's
+        #[arg(long)]
+        peer: bool,
     },
 
     /// Force a fresh quota window (counters → 0).
+    ///
+    /// F20: pass `--peer` to reset a peer's quota.
     Reset {
-        /// Principal name
+        /// Principal name (or peer id when `--peer` is set)
         name: String,
+        /// Reset a peer's quota instead of a principal's
+        #[arg(long)]
+        peer: bool,
     },
 }
 
@@ -98,7 +116,7 @@ pub async fn handle_quota(
     json: bool,
 ) -> Result<()> {
     match cmd {
-        QuotaCommands::Status { name } => status(name, json).await,
+        QuotaCommands::Status { name, peer } => status(name, peer, json).await,
         QuotaCommands::Set {
             name,
             input,
@@ -106,14 +124,15 @@ pub async fn handle_quota(
             requests,
             cycle,
             clear,
-        } => set(name, input, output, requests, cycle, clear, json).await,
-        QuotaCommands::Reset { name } => reset(name, json).await,
+            peer,
+        } => set(name, input, output, requests, cycle, clear, peer, json).await,
+        QuotaCommands::Reset { name, peer } => reset(name, peer, json).await,
     }
 }
 
-async fn status(name: String, json: bool) -> Result<()> {
+async fn status(name: String, is_peer: bool, json: bool) -> Result<()> {
     let client = connect_daemon().await?;
-    match client.quota_get(name.clone()).await? {
+    match client.quota_get(name.clone(), is_peer).await? {
         ResponsePacket::QuotaStatus { state, config, .. } => {
             render_status(&name, &config, &state, json);
             Ok(())
@@ -132,6 +151,7 @@ async fn set(
     requests: Option<u64>,
     cycle: Option<QuotaCycle>,
     clear: bool,
+    is_peer: bool,
     json: bool,
 ) -> Result<()> {
     let client = connect_daemon().await?;
@@ -139,7 +159,7 @@ async fn set(
     // Fetch the existing config so omitted flags preserve their
     // current values. `--clear` shortcuts this — the new config is
     // the empty default (unlimited).
-    let existing: QuotaConfig = match client.quota_get(name.clone()).await? {
+    let existing: QuotaConfig = match client.quota_get(name.clone(), is_peer).await? {
         ResponsePacket::QuotaStatus { config, .. } => config,
         ResponsePacket::Error { message, .. } => {
             return Err(anyhow::anyhow!("quota status failed: {message}"));
@@ -164,19 +184,22 @@ async fn set(
         }
     };
 
-    match client.quota_set(name.clone(), new_config).await? {
+    match client.quota_set(name.clone(), new_config, is_peer).await? {
         ResponsePacket::QuotaStatus { state, config, .. } => {
             if json {
                 let snapshot = serde_json::json!({
                     "name": name,
+                    "is_peer": is_peer,
                     "config": config,
                     "state": state,
                 });
                 println!("{}", serde_json::to_string_pretty(&snapshot)?);
             } else if !config.has_any_limit() {
-                println!("✅ Quota cleared for '{name}' — principal is now unlimited.");
+                let target = if is_peer { "peer" } else { "principal" };
+                println!("✅ Quota cleared for '{name}' — {target} is now unlimited.");
             } else {
-                println!("✅ Quota updated for '{name}':");
+                let target = if is_peer { "peer" } else { "principal" };
+                println!("✅ Quota updated for {target} '{name}':");
                 render_status(&name, &config, &state, false);
             }
             Ok(())
@@ -188,20 +211,22 @@ async fn set(
     }
 }
 
-async fn reset(name: String, json: bool) -> Result<()> {
+async fn reset(name: String, is_peer: bool, json: bool) -> Result<()> {
     let client = connect_daemon().await?;
-    match client.quota_reset(name.clone()).await? {
+    match client.quota_reset(name.clone(), is_peer).await? {
         ResponsePacket::QuotaStatus { state, config, .. } => {
             if json {
                 let snapshot = serde_json::json!({
                     "name": name,
+                    "is_peer": is_peer,
                     "config": config,
                     "state": state,
                     "reset": true,
                 });
                 println!("{}", serde_json::to_string_pretty(&snapshot)?);
             } else {
-                println!("✅ Quota reset for '{name}' — fresh window started at {}.",
+                let target = if is_peer { "peer" } else { "principal" };
+                println!("✅ Quota reset for {target} '{name}' — fresh window started at {}.",
                          state.window_start.to_rfc3339());
             }
             Ok(())
@@ -248,6 +273,7 @@ fn render_status(name: &str, config: &QuotaConfig, state: &QuotaState, json: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn parse_cycle_accepts_canonical_lowercase_forms() {
@@ -276,5 +302,114 @@ mod tests {
     fn parse_cycle_does_not_match_partial_strings() {
         assert!(QuotaCycle::from_str("day").is_err());
         assert!(QuotaCycle::from_str("dail").is_err());
+    }
+
+    // F20: CLI `--peer` flag parses on all three subcommands. We don't
+    // exercise the IPC round-trip here (that needs a live daemon) —
+    // just verify the clap wiring accepts the flag and flips `peer`
+    // to `true`. The `is_peer` field is added by `#[derive(Subcommand)]`
+    // — clap's `bool` flag default is `false`.
+
+    fn parse_status(args: &[&str]) -> QuotaCommands {
+        let mut full = vec!["peko", "quota"];
+        full.extend_from_slice(args);
+        let cli = crate::commands::Cli::try_parse_from(full).expect("status should parse");
+        let crate::commands::Commands::Quota(cmd) = cli.command else {
+            panic!("expected Quota variant");
+        };
+        cmd
+    }
+
+    fn parse_set(args: &[&str]) -> QuotaCommands {
+        let mut full = vec!["peko", "quota"];
+        full.extend_from_slice(args);
+        let cli = crate::commands::Cli::try_parse_from(full).expect("set should parse");
+        let crate::commands::Commands::Quota(cmd) = cli.command else {
+            panic!("expected Quota variant");
+        };
+        cmd
+    }
+
+    fn parse_reset(args: &[&str]) -> QuotaCommands {
+        let mut full = vec!["peko", "quota"];
+        full.extend_from_slice(args);
+        let cli = crate::commands::Cli::try_parse_from(full).expect("reset should parse");
+        let crate::commands::Commands::Quota(cmd) = cli.command else {
+            panic!("expected Quota variant");
+        };
+        cmd
+    }
+
+    #[test]
+    fn cli_status_default_is_principal() {
+        match parse_status(&["status", "alice"]) {
+            QuotaCommands::Status { name, peer } => {
+                assert_eq!(name, "alice");
+                assert!(!peer, "default `peer` must be false");
+            }
+            _ => panic!("expected Status variant"),
+        }
+    }
+
+    #[test]
+    fn cli_status_with_peer_flag() {
+        match parse_status(&["status", "pekohub-user-bob", "--peer"]) {
+            QuotaCommands::Status { name, peer } => {
+                assert_eq!(name, "pekohub-user-bob");
+                assert!(peer, "--peer must set `peer` to true");
+            }
+            _ => panic!("expected Status variant"),
+        }
+    }
+
+    #[test]
+    fn cli_set_with_peer_flag_emits_is_peer_true_in_packet() {
+        // We can't construct a QuotaSet packet from the CLI directly,
+        // but we can verify the `peer` field is wired. The actual
+        // `is_peer` boolean on the IPC packet is set by the
+        // `quota_set` client method (commands/quota.rs handler),
+        // not by clap. This test pins the CLI side: when --peer is
+        // present, the `peer` field on the parsed subcommand is true.
+        match parse_set(&["set", "carol", "--input", "1000", "--peer"]) {
+            QuotaCommands::Set {
+                name,
+                input,
+                peer,
+                ..
+            } => {
+                assert_eq!(name, "carol");
+                assert_eq!(input, Some(1000));
+                assert!(peer);
+            }
+            _ => panic!("expected Set variant"),
+        }
+    }
+
+    #[test]
+    fn cli_set_default_peer_is_false() {
+        match parse_set(&["set", "carol", "--input", "1000"]) {
+            QuotaCommands::Set {
+                name,
+                input,
+                peer,
+                ..
+            } => {
+                assert_eq!(name, "carol");
+                assert_eq!(input, Some(1000));
+                assert!(!peer);
+            }
+            _ => panic!("expected Set variant"),
+        }
+    }
+
+    #[test]
+    fn cli_reset_with_peer_flag() {
+        match parse_reset(&["reset", "pekohub-user-bob", "--peer"]) {
+            QuotaCommands::Reset { name, peer } => {
+                assert_eq!(name, "pekohub-user-bob");
+                assert!(peer);
+            }
+            _ => panic!("expected Reset variant"),
+        }
     }
 }
