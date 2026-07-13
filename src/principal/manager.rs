@@ -79,6 +79,12 @@ pub struct PrincipalManager {
     /// Optional observability hub. Threaded into `RouterContext` so the root
     /// agent and subagent spawns can emit audit events.
     observability: Option<Arc<Observability>>,
+    /// F20: optional per-peer quota registry. When `Some`, callers can
+    /// resolve a peer's quota meter via
+    /// [`PrincipalManager::get_or_create_peer`] and stack it alongside
+    /// the principal's meter. `None` for tests / contexts that don't
+    /// have a daemon-managed `PeerRegistry`.
+    peer_registry: Option<Arc<crate::principal::peer::PeerRegistry>>,
 }
 
 impl PrincipalManager {
@@ -114,6 +120,7 @@ impl PrincipalManager {
             slash_dispatcher: Arc::new(RwLock::new(None)),
             extension_store: None,
             observability: None,
+            peer_registry: None,
         }
     }
 
@@ -146,6 +153,51 @@ impl PrincipalManager {
     pub fn with_observability(mut self, observability: Arc<Observability>) -> Self {
         self.observability = Some(observability);
         self
+    }
+
+    /// F20: attach a per-peer quota registry. When attached,
+    /// [`PrincipalManager::get_or_create_peer`] resolves a peer's
+    /// `Arc<QuotaMeter>` from the registry, materializing the peer
+    /// directory + state file on first contact.
+    #[must_use]
+    pub fn with_peer_registry(
+        mut self,
+        peer_registry: Arc<crate::principal::peer::PeerRegistry>,
+    ) -> Self {
+        self.peer_registry = Some(peer_registry);
+        self
+    }
+
+    /// F20: resolve a peer's quota meter. Returns `Some(meter)` when a
+    /// peer registry is attached and the peer exists (or is freshly
+    /// materialized); `None` when no registry is attached (tests /
+    /// non-daemon contexts). `peer_id` must be a validated peer
+    /// identifier — see [`crate::principal::peer::validate_peer_id`]
+    /// for the rules.
+    pub async fn get_or_create_peer(
+        &self,
+        peer_id: &str,
+    ) -> Option<Arc<crate::principal::peer::Peer>> {
+        let registry = self.peer_registry.as_ref()?;
+        match registry.get_or_create(peer_id, chrono::Utc::now()).await {
+            Ok(peer) => Some(peer),
+            Err(e) => {
+                tracing::warn!(
+                    peer_id = %peer_id,
+                    error = %e,
+                    "get_or_create_peer failed; falling back to no peer meter"
+                );
+                None
+            }
+        }
+    }
+
+    /// F20: optional reference to the attached peer registry. `None`
+    /// when no registry was attached at construction time. Used by the
+    /// daemon's `PeerHost` impl to expose the registry to IPC handlers.
+    #[must_use]
+    pub fn peer_registry(&self) -> Option<&Arc<crate::principal::peer::PeerRegistry>> {
+        self.peer_registry.as_ref()
     }
 
     /// Create a new Principal from config, generate a real identity, and load

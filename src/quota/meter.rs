@@ -339,6 +339,7 @@ impl QuotaMeter {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use chrono::Timelike;
     use tempfile::TempDir;
 
     fn ts(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> DateTime<Utc> {
@@ -473,10 +474,18 @@ mod tests {
 
     #[tokio::test]
     async fn advance_if_needed_resets_when_window_expires() {
+        // Anchor the test to `Utc::now()` rather than a hardcoded
+        // date. `charge()` internally reads `Utc::now()` to decide
+        // whether to roll the window forward; if the constructor's
+        // window has already passed by wall-clock time, charge
+        // silently advances before the test's explicit
+        // `advance_if_needed` call gets to assert behavior. Pinning
+        // to `now` keeps the test self-consistent across days.
+        let start = Utc::now();
         let meter = QuotaMeter::load_or_init(
             cfg(Some(100), Some(100), Some(100)),
             None,
-            ts(2026, 7, 12, 14, 0, 0),
+            start,
         )
         .await
         .unwrap();
@@ -484,14 +493,25 @@ mod tests {
         assert_eq!(meter.snapshot().input_tokens, 80);
 
         // Step past the hourly boundary.
-        let rolled = meter.advance_if_needed(ts(2026, 7, 12, 15, 0, 1));
+        let next = start + chrono::Duration::hours(1) + chrono::Duration::seconds(1);
+        let rolled = meter.advance_if_needed(next);
         assert!(rolled, "advance should have happened");
         let snap = meter.snapshot();
         assert_eq!(snap.input_tokens, 0);
         assert_eq!(snap.output_tokens, 0);
         assert_eq!(snap.request_count, 0);
-        assert_eq!(snap.window_start, ts(2026, 7, 12, 15, 0, 0));
-        assert_eq!(snap.window_end, ts(2026, 7, 12, 16, 0, 0));
+        // `window_bounds` floors `now` to the hour, so the new
+        // window is `[floor(next.hour), floor(next.hour) + 1h)`.
+        let expected_start = next
+            .with_minute(0).unwrap()
+            .with_second(0).unwrap()
+            .with_nanosecond(0).unwrap();
+        assert_eq!(snap.window_start, expected_start, "window_start should be the hour boundary");
+        assert_eq!(
+            snap.window_end,
+            expected_start + chrono::Duration::hours(1),
+            "window_end should be one hour after window_start"
+        );
     }
 
     #[tokio::test]

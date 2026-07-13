@@ -454,6 +454,11 @@ where
     // principal charging is disabled at this layer (test paths / agent
     // catalog smoke tests are unaffected since they don't carry
     // accumulated quotas).
+    //
+    // F20: same situation for peer_meter — agent_runner doesn't have a
+    // peer registry in scope. Pass `None` until the daemon's
+    // `AppState` wiring (Task #101) makes the peer registry reachable
+    // from this entrypoint.
     let result = agent
         .execute_streaming_with_session(
             &message,
@@ -462,7 +467,8 @@ where
             None, // caller_id: attribution is handled at the dispatcher boundary
             on_event,
             cancel,
-            None,
+            None, // quota_meter
+            None, // peer_meter
         )
         .await
         .context("root agent execution failed")?;

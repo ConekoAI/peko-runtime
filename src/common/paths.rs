@@ -243,6 +243,30 @@ impl PathResolver {
         self.principals_root_dir().join(principal)
     }
 
+    /// F20: Get the peers configuration root directory.
+    ///
+    /// Path: `{config_dir}/peers`
+    #[must_use]
+    pub fn peers_root_dir(&self) -> PathBuf {
+        self.config_dir.join("peers")
+    }
+
+    /// F20: Get a specific peer's configuration directory.
+    ///
+    /// Path: `{config_dir}/peers/{peer_id}`
+    #[must_use]
+    pub fn peer_dir(&self, peer_id: &str) -> PathBuf {
+        self.peers_root_dir().join(peer_id)
+    }
+
+    /// F20: Get the path to a peer's config file.
+    ///
+    /// Path: `{config_dir}/peers/{peer_id}/peer.toml`
+    #[must_use]
+    pub fn peer_config(&self, peer_id: &str) -> PathBuf {
+        self.peer_dir(peer_id).join("peer.toml")
+    }
+
     /// Get the path to a principal's config file
     ///
     /// Path: `{config_dir}/principals/{principal}/principal.toml`

@@ -71,14 +71,22 @@ impl CompactionOrchestrator {
     /// which opens a `QuotaScope::with` around every summarization
     /// LLM call. Pass [`QuotaMeter::unlimited()`] for unquota'd
     /// sessions (CLI / tests).
+    ///
+    /// F20: `peer_meter` is an optional per-peer quota meter. When
+    /// `Some`, the worker task opens a nested
+    /// `QuotaScope::with(peer_meter, ...)` inside the principal
+    /// scope, so summarization calls charge BOTH meters via
+    /// [`StackedMeteredProvider`](crate::providers::StackedMeteredProvider).
+    /// `None` falls back to plain `MeteredProvider` (F19 behavior).
     pub fn new(
         provider: Arc<Provider>,
         context_window: usize,
         meter: Arc<crate::quota::QuotaMeter>,
+        peer_meter: Option<Arc<crate::quota::QuotaMeter>>,
     ) -> Self {
         let config = load_compaction_config();
 
-        let background_compactor = BackgroundCompactor::new(provider, meter);
+        let background_compactor = BackgroundCompactor::new(provider, meter, peer_meter);
 
         Self {
             background_compactor,

@@ -226,23 +226,44 @@ pub enum RequestPacket {
     /// window bounds). Unauthenticated: any local caller can query
     /// — the daemon's existing trust model is sufficient for F18;
     /// owner-only authz is a follow-up.
+    ///
+    /// F20: `is_peer` flips the resolver from `PrincipalManager`
+    /// to `PeerRegistry`. The `name` field holds the principal name
+    /// (default) or the peer id (when `is_peer` is `true`).
     #[serde(rename = "quota_get")]
-    QuotaGet { request_id: u64, name: String },
+    QuotaGet {
+        request_id: u64,
+        name: String,
+        #[serde(default)]
+        is_peer: bool,
+    },
 
     /// Replace the principal's `QuotaConfig` (input/output/request
     /// limits + cycle). Persists to `principal.toml` and rebuilds
     /// the meter so the new limits take effect on the next call.
+    ///
+    /// F20: `is_peer` flips the resolver to `PeerRegistry` (writes
+    /// `peer.toml` in the peer's directory).
     #[serde(rename = "quota_set")]
     QuotaSet {
         request_id: u64,
         name: String,
+        #[serde(default)]
+        is_peer: bool,
         config: crate::quota::QuotaConfig,
     },
 
     /// Force-reset the principal's quota meter to a fresh window
     /// without touching the config. Useful for ops/tests.
+    ///
+    /// F20: `is_peer` flips the resolver to `PeerRegistry`.
     #[serde(rename = "quota_reset")]
-    QuotaReset { request_id: u64, name: String },
+    QuotaReset {
+        request_id: u64,
+        name: String,
+        #[serde(default)]
+        is_peer: bool,
+    },
 
     // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
     #[serde(rename = "extension_list")]
