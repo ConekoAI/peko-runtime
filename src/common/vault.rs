@@ -421,7 +421,9 @@ impl Vault {
                 })?;
                 Self::derive_key_from_passphrase(passphrase.expose_secret(), salt)?
             }
-            UnlockMethod::Keychain => Self::retrieve_dek_from_keychain()?,
+            UnlockMethod::Keychain => Self::retrieve_dek_from_keychain().with_context(|| {
+                format!("while reloading vault at {}", self.path.display())
+            })?,
         };
         let plaintext = Self::decrypt(&envelope, &dek)?;
         let file: VaultFile =
@@ -1067,7 +1069,8 @@ impl Vault {
             (dek, UnlockMethod::Passphrase, Some(salt.to_vec()))
         } else {
             // Keychain mode.
-            let dek = Self::retrieve_dek_from_keychain()?;
+            let dek = Self::retrieve_dek_from_keychain()
+                .with_context(|| format!("while unlocking vault at {}", path.display()))?;
             (dek, UnlockMethod::Keychain, None)
         };
 
@@ -1308,7 +1311,39 @@ impl Vault {
 
     fn retrieve_dek_from_keychain() -> Result<Vec<u8>> {
         Self::try_retrieve_dek_from_keychain()?
-            .ok_or_else(|| anyhow::anyhow!("no vault DEK found in OS keychain"))
+            .ok_or_else(|| anyhow::anyhow!(Self::missing_keychain_dek_message()))
+    }
+
+    /// Actionable diagnostic for the case where a keychain-mode
+    /// vault's DEK has been removed from the OS keychain.
+    ///
+    /// When the on-disk envelope (no salt, i.e. mode = Keychain) is
+    /// still present but `try_retrieve_dek_from_keychain` returns
+    /// `Ok(None)`, the vault is unrecoverable without the DEK. A bare
+    /// "not found" string leaves non-technical testers stuck; this
+    /// names the service+account (so they can audit it themselves),
+    /// lists the typical causes (macOS aging out unsigned-binary
+    /// entries, manual `security delete-generic-password`, cross-
+    /// machine copies), and tells them how to start fresh.
+    ///
+    /// The resulting string is long but information-dense; the chain
+    /// only surfaces it to the user via `{:#}` Display (and `{:?}` in
+    /// debug builds), so the verbosity is justified.
+    fn missing_keychain_dek_message() -> String {
+        format!(
+            "no vault DEK found in OS keychain (service '{KEYCHAIN_SERVICE}', \
+             account '{KEYCHAIN_ACCOUNT}'). The on-disk envelope is no \
+             longer backed by a usable keychain entry — typically \
+             because macOS cleaned up the entry (unsigned binaries are \
+             especially prone to this), or because you ran a \
+             `security delete-generic-password -s {KEYCHAIN_SERVICE} \
+             -a {KEYCHAIN_ACCOUNT}`, or because the vault file was \
+             copied to this machine without the matching keychain \
+             item. The vault file is unrecoverable without the DEK; \
+             to start fresh, move the file aside (e.g. \
+             `mv ~/.peko/vault.enc ~/.peko/vault.enc.broken`) and \
+             re-run — a fresh vault will be created from scratch."
+        )
     }
 
     /// Delete the vault DEK from the OS keychain. Treats "no such entry"
@@ -1748,5 +1783,49 @@ mod tests {
 
         std::env::remove_var(MASTER_PASSPHRASE_ENV);
         std::env::remove_var(UNLOCK_METHOD_ENV);
+    }
+
+    /// The "keychain DEK has been removed" diagnostic must mention
+    /// the service+account by name (so the user can audit the keychain
+    /// themselves), the typical cause (macOS unsigned-binary aging),
+    /// the manual security-command trigger, and the recovery step
+    /// (`mv` the file aside and re-run). Otherwise the user is stuck
+    /// — `Vault::load` is non-recoverable when this happens, and
+    /// without the diagnostic they have no actionable instruction.
+    #[test]
+    fn missing_keychain_dek_message_points_at_recovery() {
+        let msg = Vault::missing_keychain_dek_message();
+
+        // Service + account are named so the user can verify what's in
+        // their keychain (`security find-generic-password -s peko -a vault-key`).
+        assert!(
+            msg.contains(KEYCHAIN_SERVICE),
+            "message must name the service, got: {msg}"
+        );
+        assert!(
+            msg.contains(KEYCHAIN_ACCOUNT),
+            "message must name the account, got: {msg}"
+        );
+
+        // Causes — at least the typical macOS age-out path and the manual
+        // security command — must both be mentioned.
+        assert!(
+            msg.contains("unsigned"),
+            "message must mention the typical unsigned-binary age-out cause, got: {msg}"
+        );
+        assert!(
+            msg.contains("security delete-generic-password"),
+            "message must name the manual cleanup command, got: {msg}"
+        );
+
+        // Recovery step must be a single user-runnable command, not prose-only.
+        assert!(
+            msg.contains("mv ") && msg.contains(".enc"),
+            "message must give a concrete `mv` recovery command, got: {msg}"
+        );
+
+        // Ends on a complete sentence (not a fragment) — otherwise it'll
+        // chain oddly inside anyhow's `{:#}` Display.
+        assert!(msg.trim_end().ends_with('.'));
     }
 }
