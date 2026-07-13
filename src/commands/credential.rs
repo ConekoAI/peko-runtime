@@ -27,6 +27,7 @@
 use crate::commands::GlobalPaths;
 use crate::common::secret_store::{OsKeychainSecretStore, SecretStore};
 use crate::common::vault::Vault;
+use crate::providers::catalog::ProviderCatalog;
 use anyhow::{Context, Result};
 
 /// Credential commands
@@ -36,6 +37,13 @@ pub enum CredentialCommands {
     ///
     /// The key is read from the terminal with hidden echo (or from
     /// `--key` for scripting). It is encrypted at rest inside the vault.
+    ///
+    /// By default, `provider` must match an id present in
+    /// `providers.toml`. The check prevents a typo (e.g. `miniax`
+    /// instead of `minimax`) from silently creating an orphan vault
+    /// entry that no provider can read. Pass `--allow-unknown` to
+    /// bypass the check for backup-restore workflows where keys
+    /// arrive before their provider is added.
     Set {
         /// Provider id (e.g. `openai`, `anthropic`, `groq`).
         provider: String,
@@ -44,6 +52,10 @@ pub enum CredentialCommands {
         /// shell history-sensitive environments.
         #[arg(long)]
         key: Option<String>,
+        /// Allow storing a key for a provider id that isn't in the
+        /// catalog. See the subcommand doc for the use case.
+        #[arg(long)]
+        allow_unknown: bool,
     },
     /// Remove a stored key.
     Delete {
@@ -72,17 +84,59 @@ pub enum CredentialCommands {
 pub async fn execute(cmd: CredentialCommands, paths: &GlobalPaths) -> Result<()> {
     let vault =
         Vault::load(paths.resolver().vault()).with_context(|| "failed to load credential vault")?;
+    // Snapshot the catalog's id list once. `set` validates against it;
+    // `test`/`delete` consult it for nearest-neighbor suggestions when
+    // the requested id has no stored key. A fresh run with no
+    // providers.toml (empty catalog) returns an empty vec.
+    let known_provider_ids = load_known_provider_ids(paths).await;
 
     match cmd {
-        CredentialCommands::Set { provider, key } => set_cmd(&vault, &provider, key).await,
-        CredentialCommands::Delete { provider } => delete_cmd(&vault, &provider).await,
+        CredentialCommands::Set {
+            provider,
+            key,
+            allow_unknown,
+        } => set_cmd(&vault, &provider, key, allow_unknown, &known_provider_ids).await,
+        CredentialCommands::Delete { provider } => {
+            delete_cmd(&vault, &provider, &known_provider_ids).await
+        }
         CredentialCommands::List => list_cmd(&vault).await,
-        CredentialCommands::Test { provider } => test_cmd(&vault, &provider).await,
+        CredentialCommands::Test { provider } => {
+            test_cmd(&vault, &provider, &known_provider_ids).await
+        }
         CredentialCommands::Migrate => migrate_cmd(&vault).await,
     }
 }
 
-async fn set_cmd(vault: &Vault, provider: &str, key: Option<String>) -> Result<()> {
+/// Read the provider id list from `providers.toml` once at command
+/// dispatch time. A corrupt or missing file is treated as "no known
+/// ids" — validation can still surface a "no catalog yet" hint but
+/// won't gate the command.
+async fn load_known_provider_ids(paths: &GlobalPaths) -> Vec<String> {
+    let catalog_path = paths.config_dir.join(ProviderCatalog::FILENAME);
+    let Ok(catalog) = ProviderCatalog::load_or_init(&catalog_path).await else {
+        return Vec::new();
+    };
+    catalog
+        .list_all()
+        .await
+        .into_iter()
+        .map(|e| e.id)
+        .collect()
+}
+
+async fn set_cmd(
+    vault: &Vault,
+    provider: &str,
+    key: Option<String>,
+    allow_unknown: bool,
+    known_provider_ids: &[String],
+) -> Result<()> {
+    // Validate before the secret prompt so we don't ask the user to
+    // type a key they're about to throw away. `--allow-unknown`
+    // bypasses for backup-restore workflows.
+    if !allow_unknown {
+        validate_known_provider(provider, known_provider_ids)?;
+    }
     let secret_value = match key {
         Some(k) if !k.is_empty() => k,
         _ => prompt_hidden("API key: ")?,
@@ -96,11 +150,16 @@ async fn set_cmd(vault: &Vault, provider: &str, key: Option<String>) -> Result<(
     Ok(())
 }
 
-async fn delete_cmd(vault: &Vault, provider: &str) -> Result<()> {
+async fn delete_cmd(
+    vault: &Vault,
+    provider: &str,
+    known_provider_ids: &[String],
+) -> Result<()> {
     if vault.delete_provider_key(provider)? {
         println!("Removed key for '{provider}'.");
         notify_daemon_reload().await;
     } else {
+        suggest_for_missing(provider, &vault.list_providers(), known_provider_ids);
         println!("No key stored for '{provider}'.");
     }
     Ok(())
@@ -132,11 +191,18 @@ async fn list_cmd(vault: &Vault) -> Result<()> {
     Ok(())
 }
 
-async fn test_cmd(vault: &Vault, provider: &str) -> Result<()> {
+async fn test_cmd(
+    vault: &Vault,
+    provider: &str,
+    known_provider_ids: &[String],
+) -> Result<()> {
     match vault.test_provider_key(provider) {
         Some(true) => println!("Stored key for '{provider}' looks well-formed."),
         Some(false) => println!("Stored key for '{provider}' has an unexpected shape."),
-        None => println!("No key stored for '{provider}'."),
+        None => {
+            suggest_for_missing(provider, &vault.list_providers(), known_provider_ids);
+            println!("No key stored for '{provider}'.");
+        }
     }
     Ok(())
 }
@@ -201,3 +267,237 @@ fn prompt_hidden(prompt: &str) -> Result<String> {
         Ok(s.trim().to_string())
     }
 }
+
+/// Reject a provider id that isn't in the catalog; on rejection, list
+/// the known ids and offer nearest-neighbor suggestions so the user
+/// can spot a typo without running `peko provider list` first.
+///
+/// Synchronous — `set_cmd` already has the catalog snapshot in hand
+/// and we want a hard fail *before* the secret prompt. Returns
+/// `anyhow::Error` whose Display chain is exactly what the user sees.
+fn validate_known_provider(provider: &str, known_provider_ids: &[String]) -> Result<()> {
+    if known_provider_ids.iter().any(|id| id == provider) {
+        return Ok(());
+    }
+
+    let mut msg = format!("unknown provider id '{provider}'");
+
+    if known_provider_ids.is_empty() {
+        msg.push_str(
+            "\nThe provider catalog is empty. Add the provider first with \
+             `peko provider add --template <name>` (use --allow-unknown here \
+             only if you're pre-loading keys before the provider is added).",
+        );
+    } else {
+        let quoted: Vec<String> = known_provider_ids
+            .iter()
+            .map(|s| format!("'{s}'"))
+            .collect();
+        msg.push_str(&format!(
+            "\nKnown provider ids: {}",
+            quoted.join(", ")
+        ));
+        let suggestions = nearest_neighbors(provider, known_provider_ids, 3);
+        if !suggestions.is_empty() {
+            let q: Vec<String> = suggestions
+                .iter()
+                .map(|s| format!("'{s}'"))
+                .collect();
+            msg.push_str(&format!("\nDid you mean: {}", q.join(", ")));
+        }
+    }
+
+    msg.push_str(
+        "\nUse --allow-unknown to store a key for this id anyway (e.g. for \
+         backup-restore before the provider is added).",
+    );
+
+    anyhow::bail!("{msg}")
+}
+
+/// Emit a "did you mean …?" line on stdout when the requested id
+/// has no stored key — the user almost certainly typoed. Looks at
+/// both the currently-stored keys and the catalog so a fresh
+/// typo (never stored) still gets a suggestion toward a known
+/// provider id.
+///
+/// Silently does nothing if there's nothing close enough (>= 4 edits).
+fn suggest_for_missing(
+    target: &str,
+    stored_keys: &[String],
+    known_provider_ids: &[String],
+) {
+    // Merge stored + known into a single candidate set so suggestions
+    // cover both "you typoed an existing stored id" and "you typoed a
+    // known provider". Dedup is cheap at this scale.
+    let mut candidates: Vec<String> = Vec::with_capacity(stored_keys.len() + known_provider_ids.len());
+    for s in stored_keys {
+        if !candidates.contains(s) {
+            candidates.push(s.clone());
+        }
+    }
+    for s in known_provider_ids {
+        if !candidates.contains(s) {
+            candidates.push(s.clone());
+        }
+    }
+
+    let suggestions = nearest_neighbors(target, &candidates, 3);
+    if suggestions.is_empty() {
+        return;
+    }
+    let q: Vec<String> = suggestions.iter().map(|s| format!("'{s}'")).collect();
+    println!("  Did you mean: {}", q.join(", "));
+}
+
+/// Return up to `limit` candidate strings within edit distance 3 of
+/// `target`, ordered by ascending distance then by candidate string
+/// for determinism. Ties broken alphabetically.
+///
+/// `candidates` is typically the union of stored-key ids and known-
+/// catalog ids. Empty input is a no-op.
+///
+/// The 3-edit cap filters out noise from obviously-different ids (e.g.
+/// "openai" vs "anthropic" is 7 edits) so suggestions stay relevant.
+fn nearest_neighbors(target: &str, candidates: &[String], limit: usize) -> Vec<String> {
+    if limit == 0 || candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(usize, &String)> = candidates
+        .iter()
+        .map(|c| (levenshtein(target, c), c))
+        .filter(|(d, _)| *d <= 3)
+        .collect();
+
+    // Sort by (distance, candidate-string) for deterministic output —
+    // same input → same suggestion list across runs.
+    scored.sort_by(|(da, sa), (db, sb)| da.cmp(db).then_with(|| sa.cmp(sb)));
+    scored.truncate(limit);
+    scored.into_iter().map(|(_, c)| c.clone()).collect()
+}
+
+/// Iterative two-row Levenshtein distance. Operates on Unicode chars
+/// not bytes (handles combining accents, emoji, CJK correctly).
+///
+/// O(len(a) * len(b)) time, O(min(len(a), len(b))) space. Provider
+/// ids are short so the worst case (e.g. 32-char ids) is trivial.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+
+    // Make `b` the shorter row to minimise memory.
+    let (a, b) = if a.len() < b.len() { (b, a) } else { (a, b) };
+
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0usize; b.len() + 1];
+
+    for i in 1..=a.len() {
+        curr[0] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[b.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `miniax` vs `minimax` is one insertion; should rank first.
+    #[test]
+    fn nearest_neighbors_picks_one_edit_match() {
+        let candidates = vec![
+            "minimax".to_string(),
+            "openai".to_string(),
+            "anthropic".to_string(),
+        ];
+        let got = nearest_neighbors("miniax", &candidates, 3);
+        assert_eq!(got, vec!["minimax".to_string()]);
+    }
+
+    /// Out-of-range distance (>= 4) drops the candidate entirely so
+    /// unrelated ids don't appear in the suggestion list.
+    #[test]
+    fn nearest_neighbors_drops_distant_candidates() {
+        let candidates = vec![
+            "anthropic".to_string(), // 7 edits from "miniax"
+            "openai".to_string(),    // 5 edits
+        ];
+        let got = nearest_neighbors("miniax", &candidates, 3);
+        assert!(got.is_empty(), "got: {got:?}");
+    }
+
+    /// Empty / zero-limit input returns nothing rather than panicking.
+    #[test]
+    fn nearest_neighbors_handles_empty_inputs() {
+        assert!(nearest_neighbors("minimax", &[], 3).is_empty());
+        assert!(nearest_neighbors("minimax", &["minimax".to_string()], 0).is_empty());
+    }
+
+    /// Tie-breaker is alphabetical so two strings with the same
+    /// distance always come out in the same order across runs.
+    #[test]
+    fn nearest_neighbors_breaks_ties_alphabetically() {
+        // Both candidates are 1 edit from `foo`: insert one char
+        // (`foox` = append 'x' at end, `xfoo` = prepend 'x'). Same
+        // distance — alphabetical sort should pick `foox` first.
+        let candidates = vec!["xfoo".to_string(), "foox".to_string()];
+        let got = nearest_neighbors("foo", &candidates, 3);
+        assert_eq!(got, vec!["foox".to_string(), "xfoo".to_string()],);
+    }
+
+    /// `validate_known_provider` should pass when the id is in the
+    /// catalog and error with a "Did you mean" line for typos.
+    #[test]
+    fn validate_known_provider_accepts_known() {
+        let known = vec!["openai".to_string(), "minimax".to_string()];
+        validate_known_provider("minimax", &known).expect("minimax is known");
+    }
+
+    #[test]
+    fn validate_known_provider_rejects_typo_with_suggestion() {
+        let known = vec!["openai".to_string(), "minimax".to_string()];
+        let err = validate_known_provider("miniax", &known).expect_err("must reject");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unknown provider id 'miniax'"), "got: {msg}");
+        assert!(msg.contains("Did you mean: 'minimax'"), "got: {msg}");
+        assert!(
+            msg.contains("Known provider ids: 'openai', 'minimax'"),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("--allow-unknown"),
+            "error must mention the escape hatch, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_known_provider_handles_empty_catalog() {
+        let err =
+            validate_known_provider("minimax", &[]).expect_err("empty catalog must reject");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("The provider catalog is empty"), "got: {msg}");
+    }
+
+    /// Levenshtein correctness on a few hand-checked inputs so the
+    /// helper isn't quietly broken (which would invalidate every
+    /// assertion above that relies on edit-distance ordering).
+    #[test]
+    fn levenshtein_matches_hand_computed_values() {
+        assert_eq!(levenshtein("", ""), 0);
+        assert_eq!(levenshtein("abc", ""), 3);
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+        assert_eq!(levenshtein("flaw", "lawn"), 2);
+        assert_eq!(levenshtein("minimax", "minimax"), 0);
+        assert_eq!(levenshtein("miniax", "minimax"), 1);
+    }
+}
+
