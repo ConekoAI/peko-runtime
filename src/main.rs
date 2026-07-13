@@ -34,11 +34,18 @@ async fn main() {
         Err(e) => {
             // Print error message
             if cli.debug {
-                // With --debug, show full error chain and backtrace if available
+                // With --debug, show full indented error chain and backtrace
+                // if available.
                 eprintln!("❌ Error: {:?}", e);
             } else {
-                // Default: just show the error message
-                eprintln!("❌ Error: {}", e);
+                // Default: print the error with the `:#` Display form so the
+                // `Caused by:` chain reaches stdout without --debug. The top
+                // level alone (e.g. "failed to load credential vault") is
+                // unactionable for non-technical testers; the underlying
+                // causes carry the actual instruction ("set
+                // PEKO_MASTER_PASSPHRASE", "PEKO_UNLOCK_METHOD does not
+                // match the vault's current mode", etc.).
+                eprintln!("❌ Error: {:#}", e);
             }
 
             std::process::exit(1);
