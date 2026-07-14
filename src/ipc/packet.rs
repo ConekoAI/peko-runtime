@@ -1038,6 +1038,13 @@ pub enum ResponsePacket {
 
     /// Comprehensive daemon status payload (issue #8). Includes tunnel
     /// health snapshot suitable for `peko daemon status --json`.
+    ///
+    /// `mode` is added by the engine-adoption work (ADR-043): clients
+    /// like `peko-desktop`'s SidecarSupervisor use it to detect when a
+    /// foreign daemon (CLI-launched or another sidecar) is already
+    /// holding the IPC socket, instead of trying to spawn a competing
+    /// child. `#[serde(default)]` makes the field forward+backward
+    /// compatible: old clients ignore it, old daemons omit it.
     #[serde(rename = "status")]
     Status {
         request_id: u64,
@@ -1047,6 +1054,8 @@ pub enum ResponsePacket {
         tunnel_reconnect_attempts: u32,
         tunnel_last_error: Option<String>,
         degraded: bool,
+        #[serde(default)]
+        mode: Option<crate::daemon::LaunchMode>,
     },
 
     // ── Auth management (ADR-034) ──

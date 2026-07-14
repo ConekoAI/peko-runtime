@@ -403,6 +403,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
         data_dir: workspace_path.join("data"),
         config_dir: workspace_path.join("config"),
         log_level: "warn".to_string(),
+        launch_mode: crate::daemon::LaunchMode::Headless,
     };
 
     let app_state: AppState = AppState::with_data_dir(

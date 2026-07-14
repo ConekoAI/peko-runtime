@@ -40,6 +40,12 @@ pub struct DaemonStatus {
     /// Tunnel health snapshot (issue #8). `None` if the daemon is not
     /// responding to IPC.
     pub tunnel: Option<TunnelStatusInfo>,
+    /// Launch mode of the running daemon (`Sidecar` vs. `Headless`),
+    /// surfaced from `ResponsePacket::Status::mode`. ADR-043 adoption:
+    /// `peko daemon start` uses this to print which mode owns the IPC
+    /// socket when it refuses to start a second daemon. `None` if the
+    /// daemon didn't report it (older builds).
+    pub mode: Option<crate::daemon::LaunchMode>,
 }
 
 /// Tunnel health snapshot exposed in `peko daemon status --json` (issue #8).
@@ -233,6 +239,7 @@ impl DaemonProcessService {
                                 tunnel_reconnect_attempts,
                                 tunnel_last_error,
                                 degraded,
+                                mode,
                                 ..
                             }) = ResponsePacket::from_bytes(&buf[..len])
                             {
@@ -250,6 +257,7 @@ impl DaemonProcessService {
                                         last_error: tunnel_last_error,
                                         degraded,
                                     }),
+                                    mode,
                                 });
                             }
                         }
@@ -271,6 +279,7 @@ impl DaemonProcessService {
                     ready: false,
                     error: Some(format!("daemon not responding (process {pid} exists)")),
                     tunnel: None,
+                    mode: None,
                 });
             }
         }
@@ -284,6 +293,7 @@ impl DaemonProcessService {
             ready: false,
             error: None,
             tunnel: None,
+            mode: None,
         })
     }
 
@@ -658,6 +668,7 @@ mod tests {
             ready: false,
             error: None,
             tunnel: None,
+            mode: None,
         };
         assert!(!status.responding);
         assert!(!status.process_exists);
@@ -677,6 +688,7 @@ mod tests {
                 last_error: None,
                 degraded: false,
             }),
+            mode: Some(crate::daemon::LaunchMode::Headless),
         };
         assert!(status2.responding);
         assert!(status2.process_exists);

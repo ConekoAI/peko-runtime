@@ -39,6 +39,12 @@ pub(crate) trait SystemHost: Send + Sync {
     async fn instance_count(&self) -> u64;
     async fn tunnel_health(&self) -> crate::daemon::state::TunnelHealth;
     async fn request_shutdown(&self, force: bool);
+    /// How this daemon was launched (`Sidecar` for peko-desktop's bundled
+    /// child, `Headless` for any CLI invocation). Surfaced in
+    /// `ResponsePacket::Status::mode` so peers can adopt a foreign
+    /// daemon instead of spawning a competing child (ADR-043 adoption).
+    /// Sync because the snapshot field is `Copy`.
+    fn launch_mode(&self) -> crate::daemon::LaunchMode;
 }
 
 /// `system` domain request handler. Constructed with an `Arc<dyn SystemHost>`
@@ -104,6 +110,7 @@ impl RequestHandler for SystemHandler {
                     tunnel_reconnect_attempts: health.reconnect_attempts(),
                     tunnel_last_error: health.last_error().map(str::to_string),
                     degraded: self.host.is_degraded().await,
+                    mode: Some(self.host.launch_mode()),
                 };
                 send_response(sink, response).await?;
             }

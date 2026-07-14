@@ -9,7 +9,7 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::services::DaemonProcessService;
-use crate::daemon::{Daemon, DaemonConfig};
+use crate::daemon::{Daemon, DaemonConfig, LaunchMode};
 use clap::Subcommand;
 
 /// Daemon management subcommands
@@ -104,7 +104,16 @@ pub async fn handle_daemon(
             sidecar_mode,
         } => {
             if service.is_daemon_running().await? {
-                println!("⚠️  Daemon is already running");
+                // ADR-043 adoption: when a daemon is already on the
+                // IPC socket, surface who owns it so the user can
+                // decide whether to stop the foreign daemon first.
+                let mode_label = service
+                    .get_daemon_status()
+                    .await
+                    .ok()
+                    .and_then(|s| s.mode.map(|m| m.as_str().to_string()))
+                    .unwrap_or_else(|| "headless".to_string());
+                println!("⚠️  Daemon is already running (owned by {mode_label} daemon)");
                 return Ok(());
             }
 
@@ -115,6 +124,11 @@ pub async fn handle_daemon(
                 data_dir: paths.data_dir.clone(),
                 maintenance_interval: std::time::Duration::from_hours(1),
                 max_reconnect_attempts,
+                launch_mode: if sidecar_mode {
+                    LaunchMode::Sidecar
+                } else {
+                    LaunchMode::Headless
+                },
             };
 
             if foreground {

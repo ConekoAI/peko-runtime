@@ -1,17 +1,31 @@
 # Peko Desktop × Peko Runtime — Manual Test Plan
 
-> **Status:** v0.2 (sidecar lifecycle, ADR-043)
+> **Status:** v0.3 (sidecar lifecycle, ADR-043 — engine adoption)
 > **Last updated:** 2026-07-14
 > **Maintained by:** Peko engineering
 > **Audience:** non-technical testers verifying core functionality before the next feature drop
 >
-> **What changed in v0.2**
-> The desktop now bundles the peko runtime as a Tauri sidecar. There is no
-> separate `peko daemon start/stop` step to run — the engine comes up with
-> the desktop, follows the engine's own lifecycle, and goes down when you
-> close the window. Manual Start/Stop/Restart buttons in the UI are gone.
-> Sections that depended on those buttons (1, 8.3, 12.2) are rewritten below;
-> the rest of the plan is unchanged.
+> **What changed in v0.3 (engine adoption)**
+> The desktop now co-exists with `peko daemon start` from the CLI. If a
+> `peko` daemon is already on the IPC socket when the desktop launches, the
+> sidecar supervisor **adopts** it (mirrors its state, does not spawn a
+> child) and the chat works normally. The desktop's own sidecar is only
+> spawned if no daemon is running.
+>
+> Visible change for the user: the engine is now **invisible on the happy
+> path** — the header pill and the Dashboard engine card are gone, and the
+> status footer is empty when the engine is healthy. Engine state surfaces
+> in the chrome only when something needs the user's attention:
+>
+> - **Failed** engine → a red recovery card appears at the top of the
+>   layout (above any page) with a "Restart engine" button.
+> - **Version mismatch** → a yellow banner above the page content.
+> - **Adopted** engine → the user sees nothing different, but the
+>   diagnostics panel in Settings → Daemon shows a "Borrowed from a CLI
+>   daemon" banner with the adopted lockfile path.
+>
+> §1 (engine lifecycle), §8.3 (Settings → Daemon), and §12.2 (crash
+> recovery) are rewritten below; the rest of the plan is unchanged.
 
 This checklist exercises **peko-desktop** (the Tauri/React UI) against **peko-runtime** (the daemon) end-to-end. Work through it top-to-bottom. Every row has an **Expected** column — if what you see differs, mark the test **Fail**, choose a **Severity**, and write a short **Note** describing what actually happened.
 
@@ -113,22 +127,30 @@ If you set `PEKO_HOME`, `PEKO_CONFIG_DIR`, or `PEKO_DATA_DIR` earlier, swap thos
 
 ---
 
-## 1. Engine lifecycle (Dashboard & header badge)
+## 1. Engine lifecycle (happy-path invisibility)
 
-> The engine is the bundled `peko` sidecar owned by the desktop's supervisor
-> (ADR-043). It starts when the app launches, follows its own lifecycle, and
-> shuts down when you close the window. There are no Start/Stop/Restart
-> controls in the UI — auto-spawn and one-shot auto-restart handle normal
-> cases, and a hidden diagnostics panel covers support/dev recovery.
+> The engine is the bundled `peko` sidecar owned by the desktop's
+> supervisor (ADR-043). It starts when the app launches, follows its own
+> lifecycle, and shuts down when you close the window. There are no
+> Start/Stop/Restart controls in the UI. As of v0.3 the engine is also
+> **invisible on the happy path** — the header pill and the Dashboard
+> engine card are gone, and the status footer is empty when the engine
+> is healthy. Engine state surfaces in the chrome only when something
+> needs the user's attention (Failed, or version mismatch).
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
 | T-101 | With the app closed, run `pgrep -f "peko daemon"` (or `tasklist /FI "IMAGENAME eq peko.exe"` on Windows). Confirm no engine processes are running. | No matching processes | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Proves we're starting from a clean slate |
-| T-102 | Launch the desktop (`pnpm tauri dev` or the bundled app) | App window opens; engine shows up in the process list within ~2 seconds. **Dashboard** card shows the engine going through `Starting` (amber) → `Running` (green) by the time the UI mounts. Header shows a green **Running** pill. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-103 | Read the engine card on the Dashboard. Read the header pill in the top-right. | Both report **Running** with the same version (matches `peko --version` and the `Cargo.toml` version baked into the desktop). | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-102 | Launch the desktop (`pnpm tauri dev` or the bundled app) | App window opens; engine shows up in the process list within ~2 seconds. **The header has no engine pill. The Dashboard has no engine card. The status footer is empty.** | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-103 | Look at the header, the Dashboard, and the status footer | None of them mention "engine" or "daemon". The header has the theme toggle. The Dashboard shows Principals / Extensions / Quick Actions. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If any of the three shows an engine state badge or pill on a healthy run, mark **M** — happy-path invisibility is the v0.3 contract. |
 | T-104 | Close the desktop window (X button / `⌘W` / `Alt+F4`) | Engine process exits within a few seconds. Re-run the `pgrep` from T-101 and confirm it's gone. No `zombie peko process holding the lockfile` left behind. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-105 | Look at the two stat cards below the engine card | **Principals: N** and **Extensions: M** — both real numbers (≥ 0), not "undefined" | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-106 | Open Settings → **Daemon** | Card shows **Engine is running** with version + PID. No Start/Stop/Restart buttons. There's a discreet **Show internal status** text at the bottom of the section. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-105 | Look at the two stat cards on the Dashboard | **Principals: N** and **Extensions: M** — both real numbers (≥ 0), not "undefined" | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-106 | Open Settings → **Daemon** | Card shows **Engine is running** with version + PID. No Start/Stop/Restart buttons. The **Engine diagnostics** section is visible directly below the Log Level picker — no two-click arm pattern. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-107 | **Adoption** — with the desktop closed, start a CLI daemon: `peko daemon start`. Then launch the desktop. | App opens. **Nothing in the chrome changes** — still no header pill, no Dashboard card, status footer empty. Open Settings → Daemon → Engine diagnostics. A **Borrowed from a CLI daemon** banner is shown. The lockfile path is `<config>/run/daemon.pid` (not `desktop.lock`). The **Restart engine** button is **disabled** with a tooltip explaining why. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If any chrome element claims the engine is "running" or "stopped" without telling the user whose process it is, mark **m** — that's a regression of the invisibility rule. |
+| T-107a | With the desktop open and a CLI daemon borrowed (state from T-107), close the desktop. Re-run `pgrep -f "peko daemon"`. | The CLI daemon is still alive. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Adoption is mirror-only — the desktop must not stop a process it did not start. |
+| T-107b | Reopen the desktop. | Chat works. No engine chrome appears. The diagnostics panel still shows the "Borrowed from a CLI daemon" banner. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reopening the desktop after the CLI daemon survives confirms adoption round-trips cleanly. |
+| T-107c | **Liveness** — with the desktop open and a CLI daemon borrowed, in another terminal find the CLI daemon's PID (`pgrep -f "peko daemon"`) and `kill -9 <pid>`. | Within ~5 seconds a red **Engine couldn't start** recovery card appears at the top of the layout (above any page) with a **Restart engine** button. The status footer turns red. Click **Restart engine** on that card. Within ~5 seconds the card disappears, the status footer is empty again, and chat works. The diagnostics panel now shows **owns_process = true** and the lockfile is `desktop.lock` (the desktop has spawned its own sidecar). | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the worst-case "borrowed daemon dies" path — proves the liveness poll + supervisor recovery works. |
+| T-108 | **CLI awareness** — close the desktop. Run `peko daemon start`. Then `peko daemon start` again. | The second `peko daemon start` prints something like `⚠️  Daemon is already running (owned by headless daemon, version X)`. Now stop the daemon (`peko daemon stop`). Launch the desktop (`pnpm tauri dev`). With the desktop open, run `peko daemon start`. | It prints `⚠️  Daemon is already running (owned by sidecar daemon, version X)`. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The `mode` field is new in v0.3 — if the warning is missing or doesn't include the mode, the runtime wasn't rebuilt against this PR. |
 
 ---
 
@@ -269,12 +291,21 @@ Skip this section if PekoHub login isn't configured.
 
 ### 8.3 General / Daemon / About
 
+> The Daemon tab is now opt-in by route (Settings), not by an
+> arm-and-reveal toggle. The "Show internal status" two-click pattern
+> was removed in v0.3 — the engine is no longer a happy-path
+> decoration, so the diagnostics panel can be reachable directly.
+> The **Engine diagnostics** section lives below the **Log Level**
+> picker and shows: state, PID, version (actual), expected version,
+> **Match** row, uptime, lockfile, socket, launch mode, restart count,
+> recent log lines, and a **Restart engine** button.
+
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
 | T-808 | Settings → **General** | Form renders, values save when edited | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-809 | Settings → **Daemon** (engine surface) | Status card shows **Engine is running** with version + PID, plus a short note explaining "the engine starts automatically and restarts itself — no manual controls are needed." Below it: the **Log Level** picker. Changes persist after restart of the app. **No** Start / Stop / Restart buttons. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If Start/Stop/Restart buttons are present, mark **M** — that surface was supposed to be removed in PR #30. |
-| T-809a | Settings → **Daemon** → click **Show internal status** once. The text changes to "Click again to show internal status." Click a second time within 5 seconds. | A diagnostics panel appears: state, PID, version (actual), expected version, **Match** row, uptime, lockfile path, socket path, restart count. A **Recent log** disclosure holds the supervisor's log ring buffer. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Two-click pattern is intentional; single click arms, second click surfaces. |
-| T-809b | In the same panel, click **Restart engine** | Engine card flips amber (`Restarting…`) and back to green within ~5 seconds. PID is unchanged (the supervisor kept the same child process after a graceful cycle) or a fresh PID if a fork happened. The **Restart engine** button is enabled again. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reserved for support/dev — most users should just close and reopen the app. |
+| T-809 | Settings → **Daemon** (engine surface) | Status card shows **Engine is running** with version + PID, plus a short note explaining "the engine starts automatically and restarts itself — no manual controls are needed." Below it: the **Log Level** picker, then the **Engine diagnostics** section (no two-click arm). Changes persist after restart of the app. **No** Start / Stop / Restart buttons. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If Start/Stop/Restart buttons are present, mark **M** — that surface was supposed to be removed in PR #30. If a "Show internal status" arm-and-reveal text is present, mark **m** — the arm pattern was removed in v0.3. |
+| T-809b | In the **Engine diagnostics** section, click **Restart engine** (button is enabled only when the desktop owns the engine). | Engine flips through `Restarting…` back to `Running` within ~5 seconds. PID is unchanged (the supervisor kept the same child process after a graceful cycle) or a fresh PID if a fork happened. The **Restart engine** button is enabled again. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reserved for support/dev — most users should just close and reopen the app. |
+| T-809c | With a CLI daemon borrowed (T-107), open Settings → **Daemon** → **Engine diagnostics**. | A **Borrowed from a CLI daemon** indigo banner is shown above the diagnostics grid. The **Restart engine** button is **disabled**. Hover the button — tooltip reads "Restart is disabled while the engine is borrowed from a CLI daemon. Run `peko daemon stop && peko daemon start` from the terminal, or close and reopen this window to spawn a fresh sidecar." | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Confirms the panel recognises adoption and refuses to kill a process the desktop does not own. |
 | T-810 | Settings → **About** | Shows peko-desktop version + peko-runtime version (real numbers, not "undefined") | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 ---
@@ -320,15 +351,19 @@ Skip this section if PekoHub login isn't configured.
 > The supervisor owns the engine process. There is no `peko daemon stop` that
 > can usefully be run from the terminal — the desktop owns the bundled
 > binary, not the one on your PATH. To exercise crash recovery, kill the
-> sidecar's process directly (it's a regular OS process).
+> sidecar's process directly (it's a regular OS process). In v0.3 there
+> is no header pill or Dashboard card to flip on recovery — the
+> supervisor restarts in the background and the chrome stays empty on
+> success. A **Failed** state surfaces as a layout-level recovery card
+> (the only place the engine is user-visible in the chrome).
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-1203 | With the desktop open, note the engine PID (Settings → Daemon → Show internal status → PID row). In a terminal: `kill -9 <pid>` (or `taskkill /F /PID <pid>` on Windows). | Header pill and Dashboard card flip to amber `Restarting…` for ~2 seconds, then back to green `Running` with a fresh PID. The desktop itself does not crash; the status footer returns to its normal tone. A new chat send still works. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The supervisor gives the engine exactly one auto-restart attempt before giving up. |
-| T-1204 | Kill the engine a second time within 30 seconds of the first kill. | The header pill and Dashboard card turn **red `Failed`**. Subsequent chat sends fail gracefully with an error chip — the app does NOT crash. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Two fails in a row = supervisor gives up. This is intentional: a misconfigured box should not spin the CPU. |
-| T-1204a | In the **Failed** state, open Settings → Daemon → click **Show internal status** twice → click **Restart engine**. | Card flips amber `Restarting…` → green `Running` within ~5 seconds. Chat works again. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the supported way out of a `Failed` state without closing the desktop. |
-| T-1204b | Close and reopen the desktop (X then relaunch). | On relaunch the engine comes up fresh. The header pill starts amber `Starting` and turns green `Running` within a few seconds. The Failed banner is gone. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The supported recovery path for end users. The diagnostics-panel Restart is for support/dev. |
-| T-1204c | (Optional, advanced) Force a version mismatch by editing the desktop's bundled `binaries/peko-<triple>` symlink to point at a deliberately mismatched runtime (e.g. `ln -sf /tmp/fake-peko binaries/peko-<triple>` where `/tmp/fake-peko` writes `PEKO_VERSION=99.0.0` to stderr). Restart the desktop. | On startup the engine reports a version that doesn't match the desktop's expected version. The header shows green `Running` and a yellow **Engine version mismatch** banner appears above the page content describing both versions. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reinstalling the desktop fixes the mismatch — the release process guarantees they stay in lockstep. |
+| T-1203 | With the desktop open, note the engine PID (Settings → Daemon → Engine diagnostics → PID row). In a terminal: `kill -9 <pid>` (or `taskkill /F /PID <pid>` on Windows). | The chrome stays quiet (no header pill, no Dashboard card). Within ~2 seconds the supervisor's liveness loop restarts the engine. The status footer stays empty. A new chat send still works. The diagnostics panel may briefly show the PID row flipping. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The supervisor gives the engine exactly one auto-restart attempt before giving up. If a header pill or Dashboard card appears during recovery, mark **m** — v0.3 removed those. |
+| T-1204 | Kill the engine a second time within 30 seconds of the first kill. | A red **Engine couldn't start** recovery card appears at the top of the layout (above any page) with a **Restart engine** button. The status footer turns red. Subsequent chat sends fail gracefully with an error chip — the app does NOT crash. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Two fails in a row = supervisor gives up. This is intentional: a misconfigured box should not spin the CPU. The recovery card is the v0.3 user-visible surface for a `Failed` engine. |
+| T-1204a | In the **Failed** state, click **Restart engine** on the layout-level recovery card. | Card flips through `Restarting…` back to `Running` within ~5 seconds. The recovery card disappears, the status footer is empty again, chat works. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the supported way out of a `Failed` state without closing the desktop. |
+| T-1204b | Close and reopen the desktop (X then relaunch). | On relaunch the engine comes up fresh. The header has no engine pill, the Dashboard has no engine card, the status footer is empty. The Failed recovery card is gone. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The supported recovery path for end users. The layout-level Restart is for end users; the diagnostics-panel Restart is for support/dev. |
+| T-1204c | (Optional, advanced) Force a version mismatch by editing the desktop's bundled `binaries/peko-<triple>` symlink to point at a deliberately mismatched runtime (e.g. `ln -sf /tmp/fake-peko binaries/peko-<triple>` where `/tmp/fake-peko` writes `PEKO_VERSION=99.0.0` to stderr). Restart the desktop. | On startup the engine reports a version that doesn't match the desktop's expected version. The header and Dashboard stay quiet (no engine chrome on the happy path); a yellow **Engine version mismatch** banner appears above the page content describing both versions. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reinstalling the desktop fixes the mismatch — the release process guarantees they stay in lockstep. |
 
 ### 12.3 Privacy boundary (ADR-042)
 
