@@ -258,6 +258,35 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool) -> Result<()> {
         println!("\nNo runtime default set. Use `peko provider set-default <id>` to choose one.");
     }
 
+    // Surface orphaned vault keys: API keys stored via
+    // `peko credential set <id>` for a provider id that never made it
+    // into the catalog (typo, deleted catalog entry, etc.). These
+    // are invisible in the catalog-only view above but still
+    // appear in the desktop's `credential_list` IPC, which causes
+    // the "X providers configured" count to disagree between CLI
+    // and desktop. Print a footer in both --detailed and default
+    // modes so the user can see and clean up the orphans with
+    // `peko credential delete <id>`.
+    let catalog_ids: std::collections::HashSet<&str> =
+        entries.iter().map(|e| e.id.as_str()).collect();
+    if let Ok(vault) = crate::common::vault::Vault::load(&paths.resolver().vault()) {
+        let vault_ids = vault.list_providers();
+        let orphans: Vec<&String> = vault_ids
+            .iter()
+            .filter(|id| !catalog_ids.contains(id.as_str()))
+            .collect();
+        if !orphans.is_empty() {
+            println!(
+                "\nOrphaned vault keys ({}): key stored, no catalog entry.",
+                orphans.len()
+            );
+            for o in &orphans {
+                println!("  - {o}");
+            }
+            println!("  Clean up with: peko credential delete <id>");
+        }
+    }
+
     Ok(())
 }
 
