@@ -204,6 +204,26 @@ pub enum RequestPacket {
     #[serde(rename = "principal_get")]
     PrincipalGet { request_id: u64, name: String },
 
+    /// Create a new Principal on disk + in-memory manager. The handler
+    /// writes `agents/primary.md` before invoking `manager.create`
+    /// (the manager scans `agents/` on load) and assigns ownership to
+    /// the calling subject. Mirrors `peko principal new <name>` but
+    /// without dropping the caller to the CLI.
+    ///
+    /// Optional fields are `#[serde(default)]` so older clients that
+    /// only send the name still round-trip cleanly.
+    #[serde(rename = "principal_create")]
+    PrincipalCreate {
+        request_id: u64,
+        name: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        preferred_provider_id: Option<String>,
+        #[serde(default)]
+        preferred_model_id: Option<String>,
+    },
+
     // ─── Provider listing ───────────────────────────────────────────
     #[serde(rename = "provider_list")]
     ProviderList { request_id: u64 },
@@ -613,6 +633,7 @@ impl RequestPacket {
             | Self::ExtStatus { request_id, .. }
             | Self::PrincipalList { request_id }
             | Self::PrincipalGet { request_id, .. }
+            | Self::PrincipalCreate { request_id, .. }
             | Self::ProviderList { request_id }
             | Self::ProviderReload { request_id }
             | Self::McpReload { request_id }
@@ -862,6 +883,15 @@ pub enum ResponsePacket {
     PrincipalGet {
         request_id: u64,
         principal: Option<crate::principal::PrincipalSummary>,
+    },
+
+    /// Result of `PrincipalCreate`. Returns the new principal's
+    /// summary so the caller can render it without a follow-up
+    /// `PrincipalList`. Past-tense pairing with `PrincipalCreate`.
+    #[serde(rename = "principal_created")]
+    PrincipalCreated {
+        request_id: u64,
+        principal: crate::principal::PrincipalSummary,
     },
 
     /// System status response
@@ -1371,6 +1401,7 @@ impl ResponsePacket {
             | Self::ExtStatus { request_id, .. }
             | Self::PrincipalList { request_id, .. }
             | Self::PrincipalGet { request_id, .. }
+            | Self::PrincipalCreated { request_id, .. }
             | Self::SystemStatus { request_id, .. }
             | Self::SystemDoctor { request_id, .. }
             | Self::ProviderList { request_id, .. }
@@ -1438,6 +1469,7 @@ impl ResponsePacket {
             Self::ExtStatus { .. } => "ExtStatus",
             Self::PrincipalList { .. } => "PrincipalList",
             Self::PrincipalGet { .. } => "PrincipalGet",
+            Self::PrincipalCreated { .. } => "PrincipalCreated",
             Self::SystemStatus { .. } => "SystemStatus",
             Self::SystemDoctor { .. } => "SystemDoctor",
             Self::ProviderList { .. } => "ProviderList",
@@ -2099,6 +2131,100 @@ mod tests {
             } => {
                 assert_eq!(request_id, 602);
                 assert!(principal.is_none());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_create_request_roundtrip() {
+        // All fields populated — round-trips without losing the
+        // optional provider/model fields.
+        let req = RequestPacket::PrincipalCreate {
+            request_id: 302,
+            name: "alice".to_string(),
+            description: Some("personal assistant".to_string()),
+            preferred_provider_id: Some("openai".to_string()),
+            preferred_model_id: Some("gpt-4o".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalCreate {
+                request_id,
+                name,
+                description,
+                preferred_provider_id,
+                preferred_model_id,
+            } => {
+                assert_eq!(request_id, 302);
+                assert_eq!(name, "alice");
+                assert_eq!(description.as_deref(), Some("personal assistant"));
+                assert_eq!(preferred_provider_id.as_deref(), Some("openai"));
+                assert_eq!(preferred_model_id.as_deref(), Some("gpt-4o"));
+            }
+            _ => panic!("Wrong variant"),
+        }
+
+        // Minimal payload — name only. `#[serde(default)]` lets older
+        // clients send the bare variant without breaking the round-trip.
+        let minimal = RequestPacket::PrincipalCreate {
+            request_id: 303,
+            name: "bob".to_string(),
+            description: None,
+            preferred_provider_id: None,
+            preferred_model_id: None,
+        };
+        let bytes = minimal.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalCreate {
+                request_id,
+                name,
+                description,
+                preferred_provider_id,
+                preferred_model_id,
+            } => {
+                assert_eq!(request_id, 303);
+                assert_eq!(name, "bob");
+                assert!(description.is_none());
+                assert!(preferred_provider_id.is_none());
+                assert!(preferred_model_id.is_none());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_created_response_roundtrip() {
+        let resp = ResponsePacket::PrincipalCreated {
+            request_id: 603,
+            principal: crate::principal::PrincipalSummary {
+                name: "alice".to_string(),
+                did: crate::subject::PrincipalDID("did:peko:local:alice".to_string()),
+                owner: crate::auth::Subject::User("alice".to_string()),
+                description: Some("personal assistant".to_string()),
+                exposure: crate::principal::config::Exposure::default(),
+                status: None,
+                capabilities: crate::extensions::framework::types::Capabilities::default(),
+                agent_prompt_count: 1,
+                workspace_path: "/tmp/alice".to_string(),
+            },
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalCreated {
+                request_id,
+                principal,
+            } => {
+                assert_eq!(request_id, 603);
+                assert_eq!(principal.name, "alice");
+                assert_eq!(principal.agent_prompt_count, 1);
+                assert_eq!(
+                    principal.description.as_deref(),
+                    Some("personal assistant")
+                );
             }
             _ => panic!("Wrong variant"),
         }
