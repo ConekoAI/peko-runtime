@@ -240,6 +240,7 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalPermissions { .. }
                 | RequestPacket::PrincipalSetStatus { .. }
                 | RequestPacket::PrincipalSetExposure { .. }
+                | RequestPacket::PrincipalCreate { .. }
         )
     }
 
@@ -943,6 +944,115 @@ impl RequestHandler for PrincipalHandler {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Failed to persist exposure: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::PrincipalCreate {
+                request_id,
+                name,
+                description,
+                preferred_provider_id,
+                preferred_model_id,
+            } => {
+                use crate::common::identifiers::validate_agent_name;
+                use crate::principal::config::{
+                    Exposure, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+                    PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
+                };
+
+                // 1. Validate the name first so we never touch the
+                //    filesystem with bad input.
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
+                // 2. Materialize the workspace + default agent prompt
+                //    BEFORE invoking `manager.create`. The manager
+                //    scans `agents/` on load (`discover_agent_prompts`),
+                //    so the prompt file must exist first. Mirrors
+                //    `peko principal new` in commands/principal.rs.
+                //
+                //    `default_principal_config` / `default_agent_prompt`
+                //    are private to `commands::principal`; we inline
+                //    equivalent logic here (smallest diff) — see the
+                //    T-105 plan's verified-facts section.
+                let workspace_path = host.config_dir().join("principals").join(&name);
+                let agents_dir = workspace_path.join("agents");
+                if let Err(e) = tokio::fs::create_dir_all(&agents_dir).await {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("create agents dir: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+                let prompt_body = format!(
+                    "---\ndescription: \"Default assistant for {name}\"\n---\n\n\
+                     You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
+                     {{{{memory}}}}\n"
+                );
+                if let Err(e) = tokio::fs::write(agents_dir.join("primary.md"), prompt_body).await {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("write prompt: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
+                // 3. Build the config inline. Ownership is the
+                //    *caller*, not a hardcoded `Subject::User("default")`
+                //    — the CLI's hardcoded owner was a deliberate
+                //    choice for an interactive terminal where every
+                //    local user is the same identity; for an IPC call
+                //    we honour the request's subject.
+                let description = description.unwrap_or_else(|| format!("The {name} Principal"));
+                let config = PrincipalConfig {
+                    name: name.clone(),
+                    did: None,
+                    owner: caller.subject().clone(),
+                    identity: PrincipalIdentityConfig {
+                        display_name: Some(name.clone()),
+                        description: Some(description),
+                        avatar: None,
+                    },
+                    intent: PrincipalIntentConfig::default(),
+                    governance: PrincipalGovernanceConfig::default(),
+                    memory: PrincipalMemoryConfig::default(),
+                    routing: PrincipalRoutingConfig::default(),
+                    capabilities: crate::extensions::framework::types::Capabilities::starter_bundle(),
+                    exposure: Exposure::Private,
+                    status: None,
+                    permissions: Vec::new(),
+                    preferred_provider_id,
+                    preferred_model_id,
+                    transport_preference: Default::default(),
+                    quota: None,
+                };
+
+                match host.principal_manager().create(config).await {
+                    Ok(principal) => {
+                        let summary = principal.summary().await;
+                        let response = ResponsePacket::PrincipalCreated { request_id, principal: summary };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        // `Manager::create` surfaces AlreadyExists with
+                        // the literal string `"already exists"`; we
+                        // pass the full message through so the caller
+                        // can match on it. A more structured error
+                        // variant would be a follow-up.
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("principal_create failed: {e}"),
                         };
                         send_response(sink, response).await?;
                     }
