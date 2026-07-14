@@ -2383,6 +2383,33 @@ impl crate::ipc::handlers::provider_mcp::ProviderMcpHost for AppState {
     }
 }
 
+/// F7 thirteenth narrow handle: the port the `credential` IPC domain
+/// handler uses. Trait lives in `ipc::handlers::credential`. Sync
+/// because reading the in-memory vault (`Vault::list_providers` +
+/// `Vault::get_provider_key`) is a pure in-memory operation — no
+/// disk I/O, no async work. The handler emits one row per provider
+/// id the vault knows about; `has_key` is set iff
+/// `Vault::get_provider_key` returns `Some`, and `last_tested` is
+/// always `None` until the vault gains that field (see
+/// [`crate::ipc::packet::CredentialRow`]).
+impl crate::ipc::handlers::credential::CredentialHost for AppState {
+    fn list_credentials(&self) -> Vec<crate::ipc::packet::CredentialRow> {
+        let vault = &self.vault;
+        vault
+            .list_providers()
+            .into_iter()
+            .map(|provider| {
+                let has_key = vault.get_provider_key(&provider).is_some();
+                crate::ipc::packet::CredentialRow {
+                    provider,
+                    has_key,
+                    last_tested: None,
+                }
+            })
+            .collect()
+    }
+}
+
 /// F7 twelfth narrow handle: the port the `principal` IPC domain
 /// handler uses. Trait lives in `ipc::handlers::principal`. Most
 /// methods are sync (cheap references / `Arc` clones / `PathBuf`

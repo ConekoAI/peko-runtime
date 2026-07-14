@@ -25,6 +25,7 @@ use crate::ipc::server::PeerAddr;
 
 pub(crate) mod auth;
 pub(crate) mod capability;
+pub(crate) mod credential;
 pub(crate) mod cron;
 pub(crate) mod ext_runtime;
 pub(crate) mod extension;
@@ -39,6 +40,7 @@ pub(crate) mod tunnel;
 
 use auth::AuthHandler;
 use capability::CapabilityHandler;
+use credential::CredentialHandler;
 use cron::CronHandler;
 use ext_runtime::ExtRuntimeHandler;
 use extension::ExtensionHandler;
@@ -109,7 +111,7 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 13] = [
+        let handlers: [Arc<dyn RequestHandler>; 14] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
@@ -122,6 +124,7 @@ impl RequestDispatcher {
             Arc::new(ExtensionHandler::new(host.clone())),
             Arc::new(ProviderMcpHandler::new(host.clone())),
             Arc::new(QuotaHandler::new(host.clone())),
+            Arc::new(CredentialHandler::new(host.clone())),
             Arc::new(PrincipalHandler::new(host)),
         ];
 
