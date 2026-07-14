@@ -38,8 +38,8 @@ use crate::providers::templates::{self, ModelTemplate, ProviderTemplate};
 ///
 /// Sync because `BUILT_IN_TEMPLATES` is a `&'static [ProviderTemplate]`
 /// — no I/O, no locking, no async work. Keeping the trait sync
-/// mirrors [`crate::ipc::handlers::credential::CredentialHost`]
-/// (also a pure-read surface) and avoids the `async_trait` boxing
+/// (same shape as the pure-read credential port in
+/// `ipc::handlers::credential`) avoids the `async_trait` boxing
 /// overhead. The trait is reachable from `AppState` so a future
 /// test can stub the templates without spinning up a catalog.
 pub(crate) trait ProviderTemplatesHost: Send + Sync {
