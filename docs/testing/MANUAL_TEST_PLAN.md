@@ -1,9 +1,17 @@
 # Peko Desktop × Peko Runtime — Manual Test Plan
 
-> **Status:** v0.1 (initial handout)
-> **Last updated:** 2026-07-13
+> **Status:** v0.2 (sidecar lifecycle, ADR-043)
+> **Last updated:** 2026-07-14
 > **Maintained by:** Peko engineering
 > **Audience:** non-technical testers verifying core functionality before the next feature drop
+>
+> **What changed in v0.2**
+> The desktop now bundles the peko runtime as a Tauri sidecar. There is no
+> separate `peko daemon start/stop` step to run — the engine comes up with
+> the desktop, follows the engine's own lifecycle, and goes down when you
+> close the window. Manual Start/Stop/Restart buttons in the UI are gone.
+> Sections that depended on those buttons (1, 8.3, 12.2) are rewritten below;
+> the rest of the plan is unchanged.
 
 This checklist exercises **peko-desktop** (the Tauri/React UI) against **peko-runtime** (the daemon) end-to-end. Work through it top-to-bottom. Every row has an **Expected** column — if what you see differs, mark the test **Fail**, choose a **Severity**, and write a short **Note** describing what actually happened.
 
@@ -64,13 +72,13 @@ Run these once before starting the tests below.
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
 | T-001 | From `peko-runtime/`: `cargo build --release` | Build succeeds, binary at `./target/release/peko` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-002 | Move `peko` onto your PATH (or export it) | `which peko` prints a path | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-002 | Move `peko` onto your PATH (or export it) | `which peko` prints a path | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | CLI only — used by T-003..T-005 for provider/credential setup |
 | T-003 | `peko provider add --template openai` (or anthropic/kimi/etc.) | Provider added, no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-004 | `peko credential set openai` (paste API key when prompted) | No error; key stored | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-005 | `peko credential test openai` | Prints success (✓ / ok) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-006 | From `peko-desktop/`: `pnpm install` | Install completes | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-007 | `peko daemon stop` (leave it stopped for T-101) | Daemon stops cleanly | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-008 | `pnpm tauri dev` (first run is slow — 5–10 min) | App window opens, shows Dashboard | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-007 | **No-op.** As of ADR-043 the desktop bundles the engine — there is no separate `peko daemon` to leave stopped. The engine comes up with the app (see §1). Mark this step **Skip** with note "n/a — sidecar lifecycle". | — | ☐ Skip | — | |
+| T-008 | `pnpm tauri dev` (first run is slow — 5–10 min). Tauri's `bundle.externalBin` will fail `cargo check` if a `peko` stub isn't present next to `tauri.conf.json`; the release process handles this for release builds. | App window opens, shows Dashboard | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 ---
 
@@ -94,7 +102,7 @@ If you set `PEKO_HOME`, `PEKO_CONFIG_DIR`, or `PEKO_DATA_DIR` earlier, swap thos
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-009 | Stop the daemon: `peko daemon stop` (no-op if not running) | Daemon stops cleanly | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-009 | **Close the desktop app.** The engine is owned by the sidecar supervisor and stops automatically when the window closes — no manual `peko daemon stop` is needed (or useful). If you previously had a separately-installed `peko` running on PATH, kill that too: `pkill -f "peko daemon"` (or `taskkill /F /IM peko.exe` on Windows). | No peko processes running (verify with `pgrep -f "peko daemon"`) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-010 | Unset vault env vars if you have them exported: `unset PEKO_UNLOCK_METHOD PEKO_MASTER_PASSPHRASE`. Verify with `env \| grep PEKO_` showing no output | No output | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-011 | **(macOS)** Run: `mv ~/.peko ~/.peko.bak.$(date +%s); mv ~/Library/Application\ Support/peko ~/Library/Application\ Support/peko.bak.$(date +%s); mv ~/Library/Caches/peko ~/Library/Caches/peko.bak.$(date +%s); security delete-generic-password -s peko -a vault-key 2>/dev/null; true` | No error; original dirs are gone (backed up) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-012 | **(Linux)** Run: `mv ~/.peko ~/.peko.bak.$(date +%s); mv ~/.local/share/peko ~/.local/share/peko.bak.$(date +%s); mv ~/.cache/peko ~/.cache/peko.bak.$(date +%s); (secret-tool clear service peko account vault-key 2>/dev/null \|\| true)` | No error; original dirs are gone (backed up) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If `secret-tool` isn't installed, clear via your desktop keyring app (Seahorse / KWallet) — search for service `peko`, account `vault-key` |
@@ -105,16 +113,22 @@ If you set `PEKO_HOME`, `PEKO_CONFIG_DIR`, or `PEKO_DATA_DIR` earlier, swap thos
 
 ---
 
-## 1. Dashboard & daemon lifecycle
+## 1. Engine lifecycle (Dashboard & header badge)
+
+> The engine is the bundled `peko` sidecar owned by the desktop's supervisor
+> (ADR-043). It starts when the app launches, follows its own lifecycle, and
+> shuts down when you close the window. There are no Start/Stop/Restart
+> controls in the UI — auto-spawn and one-shot auto-restart handle normal
+> cases, and a hidden diagnostics panel covers support/dev recovery.
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-101 | With daemon stopped, look at the Dashboard daemon card | Red circle, text says **"Daemon Stopped"**, green **Start** button visible | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-102 | Click the green **Start** button | Card flips to green circle, says **"Daemon Running"** with version + uptime counter ticking | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-103 | In terminal: `peko daemon status` | Matches UI: running, same version | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-104 | Click **Stop** in the UI | Card flips back to red / "Stopped"; terminal status agrees | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-105 | Click **Restart** in the UI | Brief "Stopped" → spinning → "Running"; uptime resets to 0s | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-106 | Look at the two stat cards below the daemon card | **Principals: N** and **Extensions: M** — both real numbers (≥ 0), not "undefined" | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-101 | With the app closed, run `pgrep -f "peko daemon"` (or `tasklist /FI "IMAGENAME eq peko.exe"` on Windows). Confirm no engine processes are running. | No matching processes | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Proves we're starting from a clean slate |
+| T-102 | Launch the desktop (`pnpm tauri dev` or the bundled app) | App window opens; engine shows up in the process list within ~2 seconds. **Dashboard** card shows the engine going through `Starting` (amber) → `Running` (green) by the time the UI mounts. Header shows a green **Running** pill. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-103 | Read the engine card on the Dashboard. Read the header pill in the top-right. | Both report **Running** with the same version (matches `peko --version` and the `Cargo.toml` version baked into the desktop). | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-104 | Close the desktop window (X button / `⌘W` / `Alt+F4`) | Engine process exits within a few seconds. Re-run the `pgrep` from T-101 and confirm it's gone. No `zombie peko process holding the lockfile` left behind. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-105 | Look at the two stat cards below the engine card | **Principals: N** and **Extensions: M** — both real numbers (≥ 0), not "undefined" | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-106 | Open Settings → **Daemon** | Card shows **Engine is running** with version + PID. No Start/Stop/Restart buttons. There's a discreet **Show internal status** text at the bottom of the section. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 ---
 
@@ -258,7 +272,9 @@ Skip this section if PekoHub login isn't configured.
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
 | T-808 | Settings → **General** | Form renders, values save when edited | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-809 | Settings → **Daemon** | Shows bind address + log level; changes persist after restart | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-809 | Settings → **Daemon** (engine surface) | Status card shows **Engine is running** with version + PID, plus a short note explaining "the engine starts automatically and restarts itself — no manual controls are needed." Below it: the **Log Level** picker. Changes persist after restart of the app. **No** Start / Stop / Restart buttons. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If Start/Stop/Restart buttons are present, mark **M** — that surface was supposed to be removed in PR #30. |
+| T-809a | Settings → **Daemon** → click **Show internal status** once. The text changes to "Click again to show internal status." Click a second time within 5 seconds. | A diagnostics panel appears: state, PID, version (actual), expected version, **Match** row, uptime, lockfile path, socket path, restart count. A **Recent log** disclosure holds the supervisor's log ring buffer. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Two-click pattern is intentional; single click arms, second click surfaces. |
+| T-809b | In the same panel, click **Restart engine** | Engine card flips amber (`Restarting…`) and back to green within ~5 seconds. PID is unchanged (the supervisor kept the same child process after a graceful cycle) or a fresh PID if a fork happened. The **Restart engine** button is enabled again. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reserved for support/dev — most users should just close and reopen the app. |
 | T-810 | Settings → **About** | Shows peko-desktop version + peko-runtime version (real numbers, not "undefined") | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 ---
@@ -299,12 +315,20 @@ Skip this section if PekoHub login isn't configured.
 | T-1201 | Send a prompt that produces a long reply (~500+ tokens) | Reply streams smoothly, finishes cleanly without hanging | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-1202 | Send 5 messages back-to-back quickly | All 5 eventually resolve (queued or parallel) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
-### 12.2 Daemon crash recovery
+### 12.2 Engine crash recovery (sidecar supervisor)
+
+> The supervisor owns the engine process. There is no `peko daemon stop` that
+> can usefully be run from the terminal — the desktop owns the bundled
+> binary, not the one on your PATH. To exercise crash recovery, kill the
+> sidecar's process directly (it's a regular OS process).
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-1203 | With the desktop open, run `peko daemon stop` in terminal | Dashboard card flips to "Stopped"; subsequent chat sends fail gracefully with an error chip — app does NOT freeze or crash | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-1204 | Run `peko daemon start` in terminal | Dashboard card flips back to "Running"; chat works again without restarting the desktop app | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-1203 | With the desktop open, note the engine PID (Settings → Daemon → Show internal status → PID row). In a terminal: `kill -9 <pid>` (or `taskkill /F /PID <pid>` on Windows). | Header pill and Dashboard card flip to amber `Restarting…` for ~2 seconds, then back to green `Running` with a fresh PID. The desktop itself does not crash; the status footer returns to its normal tone. A new chat send still works. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The supervisor gives the engine exactly one auto-restart attempt before giving up. |
+| T-1204 | Kill the engine a second time within 30 seconds of the first kill. | The header pill and Dashboard card turn **red `Failed`**. Subsequent chat sends fail gracefully with an error chip — the app does NOT crash. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Two fails in a row = supervisor gives up. This is intentional: a misconfigured box should not spin the CPU. |
+| T-1204a | In the **Failed** state, open Settings → Daemon → click **Show internal status** twice → click **Restart engine**. | Card flips amber `Restarting…` → green `Running` within ~5 seconds. Chat works again. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the supported way out of a `Failed` state without closing the desktop. |
+| T-1204b | Close and reopen the desktop (X then relaunch). | On relaunch the engine comes up fresh. The header pill starts amber `Starting` and turns green `Running` within a few seconds. The Failed banner is gone. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The supported recovery path for end users. The diagnostics-panel Restart is for support/dev. |
+| T-1204c | (Optional, advanced) Force a version mismatch by editing the desktop's bundled `binaries/peko-<triple>` symlink to point at a deliberately mismatched runtime (e.g. `ln -sf /tmp/fake-peko binaries/peko-<triple>` where `/tmp/fake-peko` writes `PEKO_VERSION=99.0.0` to stderr). Restart the desktop. | On startup the engine reports a version that doesn't match the desktop's expected version. The header shows green `Running` and a yellow **Engine version mismatch** banner appears above the page content describing both versions. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reinstalling the desktop fixes the mismatch — the release process guarantees they stay in lockstep. |
 
 ### 12.3 Privacy boundary (ADR-042)
 
