@@ -3,7 +3,7 @@ use clap_complete::generate;
 use peko::commands::{
     auth, capability, config, credential, cron, daemon, ext, init_logging, interrupt, log,
     principal, provider, quota, registry, runtime, search, send, system, tunnel, update, vault,
-    Cli, Commands, GlobalPaths,
+    version, Cli, Commands, GlobalPaths,
 };
 
 /// Peko - Lightweight Multi-Agent Runtime
@@ -135,5 +135,6 @@ async fn run_command(
             generate(shell, &mut cmd, name, &mut std::io::stdout());
             Ok(())
         }
+        Commands::Version(args) => version::handle_version(&args, json),
     }
 }

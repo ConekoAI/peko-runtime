@@ -50,6 +50,13 @@ pub enum DaemonCommands {
         /// and retry forever. See issue #8.
         #[arg(long, default_value = "50")]
         max_reconnect_attempts: u32,
+        /// Run in sidecar mode for `peko-desktop`. Uses a distinct lockfile
+        /// (`desktop.lock`) so the desktop's bundled engine cannot collide
+        /// with a CLI-launched daemon in the same config dir. See ADR-043.
+        /// Not user-facing — the desktop sets this when it spawns the
+        /// bundled sidecar.
+        #[arg(long, hide = true)]
+        sidecar_mode: bool,
     },
 
     /// Stop the daemon
@@ -94,6 +101,7 @@ pub async fn handle_daemon(
             foreground,
             interval,
             max_reconnect_attempts,
+            sidecar_mode,
         } => {
             if service.is_daemon_running().await? {
                 println!("⚠️  Daemon is already running");
@@ -122,10 +130,13 @@ pub async fn handle_daemon(
                 println!("🚀 Starting daemon in background (interval: {interval}s)...");
                 println!("   Config dir: {}", config.config_dir.display());
                 println!("   Data dir: {}", config.data_dir.display());
+                if sidecar_mode {
+                    println!("   Mode: sidecar (lockfile: desktop.lock)");
+                }
                 println!();
 
                 match service
-                    .spawn_daemon_with(interval, max_reconnect_attempts)
+                    .spawn_daemon_with(interval, max_reconnect_attempts, sidecar_mode)
                     .await
                 {
                     Ok(_) => {
@@ -180,8 +191,15 @@ pub async fn handle_daemon(
                 }
             }
 
+            // Restart preserves the existing mode (daemon or sidecar) by
+            // inheriting whatever lockfile is currently held. If neither is
+            // held, fall back to the standard daemon path. We don't
+            // propagate sidecar_mode here because `peko daemon restart` is
+            // a user-invoked command — the desktop drives its own restart
+            // through SidecarSupervisor in PR D.
+            let sidecar_mode = service.is_sidecar_lock_held();
             match service
-                .spawn_daemon_with(interval, max_reconnect_attempts)
+                .spawn_daemon_with(interval, max_reconnect_attempts, sidecar_mode)
                 .await
             {
                 Ok(_) => {
@@ -300,6 +318,7 @@ mod tests {
             foreground: true,
             interval: 15,
             max_reconnect_attempts: 50,
+            sidecar_mode: false,
         };
         let _cmd = DaemonCommands::Stop { force: false };
         let _cmd = DaemonCommands::Status { json: true };
