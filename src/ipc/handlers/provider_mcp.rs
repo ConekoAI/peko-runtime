@@ -166,3 +166,97 @@ impl RequestHandler for ProviderMcpHandler {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Diagnostic for the desktop "settings page shows no provider configured"
+    //! bug (T-105 follow-up): the desktop's fallback list fires when IPC
+    //! returns empty. This test pins the wire shape the handler emits so
+    //! upstream diagnostics can compare against what the runtime sends.
+
+    use super::*;
+    use crate::ipc::response_sink::ResponseSink;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    /// Stub `ProviderMcpHost` — `ProviderList` does not need any host
+    /// state (the handler builds a fresh registry), but the trait is
+    /// required for construction.
+    struct NoopHost;
+    #[async_trait]
+    impl ProviderMcpHost for NoopHost {
+        async fn reload_providers(&self) -> anyhow::Result<(usize, usize)> {
+            Ok((0, 0))
+        }
+        async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    struct CaptureSink(Arc<Mutex<Vec<u8>>>);
+    #[async_trait]
+    impl ResponseSink for CaptureSink {
+        async fn send_bytes(&self, bytes: &[u8]) -> std::io::Result<()> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(())
+        }
+    }
+
+    fn test_caller() -> CallerContext {
+        CallerContext::local()
+    }
+
+    fn test_peer() -> PeerAddr {
+        PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"))
+    }
+
+    #[tokio::test]
+    async fn provider_list_emits_all_builtin_entries() {
+        let handler = ProviderMcpHandler::new(Arc::new(NoopHost));
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = CaptureSink(buf.clone());
+
+        handler
+            .handle(
+                RequestPacket::ProviderList { request_id: 7 },
+                &test_caller(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .expect("handle should succeed");
+
+        let bytes = buf.lock().unwrap().clone();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("response should be valid JSON");
+
+        let providers = json
+            .get("providers")
+            .and_then(|v| v.as_array())
+            .expect("response should have a providers array");
+
+        let ids: Vec<String> = providers
+            .iter()
+            .filter_map(|p| p.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+
+        assert!(
+            ids.iter().any(|id| id == "minimax"),
+            "ProviderList should always include the minimax entry from \
+             BUILT_IN_PROVIDERS; got: {ids:?}",
+        );
+        assert!(
+            ids.contains(&"openai".to_string())
+                && ids.contains(&"anthropic".to_string())
+                && ids.contains(&"ollama".to_string()),
+            "ProviderList should include the canonical built-ins; got: {ids:?}",
+        );
+        // Pin the response kind so future wire-shape changes surface
+        // here rather than as a silent desktop regression.
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("provider_list")
+        );
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(7));
+    }
+}
