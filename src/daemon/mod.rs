@@ -17,12 +17,50 @@ use crate::cron::IdleDetector;
 use crate::daemon::cron_engine::CronEngine;
 use anyhow::Result;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
+
+/// How this daemon was launched.
+///
+/// Used by the Status response so clients can tell who owns the running
+/// IPC socket. `Headless` is the default for `peko daemon start` (CLI)
+/// and any ad-hoc invocation; `Sidecar` is set by `peko-desktop`'s
+/// supervisor so it can detect when a foreign daemon is already
+/// holding the socket (and adopt it instead of spawning a competing
+/// child). See ADR-043 §adoption.
+///
+/// `pub` (not `pub(crate)`) because `ResponsePacket::Status::mode`
+/// is part of the public IPC wire envelope (`ipc::packet` is `pub`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchMode {
+    #[default]
+    Headless,
+    Sidecar,
+}
+
+impl LaunchMode {
+    /// String form used in the `mode` field of `ResponsePacket::Status`
+    /// and in CLI diagnostic messages. Kept in lockstep with the serde
+    /// representation above.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LaunchMode::Headless => "headless",
+            LaunchMode::Sidecar => "sidecar",
+        }
+    }
+}
+
+impl std::fmt::Display for LaunchMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// Daemon configuration
 #[derive(Debug, Clone)]
@@ -41,6 +79,10 @@ pub(crate) struct DaemonConfig {
     /// before the tunnel client stops retrying and reports degraded state.
     /// Issue #8: defaults to 50 (~28 minutes with exponential backoff).
     pub max_reconnect_attempts: u32,
+    /// How this daemon was launched (CLI vs. sidecar). Reflected in the
+    /// `mode` field of `ResponsePacket::Status` so peers (notably the
+    /// desktop's SidecarSupervisor) can tell who owns the IPC socket.
+    pub launch_mode: LaunchMode,
 }
 
 impl Default for DaemonConfig {
@@ -56,6 +98,7 @@ impl Default for DaemonConfig {
             data_dir,
             maintenance_interval: Duration::from_hours(1), // 1 hour default
             max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
+            launch_mode: LaunchMode::default(),
         }
     }
 }
@@ -211,6 +254,7 @@ impl Daemon {
                 data_dir: self.config.data_dir.clone(),
                 config_dir: self.config.config_dir.clone(),
                 log_level: "info".to_string(),
+                launch_mode: self.config.launch_mode,
             },
         )
         .await
@@ -480,6 +524,7 @@ mod tests {
             data_dir: tmp.path().join("data"),
             maintenance_interval: Duration::from_mins(1),
             max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
+            launch_mode: LaunchMode::Headless,
         };
 
         let daemon = Daemon::new(config).unwrap();

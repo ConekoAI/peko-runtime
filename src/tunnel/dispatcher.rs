@@ -1454,6 +1454,7 @@ mod tests {
             data_dir: data_dir.clone(),
             config_dir: data_dir.clone(),
             log_level: "info".to_string(),
+            launch_mode: crate::daemon::LaunchMode::Headless,
         };
         AppState::with_data_dir(
             temp_dir.path().to_path_buf(),

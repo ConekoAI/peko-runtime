@@ -332,6 +332,12 @@ pub(crate) struct DaemonConfigSnapshot {
     pub config_dir: PathBuf,
     /// Log level
     pub log_level: String,
+    /// How this daemon was launched (CLI vs. sidecar). Reflected in the
+    /// `mode` field of `ResponsePacket::Status` so peers (notably the
+    /// desktop's SidecarSupervisor) can tell who owns the IPC socket.
+    /// Defaults to `Headless` for tests that don't construct a full
+    /// `DaemonConfig`.
+    pub launch_mode: crate::daemon::LaunchMode,
 }
 
 // Several methods on `AppState` are kept as a deliberate public-ish
@@ -1819,6 +1825,7 @@ impl Default for DaemonConfigSnapshot {
             data_dir: PathBuf::from(".peko"),
             config_dir: PathBuf::from(".peko"),
             log_level: "info".to_string(),
+            launch_mode: crate::daemon::LaunchMode::default(),
         }
     }
 }
@@ -2157,6 +2164,10 @@ impl crate::ipc::handlers::system::SystemHost for AppState {
 
     async fn request_shutdown(&self, force: bool) {
         AppState::request_shutdown(self, force).await;
+    }
+
+    fn launch_mode(&self) -> crate::daemon::LaunchMode {
+        self.config.launch_mode
     }
 }
 
