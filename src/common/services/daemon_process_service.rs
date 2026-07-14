@@ -72,15 +72,62 @@ impl DaemonProcessService {
     // PID file helpers
     // ------------------------------------------------------------------
 
-    /// Get the path to the PID file
+    /// Get the path to the daemon PID file.
+    ///
+    /// Two distinct paths exist in `<config_dir>/run/`:
+    /// - `daemon.pid` — the lockfile used by `peko daemon start` (CLI / headless)
+    /// - `desktop.lock` — the lockfile used when `peko-desktop` spawns the
+    ///   bundled sidecar with `--sidecar-mode` (ADR-043). Distinct name
+    ///   prevents a CLI daemon and a desktop sidecar in the same config
+    ///   dir from racing on the same lockfile.
     #[must_use]
-    pub fn pid_file_path(&self) -> PathBuf {
-        self.resolver.config_dir().join("run").join("daemon.pid")
+    pub fn pid_file_path(&self, sidecar_mode: bool) -> PathBuf {
+        let name = if sidecar_mode { "desktop.lock" } else { "daemon.pid" };
+        self.resolver.config_dir().join("run").join(name)
+    }
+
+    /// True iff a sidecar-mode lockfile is currently held on disk by a
+    /// live process. Used by `peko daemon restart` to preserve the mode of
+    /// whatever was running before the restart.
+    ///
+    /// Stale lockfiles (PID present but not running, or unparseable
+    /// contents) are cleaned up as a side-effect, matching
+    /// `read_pid_for`'s behaviour. This keeps callers from accidentally
+    /// chaining into `spawn_daemon_with` with a stale lockfile still on
+    /// disk.
+    #[must_use]
+    pub fn is_sidecar_lock_held(&self) -> bool {
+        let path = self.pid_file_path(true);
+        if !path.exists() {
+            return false;
+        }
+        let raw = match std::fs::read_to_string(&path).ok() {
+            Some(s) => s,
+            None => return false,
+        };
+        match raw.trim().parse::<u32>().ok() {
+            Some(pid) if is_process_running(pid) => true,
+            _ => {
+                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(path.with_extension("lock"));
+                false
+            }
+        }
     }
 
     /// Read the PID from the PID file if it exists and the process is running
     pub fn read_pid(&self) -> Option<u32> {
-        let path = self.pid_file_path();
+        // Default-mode read; sidecar-mode reads happen via `read_pid_sidecar`.
+        self.read_pid_for(false)
+    }
+
+    /// Read the PID from the sidecar lockfile if it exists and the process is running.
+    pub fn read_pid_sidecar(&self) -> Option<u32> {
+        self.read_pid_for(true)
+    }
+
+    fn read_pid_for(&self, sidecar_mode: bool) -> Option<u32> {
+        let path = self.pid_file_path(sidecar_mode);
         if !path.exists() {
             return None;
         }
@@ -89,16 +136,27 @@ impl DaemonProcessService {
         if is_process_running(pid) {
             Some(pid)
         } else {
-            // Stale PID file — clean it up
+            // Stale lockfile — clean it up.
             let _ = std::fs::remove_file(&path);
+            // Companion `.lock` is a fsnotify-style sidecar used by some
+            // platforms; harmless to remove if absent.
             let _ = std::fs::remove_file(path.with_extension("lock"));
             None
         }
     }
 
-    /// Write the PID to the PID file
+    /// Write the PID to the PID file (default daemon mode).
     pub fn write_pid(&self, pid: u32) -> anyhow::Result<()> {
-        let path = self.pid_file_path();
+        self.write_pid_for(pid, false)
+    }
+
+    /// Write the PID to the sidecar lockfile.
+    pub fn write_pid_sidecar(&self, pid: u32) -> anyhow::Result<()> {
+        self.write_pid_for(pid, true)
+    }
+
+    fn write_pid_for(&self, pid: u32, sidecar_mode: bool) -> anyhow::Result<()> {
+        let path = self.pid_file_path(sidecar_mode);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -106,9 +164,18 @@ impl DaemonProcessService {
         Ok(())
     }
 
-    /// Remove the PID file and associated lock file
+    /// Remove the PID file and associated lock file (default daemon mode).
     pub fn remove_pid_file(&self) {
-        let path = self.pid_file_path();
+        self.remove_pid_file_for(false);
+    }
+
+    /// Remove the sidecar lockfile.
+    pub fn remove_sidecar_lock_file(&self) {
+        self.remove_pid_file_for(true);
+    }
+
+    fn remove_pid_file_for(&self, sidecar_mode: bool) {
+        let path = self.pid_file_path(sidecar_mode);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("lock"));
     }
@@ -224,7 +291,10 @@ impl DaemonProcessService {
     // Spawn
     // ------------------------------------------------------------------
 
-    /// Spawn the daemon as a background child process
+    /// Spawn the daemon as a background child process (default mode).
+    ///
+    /// Backwards-compatible wrapper around `spawn_daemon_with` with
+    /// `sidecar_mode = false`. The CLI / headless path uses this.
     ///
     /// The daemon binary is invoked with `daemon start --foreground` so it
     /// blocks in the child process. Stdout/stderr are suppressed.
@@ -234,15 +304,30 @@ impl DaemonProcessService {
     /// within the timeout.
     pub async fn spawn_daemon(&self, interval_secs: u64) -> anyhow::Result<Child> {
         // Backwards-compatible wrapper: defaults to the runtime default cap.
-        self.spawn_daemon_with(interval_secs, crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS)
+        self.spawn_daemon_with(interval_secs, crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS, false)
             .await
     }
 
-    /// Spawn the daemon with a configurable reconnect-attempt cap (issue #8).
+    /// Spawn the daemon as a background child process.
+    ///
+    /// # Arguments
+    /// - `interval_secs` — cron poll interval
+    /// - `max_reconnect_attempts` — PekoHub tunnel reconnect cap (issue #8)
+    /// - `sidecar_mode` — when true, the daemon is started with
+    ///   `--sidecar-mode` and writes to a distinct lockfile
+    ///   (`<config_dir>/run/desktop.lock`) so it cannot collide with a
+    ///   CLI-launched daemon in the same config dir. `peko-desktop`'s
+    ///   `SidecarSupervisor` (PR D, ADR-043) calls this with
+    ///   `sidecar_mode = true`.
+    ///
+    /// # Errors
+    /// Returns error if the daemon fails to spawn or does not become ready
+    /// within the timeout.
     pub async fn spawn_daemon_with(
         &self,
         interval_secs: u64,
         max_reconnect_attempts: u32,
+        sidecar_mode: bool,
     ) -> anyhow::Result<Child> {
         let exe_path = std::env::current_exe()?;
         let config_dir = self.resolver.config_dir().to_path_buf();
@@ -255,10 +340,18 @@ impl DaemonProcessService {
             .arg("--interval")
             .arg(interval_secs.to_string())
             .arg("--max-reconnect-attempts")
-            .arg(max_reconnect_attempts.to_string())
-            .env("PEKO_CONFIG_DIR", &config_dir)
+            .arg(max_reconnect_attempts.to_string());
+        if sidecar_mode {
+            cmd.arg("--sidecar-mode");
+        }
+        cmd.env("PEKO_CONFIG_DIR", &config_dir)
             .env("PEKO_DATA_DIR", &data_dir)
             .stdout(std::process::Stdio::null())
+            // Stderr is intentionally NOT piped here. The CLI path doesn't
+            // care about PEKO_VERSION (it can be queried via
+            // `peko daemon status`). `peko-desktop`'s SidecarSupervisor
+            // spawns the daemon via Tauri's Command::new_sidecar in its own
+            // process and pipes stderr there.
             .stderr(std::process::Stdio::null())
             .kill_on_drop(false);
 
@@ -272,9 +365,13 @@ impl DaemonProcessService {
             anyhow::bail!("Daemon failed to start - not ready within timeout");
         }
 
-        // Write PID file
+        // Write PID file (sidecar lock or daemon.pid depending on mode)
         if let Some(pid) = child.id() {
-            let _ = self.write_pid(pid);
+            if sidecar_mode {
+                let _ = self.write_pid_sidecar(pid);
+            } else {
+                let _ = self.write_pid(pid);
+            }
         }
 
         Ok(child)
@@ -409,8 +506,88 @@ mod tests {
             PathBuf::from("/cache"),
         );
         let service = DaemonProcessService::new(resolver);
-        let path = service.pid_file_path();
-        assert_eq!(path, PathBuf::from("/config/run/daemon.pid"));
+        // Default mode keeps the historical path so existing headless
+        // setups don't see a behaviour change.
+        assert_eq!(
+            service.pid_file_path(false),
+            PathBuf::from("/config/run/daemon.pid")
+        );
+        // Sidecar mode uses a distinct filename so a CLI daemon and a
+        // desktop sidecar can coexist in the same config dir without
+        // racing on the same lockfile.
+        assert_eq!(
+            service.pid_file_path(true),
+            PathBuf::from("/config/run/desktop.lock")
+        );
+    }
+
+    /// `is_sidecar_lock_held` returns false when no lockfile exists.
+    #[test]
+    fn test_is_sidecar_lock_held_no_file() {
+        let temp_dir = std::env::temp_dir().join(format!("PEKO_test_sidecar_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let resolver = PathResolver::with_dirs(
+            temp_dir.clone(),
+            temp_dir.join("data"),
+            temp_dir.join("cache"),
+        );
+        let service = DaemonProcessService::new(resolver);
+        assert!(!service.is_sidecar_lock_held());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// `is_sidecar_lock_held` returns true when the lockfile holds a live
+    /// PID (here: our own test process).
+    #[test]
+    fn test_is_sidecar_lock_held_live_pid() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("PEKO_test_sidecar_live_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let resolver = PathResolver::with_dirs(
+            temp_dir.clone(),
+            temp_dir.join("data"),
+            temp_dir.join("cache"),
+        );
+        let service = DaemonProcessService::new(resolver);
+
+        // Write our own (live) PID to the sidecar lockfile.
+        let own_pid = std::process::id();
+        service.write_pid_sidecar(own_pid).unwrap();
+
+        assert!(service.is_sidecar_lock_held());
+
+        service.remove_sidecar_lock_file();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// `is_sidecar_lock_held` returns false for a stale (non-running) PID
+    /// and cleans up the stale lockfile.
+    #[test]
+    fn test_is_sidecar_lock_held_stale_pid() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("PEKO_test_sidecar_stale_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let resolver = PathResolver::with_dirs(
+            temp_dir.clone(),
+            temp_dir.join("data"),
+            temp_dir.join("cache"),
+        );
+        let service = DaemonProcessService::new(resolver);
+
+        // PID 999_999 effectively never exists on a sane test machine.
+        service.write_pid_sidecar(999_999).unwrap();
+        assert!(!service.is_sidecar_lock_held());
+        // Stale lockfile is cleaned up as a side-effect.
+        assert!(!service.pid_file_path(true).exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -436,7 +613,9 @@ mod tests {
 
         // Remove PID file
         service.remove_pid_file();
-        assert!(!service.pid_file_path().exists());
+        assert!(!service.pid_file_path(false).exists());
+
+        // Clean up
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -461,7 +640,7 @@ mod tests {
         // read_pid should return None and clean up the stale file
         let read = service.read_pid();
         assert_eq!(read, None);
-        assert!(!service.pid_file_path().exists());
+        assert!(!service.pid_file_path(false).exists());
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);

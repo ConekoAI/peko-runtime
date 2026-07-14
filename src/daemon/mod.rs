@@ -166,6 +166,23 @@ impl Daemon {
 
     /// Run the daemon (blocks until shutdown)
     pub async fn run(mut self) -> Result<()> {
+        // PEKO_VERSION line MUST be the first thing written to stderr. The
+        // peko-desktop sidecar supervisor (ADR-043) parses this single line
+        // for version-mismatch detection: it scrapes stderr as bytes stream
+        // in, looks for the `PEKO_VERSION=` prefix, and compares against the
+        // version baked into the desktop's bundle manifest. Anything emitted
+        // before this line shifts the parser's read frame and makes it look
+        // like the daemon is silently failing to start.
+        //
+        // Format: literal `PEKO_VERSION=<semver>\n`. No JSON, no extra
+        // fields, no prefix logs. The supervisor's parser is a strict
+        // line-prefix scan.
+        //
+        // Written via `eprintln!` (not `tracing`) so it reaches stderr even
+        // when tracing is suppressed (the CLI typically spawns the daemon
+        // with stderr=null, which is fine — the supervisor pipes stderr).
+        eprintln!("PEKO_VERSION={}", crate::VERSION);
+
         info!("🚀 peko daemon starting...");
         info!("   Config dir: {}", self.config.config_dir.display());
         info!("   Data dir: {}", self.config.data_dir.display());

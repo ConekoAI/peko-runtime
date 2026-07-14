@@ -29,6 +29,7 @@ pub mod send;
 pub mod system;
 pub mod tunnel;
 pub mod vault;
+pub mod version;
 
 pub mod update;
 
@@ -225,6 +226,17 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+
+    /// Print the runtime version
+    ///
+    /// Distinct from `peko --version` (handled by clap). This subcommand
+    /// exists for programmatic consumption — notably peko-desktop's
+    /// SidecarSupervisor (ADR-043) — and supports `--json` output.
+    ///
+    /// Examples:
+    ///   peko version
+    ///   peko version --json
+    Version(version::VersionArgs),
 }
 
 /// Global paths helper
