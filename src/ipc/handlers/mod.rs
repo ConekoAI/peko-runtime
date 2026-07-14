@@ -31,7 +31,9 @@ pub(crate) mod ext_runtime;
 pub(crate) mod extension;
 pub(crate) mod instance;
 pub(crate) mod principal;
+pub(crate) mod provider_add;
 pub(crate) mod provider_mcp;
+pub(crate) mod provider_templates;
 pub(crate) mod quota;
 pub(crate) mod runtime;
 pub(crate) mod system;
@@ -46,7 +48,9 @@ use ext_runtime::ExtRuntimeHandler;
 use extension::ExtensionHandler;
 use instance::InstanceHandler;
 use principal::PrincipalHandler;
+use provider_add::ProviderAddHandler;
 use provider_mcp::ProviderMcpHandler;
+use provider_templates::ProviderTemplatesHandler;
 use quota::QuotaHandler;
 use runtime::RuntimeHandler;
 use system::SystemHandler;
@@ -111,7 +115,7 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 14] = [
+        let handlers: [Arc<dyn RequestHandler>; 16] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
@@ -125,7 +129,14 @@ impl RequestDispatcher {
             Arc::new(ProviderMcpHandler::new(host.clone())),
             Arc::new(QuotaHandler::new(host.clone())),
             Arc::new(CredentialHandler::new(host.clone())),
-            Arc::new(PrincipalHandler::new(host)),
+            Arc::new(PrincipalHandler::new(host.clone())),
+            // T-109b: `ProviderTemplates` + `ProviderAdd` are the
+            // IPC seam for the desktop's "Add Provider" modal. They
+            // sit adjacent to `ProviderMcp` (catalog/reload) so all
+            // provider-mutation variants are colocated in the
+            // dispatch table.
+            Arc::new(ProviderTemplatesHandler::new(host.clone())),
+            Arc::new(ProviderAddHandler::new(host)),
         ];
 
         for handler in &handlers {

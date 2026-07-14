@@ -246,6 +246,29 @@ pub enum RequestPacket {
     #[serde(rename = "provider_reload")]
     ProviderReload { request_id: u64 },
 
+    /// Enumerate the built-in provider templates the runtime ships
+    /// with. Sent by the desktop's "Add Provider" modal so the
+    /// picker can show the curated list of known providers
+    /// (Anthropic, OpenAI, Groq, Ollama, …) with their default
+    /// base URL, API format, and curated model list. Mirrors the
+    /// CLI's `peko provider templates` path, but over IPC so the
+    /// desktop doesn't shell out.
+    #[serde(rename = "provider_templates")]
+    ProviderTemplates { request_id: u64 },
+
+    /// Add a provider to the catalog — either from a built-in
+    /// template (`args.template`) or fully custom
+    /// (`args.custom` + `api_format` + `base_url` + `model`).
+    /// Optionally stores a key in the vault and promotes the new
+    /// entry to the runtime default in the same round-trip.
+    /// Mirrors `peko provider add` so the desktop modal can do
+    /// the same thing without a shell-out.
+    #[serde(rename = "provider_add")]
+    ProviderAdd {
+        request_id: u64,
+        args: ProviderAddArgs,
+    },
+
     /// Re-read the MCP server configuration from `mcp.toml` and the
     /// credential vault from disk. Sent by `peko ext mcp {add,auth,remove}`
     /// so the long-running daemon observes CLI mutations without a restart.
@@ -647,6 +670,8 @@ impl RequestPacket {
             | Self::PrincipalCreate { request_id, .. }
             | Self::ProviderList { request_id }
             | Self::ProviderReload { request_id }
+            | Self::ProviderTemplates { request_id }
+            | Self::ProviderAdd { request_id, .. }
             | Self::McpReload { request_id }
             | Self::CredentialList { request_id }
             | Self::SystemStatus { request_id }
@@ -955,6 +980,28 @@ pub enum ResponsePacket {
         request_id: u64,
         providers_count: usize,
         keys_count: usize,
+    },
+
+    /// Result of `ProviderTemplates`. One row per built-in
+    /// template. The desktop uses this to populate the
+    /// "Add Provider" modal's template picker; the picker is
+    /// read-only at runtime, so we ship the whole list in one
+    /// round-trip rather than paginating.
+    #[serde(rename = "provider_templates")]
+    ProviderTemplates {
+        request_id: u64,
+        providers: Vec<ProviderTemplateInfo>,
+    },
+
+    /// Result of `ProviderAdd`. Returns the catalog-summary view
+    /// (`ProviderInfo`) of the newly-inserted entry so the desktop
+    /// can refresh `useProviders()` without a follow-up list call.
+    /// If `args.set_default` was true, the response is emitted
+    /// after the default has been promoted.
+    #[serde(rename = "provider_added")]
+    ProviderAdded {
+        request_id: u64,
+        provider: ProviderInfo,
     },
 
     /// MCP configuration reload response. Reports the post-reload server
@@ -1298,6 +1345,119 @@ pub struct ProviderInfo {
     pub is_local: bool,
 }
 
+/// One model declared by a built-in provider template.
+///
+/// This is the IPC mirror of `providers::templates::ModelTemplate` —
+/// a smaller, owned, serializable shape suitable for the desktop's
+/// "Add Provider" modal. The static `&'static str` and capability
+/// slices from the in-runtime template are projected into owned
+/// `String`s / optional `u32`s so the struct can be sent over the
+/// wire without a lifetime. `headers` and `capabilities` from the
+/// in-runtime template are intentionally omitted — the modal
+/// doesn't need them, and the catalog entry the user creates from
+/// a template starts with the template's defaults intact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelTemplateInfo {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
+/// One built-in provider template, projected from the in-runtime
+/// `BUILT_IN_TEMPLATES` array into an owned, serializable shape for
+/// the desktop's "Add Provider" modal. The wire shape is intentionally
+/// richer than `ProviderInfo` (which is the catalog-summary view) so
+/// the picker can show the curated model list and context length —
+/// the choices that actually drive a one-screen decision.
+///
+/// Field names are snake_case to match the rest of the IPC envelope;
+/// the Tauri command at `peko-desktop/src-tauri/src/commands/`
+/// `provider_admin.rs` projects this into the camelCase TS surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderTemplateInfo {
+    pub id: String,
+    pub display_name: String,
+    /// `"openai"` or `"anthropic"` — matches `ProviderInfo::api_type`
+    /// and the underlying `ApiFormat` enum's snake-case wire ids.
+    pub api_type: String,
+    /// Base URL. Empty string for templates where the user must
+    /// supply a deployment URL (e.g. `azure-openai`).
+    pub base_url: String,
+    pub requires_key: bool,
+    pub default_model: String,
+    pub models: Vec<ModelTemplateInfo>,
+}
+
+/// Arguments for `RequestPacket::ProviderAdd`.
+///
+/// This mirrors the CLI's `provider add` `AddArgs` so the desktop
+/// modal can drive exactly the same surface that
+/// `peko provider add` exposes. `template` and `custom` are
+/// mutually exclusive; the handler refuses bare invocations the
+/// same way the CLI does (per the F6/F7 symmetry rule — the
+/// "either --template or --custom is required" guard stays in
+/// both the CLI and the IPC so the two surfaces never disagree).
+///
+/// `key` and `set_default` are best-effort: if the user supplies
+/// them, the handler folds them into the same vault + catalog
+/// writes the CLI would do (`vault.set_provider_key`,
+/// `catalog.set_default`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderAddArgs {
+    /// Seed from a built-in preset template (e.g. `"anthropic"`,
+    /// `"openai"`, `"ollama"`). Mutually exclusive with `custom`.
+    #[serde(default)]
+    pub template: Option<String>,
+    /// Override the catalog id (template or custom). Defaults to
+    /// the template id when omitted for a template-mode add.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Override the catalog display name.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Add a fully custom (OpenAI-compatible or Anthropic-
+    /// compatible) provider. Mutually exclusive with `template`.
+    #[serde(default)]
+    pub custom: bool,
+    /// API format for a custom provider. One of
+    /// `"openai_completions"` | `"anthropic_messages"`. Maps to
+    /// `ApiFormat::from_wire`.
+    #[serde(default)]
+    pub api_format: Option<String>,
+    /// Base URL for a custom provider.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Whether the custom provider requires an API key.
+    /// Defaults to `true` when omitted.
+    #[serde(default)]
+    pub requires_key: Option<bool>,
+    /// One or more model ids to declare. The first becomes the
+    /// default model for the new entry. The CLI accepts the
+    /// same vector and uses the same defaulting rule.
+    #[serde(default)]
+    pub model: Vec<String>,
+    /// Store an API key in the vault immediately. Equivalent to
+    /// `peko credential set <id>` after the add. Ignored when
+    /// the new entry does not require a key.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Promote the new entry to the runtime default after adding
+    /// it. Equivalent to `peko provider set-default <id>` after
+    /// the add.
+    #[serde(default)]
+    pub set_default: Option<bool>,
+    /// Override the default model id used when `set_default` is
+    /// true. Defaults to the entry's `default_model_id` (i.e. the
+    /// template's curated choice, or the first model for a
+    /// custom add) when omitted.
+    #[serde(default)]
+    pub default_model: Option<String>,
+}
+
 /// One row of `CredentialsListed`. `last_tested` is reserved for a
 /// future vault field that records when the key was last validated
 /// via `credential_test`; the vault does not track it today, so the
@@ -1445,6 +1605,8 @@ impl ResponsePacket {
             | Self::SystemDoctor { request_id, .. }
             | Self::ProviderList { request_id, .. }
             | Self::ProviderReloaded { request_id, .. }
+            | Self::ProviderTemplates { request_id, .. }
+            | Self::ProviderAdded { request_id, .. }
             | Self::McpReloaded { request_id, .. }
             | Self::CredentialsListed { request_id, .. }
             | Self::ExtensionList { request_id, .. }
@@ -1514,6 +1676,8 @@ impl ResponsePacket {
             Self::SystemDoctor { .. } => "SystemDoctor",
             Self::ProviderList { .. } => "ProviderList",
             Self::ProviderReloaded { .. } => "ProviderReloaded",
+            Self::ProviderTemplates { .. } => "ProviderTemplates",
+            Self::ProviderAdded { .. } => "ProviderAdded",
             Self::McpReloaded { .. } => "McpReloaded",
             Self::CredentialsListed { .. } => "CredentialsListed",
             Self::ExtensionList { .. } => "ExtensionList",
@@ -2172,6 +2336,179 @@ mod tests {
             } => {
                 assert_eq!(request_id, 602);
                 assert!(principal.is_none());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_provider_templates_request_roundtrip() {
+        // T-109b: pin the request wire shape for the desktop's
+        // "Add Provider" modal's template picker. The bare request
+        // is just `{ type, request_id }` — no payload — but we round-
+        // trip the envelope anyway so a future field addition
+        // surfaces as a test diff.
+        let req = RequestPacket::ProviderTemplates { request_id: 911 };
+        let bytes = req.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("provider_templates"));
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(911));
+
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ProviderTemplates { request_id } => assert_eq!(request_id, 911),
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_provider_templates_response_roundtrip() {
+        // T-109b: pin the response shape — the desktop's modal
+        // picks up `providers[]` with the full model list and
+        // context lengths. `headers` and `capabilities` are
+        // intentionally omitted (T-109b scope decision) so the
+        // modal only ships the fields it actually renders.
+        let resp = ResponsePacket::ProviderTemplates {
+            request_id: 912,
+            providers: vec![ProviderTemplateInfo {
+                id: "anthropic".to_string(),
+                display_name: "Anthropic".to_string(),
+                api_type: "anthropic".to_string(),
+                base_url: "https://api.anthropic.com".to_string(),
+                requires_key: true,
+                default_model: "claude-sonnet-4-5".to_string(),
+                models: vec![ModelTemplateInfo {
+                    id: "claude-sonnet-4-5".to_string(),
+                    display_name: Some("Claude Sonnet 4.5".to_string()),
+                    context_length: Some(200_000),
+                    max_output_tokens: Some(8_192),
+                }],
+            }],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("provider_templates"));
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(912));
+
+        let providers = json
+            .get("providers")
+            .and_then(|v| v.as_array())
+            .expect("response should have a providers array");
+        assert_eq!(providers.len(), 1);
+
+        // Field names must match what the desktop's Tauri command
+        // projection reads in `provider_admin.rs`.
+        let p = &providers[0];
+        assert_eq!(p.get("id").and_then(|v| v.as_str()), Some("anthropic"));
+        assert_eq!(p.get("display_name").and_then(|v| v.as_str()), Some("Anthropic"));
+        assert_eq!(p.get("api_type").and_then(|v| v.as_str()), Some("anthropic"));
+        assert_eq!(p.get("base_url").and_then(|v| v.as_str()), Some("https://api.anthropic.com"));
+        assert_eq!(p.get("requires_key").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(p.get("default_model").and_then(|v| v.as_str()), Some("claude-sonnet-4-5"));
+
+        let models = p.get("models").and_then(|v| v.as_array()).expect("models array");
+        assert_eq!(models.len(), 1);
+        let m = &models[0];
+        assert_eq!(m.get("id").and_then(|v| v.as_str()), Some("claude-sonnet-4-5"));
+        assert_eq!(m.get("context_length").and_then(|v| v.as_u64()), Some(200_000));
+        assert_eq!(m.get("max_output_tokens").and_then(|v| v.as_u64()), Some(8_192));
+
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ProviderTemplates { request_id, providers } => {
+                assert_eq!(request_id, 912);
+                assert_eq!(providers.len(), 1);
+                assert_eq!(providers[0].id, "anthropic");
+                assert_eq!(providers[0].models[0].context_length, Some(200_000));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_provider_add_request_roundtrip() {
+        // T-109b: pin the request shape for `peko provider add` over
+        // IPC. All fields are Option / Vec / bool with #[serde(default)]
+        // so a bare request (template mode, no overrides) round-trips
+        // without losing defaulting. The handler treats a bare request
+        // (no `template`, no `custom`) as an error — same guard as the
+        // CLI — but the wire shape is defined either way.
+        let req = RequestPacket::ProviderAdd {
+            request_id: 913,
+            args: ProviderAddArgs {
+                template: Some("anthropic".to_string()),
+                name: None,
+                display_name: None,
+                custom: false,
+                api_format: None,
+                base_url: None,
+                requires_key: None,
+                model: vec![],
+                key: Some("sk-test".to_string()),
+                set_default: Some(true),
+                default_model: Some("claude-sonnet-4-5".to_string()),
+            },
+        };
+        let bytes = req.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("provider_add"));
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(913));
+
+        let args = json.get("args").expect("response should have an args object");
+        assert_eq!(args.get("template").and_then(|v| v.as_str()), Some("anthropic"));
+        assert_eq!(args.get("custom").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(args.get("key").and_then(|v| v.as_str()), Some("sk-test"));
+        assert_eq!(args.get("set_default").and_then(|v| v.as_bool()), Some(true));
+
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ProviderAdd { request_id, args } => {
+                assert_eq!(request_id, 913);
+                assert_eq!(args.template.as_deref(), Some("anthropic"));
+                assert_eq!(args.key.as_deref(), Some("sk-test"));
+                assert_eq!(args.set_default, Some(true));
+                assert!(!args.custom);
+                assert!(args.model.is_empty());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_provider_added_response_roundtrip() {
+        // T-109b: pin the response shape — the desktop uses the
+        // returned `provider` to refresh `useProviders()` without
+        // a follow-up list call. The shape mirrors `ProviderList`'s
+        // row exactly (id / display_name / api_type / default_model /
+        // requires_key / is_local).
+        let resp = ResponsePacket::ProviderAdded {
+            request_id: 914,
+            provider: ProviderInfo {
+                id: "anthropic".to_string(),
+                display_name: "Anthropic".to_string(),
+                api_type: "anthropic".to_string(),
+                default_model: "claude-sonnet-4-5".to_string(),
+                requires_key: true,
+                is_local: false,
+            },
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("provider_added"));
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(914));
+
+        let provider = json.get("provider").expect("response should have a provider object");
+        assert_eq!(provider.get("id").and_then(|v| v.as_str()), Some("anthropic"));
+        assert_eq!(provider.get("display_name").and_then(|v| v.as_str()), Some("Anthropic"));
+        assert_eq!(provider.get("api_type").and_then(|v| v.as_str()), Some("anthropic"));
+        assert_eq!(provider.get("requires_key").and_then(|v| v.as_bool()), Some(true));
+
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ProviderAdded { request_id, provider } => {
+                assert_eq!(request_id, 914);
+                assert_eq!(provider.id, "anthropic");
+                assert!(provider.requires_key);
             }
             _ => panic!("Wrong variant"),
         }

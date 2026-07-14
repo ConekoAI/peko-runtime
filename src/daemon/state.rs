@@ -2383,6 +2383,187 @@ impl crate::ipc::handlers::provider_mcp::ProviderMcpHost for AppState {
     }
 }
 
+/// F7 fourteenth narrow handle: the port the `provider_templates`
+/// IPC domain handler uses (T-109b). Trait lives in
+/// `ipc::handlers::provider_templates`. Sync because the templates
+/// are a `&'static [ProviderTemplate]` — no I/O, no locking, no
+/// async work. Mirrors the credential-host shape (also a pure-read
+/// surface).
+impl crate::ipc::handlers::provider_templates::ProviderTemplatesHost for AppState {
+    fn list_templates(&self) -> Vec<crate::ipc::packet::ProviderTemplateInfo> {
+        crate::providers::templates::iter_templates()
+            .map(crate::ipc::handlers::provider_templates::template_info_from_static)
+            .collect()
+    }
+}
+
+/// F7 fifteenth narrow handle: the port the `provider_add` IPC
+/// domain handler uses (T-109b). Trait lives in
+/// `ipc::handlers::provider_add`. Async because catalog mutations
+/// (`ProviderCatalog::upsert`, `set_default`) and the vault write
+/// are I/O. The body is intentionally a 1:1 mirror of the CLI's
+/// `peko provider add` (`commands/provider.rs:280-399`) — same
+/// template vs. custom branch, same `--key` / `--set-default`
+/// folding — so the IPC and CLI surfaces never disagree on the
+/// resulting catalog state (F6/F7 symmetry rule).
+#[async_trait::async_trait]
+impl crate::ipc::handlers::provider_add::ProviderAddHost for AppState {
+    async fn add_provider(
+        &self,
+        args: crate::ipc::packet::ProviderAddArgs,
+    ) -> anyhow::Result<crate::ipc::packet::ProviderInfo> {
+        use crate::providers::catalog::{
+            ApiFormat, ModelInfo, ProviderCatalogEntry,
+        };
+        use crate::providers::templates;
+        use secrecy::SecretString;
+
+        let entry: ProviderCatalogEntry = if let Some(template_id) =
+            args.template.as_deref()
+        {
+            // Template mode — mirror `add_cmd:297-304`.
+            let tmpl = templates::find_template(template_id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown template '{template_id}'. Run `peko provider templates` to list available ones."
+                )
+            })?;
+            let id = args.name.unwrap_or_else(|| tmpl.id.to_string());
+            ProviderCatalogEntry::from_template(tmpl, id, args.display_name)
+        } else if args.custom {
+            // Custom mode — mirror `add_cmd:305-346`.
+            let api_format_str = args
+                .api_format
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!(
+                    "--api-format is required with --custom (openai_completions | anthropic_messages)"
+                ))?;
+            let api_format = ApiFormat::from_wire(api_format_str).ok_or_else(|| {
+                anyhow::anyhow!("unknown --api-format '{api_format_str}'")
+            })?;
+            let base_url = args
+                .base_url
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--base-url is required with --custom"))?;
+            let id = args
+                .name
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--name is required with --custom"))?;
+            if id.is_empty() {
+                anyhow::bail!("--name must not be empty");
+            }
+            if args.model.is_empty() {
+                anyhow::bail!(
+                    "--custom providers must declare at least one --model <model-id> (use the id the API expects on the wire)"
+                );
+            }
+            let default_model_id = args.model[0].clone();
+            let models: Vec<ModelInfo> = args
+                .model
+                .iter()
+                .map(|mid| ModelInfo::new(mid.clone()))
+                .collect();
+            ProviderCatalogEntry {
+                id: id.clone(),
+                display_name: args
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| id.clone()),
+                template_id: None,
+                api_format,
+                base_url,
+                models,
+                default_model_id,
+                headers: Default::default(),
+                requires_key: args.requires_key.unwrap_or(true),
+                enabled: true,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }
+        } else {
+            // Bare-invocation guard. The handler also short-circuits
+            // before calling the host, so reaching this branch means
+            // a future caller (e.g. a direct host consumer) passed
+            // through without going through the IPC handler. Keep
+            // the same hint string so the surfaces stay symmetric.
+            anyhow::bail!(
+                "either --template <id> or --custom is required.\n\
+                 \n\
+                 Quick start:\n\
+                   peko provider add --template anthropic --key \"$ANTHROPIC_API_KEY\" --default\n\
+                 \n\
+                 List templates:\n\
+                   peko provider templates"
+            );
+        };
+
+        // `self.resolver.catalog()` returns the daemon's in-memory
+        // `Arc<ProviderCatalog>` — same instance the resolver and
+        // every other consumer read. `upsert` stamps `updated_at`
+        // and persists to `providers.toml` atomically, so the
+        // mutation is visible to the next `ProviderList` IPC call
+        // without a reload hop (the CLI's `notify_daemon_reload`
+        // pattern doesn't apply — we ARE the daemon).
+        self.resolver
+            .catalog()
+            .upsert(entry.clone())
+            .await?;
+
+        // Fold in the optional key, same as the CLI's
+        // `add_cmd:357-382`. Silently skipped for key-less providers
+        // (e.g. Ollama templates) so the same call works for both
+        // with-key and without-key templates.
+        if let Some(key) = args.key.as_deref() {
+            if key.is_empty() {
+                anyhow::bail!("--key must not be empty");
+            }
+            if entry.requires_key {
+                let secret = SecretString::from(key.to_string());
+                self.vault
+                    .set_provider_key(&entry.id, &secret)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "failed to store key for '{}' in vault: {e}",
+                            entry.id
+                        )
+                    })?;
+            } else {
+                anyhow::bail!(
+                    "--key supplied but provider '{}' does not require a key (set --requires-key true to override)",
+                    entry.id
+                );
+            }
+        }
+
+        // Fold in the optional default promotion, same as the CLI's
+        // `add_cmd:387-393`.
+        if args.set_default.unwrap_or(false) {
+            let model = args
+                .default_model
+                .clone()
+                .unwrap_or_else(|| entry.default_model_id.clone());
+            self.resolver
+                .catalog()
+                .set_default(Some(entry.id.clone()), Some(model))
+                .await?;
+        }
+
+        // Build the catalog-summary view the handler wraps in
+        // `ResponsePacket::ProviderAdded`. Mirrors the projection
+        // `provider_mcp.rs:91-121` uses for `ProviderList` rows.
+        Ok(crate::ipc::packet::ProviderInfo {
+            id: entry.id.clone(),
+            display_name: entry.display_name.clone(),
+            api_type: match entry.api_format {
+                ApiFormat::OpenaiCompletions => "openai".to_string(),
+                ApiFormat::AnthropicMessages => "anthropic".to_string(),
+            },
+            default_model: entry.default_model_id.clone(),
+            requires_key: entry.requires_key,
+            is_local: !entry.requires_key,
+        })
+    }
+}
+
 /// F7 thirteenth narrow handle: the port the `credential` IPC domain
 /// handler uses. Trait lives in `ipc::handlers::credential`. Sync
 /// because reading the in-memory vault (`Vault::list_providers` +
