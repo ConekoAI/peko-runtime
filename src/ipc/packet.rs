@@ -228,6 +228,17 @@ pub enum RequestPacket {
     #[serde(rename = "provider_list")]
     ProviderList { request_id: u64 },
 
+    /// Enumerate the providers that have a key stored in the
+    /// credential vault. Sent by the desktop's
+    /// `useCredentialList` (Tauri `credential_list` command at
+    /// `peko-desktop/src-tauri/src/commands/settings.rs:301`) so
+    /// Settings → Credentials can paint the per-pill "Key set"
+    /// indicators and the FirstRunWalkthrough can detect existing
+    /// configuration. The CLI `peko credential list` path is
+    /// unchanged — it reads the vault directly, not via IPC.
+    #[serde(rename = "credential_list")]
+    CredentialList { request_id: u64 },
+
     /// Re-read the provider catalog and the credential vault from
     /// disk. Sent by `peko provider {add,remove,set-default}` and
     /// `peko credential {set,delete}` so the long-running daemon
@@ -637,6 +648,7 @@ impl RequestPacket {
             | Self::ProviderList { request_id }
             | Self::ProviderReload { request_id }
             | Self::McpReload { request_id }
+            | Self::CredentialList { request_id }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::ExtensionList { request_id, .. }
@@ -892,6 +904,20 @@ pub enum ResponsePacket {
     PrincipalCreated {
         request_id: u64,
         principal: crate::principal::PrincipalSummary,
+    },
+
+    /// Result of `CredentialList`. One row per provider id that the
+    /// vault knows about, regardless of whether a key is currently
+    /// stored — the desktop paints "Key set" vs "No key" from
+    /// `has_key`. Past-tense pairing with `CredentialList`.
+    ///
+    /// Field names mirror the desktop's `CredentialRow`
+    /// (`peko-desktop/src-tauri/src/commands/settings.rs:287`) so
+    /// the Tauri command's projection is a no-op rename.
+    #[serde(rename = "credentials_listed")]
+    CredentialsListed {
+        request_id: u64,
+        providers: Vec<CredentialRow>,
     },
 
     /// System status response
@@ -1272,6 +1298,19 @@ pub struct ProviderInfo {
     pub is_local: bool,
 }
 
+/// One row of `CredentialsListed`. `last_tested` is reserved for a
+/// future vault field that records when the key was last validated
+/// via `credential_test`; the vault does not track it today, so the
+/// runtime always emits `None`. The desktop already treats it as
+/// optional (`src/lib/api.ts`), so no follow-up desktop change is
+/// required when this lands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialRow {
+    pub provider: String,
+    pub has_key: bool,
+    pub last_tested: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionSummary {
     pub id: String,
@@ -1407,6 +1446,7 @@ impl ResponsePacket {
             | Self::ProviderList { request_id, .. }
             | Self::ProviderReloaded { request_id, .. }
             | Self::McpReloaded { request_id, .. }
+            | Self::CredentialsListed { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::CapabilityGranted { request_id, .. }
             | Self::CapabilityRevoked { request_id, .. }
@@ -1475,6 +1515,7 @@ impl ResponsePacket {
             Self::ProviderList { .. } => "ProviderList",
             Self::ProviderReloaded { .. } => "ProviderReloaded",
             Self::McpReloaded { .. } => "McpReloaded",
+            Self::CredentialsListed { .. } => "CredentialsListed",
             Self::ExtensionList { .. } => "ExtensionList",
             Self::CapabilityGranted { .. } => "CapabilityGranted",
             Self::CapabilityRevoked { .. } => "CapabilityRevoked",
@@ -2225,6 +2266,63 @@ mod tests {
                     principal.description.as_deref(),
                     Some("personal assistant")
                 );
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_credential_list_request_roundtrip() {
+        // T-107: pin the wire shape so the desktop's `credential_list`
+        // Tauri command can rely on `type: "credential_list"` and
+        // `request_id` round-trip.
+        let req = RequestPacket::CredentialList { request_id: 901 };
+        let bytes = req.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("credential_list"));
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(901));
+
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::CredentialList { request_id } => assert_eq!(request_id, 901),
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_credentials_listed_response_roundtrip() {
+        // T-107: pin the response wire shape — provider / has_key /
+        // last_tested field names mirror the desktop's `CredentialRow`
+        // (`peko-desktop/src-tauri/src/commands/settings.rs:287`).
+        let resp = ResponsePacket::CredentialsListed {
+            request_id: 902,
+            providers: vec![
+                CredentialRow {
+                    provider: "minimax".to_string(),
+                    has_key: true,
+                    last_tested: None,
+                },
+                CredentialRow {
+                    provider: "openai".to_string(),
+                    has_key: false,
+                    last_tested: None,
+                },
+            ],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("credentials_listed"));
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(902));
+
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::CredentialsListed { request_id, providers } => {
+                assert_eq!(request_id, 902);
+                assert_eq!(providers.len(), 2);
+                assert_eq!(providers[0].provider, "minimax");
+                assert!(providers[0].has_key);
+                assert_eq!(providers[1].provider, "openai");
+                assert!(!providers[1].has_key);
             }
             _ => panic!("Wrong variant"),
         }
