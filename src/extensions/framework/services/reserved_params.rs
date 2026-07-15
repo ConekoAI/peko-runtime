@@ -16,6 +16,7 @@
 //! agent_id = { source = "runtime", field = "agent_id" }
 //! api_key = { source = "env", var = "API_KEY" }
 //! version = { source = "static", value = "1.0.0" }
+//! secret = { source = "vault", namespace = "mcp:my-server", name = "default" }
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,13 @@ pub enum ParamSource {
     Env { var: String },
     /// Static hardcoded value
     Static { value: Value },
+    /// Read from the encrypted vault (RP3C).
+    ///
+    /// The value is resolved at execution time via
+    /// `vault.get_material_for(namespace, name)`. A missing credential
+    /// is treated as `Value::Null` at runtime; the MCP manager refuses
+    /// to start a server whose vault-backed reserved param is absent.
+    Vault { namespace: String, name: String },
 }
 
 impl ReservedParamsConfig {
@@ -76,6 +84,23 @@ impl ReservedParamsConfig {
             name.into(),
             ParamSource::Static {
                 value: value.into(),
+            },
+        );
+        self
+    }
+
+    /// Add a vault-backed parameter (RP3C).
+    pub fn with_vault(
+        mut self,
+        name: impl Into<String>,
+        namespace: impl Into<String>,
+        param_name: impl Into<String>,
+    ) -> Self {
+        self.params.insert(
+            name.into(),
+            ParamSource::Vault {
+                namespace: namespace.into(),
+                name: param_name.into(),
             },
         );
         self
@@ -126,6 +151,22 @@ impl ReservedParamsConfig {
         result
     }
 
+    /// Resolve all parameters, reading `Vault` sources from the provided vault.
+    ///
+    /// Non-vault sources behave exactly like [`Self::resolve`].
+    #[must_use]
+    pub fn resolve_with_vault(
+        &self,
+        ctx: Option<&crate::tools::core::ToolContext>,
+        vault: Option<&crate::common::vault::Vault>,
+    ) -> HashMap<String, Value> {
+        let mut result = HashMap::new();
+        for (name, source) in &self.params {
+            result.insert(name.clone(), source.resolve_with_vault(ctx, vault));
+        }
+        result
+    }
+
     /// Convert to JSON object with resolved values
     #[must_use]
     pub fn resolve_to_object(&self, ctx: Option<&crate::tools::core::ToolContext>) -> Value {
@@ -147,8 +188,20 @@ impl ParamSource {
     /// # Returns
     /// The resolved value, or `Value::Null` if not available
     pub fn resolve(&self, ctx: Option<&crate::tools::core::ToolContext>) -> Value {
+        self.resolve_with_vault(ctx, None)
+    }
+
+    /// Resolve this parameter source, reading `Vault` sources from the provided vault.
+    ///
+    /// Non-vault sources behave exactly like [`Self::resolve`].
+    pub fn resolve_with_vault(
+        &self,
+        ctx: Option<&crate::tools::core::ToolContext>,
+        vault: Option<&crate::common::vault::Vault>,
+    ) -> Value {
         use crate::tools::core::context_source::ContextResolver;
         use crate::tools::core::ToolContextAdapter;
+        use secrecy::ExposeSecret;
 
         match self {
             Self::Runtime { field } => ctx.map_or(Value::Null, |c| {
@@ -157,6 +210,10 @@ impl ParamSource {
             }),
             Self::Env { var } => std::env::var(var).map_or(Value::Null, Value::String),
             Self::Static { value } => value.clone(),
+            Self::Vault { namespace, name } => vault
+                .and_then(|v| v.get_material_for(namespace, name).ok().flatten())
+                .map(|s| Value::String(s.expose_secret().to_string()))
+                .unwrap_or(Value::Null),
         }
     }
 
@@ -167,6 +224,7 @@ impl ParamSource {
             Self::Runtime { .. } => "runtime",
             Self::Env { .. } => "env",
             Self::Static { .. } => "static",
+            Self::Vault { .. } => "vault",
         }
     }
 }
@@ -246,6 +304,37 @@ mod tests {
 
         // Clean up
         std::env::remove_var("TEST_RESERVED_PARAM");
+    }
+
+    /// RP3C: vault-backed parameters resolve via `vault.get_material_for`.
+    #[test]
+    fn test_vault_param_source_resolution() {
+        use crate::common::vault::{Credential, CredentialKind, Vault};
+        use secrecy::SecretString;
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Arc::new(Vault::for_test(tmp.path(), "test-passphrase"));
+        vault
+            .set_credential(&Credential::now(
+                "mcp:analytics",
+                "default",
+                CredentialKind::ApiKey,
+                SecretString::new("analytics-key".into()),
+            ))
+            .unwrap();
+
+        let vault_source = ParamSource::Vault {
+            namespace: "mcp:analytics".to_string(),
+            name: "default".to_string(),
+        };
+        assert_eq!(
+            vault_source.resolve_with_vault(None, Some(&vault)),
+            json!("analytics-key")
+        );
+
+        // Without a vault the value is Null.
+        assert_eq!(vault_source.resolve(None), json!(null));
     }
 
     #[test]

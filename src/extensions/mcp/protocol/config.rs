@@ -709,13 +709,14 @@ agent_id = { source = "runtime", field = "agent_id" }
 session_id = { source = "runtime", field = "session_id" }
 api_key = { source = "env", var = "API_KEY" }
 environment = { source = "static", value = "production" }
+secret = { source = "vault", namespace = "mcp:my-server", name = "default" }
 "#;
 
         let config = McpConfig::from_toml(toml).unwrap();
         assert_eq!(config.servers.len(), 1);
 
         let server = config.get_server("my-server").unwrap();
-        assert_eq!(server.reserved_parameters.len(), 4);
+        assert_eq!(server.reserved_parameters.len(), 5);
 
         // Check runtime param
         let agent_id = server.reserved_parameters.get("agent_id").unwrap();
@@ -728,5 +729,11 @@ environment = { source = "static", value = "production" }
         // Check static param
         let env = server.reserved_parameters.get("environment").unwrap();
         assert!(matches!(env, ParamSource::Static { value } if value == "production"));
+
+        // Check vault param (RP3C)
+        let secret = server.reserved_parameters.get("secret").unwrap();
+        assert!(
+            matches!(secret, ParamSource::Vault { namespace, name } if namespace == "mcp:my-server" && name == "default")
+        );
     }
 }

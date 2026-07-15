@@ -7,6 +7,7 @@
 use crate::common::vault::Vault;
 use crate::extensions::mcp::protocol::{config::McpAuthConfig, types::JsonRpcMessage};
 use async_trait::async_trait;
+use secrecy::ExposeSecret;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -793,13 +794,20 @@ impl SseTransport {
         Ok(headers)
     }
 
+    /// Read secret material from the vault for a given namespace/name slot.
+    fn vault_material(&self, namespace: &str, name: &str) -> Option<String> {
+        let vault = self.vault.as_ref()?;
+        vault
+            .get_material_for(namespace, name)
+            .ok()
+            .flatten()
+            .map(|s| s.expose_secret().to_string())
+    }
+
     /// Read the current OAuth access token from the vault, if any.
     fn vault_token(&self) -> Option<String> {
-        let vault = self.vault.as_ref()?;
         let server_name = self.server_name.as_ref()?;
-        vault
-            .get_oauth_token(server_name)
-            .map(|entry| entry.access_token)
+        self.vault_material(&format!("oauth:{server_name}"), "default")
     }
 
     /// Try to refresh the OAuth token using the stored refresh token.
@@ -961,7 +969,10 @@ struct SseEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::vault::{Credential, CredentialKind, Vault};
     use crate::extensions::mcp::protocol::types::JsonRpcRequest;
+    use secrecy::SecretString;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_in_memory_transport() {
@@ -1023,4 +1034,39 @@ mod tests {
 
     // Note: Testing StdioTransport would require a mock subprocess,
     // which is complex. We rely on integration tests for that.
+
+    #[test]
+    fn vault_material_reads_from_vault() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Arc::new(Vault::for_test(tmp.path(), "test-passphrase"));
+        vault
+            .set_credential(&Credential::now(
+                "mcp:analytics",
+                "default",
+                CredentialKind::ApiKey,
+                SecretString::new("analytics-key".into()),
+            ))
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<JsonRpcMessage>(1);
+        let transport = SseTransport {
+            client: Client::new(),
+            endpoint: Url::parse("http://localhost:8080").unwrap(),
+            session_id: Mutex::new(None),
+            receiver: Arc::new(Mutex::new(rx)),
+            sender: Arc::new(Mutex::new(tx)),
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            receive_task: Mutex::new(None),
+            auth: None,
+            vault: Some(vault),
+            server_name: None,
+        };
+
+        assert_eq!(
+            transport.vault_material("mcp:analytics", "default"),
+            Some("analytics-key".to_string())
+        );
+        assert_eq!(transport.vault_material("mcp:analytics", "missing"), None);
+        assert_eq!(transport.vault_material("mcp:other", "default"), None);
+    }
 }
