@@ -3,11 +3,10 @@
 //! This module provides a single provider implementation that works with
 //! any `ApiAdapter`. All provider-specific logic is delegated to the adapter.
 
-use crate::common::types::provider::ProviderConfig;
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::providers::adapters::{AnyAdapter, ApiAdapter};
 use crate::providers::transport::HttpClient;
-use crate::providers::types::{
+use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, StreamEvent, ToolDefinition,
 };
 use futures::StreamExt;
@@ -16,20 +15,38 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info};
 
+/// Slim options carried alongside the HTTP client.
+///
+/// Replaces the old `ProviderConfig` shape. The catalog is the
+/// single source of truth for providers; the only fields the
+/// `Provider` struct itself needs are the four below.
+#[derive(Debug, Clone)]
+pub struct ProviderRuntimeOptions {
+    /// Catalog-declared default model id, surfaced through
+    /// `Provider::model_id()` for legacy callers.
+    pub default_model_id: String,
+    /// Per-request HTTP timeout, in seconds.
+    pub timeout_seconds: u64,
+    /// Number of retries for transient transport failures.
+    pub max_retries: u32,
+    /// Initial backoff between retries, in milliseconds.
+    pub retry_delay_ms: u64,
+}
+
 /// Unified provider
 ///
 /// Works with any `ApiAdapter` to provide LLM functionality.
 /// All provider-specific formatting is handled by the adapter.
 ///
-/// **Model is no longer stored on the adapter.** `Provider` retains a
-/// `default_model_id` derived from its `ProviderConfig` for legacy
+/// **Model is no longer stored on the adapter.** `Provider` retains
+/// `default_model_id` from `ProviderRuntimeOptions` for legacy
 /// callers, but every public `chat*` method accepts an explicit
 /// `model_id` parameter that is threaded into the adapter's
 /// `build_request`/`parse_response`/`parse_sse_event` calls.
 pub struct Provider {
     client: HttpClient,
     adapter: AnyAdapter,
-    config: ProviderConfig,
+    options: ProviderRuntimeOptions,
 }
 
 impl Provider {
@@ -37,7 +54,7 @@ impl Provider {
     pub fn new(
         adapter: AnyAdapter,
         api_key: impl Into<String>,
-        config: ProviderConfig,
+        options: ProviderRuntimeOptions,
     ) -> anyhow::Result<Self> {
         let api_key = api_key.into();
 
@@ -46,7 +63,7 @@ impl Provider {
             HttpClient::with_headers(
                 adapter.base_url(),
                 adapter.auth_config(&api_key),
-                config.timeout_seconds,
+                options.timeout_seconds,
                 adapter.extra_headers(),
             )?
         } else {
@@ -59,29 +76,28 @@ impl Provider {
             let mut client = HttpClient::with_headers(
                 adapter.base_url(),
                 auth,
-                config.timeout_seconds,
+                options.timeout_seconds,
                 extra_headers,
             )?;
 
-            // Wire retry configuration from ProviderConfig
+            // Wire retry policy from the runtime options.
             if let Some(retry_policy) = crate::providers::transport::RetryPolicy::from_config(
-                config.max_retries,
-                config.retry_delay_ms,
+                options.max_retries,
+                options.retry_delay_ms,
             ) {
                 client = client.with_retry_policy(retry_policy);
             }
             client
         };
 
-        let model_name = config
-            .default_model_config()
-            .map(|m| m.name.clone())
-            .unwrap_or_else(|| {
-                // No model configured at construction time. The
-                // adapter no longer carries one; callers must pass
-                // `model_id` on every request. We log this clearly.
-                "<unset — pass model_id per request>".to_string()
-            });
+        let model_name = if options.default_model_id.is_empty() {
+            // No model configured at construction time. The
+            // adapter no longer carries one; callers must pass
+            // `model_id` on every request. We log this clearly.
+            "<unset — pass model_id per request>".to_string()
+        } else {
+            options.default_model_id.clone()
+        };
 
         info!(
             "{} provider initialized (default model: {})",
@@ -92,7 +108,7 @@ impl Provider {
         Ok(Self {
             client,
             adapter,
-            config,
+            options,
         })
     }
 
@@ -103,14 +119,12 @@ impl Provider {
     }
 
     /// Resolve the model id this provider should use when callers
-    /// don't pass one explicitly. Pulled from `ProviderConfig`'s
-    /// default model configuration.
+    /// don't pass one explicitly. Pulled from the runtime options
+    /// (which the factory sets to the catalog entry's declared
+    /// `default_model_id`).
     #[must_use]
     pub fn model_id(&self) -> String {
-        self.config
-            .default_model_config()
-            .map(|m| m.name.clone())
-            .unwrap_or_default()
+        self.options.default_model_id.clone()
     }
 
     /// Check if this provider supports native tool calling
@@ -440,14 +454,40 @@ mod tests {
     use super::*;
     use crate::providers::adapters::openai::OpenAiAdapter;
 
+    fn runtime_options() -> ProviderRuntimeOptions {
+        ProviderRuntimeOptions {
+            default_model_id: "gpt-4o-mini".to_string(),
+            timeout_seconds: 300,
+            max_retries: 3,
+            retry_delay_ms: 1000,
+        }
+    }
+
     #[test]
     fn test_provider_creation() {
         let adapter = AnyAdapter::OpenAi(OpenAiAdapter::new());
-        let config = ProviderConfig::default();
-
-        // This will fail without a real API key in tests
-        // Just verify the structure is correct
-        let result = Provider::new(adapter, "test_key", config);
+        // A non-empty key is required even though no real network call is made.
+        let result = Provider::new(adapter, "test_key", runtime_options());
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_provider_creation_rejects_empty_key() {
+        let adapter = AnyAdapter::OpenAi(OpenAiAdapter::new());
+        let result = Provider::new(adapter, "", runtime_options());
+        assert!(result.is_err(), "empty API key must error on construction");
+    }
+
+    #[test]
+    fn model_id_returns_default_from_options() {
+        let adapter = AnyAdapter::OpenAi(OpenAiAdapter::new());
+        let opts = ProviderRuntimeOptions {
+            default_model_id: "gpt-5-test".to_string(),
+            timeout_seconds: 60,
+            max_retries: 1,
+            retry_delay_ms: 100,
+        };
+        let provider = Provider::new(adapter, "test_key", opts).unwrap();
+        assert_eq!(provider.model_id(), "gpt-5-test");
     }
 }

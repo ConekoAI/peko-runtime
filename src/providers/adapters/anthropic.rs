@@ -4,7 +4,7 @@
 
 use super::{extract_text_content, ToolCallAccumulator};
 use crate::providers::transport::AuthConfig;
-use crate::providers::types::{
+use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolDefinition,
 };

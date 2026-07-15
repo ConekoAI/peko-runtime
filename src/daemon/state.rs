@@ -2381,6 +2381,38 @@ impl crate::ipc::handlers::provider_mcp::ProviderMcpHost for AppState {
     async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
         AppState::reload_mcp_config(self).await
     }
+
+    /// Snapshot every catalog entry (enabled + disabled) as the
+    /// `ProviderInfo` wire shape. Reads go through
+    /// `self.resolver.catalog()` so the response matches what the
+    /// resolver and every other daemon-side consumer see — including
+    /// user-added entries that don't appear in the static
+    /// `BUILT_IN_TEMPLATES`.
+    async fn list_catalog_providers(&self) -> Vec<crate::ipc::packet::ProviderInfo> {
+        let entries = self.resolver.catalog().list_all().await;
+        entries
+            .into_iter()
+            .map(|entry| crate::ipc::packet::ProviderInfo {
+                id: entry.id.clone(),
+                display_name: entry.display_name.clone(),
+                api_type: match entry.api_format {
+                    crate::providers::catalog::ApiFormat::OpenaiCompletions => {
+                        "openai".to_string()
+                    }
+                    crate::providers::catalog::ApiFormat::AnthropicMessages => {
+                        "anthropic".to_string()
+                    }
+                },
+                base_url: entry.base_url.clone(),
+                requires_key: entry.requires_key,
+                is_local: !entry.requires_key,
+                enabled: entry.enabled,
+                models: entry.models.clone(),
+                default_model_id: entry.default_model_id.clone(),
+                headers: entry.headers.clone(),
+            })
+            .collect()
+    }
 }
 
 /// F7 fourteenth narrow handle: the port the `provider_templates`
@@ -2549,7 +2581,8 @@ impl crate::ipc::handlers::provider_add::ProviderAddHost for AppState {
 
         // Build the catalog-summary view the handler wraps in
         // `ResponsePacket::ProviderAdded`. Mirrors the projection
-        // `provider_mcp.rs:91-121` uses for `ProviderList` rows.
+        // `provider_mcp.rs` uses for `ProviderList` rows so the two
+        // surfaces stay in sync.
         Ok(crate::ipc::packet::ProviderInfo {
             id: entry.id.clone(),
             display_name: entry.display_name.clone(),
@@ -2557,9 +2590,13 @@ impl crate::ipc::handlers::provider_add::ProviderAddHost for AppState {
                 ApiFormat::OpenaiCompletions => "openai".to_string(),
                 ApiFormat::AnthropicMessages => "anthropic".to_string(),
             },
-            default_model: entry.default_model_id.clone(),
+            base_url: entry.base_url.clone(),
             requires_key: entry.requires_key,
             is_local: !entry.requires_key,
+            enabled: entry.enabled,
+            models: entry.models.clone(),
+            default_model_id: entry.default_model_id.clone(),
+            headers: entry.headers.clone(),
         })
     }
 }

@@ -9,6 +9,7 @@
 
 use crate::common::types::OutputFormat;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Maximum packet size in bytes (conservative UDP limit)
@@ -1409,15 +1410,48 @@ pub enum ResponsePacket {
 }
 
 /// Summary of an extension for IPC responses
-/// Provider info for listing available LLM providers
+/// Provider info for listing available LLM providers.
+///
+/// Post-RP1 this struct is the canonical catalog-summary view
+/// (replaces the legacy shape that omitted `models[]`, `context_length`,
+/// `enabled`, `headers`, and the explicit `default_model_id`). The
+/// wire field for the API format stays the short form
+/// (`"openai"` / `"anthropic"`) so the desktop's existing rendering
+/// code keeps working without a coord change; the field is renamed
+/// `api_format` to match the catalog's terminology.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInfo {
     pub id: String,
     pub display_name: String,
-    pub api_type: String, // "openai" or "anthropic"
-    pub default_model: String,
+    /// Short wire id: `"openai"` or `"anthropic"`. The desktop's
+    /// existing renderer reads this field, so the on-wire value stays
+    /// stable; the runtime translates to/from the catalog's
+    /// `ApiFormat` (`openai_completions` / `anthropic_messages`).
+    #[serde(rename = "api_format")]
+    pub api_type: String,
+    /// Base URL configured for this provider. Empty for templates
+    /// where the user must supply a deployment URL (e.g.
+    /// `azure-openai`).
+    pub base_url: String,
     pub requires_key: bool,
+    /// True iff the catalog entry has `requires_key = false` (local
+    /// provider like Ollama). Surfaced to the desktop so it can hide
+    /// the "Add Key" CTA.
     pub is_local: bool,
+    /// Catalog `enabled` flag. Disabled entries still appear in the
+    /// list so the desktop can render them greyed-out / at the bottom
+    /// of the providers panel.
+    pub enabled: bool,
+    /// Declared models. The desktop's "Edit Provider" modal edits
+    /// these rows; the model picker (CreatePrincipal) reads them.
+    pub models: Vec<crate::providers::catalog::ModelInfo>,
+    /// Catalog-declared default model id. Distinct from any legacy
+    /// `default_model` field (which used the human label).
+    pub default_model_id: String,
+    /// Optional extra HTTP headers (e.g. `OpenAI-Organization`).
+    /// Empty for most entries; non-empty for vendors that require a
+    /// tenant header.
+    pub headers: BTreeMap<String, String>,
 }
 
 /// One model declared by a built-in provider template.
@@ -2601,20 +2635,31 @@ mod tests {
 
     #[test]
     fn test_provider_added_response_roundtrip() {
-        // T-109b: pin the response shape — the desktop uses the
-        // returned `provider` to refresh `useProviders()` without
-        // a follow-up list call. The shape mirrors `ProviderList`'s
-        // row exactly (id / display_name / api_type / default_model /
-        // requires_key / is_local).
+        // T-109b + RP1: pin the response shape — the desktop uses
+        // the returned `provider` to refresh `useProviders()`
+        // without a follow-up list call. Post-RP1 the shape mirrors
+        // `ProviderList`'s row exactly (id / display_name /
+        // api_format / base_url / requires_key / is_local / enabled
+        // / models[] / default_model_id / headers).
         let resp = ResponsePacket::ProviderAdded {
             request_id: 914,
             provider: ProviderInfo {
                 id: "anthropic".to_string(),
                 display_name: "Anthropic".to_string(),
                 api_type: "anthropic".to_string(),
-                default_model: "claude-sonnet-4-5".to_string(),
+                base_url: "https://api.anthropic.com".to_string(),
                 requires_key: true,
                 is_local: false,
+                enabled: true,
+                models: vec![crate::providers::catalog::ModelInfo {
+                    id: "claude-sonnet-4-5".to_string(),
+                    display_name: Some("Claude Sonnet 4.5".to_string()),
+                    context_length: Some(200_000),
+                    max_output_tokens: Some(8_192),
+                    capabilities: vec![],
+                }],
+                default_model_id: "claude-sonnet-4-5".to_string(),
+                headers: Default::default(),
             },
         };
         let bytes = resp.to_bytes().unwrap();
@@ -2637,7 +2682,7 @@ mod tests {
             Some("Anthropic")
         );
         assert_eq!(
-            provider.get("api_type").and_then(|v| v.as_str()),
+            provider.get("api_format").and_then(|v| v.as_str()),
             Some("anthropic")
         );
         assert_eq!(

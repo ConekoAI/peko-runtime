@@ -1478,7 +1478,6 @@ mod tests {
     use crate::agents::agent_config::AgentConfig;
     use crate::agents::Agent;
     use crate::auth::Subject;
-    use crate::common::types::provider::{ProviderConfig, ProviderType};
     use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
     use crate::providers::{AnyAdapter, MockAdapter, Provider};
     use crate::session::manager::SessionManager;
@@ -1488,13 +1487,17 @@ mod tests {
 
     /// Build a mock provider with a fresh MockAdapter
     fn mock_provider() -> (Arc<Provider>, MockAdapter) {
+        use crate::providers::core::ProviderRuntimeOptions;
+
         let adapter = MockAdapter::new();
         let any = AnyAdapter::Mock(adapter.clone());
-        let config = ProviderConfig {
-            provider_type: ProviderType::OpenAI,
-            ..Default::default()
+        let options = ProviderRuntimeOptions {
+            default_model_id: "mock-model".to_string(),
+            timeout_seconds: 300,
+            max_retries: 3,
+            retry_delay_ms: 1000,
         };
-        let provider = Provider::new(any, "mock_key", config).unwrap();
+        let provider = Provider::new(any, "mock_key", options).unwrap();
         (Arc::new(provider), adapter)
     }
 

@@ -6,7 +6,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::common::types::message::{ContentBlock, TokenUsage};
+// Re-export the message-domain types that are part of the public
+// provider surface so adapter modules can pull them all from
+// `crate::providers::traits::*` without an extra import.
+pub use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
 
 /// Unique content block ID for streaming correlation
 pub type ContentBlockId = String;
