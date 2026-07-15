@@ -63,6 +63,7 @@ pub enum AuthConfig {
 }
 
 /// Shared HTTP client for provider API calls
+#[derive(Clone)]
 pub struct HttpClient {
     inner: Client,
     base_url: String,

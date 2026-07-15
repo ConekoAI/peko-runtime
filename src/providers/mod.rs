@@ -18,6 +18,7 @@ pub mod factory;
 pub mod metered;
 pub mod mock;
 pub mod resolver;
+pub mod rotating_auth;
 pub mod stacked_metered;
 pub mod synthetic_stream;
 pub mod templates;

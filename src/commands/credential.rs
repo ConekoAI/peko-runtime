@@ -25,7 +25,6 @@
 //! ```
 
 use crate::commands::GlobalPaths;
-use crate::common::secret_store::{OsKeychainSecretStore, SecretStore};
 use crate::common::vault::Vault;
 use crate::providers::catalog::ProviderCatalog;
 use anyhow::{Context, Result};
@@ -312,39 +311,11 @@ fn message_invites_suggestion(
     }
 }
 
-async fn migrate_cmd(vault: &Vault) -> Result<()> {
-    let legacy = OsKeychainSecretStore::new();
-    let accounts = legacy
-        .list_accounts()
-        .with_context(|| "failed to list legacy keychain entries")?;
-
-    if accounts.is_empty() {
-        println!("No legacy keychain entries found to migrate.");
-        return Ok(());
-    }
-
-    let mut migrated = 0;
-    for account in accounts {
-        match legacy.get(&account) {
-            Ok(Some(secret)) => {
-                if vault.get_provider_key(&account).is_some() {
-                    println!("  - '{account}' already exists in vault, skipping");
-                    continue;
-                }
-                vault.set_provider_key(&account, &secret)?;
-                println!("  + Migrated '{account}'");
-                migrated += 1;
-            }
-            Ok(None) => {
-                println!("  - '{account}' not found in keychain, skipping");
-            }
-            Err(e) => {
-                println!("  ! Failed to read '{account}': {e}");
-            }
-        }
-    }
-
-    println!("Migrated {migrated} provider key(s) into the vault.");
+async fn migrate_cmd(_vault: &Vault) -> Result<()> {
+    // RP3B: legacy per-provider OS keychain entries are no longer a
+    // supported secret source. The unified vault (`crate::common::vault`)
+    // is the single source of truth for provider API keys.
+    println!("No legacy keychain entries to migrate.");
     Ok(())
 }
 

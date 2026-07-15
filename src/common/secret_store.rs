@@ -1,26 +1,9 @@
-//! Secure secret store for provider API keys.
+//! Secure secret store interface for provider API keys.
 //!
-//! This module replaces the previous plaintext `credentials.json` design.
-//! Production deployments store secrets in the OS keychain (Windows
-//! Credential Manager, macOS Keychain, libsecret on Linux) via the
-//! `keyring` crate. Tests use an explicit in-memory implementation that
-//! is opted into by the caller — the runtime never silently downgrades
-//! to plaintext on disk.
-//!
-//! ## On-disk layout
-//!
-//! Secrets are not persisted by this module. The OS keychain is the
-//! single source of truth when this module is used directly. For the
-//! unified runtime vault (provider API keys, registry tokens, identity
-//! keys, tunnel keys), see `crate::common::vault`.
-//!
-//! ## Service / account naming
-//!
-//! All peko-managed secrets live under a single service name in the OS
-//! keychain. The account name is the provider id (e.g. `openai`,
-//! `anthropic`). This matches the convention already used by
-//! `peko-desktop`'s `vault/mod.rs` so desktop-entered keys are visible
-//! to the runtime and vice versa.
+//! This module defines the [`SecretStore`] trait and an in-memory test
+//! implementation. Production provider API keys live in the unified
+//! encrypted vault (`crate::common::vault`); the OS keychain is only used
+//! for the vault data-encryption key (DEK), not for individual secrets.
 //!
 //! ## Thread-safety
 //!
@@ -32,14 +15,6 @@ use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use thiserror::Error;
-
-/// OS keychain service name under which all peko-managed provider
-/// secrets are stored.
-///
-/// This is the same service name used by `peko-desktop`'s
-/// `vault::get_credential("peko", ...)`, ensuring desktop-entered keys
-/// are visible to the runtime after this refactor.
-pub const KEYCHAIN_SERVICE: &str = "peko";
 
 /// Errors returned by secret store operations.
 ///
@@ -61,11 +36,10 @@ pub enum SecretStoreError {
 
 /// Abstract interface for storing and retrieving provider secrets.
 ///
-/// One production implementation (`OsKeychainSecretStore`) plus one test
-/// implementation (`InMemorySecretStore`) are provided. The trait is
-/// sealed against further silent downgrades — any future backend must
-/// be added explicitly so that the security properties of the OS
-/// keychain remain the default.
+/// The in-memory implementation (`InMemorySecretStore`) is provided for
+/// tests. Production code should use `crate::common::vault::Vault`,
+/// which implements this trait as a backward-compat shim over the
+/// generic credential store.
 pub trait SecretStore: Send + Sync {
     /// Retrieve the secret for `account`, if one exists.
     fn get(&self, account: &str) -> Result<Option<SecretString>, SecretStoreError>;
@@ -118,110 +92,6 @@ fn validate_account(account: &str) -> Result<(), SecretStoreError> {
         )));
     }
     Ok(())
-}
-
-/// Production implementation backed by the OS keychain via the
-/// `keyring` crate (Windows Credential Manager, macOS Keychain,
-/// libsecret on Linux).
-///
-/// On Linux without a running secret service (common in CI / Docker),
-/// keyring operations return errors rather than silently falling back
-/// to disk. Callers should surface a clear "OS keychain unavailable"
-/// message and direct users to either:
-/// 1. Install / start `gnome-keyring` or `kwallet`, or
-/// 2. Use the env-var bootstrap path (`LlmResolver` honors
-///    `*_API_KEY` env vars when started with `--bootstrap-env-keys`).
-pub struct OsKeychainSecretStore {
-    service: String,
-}
-
-impl OsKeychainSecretStore {
-    /// Create a new keychain-backed store under the canonical peko
-    /// service name.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            service: KEYCHAIN_SERVICE.to_string(),
-        }
-    }
-
-    /// Create a keychain-backed store under a custom service name.
-    /// Intended for tests and unusual deployments; production code
-    /// should use `new()`.
-    #[must_use]
-    pub fn with_service(service: impl Into<String>) -> Self {
-        Self {
-            service: service.into(),
-        }
-    }
-
-    fn entry(&self, account: &str) -> Result<keyring::Entry, SecretStoreError> {
-        validate_account(account)?;
-        keyring::Entry::new(&self.service, account)
-            .map_err(|e| SecretStoreError::Backend(format!("keychain entry: {e}")))
-    }
-}
-
-impl Default for OsKeychainSecretStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SecretStore for OsKeychainSecretStore {
-    fn get(&self, account: &str) -> Result<Option<SecretString>, SecretStoreError> {
-        let entry = self.entry(account)?;
-        match entry.get_password() {
-            Ok(pw) => Ok(Some(SecretString::from(pw))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(SecretStoreError::Backend(format!("keychain get: {e}"))),
-        }
-    }
-
-    fn set(&self, account: &str, secret: &SecretString) -> Result<(), SecretStoreError> {
-        let entry = self.entry(account)?;
-        entry
-            .set_password(secret.expose_secret())
-            .map_err(|e| SecretStoreError::Backend(format!("keychain set: {e}")))
-    }
-
-    fn delete(&self, account: &str) -> Result<bool, SecretStoreError> {
-        let entry = self.entry(account)?;
-        match entry.delete_password() {
-            Ok(()) => Ok(true),
-            Err(keyring::Error::NoEntry) => Ok(false),
-            Err(e) => Err(SecretStoreError::Backend(format!("keychain delete: {e}"))),
-        }
-    }
-
-    fn list_accounts(&self) -> Result<Vec<String>, SecretStoreError> {
-        // The cross-platform `keyring` v2 crate does not expose
-        // service-wide enumeration (it's only available via
-        // platform-specific extensions). We intentionally do not
-        // shell out to platform tools here — callers that need a
-        // full list should track it alongside the catalog. This
-        // returns an empty list rather than failing so existing
-        // call sites that iterate `list_accounts()` continue to
-        // work; new code should rely on the catalog for membership.
-        Ok(Vec::new())
-    }
-
-    fn test_format(&self, account: &str) -> Result<Option<bool>, SecretStoreError> {
-        let Some(secret) = self.get(account)? else {
-            return Ok(None);
-        };
-        let s = secret.expose_secret();
-        let ok = match account {
-            "openai" | "azure-openai" | "azure" | "openrouter" | "together" | "fireworks"
-            | "groq" | "deepseek" | "xai" | "grok" | "moonshot" | "kimi" => {
-                s.starts_with("sk-") || s.len() > 10
-            }
-            "anthropic" => s.starts_with("sk-ant-") || s.len() > 10,
-            "ollama" => true, // local, no key required
-            _ => s.len() > 4 && !s.trim().is_empty(),
-        };
-        Ok(Some(ok))
-    }
 }
 
 /// In-memory implementation for tests.
@@ -400,10 +270,4 @@ mod tests {
         assert!(store.set("", &key).is_err());
     }
 
-    #[test]
-    fn keychain_service_constant_matches_desktop() {
-        // Pinned so peko-desktop's vault (service="peko") and the
-        // runtime's keychain store share the same namespace.
-        assert_eq!(KEYCHAIN_SERVICE, "peko");
-    }
 }
