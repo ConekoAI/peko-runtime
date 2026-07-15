@@ -2589,6 +2589,29 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
             })
             .collect()
     }
+
+    fn set_credential(
+        &self,
+        provider: &str,
+        api_key: &secrecy::SecretString,
+    ) -> anyhow::Result<()> {
+        // `Vault::set_provider_key` does an in-memory insert +
+        // encrypted save atomically. The desktop's `credential_set`
+        // Tauri command goes through this so the next
+        // `credential_list` IPC returns the freshly-stored key with
+        // no separate `notify_daemon_reload` hop needed (we ARE the
+        // daemon). Empty-key rejection happens one layer up in the
+        // handler — this method trusts its caller to have validated.
+        self.vault
+            .set_provider_key(provider, api_key)
+            .map_err(|e| anyhow::anyhow!("vault refused to store key for '{provider}': {e}"))
+    }
+
+    fn delete_credential(&self, provider: &str) -> anyhow::Result<bool> {
+        self.vault
+            .delete_provider_key(provider)
+            .map_err(|e| anyhow::anyhow!("vault refused to delete key for '{provider}': {e}"))
+    }
 }
 
 // Live-credential-test companion to [`CredentialHost`]. Powers

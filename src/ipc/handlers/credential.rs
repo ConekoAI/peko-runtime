@@ -1,6 +1,6 @@
 //! `credential` domain request handler (T-107).
 //!
-//! Owns two IPC variants:
+//! Owns four IPC variants:
 //!
 //! - `CredentialList` — the desktop's `useCredentialList` hook calls
 //!   this so Settings → Credentials can paint per-pill "Key set"
@@ -13,11 +13,18 @@
 //!   `peko credential test` and the desktop's Test button. Replaces
 //!   the shape-only `Vault::test_provider_key` check that couldn't
 //!   tell `sk-opena-12345` from a real key.
+//! - `CredentialSet` — store or overwrite the API key for a provider
+//!   in the vault. Powers the desktop's Settings → Add Key / Update
+//!   Key flow; the CLI's `peko credential set` writes the vault
+//!   directly without IPC.
+//! - `CredentialDelete` — remove the stored key. Powers the desktop's
+//!   Remove action; the CLI's `peko credential delete` writes the
+//!   vault directly without IPC.
 //!
 //! The handler holds two narrow port traits ([`CredentialHost`] for
-//! the sync list and [`CredentialTestLiveHost`] for the async ping);
-//! the daemon-side implementation (`AppState`) is reached only
-//! through the traits, so this module never imports
+//! the sync read + set + delete and [`CredentialTestLiveHost`] for
+//! the async ping); the daemon-side implementation (`AppState`) is
+//! reached only through the traits, so this module never imports
 //! `crate::daemon::state::AppState` directly.
 //!
 //! Boundary rules:
@@ -29,6 +36,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use secrecy::SecretString;
 
 use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::RequestHandler;
@@ -38,20 +46,33 @@ use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 
 /// Narrow port the `credential` handler uses to reach the vault for
-/// the read-only `CredentialList` variant.
+/// the list, set, and delete variants.
 ///
 /// `AppState` is the sole implementor. Sync because
-/// `Vault::list_providers` and `Vault::get_provider_key` are both
-/// in-memory lookups against the already-loaded vault state — no
-/// I/O is performed and no async work is required. Keeping the
-/// trait sync also avoids the `async_trait` boxing overhead for a
-/// pure-read surface.
+/// `Vault::list_providers`, `Vault::get_provider_key`,
+/// `Vault::set_provider_key`, and `Vault::delete_provider_key` are
+/// all in-memory (the latter two also do a synchronous `save()`)
+/// against the already-loaded vault state — no async work is
+/// required. Keeping the trait sync also avoids the `async_trait`
+/// boxing overhead for what is essentially disk-flushed state.
 pub(crate) trait CredentialHost: Send + Sync {
     /// Snapshot the credential vault into a list of rows the desktop
     /// can render directly. Each row carries the provider id, a
     /// `has_key` flag, and a `last_tested` timestamp (always `None`
     /// until the vault gains that field; see [`CredentialRow`]).
     fn list_credentials(&self) -> Vec<CredentialRow>;
+
+    /// Store or overwrite the API key for `provider`. Empty
+    /// `api_key` is rejected with an `Err` so the desktop can't
+    /// accidentally wipe a key with a blank submit. Mirrors
+    /// `Vault::set_provider_key`.
+    fn set_credential(&self, provider: &str, api_key: &SecretString) -> anyhow::Result<()>;
+
+    /// Remove the stored key for `provider`. Returns `Ok(true)` if a
+    /// key was removed, `Ok(false)` if the vault had no entry to
+    /// remove (idempotent — the desktop can re-issue on stale UI).
+    /// Mirrors `Vault::delete_provider_key`.
+    fn delete_credential(&self, provider: &str) -> anyhow::Result<bool>;
 }
 
 /// Narrow port the `credential` handler uses to live-ping a
@@ -73,7 +94,7 @@ pub(crate) trait CredentialTestLiveHost: Send + Sync {
 }
 
 /// `credential` domain request handler. Constructed with one
-/// `Arc<dyn CredentialHost>` for the read-only list variant and one
+/// `Arc<dyn CredentialHost>` for the read/write variants and one
 /// `Arc<dyn CredentialTestLiveHost>` for the async live ping. The
 /// dispatcher passes two clones of the same `Arc<AppState>`; the
 /// downcasts happen at construction time.
@@ -100,7 +121,10 @@ impl RequestHandler for CredentialHandler {
     fn matches(&self, request: &RequestPacket) -> bool {
         matches!(
             request,
-            RequestPacket::CredentialList { .. } | RequestPacket::CredentialTest { .. }
+            RequestPacket::CredentialList { .. }
+                | RequestPacket::CredentialTest { .. }
+                | RequestPacket::CredentialSet { .. }
+                | RequestPacket::CredentialDelete { .. }
         )
     }
 
@@ -153,6 +177,61 @@ impl RequestHandler for CredentialHandler {
                 };
                 send_response(sink, response).await?;
             }
+            RequestPacket::CredentialSet {
+                request_id,
+                provider,
+                api_key,
+            } => {
+                // Empty key submissions are rejected as a structured
+                // `Error` so the desktop form can surface them inline
+                // without a vault round-trip. Non-empty keys are
+                // forwarded to `Vault::set_provider_key` which
+                // encrypts and persists atomically.
+                if api_key.is_empty() {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("api_key for '{provider}' must not be empty"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+                let secret = SecretString::from(api_key);
+                match self.host.set_credential(&provider, &secret) {
+                    Ok(()) => {
+                        let response = ResponsePacket::CredentialSetDone {
+                            request_id,
+                            provider,
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("failed to store key for '{provider}': {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
+            }
+            RequestPacket::CredentialDelete {
+                request_id,
+                provider,
+            } => match self.host.delete_credential(&provider) {
+                Ok(_) => {
+                    let response = ResponsePacket::CredentialDeleted {
+                        request_id,
+                        provider,
+                    };
+                    send_response(sink, response).await?;
+                }
+                Err(e) => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("failed to delete key for '{provider}': {e}"),
+                    };
+                    send_response(sink, response).await?;
+                }
+            },
             // `matches()` returned true, so the exhaustive list above
             // covers every owned variant. This arm is unreachable.
             _ => unreachable!("CredentialHandler::matches allowed an unhandled variant"),
@@ -171,13 +250,56 @@ mod tests {
 
     use super::*;
     use crate::ipc::response_sink::ResponseSink;
+    use secrecy::ExposeSecret;
     use std::sync::{Arc, Mutex};
 
     /// Stub host — each test stages the rows it wants to exercise.
-    struct StubHost(Vec<CredentialRow>);
+    /// Write-path methods are recorded into an `Arc<Mutex<_>>` so
+    /// the set/delete tests can assert what the handler forwarded
+    /// without standing up a real vault.
+    struct StubHost {
+        rows: Vec<CredentialRow>,
+        writes: Arc<Mutex<Vec<(String, String)>>>,
+        deletes: Arc<Mutex<Vec<String>>>,
+        set_err: Option<String>,
+        delete_err: Option<String>,
+    }
     impl CredentialHost for StubHost {
         fn list_credentials(&self) -> Vec<CredentialRow> {
-            self.0.clone()
+            self.rows.clone()
+        }
+
+        fn set_credential(
+            &self,
+            provider: &str,
+            api_key: &SecretString,
+        ) -> anyhow::Result<()> {
+            if let Some(msg) = &self.set_err {
+                return Err(anyhow::anyhow!("{msg}"));
+            }
+            self.writes
+                .lock()
+                .unwrap()
+                .push((provider.to_string(), api_key.expose_secret().to_string()));
+            Ok(())
+        }
+
+        fn delete_credential(&self, provider: &str) -> anyhow::Result<bool> {
+            if let Some(msg) = &self.delete_err {
+                return Err(anyhow::anyhow!("{msg}"));
+            }
+            self.deletes.lock().unwrap().push(provider.to_string());
+            Ok(true)
+        }
+    }
+
+    fn stub_host(rows: Vec<CredentialRow>) -> StubHost {
+        StubHost {
+            rows,
+            writes: Arc::new(Mutex::new(Vec::new())),
+            deletes: Arc::new(Mutex::new(Vec::new())),
+            set_err: None,
+            delete_err: None,
         }
     }
 
@@ -217,7 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn credential_list_emits_rows_with_has_key_flag() {
-        let host = StubHost(vec![
+        let host = stub_host(vec![
             CredentialRow {
                 provider: "minimax".to_string(),
                 has_key: true,
@@ -294,7 +416,7 @@ mod tests {
         // emit an empty `providers` array (not omit the field, not
         // null) so the desktop's `useCredentialList` reduces to `[]`
         // without an undefined-property error.
-        let host = StubHost(Vec::new());
+        let host = stub_host(Vec::new());
         let test_host = StubTestHost {
             outcome: crate::providers::validator::CredentialTestOutcome {
                 ok: true,
@@ -335,7 +457,7 @@ mod tests {
         // the handler so the desktop's Tauri command can rely on
         // `ok`, `message`, `latency_ms`, `http_status`, `model_used`,
         // and `tested_at` all round-tripping.
-        let host = StubHost(Vec::new());
+        let host = stub_host(Vec::new());
         let test_host = StubTestHost {
             outcome: crate::providers::validator::CredentialTestOutcome {
                 ok: false,
@@ -417,7 +539,7 @@ mod tests {
             }
         }
 
-        let host = StubHost(Vec::new());
+        let host = stub_host(Vec::new());
         let test_host = FailingTestHost(AtomicUsize::new(0));
         let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
         let buf = Arc::new(Mutex::new(Vec::new()));
@@ -453,5 +575,219 @@ mod tests {
                 .unwrap_or(false),
             "message should carry the original error reason"
         );
+    }
+
+    /// `CredentialSet` round-trips the api_key to the host and
+    /// replies with `credential_set_done`. Pins the wire shape so a
+    /// future change to the JSON envelope surfaces as a test
+    /// failure rather than the desktop timing out (the symptom
+    /// that motivated adding the variant — the original handler
+    /// didn't claim it, so requests fell through to the dispatcher's
+    /// generic "no handler registered" error and the desktop's
+    /// `credential_set` mutation hung until the socket timeout).
+    #[tokio::test]
+    async fn credential_set_forwards_api_key_to_host_and_replies_with_done() {
+        let host = stub_host(Vec::new());
+        let writes = host.writes.clone();
+        let test_host = StubTestHost {
+            outcome: crate::providers::validator::CredentialTestOutcome {
+                ok: true,
+                message: "unused".into(),
+                latency_ms: 0,
+                http_status: None,
+                model_used: None,
+            },
+        };
+        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = CaptureSink(buf.clone());
+
+        handler
+            .handle(
+                RequestPacket::CredentialSet {
+                    request_id: 50,
+                    provider: "minimax".to_string(),
+                    api_key: "sk-test-123".to_string(),
+                },
+                &test_caller(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .expect("handle should succeed");
+
+        let bytes = buf.lock().unwrap().clone();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("response should be valid JSON");
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("credential_set_done"),
+            "set success must emit credential_set_done"
+        );
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(50));
+        assert_eq!(
+            json.get("provider").and_then(|v| v.as_str()),
+            Some("minimax")
+        );
+
+        // Verify the host actually got the key (not empty / not
+        // truncated).
+        let writes = writes.lock().unwrap();
+        assert_eq!(writes.len(), 1, "host should record exactly one write");
+        assert_eq!(writes[0].0, "minimax");
+        assert_eq!(writes[0].1, "sk-test-123");
+    }
+
+    /// Empty-key submissions are rejected as a structured
+    /// `ResponsePacket::Error` rather than silently wiping the
+    /// existing key. The desktop's Save button is guarded against
+    /// this client-side, but the handler enforces it too as a
+    /// defense-in-depth check.
+    #[tokio::test]
+    async fn credential_set_rejects_empty_key_with_error_response() {
+        let host = stub_host(Vec::new());
+        let writes = host.writes.clone();
+        let test_host = StubTestHost {
+            outcome: crate::providers::validator::CredentialTestOutcome {
+                ok: true,
+                message: "unused".into(),
+                latency_ms: 0,
+                http_status: None,
+                model_used: None,
+            },
+        };
+        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = CaptureSink(buf.clone());
+
+        handler
+            .handle(
+                RequestPacket::CredentialSet {
+                    request_id: 51,
+                    provider: "minimax".to_string(),
+                    api_key: String::new(),
+                },
+                &test_caller(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .expect("handle should succeed even on validation failure");
+
+        let bytes = buf.lock().unwrap().clone();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("response should be valid JSON");
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("error"),
+            "empty key must surface as ResponsePacket::Error"
+        );
+        assert!(
+            json.get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.contains("must not be empty"))
+                .unwrap_or(false),
+            "error message should explain the empty-key rule"
+        );
+        assert!(
+            writes.lock().unwrap().is_empty(),
+            "host must not be called for empty keys"
+        );
+    }
+
+    /// Vault-side failures (e.g. encryption error) come back as a
+    /// `ResponsePacket::Error` rather than bubbling the `Result::Err`
+    /// out of `handle()` — the desktop always expects a structured
+    /// response on the sink.
+    #[tokio::test]
+    async fn credential_set_maps_vault_failure_to_error_response() {
+        let mut host = stub_host(Vec::new());
+        host.set_err = Some("argon2id derivation failed".to_string());
+        let test_host = StubTestHost {
+            outcome: crate::providers::validator::CredentialTestOutcome {
+                ok: true,
+                message: "unused".into(),
+                latency_ms: 0,
+                http_status: None,
+                model_used: None,
+            },
+        };
+        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = CaptureSink(buf.clone());
+
+        handler
+            .handle(
+                RequestPacket::CredentialSet {
+                    request_id: 52,
+                    provider: "minimax".to_string(),
+                    api_key: "sk-ok".to_string(),
+                },
+                &test_caller(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .expect("handler must not propagate Err");
+
+        let bytes = buf.lock().unwrap().clone();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("response should be valid JSON");
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("error"));
+        assert!(
+            json.get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.contains("argon2id derivation failed"))
+                .unwrap_or(false),
+            "error message must carry the vault failure reason"
+        );
+    }
+
+    /// `CredentialDelete` round-trips the provider id to the host
+    /// and replies with `credential_deleted`. Mirrors the set test
+    /// to pin both halves of the desktop's credentials write surface.
+    #[tokio::test]
+    async fn credential_delete_forwards_provider_to_host_and_replies_done() {
+        let host = stub_host(Vec::new());
+        let deletes = host.deletes.clone();
+        let test_host = StubTestHost {
+            outcome: crate::providers::validator::CredentialTestOutcome {
+                ok: true,
+                message: "unused".into(),
+                latency_ms: 0,
+                http_status: None,
+                model_used: None,
+            },
+        };
+        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = CaptureSink(buf.clone());
+
+        handler
+            .handle(
+                RequestPacket::CredentialDelete {
+                    request_id: 60,
+                    provider: "minimax".to_string(),
+                },
+                &test_caller(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .expect("handle should succeed");
+
+        let bytes = buf.lock().unwrap().clone();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("response should be valid JSON");
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("credential_deleted"),
+        );
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(60));
+        assert_eq!(
+            json.get("provider").and_then(|v| v.as_str()),
+            Some("minimax")
+        );
+        assert_eq!(*deletes.lock().unwrap(), vec!["minimax".to_string()]);
     }
 }
