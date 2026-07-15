@@ -178,9 +178,13 @@ mod tests {
             id: "anthropic".to_string(),
             display_name: "Anthropic".to_string(),
             api_type: "anthropic".to_string(),
-            default_model: "claude-sonnet-4-5".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
             requires_key: true,
             is_local: false,
+            enabled: true,
+            models: vec![],
+            default_model_id: "claude-sonnet-4-5".to_string(),
+            headers: Default::default(),
         }
     }
 

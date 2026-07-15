@@ -10,7 +10,6 @@ pub mod config;
 pub mod extension;
 pub mod message;
 pub mod output_format;
-pub mod provider;
 pub mod task;
 
 pub use output_format::OutputFormat;

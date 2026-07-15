@@ -14,7 +14,7 @@
 //! check and is what `peko credential test` and the desktop's Test
 //! button both call today.
 //!
-//! Per-format dispatch mirrors [`crate::providers::registry::create_provider_for_entry`]:
+//! Per-format dispatch mirrors [`crate::providers::factory::create_provider_for_entry`]:
 //!
 //! | `entry.api_format` | Method | Path | Body |
 //! |---|---|---|---|
@@ -175,7 +175,7 @@ impl Validator {
 /// `extra_headers`. The adapter's `base_url` is unused — the
 /// `HttpClient` we build carries the real base URL. Mirrors the
 /// construction in
-/// [`crate::providers::registry::create_provider_for_entry`].
+/// [`crate::providers::factory::create_provider_for_entry`].
 fn build_adapter(entry: &ProviderCatalogEntry) -> AnyAdapter {
     match entry.api_format {
         ApiFormat::OpenaiCompletions => {

@@ -14,15 +14,14 @@
 pub mod adapters;
 pub mod catalog;
 pub mod core;
+pub mod factory;
 pub mod metered;
 pub mod mock;
-pub mod registry;
 pub mod resolver;
 pub mod stacked_metered;
 pub mod synthetic_stream;
 pub mod templates;
 pub mod transport;
-pub mod types;
 pub mod validator;
 
 // Re-export commonly used types
@@ -33,24 +32,27 @@ pub use catalog::{
     ApiFormat, ModelCapability, ModelInfo, ProviderCatalog, ProviderCatalogEntry,
     ProviderCatalogFile,
 };
-pub use core::Provider;
+pub use core::{Provider, ProviderRuntimeOptions};
+pub use factory::create_provider_for_entry;
 pub use metered::MeteredProvider;
 pub use mock::{MockAdapter, MockResponse};
-pub use registry::{create_provider, get_provider_metadata, list_providers, ProviderRegistry};
 pub use resolver::{KeyProbeReport, LlmResolver, ResolveRequest, ResolveSource, ResolvedChoice};
 pub use stacked_metered::StackedMeteredProvider;
 pub use templates::{find_template, iter_templates, ModelTemplate, ProviderTemplate};
 pub use transport::{AuthConfig, HttpClient, SseParser};
-pub use types::{
-    BlockType, ChatOptions, ChatResponse, ContentBlock, ContentBlockId, ContentDelta, LlmMessage,
-    MessageRole, ProviderConfig, StopReason, StreamEvent, TokenUsage, ToolDefinition,
+// Domain types (canonical source: `common::types::message`)
+pub use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
+// Provider interface types (canonical source: `providers::traits`)
+pub use traits::{
+    BlockType, ChatOptions, ChatResponse, ContentBlockId, ContentDelta, StopReason, StreamEvent,
+    ToolDefinition,
 };
 
-// Types still defined in traits.rs for historical reasons; imported via types::*
+// Types still defined in traits.rs for historical reasons; imported via traits::*
 pub mod traits;
 
-/// Fallback for `ChatOptions::max_tokens` and `ModelConfig::max_tokens`
-/// when neither the caller nor the catalog supplies a value.
+/// Fallback for `ChatOptions::max_tokens` when neither the caller nor
+/// the catalog supplies a value.
 ///
 /// 4096 fits the lower bound of every Anthropic and OpenAI model that
 /// supports tool use. The preferred source is

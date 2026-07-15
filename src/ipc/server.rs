@@ -862,9 +862,13 @@ mod buffer_tests {
                 id: format!("test-provider-{i:02}-with-a-longer-id"),
                 display_name: format!("Test Provider {i:02}"),
                 api_type: "openai".into(),
-                default_model: "gpt-5".into(),
+                base_url: format!("https://api.test-provider-{i:02}.com/v1"),
                 requires_key: true,
                 is_local: false,
+                enabled: true,
+                models: vec![],
+                default_model_id: "gpt-5".into(),
+                headers: Default::default(),
             })
             .collect();
         let response = ResponsePacket::ProviderList {

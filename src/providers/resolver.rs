@@ -39,7 +39,7 @@ use std::sync::Arc;
 use crate::common::secret_store::SecretStore;
 use crate::providers::catalog::{ModelInfo, ProviderCatalog, ProviderCatalogEntry};
 use crate::providers::core::Provider;
-use crate::providers::registry::create_provider_for_entry;
+use crate::providers::factory::create_provider_for_entry;
 
 /// Inputs to `LlmResolver::resolve`.
 ///
@@ -297,22 +297,17 @@ impl LlmResolver {
         adapter: crate::providers::MockAdapter,
         model: &ModelInfo,
     ) -> Result<Arc<Provider>> {
-        use crate::common::types::provider::{ModelConfig, ProviderConfig};
         use crate::providers::adapters::AnyAdapter;
+        use crate::providers::core::ProviderRuntimeOptions;
 
-        let mut models = std::collections::HashMap::new();
-        models.insert(
-            "default".to_string(),
-            ModelConfig {
-                name: model.id.clone(),
-                ..Default::default()
-            },
-        );
-        let mut config = ProviderConfig::default();
-        config.default_model = "default".to_string();
-        config.models = models;
+        let options = ProviderRuntimeOptions {
+            default_model_id: model.id.clone(),
+            timeout_seconds: 300,
+            max_retries: 3,
+            retry_delay_ms: 1000,
+        };
 
-        Provider::new(AnyAdapter::Mock(adapter), "mock-key".to_string(), config).map(Arc::new)
+        Provider::new(AnyAdapter::Mock(adapter), "mock-key".to_string(), options).map(Arc::new)
     }
 
     /// Internal: look up the API key for a provider.

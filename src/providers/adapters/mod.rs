@@ -7,7 +7,7 @@
 
 use crate::providers::mock::MockAdapter;
 use crate::providers::transport::AuthConfig;
-use crate::providers::types::{
+use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StreamEvent, ToolDefinition,
 };
 use anyhow::Result;

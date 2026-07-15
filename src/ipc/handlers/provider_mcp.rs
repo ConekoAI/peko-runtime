@@ -38,9 +38,10 @@ use crate::ipc::server::PeerAddr;
 
 /// Narrow port the `provider_mcp` handler uses to reach daemon state.
 ///
-/// `AppState` is the sole implementor. Both methods are async because
-/// they drive live config-file reloads (provider registry + MCP
-/// config); the trait needs `async_trait` for that reason.
+/// `AppState` is the sole implementor. All three methods are async
+/// because they drive live config-file reads and reloads (provider
+/// catalog + MCP config); the trait needs `async_trait` for that
+/// reason.
 #[async_trait::async_trait]
 pub(crate) trait ProviderMcpHost: Send + Sync {
     /// Live reload the provider registry from disk, returning
@@ -51,6 +52,13 @@ pub(crate) trait ProviderMcpHost: Send + Sync {
     /// Live reload the MCP config from disk, returning the count of
     /// configured MCP servers on success. Powers `McpReload`.
     async fn reload_mcp_config(&self) -> anyhow::Result<usize>;
+
+    /// Snapshot every catalog entry (enabled + disabled) as the
+    /// `ProviderInfo` wire shape. Powers `ProviderList`. Reads go
+    /// through the daemon's `Arc<ProviderCatalog>` so the response
+    /// matches what the resolver sees — including any user-added
+    /// entries that don't appear in the static `BUILT_IN_TEMPLATES`.
+    async fn list_catalog_providers(&self) -> Vec<crate::ipc::packet::ProviderInfo>;
 }
 
 /// `provider_mcp` domain request handler. Constructed with an
@@ -90,29 +98,15 @@ impl RequestHandler for ProviderMcpHandler {
     ) -> anyhow::Result<()> {
         match request {
             RequestPacket::ProviderList { request_id } => {
-                let registry = crate::providers::ProviderRegistry::new();
-                let mut providers: Vec<crate::ipc::packet::ProviderInfo> = Vec::new();
-                let mut seen_ids = std::collections::HashSet::new();
-                for (_id, meta) in registry.iter() {
-                    if !seen_ids.insert(meta.id) {
-                        continue;
-                    }
-                    providers.push(crate::ipc::packet::ProviderInfo {
-                        id: meta.id.to_string(),
-                        display_name: meta.display_name.to_string(),
-                        api_type: match meta.api_type {
-                            crate::providers::registry::ApiType::OpenAICompletions => {
-                                "openai".to_string()
-                            }
-                            crate::providers::registry::ApiType::AnthropicMessages => {
-                                "anthropic".to_string()
-                            }
-                        },
-                        default_model: meta.default_model.to_string(),
-                        requires_key: !meta.api_key_env.is_empty(),
-                        is_local: meta.api_key_env.is_empty(),
-                    });
-                }
+                // Read the catalog through the host so the response
+                // reflects every entry the user has added via
+                // `peko provider add` — including disabled entries.
+                // Pre-RP1 this handler walked the in-memory
+                // `BUILT_IN_PROVIDERS` list, which silently omitted
+                // any catalog-only provider. The bug surfaced as
+                // `peko provider list` showing entries that
+                // disappeared from `ProviderList` IPC.
+                let providers = self.host.list_catalog_providers().await;
                 let response = ResponsePacket::ProviderList {
                     request_id,
                     providers,
@@ -173,23 +167,75 @@ mod tests {
     //! bug (T-105 follow-up): the desktop's fallback list fires when IPC
     //! returns empty. This test pins the wire shape the handler emits so
     //! upstream diagnostics can compare against what the runtime sends.
+    //!
+    //! Post-RP1 the handler reads from a stub catalog (via
+    //! `list_catalog_providers`) rather than rebuilding the in-memory
+    //! registry. The stub here stands in for `AppState`'s catalog
+    //! projection.
 
     use super::*;
     use crate::ipc::response_sink::ResponseSink;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
-    /// Stub `ProviderMcpHost` — `ProviderList` does not need any host
-    /// state (the handler builds a fresh registry), but the trait is
-    /// required for construction.
-    struct NoopHost;
+    /// Stub host backed by an in-memory list of `ProviderInfo`s.
+    struct StubHost(Vec<crate::ipc::packet::ProviderInfo>);
     #[async_trait]
-    impl ProviderMcpHost for NoopHost {
+    impl ProviderMcpHost for StubHost {
         async fn reload_providers(&self) -> anyhow::Result<(usize, usize)> {
-            Ok((0, 0))
+            Ok((self.0.len(), 0))
         }
         async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
             Ok(0)
+        }
+        async fn list_catalog_providers(&self) -> Vec<crate::ipc::packet::ProviderInfo> {
+            self.0.clone()
+        }
+    }
+
+    fn anthropic_info() -> crate::ipc::packet::ProviderInfo {
+        crate::ipc::packet::ProviderInfo {
+            id: "anthropic".to_string(),
+            display_name: "Anthropic".to_string(),
+            api_type: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            requires_key: true,
+            is_local: false,
+            enabled: true,
+            models: vec![],
+            default_model_id: "claude-sonnet-4-5".to_string(),
+            headers: Default::default(),
+        }
+    }
+
+    fn ollama_info() -> crate::ipc::packet::ProviderInfo {
+        crate::ipc::packet::ProviderInfo {
+            id: "ollama".to_string(),
+            display_name: "Ollama".to_string(),
+            api_type: "openai".to_string(),
+            base_url: "http://localhost:11434/v1".to_string(),
+            requires_key: false,
+            is_local: true,
+            enabled: true,
+            models: vec![],
+            default_model_id: "llama3.1".to_string(),
+            headers: Default::default(),
+        }
+    }
+
+    /// Disables-flavor entry to verify enabled=false flows through.
+    fn disabled_info() -> crate::ipc::packet::ProviderInfo {
+        crate::ipc::packet::ProviderInfo {
+            id: "minimax".to_string(),
+            display_name: "MiniMax (disabled)".to_string(),
+            api_type: "anthropic".to_string(),
+            base_url: "https://api.minimaxi.com/anthropic".to_string(),
+            requires_key: true,
+            is_local: false,
+            enabled: false,
+            models: vec![],
+            default_model_id: "MiniMax-M3".to_string(),
+            headers: Default::default(),
         }
     }
 
@@ -211,8 +257,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_list_emits_all_builtin_entries() {
-        let handler = ProviderMcpHandler::new(Arc::new(NoopHost));
+    async fn provider_list_emits_catalog_entries() {
+        // Pre-RP1 this test asserted that BUILT_IN_PROVIDERS flowed
+        // through. Post-RP1 the handler reads the catalog via the
+        // host, so we stage the equivalent rows here and assert the
+        // wire shape — including `api_format`, `base_url`, `enabled`,
+        // `default_model_id`, and `models`.
+        let host = StubHost(vec![
+            anthropic_info(),
+            ollama_info(),
+            disabled_info(),
+        ]);
+        let handler = ProviderMcpHandler::new(Arc::new(host));
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -230,27 +286,6 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_slice(&bytes).expect("response should be valid JSON");
 
-        let providers = json
-            .get("providers")
-            .and_then(|v| v.as_array())
-            .expect("response should have a providers array");
-
-        let ids: Vec<String> = providers
-            .iter()
-            .filter_map(|p| p.get("id").and_then(|v| v.as_str()).map(String::from))
-            .collect();
-
-        assert!(
-            ids.iter().any(|id| id == "minimax"),
-            "ProviderList should always include the minimax entry from \
-             BUILT_IN_PROVIDERS; got: {ids:?}",
-        );
-        assert!(
-            ids.contains(&"openai".to_string())
-                && ids.contains(&"anthropic".to_string())
-                && ids.contains(&"ollama".to_string()),
-            "ProviderList should include the canonical built-ins; got: {ids:?}",
-        );
         // Pin the response kind so future wire-shape changes surface
         // here rather than as a silent desktop regression.
         assert_eq!(
@@ -258,5 +293,110 @@ mod tests {
             Some("provider_list")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(7));
+
+        let providers = json
+            .get("providers")
+            .and_then(|v| v.as_array())
+            .expect("response should have a providers array");
+        assert_eq!(providers.len(), 3, "all three staged rows must flow");
+
+        // The wire shape carries the new fields. Spot-check the first
+        // row — a future field addition surfaces as a test diff here
+        // rather than as a silent desktop regression.
+        let anthropic = &providers[0];
+        assert_eq!(
+            anthropic.get("id").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
+        assert_eq!(
+            anthropic.get("api_format").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
+        assert_eq!(
+            anthropic.get("base_url").and_then(|v| v.as_str()),
+            Some("https://api.anthropic.com")
+        );
+        assert_eq!(
+            anthropic.get("requires_key").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            anthropic.get("is_local").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            anthropic.get("enabled").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            anthropic.get("default_model_id").and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-5")
+        );
+        assert!(
+            anthropic.get("models").and_then(|v| v.as_array()).is_some(),
+            "models[] must be present (even when empty)"
+        );
+
+        // The disabled row must round-trip `enabled = false`.
+        let disabled = &providers[2];
+        assert_eq!(
+            disabled.get("id").and_then(|v| v.as_str()),
+            Some("minimax")
+        );
+        assert_eq!(
+            disabled.get("enabled").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
+
+    /// Regression for the original bug: a user-added catalog entry
+    /// (one not in `BUILT_IN_TEMPLATES`) must round-trip through the
+    /// `ProviderList` IPC. Pre-RP1 the handler rebuilt a fresh
+    /// `ProviderRegistry` from `BUILT_IN_PROVIDERS` and silently
+    /// dropped user additions.
+    #[tokio::test]
+    async fn provider_list_emits_user_added_providers() {
+        let custom = crate::ipc::packet::ProviderInfo {
+            id: "my-internal-llm".to_string(),
+            display_name: "Internal LLM".to_string(),
+            api_type: "openai".to_string(),
+            base_url: "http://internal-llm.internal/v1".to_string(),
+            requires_key: true,
+            is_local: false,
+            enabled: true,
+            models: vec![],
+            default_model_id: "custom-model".to_string(),
+            headers: Default::default(),
+        };
+        let host = StubHost(vec![custom.clone()]);
+        let handler = ProviderMcpHandler::new(Arc::new(host));
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = CaptureSink(buf.clone());
+
+        handler
+            .handle(
+                RequestPacket::ProviderList { request_id: 9 },
+                &test_caller(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .expect("handle should succeed");
+
+        let bytes = buf.lock().unwrap().clone();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("response should be valid JSON");
+        let providers = json
+            .get("providers")
+            .and_then(|v| v.as_array())
+            .expect("response should have a providers array");
+        let ids: Vec<String> = providers
+            .iter()
+            .filter_map(|p| p.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        assert!(
+            ids.contains(&"my-internal-llm".to_string()),
+            "user-added catalog entries must flow through ProviderList IPC, got: {ids:?}"
+        );
     }
 }

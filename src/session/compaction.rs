@@ -684,8 +684,9 @@ impl Default for Compactor {
 mod tests {
     use super::*;
     use crate::providers::adapters::AnyAdapter;
+    use crate::providers::core::ProviderRuntimeOptions;
     use crate::providers::mock::MockAdapter;
-    use crate::providers::{Provider, ProviderConfig};
+    use crate::providers::Provider;
 
     fn create_test_messages(count: usize) -> Vec<LlmMessage> {
         let mut messages = vec![];
@@ -881,8 +882,17 @@ minimax = { "M3" = 4000 }
         mock.queue_text("Summary of conversation: user and assistant discussed several topics over many turns and arrived at a conclusion that satisfied everyone involved in the discussion.");
 
         let provider = Arc::new(
-            Provider::new(AnyAdapter::Mock(mock.clone()), "", ProviderConfig::default())
-                .expect("mock provider should construct"),
+            Provider::new(
+                AnyAdapter::Mock(mock.clone()),
+                "",
+                ProviderRuntimeOptions {
+                    default_model_id: "mock-model".to_string(),
+                    timeout_seconds: 300,
+                    max_retries: 3,
+                    retry_delay_ms: 1000,
+                },
+            )
+            .expect("mock provider should construct"),
         );
 
         // Build a long-enough history that the compactor will
@@ -926,8 +936,17 @@ minimax = { "M3" = 4000 }
         mock.queue_text("Summary.");
 
         let provider = Arc::new(
-            Provider::new(AnyAdapter::Mock(mock.clone()), "", ProviderConfig::default())
-                .expect("mock provider should construct"),
+            Provider::new(
+                AnyAdapter::Mock(mock.clone()),
+                "",
+                ProviderRuntimeOptions {
+                    default_model_id: "mock-model".to_string(),
+                    timeout_seconds: 300,
+                    max_retries: 3,
+                    retry_delay_ms: 1000,
+                },
+            )
+            .expect("mock provider should construct"),
         );
 
         // Build messages long enough to trigger compaction.
