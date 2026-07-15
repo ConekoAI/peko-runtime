@@ -87,6 +87,12 @@ impl McpToolProxy {
         &self.tool
     }
 
+    /// RP3C: access the manager's vault for vault-backed reserved params.
+    pub(crate) async fn vault(&self) -> Option<Arc<crate::common::vault::Vault>> {
+        let manager = self.manager.read().await;
+        manager.vault()
+    }
+
     /// Internal method to call the tool with auto-start if needed
     ///
     /// This handles the case where the server is not running by attempting

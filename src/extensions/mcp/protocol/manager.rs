@@ -17,6 +17,7 @@
 //!   connections, not supervised child processes.
 
 use crate::common::vault::Vault;
+use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
 use crate::daemon::background_runtime::{BackgroundRuntimeManager, RuntimeState};
 use crate::extensions::mcp::protocol::{
     client::{ClientError, McpClient, ServerRequestHandler},
@@ -246,6 +247,56 @@ impl McpManager {
             .unwrap_or_else(|| self.owned_client_registry.clone())
     }
 
+    /// RP3C: expose the vault so injectable proxies can resolve
+    /// vault-backed reserved parameters.
+    pub(crate) fn vault(&self) -> Option<Arc<Vault>> {
+        self.vault.clone()
+    }
+
+    /// RP3C: verify that any vault-backed reserved parameters for this
+    /// server have a corresponding credential before starting.
+    fn validate_vault_reserved_params(
+        &self,
+        server_name: &str,
+        reserved: &ReservedParamsConfig,
+    ) -> Result<()> {
+        let Some(vault) = &self.vault else {
+            for (name, source) in reserved.params.iter() {
+                if matches!(source, ParamSource::Vault { .. }) {
+                    return Err(ManagerError::Config(format!(
+                        "MCP server '{server_name}' reserved param '{name}' uses source = \"vault\" but no vault is available"
+                    )));
+                }
+            }
+            return Ok(());
+        };
+
+        for (name, source) in reserved.params.iter() {
+            if let ParamSource::Vault {
+                namespace,
+                name: param_name,
+            } = source
+            {
+                match vault.get_material_for(namespace, param_name) {
+                    Ok(Some(_)) => continue,
+                    Ok(None) => {
+                        return Err(ManagerError::Config(format!(
+                            "MCP server '{server_name}' reserved param '{name}' has no vault credential at {namespace}/{param_name}; \
+                             run `peko credential set {namespace} {param_name} api_key`"
+                        )));
+                    }
+                    Err(e) => {
+                        return Err(ManagerError::Config(format!(
+                            "MCP server '{server_name}' reserved param '{name}' vault lookup failed: {e}"
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Build a server-request handler for sampling when a resolver is configured.
     ///
     /// F19: per-server handler. The meter is resolved from the
@@ -293,6 +344,14 @@ impl McpManager {
         pm: Arc<crate::principal::manager::PrincipalManager>,
     ) -> Self {
         self.principal_manager = Some(pm);
+        self
+    }
+
+    /// RP3C: attach a vault so injectable proxies can resolve vault-backed
+    /// reserved parameters. Builder-style.
+    #[must_use]
+    pub fn with_vault(mut self, vault: Arc<Vault>) -> Self {
+        self.vault = Some(vault);
         self
     }
 
@@ -433,6 +492,9 @@ impl McpManager {
         let handle = servers
             .get_mut(name)
             .ok_or_else(|| ManagerError::ServerNotFound(name.to_string()))?;
+
+        // RP3C: refuse to start if vault-backed reserved params are missing.
+        self.validate_vault_reserved_params(name, &handle.config.reserved_parameters)?;
 
         match handle.config.transport {
             TransportType::Stdio => {
@@ -1310,5 +1372,31 @@ mod tests {
         assert_eq!(contexts[0].name, "offline-server");
         assert!(!contexts[0].running);
         assert!(contexts[0].instructions.is_none());
+    }
+
+    /// RP3C: a server with a vault-backed reserved parameter must not
+    /// start when the credential is absent.
+    #[tokio::test]
+    async fn start_server_rejects_missing_vault_reserved_param() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Arc::new(Vault::for_test(tmp.path(), "test-passphrase"));
+
+        let mut config = McpConfig::default();
+        config.add_server(
+            McpServerConfig::sse("remote", "http://localhost:9999/mcp").with_reserved_parameters(
+                ReservedParamsConfig::new().with_vault("api_key", "mcp:remote", "default"),
+            ),
+        );
+
+        let manager = McpManager::new(config).with_vault(vault);
+        manager.init().await.unwrap();
+
+        let err = manager.start_server("remote", None).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no vault credential"),
+            "expected missing-credential error, got: {msg}"
+        );
+        assert!(msg.contains("mcp:remote/default"), "error should name the slot: {msg}");
     }
 }

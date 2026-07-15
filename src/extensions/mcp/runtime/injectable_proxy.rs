@@ -15,6 +15,7 @@
 //! [server.reserved_parameters]
 //! agent_id = { source = "runtime", field = "agent_id" }
 //! session_id = { source = "runtime", field = "session_id" }
+//! api_key = { source = "vault", namespace = "mcp:my-server", name = "default" }
 //! ```
 
 use crate::extensions::framework::protocols::shared::proxy_utils::execute_with_context_handling;
@@ -130,8 +131,13 @@ impl InjectableMcpToolProxy {
     /// Inject reserved parameters into the arguments
     ///
     /// Takes the LLM-provided arguments and merges in the reserved parameters
-    /// from the runtime context.
-    fn inject_params(&self, mut params: Value, ctx: Option<&ToolContext>) -> anyhow::Result<Value> {
+    /// from the runtime context and vault.
+    fn inject_params(
+        &self,
+        mut params: Value,
+        ctx: Option<&ToolContext>,
+        vault: Option<&crate::common::vault::Vault>,
+    ) -> anyhow::Result<Value> {
         if self.reserved_params.is_empty() {
             return Ok(params);
         }
@@ -149,7 +155,7 @@ impl InjectableMcpToolProxy {
         for name in self.reserved_params.names() {
             let value = self
                 .reserved_params
-                .resolve(ctx)
+                .resolve_with_vault(ctx, vault)
                 .get(name)
                 .cloned()
                 .unwrap_or(Value::Null);
@@ -162,8 +168,9 @@ impl InjectableMcpToolProxy {
 
     /// Execute with parameter injection
     async fn do_execute(&self, params: Value, ctx: Option<&ToolContext>) -> anyhow::Result<Value> {
-        // Inject reserved parameters from context
-        let merged = self.inject_params(params, ctx)?;
+        // Inject reserved parameters from context and vault
+        let vault = self.inner.vault().await;
+        let merged = self.inject_params(params, ctx, vault.as_ref().map(|v| &**v))?;
 
         trace!(
             "Executing {} with {} reserved params injected",
@@ -333,5 +340,60 @@ mod tests {
         assert_eq!(resolved.get("agent_id"), Some(&json!(null)));
         // Static params still resolve
         assert_eq!(resolved.get("static_val"), Some(&json!("hardcoded")));
+    }
+
+    /// RP3C: vault-backed reserved parameters are read from the vault and
+    /// injected into the tool arguments.
+    #[tokio::test]
+    async fn test_inject_vault_reserved_param() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Arc::new(crate::common::vault::Vault::for_test(
+            tmp.path(),
+            "test-passphrase",
+        ));
+        vault
+            .set_credential(&crate::common::vault::Credential::now(
+                "mcp:my-server",
+                "default",
+                crate::common::vault::CredentialKind::ApiKey,
+                secrecy::SecretString::new("vault-secret".into()),
+            ))
+            .unwrap();
+
+        let manager = Arc::new(RwLock::new(
+            crate::extensions::mcp::protocol::manager::McpManager::new(
+                crate::extensions::mcp::protocol::config::McpConfig::default(),
+            )
+            .with_vault(vault.clone()),
+        ));
+
+        let tool = McpTool {
+            name: "test-tool".to_string(),
+            description: "test".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "api_key": {"type": "string"}
+                }
+            }),
+        };
+
+        let reserved =
+            ReservedParamsConfig::new().with_vault("api_key", "mcp:my-server", "default");
+
+        let proxy = InjectableMcpToolProxy::new(
+            "my-server".to_string(),
+            tool,
+            manager,
+            reserved,
+        );
+
+        let args = json!({"query": "hello"});
+        let result = proxy
+            .inject_params(args, None, Some(vault.as_ref()))
+            .unwrap();
+        assert_eq!(result["query"], "hello");
+        assert_eq!(result["api_key"], "vault-secret");
     }
 }
