@@ -99,6 +99,11 @@ impl ResolveSource {
 pub struct LlmResolver {
     catalog: Arc<ProviderCatalog>,
     secrets: Arc<dyn SecretStore>,
+    /// Optional concrete vault. When present, `resolve_api_key` prefers
+    /// `vault.get_material_for("provider:{account}", "default")` so the
+    /// resolver exercises the v2 credential API. Falls back to the
+    /// generic `SecretStore` for tests and the env-bootstrap path.
+    vault: Option<Arc<crate::common::vault::Vault>>,
     /// If true, the resolver falls back to conventional `*_API_KEY`
     /// env vars when the secret store has no entry. Read-only path;
     /// keys found via env are never persisted.
@@ -110,16 +115,25 @@ pub struct LlmResolver {
 }
 
 impl LlmResolver {
-    /// Create a new resolver.
+    /// Create a new resolver backed by a generic secret store.
     #[must_use]
     pub fn new(catalog: Arc<ProviderCatalog>, secrets: Arc<dyn SecretStore>) -> Self {
         Self {
             catalog,
             secrets,
+            vault: None,
             bootstrap_env_keys: false,
             #[cfg(any(test, feature = "test-utils"))]
             mock_adapter: None,
         }
+    }
+
+    /// Attach a concrete vault so the resolver uses the v2 credential
+    /// API (`get_material_for`) for provider API keys.
+    #[must_use]
+    pub fn with_vault(mut self, vault: Arc<crate::common::vault::Vault>) -> Self {
+        self.vault = Some(vault);
+        self
     }
 
     /// Enable the env-var bootstrap path. Intended for CI and
@@ -144,7 +158,6 @@ impl LlmResolver {
         adapter: crate::providers::MockAdapter,
         catalog_path: impl AsRef<std::path::Path>,
     ) -> (std::sync::Arc<Self>, crate::providers::MockAdapter) {
-        use crate::common::secret_store::InMemorySecretStore;
         use crate::providers::catalog::{ApiFormat, ModelInfo, ProviderCatalogEntry};
         use crate::providers::ProviderCatalog;
 
@@ -178,10 +191,13 @@ impl LlmResolver {
             .await
             .expect("mock default failed");
 
-        let secrets = std::sync::Arc::new(InMemorySecretStore::from_pairs(&[("mock", "mock-key")]));
+        let tmp = tempfile::tempdir().expect("mock tempdir");
+        let vault = Arc::new(crate::common::vault::Vault::for_test(tmp.path(), "mock-passphrase"));
+        let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
         let resolver = std::sync::Arc::new(Self {
             catalog,
             secrets,
+            vault: Some(vault),
             bootstrap_env_keys: false,
             mock_adapter: Some(adapter.clone()),
         });
@@ -313,11 +329,26 @@ impl LlmResolver {
     /// Internal: look up the API key for a provider.
     ///
     /// Resolution order:
-    /// 1. Secret store (OS keychain or test backend).
-    /// 2. If `bootstrap_env_keys` is enabled, conventional `*_API_KEY`
+    /// 1. Concrete vault via `get_material_for("provider:{account}", "default")`
+    ///    (RP3A v2 credential API).
+    /// 2. Generic secret store (test backends / backward compat).
+    /// 3. If `bootstrap_env_keys` is enabled, conventional `*_API_KEY`
     ///    env vars (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
     fn resolve_api_key(&self, account: &str) -> Result<SecretString> {
-        // 1. Keychain / secret store.
+        // 1. Prefer the v2 vault API when a concrete vault is attached.
+        if let Some(vault) = &self.vault {
+            match vault.get_material_for(&format!("provider:{account}"), "default") {
+                Ok(Some(secret)) => return Ok(secret),
+                Ok(None) => {} // not present — fall through
+                Err(e) => {
+                    if !self.bootstrap_env_keys {
+                        return Err(anyhow!("vault backend error for '{account}': {e}"));
+                    }
+                }
+            }
+        }
+
+        // 2. Generic secret store fallback.
         match self.secrets.get(account) {
             Ok(Some(secret)) => return Ok(secret),
             Ok(None) => {} // not present — fall through to env
@@ -330,7 +361,7 @@ impl LlmResolver {
             }
         }
 
-        // 2. Env-var bootstrap.
+        // 3. Env-var bootstrap.
         if self.bootstrap_env_keys {
             for var in env_var_candidates(account) {
                 if let Ok(v) = std::env::var(var) {
@@ -540,8 +571,13 @@ mod tests {
     }
 
     fn resolver(cat: Arc<ProviderCatalog>) -> LlmResolver {
-        let secrets = Arc::new(InMemorySecretStore::from_pairs(&[("openai", "sk-openai")]));
-        LlmResolver::new(cat, secrets)
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Arc::new(crate::common::vault::Vault::for_test(tmp.path(), "test-passphrase"));
+        vault
+            .set_provider_key("openai", &SecretString::new("sk-openai".into()))
+            .unwrap();
+        let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
+        LlmResolver::new(cat, secrets).with_vault(vault)
     }
 
     #[tokio::test]
@@ -691,6 +727,23 @@ mod tests {
         // Default openai is disabled; resolver falls back to anthropic.
         assert_eq!(choice.entry.id, "anthropic");
         assert_eq!(choice.source, ResolveSource::FirstEnabled);
+    }
+
+    #[tokio::test]
+    async fn resolve_api_key_uses_get_material_for() {
+        // RP3A: the resolver must read provider API keys through the v2
+        // vault API (`get_material_for("provider:{id}", "default")`),
+        // not the legacy trait `get(account)`.
+        let (_d, cat) = seeded_catalog().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Arc::new(crate::common::vault::Vault::for_test(tmp.path(), "test-passphrase"));
+        vault
+            .set_provider_key("anthropic", &SecretString::new("sk-ant-v2".into()))
+            .unwrap();
+        let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
+        let r = LlmResolver::new(cat, secrets).with_vault(vault);
+        let key = r.resolve_api_key("anthropic").unwrap();
+        assert_eq!(key.expose_secret(), "sk-ant-v2");
     }
 
     #[tokio::test]

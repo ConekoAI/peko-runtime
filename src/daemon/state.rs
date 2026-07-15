@@ -526,7 +526,8 @@ impl AppState {
             .map_err(|e| anyhow::anyhow!("Failed to load provider catalog: {e}"))?;
         let secrets: Arc<dyn crate::common::secret_store::SecretStore> =
             Arc::clone(&vault) as Arc<dyn crate::common::secret_store::SecretStore>;
-        let mut resolver_builder = crate::providers::LlmResolver::new(catalog, secrets);
+        let mut resolver_builder = crate::providers::LlmResolver::new(catalog, secrets)
+            .with_vault(Arc::clone(&vault));
         if std::env::var_os("PEKO_TEST_RESOLVER_BOOTSTRAP").is_some() {
             resolver_builder = resolver_builder.with_env_bootstrap();
         }
@@ -2605,79 +2606,186 @@ impl crate::ipc::handlers::provider_add::ProviderAddHost for AppState {
 /// handler uses. Trait lives in `ipc::handlers::credential`. Sync
 /// because reading the in-memory vault (`Vault::list_providers` +
 /// `Vault::get_provider_key`) is a pure in-memory operation — no
-/// disk I/O, no async work. The handler emits one row per provider
-/// id the vault knows about; `has_key` is set iff
-/// `Vault::get_provider_key` returns `Some`, and `last_tested` is
-/// always `None` until the vault gains that field (see
-/// [`crate::ipc::packet::CredentialRow`]).
+/// CredentialHost implementation for the daemon. Translates between
+/// the generic vault API (`Vault::list_credentials`,
+/// `Vault::set_credential`, `Vault::delete_credential`) and the IPC
+/// wire types in `crate::ipc::packet`.
 impl crate::ipc::handlers::credential::CredentialHost for AppState {
-    fn list_credentials(&self) -> Vec<crate::ipc::packet::CredentialRow> {
-        let vault = &self.vault;
-        vault
-            .list_providers()
+    fn list_credentials(
+        &self,
+        namespace: Option<&str>,
+        kind: Option<crate::common::vault::CredentialKind>,
+    ) -> Vec<crate::ipc::packet::CredentialRow> {
+        let filter = crate::common::vault::CredentialFilter {
+            namespace: namespace.map(String::from),
+            kind,
+        };
+        self.vault
+            .list_credentials(&filter)
             .into_iter()
-            .map(|provider| {
-                let has_key = vault.get_provider_key(&provider).is_some();
-                crate::ipc::packet::CredentialRow {
-                    provider,
-                    has_key,
-                    last_tested: None,
-                }
+            .map(|summary| crate::ipc::packet::CredentialRow {
+                id: summary.id,
+                namespace: summary.namespace,
+                name: summary.name,
+                kind: summary.kind.as_str().to_string(),
+                has_key: summary.has_key,
+                last_tested_at: summary
+                    .last_tested_at
+                    .map(|dt| dt.to_rfc3339()),
+                last_tested_ok: summary.last_tested_ok,
             })
             .collect()
     }
 
-    fn set_credential(
-        &self,
-        provider: &str,
-        api_key: &secrecy::SecretString,
-    ) -> anyhow::Result<()> {
-        // `Vault::set_provider_key` does an in-memory insert +
-        // encrypted save atomically. The desktop's `credential_set`
-        // Tauri command goes through this so the next
-        // `credential_list` IPC returns the freshly-stored key with
-        // no separate `notify_daemon_reload` hop needed (we ARE the
-        // daemon). Empty-key rejection happens one layer up in the
-        // handler — this method trusts its caller to have validated.
-        self.vault
-            .set_provider_key(provider, api_key)
-            .map_err(|e| anyhow::anyhow!("vault refused to store key for '{provider}': {e}"))
+    fn get_credential(&self, id: &str) -> Option<crate::ipc::packet::Credential> {
+        self.vault.get_credential(id).map(|c| {
+            crate::ipc::packet::Credential {
+                id: c.id,
+                namespace: c.namespace,
+                name: c.name,
+                kind: c.kind.as_str().to_string(),
+                metadata: c.metadata,
+                created_at: c.created_at.to_rfc3339(),
+                updated_at: c.updated_at.to_rfc3339(),
+                last_tested_at: c.last_tested_at.map(|dt| dt.to_rfc3339()),
+                last_tested_ok: c.last_tested_ok,
+            }
+        })
     }
 
-    fn delete_credential(&self, provider: &str) -> anyhow::Result<bool> {
+    fn set_credential(
+        &self,
+        namespace: &str,
+        name: &str,
+        kind: crate::common::vault::CredentialKind,
+        material: &secrecy::SecretString,
+        metadata: Option<serde_json::Value>,
+    ) -> anyhow::Result<String> {
+        // Reuse the existing credential id when overwriting the same
+        // (namespace, name) slot so rotation bindings remain valid.
+        let mut credential = crate::common::vault::Credential::now(
+            namespace.to_string(),
+            name.to_string(),
+            kind,
+            material.clone(),
+        );
+        credential.metadata = metadata.unwrap_or_default();
+        if let Some(existing) = self
+            .vault
+            .list_credentials(&crate::common::vault::CredentialFilter {
+                namespace: Some(namespace.to_string()),
+                kind: None,
+            })
+            .into_iter()
+            .find(|s| s.name == name)
+        {
+            credential.id = existing.id;
+        }
+        let id = credential.id.clone();
         self.vault
-            .delete_provider_key(provider)
-            .map_err(|e| anyhow::anyhow!("vault refused to delete key for '{provider}': {e}"))
+            .set_credential(&credential)
+            .map_err(|e| anyhow::anyhow!("vault refused to store credential '{namespace}/{name}': {e}"))?;
+        Ok(id)
+    }
+
+    fn delete_credential(&self, id: &str) -> anyhow::Result<bool> {
+        self.vault
+            .delete_credential(id)
+            .map_err(|e| anyhow::anyhow!("vault refused to delete credential '{id}': {e}"))
+    }
+}
+
+impl crate::ipc::handlers::credential::BindingHost for AppState {
+    fn list_bindings(&self) -> Vec<crate::ipc::packet::RotationBindingWire> {
+        self.vault
+            .list_bindings()
+            .into_iter()
+            .map(|(key, binding)| crate::ipc::packet::RotationBindingWire {
+                key,
+                strategy: binding.strategy.as_str().to_string(),
+                order: binding.ordered_credential_ids,
+            })
+            .collect()
+    }
+
+    fn get_binding(&self, key: &str) -> Option<crate::ipc::packet::RotationBindingWire> {
+        self.vault
+            .list_bindings()
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .map(|(key, binding)| crate::ipc::packet::RotationBindingWire {
+                key,
+                strategy: binding.strategy.as_str().to_string(),
+                order: binding.ordered_credential_ids,
+            })
+    }
+
+    fn set_binding(
+        &self,
+        key: &str,
+        strategy: crate::common::vault::RotationStrategy,
+        order: Vec<String>,
+    ) -> anyhow::Result<()> {
+        let binding = crate::common::vault::RotationBinding {
+            strategy,
+            ordered_credential_ids: order,
+        };
+        self.vault
+            .set_binding(key, &binding)
+            .map_err(|e| anyhow::anyhow!("vault refused to store binding '{key}': {e}"))
+    }
+
+    fn delete_binding(&self, key: &str) -> anyhow::Result<bool> {
+        self.vault
+            .delete_binding(key)
+            .map_err(|e| anyhow::anyhow!("vault refused to delete binding '{key}': {e}"))
     }
 }
 
 // Live-credential-test companion to [`CredentialHost`]. Powers
-// `peko credential test <provider>` and the desktop Test button —
-// the existing `Vault::test_provider_key` shape-only check can't
-// tell `sk-opena-12345` from a real key, so this hands the stored
-// key to the validator which pings the real provider API. Look up
-// the catalog entry and (if the entry requires one) the stored key,
-// then delegate to `providers::validator::Validator::test`.
+// `peko credential test <id>` and the desktop Test button. Resolves
+// the credential by id, then (for provider-namespace credentials)
+// looks up the catalog entry and hands the material to the validator.
 #[async_trait::async_trait]
 impl crate::ipc::handlers::credential::CredentialTestLiveHost for AppState {
     async fn test_credential_live(
         &self,
-        provider: &str,
+        id: &str,
     ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
+        let credential = self
+            .vault
+            .get_credential(id)
+            .ok_or_else(|| anyhow::anyhow!("credential not found: {id}"))?;
+
+        let provider_id = credential
+            .namespace
+            .strip_prefix("provider:")
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "credential '{}' has namespace '{}'; live test only supports provider:* namespaces",
+                    id,
+                    credential.namespace
+                )
+            })?;
+
         let entry = self
             .resolver
             .catalog()
-            .get(provider)
+            .get(provider_id)
             .await
-            .ok_or_else(|| anyhow::anyhow!("unknown provider: {provider}"))?;
+            .ok_or_else(|| anyhow::anyhow!("unknown provider: {provider_id}"))?;
+
         let key = if entry.requires_key {
-            Some(self.vault.get_provider_key(provider).ok_or_else(|| {
-                anyhow::anyhow!("no key stored for '{provider}'")
-            })?)
+            Some(&credential.material)
         } else {
             None
         };
-        Ok(crate::providers::validator::Validator::test(&entry, key.as_ref()).await)
+
+        let outcome = crate::providers::validator::Validator::test(&entry, key).await;
+        if let Err(e) = self.vault.record_test(id, outcome.ok) {
+            tracing::warn!(credential_id = %id, error = %e, "failed to record credential test outcome");
+        }
+        Ok(outcome)
     }
 }
 

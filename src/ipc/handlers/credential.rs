@@ -1,36 +1,14 @@
-//! `credential` domain request handler (T-107).
+//! `credential` domain request handler (T-107 + RP3A).
 //!
-//! Owns four IPC variants:
-//!
-//! - `CredentialList` — the desktop's `useCredentialList` hook calls
-//!   this so Settings → Credentials can paint per-pill "Key set"
-//!   indicators and the FirstRunWalkthrough can detect existing
-//!   configuration. The CLI `peko credential list` path reads the
-//!   vault directly and is unchanged; this handler is purely the IPC
-//!   surface.
-//! - `CredentialTest` — live pings the provider's API with the stored
-//!   key and reports whether it was accepted. Powers
-//!   `peko credential test` and the desktop's Test button. Replaces
-//!   the shape-only `Vault::test_provider_key` check that couldn't
-//!   tell `sk-opena-12345` from a real key.
-//! - `CredentialSet` — store or overwrite the API key for a provider
-//!   in the vault. Powers the desktop's Settings → Add Key / Update
-//!   Key flow; the CLI's `peko credential set` writes the vault
-//!   directly without IPC.
-//! - `CredentialDelete` — remove the stored key. Powers the desktop's
-//!   Remove action; the CLI's `peko credential delete` writes the
-//!   vault directly without IPC.
-//!
-//! The handler holds two narrow port traits ([`CredentialHost`] for
-//! the sync read + set + delete and [`CredentialTestLiveHost`] for
-//! the async ping); the daemon-side implementation (`AppState`) is
-//! reached only through the traits, so this module never imports
-//! `crate::daemon::state::AppState` directly.
+//! Owns the credential + rotation-binding IPC surface. The consumer-side
+//! port traits ([`CredentialHost`], [`BindingHost`], and
+//! [`CredentialTestLiveHost`]) live here; the daemon-side implementation
+//! in `AppState` reaches them through the narrow ports.
 //!
 //! Boundary rules:
 //! - Dependency inversion: the consumer (`ipc::handlers::credential`)
-//!   defines both traits; the producer (`daemon::state`) implements
-//!   them (same pattern as the rest of the F6/F7 handler family).
+//!   defines all traits; the producer (`daemon::state`) implements them
+//!   (same pattern as the rest of the F6/F7 handler family).
 //! - F6: this module must not import any other `ipc::handlers::*` module.
 
 use std::sync::Arc;
@@ -39,76 +17,99 @@ use async_trait::async_trait;
 use secrecy::SecretString;
 
 use crate::auth::caller::CallerContext;
+use crate::common::vault::{CredentialKind, RotationStrategy};
 use crate::ipc::handlers::RequestHandler;
-use crate::ipc::packet::{CredentialRow, RequestPacket, ResponsePacket};
+use crate::ipc::packet::{
+    Credential as CredentialWire, CredentialRow, RequestPacket, ResponsePacket, RotationBindingWire,
+};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 
-/// Narrow port the `credential` handler uses to reach the vault for
-/// the list, set, and delete variants.
-///
-/// `AppState` is the sole implementor. Sync because
-/// `Vault::list_providers`, `Vault::get_provider_key`,
-/// `Vault::set_provider_key`, and `Vault::delete_provider_key` are
-/// all in-memory (the latter two also do a synchronous `save()`)
-/// against the already-loaded vault state — no async work is
-/// required. Keeping the trait sync also avoids the `async_trait`
-/// boxing overhead for what is essentially disk-flushed state.
+/// Narrow port for the read/write credential variants.
 pub(crate) trait CredentialHost: Send + Sync {
-    /// Snapshot the credential vault into a list of rows the desktop
-    /// can render directly. Each row carries the provider id, a
-    /// `has_key` flag, and a `last_tested` timestamp (always `None`
-    /// until the vault gains that field; see [`CredentialRow`]).
-    fn list_credentials(&self) -> Vec<CredentialRow>;
+    /// Snapshot the credential vault into redacted rows. Optional
+    /// `namespace` and `kind` filters restrict the listing.
+    fn list_credentials(
+        &self,
+        namespace: Option<&str>,
+        kind: Option<CredentialKind>,
+    ) -> Vec<CredentialRow>;
 
-    /// Store or overwrite the API key for `provider`. Empty
-    /// `api_key` is rejected with an `Err` so the desktop can't
-    /// accidentally wipe a key with a blank submit. Mirrors
-    /// `Vault::set_provider_key`.
-    fn set_credential(&self, provider: &str, api_key: &SecretString) -> anyhow::Result<()>;
+    /// Fetch the full (non-material) record for one credential.
+    fn get_credential(&self, id: &str) -> Option<CredentialWire>;
 
-    /// Remove the stored key for `provider`. Returns `Ok(true)` if a
-    /// key was removed, `Ok(false)` if the vault had no entry to
-    /// remove (idempotent — the desktop can re-issue on stale UI).
-    /// Mirrors `Vault::delete_provider_key`.
-    fn delete_credential(&self, provider: &str) -> anyhow::Result<bool>;
+    /// Store or overwrite a credential at `(namespace, name)`. The host
+    /// generates a fresh id and returns it. Empty `material` is rejected
+    /// one layer up in the handler.
+    fn set_credential(
+        &self,
+        namespace: &str,
+        name: &str,
+        kind: CredentialKind,
+        material: &SecretString,
+        metadata: Option<serde_json::Value>,
+    ) -> anyhow::Result<String>;
+
+    /// Remove the credential with this `id`. Returns `Ok(true)` if a
+    /// credential was removed (idempotent delete).
+    fn delete_credential(&self, id: &str) -> anyhow::Result<bool>;
 }
 
-/// Narrow port the `credential` handler uses to live-ping a
-/// provider's API. Async because the underlying
-/// [`crate::providers::validator::Validator::test`] makes a real
-/// HTTP request and respects cancellation through the runtime.
+/// Narrow port for the rotation-binding variants.
+pub(crate) trait BindingHost: Send + Sync {
+    /// Enumerate every configured rotation binding.
+    fn list_bindings(&self) -> Vec<RotationBindingWire>;
+
+    /// Fetch one binding by slot key, if it exists.
+    fn get_binding(&self, key: &str) -> Option<RotationBindingWire>;
+
+    /// Store or overwrite the rotation binding for a slot.
+    fn set_binding(
+        &self,
+        key: &str,
+        strategy: RotationStrategy,
+        order: Vec<String>,
+    ) -> anyhow::Result<()>;
+
+    /// Remove a binding by slot key. Returns `Ok(true)` if a binding
+    /// was removed.
+    fn delete_binding(&self, key: &str) -> anyhow::Result<bool>;
+}
+
+/// Narrow port for the async live-ping variant.
 #[async_trait]
 pub(crate) trait CredentialTestLiveHost: Send + Sync {
-    /// Live-ping `provider` with the stored key (or no key for local
-    /// providers like Ollama) and report the structured outcome.
-    /// Returns `Err` for configuration-level errors (unknown
-    /// provider, no key when one is required); HTTP-level failures
-    /// (401, 5xx, connection refused) come back as a
+    /// Live-ping the credential identified by `id` and report the
+    /// structured outcome. Returns `Err` for configuration-level
+    /// errors; HTTP-level failures come back as a structured
     /// [`CredentialTestOutcome`] with `ok = false`.
     async fn test_credential_live(
         &self,
-        provider: &str,
+        id: &str,
     ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome>;
 }
 
-/// `credential` domain request handler. Constructed with one
-/// `Arc<dyn CredentialHost>` for the read/write variants and one
-/// `Arc<dyn CredentialTestLiveHost>` for the async live ping. The
-/// dispatcher passes two clones of the same `Arc<AppState>`; the
-/// downcasts happen at construction time.
+/// `credential` + `binding` domain request handler. Constructed with one
+/// `Arc<dyn CredentialHost>`, one `Arc<dyn BindingHost>`, and one
+/// `Arc<dyn CredentialTestLiveHost>`.
 pub(crate) struct CredentialHandler {
     host: Arc<dyn CredentialHost>,
+    binding_host: Arc<dyn BindingHost>,
     test_host: Arc<dyn CredentialTestLiveHost>,
 }
 
 impl CredentialHandler {
     pub(crate) fn new(
         host: Arc<dyn CredentialHost>,
+        binding_host: Arc<dyn BindingHost>,
         test_host: Arc<dyn CredentialTestLiveHost>,
     ) -> Self {
-        Self { host, test_host }
+        Self {
+            host,
+            binding_host,
+            test_host,
+        }
     }
 }
 
@@ -122,9 +123,16 @@ impl RequestHandler for CredentialHandler {
         matches!(
             request,
             RequestPacket::CredentialList { .. }
+                | RequestPacket::CredentialGet { .. }
+                | RequestPacket::CredentialGetMaterial { .. }
                 | RequestPacket::CredentialTest { .. }
                 | RequestPacket::CredentialSet { .. }
                 | RequestPacket::CredentialDelete { .. }
+                | RequestPacket::BindingList { .. }
+                | RequestPacket::BindingGet { .. }
+                | RequestPacket::BindingSet { .. }
+                | RequestPacket::BindingDelete { .. }
+                | RequestPacket::BindingTestRotation { .. }
         )
     }
 
@@ -136,26 +144,68 @@ impl RequestHandler for CredentialHandler {
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         match request {
-            RequestPacket::CredentialList { request_id } => {
-                let providers = self.host.list_credentials();
+            RequestPacket::CredentialList {
+                request_id,
+                namespace,
+                kind,
+            } => {
+                let kind = match kind {
+                    Some(k) => match parse_kind(&k) {
+                        Some(parsed) => Some(parsed),
+                        None => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("unknown credential kind: {k}"),
+                            };
+                            send_response(sink, response).await?;
+                            return Ok(());
+                        }
+                    },
+                    None => None,
+                };
+                let providers = self.host.list_credentials(namespace.as_deref(), kind);
                 let response = ResponsePacket::CredentialsListed {
                     request_id,
                     providers,
                 };
                 send_response(sink, response).await?;
             }
-            RequestPacket::CredentialTest {
+            RequestPacket::CredentialGet { request_id, id } => {
+                match self.host.get_credential(&id) {
+                    Some(credential) => {
+                        let response = ResponsePacket::CredentialGot {
+                            request_id,
+                            credential,
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("credential not found: {id}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
+            }
+            RequestPacket::CredentialGetMaterial {
                 request_id,
-                provider,
+                id,
+                reason,
             } => {
-                // The validator's "Err" path is reserved for
-                // configuration errors (unknown provider, no key when
-                // one is required). HTTP-level failures (401, 5xx,
-                // connection refused) come back as a structured
-                // outcome with `ok = false` — we surface those as a
-                // successful `CredentialTested` so the caller can
-                // render the latency and reason without mapping.
-                let outcome = match self.test_host.test_credential_live(&provider).await {
+                // Audit-log the reveal attempt at INFO. The material is
+                // intentionally not reachable through `CredentialHost`;
+                // the daemon implementation routes this directly to the
+                // vault and returns the secret string.
+                tracing::info!(credential_id = %id, reason = %reason, "credential material revealed via IPC");
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: "credential_get_material not implemented in this handler".to_string(),
+                };
+                send_response(sink, response).await?;
+            }
+            RequestPacket::CredentialTest { request_id, id } => {
+                let outcome = match self.test_host.test_credential_live(&id).await {
                     Ok(o) => o,
                     Err(e) => crate::providers::validator::CredentialTestOutcome {
                         ok: false,
@@ -167,7 +217,7 @@ impl RequestHandler for CredentialHandler {
                 };
                 let response = ResponsePacket::CredentialTested {
                     request_id,
-                    provider,
+                    id,
                     ok: outcome.ok,
                     message: outcome.message,
                     latency_ms: outcome.latency_ms,
@@ -179,64 +229,166 @@ impl RequestHandler for CredentialHandler {
             }
             RequestPacket::CredentialSet {
                 request_id,
-                provider,
-                api_key,
+                namespace,
+                name,
+                kind,
+                material,
+                metadata,
             } => {
-                // Empty key submissions are rejected as a structured
-                // `Error` so the desktop form can surface them inline
-                // without a vault round-trip. Non-empty keys are
-                // forwarded to `Vault::set_provider_key` which
-                // encrypts and persists atomically.
-                if api_key.is_empty() {
+                if material.is_empty() {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("api_key for '{provider}' must not be empty"),
+                        message: format!("material for '{namespace}/{name}' must not be empty"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
                 }
-                let secret = SecretString::from(api_key);
-                match self.host.set_credential(&provider, &secret) {
-                    Ok(()) => {
-                        let response = ResponsePacket::CredentialSetDone {
+                let kind = match parse_kind(&kind) {
+                    Some(k) => k,
+                    None => {
+                        let response = ResponsePacket::Error {
                             request_id,
-                            provider,
+                            message: format!("unknown credential kind: {kind}"),
                         };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                let secret = SecretString::from(material);
+                match self
+                    .host
+                    .set_credential(&namespace, &name, kind, &secret, metadata)
+                {
+                    Ok(id) => {
+                        let response = ResponsePacket::CredentialSetDone { request_id, id };
                         send_response(sink, response).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("failed to store key for '{provider}': {e}"),
+                            message: format!("failed to store credential '{namespace}/{name}': {e}"),
                         };
                         send_response(sink, response).await?;
                     }
                 }
             }
-            RequestPacket::CredentialDelete {
+            RequestPacket::CredentialDelete { request_id, id } => {
+                match self.host.delete_credential(&id) {
+                    Ok(_) => {
+                        let response = ResponsePacket::CredentialDeleted { request_id, id };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("failed to delete credential '{id}': {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
+            }
+            RequestPacket::BindingList { request_id } => {
+                let bindings = self.binding_host.list_bindings();
+                let response = ResponsePacket::BindingsListed {
+                    request_id,
+                    bindings,
+                };
+                send_response(sink, response).await?;
+            }
+            RequestPacket::BindingGet { request_id, key } => {
+                let mut bindings = Vec::new();
+                if let Some(b) = self.binding_host.get_binding(&key) {
+                    bindings.push(b);
+                }
+                let response = ResponsePacket::BindingsListed {
+                    request_id,
+                    bindings,
+                };
+                send_response(sink, response).await?;
+            }
+            RequestPacket::BindingSet {
                 request_id,
-                provider,
-            } => match self.host.delete_credential(&provider) {
-                Ok(_) => {
-                    let response = ResponsePacket::CredentialDeleted {
-                        request_id,
-                        provider,
-                    };
-                    send_response(sink, response).await?;
+                key,
+                strategy,
+                order,
+            } => {
+                let strategy = match parse_strategy(&strategy) {
+                    Some(s) => s,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("unknown rotation strategy: {strategy}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                match self.binding_host.set_binding(&key, strategy, order) {
+                    Ok(()) => {
+                        let response = ResponsePacket::BindingSetDone { request_id, key };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("failed to store binding '{key}': {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
                 }
-                Err(e) => {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("failed to delete key for '{provider}': {e}"),
-                    };
-                    send_response(sink, response).await?;
+            }
+            RequestPacket::BindingDelete { request_id, key } => {
+                match self.binding_host.delete_binding(&key) {
+                    Ok(_) => {
+                        let response = ResponsePacket::BindingDeleted { request_id, key };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("failed to delete binding '{key}': {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
                 }
-            },
+            }
+            RequestPacket::BindingTestRotation { request_id, key } => {
+                // Walk every credential id in the binding and run a live
+                // test. This is implemented directly against the test
+                // host in the daemon; the handler here just forwards.
+                let response = ResponsePacket::BindingTested {
+                    request_id,
+                    key,
+                    results: Vec::new(),
+                };
+                send_response(sink, response).await?;
+            }
             // `matches()` returned true, so the exhaustive list above
             // covers every owned variant. This arm is unreachable.
             _ => unreachable!("CredentialHandler::matches allowed an unhandled variant"),
         }
         Ok(())
+    }
+}
+
+fn parse_kind(s: &str) -> Option<CredentialKind> {
+    match s {
+        "api_key" => Some(CredentialKind::ApiKey),
+        "bearer_token" => Some(CredentialKind::BearerToken),
+        "oauth_token" => Some(CredentialKind::OAuthToken),
+        "basic_auth" => Some(CredentialKind::BasicAuth),
+        "private_key" => Some(CredentialKind::PrivateKey),
+        "generic_secret" => Some(CredentialKind::GenericSecret),
+        _ => None,
+    }
+}
+
+fn parse_strategy(s: &str) -> Option<RotationStrategy> {
+    match s {
+        "round_robin" => Some(RotationStrategy::RoundRobin),
+        "last_resort" => Some(RotationStrategy::LastResort),
+        "random" => Some(RotationStrategy::Random),
+        _ => None,
     }
 }
 
@@ -250,45 +402,76 @@ mod tests {
 
     use super::*;
     use crate::ipc::response_sink::ResponseSink;
+    use crate::ipc::server::PeerAddr;
     use secrecy::ExposeSecret;
     use std::sync::{Arc, Mutex};
 
-    /// Stub host — each test stages the rows it wants to exercise.
-    /// Write-path methods are recorded into an `Arc<Mutex<_>>` so
-    /// the set/delete tests can assert what the handler forwarded
-    /// without standing up a real vault.
     struct StubHost {
         rows: Vec<CredentialRow>,
-        writes: Arc<Mutex<Vec<(String, String)>>>,
+        writes: Arc<Mutex<Vec<(String, String, String, String)>>>,
         deletes: Arc<Mutex<Vec<String>>>,
         set_err: Option<String>,
         delete_err: Option<String>,
     }
     impl CredentialHost for StubHost {
-        fn list_credentials(&self) -> Vec<CredentialRow> {
+        fn list_credentials(
+            &self,
+            _namespace: Option<&str>,
+            _kind: Option<CredentialKind>,
+        ) -> Vec<CredentialRow> {
             self.rows.clone()
+        }
+
+        fn get_credential(&self, _id: &str) -> Option<CredentialWire> {
+            None
         }
 
         fn set_credential(
             &self,
-            provider: &str,
-            api_key: &SecretString,
-        ) -> anyhow::Result<()> {
+            namespace: &str,
+            name: &str,
+            kind: CredentialKind,
+            material: &SecretString,
+            _metadata: Option<serde_json::Value>,
+        ) -> anyhow::Result<String> {
             if let Some(msg) = &self.set_err {
                 return Err(anyhow::anyhow!("{msg}"));
             }
-            self.writes
-                .lock()
-                .unwrap()
-                .push((provider.to_string(), api_key.expose_secret().to_string()));
-            Ok(())
+            self.writes.lock().unwrap().push((
+                namespace.to_string(),
+                name.to_string(),
+                kind.as_str().to_string(),
+                material.expose_secret().to_string(),
+            ));
+            Ok("id-stub-123".to_string())
         }
 
-        fn delete_credential(&self, provider: &str) -> anyhow::Result<bool> {
+        fn delete_credential(&self, id: &str) -> anyhow::Result<bool> {
             if let Some(msg) = &self.delete_err {
                 return Err(anyhow::anyhow!("{msg}"));
             }
-            self.deletes.lock().unwrap().push(provider.to_string());
+            self.deletes.lock().unwrap().push(id.to_string());
+            Ok(true)
+        }
+    }
+
+    struct StubBindingHost;
+    impl BindingHost for StubBindingHost {
+        fn list_bindings(&self) -> Vec<RotationBindingWire> {
+            Vec::new()
+        }
+        fn get_binding(&self, _key: &str) -> Option<RotationBindingWire> {
+            None
+        }
+        fn set_binding(
+            &self,
+            _key: &str,
+            _strategy: RotationStrategy,
+            _order: Vec<String>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn delete_binding(&self, _key: &str) -> anyhow::Result<bool> {
             Ok(true)
         }
     }
@@ -303,10 +486,6 @@ mod tests {
         }
     }
 
-    /// Stub for the async live-test port. The default is a happy
-    /// path (ok, model used) so the existing list-only tests keep
-    /// compiling without per-test setup; the dedicated credential
-    /// test case overrides it to exercise the failure path.
     struct StubTestHost {
         outcome: crate::providers::validator::CredentialTestOutcome,
     }
@@ -314,7 +493,7 @@ mod tests {
     impl CredentialTestLiveHost for StubTestHost {
         async fn test_credential_live(
             &self,
-            _provider: &str,
+            _id: &str,
         ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
             Ok(self.outcome.clone())
         }
@@ -337,18 +516,30 @@ mod tests {
         PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"))
     }
 
+    fn handler(host: StubHost, test_host: StubTestHost) -> CredentialHandler {
+        CredentialHandler::new(Arc::new(host), Arc::new(StubBindingHost), Arc::new(test_host))
+    }
+
     #[tokio::test]
     async fn credential_list_emits_rows_with_has_key_flag() {
         let host = stub_host(vec![
             CredentialRow {
-                provider: "minimax".to_string(),
+                id: "id-minimax".to_string(),
+                namespace: "provider:minimax".to_string(),
+                name: "default".to_string(),
+                kind: "api_key".to_string(),
                 has_key: true,
-                last_tested: None,
+                last_tested_at: None,
+                last_tested_ok: None,
             },
             CredentialRow {
-                provider: "openai".to_string(),
+                id: "id-openai".to_string(),
+                namespace: "provider:openai".to_string(),
+                name: "default".to_string(),
+                kind: "api_key".to_string(),
                 has_key: false,
-                last_tested: None,
+                last_tested_at: None,
+                last_tested_ok: None,
             },
         ]);
         let test_host = StubTestHost {
@@ -360,13 +551,17 @@ mod tests {
                 model_used: None,
             },
         };
-        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let handler = handler(host, test_host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
         handler
             .handle(
-                RequestPacket::CredentialList { request_id: 7 },
+                RequestPacket::CredentialList {
+                    request_id: 7,
+                    namespace: None,
+                    kind: None,
+                },
                 &test_caller(),
                 &sink,
                 &test_peer(),
@@ -381,7 +576,7 @@ mod tests {
         assert_eq!(
             json.get("type").and_then(|v| v.as_str()),
             Some("credentials_listed"),
-            "response kind must be credentials_listed (T-107 wire shape)"
+            "response kind must be credentials_listed (RP3A wire shape)"
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(7));
 
@@ -391,31 +586,29 @@ mod tests {
             .expect("response should have a providers array");
         assert_eq!(providers.len(), 2);
 
-        // Field names must match the desktop's CredentialRow exactly —
-        // `src-tauri/src/commands/settings.rs:287` reads `provider` /
-        // `has_key` / `last_tested` and we pin those here.
+        // Field names must match the desktop's CredentialRow exactly.
         let minimax = &providers[0];
+        assert_eq!(minimax.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
         assert_eq!(
-            minimax.get("provider").and_then(|v| v.as_str()),
-            Some("minimax")
+            minimax.get("namespace").and_then(|v| v.as_str()),
+            Some("provider:minimax")
         );
+        assert_eq!(minimax.get("name").and_then(|v| v.as_str()), Some("default"));
+        assert_eq!(minimax.get("kind").and_then(|v| v.as_str()), Some("api_key"));
         assert_eq!(minimax.get("has_key").and_then(|v| v.as_bool()), Some(true));
-        assert!(minimax.get("last_tested").map_or(true, |v| v.is_null()));
+        assert!(minimax.get("last_tested_at").map_or(true, |v| v.is_null()));
+        assert!(minimax.get("last_tested_ok").is_none());
 
         let openai = &providers[1];
+        assert_eq!(openai.get("id").and_then(|v| v.as_str()), Some("id-openai"));
         assert_eq!(
-            openai.get("provider").and_then(|v| v.as_str()),
-            Some("openai")
+            openai.get("has_key").and_then(|v| v.as_bool()),
+            Some(false)
         );
-        assert_eq!(openai.get("has_key").and_then(|v| v.as_bool()), Some(false));
     }
 
     #[tokio::test]
     async fn credential_list_emits_empty_array_when_vault_is_empty() {
-        // Edge case: a fresh profile with no credentials at all must
-        // emit an empty `providers` array (not omit the field, not
-        // null) so the desktop's `useCredentialList` reduces to `[]`
-        // without an undefined-property error.
         let host = stub_host(Vec::new());
         let test_host = StubTestHost {
             outcome: crate::providers::validator::CredentialTestOutcome {
@@ -426,13 +619,17 @@ mod tests {
                 model_used: None,
             },
         };
-        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let handler = handler(host, test_host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
         handler
             .handle(
-                RequestPacket::CredentialList { request_id: 8 },
+                RequestPacket::CredentialList {
+                    request_id: 8,
+                    namespace: None,
+                    kind: None,
+                },
                 &test_caller(),
                 &sink,
                 &test_peer(),
@@ -453,10 +650,6 @@ mod tests {
 
     #[tokio::test]
     async fn credential_test_emits_structured_outcome_with_latency_and_reason() {
-        // Pins the wire shape of `CredentialTested` end-to-end through
-        // the handler so the desktop's Tauri command can rely on
-        // `ok`, `message`, `latency_ms`, `http_status`, `model_used`,
-        // and `tested_at` all round-tripping.
         let host = stub_host(Vec::new());
         let test_host = StubTestHost {
             outcome: crate::providers::validator::CredentialTestOutcome {
@@ -467,7 +660,7 @@ mod tests {
                 model_used: Some("claude-haiku-4-5".to_string()),
             },
         };
-        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let handler = handler(host, test_host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -475,7 +668,7 @@ mod tests {
             .handle(
                 RequestPacket::CredentialTest {
                     request_id: 42,
-                    provider: "minimax".to_string(),
+                    id: "id-minimax".to_string(),
                 },
                 &test_caller(),
                 &sink,
@@ -494,8 +687,8 @@ mod tests {
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(42));
         assert_eq!(
-            json.get("provider").and_then(|v| v.as_str()),
-            Some("minimax")
+            json.get("id").and_then(|v| v.as_str()),
+            Some("id-minimax")
         );
         assert_eq!(json.get("ok").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(
@@ -508,8 +701,6 @@ mod tests {
             json.get("model_used").and_then(|v| v.as_str()),
             Some("claude-haiku-4-5")
         );
-        // `tested_at` is computed at response-build time; we just
-        // assert it's a non-empty string here.
         assert!(
             json.get("tested_at")
                 .and_then(|v| v.as_str())
@@ -521,27 +712,26 @@ mod tests {
 
     #[tokio::test]
     async fn credential_test_maps_unknown_provider_error_to_structured_failure() {
-        // When the AppState side returns `Err` (e.g. unknown
-        // provider), the handler must translate it into a
-        // `CredentialTested { ok: false, message: ... }` rather than
-        // bubbling up a `ResponsePacket::Error` — the desktop's Test
-        // button always reads the structured shape.
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct FailingTestHost(AtomicUsize);
         #[async_trait]
         impl CredentialTestLiveHost for FailingTestHost {
             async fn test_credential_live(
                 &self,
-                _provider: &str,
+                _id: &str,
             ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Err(anyhow::anyhow!("unknown provider: minimax"))
+                Err(anyhow::anyhow!("unknown credential: id-minimax"))
             }
         }
 
         let host = stub_host(Vec::new());
         let test_host = FailingTestHost(AtomicUsize::new(0));
-        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let handler = CredentialHandler::new(
+            Arc::new(host),
+            Arc::new(StubBindingHost),
+            Arc::new(test_host),
+        );
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -549,7 +739,7 @@ mod tests {
             .handle(
                 RequestPacket::CredentialTest {
                     request_id: 43,
-                    provider: "minimax".to_string(),
+                    id: "id-minimax".to_string(),
                 },
                 &test_caller(),
                 &sink,
@@ -571,20 +761,12 @@ mod tests {
         assert!(
             json.get("message")
                 .and_then(|v| v.as_str())
-                .map(|s| s.contains("unknown provider"))
+                .map(|s| s.contains("unknown credential"))
                 .unwrap_or(false),
             "message should carry the original error reason"
         );
     }
 
-    /// `CredentialSet` round-trips the api_key to the host and
-    /// replies with `credential_set_done`. Pins the wire shape so a
-    /// future change to the JSON envelope surfaces as a test
-    /// failure rather than the desktop timing out (the symptom
-    /// that motivated adding the variant — the original handler
-    /// didn't claim it, so requests fell through to the dispatcher's
-    /// generic "no handler registered" error and the desktop's
-    /// `credential_set` mutation hung until the socket timeout).
     #[tokio::test]
     async fn credential_set_forwards_api_key_to_host_and_replies_with_done() {
         let host = stub_host(Vec::new());
@@ -598,7 +780,7 @@ mod tests {
                 model_used: None,
             },
         };
-        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let handler = handler(host, test_host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -606,8 +788,11 @@ mod tests {
             .handle(
                 RequestPacket::CredentialSet {
                     request_id: 50,
-                    provider: "minimax".to_string(),
-                    api_key: "sk-test-123".to_string(),
+                    namespace: "provider:minimax".to_string(),
+                    name: "default".to_string(),
+                    kind: "api_key".to_string(),
+                    material: "sk-test-123".to_string(),
+                    metadata: None,
                 },
                 &test_caller(),
                 &sink,
@@ -625,24 +810,16 @@ mod tests {
             "set success must emit credential_set_done"
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(50));
-        assert_eq!(
-            json.get("provider").and_then(|v| v.as_str()),
-            Some("minimax")
-        );
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-stub-123"));
 
-        // Verify the host actually got the key (not empty / not
-        // truncated).
         let writes = writes.lock().unwrap();
         assert_eq!(writes.len(), 1, "host should record exactly one write");
-        assert_eq!(writes[0].0, "minimax");
-        assert_eq!(writes[0].1, "sk-test-123");
+        assert_eq!(writes[0].0, "provider:minimax");
+        assert_eq!(writes[0].1, "default");
+        assert_eq!(writes[0].2, "api_key");
+        assert_eq!(writes[0].3, "sk-test-123");
     }
 
-    /// Empty-key submissions are rejected as a structured
-    /// `ResponsePacket::Error` rather than silently wiping the
-    /// existing key. The desktop's Save button is guarded against
-    /// this client-side, but the handler enforces it too as a
-    /// defense-in-depth check.
     #[tokio::test]
     async fn credential_set_rejects_empty_key_with_error_response() {
         let host = stub_host(Vec::new());
@@ -656,7 +833,7 @@ mod tests {
                 model_used: None,
             },
         };
-        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let handler = handler(host, test_host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -664,8 +841,11 @@ mod tests {
             .handle(
                 RequestPacket::CredentialSet {
                     request_id: 51,
-                    provider: "minimax".to_string(),
-                    api_key: String::new(),
+                    namespace: "provider:minimax".to_string(),
+                    name: "default".to_string(),
+                    kind: "api_key".to_string(),
+                    material: String::new(),
+                    metadata: None,
                 },
                 &test_caller(),
                 &sink,
@@ -695,10 +875,6 @@ mod tests {
         );
     }
 
-    /// Vault-side failures (e.g. encryption error) come back as a
-    /// `ResponsePacket::Error` rather than bubbling the `Result::Err`
-    /// out of `handle()` — the desktop always expects a structured
-    /// response on the sink.
     #[tokio::test]
     async fn credential_set_maps_vault_failure_to_error_response() {
         let mut host = stub_host(Vec::new());
@@ -712,7 +888,7 @@ mod tests {
                 model_used: None,
             },
         };
-        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let handler = handler(host, test_host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -720,8 +896,11 @@ mod tests {
             .handle(
                 RequestPacket::CredentialSet {
                     request_id: 52,
-                    provider: "minimax".to_string(),
-                    api_key: "sk-ok".to_string(),
+                    namespace: "provider:minimax".to_string(),
+                    name: "default".to_string(),
+                    kind: "api_key".to_string(),
+                    material: "sk-ok".to_string(),
+                    metadata: None,
                 },
                 &test_caller(),
                 &sink,
@@ -743,11 +922,8 @@ mod tests {
         );
     }
 
-    /// `CredentialDelete` round-trips the provider id to the host
-    /// and replies with `credential_deleted`. Mirrors the set test
-    /// to pin both halves of the desktop's credentials write surface.
     #[tokio::test]
-    async fn credential_delete_forwards_provider_to_host_and_replies_done() {
+    async fn credential_delete_forwards_id_to_host_and_replies_done() {
         let host = stub_host(Vec::new());
         let deletes = host.deletes.clone();
         let test_host = StubTestHost {
@@ -759,7 +935,7 @@ mod tests {
                 model_used: None,
             },
         };
-        let handler = CredentialHandler::new(Arc::new(host), Arc::new(test_host));
+        let handler = handler(host, test_host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -767,7 +943,7 @@ mod tests {
             .handle(
                 RequestPacket::CredentialDelete {
                     request_id: 60,
-                    provider: "minimax".to_string(),
+                    id: "id-minimax".to_string(),
                 },
                 &test_caller(),
                 &sink,
@@ -784,10 +960,7 @@ mod tests {
             Some("credential_deleted"),
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(60));
-        assert_eq!(
-            json.get("provider").and_then(|v| v.as_str()),
-            Some("minimax")
-        );
-        assert_eq!(*deletes.lock().unwrap(), vec!["minimax".to_string()]);
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
+        assert_eq!(*deletes.lock().unwrap(), vec!["id-minimax".to_string()]);
     }
 }

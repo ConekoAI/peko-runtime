@@ -200,15 +200,17 @@ async fn test_cmd(
     provider: &str,
     known_provider_ids: &[String],
 ) -> Result<()> {
-    // Live API ping: the old `Vault::test_provider_key` shape-only
-    // check couldn't tell `sk-opena-12345` from a real key. Route
-    // through the daemon's `credential_test` IPC so the validator
-    // hits the real provider URL with the real stored key. The
-    // vault is only consulted to surface a "did you mean" hint when
-    // the daemon reports no key (which means the catalog entry
-    // doesn't require one either — Ollama path — or the key was
-    // deleted between sessions; either way the user gets a useful
-    // hint).
+    // Resolve the provider id to the default credential id for that
+    // provider namespace. RP4 will widen the CLI to accept an explicit
+    // credential id; during RP3A `peko credential test <provider>` is
+    // preserved as a provider-keyed shortcut.
+    let credential_id = match find_default_credential_id(vault, provider) {
+        Some(id) => id,
+        None => {
+            anyhow::bail!("no key stored for '{provider}'");
+        }
+    };
+
     let client = match crate::ipc::DaemonClient::connect().await {
         Ok(c) => c,
         Err(e) => {
@@ -217,7 +219,7 @@ async fn test_cmd(
             );
         }
     };
-    let resp = client.credential_test(provider).await?;
+    let resp = client.credential_test(&credential_id).await?;
     let (lines, exit_code) = render_credential_tested(provider, &resp);
     for line in &lines {
         println!("{line}");
@@ -229,6 +231,16 @@ async fn test_cmd(
         std::process::exit(exit_code);
     }
     Ok(())
+}
+
+/// Find the id of the default credential at `provider:{provider}`.
+fn find_default_credential_id(vault: &Vault, provider: &str) -> Option<String> {
+    let namespace = format!("provider:{provider}");
+    let summaries = vault.list_credentials(&crate::common::vault::CredentialFilter {
+        namespace: Some(namespace),
+        kind: None,
+    });
+    summaries.into_iter().find(|s| s.name == "default").map(|s| s.id)
 }
 
 /// Pure formatter for `CredentialTested` so the IPC plumbing is
@@ -600,7 +612,7 @@ mod tests {
     fn render_credential_tested_ok_openai_compat() {
         let resp = ResponsePacket::CredentialTested {
             request_id: 1,
-            provider: "openai".to_string(),
+            id: "id-openai".to_string(),
             ok: true,
             message: "Connection successful (124 models)".to_string(),
             latency_ms: 187,
@@ -622,7 +634,7 @@ mod tests {
     fn render_credential_tested_ok_anthropic_includes_via_model_line() {
         let resp = ResponsePacket::CredentialTested {
             request_id: 2,
-            provider: "anthropic".to_string(),
+            id: "id-anthropic".to_string(),
             ok: true,
             message: "Connection successful (1 token billed via claude-haiku-4-5)"
                 .to_string(),
@@ -645,7 +657,7 @@ mod tests {
     fn render_credential_tested_failure_401_reports_status_and_exit_2() {
         let resp = ResponsePacket::CredentialTested {
             request_id: 3,
-            provider: "openai".to_string(),
+            id: "id-openai".to_string(),
             ok: false,
             message: "HTTP 401: invalid api key".to_string(),
             latency_ms: 124,
@@ -670,7 +682,7 @@ mod tests {
     fn render_credential_tested_connection_failure_says_so() {
         let resp = ResponsePacket::CredentialTested {
             request_id: 4,
-            provider: "ollama".to_string(),
+            id: "id-ollama".to_string(),
             ok: false,
             message: "connection refused: 127.0.0.1:11434".to_string(),
             latency_ms: 12,
@@ -697,7 +709,7 @@ mod tests {
     fn message_invites_suggestion_for_missing_key_and_unknown_provider() {
         let missing = ResponsePacket::CredentialTested {
             request_id: 5,
-            provider: "miniax".to_string(),
+            id: "id-miniax".to_string(),
             ok: false,
             message: "no key stored for 'miniax'".to_string(),
             latency_ms: 0,
@@ -709,7 +721,7 @@ mod tests {
 
         let unknown = ResponsePacket::CredentialTested {
             request_id: 7,
-            provider: "miniax".to_string(),
+            id: "id-miniax".to_string(),
             ok: false,
             message: "unknown provider: miniax".to_string(),
             latency_ms: 0,
@@ -724,7 +736,7 @@ mod tests {
 
         let auth = ResponsePacket::CredentialTested {
             request_id: 6,
-            provider: "openai".to_string(),
+            id: "id-openai".to_string(),
             ok: false,
             message: "HTTP 401: invalid api key".to_string(),
             latency_ms: 50,
@@ -745,7 +757,7 @@ mod tests {
     fn render_credential_tested_unknown_provider_says_request_not_sent() {
         let resp = ResponsePacket::CredentialTested {
             request_id: 8,
-            provider: "miniax".to_string(),
+            id: "id-miniax".to_string(),
             ok: false,
             message: "unknown provider: miniax".to_string(),
             latency_ms: 0,

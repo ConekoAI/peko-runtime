@@ -229,51 +229,125 @@ pub enum RequestPacket {
     #[serde(rename = "provider_list")]
     ProviderList { request_id: u64 },
 
-    /// Enumerate the providers that have a key stored in the
-    /// credential vault. Sent by the desktop's
-    /// `useCredentialList` (Tauri `credential_list` command at
-    /// `peko-desktop/src-tauri/src/commands/settings.rs:301`) so
-    /// Settings → Credentials can paint the per-pill "Key set"
-    /// indicators and the FirstRunWalkthrough can detect existing
-    /// configuration. The CLI `peko credential list` path is
-    /// unchanged — it reads the vault directly, not via IPC.
+    /// Enumerate credentials in the vault. The optional `namespace`
+    /// and `kind` filters restrict the listing; missing filters match
+    /// everything. Each row is redacted (no material); see
+    /// [`CredentialRow`].
+    ///
+    /// Replaces the pre-RP3A provider-keyed `CredentialList`. The
+    /// desktop's `useCredentialList` (Tauri `credential_list`
+    /// command at `peko-desktop/src-tauri/src/commands/settings.rs:301`)
+    /// consumes this so Settings → Credentials can paint per-pill
+    /// "Key set" indicators and the FirstRunWalkthrough can detect
+    /// existing configuration. The CLI `peko credential list` path
+    /// reads the vault directly and is unchanged; this handler is
+    /// purely the IPC surface.
     #[serde(rename = "credential_list")]
-    CredentialList { request_id: u64 },
+    CredentialList {
+        request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
 
-    /// Live-ping the provider identified by `provider` with the
-    /// stored key (or no key for local providers like Ollama) and
-    /// report whether the API accepted it. Powers both
-    /// `peko credential test <provider>` and the desktop's Test
-    /// button — the existing shape-only check in
-    /// `Vault::test_provider_key` couldn't tell `sk-opena-12345`
-    /// from a real key. Mirrors `providers::validator::Validator::test`.
+    /// Fetch the full record for one credential (id, namespace, name,
+    /// kind, metadata, timestamps). The `material` field is NOT
+    /// included — use [`RequestPacket::CredentialGetMaterial`] for
+    /// the secret itself (audit-logged).
+    #[serde(rename = "credential_get")]
+    CredentialGet { request_id: u64, id: String },
+
+    /// Fetch the secret material for a credential. Audit-logged on
+    /// the daemon side because the only legitimate caller is the
+    /// "Reveal" UI affordance or the rotation-binding test path.
+    #[serde(rename = "credential_get_material")]
+    CredentialGetMaterial {
+        request_id: u64,
+        id: String,
+        /// Free-form caller-supplied justification. Logged at INFO
+        /// alongside the credential id so an audit trail ties the
+        /// reveal back to its purpose.
+        reason: String,
+    },
+
+    /// Live-ping the credential identified by `id` and report whether
+    /// the API accepted its material. Powers both
+    /// `peko credential test <id>` and the desktop's Test button —
+    /// the existing shape-only check in `Vault::test_provider_key`
+    /// couldn't tell `sk-opena-12345` from a real key. Mirrors
+    /// `providers::validator::Validator::test`.
     #[serde(rename = "credential_test")]
-    CredentialTest { request_id: u64, provider: String },
+    CredentialTest { request_id: u64, id: String },
 
-    /// Store or overwrite the API key for `provider` in the
-    /// runtime's keychain-backed vault. Powers the desktop's
-    /// `credential_set` Tauri command (Settings → Add Key / Update
-    /// Key); the CLI's `peko credential set` writes the vault
-    /// directly and doesn't round-trip through IPC. Mirrors
-    /// `Vault::set_provider_key`.
+    /// Insert or overwrite a credential at `(namespace, name)` with
+    /// the given material. The vault assigns a fresh UUID on insert
+    /// and returns it in the reply; on overwrite the existing
+    /// credential at the slot is replaced (a new id is generated
+    /// unless the caller specifies one — see RP3A follow-up if that
+    /// path becomes necessary).
+    ///
+    /// `kind` is the lowercase snake_case spelling of
+    /// [`crate::common::vault::CredentialKind`]. `metadata` is an
+    /// optional JSON object holding per-kind extras (OAuth
+    /// `refresh_token` / `expires_at`, BasicAuth `username`,
+    /// PrivateKey `algorithm`).
     #[serde(rename = "credential_set")]
     CredentialSet {
         request_id: u64,
-        provider: String,
-        /// Raw API key string from the caller. Wrapped in
+        namespace: String,
+        name: String,
+        kind: String,
+        /// Raw secret string from the caller. Wrapped in
         /// `SecretString` on the handler side before persisting.
-        api_key: String,
+        material: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
     },
 
-    /// Remove the stored API key for `provider` from the vault.
-    /// Powers the desktop's `credential_delete` Tauri command; the
-    /// CLI's `peko credential delete` writes the vault directly.
-    /// Mirrors `Vault::delete_provider_key`.
+    /// Remove a credential by `id`. Powers the desktop's
+    /// `credential_delete` Tauri command; the CLI's
+    /// `peko credential delete <id>` writes the vault directly.
+    /// Mirrors `Vault::delete_credential`.
     #[serde(rename = "credential_delete")]
-    CredentialDelete {
+    CredentialDelete { request_id: u64, id: String },
+
+    // ─── Rotation bindings (RP3A) ───────────────────────────────────
+
+    /// Enumerate every rotation binding currently configured in the
+    /// vault. Each binding carries its slot key (`{namespace}:{name}`),
+    /// strategy, and ordered list of credential ids.
+    #[serde(rename = "binding_list")]
+    BindingList { request_id: u64 },
+
+    /// Fetch one binding by slot key. Returns `None` if no binding
+    /// exists for the slot.
+    #[serde(rename = "binding_get")]
+    BindingGet { request_id: u64, key: String },
+
+    /// Insert or overwrite the rotation binding for a `{namespace}:{name}`
+    /// slot. `strategy` is one of `round_robin` (today's only honored
+    /// strategy), `last_resort`, or `random` (reserved; the resolver
+    /// rejects them with a clear error if encountered). `order` is
+    /// the ordered list of credential ids.
+    #[serde(rename = "binding_set")]
+    BindingSet {
         request_id: u64,
-        provider: String,
+        key: String,
+        strategy: String,
+        order: Vec<String>,
     },
+
+    /// Remove a binding by slot key. Returns `Ok(true)` if a binding
+    /// was removed.
+    #[serde(rename = "binding_delete")]
+    BindingDelete { request_id: u64, key: String },
+
+    /// Walk every credential in the binding's `ordered_credential_ids`
+    /// and run a live test against each one. The reply is
+    /// [`ResponsePacket::BindingTested`] with per-credential outcomes.
+    #[serde(rename = "binding_test_rotation")]
+    BindingTestRotation { request_id: u64, key: String },
 
     /// Re-read the provider catalog and the credential vault from
     /// disk. Sent by `peko provider {add,remove,set-default}` and
@@ -709,10 +783,17 @@ impl RequestPacket {
             | Self::ProviderTemplates { request_id }
             | Self::ProviderAdd { request_id, .. }
             | Self::McpReload { request_id }
-            | Self::CredentialList { request_id }
+            | Self::CredentialList { request_id, .. }
+            | Self::CredentialGet { request_id, .. }
+            | Self::CredentialGetMaterial { request_id, .. }
             | Self::CredentialTest { request_id, .. }
             | Self::CredentialSet { request_id, .. }
             | Self::CredentialDelete { request_id, .. }
+            | Self::BindingList { request_id }
+            | Self::BindingGet { request_id, .. }
+            | Self::BindingSet { request_id, .. }
+            | Self::BindingDelete { request_id, .. }
+            | Self::BindingTestRotation { request_id, .. }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::ExtensionList { request_id, .. }
@@ -992,7 +1073,7 @@ pub enum ResponsePacket {
     #[serde(rename = "credential_tested")]
     CredentialTested {
         request_id: u64,
-        provider: String,
+        id: String,
         ok: bool,
         message: String,
         latency_ms: u32,
@@ -1004,21 +1085,65 @@ pub enum ResponsePacket {
     /// Reply to [`RequestPacket::CredentialSet`]. The vault write
     /// has already succeeded (or surfaced an error via
     /// [`ResponsePacket::Error`]) by the time this is sent. The
-    /// `provider` echo lets the desktop update its local UI without
+    /// `id` echo lets the desktop update its local UI without
     /// re-issuing a `credential_list` round-trip.
     #[serde(rename = "credential_set_done")]
     CredentialSetDone {
         request_id: u64,
-        provider: String,
+        id: String,
     },
 
     /// Reply to [`RequestPacket::CredentialDelete`]. See
     /// [`ResponsePacket::CredentialSetDone`] for the same notes on
     /// the success/error split.
     #[serde(rename = "credential_deleted")]
-    CredentialDeleted {
+    CredentialDeleted { request_id: u64, id: String },
+
+    /// Reply to [`RequestPacket::CredentialGet`]. Carries the full
+    /// record (id, namespace, name, kind, metadata, timestamps)
+    /// but never the secret material.
+    #[serde(rename = "credential_got")]
+    CredentialGot {
         request_id: u64,
-        provider: String,
+        credential: Credential,
+    },
+
+    /// Reply to [`RequestPacket::CredentialGetMaterial`]. The only
+    /// IPC path that returns the secret material. Audit-logged at
+    /// INFO with the caller's reason and the credential id.
+    #[serde(rename = "credential_material")]
+    CredentialMaterial {
+        request_id: u64,
+        id: String,
+        material: String,
+    },
+
+    /// Reply to [`RequestPacket::BindingList`] and
+    /// [`RequestPacket::BindingGet`]. Carries the binding map; for
+    /// `BindingList` `bindings` is the full map, for `BindingGet`
+    /// it's a one-element map or empty when no binding exists.
+    #[serde(rename = "bindings_listed")]
+    BindingsListed {
+        request_id: u64,
+        bindings: Vec<RotationBindingWire>,
+    },
+
+    /// Reply to [`RequestPacket::BindingSet`]. The vault write has
+    /// already succeeded by the time this is sent.
+    #[serde(rename = "binding_set_done")]
+    BindingSetDone { request_id: u64, key: String },
+
+    /// Reply to [`RequestPacket::BindingDelete`].
+    #[serde(rename = "binding_deleted")]
+    BindingDeleted { request_id: u64, key: String },
+
+    /// Reply to [`RequestPacket::BindingTestRotation`]. Per-credential
+    /// outcomes in the order they appear in the binding.
+    #[serde(rename = "binding_tested")]
+    BindingTested {
+        request_id: u64,
+        key: String,
+        results: Vec<BindingTestResult>,
     },
 
     /// System status response
@@ -1567,17 +1692,72 @@ pub struct ProviderAddArgs {
     pub default_model: Option<String>,
 }
 
-/// One row of `CredentialsListed`. `last_tested` is reserved for a
-/// future vault field that records when the key was last validated
-/// via `credential_test`; the vault does not track it today, so the
-/// runtime always emits `None`. The desktop already treats it as
-/// optional (`src/lib/api.ts`), so no follow-up desktop change is
-/// required when this lands.
+/// One row of `CredentialsListed`. Redacted — never carries the
+/// secret material. The full record (including metadata) is fetched
+/// via `CredentialGet`; the material itself is only available via
+/// `CredentialGetMaterial` (RP3A: audit-logged).
+///
+/// `id` is the credential's UUID. `namespace` and `name` together
+/// identify the slot (`provider:openai / default`,
+/// `mcp:analytics / default`, `oauth:myremote / default`, …).
+/// `kind` is the lowercase snake_case spelling of
+/// [`crate::common::vault::CredentialKind`] (`api_key`,
+/// `bearer_token`, `oauth_token`, `basic_auth`, `private_key`,
+/// `generic_secret`).
+///
+/// `last_tested_at` is an ISO-8601 UTC stamp from the most recent
+/// `CredentialTest` against this credential; `last_tested_ok`
+/// records the outcome. Both are `None` until the first test runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialRow {
-    pub provider: String,
+    pub id: String,
+    pub namespace: String,
+    pub name: String,
+    pub kind: String,
     pub has_key: bool,
-    pub last_tested: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tested_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tested_ok: Option<bool>,
+}
+
+/// Full credential record returned by `CredentialGet`. Includes
+/// metadata but NOT the secret material — use
+/// [`ResponsePacket::CredentialMaterial`] for that.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Credential {
+    pub id: String,
+    pub namespace: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(default = "serde_json::Value::default")]
+    pub metadata: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tested_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tested_ok: Option<bool>,
+}
+
+/// Rotation binding wire shape. Carries the slot key (the map key
+/// itself), strategy name, and ordered list of credential ids.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RotationBindingWire {
+    pub key: String,
+    pub strategy: String,
+    pub order: Vec<String>,
+}
+
+/// Per-credential outcome inside `BindingTested`. Mirrors the
+/// relevant fields of `CredentialTested` without the request-id /
+/// tested_at envelope (those are on the parent response).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BindingTestResult {
+    pub id: String,
+    pub ok: bool,
+    pub http_status: Option<u16>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1721,6 +1901,12 @@ impl ResponsePacket {
             | Self::CredentialTested { request_id, .. }
             | Self::CredentialSetDone { request_id, .. }
             | Self::CredentialDeleted { request_id, .. }
+            | Self::CredentialGot { request_id, .. }
+            | Self::CredentialMaterial { request_id, .. }
+            | Self::BindingsListed { request_id, .. }
+            | Self::BindingSetDone { request_id, .. }
+            | Self::BindingDeleted { request_id, .. }
+            | Self::BindingTested { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::CapabilityGranted { request_id, .. }
             | Self::CapabilityRevoked { request_id, .. }
@@ -1795,6 +1981,12 @@ impl ResponsePacket {
             Self::CredentialTested { .. } => "CredentialTested",
             Self::CredentialSetDone { .. } => "CredentialSetDone",
             Self::CredentialDeleted { .. } => "CredentialDeleted",
+            Self::CredentialGot { .. } => "CredentialGot",
+            Self::CredentialMaterial { .. } => "CredentialMaterial",
+            Self::BindingsListed { .. } => "BindingsListed",
+            Self::BindingSetDone { .. } => "BindingSetDone",
+            Self::BindingDeleted { .. } => "BindingDeleted",
+            Self::BindingTested { .. } => "BindingTested",
             Self::ExtensionList { .. } => "ExtensionList",
             Self::CapabilityGranted { .. } => "CapabilityGranted",
             Self::CapabilityRevoked { .. } => "CapabilityRevoked",
@@ -2797,10 +2989,14 @@ mod tests {
 
     #[test]
     fn test_credential_list_request_roundtrip() {
-        // T-107: pin the wire shape so the desktop's `credential_list`
-        // Tauri command can rely on `type: "credential_list"` and
-        // `request_id` round-trip.
-        let req = RequestPacket::CredentialList { request_id: 901 };
+        // RP3A: pin the widened wire shape so the desktop's
+        // `credential_list` Tauri command can rely on `type`,
+        // `request_id`, `namespace`, and `kind` round-trip.
+        let req = RequestPacket::CredentialList {
+            request_id: 901,
+            namespace: Some("provider:openai".to_string()),
+            kind: Some("api_key".to_string()),
+        };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
@@ -2808,31 +3004,52 @@ mod tests {
             Some("credential_list")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(901));
+        assert_eq!(
+            json.get("namespace").and_then(|v| v.as_str()),
+            Some("provider:openai")
+        );
+        assert_eq!(json.get("kind").and_then(|v| v.as_str()), Some("api_key"));
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::CredentialList { request_id } => assert_eq!(request_id, 901),
+            RequestPacket::CredentialList {
+                request_id,
+                namespace,
+                kind,
+            } => {
+                assert_eq!(request_id, 901);
+                assert_eq!(namespace.as_deref(), Some("provider:openai"));
+                assert_eq!(kind.as_deref(), Some("api_key"));
+            }
             _ => panic!("Wrong variant"),
         }
     }
 
     #[test]
     fn test_credentials_listed_response_roundtrip() {
-        // T-107: pin the response wire shape — provider / has_key /
-        // last_tested field names mirror the desktop's `CredentialRow`
-        // (`peko-desktop/src-tauri/src/commands/settings.rs:287`).
+        // RP3A: pin the widened response wire shape — id / namespace /
+        // name / kind / has_key / last_tested_at / last_tested_ok field
+        // names mirror the desktop's `CredentialRow`.
         let resp = ResponsePacket::CredentialsListed {
             request_id: 902,
             providers: vec![
                 CredentialRow {
-                    provider: "minimax".to_string(),
+                    id: "id-minimax".to_string(),
+                    namespace: "provider:minimax".to_string(),
+                    name: "default".to_string(),
+                    kind: "api_key".to_string(),
                     has_key: true,
-                    last_tested: None,
+                    last_tested_at: Some("2026-07-15T11:48:00Z".to_string()),
+                    last_tested_ok: Some(true),
                 },
                 CredentialRow {
-                    provider: "openai".to_string(),
+                    id: "id-openai".to_string(),
+                    namespace: "provider:openai".to_string(),
+                    name: "default".to_string(),
+                    kind: "api_key".to_string(),
                     has_key: false,
-                    last_tested: None,
+                    last_tested_at: None,
+                    last_tested_ok: None,
                 },
             ],
         };
@@ -2852,10 +3069,21 @@ mod tests {
             } => {
                 assert_eq!(request_id, 902);
                 assert_eq!(providers.len(), 2);
-                assert_eq!(providers[0].provider, "minimax");
+                assert_eq!(providers[0].id, "id-minimax");
+                assert_eq!(providers[0].namespace, "provider:minimax");
+                assert_eq!(providers[0].name, "default");
+                assert_eq!(providers[0].kind, "api_key");
                 assert!(providers[0].has_key);
-                assert_eq!(providers[1].provider, "openai");
+                assert_eq!(
+                    providers[0].last_tested_at,
+                    Some("2026-07-15T11:48:00Z".to_string())
+                );
+                assert_eq!(providers[0].last_tested_ok, Some(true));
+                assert_eq!(providers[1].id, "id-openai");
+                assert_eq!(providers[1].namespace, "provider:openai");
                 assert!(!providers[1].has_key);
+                assert!(providers[1].last_tested_at.is_none());
+                assert!(providers[1].last_tested_ok.is_none());
             }
             _ => panic!("Wrong variant"),
         }
@@ -2863,13 +3091,10 @@ mod tests {
 
     #[test]
     fn test_credential_test_request_roundtrip() {
-        // Live-credential-test wire shape (peko-runtime#193, the
-        // counterpart to `credential_list`). Pin `type`, `provider`,
-        // and `request_id` round-trip so the desktop's Tauri command
-        // can project the fields by name.
+        // RP3A: live-credential-test is keyed by credential id now.
         let req = RequestPacket::CredentialTest {
             request_id: 911,
-            provider: "minimax".to_string(),
+            id: "id-minimax".to_string(),
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -2878,19 +3103,13 @@ mod tests {
             Some("credential_test")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(911));
-        assert_eq!(
-            json.get("provider").and_then(|v| v.as_str()),
-            Some("minimax")
-        );
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::CredentialTest {
-                request_id,
-                provider,
-            } => {
+            RequestPacket::CredentialTest { request_id, id } => {
                 assert_eq!(request_id, 911);
-                assert_eq!(provider, "minimax");
+                assert_eq!(id, "id-minimax");
             }
             _ => panic!("Wrong variant"),
         }
@@ -2900,7 +3119,7 @@ mod tests {
     fn test_credential_tested_response_roundtrip() {
         let resp = ResponsePacket::CredentialTested {
             request_id: 912,
-            provider: "anthropic".to_string(),
+            id: "id-anthropic".to_string(),
             ok: false,
             message: "HTTP 401: invalid api key".to_string(),
             latency_ms: 187,
@@ -2916,8 +3135,8 @@ mod tests {
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(912));
         assert_eq!(
-            json.get("provider").and_then(|v| v.as_str()),
-            Some("anthropic")
+            json.get("id").and_then(|v| v.as_str()),
+            Some("id-anthropic")
         );
         assert_eq!(json.get("ok").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(
@@ -2939,7 +3158,7 @@ mod tests {
         match decoded {
             ResponsePacket::CredentialTested {
                 request_id,
-                provider,
+                id,
                 ok,
                 message,
                 latency_ms,
@@ -2948,7 +3167,7 @@ mod tests {
                 tested_at,
             } => {
                 assert_eq!(request_id, 912);
-                assert_eq!(provider, "anthropic");
+                assert_eq!(id, "id-anthropic");
                 assert!(!ok);
                 assert_eq!(message, "HTTP 401: invalid api key");
                 assert_eq!(latency_ms, 187);
@@ -2960,19 +3179,19 @@ mod tests {
         }
     }
 
-    /// Pin the `credential_set` wire envelope (`type`, `provider`,
-    /// `api_key`, `request_id`) so a future change to the JSON keys
-    /// surfaces as a test failure rather than the desktop's
-    /// `credential_set` Tauri command silently timing out (the
-    /// original bug — the variant didn't exist, so requests fell
-    /// through to the dispatcher's generic "no handler registered"
-    /// error and the desktop hung until the socket timeout).
+    /// Pin the `credential_set` wire envelope (`type`, `namespace`,
+    /// `name`, `kind`, `material`, `metadata`, `request_id`) so a future
+    /// change to the JSON keys surfaces as a test failure rather than
+    /// the desktop's `credential_set` Tauri command silently timing out.
     #[test]
     fn test_credential_set_request_roundtrip() {
         let req = RequestPacket::CredentialSet {
             request_id: 921,
-            provider: "minimax".to_string(),
-            api_key: "sk-test-123".to_string(),
+            namespace: "provider:minimax".to_string(),
+            name: "default".to_string(),
+            kind: "api_key".to_string(),
+            material: "sk-test-123".to_string(),
+            metadata: Some(serde_json::json!({ "foo": "bar" })),
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -2982,24 +3201,39 @@ mod tests {
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(921));
         assert_eq!(
-            json.get("provider").and_then(|v| v.as_str()),
-            Some("minimax")
+            json.get("namespace").and_then(|v| v.as_str()),
+            Some("provider:minimax")
+        );
+        assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("default"));
+        assert_eq!(json.get("kind").and_then(|v| v.as_str()), Some("api_key"));
+        assert_eq!(
+            json.get("material").and_then(|v| v.as_str()),
+            Some("sk-test-123")
         );
         assert_eq!(
-            json.get("api_key").and_then(|v| v.as_str()),
-            Some("sk-test-123")
+            json.get("metadata").and_then(|v| v.as_object()).map(|m| m.len()),
+            Some(1)
         );
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
             RequestPacket::CredentialSet {
                 request_id,
-                provider,
-                api_key,
+                namespace,
+                name,
+                kind,
+                material,
+                metadata,
             } => {
                 assert_eq!(request_id, 921);
-                assert_eq!(provider, "minimax");
-                assert_eq!(api_key, "sk-test-123");
+                assert_eq!(namespace, "provider:minimax");
+                assert_eq!(name, "default");
+                assert_eq!(kind, "api_key");
+                assert_eq!(material, "sk-test-123");
+                assert_eq!(
+                    metadata.as_ref().and_then(|m| m.get("foo").and_then(|v| v.as_str())),
+                    Some("bar")
+                );
             }
             _ => panic!("Wrong variant"),
         }
@@ -3008,12 +3242,12 @@ mod tests {
     /// Pin the `credential_set_done` response wire shape. The
     /// desktop's Tauri command consumes this and updates its local
     /// UI without re-issuing a `credential_list` round-trip, so the
-    /// `provider` echo is part of the contract.
+    /// `id` echo is part of the contract.
     #[test]
     fn test_credential_set_done_response_roundtrip() {
         let resp = ResponsePacket::CredentialSetDone {
             request_id: 922,
-            provider: "minimax".to_string(),
+            id: "id-minimax".to_string(),
         };
         let bytes = resp.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -3023,18 +3257,15 @@ mod tests {
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(922));
         assert_eq!(
-            json.get("provider").and_then(|v| v.as_str()),
-            Some("minimax")
+            json.get("id").and_then(|v| v.as_str()),
+            Some("id-minimax")
         );
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::CredentialSetDone {
-                request_id,
-                provider,
-            } => {
+            ResponsePacket::CredentialSetDone { request_id, id } => {
                 assert_eq!(request_id, 922);
-                assert_eq!(provider, "minimax");
+                assert_eq!(id, "id-minimax");
             }
             _ => panic!("Wrong variant"),
         }
@@ -3048,7 +3279,7 @@ mod tests {
     fn test_credential_delete_request_roundtrip() {
         let req = RequestPacket::CredentialDelete {
             request_id: 931,
-            provider: "minimax".to_string(),
+            id: "id-minimax".to_string(),
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -3057,19 +3288,13 @@ mod tests {
             Some("credential_delete")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(931));
-        assert_eq!(
-            json.get("provider").and_then(|v| v.as_str()),
-            Some("minimax")
-        );
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::CredentialDelete {
-                request_id,
-                provider,
-            } => {
+            RequestPacket::CredentialDelete { request_id, id } => {
                 assert_eq!(request_id, 931);
-                assert_eq!(provider, "minimax");
+                assert_eq!(id, "id-minimax");
             }
             _ => panic!("Wrong variant"),
         }
@@ -3080,7 +3305,7 @@ mod tests {
     fn test_credential_deleted_response_roundtrip() {
         let resp = ResponsePacket::CredentialDeleted {
             request_id: 932,
-            provider: "minimax".to_string(),
+            id: "id-minimax".to_string(),
         };
         let bytes = resp.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -3089,19 +3314,13 @@ mod tests {
             Some("credential_deleted")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(932));
-        assert_eq!(
-            json.get("provider").and_then(|v| v.as_str()),
-            Some("minimax")
-        );
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::CredentialDeleted {
-                request_id,
-                provider,
-            } => {
+            ResponsePacket::CredentialDeleted { request_id, id } => {
                 assert_eq!(request_id, 932);
-                assert_eq!(provider, "minimax");
+                assert_eq!(id, "id-minimax");
             }
             _ => panic!("Wrong variant"),
         }
