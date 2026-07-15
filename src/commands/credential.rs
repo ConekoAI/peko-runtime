@@ -64,9 +64,13 @@ pub enum CredentialCommands {
     },
     /// List provider ids that currently have a stored key.
     List,
-    /// Cheap format-only check on a stored key.
-    ///
-    /// For real round-trip tests, use `peko provider fetch-models`.
+    /// Live validation: ping the provider's real API with the stored
+    /// key and report whether the request succeeded (HTTP 2xx) or
+    /// what went wrong (401 / 403 / 404 / 429 / 5xx / connection
+    /// refused / DNS / timeout). The old shape-only check couldn't
+    /// tell `sk-opena-12345` from a real key — this does. For
+    /// local / keyless providers (e.g. Ollama) the ping goes out
+    /// without an Authorization header.
     Test {
         /// Provider id.
         provider: String,
@@ -196,15 +200,104 @@ async fn test_cmd(
     provider: &str,
     known_provider_ids: &[String],
 ) -> Result<()> {
-    match vault.test_provider_key(provider) {
-        Some(true) => println!("Stored key for '{provider}' looks well-formed."),
-        Some(false) => println!("Stored key for '{provider}' has an unexpected shape."),
-        None => {
-            suggest_for_missing(provider, &vault.list_providers(), known_provider_ids);
-            println!("No key stored for '{provider}'.");
+    // Live API ping: the old `Vault::test_provider_key` shape-only
+    // check couldn't tell `sk-opena-12345` from a real key. Route
+    // through the daemon's `credential_test` IPC so the validator
+    // hits the real provider URL with the real stored key. The
+    // vault is only consulted to surface a "did you mean" hint when
+    // the daemon reports no key (which means the catalog entry
+    // doesn't require one either — Ollama path — or the key was
+    // deleted between sessions; either way the user gets a useful
+    // hint).
+    let client = match crate::ipc::DaemonClient::connect().await {
+        Ok(c) => c,
+        Err(e) => {
+            anyhow::bail!(
+                "cannot reach the daemon (is `peko daemon start` running?): {e}"
+            );
         }
+    };
+    let resp = client.credential_test(provider).await?;
+    let (lines, exit_code) = render_credential_tested(provider, &resp);
+    for line in &lines {
+        println!("{line}");
+    }
+    if message_invites_suggestion(provider, &resp) {
+        suggest_for_missing(provider, &vault.list_providers(), known_provider_ids);
+    }
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
     Ok(())
+}
+
+/// Pure formatter for `CredentialTested` so the IPC plumbing is
+/// tested by `cargo build` and the human-readable output is
+/// covered by unit tests without spawning a daemon. Returns
+/// `(lines, exit_code)` — exit code is 0 for success, 2 for a
+/// validator failure, distinct from `1` (clap usage error) so
+/// scripts can branch on outcome cleanly.
+fn render_credential_tested(
+    provider: &str,
+    resp: &crate::ipc::packet::ResponsePacket,
+) -> (Vec<String>, i32) {
+    let crate::ipc::packet::ResponsePacket::CredentialTested {
+        ok,
+        message,
+        latency_ms,
+        http_status,
+        model_used,
+        ..
+    } = resp
+    else {
+        return (
+            vec![format!(
+                "unexpected response from daemon: {}  (is the daemon up-to-date?)",
+                resp.variant_name()
+            )],
+            1,
+        );
+    };
+
+    if *ok {
+        let mut lines = vec![format!("✓ {message} ({latency_ms}ms)")];
+        if let Some(model) = model_used {
+            lines.push(format!("  via {model} (~1 token billed)"));
+        }
+        (lines, 0)
+    } else {
+        let mut lines = vec![format!("✗ {message}")];
+        if let Some(code) = http_status {
+            lines.push(format!("  HTTP {code} after {latency_ms}ms"));
+        } else if message.contains("unknown provider") || message.contains("no key stored") {
+            // Config-level errors — the validator never dialed, so
+            // there's no "connection" to fail. A short tail line
+            // keeps the format consistent (always 2 lines for !ok).
+            lines.push(format!("  ({latency_ms}ms — request was not sent)"));
+        } else {
+            lines.push(format!("  connection failed after {latency_ms}ms"));
+        }
+        let _ = provider; // provider name surfaces via the daemon's `message`
+        (lines, 2)
+    }
+}
+
+/// True iff the validator's failure message names a configuration
+/// gap the user can fix from this command — a missing key
+/// (`no key stored for X`) or a typo (`unknown provider: X`). Both
+/// benefit from the nearest-neighbor hint. Real failures (401,
+/// 429, connection refused) already carry enough context in the
+/// HTTP / connection line — adding a typo suggestion there would
+/// be noise.
+fn message_invites_suggestion(
+    _provider: &str,
+    resp: &crate::ipc::packet::ResponsePacket,
+) -> bool {
+    if let crate::ipc::packet::ResponsePacket::CredentialTested { message, .. } = resp {
+        message.contains("no key stored") || message.contains("unknown provider")
+    } else {
+        false
+    }
 }
 
 async fn migrate_cmd(vault: &Vault) -> Result<()> {
@@ -409,6 +502,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::packet::ResponsePacket;
 
     /// `miniax` vs `minimax` is one insertion; should rank first.
     #[test]
@@ -498,6 +592,200 @@ mod tests {
         assert_eq!(levenshtein("flaw", "lawn"), 2);
         assert_eq!(levenshtein("minimax", "minimax"), 0);
         assert_eq!(levenshtein("miniax", "minimax"), 1);
+    }
+
+    /// Successful OpenAI-compat ping: status line + latency, no
+    /// `via <model>` line because `model_used` is `None`.
+    #[test]
+    fn render_credential_tested_ok_openai_compat() {
+        let resp = ResponsePacket::CredentialTested {
+            request_id: 1,
+            provider: "openai".to_string(),
+            ok: true,
+            message: "Connection successful (124 models)".to_string(),
+            latency_ms: 187,
+            http_status: Some(200),
+            model_used: None,
+            tested_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        let (lines, exit) = render_credential_tested("openai", &resp);
+        assert_eq!(exit, 0, "ok outcome must exit 0");
+        assert_eq!(lines.len(), 1, "no via-model line for OpenAI-compat");
+        assert!(lines[0].starts_with("✓ "), "got: {}", lines[0]);
+        assert!(lines[0].contains("(187ms)"), "got: {}", lines[0]);
+        assert!(lines[0].contains("124 models"), "got: {}", lines[0]);
+    }
+
+    /// Successful Anthropic-format ping: model_used drives the
+    /// "via <model> (~1 token billed)" line.
+    #[test]
+    fn render_credential_tested_ok_anthropic_includes_via_model_line() {
+        let resp = ResponsePacket::CredentialTested {
+            request_id: 2,
+            provider: "anthropic".to_string(),
+            ok: true,
+            message: "Connection successful (1 token billed via claude-haiku-4-5)"
+                .to_string(),
+            latency_ms: 312,
+            http_status: Some(200),
+            model_used: Some("claude-haiku-4-5".to_string()),
+            tested_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        let (lines, exit) = render_credential_tested("anthropic", &resp);
+        assert_eq!(exit, 0);
+        assert_eq!(lines.len(), 2, "ok + via-model line");
+        assert!(lines[0].contains("(312ms)"), "got: {}", lines[0]);
+        assert!(lines[1].contains("claude-haiku-4-5"), "got: {}", lines[1]);
+        assert!(lines[1].contains("~1 token billed"), "got: {}", lines[1]);
+    }
+
+    /// HTTP failure (401): exit 2, ✗ prefix, HTTP code on a second
+    /// line — scripts branch on the exit code without scraping stdout.
+    #[test]
+    fn render_credential_tested_failure_401_reports_status_and_exit_2() {
+        let resp = ResponsePacket::CredentialTested {
+            request_id: 3,
+            provider: "openai".to_string(),
+            ok: false,
+            message: "HTTP 401: invalid api key".to_string(),
+            latency_ms: 124,
+            http_status: Some(401),
+            model_used: None,
+            tested_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        let (lines, exit) = render_credential_tested("openai", &resp);
+        assert_eq!(exit, 2, "validator failure must exit 2, not 0/1");
+        assert!(lines[0].starts_with("✗ "), "got: {}", lines[0]);
+        assert!(lines[0].contains("invalid api key"), "got: {}", lines[0]);
+        assert!(
+            lines[1].contains("HTTP 401"),
+            "expected HTTP status on second line, got: {:?}",
+            lines
+        );
+    }
+
+    /// Connection-level failure (no HTTP status): second line says
+    /// "connection failed" so the user knows it's not a 4xx.
+    #[test]
+    fn render_credential_tested_connection_failure_says_so() {
+        let resp = ResponsePacket::CredentialTested {
+            request_id: 4,
+            provider: "ollama".to_string(),
+            ok: false,
+            message: "connection refused: 127.0.0.1:11434".to_string(),
+            latency_ms: 12,
+            http_status: None,
+            model_used: None,
+            tested_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        let (lines, exit) = render_credential_tested("ollama", &resp);
+        assert_eq!(exit, 2);
+        assert!(lines[0].starts_with("✗ "));
+        assert!(
+            lines[1].contains("connection failed"),
+            "expected connection-failed line, got: {:?}",
+            lines
+        );
+    }
+
+    /// "No key stored for X" or "unknown provider: X" — config
+    /// gaps the user can fix from this command. Real failures
+    /// (401, 429, connection refused) carry enough context in
+    /// the HTTP / connection line — adding a typo suggestion there
+    /// would be noise.
+    #[test]
+    fn message_invites_suggestion_for_missing_key_and_unknown_provider() {
+        let missing = ResponsePacket::CredentialTested {
+            request_id: 5,
+            provider: "miniax".to_string(),
+            ok: false,
+            message: "no key stored for 'miniax'".to_string(),
+            latency_ms: 0,
+            http_status: None,
+            model_used: None,
+            tested_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        assert!(message_invites_suggestion("miniax", &missing));
+
+        let unknown = ResponsePacket::CredentialTested {
+            request_id: 7,
+            provider: "miniax".to_string(),
+            ok: false,
+            message: "unknown provider: miniax".to_string(),
+            latency_ms: 0,
+            http_status: None,
+            model_used: None,
+            tested_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        assert!(
+            message_invites_suggestion("miniax", &unknown),
+            "typo on unknown provider must invite suggestion"
+        );
+
+        let auth = ResponsePacket::CredentialTested {
+            request_id: 6,
+            provider: "openai".to_string(),
+            ok: false,
+            message: "HTTP 401: invalid api key".to_string(),
+            latency_ms: 50,
+            http_status: Some(401),
+            model_used: None,
+            tested_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        assert!(
+            !message_invites_suggestion("openai", &auth),
+            "401 doesn't invite a typo suggestion — the HTTP code line is enough"
+        );
+    }
+
+    /// Config-level errors get a "request was not sent" tail line
+    /// rather than the misleading "connection failed" — the
+    /// validator never dialed.
+    #[test]
+    fn render_credential_tested_unknown_provider_says_request_not_sent() {
+        let resp = ResponsePacket::CredentialTested {
+            request_id: 8,
+            provider: "miniax".to_string(),
+            ok: false,
+            message: "unknown provider: miniax".to_string(),
+            latency_ms: 0,
+            http_status: None,
+            model_used: None,
+            tested_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        let (lines, exit) = render_credential_tested("miniax", &resp);
+        assert_eq!(exit, 2);
+        assert!(
+            lines[1].contains("request was not sent"),
+            "expected config-error tail, got: {:?}",
+            lines
+        );
+    }
+
+    /// Unexpected variant (e.g. an old daemon returning
+    /// `ProviderList` because `CredentialTested` isn't supported)
+    /// must surface a clear "is the daemon up-to-date?" hint rather
+    /// than panic.
+    #[test]
+    fn render_credential_tested_unexpected_variant_surfaces_diagnostic() {
+        let resp = ResponsePacket::Pong {
+            request_id: 7,
+            uptime_secs: 12,
+            version: "0.1.0".to_string(),
+        };
+        let (lines, exit) = render_credential_tested("openai", &resp);
+        assert_eq!(exit, 1);
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("unexpected response"),
+            "got: {}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("up-to-date"),
+            "got: {}",
+            lines[0]
+        );
     }
 }
 

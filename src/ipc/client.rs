@@ -189,6 +189,25 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
+    /// Live-ping the provider identified by `provider` with the
+    /// stored key (or no key for local providers like Ollama) and
+    /// return the structured outcome (ok, message, latency_ms,
+    /// http_status, model_used, tested_at). Powers
+    /// `peko credential test <provider>` — the old
+    /// `Vault::test_provider_key` shape-only check couldn't tell
+    /// `sk-opena-12345` from a real key. Mirrors the desktop Test
+    /// button's path (peko-desktop#44 follow-up). See
+    /// `providers::validator::Validator::test` for the dispatch
+    /// table.
+    pub async fn credential_test(&self, provider: &str) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::CredentialTest {
+            request_id,
+            provider: provider.to_string(),
+        };
+        self.request_response(packet).await
+    }
+
     // ------------------------------------------------------------------
     // Cron management
     // ------------------------------------------------------------------
