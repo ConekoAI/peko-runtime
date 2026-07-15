@@ -249,6 +249,31 @@ pub enum RequestPacket {
     #[serde(rename = "credential_test")]
     CredentialTest { request_id: u64, provider: String },
 
+    /// Store or overwrite the API key for `provider` in the
+    /// runtime's keychain-backed vault. Powers the desktop's
+    /// `credential_set` Tauri command (Settings → Add Key / Update
+    /// Key); the CLI's `peko credential set` writes the vault
+    /// directly and doesn't round-trip through IPC. Mirrors
+    /// `Vault::set_provider_key`.
+    #[serde(rename = "credential_set")]
+    CredentialSet {
+        request_id: u64,
+        provider: String,
+        /// Raw API key string from the caller. Wrapped in
+        /// `SecretString` on the handler side before persisting.
+        api_key: String,
+    },
+
+    /// Remove the stored API key for `provider` from the vault.
+    /// Powers the desktop's `credential_delete` Tauri command; the
+    /// CLI's `peko credential delete` writes the vault directly.
+    /// Mirrors `Vault::delete_provider_key`.
+    #[serde(rename = "credential_delete")]
+    CredentialDelete {
+        request_id: u64,
+        provider: String,
+    },
+
     /// Re-read the provider catalog and the credential vault from
     /// disk. Sent by `peko provider {add,remove,set-default}` and
     /// `peko credential {set,delete}` so the long-running daemon
@@ -685,6 +710,8 @@ impl RequestPacket {
             | Self::McpReload { request_id }
             | Self::CredentialList { request_id }
             | Self::CredentialTest { request_id, .. }
+            | Self::CredentialSet { request_id, .. }
+            | Self::CredentialDelete { request_id, .. }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::ExtensionList { request_id, .. }
@@ -971,6 +998,26 @@ pub enum ResponsePacket {
         http_status: Option<u16>,
         model_used: Option<String>,
         tested_at: String,
+    },
+
+    /// Reply to [`RequestPacket::CredentialSet`]. The vault write
+    /// has already succeeded (or surfaced an error via
+    /// [`ResponsePacket::Error`]) by the time this is sent. The
+    /// `provider` echo lets the desktop update its local UI without
+    /// re-issuing a `credential_list` round-trip.
+    #[serde(rename = "credential_set_done")]
+    CredentialSetDone {
+        request_id: u64,
+        provider: String,
+    },
+
+    /// Reply to [`RequestPacket::CredentialDelete`]. See
+    /// [`ResponsePacket::CredentialSetDone`] for the same notes on
+    /// the success/error split.
+    #[serde(rename = "credential_deleted")]
+    CredentialDeleted {
+        request_id: u64,
+        provider: String,
     },
 
     /// System status response
@@ -1638,6 +1685,8 @@ impl ResponsePacket {
             | Self::McpReloaded { request_id, .. }
             | Self::CredentialsListed { request_id, .. }
             | Self::CredentialTested { request_id, .. }
+            | Self::CredentialSetDone { request_id, .. }
+            | Self::CredentialDeleted { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::CapabilityGranted { request_id, .. }
             | Self::CapabilityRevoked { request_id, .. }
@@ -1710,6 +1759,8 @@ impl ResponsePacket {
             Self::McpReloaded { .. } => "McpReloaded",
             Self::CredentialsListed { .. } => "CredentialsListed",
             Self::CredentialTested { .. } => "CredentialTested",
+            Self::CredentialSetDone { .. } => "CredentialSetDone",
+            Self::CredentialDeleted { .. } => "CredentialDeleted",
             Self::ExtensionList { .. } => "ExtensionList",
             Self::CapabilityGranted { .. } => "CapabilityGranted",
             Self::CapabilityRevoked { .. } => "CapabilityRevoked",
@@ -2859,6 +2910,153 @@ mod tests {
                 assert_eq!(http_status, Some(401));
                 assert_eq!(model_used.as_deref(), Some("claude-haiku-4-5"));
                 assert_eq!(tested_at, "2026-07-15T11:48:00Z");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    /// Pin the `credential_set` wire envelope (`type`, `provider`,
+    /// `api_key`, `request_id`) so a future change to the JSON keys
+    /// surfaces as a test failure rather than the desktop's
+    /// `credential_set` Tauri command silently timing out (the
+    /// original bug — the variant didn't exist, so requests fell
+    /// through to the dispatcher's generic "no handler registered"
+    /// error and the desktop hung until the socket timeout).
+    #[test]
+    fn test_credential_set_request_roundtrip() {
+        let req = RequestPacket::CredentialSet {
+            request_id: 921,
+            provider: "minimax".to_string(),
+            api_key: "sk-test-123".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("credential_set")
+        );
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(921));
+        assert_eq!(
+            json.get("provider").and_then(|v| v.as_str()),
+            Some("minimax")
+        );
+        assert_eq!(
+            json.get("api_key").and_then(|v| v.as_str()),
+            Some("sk-test-123")
+        );
+
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::CredentialSet {
+                request_id,
+                provider,
+                api_key,
+            } => {
+                assert_eq!(request_id, 921);
+                assert_eq!(provider, "minimax");
+                assert_eq!(api_key, "sk-test-123");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    /// Pin the `credential_set_done` response wire shape. The
+    /// desktop's Tauri command consumes this and updates its local
+    /// UI without re-issuing a `credential_list` round-trip, so the
+    /// `provider` echo is part of the contract.
+    #[test]
+    fn test_credential_set_done_response_roundtrip() {
+        let resp = ResponsePacket::CredentialSetDone {
+            request_id: 922,
+            provider: "minimax".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("credential_set_done")
+        );
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(922));
+        assert_eq!(
+            json.get("provider").and_then(|v| v.as_str()),
+            Some("minimax")
+        );
+
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::CredentialSetDone {
+                request_id,
+                provider,
+            } => {
+                assert_eq!(request_id, 922);
+                assert_eq!(provider, "minimax");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    /// Mirror of `test_credential_set_request_roundtrip` for the
+    /// delete variant. The desktop's `credential_delete` Tauri
+    /// command has the same timeout pathology as `credential_set`
+    /// without a registered handler.
+    #[test]
+    fn test_credential_delete_request_roundtrip() {
+        let req = RequestPacket::CredentialDelete {
+            request_id: 931,
+            provider: "minimax".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("credential_delete")
+        );
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(931));
+        assert_eq!(
+            json.get("provider").and_then(|v| v.as_str()),
+            Some("minimax")
+        );
+
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::CredentialDelete {
+                request_id,
+                provider,
+            } => {
+                assert_eq!(request_id, 931);
+                assert_eq!(provider, "minimax");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    /// Pin the `credential_deleted` response wire shape.
+    #[test]
+    fn test_credential_deleted_response_roundtrip() {
+        let resp = ResponsePacket::CredentialDeleted {
+            request_id: 932,
+            provider: "minimax".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("credential_deleted")
+        );
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(932));
+        assert_eq!(
+            json.get("provider").and_then(|v| v.as_str()),
+            Some("minimax")
+        );
+
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::CredentialDeleted {
+                request_id,
+                provider,
+            } => {
+                assert_eq!(request_id, 932);
+                assert_eq!(provider, "minimax");
             }
             _ => panic!("Wrong variant"),
         }
