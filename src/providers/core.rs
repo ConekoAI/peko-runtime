@@ -5,10 +5,12 @@
 
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::providers::adapters::{AnyAdapter, ApiAdapter};
+use crate::providers::rotating_auth::{is_auth_failure, RotationState};
 use crate::providers::transport::HttpClient;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, StreamEvent, ToolDefinition,
 };
+use secrecy::ExposeSecret;
 use futures::StreamExt;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -43,10 +45,14 @@ pub struct ProviderRuntimeOptions {
 /// callers, but every public `chat*` method accepts an explicit
 /// `model_id` parameter that is threaded into the adapter's
 /// `build_request`/`parse_response`/`parse_sse_event` calls.
+#[derive(Clone)]
 pub struct Provider {
     client: HttpClient,
     adapter: AnyAdapter,
     options: ProviderRuntimeOptions,
+    /// Optional rotation state. When present, 401 responses advance
+    /// to the next credential in the binding and retry.
+    rotation: Option<RotationState>,
 }
 
 impl Provider {
@@ -109,7 +115,74 @@ impl Provider {
             client,
             adapter,
             options,
+            rotation: None,
         })
+    }
+
+    /// Rebuild the provider with a different API key, preserving the
+    /// adapter, options, and any rotation state.
+    ///
+    /// Used by the auth-rotation path after a 401 advances the cursor
+    /// to the next credential in a binding.
+    pub fn rebuild_with_material(
+        &self,
+        api_key: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        let mut rebuilt = Self::new(self.adapter.clone(), api_key, self.options.clone())?;
+        rebuilt.rotation = self.rotation.clone();
+        Ok(rebuilt)
+    }
+
+    /// Attach a rotation state to this provider.
+    #[must_use]
+    pub fn with_rotation(mut self, rotation: RotationState) -> Self {
+        self.rotation = Some(rotation);
+        self
+    }
+
+    /// Run an operation, retrying on HTTP 401 when a rotation binding is
+    /// configured. Advances through bound credentials and rebuilds the
+    /// provider with each new material until the operation succeeds, a
+    /// non-401 error occurs, or all credentials are exhausted.
+    async fn with_auth_rotation<F, Fut, T>(&self, operation: F) -> anyhow::Result<T>
+    where
+        F: Fn(&Self) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>> + Send,
+    {
+        let start_index = self.rotation.as_ref().map(|r| r.current_index());
+        let mut provider: Option<Self> = None;
+
+        loop {
+            let current = provider.as_ref().unwrap_or(self);
+            match operation(current).await {
+                Ok(v) => {
+                    if let Some(rotation) = current.rotation.as_ref() {
+                        rotation.record_current_test(true);
+                    }
+                    return Ok(v);
+                }
+                Err(e) => {
+                    if !is_auth_failure(&e) {
+                        return Err(e);
+                    }
+                    let Some(rotation) = current.rotation.as_ref() else {
+                        return Err(e);
+                    };
+                    rotation.record_current_test(false);
+                    rotation.advance();
+                    if Some(rotation.current_index()) == start_index {
+                        return Err(e);
+                    }
+                    let Some(material) = rotation.current_material() else {
+                        return Err(e);
+                    };
+                    provider = Some(
+                        current
+                            .rebuild_with_material(material.expose_secret())?,
+                    );
+                }
+            }
+        }
     }
 
     /// Provider name
@@ -204,33 +277,34 @@ impl Provider {
         _model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let messages: Vec<LlmMessage> = if let Some(system) = system_prompt {
-            vec![LlmMessage::system(system), LlmMessage::user(message)]
-        } else {
-            vec![LlmMessage::user(message)]
-        };
+        self.with_auth_rotation(|provider| {
+            let provider = provider.clone();
+            async move {
+                let messages: Vec<LlmMessage> = if let Some(system) = system_prompt {
+                    vec![LlmMessage::system(system), LlmMessage::user(message)]
+                } else {
+                    vec![LlmMessage::user(message)]
+                };
 
-        let options = ChatOptions {
-            temperature: Some(temperature as f32),
-            max_tokens: None,
-            api_key: None,
-            headers: std::collections::HashMap::new(),
-        };
+                let options = ChatOptions {
+                    temperature: Some(temperature as f32),
+                    max_tokens: None,
+                    api_key: None,
+                    headers: std::collections::HashMap::new(),
+                };
 
-        // Short-circuit to mock adapter (same pattern as
-        // `chat_with_tools`). The mock has no real HTTP response to
-        // parse; routing through `chat_with_tools` lets the queued
-        // `ChatResponse` — including its synthesised `usage` — reach
-        // the compactor and end-to-end tests.
-        if let AnyAdapter::Mock(mock) = &self.adapter {
-            return mock.chat_with_tools(_model, &messages, Some(&[]), &options);
-        }
+                if let AnyAdapter::Mock(mock) = &provider.adapter {
+                    return mock.chat_with_tools(_model, &messages, Some(&[]), &options);
+                }
 
-        let (path, body) = self
-            .adapter
-            .build_request(_model, &messages, None, &options, false)?;
-        let response: serde_json::Value = self.client.post_json(&path, &body).await?;
-        self.adapter.parse_response(_model, response)
+                let (path, body) = provider
+                    .adapter
+                    .build_request(_model, &messages, None, &options, false)?;
+                let response: serde_json::Value = provider.client.post_json(&path, &body).await?;
+                provider.adapter.parse_response(_model, response)
+            }
+        })
+        .await
     }
 
     /// Chat with native tool calling support (blocking)
@@ -244,16 +318,23 @@ impl Provider {
         tools: &[ToolDefinition],
         options: &ChatOptions,
     ) -> anyhow::Result<ChatResponse> {
-        // Short-circuit to mock adapter when testing
-        if let AnyAdapter::Mock(mock) = &self.adapter {
-            return mock.chat_with_tools(model_id, messages, Some(tools), options);
-        }
+        self.with_auth_rotation(|provider| {
+            let provider = provider.clone();
+            async move {
+                // Short-circuit to mock adapter when testing
+                if let AnyAdapter::Mock(mock) = &provider.adapter {
+                    return mock.chat_with_tools(model_id, messages, Some(tools), options);
+                }
 
-        let (path, body) =
-            self.adapter
-                .build_request(model_id, messages, Some(tools), options, false)?;
-        let response: serde_json::Value = self.client.post_json(&path, &body).await?;
-        self.adapter.parse_response(model_id, response)
+                let (path, body) = provider
+                    .adapter
+                    .build_request(model_id, messages, Some(tools), options, false)?;
+                let response: serde_json::Value =
+                    provider.client.post_json(&path, &body).await?;
+                provider.adapter.parse_response(model_id, response)
+            }
+        })
+        .await
     }
 
     /// Stream chat with native tool calling support
@@ -265,67 +346,73 @@ impl Provider {
         options: &ChatOptions,
     ) -> anyhow::Result<Pin<Box<dyn futures::Stream<Item = anyhow::Result<StreamEvent>> + Send>>>
     {
-        // Short-circuit to mock adapter when testing
-        if let AnyAdapter::Mock(mock) = &self.adapter {
-            return mock.stream_with_tools(model_id, messages, Some(tools), options);
-        }
+        self.with_auth_rotation(|provider| {
+            let provider = provider.clone();
+            async move {
+                // Short-circuit to mock adapter when testing
+                if let AnyAdapter::Mock(mock) = &provider.adapter {
+                    return mock.stream_with_tools(model_id, messages, Some(tools), options);
+                }
 
-        let (path, body) =
-            self.adapter
-                .build_request(model_id, messages, Some(tools), options, true)?;
-        let stream = self.client.post_stream(&path, &body).await?;
+                let (path, body) = provider
+                    .adapter
+                    .build_request(model_id, messages, Some(tools), options, true)?;
+                let stream = provider.client.post_stream(&path, &body).await?;
 
-        // Parse SSE and convert to StreamEvent using a channel-based approach
-        let adapter = self.adapter.clone();
-        let model_id_owned = model_id.to_string();
-        let (tx, rx) = mpsc::channel::<anyhow::Result<StreamEvent>>(100);
+                // Parse SSE and convert to StreamEvent using a channel-based approach
+                let adapter = provider.adapter.clone();
+                let model_id_owned = model_id.to_string();
+                let (tx, rx) = mpsc::channel::<anyhow::Result<StreamEvent>>(100);
 
-        tokio::spawn(async move {
-            let mut sse_stream = crate::providers::transport::sse::SseParser::parse_stream(stream);
-            while let Some(result) = sse_stream.next().await {
-                // The OpenAI-style `[DONE]` sentinel and the Anthropic-style
-                // `message_stop` event (which `parse_sse_event` maps to
-                // `StreamEvent::Done`) both mark the logical end of the
-                // stream. Some providers hold the HTTP connection open
-                // (keep-alive) after emitting them instead of closing the
-                // byte stream, so relying on `sse_stream.next()` returning
-                // `None` to terminate can block forever — stalling the
-                // agentic loop and hanging `peko send` after the final
-                // token. Stop once the canonical Done has been forwarded.
-                // Usage chunks arrive *before* Done, so they are still
-                // delivered. Providers that neither emit a Done event nor
-                // close the connection will still hang; the only safe
-                // mitigation there is the per-request HTTP timeout.
-                let is_openai_done = matches!(&result, Ok(event) if event.data.trim() == "[DONE]");
+                tokio::spawn(async move {
+                    let mut sse_stream = crate::providers::transport::sse::SseParser::parse_stream(stream);
+                    while let Some(result) = sse_stream.next().await {
+                        // The OpenAI-style `[DONE]` sentinel and the Anthropic-style
+                        // `message_stop` event (which `parse_sse_event` maps to
+                        // `StreamEvent::Done`) both mark the logical end of the
+                        // stream. Some providers hold the HTTP connection open
+                        // (keep-alive) after emitting them instead of closing the
+                        // byte stream, so relying on `sse_stream.next()` returning
+                        // `None` to terminate can block forever — stalling the
+                        // agentic loop and hanging `peko send` after the final
+                        // token. Stop once the canonical Done has been forwarded.
+                        // Usage chunks arrive *before* Done, so they are still
+                        // delivered. Providers that neither emit a Done event nor
+                        // close the connection will still hang; the only safe
+                        // mitigation there is the per-request HTTP timeout.
+                        let is_openai_done = matches!(&result, Ok(event) if event.data.trim() == "[DONE]");
 
-                let output = match result {
-                    Ok(event) => match adapter.parse_sse_event(&model_id_owned, &event.data) {
-                        Ok(Some(stream_event)) => Some(Ok(stream_event)),
-                        Ok(None) => None,
-                        Err(e) => Some(Err(e)),
-                    },
-                    Err(e) => Some(Err(e)),
-                };
+                        let output = match result {
+                            Ok(event) => match adapter.parse_sse_event(&model_id_owned, &event.data) {
+                                Ok(Some(stream_event)) => Some(Ok(stream_event)),
+                                Ok(None) => None,
+                                Err(e) => Some(Err(e)),
+                            },
+                            Err(e) => Some(Err(e)),
+                        };
 
-                let is_done_event = matches!(
-                    &output,
-                    Some(Ok(crate::providers::StreamEvent::Done { .. }))
-                );
+                        let is_done_event = matches!(
+                            &output,
+                            Some(Ok(crate::providers::StreamEvent::Done { .. }))
+                        );
 
-                if let Some(event) = output {
-                    if tx.send(event).await.is_err() {
-                        break;
+                        if let Some(event) = output {
+                            if tx.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+
+                        if is_openai_done || is_done_event {
+                            break;
+                        }
                     }
-                }
+                    // tx dropped here, closing the channel
+                });
 
-                if is_openai_done || is_done_event {
-                    break;
-                }
+                Ok(Box::pin(ReceiverStream::new(rx)))
             }
-            // tx dropped here, closing the channel
-        });
-
-        Ok(Box::pin(ReceiverStream::new(rx)))
+        })
+        .await
     }
 
     /// Stream completion with events (legacy interface)
@@ -335,110 +422,118 @@ impl Provider {
         event_tx: mpsc::Sender<AgenticEvent>,
         run_id: String,
     ) -> anyhow::Result<()> {
-        let model_id_owned = self.model_id();
-        // Emit start event
-        let _ = event_tx
-            .send(AgenticEvent::Lifecycle {
-                run_id: run_id.clone(),
-                phase: LifecyclePhase::Start,
-                error: None,
-            })
-            .await;
+        self.with_auth_rotation(|provider| {
+            let provider = provider.clone();
+            let event_tx = event_tx.clone();
+            let run_id = run_id.clone();
+            async move {
+                let model_id_owned = provider.model_id();
+                // Emit start event
+                let _ = event_tx
+                    .send(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Start,
+                        error: None,
+                    })
+                    .await;
 
-        // Build simple completion request
-        let messages = vec![LlmMessage::user(prompt)];
+                // Build simple completion request
+                let messages = vec![LlmMessage::user(prompt)];
 
-        let options = ChatOptions {
-            temperature: Some(0.7),
-            max_tokens: None,
-            api_key: None,
-            headers: std::collections::HashMap::new(),
-        };
+                let options = ChatOptions {
+                    temperature: Some(0.7),
+                    max_tokens: None,
+                    api_key: None,
+                    headers: std::collections::HashMap::new(),
+                };
 
-        let (path, body) =
-            self.adapter
-                .build_request(&model_id_owned, &messages, None, &options, true)?;
+                let (path, body) = provider
+                    .adapter
+                    .build_request(&model_id_owned, &messages, None, &options, true)?;
 
-        // Emit running event
-        let _ = event_tx
-            .send(AgenticEvent::Lifecycle {
-                run_id: run_id.clone(),
-                phase: LifecyclePhase::Running,
-                error: None,
-            })
-            .await;
+                // Emit running event
+                let _ = event_tx
+                    .send(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Running,
+                        error: None,
+                    })
+                    .await;
 
-        let stream = self.client.post_stream(&path, &body).await?;
-        let mut accumulated_text = String::new();
-        let mut sequence = 0usize;
+                let stream = provider.client.post_stream(&path, &body).await?;
+                let mut accumulated_text = String::new();
+                let mut sequence = 0usize;
 
-        use futures::StreamExt;
-        let mut parser = crate::providers::transport::sse::SseParser::parse_stream(stream);
+                use futures::StreamExt;
+                let mut parser = crate::providers::transport::sse::SseParser::parse_stream(stream);
 
-        while let Some(result) = parser.next().await {
-            match result {
-                Ok(event) => match self.adapter.parse_sse_event(&model_id_owned, &event.data) {
-                    Ok(Some(StreamEvent::TextDelta { delta, .. })) => {
-                        accumulated_text.push_str(&delta);
-                        sequence += 1;
-                        let _ = event_tx
-                            .send(AgenticEvent::AssistantDelta {
-                                run_id: run_id.clone(),
-                                text: delta,
-                                sequence,
-                                is_interstitial: false,
-                            })
-                            .await;
+                while let Some(result) = parser.next().await {
+                    match result {
+                        Ok(event) => match provider.adapter.parse_sse_event(&model_id_owned, &event.data) {
+                            Ok(Some(StreamEvent::TextDelta { delta, .. })) => {
+                                accumulated_text.push_str(&delta);
+                                sequence += 1;
+                                let _ = event_tx
+                                    .send(AgenticEvent::AssistantDelta {
+                                        run_id: run_id.clone(),
+                                        text: delta,
+                                        sequence,
+                                        is_interstitial: false,
+                                    })
+                                    .await;
+                            }
+                            Ok(Some(StreamEvent::Done { .. })) => break,
+                            Ok(Some(StreamEvent::Error { message })) => {
+                                error!("Stream error: {}", message);
+                                let _ = event_tx
+                                    .send(AgenticEvent::Lifecycle {
+                                        run_id: run_id.clone(),
+                                        phase: LifecyclePhase::Error,
+                                        error: Some(message.clone()),
+                                    })
+                                    .await;
+                                return Err(anyhow::anyhow!("Stream error: {message}"));
+                            }
+                            _ => {}
+                        },
+                        Err(e) => {
+                            let err_msg = e.to_string();
+                            error!("Stream error: {}", err_msg);
+                            let _ = event_tx
+                                .send(AgenticEvent::Lifecycle {
+                                    run_id: run_id.clone(),
+                                    phase: LifecyclePhase::Error,
+                                    error: Some(err_msg),
+                                })
+                                .await;
+                            return Err(e);
+                        }
                     }
-                    Ok(Some(StreamEvent::Done { .. })) => break,
-                    Ok(Some(StreamEvent::Error { message })) => {
-                        error!("Stream error: {}", message);
-                        let _ = event_tx
-                            .send(AgenticEvent::Lifecycle {
-                                run_id: run_id.clone(),
-                                phase: LifecyclePhase::Error,
-                                error: Some(message.clone()),
-                            })
-                            .await;
-                        return Err(anyhow::anyhow!("Stream error: {message}"));
-                    }
-                    _ => {}
-                },
-                Err(e) => {
-                    let err_msg = e.to_string();
-                    error!("Stream error: {}", err_msg);
-                    let _ = event_tx
-                        .send(AgenticEvent::Lifecycle {
-                            run_id: run_id.clone(),
-                            phase: LifecyclePhase::Error,
-                            error: Some(err_msg),
-                        })
-                        .await;
-                    return Err(e);
                 }
+
+                // Emit final assistant event using new event type
+                let _ = event_tx
+                    .send(AgenticEvent::AssistantText {
+                        run_id: run_id.clone(),
+                        text: accumulated_text,
+                        sequence: sequence.saturating_add(1),
+                        is_interstitial: false, // Final answer
+                    })
+                    .await;
+
+                // Emit end event
+                let _ = event_tx
+                    .send(AgenticEvent::Lifecycle {
+                        run_id,
+                        phase: LifecyclePhase::End,
+                        error: None,
+                    })
+                    .await;
+
+                Ok(())
             }
-        }
-
-        // Emit final assistant event using new event type
-        let _ = event_tx
-            .send(AgenticEvent::AssistantText {
-                run_id: run_id.clone(),
-                text: accumulated_text,
-                sequence: sequence.saturating_add(1),
-                is_interstitial: false, // Final answer
-            })
-            .await;
-
-        // Emit end event
-        let _ = event_tx
-            .send(AgenticEvent::Lifecycle {
-                run_id,
-                phase: LifecyclePhase::End,
-                error: None,
-            })
-            .await;
-
-        Ok(())
+        })
+        .await
     }
 
     /// Legacy alias for `model_id`. Kept so older internal call sites
@@ -452,7 +547,13 @@ impl Provider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::vault::{
+        Credential, CredentialKind, RotationBinding, RotationStrategy, Vault,
+    };
     use crate::providers::adapters::openai::OpenAiAdapter;
+    use crate::providers::mock::MockAdapter;
+    use secrecy::SecretString;
+    use std::sync::Arc;
 
     fn runtime_options() -> ProviderRuntimeOptions {
         ProviderRuntimeOptions {
@@ -461,6 +562,44 @@ mod tests {
             max_retries: 3,
             retry_delay_ms: 1000,
         }
+    }
+
+    fn rotating_provider_with_two_keys() -> (tempfile::TempDir, Provider, MockAdapter) {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Arc::new(Vault::for_test(dir.path(), "rotation-test"));
+
+        let c1 = Credential::now(
+            "provider:mock",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("key-1".into()),
+        );
+        let c2 = Credential::now(
+            "provider:mock",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("key-2".into()),
+        );
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        vault.set_credential(&c1).unwrap();
+        vault.set_credential(&c2).unwrap();
+        vault
+            .set_binding(
+                &RotationBinding::slot_key("provider:mock", "default"),
+                &RotationBinding {
+                    strategy: RotationStrategy::RoundRobin,
+                    ordered_credential_ids: vec![id1, id2],
+                },
+            )
+            .unwrap();
+
+        let adapter = MockAdapter::new();
+        let rotation = RotationState::new(vault, "provider:mock".into(), "default".into()).unwrap();
+        let provider = Provider::new(AnyAdapter::Mock(adapter.clone()), "any-key", runtime_options())
+            .unwrap()
+            .with_rotation(rotation);
+        (dir, provider, adapter)
     }
 
     #[test]
@@ -489,5 +628,58 @@ mod tests {
         };
         let provider = Provider::new(adapter, "test_key", opts).unwrap();
         assert_eq!(provider.model_id(), "gpt-5-test");
+    }
+
+    #[tokio::test]
+    async fn on_401_advances_to_next_credential_and_retries() {
+        let (_dir, provider, adapter) = rotating_provider_with_two_keys();
+        adapter.queue_error("HTTP error 401: invalid key");
+        adapter.queue_text("success after rotation");
+
+        let response = provider
+            .chat_with_tools("mock-model", &[], &[], &ChatOptions::default())
+            .await
+            .unwrap();
+        let text: String = response
+            .content
+            .into_iter()
+            .filter_map(|cb| match cb {
+                ContentBlock::Text { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "success after rotation");
+
+        // Two requests were made: one that 401'd, one that succeeded.
+        assert_eq!(adapter.recorded_requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn on_all_401_returns_last_error() {
+        let (_dir, provider, adapter) = rotating_provider_with_two_keys();
+        adapter.queue_error("HTTP error 401: invalid key");
+        adapter.queue_error("HTTP error 401: still invalid");
+
+        let err = provider
+            .chat_with_tools("mock-model", &[], &[], &ChatOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("still invalid"));
+        // Two attempts: initial + one retry after rotation exhausts the
+        // two-credential binding.
+        assert_eq!(adapter.recorded_requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn non_401_error_does_not_rotate() {
+        let (_dir, provider, adapter) = rotating_provider_with_two_keys();
+        adapter.queue_error("HTTP error 429: rate limited");
+
+        let err = provider
+            .chat_with_tools("mock-model", &[], &[], &ChatOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("rate limited"));
+        assert_eq!(adapter.recorded_requests().len(), 1);
     }
 }

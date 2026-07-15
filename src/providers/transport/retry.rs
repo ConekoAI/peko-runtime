@@ -111,8 +111,12 @@ impl RetryableError for anyhow::Error {
     fn http_status(&self) -> Option<u16> {
         let msg = self.to_string();
 
-        // Try to extract status code from common error patterns
-        for code in [429u16, 500, 502, 503, 504, 408, 504] {
+        // Try to extract status code from common error patterns.
+        // 401 is included here so `RotatingAuthProvider` can detect
+        // auth failures; it is intentionally NOT in `is_retryable()`
+        // because the HTTP retry policy should not retry 401s — rotation
+        // handles them at the provider layer.
+        for code in [401u16, 429, 500, 502, 503, 504, 408, 529] {
             if msg.contains(&format!(" {code}"))
                 || msg.contains(&format!("HTTP error {code}"))
                 || msg.contains(&format!("status {code}"))

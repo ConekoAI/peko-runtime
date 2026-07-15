@@ -1441,6 +1441,51 @@ impl Vault {
             .collect())
     }
 
+    /// Look up a single rotation binding by slot key.
+    #[must_use]
+    pub fn get_binding(&self, namespace: &str, name: &str) -> Option<RotationBinding> {
+        let inner = self.inner.read().ok()?;
+        let slot_key = RotationBinding::slot_key(namespace, name);
+        inner.file.rotation_bindings.get(&slot_key).cloned()
+    }
+
+    /// Return the ordered `(credential_id, material)` pairs for a
+    /// rotation binding. If no binding exists, falls back to the single
+    /// credential at `(namespace, name)` (with an empty id, since the
+    /// non-binding path does not need per-credential test recording).
+    pub fn get_rotation_credentials(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Vec<(String, SecretString)>> {
+        let slot_key = RotationBinding::slot_key(namespace, name);
+        let inner = self
+            .inner
+            .read()
+            .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+
+        if let Some(binding) = inner.file.rotation_bindings.get(&slot_key) {
+            let mut out = Vec::with_capacity(binding.ordered_credential_ids.len());
+            for id in &binding.ordered_credential_ids {
+                if let Some(c) = inner.file.credentials.get(id) {
+                    out.push((id.clone(), c.material.clone()));
+                }
+            }
+            if !out.is_empty() {
+                return Ok(out);
+            }
+        }
+
+        // No binding (or binding referenced only missing ids). Fall back
+        // to any single credential at the slot; the id is empty because
+        // this path is not used for rotation-aware test recording.
+        drop(inner);
+        if let Some(m) = self.get_material_for(namespace, name)? {
+            return Ok(vec![(String::new(), m)]);
+        }
+        Ok(Vec::new())
+    }
+
     /// List every rotation binding currently configured.
     #[must_use]
     pub fn list_bindings(&self) -> Vec<(String, RotationBinding)> {

@@ -289,22 +289,55 @@ impl LlmResolver {
     /// env-var fallback). The adapter is constructed from the
     /// catalog entry's `api_format` and `base_url` — it does not
     /// carry a model id; the model is threaded per call.
+    ///
+    /// When the vault contains a rotation binding for
+    /// `provider:{id}:default`, the returned provider is configured
+    /// to advance to the next credential on HTTP 401 and retry.
     pub async fn build_provider(
         &self,
         entry: &ProviderCatalogEntry,
         model: &ModelInfo,
     ) -> Result<Arc<Provider>> {
-        #[cfg(any(test, feature = "test-utils"))]
-        if entry.id == "mock" {
+        let provider = if entry.id == "mock" {
+            #[cfg(any(test, feature = "test-utils"))]
             if let Some(ref adapter) = self.mock_adapter {
-                return Self::build_mock_provider(adapter.clone(), model);
+                Self::build_mock_provider(adapter.clone(), model)?
+            } else {
+                create_provider_for_entry(entry, "mock-key", model)?
+            }
+            #[cfg(not(any(test, feature = "test-utils")))]
+            create_provider_for_entry(entry, "mock-key", model)?
+        } else {
+            let api_key = self
+                .resolve_api_key(&entry.id)
+                .with_context(|| format!("no API key available for provider '{}'", entry.id))?;
+            create_provider_for_entry(entry, api_key.expose_secret(), model)?
+        };
+
+        // RP3B: attach rotation state when a binding exists for this
+        // provider's default slot.
+        if let Some(vault) = &self.vault {
+            let namespace = format!("provider:{}", entry.id);
+            if vault.get_binding(&namespace, "default").is_some() {
+                let rotation = crate::providers::rotating_auth::RotationState::new(
+                    Arc::clone(vault),
+                    namespace,
+                    "default".to_string(),
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to attach rotation state for provider '{}'",
+                        entry.id
+                    )
+                })?;
+                let provider = Arc::try_unwrap(provider)
+                    .unwrap_or_else(|p| (*p).clone())
+                    .with_rotation(rotation);
+                return Ok(Arc::new(provider));
             }
         }
 
-        let api_key = self
-            .resolve_api_key(&entry.id)
-            .with_context(|| format!("no API key available for provider '{}'", entry.id))?;
-        create_provider_for_entry(entry, api_key.expose_secret(), model)
+        Ok(provider)
     }
 
     /// Test-only helper: build a `Provider` backed by the shared mock adapter.
@@ -541,8 +574,10 @@ pub fn _model_for_entry<'a>(entry: &'a ProviderCatalogEntry) -> &'a ModelInfo {
 mod tests {
     use super::*;
     use crate::common::secret_store::InMemorySecretStore;
+    use crate::common::vault::{Credential, CredentialKind, RotationBinding, RotationStrategy};
     use crate::providers::catalog::ApiFormat;
     use crate::providers::templates;
+    use secrecy::SecretString;
     use tempfile::tempdir;
 
     async fn tempdir_catalog() -> (tempfile::TempDir, Arc<ProviderCatalog>) {
@@ -838,6 +873,157 @@ mod tests {
         let choice = r.resolve(ResolveRequest::default()).await.unwrap();
         assert_eq!(choice.entry.id, "anthropic");
         assert_eq!(choice.source, ResolveSource::RuntimeDefault);
+    }
+
+    /// RP3B: when no rotation binding exists, a 401 from the provider
+    /// is surfaced immediately — the plain provider does not retry.
+    #[tokio::test]
+    async fn build_provider_without_binding_does_not_rotate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (resolver, adapter) = LlmResolver::mock(
+            crate::providers::MockAdapter::new(),
+            tmp.path().join("providers.toml"),
+        )
+        .await;
+        let entry = resolver.catalog.get("mock").await.unwrap();
+        let model = entry.model("mock-model").unwrap().clone();
+        let provider = resolver.build_provider(&entry, &model).await.unwrap();
+
+        adapter.queue_error("HTTP error 401: invalid credentials");
+        let result = provider.chat_response("hi", "mock-model", 0.7).await;
+        assert!(result.is_err(), "expected 401 to surface without rotation");
+        assert!(
+            result.unwrap_err().to_string().contains("401"),
+            "error should mention the 401 status"
+        );
+    }
+
+    /// RP3B: with a rotation binding, a 401 advances to the next
+    /// credential and retries. The success is returned and the mock
+    /// adapter sees two attempts.
+    #[tokio::test]
+    async fn build_provider_with_binding_rotates_on_401() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (resolver, adapter) = LlmResolver::mock(
+            crate::providers::MockAdapter::new(),
+            tmp.path().join("providers.toml"),
+        )
+        .await;
+
+        let vault = resolver.vault.as_ref().unwrap();
+        let c1 = Credential::now(
+            "provider:mock",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("key-1".into()),
+        );
+        let c2 = Credential::now(
+            "provider:mock",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("key-2".into()),
+        );
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        vault.set_credential(&c1).unwrap();
+        vault.set_credential(&c2).unwrap();
+        vault
+            .set_binding(
+                &RotationBinding::slot_key("provider:mock", "default"),
+                &RotationBinding {
+                    strategy: RotationStrategy::RoundRobin,
+                    ordered_credential_ids: vec![id1, id2],
+                },
+            )
+            .unwrap();
+
+        let entry = resolver.catalog.get("mock").await.unwrap();
+        let model = entry.model("mock-model").unwrap().clone();
+        let provider = resolver.build_provider(&entry, &model).await.unwrap();
+
+        adapter.queue_error("HTTP error 401: invalid credentials");
+        adapter.queue_text("rotated success");
+
+        let result = provider.chat_response("hi", "mock-model", 0.7).await;
+        assert!(
+            result.is_ok(),
+            "expected rotation to retry and succeed: {:?}",
+            result.err()
+        );
+        let text: String = result
+            .unwrap()
+            .content
+            .into_iter()
+            .filter_map(|cb| match cb {
+                crate::providers::ContentBlock::Text { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "rotated success");
+        assert_eq!(
+            adapter.recorded_requests().len(),
+            2,
+            "rotation should have made two attempts"
+        );
+    }
+
+    /// RP3B: when every credential in the binding returns 401, the
+    /// provider surfaces the last error after one full cycle.
+    #[tokio::test]
+    async fn build_provider_with_binding_exhausts_on_all_401() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (resolver, adapter) = LlmResolver::mock(
+            crate::providers::MockAdapter::new(),
+            tmp.path().join("providers.toml"),
+        )
+        .await;
+
+        let vault = resolver.vault.as_ref().unwrap();
+        let c1 = Credential::now(
+            "provider:mock",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("key-1".into()),
+        );
+        let c2 = Credential::now(
+            "provider:mock",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("key-2".into()),
+        );
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        vault.set_credential(&c1).unwrap();
+        vault.set_credential(&c2).unwrap();
+        vault
+            .set_binding(
+                &RotationBinding::slot_key("provider:mock", "default"),
+                &RotationBinding {
+                    strategy: RotationStrategy::RoundRobin,
+                    ordered_credential_ids: vec![id1, id2],
+                },
+            )
+            .unwrap();
+
+        let entry = resolver.catalog.get("mock").await.unwrap();
+        let model = entry.model("mock-model").unwrap().clone();
+        let provider = resolver.build_provider(&entry, &model).await.unwrap();
+
+        adapter.queue_error("HTTP error 401: first credential failed");
+        adapter.queue_error("HTTP error 401: second credential failed");
+
+        let result = provider.chat_response("hi", "mock-model", 0.7).await;
+        assert!(result.is_err(), "expected exhaustion after all 401s");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("second credential failed"),
+            "last error should be from the second credential: {err}"
+        );
+        assert_eq!(
+            adapter.recorded_requests().len(),
+            2,
+            "should attempt each credential once"
+        );
     }
 
     // ensure we cover the unsupported-feature in cargo features
