@@ -61,6 +61,16 @@ pub struct RouterContext {
     /// Optional observability hub for audit/metrics. Threaded through to the
     /// root agent and the `Agent` tool so subagent spawns are auditable.
     pub observability: Option<Arc<Observability>>,
+    /// Per-message provider override (e.g. `peko send --provider ...`).
+    /// When `Some`, takes precedence over the principal's
+    /// `preferred_provider_id` and the catalog default. Resolver source
+    /// becomes `ResolveSource::ExplicitOverride`. RP2 plumbing; RP8
+    /// wires the CLI flags.
+    pub override_provider: Option<String>,
+    /// Per-message model override (`peko send --model ...`). Must name
+    /// a model declared on `override_provider`'s catalog entry, or the
+    /// resolver surfaces the actionable `unknown model` error.
+    pub override_model: Option<String>,
 }
 
 #[derive(Debug, Clone)]

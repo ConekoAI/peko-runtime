@@ -1224,7 +1224,7 @@ async fn run_principal_send(
     // two variants.
     let router_ctx = match host
         .principal_manager()
-        .build_router_context(&principal, peer.clone(), message.clone(), channel)
+        .build_router_context(&principal, peer.clone(), message.clone(), channel, None, None)
         .await
     {
         Ok(ctx) => ctx,

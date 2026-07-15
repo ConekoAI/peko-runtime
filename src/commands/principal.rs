@@ -441,7 +441,7 @@ async fn send_to_principal(name: &str, message: &str, paths: &GlobalPaths) -> Re
     };
 
     let response = manager
-        .receive(principal.id.clone(), peer, message.to_string(), channel)
+        .receive(principal.id.clone(), peer, message.to_string(), channel, None, None)
         .await
         .context("principal receive failed")?;
 
