@@ -239,6 +239,16 @@ pub enum RequestPacket {
     #[serde(rename = "credential_list")]
     CredentialList { request_id: u64 },
 
+    /// Live-ping the provider identified by `provider` with the
+    /// stored key (or no key for local providers like Ollama) and
+    /// report whether the API accepted it. Powers both
+    /// `peko credential test <provider>` and the desktop's Test
+    /// button — the existing shape-only check in
+    /// `Vault::test_provider_key` couldn't tell `sk-opena-12345`
+    /// from a real key. Mirrors `providers::validator::Validator::test`.
+    #[serde(rename = "credential_test")]
+    CredentialTest { request_id: u64, provider: String },
+
     /// Re-read the provider catalog and the credential vault from
     /// disk. Sent by `peko provider {add,remove,set-default}` and
     /// `peko credential {set,delete}` so the long-running daemon
@@ -674,6 +684,7 @@ impl RequestPacket {
             | Self::ProviderAdd { request_id, .. }
             | Self::McpReload { request_id }
             | Self::CredentialList { request_id }
+            | Self::CredentialTest { request_id, .. }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::ExtensionList { request_id, .. }
@@ -943,6 +954,23 @@ pub enum ResponsePacket {
     CredentialsListed {
         request_id: u64,
         providers: Vec<CredentialRow>,
+    },
+
+    /// Reply to [`RequestPacket::CredentialTest`]. Carries the
+    /// structured outcome so the UI can render latency + reason
+    /// without re-parsing strings. `tested_at` is an ISO-8601 UTC
+    /// stamp the validator computes at response-build time so
+    /// callers don't have to read the daemon's wall clock.
+    #[serde(rename = "credential_tested")]
+    CredentialTested {
+        request_id: u64,
+        provider: String,
+        ok: bool,
+        message: String,
+        latency_ms: u32,
+        http_status: Option<u16>,
+        model_used: Option<String>,
+        tested_at: String,
     },
 
     /// System status response
@@ -1609,6 +1637,7 @@ impl ResponsePacket {
             | Self::ProviderAdded { request_id, .. }
             | Self::McpReloaded { request_id, .. }
             | Self::CredentialsListed { request_id, .. }
+            | Self::CredentialTested { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::CapabilityGranted { request_id, .. }
             | Self::CapabilityRevoked { request_id, .. }
@@ -1680,6 +1709,7 @@ impl ResponsePacket {
             Self::ProviderAdded { .. } => "ProviderAdded",
             Self::McpReloaded { .. } => "McpReloaded",
             Self::CredentialsListed { .. } => "CredentialsListed",
+            Self::CredentialTested { .. } => "CredentialTested",
             Self::ExtensionList { .. } => "ExtensionList",
             Self::CapabilityGranted { .. } => "CapabilityGranted",
             Self::CapabilityRevoked { .. } => "CapabilityRevoked",
@@ -2351,7 +2381,10 @@ mod tests {
         let req = RequestPacket::ProviderTemplates { request_id: 911 };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("provider_templates"));
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("provider_templates")
+        );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(911));
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -2387,7 +2420,10 @@ mod tests {
         };
         let bytes = resp.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("provider_templates"));
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("provider_templates")
+        );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(912));
 
         let providers = json
@@ -2400,22 +2436,49 @@ mod tests {
         // projection reads in `provider_admin.rs`.
         let p = &providers[0];
         assert_eq!(p.get("id").and_then(|v| v.as_str()), Some("anthropic"));
-        assert_eq!(p.get("display_name").and_then(|v| v.as_str()), Some("Anthropic"));
-        assert_eq!(p.get("api_type").and_then(|v| v.as_str()), Some("anthropic"));
-        assert_eq!(p.get("base_url").and_then(|v| v.as_str()), Some("https://api.anthropic.com"));
+        assert_eq!(
+            p.get("display_name").and_then(|v| v.as_str()),
+            Some("Anthropic")
+        );
+        assert_eq!(
+            p.get("api_type").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
+        assert_eq!(
+            p.get("base_url").and_then(|v| v.as_str()),
+            Some("https://api.anthropic.com")
+        );
         assert_eq!(p.get("requires_key").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(p.get("default_model").and_then(|v| v.as_str()), Some("claude-sonnet-4-5"));
+        assert_eq!(
+            p.get("default_model").and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-5")
+        );
 
-        let models = p.get("models").and_then(|v| v.as_array()).expect("models array");
+        let models = p
+            .get("models")
+            .and_then(|v| v.as_array())
+            .expect("models array");
         assert_eq!(models.len(), 1);
         let m = &models[0];
-        assert_eq!(m.get("id").and_then(|v| v.as_str()), Some("claude-sonnet-4-5"));
-        assert_eq!(m.get("context_length").and_then(|v| v.as_u64()), Some(200_000));
-        assert_eq!(m.get("max_output_tokens").and_then(|v| v.as_u64()), Some(8_192));
+        assert_eq!(
+            m.get("id").and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-5")
+        );
+        assert_eq!(
+            m.get("context_length").and_then(|v| v.as_u64()),
+            Some(200_000)
+        );
+        assert_eq!(
+            m.get("max_output_tokens").and_then(|v| v.as_u64()),
+            Some(8_192)
+        );
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ProviderTemplates { request_id, providers } => {
+            ResponsePacket::ProviderTemplates {
+                request_id,
+                providers,
+            } => {
                 assert_eq!(request_id, 912);
                 assert_eq!(providers.len(), 1);
                 assert_eq!(providers[0].id, "anthropic");
@@ -2451,14 +2514,25 @@ mod tests {
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("provider_add"));
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("provider_add")
+        );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(913));
 
-        let args = json.get("args").expect("response should have an args object");
-        assert_eq!(args.get("template").and_then(|v| v.as_str()), Some("anthropic"));
+        let args = json
+            .get("args")
+            .expect("response should have an args object");
+        assert_eq!(
+            args.get("template").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
         assert_eq!(args.get("custom").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(args.get("key").and_then(|v| v.as_str()), Some("sk-test"));
-        assert_eq!(args.get("set_default").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            args.get("set_default").and_then(|v| v.as_bool()),
+            Some(true)
+        );
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
@@ -2494,18 +2568,38 @@ mod tests {
         };
         let bytes = resp.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("provider_added"));
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("provider_added")
+        );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(914));
 
-        let provider = json.get("provider").expect("response should have a provider object");
-        assert_eq!(provider.get("id").and_then(|v| v.as_str()), Some("anthropic"));
-        assert_eq!(provider.get("display_name").and_then(|v| v.as_str()), Some("Anthropic"));
-        assert_eq!(provider.get("api_type").and_then(|v| v.as_str()), Some("anthropic"));
-        assert_eq!(provider.get("requires_key").and_then(|v| v.as_bool()), Some(true));
+        let provider = json
+            .get("provider")
+            .expect("response should have a provider object");
+        assert_eq!(
+            provider.get("id").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
+        assert_eq!(
+            provider.get("display_name").and_then(|v| v.as_str()),
+            Some("Anthropic")
+        );
+        assert_eq!(
+            provider.get("api_type").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
+        assert_eq!(
+            provider.get("requires_key").and_then(|v| v.as_bool()),
+            Some(true)
+        );
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ProviderAdded { request_id, provider } => {
+            ResponsePacket::ProviderAdded {
+                request_id,
+                provider,
+            } => {
                 assert_eq!(request_id, 914);
                 assert_eq!(provider.id, "anthropic");
                 assert!(provider.requires_key);
@@ -2599,10 +2693,7 @@ mod tests {
                 assert_eq!(request_id, 603);
                 assert_eq!(principal.name, "alice");
                 assert_eq!(principal.agent_prompt_count, 1);
-                assert_eq!(
-                    principal.description.as_deref(),
-                    Some("personal assistant")
-                );
+                assert_eq!(principal.description.as_deref(), Some("personal assistant"));
             }
             _ => panic!("Wrong variant"),
         }
@@ -2616,7 +2707,10 @@ mod tests {
         let req = RequestPacket::CredentialList { request_id: 901 };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("credential_list"));
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("credential_list")
+        );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(901));
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -2648,18 +2742,123 @@ mod tests {
         };
         let bytes = resp.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("credentials_listed"));
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("credentials_listed")
+        );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(902));
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::CredentialsListed { request_id, providers } => {
+            ResponsePacket::CredentialsListed {
+                request_id,
+                providers,
+            } => {
                 assert_eq!(request_id, 902);
                 assert_eq!(providers.len(), 2);
                 assert_eq!(providers[0].provider, "minimax");
                 assert!(providers[0].has_key);
                 assert_eq!(providers[1].provider, "openai");
                 assert!(!providers[1].has_key);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_credential_test_request_roundtrip() {
+        // Live-credential-test wire shape (peko-runtime#193, the
+        // counterpart to `credential_list`). Pin `type`, `provider`,
+        // and `request_id` round-trip so the desktop's Tauri command
+        // can project the fields by name.
+        let req = RequestPacket::CredentialTest {
+            request_id: 911,
+            provider: "minimax".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("credential_test")
+        );
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(911));
+        assert_eq!(
+            json.get("provider").and_then(|v| v.as_str()),
+            Some("minimax")
+        );
+
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::CredentialTest {
+                request_id,
+                provider,
+            } => {
+                assert_eq!(request_id, 911);
+                assert_eq!(provider, "minimax");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_credential_tested_response_roundtrip() {
+        let resp = ResponsePacket::CredentialTested {
+            request_id: 912,
+            provider: "anthropic".to_string(),
+            ok: false,
+            message: "HTTP 401: invalid api key".to_string(),
+            latency_ms: 187,
+            http_status: Some(401),
+            model_used: Some("claude-haiku-4-5".to_string()),
+            tested_at: "2026-07-15T11:48:00Z".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("credential_tested")
+        );
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(912));
+        assert_eq!(
+            json.get("provider").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
+        assert_eq!(json.get("ok").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            json.get("message").and_then(|v| v.as_str()),
+            Some("HTTP 401: invalid api key")
+        );
+        assert_eq!(json.get("latency_ms").and_then(|v| v.as_u64()), Some(187));
+        assert_eq!(json.get("http_status").and_then(|v| v.as_u64()), Some(401));
+        assert_eq!(
+            json.get("model_used").and_then(|v| v.as_str()),
+            Some("claude-haiku-4-5")
+        );
+        assert_eq!(
+            json.get("tested_at").and_then(|v| v.as_str()),
+            Some("2026-07-15T11:48:00Z")
+        );
+
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::CredentialTested {
+                request_id,
+                provider,
+                ok,
+                message,
+                latency_ms,
+                http_status,
+                model_used,
+                tested_at,
+            } => {
+                assert_eq!(request_id, 912);
+                assert_eq!(provider, "anthropic");
+                assert!(!ok);
+                assert_eq!(message, "HTTP 401: invalid api key");
+                assert_eq!(latency_ms, 187);
+                assert_eq!(http_status, Some(401));
+                assert_eq!(model_used.as_deref(), Some("claude-haiku-4-5"));
+                assert_eq!(tested_at, "2026-07-15T11:48:00Z");
             }
             _ => panic!("Wrong variant"),
         }

@@ -2591,6 +2591,36 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
     }
 }
 
+// Live-credential-test companion to [`CredentialHost`]. Powers
+// `peko credential test <provider>` and the desktop Test button —
+// the existing `Vault::test_provider_key` shape-only check can't
+// tell `sk-opena-12345` from a real key, so this hands the stored
+// key to the validator which pings the real provider API. Look up
+// the catalog entry and (if the entry requires one) the stored key,
+// then delegate to `providers::validator::Validator::test`.
+#[async_trait::async_trait]
+impl crate::ipc::handlers::credential::CredentialTestLiveHost for AppState {
+    async fn test_credential_live(
+        &self,
+        provider: &str,
+    ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
+        let entry = self
+            .resolver
+            .catalog()
+            .get(provider)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("unknown provider: {provider}"))?;
+        let key = if entry.requires_key {
+            Some(self.vault.get_provider_key(provider).ok_or_else(|| {
+                anyhow::anyhow!("no key stored for '{provider}'")
+            })?)
+        } else {
+            None
+        };
+        Ok(crate::providers::validator::Validator::test(&entry, key.as_ref()).await)
+    }
+}
+
 /// F7 twelfth narrow handle: the port the `principal` IPC domain
 /// handler uses. Trait lives in `ipc::handlers::principal`. Most
 /// methods are sync (cheap references / `Arc` clones / `PathBuf`

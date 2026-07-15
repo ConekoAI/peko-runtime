@@ -23,6 +23,7 @@ pub mod synthetic_stream;
 pub mod templates;
 pub mod transport;
 pub mod types;
+pub mod validator;
 
 // Re-export commonly used types
 pub use adapters::{
@@ -34,10 +35,10 @@ pub use catalog::{
 };
 pub use core::Provider;
 pub use metered::MeteredProvider;
-pub use stacked_metered::StackedMeteredProvider;
 pub use mock::{MockAdapter, MockResponse};
 pub use registry::{create_provider, get_provider_metadata, list_providers, ProviderRegistry};
 pub use resolver::{KeyProbeReport, LlmResolver, ResolveRequest, ResolveSource, ResolvedChoice};
+pub use stacked_metered::StackedMeteredProvider;
 pub use templates::{find_template, iter_templates, ModelTemplate, ProviderTemplate};
 pub use transport::{AuthConfig, HttpClient, SseParser};
 pub use types::{
