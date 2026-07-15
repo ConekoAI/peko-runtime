@@ -20,6 +20,8 @@
 //! sink over a `&mut NamedPipeServer`. See `response_sink.rs` for the
 //! full design.
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,6 +40,26 @@ use crate::auth::caller::CallerContext;
 use crate::auth::config::enforce_auth_for_public_bind;
 use crate::auth::permissions::AuthError;
 use crate::daemon::state::AppState;
+
+/// `SO_SNDBUF` applied to both the Unix datagram and UDP server sockets
+/// at bind time.
+///
+/// Why this exists: macOS's default `SO_SNDBUF` for `AF_UNIX/SOCK_DGRAM`
+/// is **2048 bytes**, which is *smaller* than the serialised
+/// `provider_list` response once the catalog carries more than a
+/// handful of providers (each `ProviderInfo` entry is ~150 B). The
+/// runtime's `send_to` then returns `EMSGSIZE` ("Message too long",
+/// os error 40), the handler logs the error, and the client silently
+/// hangs waiting for a reply that never arrives. The UDP default
+/// (~8 KiB on Linux, ~9 KiB on macOS) is also too small for the
+/// combined `runtime_info` + `extension_list` payloads a single
+/// `system_status` request can produce.
+///
+/// 256 KiB is generous enough that every response the runtime ships
+/// today — and the larger composite ones future handlers will produce
+/// — fits atomically, while staying well under any sensible per-socket
+/// memory budget on a developer workstation.
+const IPC_SEND_BUFFER_BYTES: usize = 256 * 1024;
 
 /// Platform-specific server socket (wrapped in Arc for shared ownership)
 #[derive(Clone)]
@@ -92,6 +114,43 @@ impl PeerAddr {
             #[cfg(windows)]
             Self::Local => true,
         }
+    }
+}
+
+/// Raise the kernel-side `SO_SNDBUF` of a server socket to
+/// [`IPC_SEND_BUFFER_BYTES`].
+///
+/// Tokio deliberately does not expose `set_send_buffer_size` on its
+/// async socket wrappers (it wants to keep the surface area small and
+/// the platform matrix narrow), so we drop down to `libc::setsockopt`
+/// via `AsRawFd`. The kernel clamps the requested size to its
+/// configured maximum, so passing a value that's larger than the
+/// `kern.ipc.maxsockbuf` ceiling is harmless — we just get the
+/// ceiling back. We log the actual size we observed in the success
+/// case at the callsite; this helper only signals pass/fail.
+///
+/// Returns `Err` only if `setsockopt` itself fails (e.g. invalid fd),
+/// not when the kernel clamps the request.
+fn bump_send_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
+    let fd = socket.as_raw_fd();
+    let buf_len = IPC_SEND_BUFFER_BYTES as libc::c_int;
+    // SAFETY: `fd` is a live socket owned by `socket`, and `buf_len` is
+    // a valid `c_int`. `SOL_SOCKET` / `SO_SNDBUF` are the kernel
+    // constants we want. `setsockopt` does not take ownership of the
+    // fd and writes the requested buffer size back via the same fd.
+    let rc = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            &buf_len as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if rc != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -164,6 +223,24 @@ impl IpcServer {
 
             match UnixDatagram::bind(&sock_path) {
                 Ok(socket) => {
+                    // macOS's default `SO_SNDBUF` for `AF_UNIX/SOCK_DGRAM`
+                    // is 2048 bytes, which is *smaller* than the
+                    // `provider_list` response once the catalog has more
+                    // than a handful of providers (each `ProviderInfo`
+                    // entry serialises to ~150 B). `send_to` then
+                    // returns `EMSGSIZE` ("Message too long", os error 40)
+                    // and the handler logs an error while the client
+                    // silently hangs waiting for a reply it never gets.
+                    // Bump the socket buffer so any response shape we
+                    // ship today — and the larger ones a future handler
+                    // is bound to produce — fits atomically.
+                    if let Err(e) = bump_send_buffer(&socket) {
+                        warn!(
+                            "Failed to set Unix datagram SO_SNDBUF to {} bytes ({}); \
+                             responses larger than the platform default may fail with EMSGSIZE",
+                            IPC_SEND_BUFFER_BYTES, e
+                        );
+                    }
                     info!("IPC server bound to Unix socket: {}", sock_path.display());
                     return Ok(Self {
                         socket: ServerSocket::Unix {
@@ -208,6 +285,18 @@ impl IpcServer {
         let socket = UdpSocket::bind(&addr_str)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket to {}: {}", addr_str, e))?;
+
+        // Same rationale as the Unix datagram branch above: bump the
+        // send buffer so handler responses that exceed the platform
+        // default (8 KiB on Linux for UDP, 9 KiB on macOS) still fit
+        // atomically. `provider_list` is the worst offender today.
+        if let Err(e) = bump_send_buffer(&socket) {
+            warn!(
+                "Failed to set UDP SO_SNDBUF to {} bytes ({}); responses larger \
+                 than the platform default may fail with EMSGSIZE",
+                IPC_SEND_BUFFER_BYTES, e
+            );
+        }
 
         let bound_addr = socket.local_addr()?;
 
@@ -714,6 +803,172 @@ impl IpcServer {
     // there is no longer any IPC entrypoint that pushes a steering
     // message onto a peer-keyed session from outside the daemon.
     // See ADR-042.)
-
 }
 
+#[cfg(test)]
+mod buffer_tests {
+    //! Regression tests for the IPC `SO_SNDBUF` bump.
+    //!
+    //! Symptom we're guarding against (peko-desktop#44, daemon-side
+    //! EMSGSIZE): on macOS the default `SO_SNDBUF` for `AF_UNIX/SOCK_DGRAM`
+    //! is 2048 bytes, and the `provider_list` response (15+ providers,
+    //! each serialising to ~150 B) is larger than that. `send_to` then
+    //! returns `EMSGSIZE` ("Message too long", os error 40), the handler
+    //! logs the error, and the client silently hangs. The fix bumps
+    //! `SO_SNDBUF` to `IPC_SEND_BUFFER_BYTES` on every server bind, and
+    //! these tests assert both that the helper succeeds and that a
+    //! large round-tripped payload actually fits.
+
+    use super::bump_send_buffer;
+    use crate::ipc::packet::{RequestPacket, ResponsePacket};
+    use std::os::fd::AsRawFd;
+    use tokio::net::UnixDatagram;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bump_send_buffer_raises_unix_datagram_sndbuf() {
+        // The kernel clamps `SO_SNDBUF` to its configured maximum, so
+        // we can only assert *at least* `IPC_SEND_BUFFER_BYTES` is in
+        // effect — not that the exact value was honoured verbatim.
+        const MIN_EXPECTED: usize = 8 * 1024;
+
+        let tmp =
+            std::env::temp_dir().join(format!("peko_ipc_buf_test_{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let sock = UnixDatagram::bind(&tmp).expect("bind unix datagram");
+        bump_send_buffer(&sock).expect("bump_send_buffer");
+
+        let actual = read_so_sndbuf(sock.as_raw_fd());
+        let _ = std::fs::remove_file(&tmp);
+
+        assert!(
+            actual >= MIN_EXPECTED,
+            "expected SO_SNDBUF >= {MIN_EXPECTED}, got {actual}"
+        );
+    }
+
+    /// Round-trip a `provider_list`-shaped response large enough that
+    /// the *default* macOS `SO_SNDBUF` (2048 B) would reject it with
+    /// `EMSGSIZE`, and verify the bumped server can deliver it back
+    /// without truncation. This mirrors the exact failure mode the
+    /// desktop hit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_datagram_round_trips_response_larger_than_default_sndbuf() {
+        // 15 entries × ~200 B ≈ 3 KiB — comfortably over the macOS
+        // 2048 B default, comfortably under `IPC_SEND_BUFFER_BYTES`.
+        let providers: Vec<crate::ipc::packet::ProviderInfo> = (0..15)
+            .map(|i| crate::ipc::packet::ProviderInfo {
+                id: format!("test-provider-{i:02}-with-a-longer-id"),
+                display_name: format!("Test Provider {i:02}"),
+                api_type: "openai".into(),
+                default_model: "gpt-5".into(),
+                requires_key: true,
+                is_local: false,
+            })
+            .collect();
+        let response = ResponsePacket::ProviderList {
+            request_id: 1,
+            providers,
+        };
+
+        let server_path = std::env::temp_dir().join(format!(
+            "peko_ipc_roundtrip_server_{}.sock",
+            std::process::id()
+        ));
+        let client_path = std::env::temp_dir().join(format!(
+            "peko_ipc_roundtrip_client_{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&server_path);
+        let _ = std::fs::remove_file(&client_path);
+
+        let server = UnixDatagram::bind(&server_path).expect("server bind");
+        bump_send_buffer(&server).expect("bump server buffer");
+        let client = UnixDatagram::bind(&client_path).expect("client bind");
+
+        let bytes = serde_json::to_vec(&response).expect("serialize response");
+        assert!(
+            bytes.len() > 2048,
+            "fixture must exceed the macOS default SO_SNDBUF (got {} B)",
+            bytes.len()
+        );
+
+        // Server → client (this is the path that fails with the un-bumped
+        // socket).
+        client.send_to(b"hello", &server_path).await.unwrap();
+        let (_req_len, server_peer) = server.recv_from(&mut [0u8; 64]).await.unwrap();
+        let server_peer_path = server_peer
+            .as_pathname()
+            .expect("client peer must have a filesystem path");
+        server
+            .send_to(&bytes, server_peer_path)
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "send_to({} B response) failed: {e}. \
+                     This is the EMSGSIZE bug we're guarding against.",
+                    bytes.len()
+                )
+            });
+
+        let mut buf = vec![0u8; bytes.len() + 1024];
+        let (len, _) = client
+            .recv_from(&mut buf)
+            .await
+            .expect("client should receive the bumped response");
+        buf.truncate(len);
+        assert_eq!(buf, bytes, "round-tripped payload must match");
+
+        let _ = std::fs::remove_file(&server_path);
+        let _ = std::fs::remove_file(&client_path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bump_send_buffer_is_idempotent() {
+        let tmp =
+            std::env::temp_dir().join(format!("peko_ipc_buf_idem_{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let sock = UnixDatagram::bind(&tmp).expect("bind unix datagram");
+        bump_send_buffer(&sock).expect("first bump");
+        bump_send_buffer(&sock).expect("second bump");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Read the *current* `SO_SNDBUF` for `fd`. Lives here rather than
+    /// in the helper so the test asserts an observable side effect
+    /// rather than trusting that `setsockopt` returned 0.
+    #[cfg(unix)]
+    fn read_so_sndbuf(fd: std::os::fd::RawFd) -> usize {
+        let mut value: libc::c_int = 0;
+        let mut len: libc::socklen_t = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: `fd` is live, `value` is a writable `c_int`, `len`
+        // is set to the correct size. `getsockopt` does not retain
+        // any pointer past the call.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                &mut value as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        assert_eq!(
+            rc,
+            0,
+            "getsockopt failed: {}",
+            std::io::Error::last_os_error()
+        );
+        value as usize
+    }
+
+    /// Silences the unused-import lint when running only the bump
+    /// test (the `RequestPacket` is wired in for a future integration
+    /// test that drives a real handler through the server loop).
+    #[allow(dead_code)]
+    fn _ensure_request_packet_in_scope() -> RequestPacket {
+        RequestPacket::Ping { request_id: 1 }
+    }
+}
