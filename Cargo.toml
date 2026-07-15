@@ -88,7 +88,7 @@ rpassword = "7.3"
 # Secret manager dependencies
 hkdf = "0.12"
 keyring = "2.3"
-secrecy = "0.10"
+secrecy = { version = "0.10", features = ["serde"] }
 
 # Image building
 walkdir = "2.5"

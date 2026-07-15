@@ -50,15 +50,17 @@ use aes_gcm::{
 };
 use anyhow::{Context, Result};
 use argon2::Argon2;
+use chrono::{DateTime, Utc};
 use rand::RngCore;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::info;
+use uuid::Uuid;
 
 /// On-disk vault filename.
 pub const VAULT_FILE_NAME: &str = "vault.enc";
@@ -180,17 +182,113 @@ pub struct VaultEnvelope {
 }
 
 /// Plaintext vault contents.
+///
+/// `version == 2` is the generic-credential schema (RP3A). The
+/// envelope version (`VaultEnvelope::version`) stays at 1 because
+/// only the plaintext structure changed, not the encryption
+/// envelope.
+///
+/// A `VaultFileV1` (`{ version: 1, entries: HashMap<String, VaultEntry> }`)
+/// is deserialized only during migration. After v1→v2 conversion,
+/// `legacy_entries` is empty and the data lives under
+/// `credentials`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultFile {
     pub version: u32,
-    pub entries: HashMap<String, VaultEntry>,
+    /// Generic credential records keyed by `Credential::id`.
+    #[serde(default)]
+    pub credentials: BTreeMap<String, Credential>,
+    /// Rotation bindings keyed by `{namespace}:{name}`.
+    #[serde(default)]
+    pub rotation_bindings: BTreeMap<String, RotationBinding>,
+    /// Legacy v1 entries preserved for backward-compat decoding.
+    /// Empty after migration; serialization uses a custom impl that
+    /// skips empty maps so v2-on-disk files never write this field.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub legacy_entries: HashMap<String, VaultEntry>,
 }
 
 impl Default for VaultFile {
     fn default() -> Self {
         Self {
-            version: VAULT_VERSION,
-            entries: HashMap::new(),
+            version: 2,
+            credentials: BTreeMap::new(),
+            rotation_bindings: BTreeMap::new(),
+            legacy_entries: HashMap::new(),
+        }
+    }
+}
+
+/// On-disk shape of a v1 vault file, kept only for one-time migration
+/// when an existing user's vault predates the generic-credential
+/// schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VaultFileV1 {
+    pub version: u32,
+    pub entries: HashMap<String, VaultEntry>,
+}
+
+impl VaultFileV1 {
+    /// Convert a v1 file to v2 in memory: walk `entries`, build a
+    /// `Credential` for each via the per-variant `from_legacy_*`
+    /// constructors, and stash the originals in `legacy_entries` for
+    /// any consumer that still wants to read them back. After this
+    /// returns, the resulting `VaultFile` is a valid v2 file.
+    fn into_v2(self) -> VaultFile {
+        let mut credentials = BTreeMap::new();
+        for (legacy_key, entry) in &self.entries {
+            if let Some(c) = Self::credential_from_legacy(legacy_key, entry) {
+                credentials.insert(c.id.clone(), c);
+            }
+        }
+        VaultFile {
+            version: 2,
+            credentials,
+            rotation_bindings: BTreeMap::new(),
+            legacy_entries: self.entries,
+        }
+    }
+
+    fn credential_from_legacy(legacy_key: &str, entry: &VaultEntry) -> Option<Credential> {
+        match entry {
+            VaultEntry::ProviderApiKey { provider, key } => {
+                Some(Credential::from_legacy_provider_key(provider, key, legacy_key))
+            }
+            VaultEntry::RegistryToken {
+                host,
+                token,
+                namespace,
+            } => Some(Credential::from_legacy_registry_token(
+                host,
+                token,
+                namespace.as_deref(),
+                legacy_key,
+            )),
+            VaultEntry::IdentityPrivateKey {
+                key_id,
+                algorithm,
+                key,
+            } => Some(Credential::from_legacy_identity_key(
+                key_id, algorithm, key, legacy_key,
+            )),
+            VaultEntry::TunnelPrivateKey { runtime_id, key } => {
+                Some(Credential::from_legacy_tunnel_key(runtime_id, key, legacy_key))
+            }
+            VaultEntry::OAuthToken {
+                server,
+                access_token,
+                refresh_token,
+                expires_at,
+            } => Some(Credential::from_legacy_oauth_token(
+                server,
+                access_token,
+                refresh_token.as_deref(),
+                *expires_at,
+                legacy_key,
+            )),
+            VaultEntry::Secret { value } => {
+                Some(Credential::from_legacy_secret(value, legacy_key))
+            }
         }
     }
 }
@@ -242,6 +340,404 @@ pub struct OAuthTokenEntry {
     /// Optional Unix timestamp when the access token expires.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+}
+
+/// Generic credential kind — discriminates how a credential's material
+/// is to be interpreted by consumers.
+///
+/// `Copy` so it can be used in filter structs and passed by value
+/// without ceremony. `#[serde(rename_all = "snake_case")]` matches the
+/// CLI's `--kind` argument spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialKind {
+    /// Static API key (`sk-...`, `sk-ant-...`, etc.) for an LLM
+    /// provider or HTTP API.
+    ApiKey,
+    /// Bearer token for HTTP `Authorization: Bearer <material>`.
+    BearerToken,
+    /// OAuth access token (with optional `refresh_token` /
+    /// `expires_at` in the metadata blob).
+    OAuthToken,
+    /// HTTP basic auth (`username:password` joined with a colon;
+    /// the username lives in `metadata.username`).
+    BasicAuth,
+    /// Cryptographic private key (identity, tunnel, signing).
+    PrivateKey,
+    /// Generic fallback for secrets that don't fit any of the
+    /// above kinds.
+    GenericSecret,
+}
+
+impl CredentialKind {
+    /// Stable lowercase wire form (matches the serde rename).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ApiKey => "api_key",
+            Self::BearerToken => "bearer_token",
+            Self::OAuthToken => "oauth_token",
+            Self::BasicAuth => "basic_auth",
+            Self::PrivateKey => "private_key",
+            Self::GenericSecret => "generic_secret",
+        }
+    }
+}
+
+/// A single stored credential in the generic vault.
+///
+/// One credential = one (namespace, name) slot holding a piece of
+/// secret material. Multiple credentials can share a `(namespace,
+/// name)` pair — they're picked up by a [`RotationBinding`] and
+/// tried in order on 401 (RP3B wires the swap; RP3A wires the
+/// storage).
+///
+/// `id` is a UUID v4 generated on first write. When a legacy
+/// v1 entry is migrated, the id is a UUID v5 derived from the
+/// legacy entry key for stability across reloads.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Credential {
+    /// Stable UUID identifying this credential. Used as the key in
+    /// `VaultFile::credentials` and as the member of
+    /// `RotationBinding::ordered_credential_ids`.
+    pub id: String,
+    /// Namespace, e.g. `provider:openai`, `mcp:analytics`,
+    /// `registry:pekohub.ai`, `oauth:myremote`, `identity`,
+    /// `tunnel`, `secret`.
+    pub namespace: String,
+    /// Slot name within the namespace. Most credentials are
+    /// `default`; rotation scenarios add `alt-1`, `alt-2`, etc.
+    pub name: String,
+    /// Discriminator for how the material is to be consumed.
+    pub kind: CredentialKind,
+    /// Free-form per-kind metadata (OAuth `refresh_token` /
+    /// `expires_at`, BasicAuth `username`, PrivateKey `algorithm`,
+    /// etc.). The schema is enforced at the validator / set
+    /// sites, not the type system.
+    #[serde(default = "serde_json::Value::default")]
+    pub metadata: serde_json::Value,
+    /// The secret itself. Stored in memory as a [`SecretString`] so
+    /// it doesn't leak into Debug / Display / log lines. Serialized
+    /// to plain JSON via a custom helper that unwraps the secret
+    /// during (de)serialization only — never log this field.
+    #[serde(
+        serialize_with = "serialize_secret_string",
+        deserialize_with = "deserialize_secret_string"
+    )]
+    pub material: SecretString,
+    /// When this credential was first written.
+    pub created_at: DateTime<Utc>,
+    /// When the material was last overwritten.
+    pub updated_at: DateTime<Utc>,
+    /// When `peko credential test <id>` (or its desktop equivalent)
+    /// last verified this credential.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tested_at: Option<DateTime<Utc>>,
+    /// Result of the last test (`true` = ok, `false` = validation
+    /// / network failure). `None` until the first test runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tested_ok: Option<bool>,
+}
+
+/// Custom serde for the `material: SecretString` field. We unwrap
+/// the secret on the way in and out so the on-disk format is
+/// identical to a plain `String`. The on-disk vault is itself
+/// encrypted, so this isn't a security regression vs. the old
+/// `VaultEntry::ProviderApiKey { key: String }` layout.
+fn serialize_secret_string<S>(secret: &SecretString, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(secret.expose_secret())
+}
+
+fn deserialize_secret_string<'de, D>(deserializer: D) -> Result<SecretString, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(SecretString::new(s.into()))
+}
+
+impl Credential {
+    /// Generate a fresh UUID v4 for a new credential.
+    pub fn generate_id() -> String {
+        Uuid::new_v4().to_string()
+    }
+
+    /// Build a credential for the current moment.
+    pub fn now(
+        namespace: impl Into<String>,
+        name: impl Into<String>,
+        kind: CredentialKind,
+        material: SecretString,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Self::generate_id(),
+            namespace: namespace.into(),
+            name: name.into(),
+            kind,
+            metadata: serde_json::Value::Null,
+            material,
+            created_at: now,
+            updated_at: now,
+            last_tested_at: None,
+            last_tested_ok: None,
+        }
+    }
+
+    /// Deterministic UUID v5 from a legacy entry key. Used during
+    /// v1→v2 migration so the same legacy entry always produces the
+    /// same credential id across reloads.
+    fn legacy_id(legacy_key: &str) -> String {
+        Uuid::new_v5(
+            &Uuid::NAMESPACE_OID,
+            format!("peko-vault-legacy:{legacy_key}").as_bytes(),
+        )
+        .to_string()
+    }
+
+    /// Migrate a legacy `ProviderApiKey` entry to a Credential.
+    fn from_legacy_provider_key(provider: &str, key: &str, legacy_key: &str) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Self::legacy_id(legacy_key),
+            namespace: format!("provider:{provider}"),
+            name: "default".to_string(),
+            kind: CredentialKind::ApiKey,
+            metadata: serde_json::Value::Null,
+            material: SecretString::new(key.to_string().into()),
+            created_at: now,
+            updated_at: now,
+            last_tested_at: None,
+            last_tested_ok: None,
+        }
+    }
+
+    /// Migrate a legacy `RegistryToken` entry.
+    fn from_legacy_registry_token(
+        host: &str,
+        token: &str,
+        namespace: Option<&str>,
+        legacy_key: &str,
+    ) -> Self {
+        let now = Utc::now();
+        let metadata = namespace
+            .map(|ns| serde_json::json!({ "namespace": ns }))
+            .unwrap_or(serde_json::Value::Null);
+        Self {
+            id: Self::legacy_id(legacy_key),
+            namespace: format!("registry:{host}"),
+            name: "default".to_string(),
+            kind: CredentialKind::BearerToken,
+            metadata,
+            material: SecretString::new(token.to_string().into()),
+            created_at: now,
+            updated_at: now,
+            last_tested_at: None,
+            last_tested_ok: None,
+        }
+    }
+
+    /// Migrate a legacy `IdentityPrivateKey` entry.
+    fn from_legacy_identity_key(key_id: &str, algorithm: &str, key: &str, legacy_key: &str) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Self::legacy_id(legacy_key),
+            namespace: "identity".to_string(),
+            name: key_id.to_string(),
+            kind: CredentialKind::PrivateKey,
+            metadata: serde_json::json!({ "algorithm": algorithm }),
+            material: SecretString::new(key.to_string().into()),
+            created_at: now,
+            updated_at: now,
+            last_tested_at: None,
+            last_tested_ok: None,
+        }
+    }
+
+    /// Migrate a legacy `TunnelPrivateKey` entry.
+    fn from_legacy_tunnel_key(runtime_id: &str, key: &str, legacy_key: &str) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Self::legacy_id(legacy_key),
+            namespace: "tunnel".to_string(),
+            name: runtime_id.to_string(),
+            kind: CredentialKind::PrivateKey,
+            metadata: serde_json::Value::Null,
+            material: SecretString::new(key.to_string().into()),
+            created_at: now,
+            updated_at: now,
+            last_tested_at: None,
+            last_tested_ok: None,
+        }
+    }
+
+    /// Migrate a legacy `OAuthToken` entry.
+    fn from_legacy_oauth_token(
+        server: &str,
+        access_token: &str,
+        refresh_token: Option<&str>,
+        expires_at: Option<i64>,
+        legacy_key: &str,
+    ) -> Self {
+        let now = Utc::now();
+        let mut metadata = serde_json::Map::new();
+        if let Some(rt) = refresh_token {
+            metadata.insert("refresh_token".to_string(), serde_json::Value::String(rt.to_string()));
+        }
+        if let Some(exp) = expires_at {
+            metadata.insert("expires_at".to_string(), serde_json::Value::Number(exp.into()));
+        }
+        Self {
+            id: Self::legacy_id(legacy_key),
+            namespace: format!("oauth:{server}"),
+            name: "default".to_string(),
+            kind: CredentialKind::OAuthToken,
+            metadata: serde_json::Value::Object(metadata),
+            material: SecretString::new(access_token.to_string().into()),
+            created_at: now,
+            updated_at: now,
+            last_tested_at: None,
+            last_tested_ok: None,
+        }
+    }
+
+    /// Migrate a legacy generic `Secret` entry. The legacy
+    /// storage lost the original key (only `value` was kept), so
+    /// the legacy entry key from the surrounding `HashMap` is used
+    /// as the credential `name` to preserve whatever grouping the
+    /// caller originally intended.
+    fn from_legacy_secret(value: &str, legacy_key: &str) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Self::legacy_id(legacy_key),
+            namespace: "secret".to_string(),
+            name: legacy_key.to_string(),
+            kind: CredentialKind::GenericSecret,
+            metadata: serde_json::Value::Null,
+            material: SecretString::new(value.to_string().into()),
+            created_at: now,
+            updated_at: now,
+            last_tested_at: None,
+            last_tested_ok: None,
+        }
+    }
+
+    /// Strip the material field — used to produce a [`CredentialSummary`]
+    /// for list endpoints that should never round-trip the secret to
+    /// the wire.
+    #[must_use]
+    pub fn to_summary(&self) -> CredentialSummary {
+        CredentialSummary {
+            id: self.id.clone(),
+            namespace: self.namespace.clone(),
+            name: self.name.clone(),
+            kind: self.kind,
+            has_key: true,
+            last_tested_at: self.last_tested_at,
+            last_tested_ok: self.last_tested_ok,
+        }
+    }
+}
+
+/// Redacted view of a [`Credential`] for list endpoints. Drops
+/// `material` so a network sniff of the desktop's IPC stream can't
+/// capture secrets; the full record is fetched via a separate
+/// `CredentialGet` IPC (which also still hides material — the only
+/// path that returns material is `CredentialGetMaterial`, which is
+/// explicitly audit-logged).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialSummary {
+    pub id: String,
+    pub namespace: String,
+    pub name: String,
+    pub kind: CredentialKind,
+    pub has_key: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tested_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tested_ok: Option<bool>,
+}
+
+/// Filter for [`Vault::list_credentials`]. Any `None` field matches
+/// all values.
+#[derive(Debug, Clone, Default)]
+pub struct CredentialFilter {
+    pub namespace: Option<String>,
+    pub kind: Option<CredentialKind>,
+}
+
+impl CredentialFilter {
+    #[must_use]
+    pub fn matches(&self, c: &Credential) -> bool {
+        if let Some(ns) = &self.namespace {
+            if &c.namespace != ns {
+                return false;
+            }
+        }
+        if let Some(k) = self.kind {
+            if c.kind != k {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Strategy used to walk through a rotation binding's credential
+/// list on auth failure.
+///
+/// Only `RoundRobin` is honored by the resolver today. The other
+/// variants deserialize from disk (so a v2 file written by an
+/// older version with `last_resort` / `random` still loads), but
+/// the resolver rejects them with a clear "unsupported rotation
+/// strategy" error rather than silently picking the wrong key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RotationStrategy {
+    /// Try each credential in order; on 401, advance to the next.
+    /// After the last credential fails, surface the last error.
+    RoundRobin,
+    /// Reserved for future use. The resolver rejects this with a
+    /// clear "unsupported" error if encountered.
+    LastResort,
+    /// Reserved for future use. Rejected by the resolver for now.
+    Random,
+}
+
+impl RotationStrategy {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::RoundRobin => "round_robin",
+            Self::LastResort => "last_resort",
+            Self::Random => "random",
+        }
+    }
+}
+
+/// A rotation binding associates an ordered list of credential ids
+/// with a `(namespace, name)` slot. On 401 from an LLM call, the
+/// resolver advances to the next credential in
+/// `ordered_credential_ids` and retries (RP3B wires the swap).
+///
+/// The `key` is the binding slot identifier (`{namespace}:{name}`)
+/// so the binding map is keyed the same way as credentials for
+/// ergonomic lookup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RotationBinding {
+    pub strategy: RotationStrategy,
+    pub ordered_credential_ids: Vec<String>,
+}
+
+impl RotationBinding {
+    /// Build the binding-slot key from a namespace + name pair.
+    #[must_use]
+    pub fn slot_key(namespace: &str, name: &str) -> String {
+        format!("{namespace}:{name}")
+    }
 }
 
 /// How the vault DEK was obtained.
@@ -335,8 +831,7 @@ impl Vault {
             .ok_or_else(|| anyhow::anyhow!("vault is not passphrase-protected"))?;
         let dek = Self::derive_key_from_passphrase(passphrase.expose_secret(), salt)?;
         let plaintext = Self::decrypt(&envelope, &dek)?;
-        let file: VaultFile =
-            serde_json::from_slice(&plaintext).with_context(|| "failed to parse vault contents")?;
+        let file = Self::parse_vault_file(&plaintext)?;
 
         Ok(Self {
             path,
@@ -426,10 +921,9 @@ impl Vault {
             })?,
         };
         let plaintext = Self::decrypt(&envelope, &dek)?;
-        let file: VaultFile =
-            serde_json::from_slice(&plaintext).with_context(|| "failed to parse vault contents")?;
+        let file = Self::parse_vault_file(&plaintext)?;
 
-        let count = file.entries.len();
+        let count = file.credentials.len() + file.legacy_entries.len();
         let mut guard = self
             .inner
             .write()
@@ -446,73 +940,103 @@ impl Vault {
     }
 
     // ------------------------------------------------------------------
-    // Entry key namespacing
+    // Entry key namespacing (legacy only — kept so callers that still
+    // poke at the legacy `entries` map can find entries by their old
+    // key. New code should use `get_material_for` / `set_credential`.)
     // ------------------------------------------------------------------
 
+    #[allow(dead_code)]
     fn provider_key(provider: &str) -> String {
         format!("provider:{provider}")
     }
 
+    #[allow(dead_code)]
     fn registry_key(host: &str) -> String {
         format!("registry:{host}")
     }
 
+    #[allow(dead_code)]
     fn identity_key(key_id: &str) -> String {
         format!("identity:{key_id}")
     }
 
+    #[allow(dead_code)]
     fn tunnel_key(runtime_id: &str) -> String {
         format!("tunnel:{runtime_id}")
     }
 
+    #[allow(dead_code)]
+    fn oauth_token_key(server: &str) -> String {
+        format!("oauth:{server}")
+    }
+
+    /// Return the credential id for a `(namespace, name)` slot if one
+    /// already exists in the v2 `credentials` map. Used by the typed
+    /// adapters below to preserve the id (and thus `created_at`)
+    /// across overwrites.
+    fn credential_id_for_slot(&self, namespace: &str, name: &str) -> Option<String> {
+        let inner = self.inner.read().ok()?;
+        inner
+            .file
+            .credentials
+            .values()
+            .find(|c| c.namespace == namespace && c.name == name)
+            .map(|c| c.id.clone())
+    }
+
+    /// Return the credential ids for a `(namespace, name)` slot.
+    /// Always returns a vec because future rotation flows allow
+    /// multiple credentials at the same slot.
+    fn credential_ids_for_slot(&self, namespace: &str, name: &str) -> Vec<String> {
+        let Ok(inner) = self.inner.read() else {
+            return Vec::new();
+        };
+        inner
+            .file
+            .credentials
+            .values()
+            .filter(|c| c.namespace == namespace && c.name == name)
+            .map(|c| c.id.clone())
+            .collect()
+    }
+
     // ------------------------------------------------------------------
-    // Provider API keys
+    // Provider API keys (typed adapters over the generic API)
     // ------------------------------------------------------------------
 
     /// Get a provider API key.
     pub fn get_provider_key(&self, provider: &str) -> Option<SecretString> {
-        let inner = self.inner.read().ok()?;
-        match inner.file.entries.get(&Self::provider_key(provider))? {
-            VaultEntry::ProviderApiKey { key, .. } => Some(SecretString::new(key.clone().into())),
-            _ => None,
-        }
+        self.get_material_for(&format!("provider:{provider}"), "default")
+            .ok()
+            .flatten()
     }
 
     /// Store or overwrite a provider API key.
     pub fn set_provider_key(&self, provider: &str, key: &SecretString) -> Result<()> {
-        {
-            let mut inner = self
-                .inner
-                .write()
-                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner.file.entries.insert(
-                Self::provider_key(provider),
-                VaultEntry::ProviderApiKey {
-                    provider: provider.to_string(),
-                    key: key.expose_secret().to_string(),
-                },
-            );
+        let namespace = format!("provider:{provider}");
+        let mut c = Credential::now(
+            namespace.clone(),
+            "default",
+            CredentialKind::ApiKey,
+            key.clone(),
+        );
+        if let Some(id) = self.credential_id_for_slot(&namespace, "default") {
+            c.id = id;
         }
-        self.save()
+        self.set_credential(&c)
     }
 
     /// Remove a provider API key.
     pub fn delete_provider_key(&self, provider: &str) -> Result<bool> {
-        let removed = {
-            let mut inner = self
-                .inner
-                .write()
-                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner
-                .file
-                .entries
-                .remove(&Self::provider_key(provider))
-                .is_some()
-        };
-        if removed {
-            self.save()?;
+        let namespace = format!("provider:{provider}");
+        let ids = self.credential_ids_for_slot(&namespace, "default");
+        let mut any = false;
+        for id in ids {
+            if self.delete_credential(&id)? {
+                any = true;
+            }
         }
-        Ok(removed)
+        Ok(any)
     }
 
     /// Return all provider ids that have a stored API key.
@@ -524,12 +1048,10 @@ impl Vault {
         };
         let mut providers: Vec<String> = inner
             .file
-            .entries
+            .credentials
             .values()
-            .filter_map(|e| match e {
-                VaultEntry::ProviderApiKey { provider, .. } => Some(provider.clone()),
-                _ => None,
-            })
+            .filter(|c| c.namespace.starts_with("provider:") && c.name == "default")
+            .map(|c| c.namespace.trim_start_matches("provider:").to_string())
             .collect();
         providers.sort();
         providers.dedup();
@@ -553,7 +1075,7 @@ impl Vault {
     }
 
     // ------------------------------------------------------------------
-    // Registry token
+    // Registry token (typed adapters)
     // ------------------------------------------------------------------
 
     /// Get the stored registry token, if any.
@@ -562,35 +1084,42 @@ impl Vault {
     /// use [`Self::get_registry_token_for_host`].
     pub fn get_registry_token(&self) -> Option<RegistryToken> {
         let inner = self.inner.read().ok()?;
-        inner.file.entries.values().find_map(|e| match e {
-            VaultEntry::RegistryToken {
-                host,
-                token,
-                namespace,
-            } => Some(RegistryToken {
-                host: host.clone(),
-                token: token.clone(),
-                namespace: namespace.clone(),
-            }),
-            _ => None,
+        let cred = inner
+            .file
+            .credentials
+            .values()
+            .find(|c| c.namespace.starts_with("registry:") && c.name == "default")?;
+        let host = cred.namespace.trim_start_matches("registry:").to_string();
+        let namespace = cred
+            .metadata
+            .get("namespace")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        Some(RegistryToken {
+            host,
+            token: cred.material.expose_secret().to_string(),
+            namespace,
         })
     }
 
     /// Get the registry token for a specific host.
     pub fn get_registry_token_for_host(&self, host: &str) -> Option<RegistryToken> {
         let inner = self.inner.read().ok()?;
-        match inner.file.entries.get(&Self::registry_key(host))? {
-            VaultEntry::RegistryToken {
-                host,
-                token,
-                namespace,
-            } => Some(RegistryToken {
-                host: host.clone(),
-                token: token.clone(),
-                namespace: namespace.clone(),
-            }),
-            _ => None,
-        }
+        let cred = inner
+            .file
+            .credentials
+            .values()
+            .find(|c| c.namespace == format!("registry:{host}") && c.name == "default")?;
+        let namespace = cred
+            .metadata
+            .get("namespace")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        Some(RegistryToken {
+            host: host.to_string(),
+            token: cred.material.expose_secret().to_string(),
+            namespace,
+        })
     }
 
     /// Store or overwrite the registry token for a host.
@@ -600,205 +1129,238 @@ impl Vault {
         token: &str,
         namespace: Option<&str>,
     ) -> Result<()> {
-        {
-            let mut inner = self
-                .inner
-                .write()
-                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner.file.entries.insert(
-                Self::registry_key(host),
-                VaultEntry::RegistryToken {
-                    host: host.to_string(),
-                    token: token.to_string(),
-                    namespace: namespace.map(String::from),
-                },
-            );
+        let ns = format!("registry:{host}");
+        let mut c = Credential::now(
+            ns.clone(),
+            "default",
+            CredentialKind::BearerToken,
+            SecretString::new(token.to_string().into()),
+        );
+        if let Some(id) = self.credential_id_for_slot(&ns, "default") {
+            c.id = id;
         }
-        self.save()
+        if let Some(n) = namespace {
+            c.metadata = serde_json::json!({ "namespace": n });
+        }
+        self.set_credential(&c)
     }
 
     /// Clear the registry token for a host.
     pub fn clear_registry_token(&self, host: &str) -> Result<bool> {
-        let removed = {
-            let mut inner = self
-                .inner
-                .write()
-                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner
-                .file
-                .entries
-                .remove(&Self::registry_key(host))
-                .is_some()
-        };
-        if removed {
-            self.save()?;
+        let ns = format!("registry:{host}");
+        let ids = self.credential_ids_for_slot(&ns, "default");
+        let mut any = false;
+        for id in ids {
+            if self.delete_credential(&id)? {
+                any = true;
+            }
         }
-        Ok(removed)
+        Ok(any)
     }
 
     // ------------------------------------------------------------------
-    // Identity private key
+    // Identity private key (typed adapters)
     // ------------------------------------------------------------------
 
     /// Store a runtime identity private key.
     pub fn set_identity_private_key(&self, key_id: &str, algorithm: &str, key: &str) -> Result<()> {
-        {
-            let mut inner = self
-                .inner
-                .write()
-                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner.file.entries.insert(
-                Self::identity_key(key_id),
-                VaultEntry::IdentityPrivateKey {
-                    key_id: key_id.to_string(),
-                    algorithm: algorithm.to_string(),
-                    key: key.to_string(),
-                },
-            );
+        let mut c = Credential::now(
+            "identity",
+            key_id,
+            CredentialKind::PrivateKey,
+            SecretString::new(key.to_string().into()),
+        );
+        if let Some(id) = self.credential_id_for_slot("identity", key_id) {
+            c.id = id;
         }
-        self.save()
+        c.metadata = serde_json::json!({ "algorithm": algorithm });
+        self.set_credential(&c)
     }
 
     /// Get a runtime identity private key by key id.
     pub fn get_identity_private_key(&self, key_id: &str) -> Option<SecretString> {
-        let inner = self.inner.read().ok()?;
-        match inner.file.entries.get(&Self::identity_key(key_id))? {
-            VaultEntry::IdentityPrivateKey { key, .. } => {
-                Some(SecretString::new(key.clone().into()))
-            }
-            _ => None,
-        }
+        self.get_material_for("identity", key_id).ok().flatten()
     }
 
     /// Remove a runtime identity private key.
     pub fn delete_identity_private_key(&self, key_id: &str) -> Result<bool> {
-        let removed = {
-            let mut inner = self
-                .inner
-                .write()
-                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner
-                .file
-                .entries
-                .remove(&Self::identity_key(key_id))
-                .is_some()
-        };
-        if removed {
-            self.save()?;
+        let ids = self.credential_ids_for_slot("identity", key_id);
+        let mut any = false;
+        for id in ids {
+            if self.delete_credential(&id)? {
+                any = true;
+            }
         }
-        Ok(removed)
+        Ok(any)
     }
 
     // ------------------------------------------------------------------
-    // Tunnel private key
+    // Tunnel private key (typed adapters)
     // ------------------------------------------------------------------
 
     /// Store a PekoHub tunnel private key.
     pub fn set_tunnel_private_key(&self, runtime_id: &str, key: &str) -> Result<()> {
-        {
-            let mut inner = self
-                .inner
-                .write()
-                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner.file.entries.insert(
-                Self::tunnel_key(runtime_id),
-                VaultEntry::TunnelPrivateKey {
-                    runtime_id: runtime_id.to_string(),
-                    key: key.to_string(),
-                },
-            );
+        let mut c = Credential::now(
+            "tunnel",
+            runtime_id,
+            CredentialKind::PrivateKey,
+            SecretString::new(key.to_string().into()),
+        );
+        if let Some(id) = self.credential_id_for_slot("tunnel", runtime_id) {
+            c.id = id;
         }
-        self.save()
+        self.set_credential(&c)
     }
 
     /// Get a PekoHub tunnel private key by runtime id.
     pub fn get_tunnel_private_key(&self, runtime_id: &str) -> Option<SecretString> {
-        let inner = self.inner.read().ok()?;
-        match inner.file.entries.get(&Self::tunnel_key(runtime_id))? {
-            VaultEntry::TunnelPrivateKey { key, .. } => Some(SecretString::new(key.clone().into())),
-            _ => None,
-        }
+        self.get_material_for("tunnel", runtime_id).ok().flatten()
     }
 
     /// Remove a PekoHub tunnel private key.
     pub fn delete_tunnel_private_key(&self, runtime_id: &str) -> Result<bool> {
-        let removed = {
-            let mut inner = self
-                .inner
-                .write()
-                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner
-                .file
-                .entries
-                .remove(&Self::tunnel_key(runtime_id))
-                .is_some()
-        };
-        if removed {
-            self.save()?;
+        let ids = self.credential_ids_for_slot("tunnel", runtime_id);
+        let mut any = false;
+        for id in ids {
+            if self.delete_credential(&id)? {
+                any = true;
+            }
         }
-        Ok(removed)
+        Ok(any)
     }
 
     // ------------------------------------------------------------------
-    // OAuth tokens
+    // OAuth tokens (typed adapters)
     // ------------------------------------------------------------------
-
-    fn oauth_token_key(server: &str) -> String {
-        format!("oauth:{server}")
-    }
 
     /// Get an OAuth token entry for a remote server.
     #[must_use]
     pub fn get_oauth_token(&self, server: &str) -> Option<OAuthTokenEntry> {
         let inner = self.inner.read().ok()?;
-        match inner.file.entries.get(&Self::oauth_token_key(server))? {
-            VaultEntry::OAuthToken {
-                server,
-                access_token,
-                refresh_token,
-                expires_at,
-            } => Some(OAuthTokenEntry {
-                server: server.clone(),
-                access_token: access_token.clone(),
-                refresh_token: refresh_token.clone(),
-                expires_at: *expires_at,
-            }),
-            _ => None,
-        }
+        let cred = inner
+            .file
+            .credentials
+            .values()
+            .find(|c| c.namespace == format!("oauth:{server}") && c.name == "default")?;
+        let refresh_token = cred
+            .metadata
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let expires_at = cred
+            .metadata
+            .get("expires_at")
+            .and_then(serde_json::Value::as_i64);
+        Some(OAuthTokenEntry {
+            server: server.to_string(),
+            access_token: cred.material.expose_secret().to_string(),
+            refresh_token,
+            expires_at,
+        })
     }
 
     /// Store or overwrite an OAuth token entry for a remote server.
     pub fn set_oauth_token(&self, server: &str, entry: &OAuthTokenEntry) -> Result<()> {
+        let ns = format!("oauth:{server}");
+        let mut c = Credential::now(
+            ns.clone(),
+            "default",
+            CredentialKind::OAuthToken,
+            SecretString::new(entry.access_token.clone().into()),
+        );
+        if let Some(id) = self.credential_id_for_slot(&ns, "default") {
+            c.id = id;
+        }
+        let mut metadata = serde_json::Map::new();
+        if let Some(rt) = entry.refresh_token.as_ref() {
+            metadata.insert(
+                "refresh_token".to_string(),
+                serde_json::Value::String(rt.clone()),
+            );
+        }
+        if let Some(exp) = entry.expires_at {
+            metadata.insert(
+                "expires_at".to_string(),
+                serde_json::Value::Number(exp.into()),
+            );
+        }
+        c.metadata = serde_json::Value::Object(metadata);
+        self.set_credential(&c)
+    }
+
+    /// Remove an OAuth token entry for a remote server.
+    pub fn delete_oauth_token(&self, server: &str) -> Result<bool> {
+        let ns = format!("oauth:{server}");
+        let ids = self.credential_ids_for_slot(&ns, "default");
+        let mut any = false;
+        for id in ids {
+            if self.delete_credential(&id)? {
+                any = true;
+            }
+        }
+        Ok(any)
+    }
+
+    // ------------------------------------------------------------------
+    // Generic credential API (RP3A)
+    // ------------------------------------------------------------------
+
+    /// List credentials matching `filter`. Returns redacted summaries
+    /// (no material). Stable order: sorted by `id` (UUID lexicographic,
+    /// which approximates insertion-time ordering for v4 UUIDs).
+    #[must_use]
+    pub fn list_credentials(&self, filter: &CredentialFilter) -> Vec<CredentialSummary> {
+        let inner = match self.inner.read() {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+        let mut summaries: Vec<CredentialSummary> = inner
+            .file
+            .credentials
+            .values()
+            .filter(|c| filter.matches(c))
+            .map(Credential::to_summary)
+            .collect();
+        summaries.sort_by(|a, b| a.id.cmp(&b.id));
+        summaries
+    }
+
+    /// Fetch the full record for `id` (including `material`). The
+    /// caller is responsible for not serializing the material to a
+    /// log line or a non-audit wire endpoint.
+    #[must_use]
+    pub fn get_credential(&self, id: &str) -> Option<Credential> {
+        let inner = self.inner.read().ok()?;
+        inner.file.credentials.get(id).cloned()
+    }
+
+    /// Insert or overwrite a credential by `id`. `updated_at` is
+    /// bumped to "now" on overwrite; `created_at` is preserved.
+    pub fn set_credential(&self, c: &Credential) -> Result<()> {
         {
             let mut inner = self
                 .inner
                 .write()
                 .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner.file.entries.insert(
-                Self::oauth_token_key(server),
-                VaultEntry::OAuthToken {
-                    server: server.to_string(),
-                    access_token: entry.access_token.clone(),
-                    refresh_token: entry.refresh_token.clone(),
-                    expires_at: entry.expires_at,
-                },
-            );
+            let mut to_store = c.clone();
+            if let Some(existing) = inner.file.credentials.get(&c.id) {
+                to_store.created_at = existing.created_at;
+            }
+            to_store.updated_at = Utc::now();
+            inner.file.credentials.insert(c.id.clone(), to_store);
         }
         self.save()
     }
 
-    /// Remove an OAuth token entry for a remote server.
-    pub fn delete_oauth_token(&self, server: &str) -> Result<bool> {
+    /// Delete the credential with this `id`. Returns `true` if a
+    /// credential was removed.
+    pub fn delete_credential(&self, id: &str) -> Result<bool> {
         let removed = {
             let mut inner = self
                 .inner
                 .write()
                 .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner
-                .file
-                .entries
-                .remove(&Self::oauth_token_key(server))
-                .is_some()
+            inner.file.credentials.remove(id).is_some()
         };
         if removed {
             self.save()?;
@@ -806,24 +1368,207 @@ impl Vault {
         Ok(removed)
     }
 
-    // ------------------------------------------------------------------
-    // Generic entry access
-    // ------------------------------------------------------------------
-
-    /// Return a reference to a raw vault entry.
-    pub fn get_entry(&self, key: &str) -> Option<VaultEntry> {
-        let inner = self.inner.read().ok()?;
-        inner.file.entries.get(key).cloned()
+    /// Look up the material for a `(namespace, name)` slot. Used by
+    /// the resolver when there's no rotation binding (the common
+    /// case). Returns `Ok(None)` when no credential exists at the
+    /// slot; callers treat that as "no key configured".
+    pub fn get_material_for(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<SecretString>> {
+        let inner = self
+            .inner
+            .read()
+            .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+        // Prefer the first credential at (namespace, name); fall
+        // through to legacy_entries for pre-v2 data.
+        if let Some(c) = inner
+            .file
+            .credentials
+            .values()
+            .find(|c| c.namespace == namespace && c.name == name)
+        {
+            return Ok(Some(c.material.clone()));
+        }
+        if let Some(legacy_key) = Self::legacy_slot_key(namespace, name) {
+            if let Some(entry) = inner.file.legacy_entries.get(&legacy_key) {
+                return Ok(Self::legacy_entry_material(entry));
+            }
+        }
+        Ok(None)
     }
 
-    /// Remove an arbitrary entry.
+    /// Look up the ordered list of materials for a `(namespace, name)`
+    /// slot, walking the rotation binding if one exists. Returns the
+    /// primary material in position 0 when no binding is configured
+    /// (i.e. it falls back to [`Self::get_material_for`] and wraps
+    /// the result in a single-element vec).
+    ///
+    /// The resolver (RP3B) uses this to pick the next credential on
+    /// 401. Today (RP3A) only position 0 is consumed; positions 1..N
+    /// are silently preserved so RP3B can wire the swap without a
+    /// second data migration.
+    pub fn get_material_with_rotation(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Vec<SecretString>> {
+        let slot_key = RotationBinding::slot_key(namespace, name);
+        let inner = self
+            .inner
+            .read()
+            .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+
+        if let Some(binding) = inner.file.rotation_bindings.get(&slot_key) {
+            let mut materials = Vec::with_capacity(binding.ordered_credential_ids.len());
+            for id in &binding.ordered_credential_ids {
+                if let Some(c) = inner.file.credentials.get(id) {
+                    materials.push(c.material.clone());
+                }
+            }
+            if !materials.is_empty() {
+                return Ok(materials);
+            }
+        }
+
+        // No binding (or binding had missing ids). Fall through to
+        // the single-slot lookup.
+        drop(inner);
+        Ok(self
+            .get_material_for(namespace, name)?
+            .into_iter()
+            .collect())
+    }
+
+    /// List every rotation binding currently configured.
+    #[must_use]
+    pub fn list_bindings(&self) -> Vec<(String, RotationBinding)> {
+        let inner = match self.inner.read() {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+        inner
+            .file
+            .rotation_bindings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// Store (or overwrite) a rotation binding for the given
+    /// `{namespace}:{name}` slot key.
+    pub fn set_binding(&self, slot_key: &str, binding: &RotationBinding) -> Result<()> {
+        {
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            inner
+                .file
+                .rotation_bindings
+                .insert(slot_key.to_string(), binding.clone());
+        }
+        self.save()
+    }
+
+    /// Delete a rotation binding by slot key. Returns `true` if a
+    /// binding was removed.
+    pub fn delete_binding(&self, slot_key: &str) -> Result<bool> {
+        let removed = {
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            inner.file.rotation_bindings.remove(slot_key).is_some()
+        };
+        if removed {
+            self.save()?;
+        }
+        Ok(removed)
+    }
+
+    /// Record the outcome of `peko credential test <id>` against this
+    /// credential so subsequent listings can surface "last tested"
+    /// metadata without re-running the network check.
+    pub fn record_test(&self, id: &str, ok: bool) -> Result<()> {
+        {
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            if let Some(c) = inner.file.credentials.get_mut(id) {
+                c.last_tested_at = Some(Utc::now());
+                c.last_tested_ok = Some(ok);
+            } else {
+                return Err(VaultError::Backend(format!(
+                    "record_test: no credential with id {id:?}"
+                ))
+                .into());
+            }
+        }
+        self.save()
+    }
+
+    /// Derive the legacy `entries` map key for a `(namespace, name)`
+    /// pair. Returns `None` for namespaces that don't have a legacy
+    /// encoding (e.g. `mcp:*`, `secret:*`).
+    fn legacy_slot_key(namespace: &str, name: &str) -> Option<String> {
+        // The provider / oauth / registry namespaces all stored at
+        // a single slot under the legacy key, so the lookup uses
+        // the bare legacy key (no `name` suffix). Other namespaces
+        // didn't exist in v1 and have no legacy encoding.
+        match namespace {
+            ns if ns.starts_with("provider:") => Some(format!("provider:{}", &ns[9..])),
+            ns if ns.starts_with("oauth:") => Some(format!("oauth:{}", &ns[6..])),
+            ns if ns.starts_with("registry:") => Some(format!("registry:{}", &ns[9..])),
+            "identity" => Some(format!("identity:{name}")),
+            "tunnel" => Some(format!("tunnel:{name}")),
+            _ => None,
+        }
+    }
+
+    fn legacy_entry_material(entry: &VaultEntry) -> Option<SecretString> {
+        match entry {
+            VaultEntry::ProviderApiKey { key, .. } => {
+                Some(SecretString::new(key.clone().into()))
+            }
+            VaultEntry::RegistryToken { token, .. } => {
+                Some(SecretString::new(token.clone().into()))
+            }
+            VaultEntry::IdentityPrivateKey { key, .. } => {
+                Some(SecretString::new(key.clone().into()))
+            }
+            VaultEntry::TunnelPrivateKey { key, .. } => {
+                Some(SecretString::new(key.clone().into()))
+            }
+            VaultEntry::OAuthToken { access_token, .. } => {
+                Some(SecretString::new(access_token.clone().into()))
+            }
+            VaultEntry::Secret { value } => Some(SecretString::new(value.clone().into())),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Generic entry access (legacy)
+    // ------------------------------------------------------------------
+
+    /// Return a reference to a raw vault entry. Looks up the legacy
+    /// v1 `entries` map; for new (post-migration) credentials, use
+    /// [`Self::get_credential`].
+    pub fn get_entry(&self, key: &str) -> Option<VaultEntry> {
+        let inner = self.inner.read().ok()?;
+        inner.file.legacy_entries.get(key).cloned()
+    }
+
+    /// Remove an arbitrary legacy entry by key.
     pub fn delete_entry(&self, key: &str) -> Result<bool> {
         let removed = {
             let mut inner = self
                 .inner
                 .write()
                 .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
-            inner.file.entries.remove(key).is_some()
+            inner.file.legacy_entries.remove(key).is_some()
         };
         if removed {
             self.save()?;
@@ -831,14 +1576,14 @@ impl Vault {
         Ok(removed)
     }
 
-    /// Return all entry keys in the vault.
+    /// Return all entry keys in the vault (legacy entries only).
     #[must_use]
     pub fn keys(&self) -> Vec<String> {
         let inner = match self.inner.read() {
             Ok(g) => g,
             Err(_) => return Vec::new(),
         };
-        let mut keys: Vec<String> = inner.file.entries.keys().cloned().collect();
+        let mut keys: Vec<String> = inner.file.legacy_entries.keys().cloned().collect();
         keys.sort();
         keys
     }
@@ -1024,6 +1769,36 @@ impl Vault {
     // Internal helpers
     // ------------------------------------------------------------------
 
+    /// Parse decrypted plaintext into a v2 `VaultFile`, transparently
+    /// migrating a v1 file (legacy `entries: HashMap<String, VaultEntry>`)
+    /// into the new generic-credential schema.
+    ///
+    /// Branching on the JSON `version` discriminator (rather than a
+    /// serde tagged enum) lets us preserve the `VaultFile` struct as
+    /// the canonical in-memory shape; v1 is a transient migration
+    /// type. The cost is one extra `serde_json::Value` parse — a
+    /// negligible one-time tax on `Vault::load` / `Vault::reload`.
+    fn parse_vault_file(plaintext: &[u8]) -> Result<VaultFile> {
+        let value: serde_json::Value = serde_json::from_slice(plaintext)
+            .with_context(|| "failed to parse vault contents as JSON")?;
+        let version = value
+            .get("version")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("vault file missing 'version' field"))?;
+        match version {
+            2 => serde_json::from_value(value)
+                .with_context(|| "failed to parse vault contents as v2 VaultFile"),
+            1 => {
+                let v1: VaultFileV1 = serde_json::from_value(value)
+                    .with_context(|| "failed to parse vault contents as v1 VaultFile")?;
+                Ok(v1.into_v2())
+            }
+            other => anyhow::bail!(
+                "unsupported vault file version: {other} (expected 1 or 2)"
+            ),
+        }
+    }
+
     fn load_existing_with_override(
         path: PathBuf,
         method_override: UnlockMethodOverride,
@@ -1075,8 +1850,7 @@ impl Vault {
         };
 
         let plaintext = Self::decrypt(&envelope, &dek)?;
-        let file: VaultFile =
-            serde_json::from_slice(&plaintext).with_context(|| "failed to parse vault contents")?;
+        let file = Self::parse_vault_file(&plaintext)?;
 
         Ok(Self {
             path,
@@ -1827,5 +2601,395 @@ mod tests {
         // Ends on a complete sentence (not a fragment) — otherwise it'll
         // chain oddly inside anyhow's `{:#}` Display.
         assert!(msg.trim_end().ends_with('.'));
+    }
+
+    // ------------------------------------------------------------------
+    // RP3A: Generic credential API
+    // ------------------------------------------------------------------
+
+    /// `set_credential` writes a Credential that survives a reload.
+    /// Confirms the v2 on-disk format is being written (the on-disk
+    /// file's plaintext version field is 2).
+    #[test]
+    #[serial_test::serial]
+    fn new_credential_roundtrip_persists_as_v2() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        let c = Credential::now(
+            "provider:openai",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("sk-test".into()),
+        );
+        vault.set_credential(&c).unwrap();
+
+        // Re-load from disk and confirm version=2 + material survives.
+        let reloaded =
+            Vault::load_with_passphrase(vault.path(), &SecretString::new("test-passphrase".into()))
+                .unwrap();
+        let got = reloaded.get_credential(&c.id).unwrap();
+        assert_eq!(got.namespace, "provider:openai");
+        assert_eq!(got.name, "default");
+        assert_eq!(got.kind, CredentialKind::ApiKey);
+        assert_eq!(got.material.expose_secret(), "sk-test");
+    }
+
+    /// Overwriting a credential by id preserves `created_at` and
+    /// bumps `updated_at`.
+    #[test]
+    fn set_credential_overwrites_preserving_created_at() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        let c1 = Credential::now(
+            "provider:anthropic",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("sk-ant-1".into()),
+        );
+        let original_created = c1.created_at;
+        vault.set_credential(&c1).unwrap();
+
+        // Sleep briefly so updated_at is strictly greater.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let mut c2 = c1.clone();
+        c2.material = SecretString::new("sk-ant-2".into());
+        vault.set_credential(&c2).unwrap();
+
+        let got = vault.get_credential(&c1.id).unwrap();
+        assert_eq!(got.created_at, original_created, "created_at preserved");
+        assert!(got.updated_at > original_created, "updated_at bumped");
+        assert_eq!(got.material.expose_secret(), "sk-ant-2");
+    }
+
+    /// `delete_credential` is idempotent: the second call returns false.
+    #[test]
+    fn delete_credential_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        let c = Credential::now(
+            "mcp:analytics",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("m".into()),
+        );
+        vault.set_credential(&c).unwrap();
+        assert!(vault.delete_credential(&c.id).unwrap());
+        assert!(!vault.delete_credential(&c.id).unwrap());
+    }
+
+    /// `list_credentials` respects the filter on namespace and kind.
+    #[test]
+    fn list_credentials_with_filter() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        vault
+            .set_credential(&Credential::now(
+                "provider:openai",
+                "default",
+                CredentialKind::ApiKey,
+                SecretString::new("a".into()),
+            ))
+            .unwrap();
+        vault
+            .set_credential(&Credential::now(
+                "provider:anthropic",
+                "default",
+                CredentialKind::ApiKey,
+                SecretString::new("b".into()),
+            ))
+            .unwrap();
+        vault
+            .set_credential(&Credential::now(
+                "oauth:myremote",
+                "default",
+                CredentialKind::OAuthToken,
+                SecretString::new("c".into()),
+            ))
+            .unwrap();
+
+        let all = vault.list_credentials(&CredentialFilter::default());
+        assert_eq!(all.len(), 3);
+
+        let provider_only = vault.list_credentials(&CredentialFilter {
+            namespace: Some("provider:openai".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(provider_only.len(), 1);
+        assert_eq!(provider_only[0].namespace, "provider:openai");
+
+        let oauth_only = vault.list_credentials(&CredentialFilter {
+            kind: Some(CredentialKind::OAuthToken),
+            ..Default::default()
+        });
+        assert_eq!(oauth_only.len(), 1);
+        assert_eq!(oauth_only[0].namespace, "oauth:myremote");
+
+        // Material is redacted in summaries.
+        assert!(all.iter().all(|s| s.has_key));
+    }
+
+    /// `get_material_for` returns `None` when no credential exists at
+    /// the requested `(namespace, name)` slot.
+    #[test]
+    fn get_material_for_missing_returns_none() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        assert!(vault
+            .get_material_for("provider:openai", "default")
+            .unwrap()
+            .is_none());
+        assert!(vault
+            .get_material_for("oauth:nope", "default")
+            .unwrap()
+            .is_none());
+    }
+
+    /// `set_binding` + `get_material_with_rotation` returns the
+    /// credential materials in the order specified by the binding.
+    #[test]
+    fn set_binding_then_get_material_with_rotation_orders_credentials() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        let c1 = Credential::now(
+            "provider:anthropic",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("sk-ant-AAA".into()),
+        );
+        let c2 = Credential::now(
+            "provider:anthropic",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("sk-ant-BBB".into()),
+        );
+        let c3 = Credential::now(
+            "provider:anthropic",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("sk-ant-CCC".into()),
+        );
+        vault.set_credential(&c1).unwrap();
+        vault.set_credential(&c2).unwrap();
+        vault.set_credential(&c3).unwrap();
+
+        // Bind in a deliberate non-insertion order.
+        let binding = RotationBinding {
+            strategy: RotationStrategy::RoundRobin,
+            ordered_credential_ids: vec![c3.id.clone(), c1.id.clone(), c2.id.clone()],
+        };
+        vault
+            .set_binding(
+                &RotationBinding::slot_key("provider:anthropic", "default"),
+                &binding,
+            )
+            .unwrap();
+
+        let materials = vault
+            .get_material_with_rotation("provider:anthropic", "default")
+            .unwrap();
+        let strs: Vec<&str> = materials.iter().map(|s| s.expose_secret()).collect();
+        assert_eq!(
+            strs,
+            vec!["sk-ant-CCC", "sk-ant-AAA", "sk-ant-BBB"],
+            "rotation binding order should be honored"
+        );
+
+        // List-bindings + delete-binding are symmetric.
+        let bindings = vault.list_bindings();
+        assert_eq!(bindings.len(), 1);
+        let slot_key = &bindings[0].0;
+        assert_eq!(
+            slot_key,
+            &RotationBinding::slot_key("provider:anthropic", "default")
+        );
+        assert!(vault.delete_binding(slot_key).unwrap());
+        assert!(!vault.delete_binding(slot_key).unwrap());
+
+        // After deleting the binding, the resolver falls back to
+        // a single material (the first matching credential).
+        let materials = vault
+            .get_material_with_rotation("provider:anthropic", "default")
+            .unwrap();
+        assert_eq!(materials.len(), 1);
+    }
+
+    /// `record_test` populates `last_tested_at` and `last_tested_ok`
+    /// on the matching credential.
+    #[test]
+    fn record_test_populates_last_tested_at_and_ok() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        let c = Credential::now(
+            "provider:openai",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("sk-test".into()),
+        );
+        vault.set_credential(&c).unwrap();
+
+        assert!(vault.get_credential(&c.id).unwrap().last_tested_at.is_none());
+        vault.record_test(&c.id, true).unwrap();
+
+        let got = vault.get_credential(&c.id).unwrap();
+        assert!(got.last_tested_at.is_some());
+        assert_eq!(got.last_tested_ok, Some(true));
+
+        vault.record_test(&c.id, false).unwrap();
+        let got = vault.get_credential(&c.id).unwrap();
+        assert_eq!(got.last_tested_ok, Some(false));
+
+        // Unknown id surfaces as an error rather than silently
+        // dropping the test result.
+        assert!(vault.record_test("nonexistent", true).is_err());
+    }
+
+    /// A v1 VaultFile loaded into v2 surfaces its legacy entries
+    /// as `Credential` records on the credentials map.
+    ///
+    /// We build the v1 plaintext directly here (no need to go via
+    /// `VaultEntry`-typed adapter methods, which now write v2).
+    #[test]
+    #[serial_test::serial]
+    fn legacy_provider_api_key_migrates_on_load() {
+        use aes_gcm::aead::Aead;
+        use aes_gcm::{Aes256Gcm, Key, Nonce};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(VAULT_FILE_NAME);
+
+        // Manually write a v1 plaintext + envelope so we exercise
+        // the migration path.
+        let plaintext = serde_json::to_vec(&VaultFileV1 {
+            version: 1,
+            entries: [(
+                "provider:openai".to_string(),
+                VaultEntry::ProviderApiKey {
+                    provider: "openai".to_string(),
+                    key: "sk-legacy".to_string(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        })
+        .unwrap();
+
+        // Derive a DEK from a known passphrase + a fixed salt and
+        // encrypt the v1 plaintext into a v1 envelope.
+        let mut salt = [0u8; 32];
+        salt[..5].copy_from_slice(b"salts");
+        let passphrase = "test-passphrase".to_string();
+        let argon2 = Argon2::new(
+            argon2::Algorithm::Argon2id,
+            argon2::Version::V0x13,
+            argon2::Params::new(65536, 3, 4, None).unwrap(),
+        );
+        let mut dek = [0u8; 32];
+        argon2
+            .hash_password_into(passphrase.as_bytes(), &salt, &mut dek)
+            .unwrap();
+        let key = Key::<Aes256Gcm>::from_slice(&dek);
+        let cipher = Aes256Gcm::new(key);
+        let nonce_bytes = [7u8; 12];
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher.encrypt(nonce, plaintext.as_ref()).unwrap();
+
+        let envelope = VaultEnvelope {
+            version: 1,
+            salt: Some(salt.to_vec()),
+            nonce: nonce_bytes.to_vec(),
+            ciphertext,
+        };
+        std::fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
+
+        // Load via `load_with_passphrase`, which exercises
+        // `parse_vault_file` and thus the v1→v2 migration.
+        std::env::set_var(MASTER_PASSPHRASE_ENV, passphrase.as_str());
+        let vault = Vault::load_with_passphrase(&path, &SecretString::new(passphrase.into()))
+            .expect("v1 vault should load via migration");
+        std::env::remove_var(MASTER_PASSPHRASE_ENV);
+
+        // The legacy entry has been materialized as a Credential.
+        let creds = vault.list_credentials(&CredentialFilter {
+            namespace: Some("provider:openai".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(creds.len(), 1);
+        assert_eq!(creds[0].namespace, "provider:openai");
+        assert_eq!(creds[0].kind, CredentialKind::ApiKey);
+
+        // And `get_material_for` returns the legacy value.
+        let material = vault
+            .get_material_for("provider:openai", "default")
+            .unwrap()
+            .unwrap();
+        assert_eq!(material.expose_secret(), "sk-legacy");
+    }
+
+    /// OAuth refresh_token + expires_at survive the v1→v2 migration
+    /// in the credential's metadata blob.
+    #[test]
+    #[serial_test::serial]
+    fn legacy_oauth_preserves_refresh_token() {
+        use aes_gcm::aead::Aead;
+        use aes_gcm::{Aes256Gcm, Key, Nonce};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(VAULT_FILE_NAME);
+
+        let plaintext = serde_json::to_vec(&VaultFileV1 {
+            version: 1,
+            entries: [(
+                "oauth:myremote".to_string(),
+                VaultEntry::OAuthToken {
+                    server: "myremote".to_string(),
+                    access_token: "access-123".to_string(),
+                    refresh_token: Some("refresh-456".to_string()),
+                    expires_at: Some(1_700_000_000),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        })
+        .unwrap();
+
+        let mut salt = [0u8; 32];
+        salt[..5].copy_from_slice(b"salts");
+        let passphrase = "test-passphrase".to_string();
+        let argon2 = Argon2::new(
+            argon2::Algorithm::Argon2id,
+            argon2::Version::V0x13,
+            argon2::Params::new(65536, 3, 4, None).unwrap(),
+        );
+        let mut dek = [0u8; 32];
+        argon2
+            .hash_password_into(passphrase.as_bytes(), &salt, &mut dek)
+            .unwrap();
+        let key = Key::<Aes256Gcm>::from_slice(&dek);
+        let cipher = Aes256Gcm::new(key);
+        let nonce_bytes = [8u8; 12];
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher.encrypt(nonce, plaintext.as_ref()).unwrap();
+
+        let envelope = VaultEnvelope {
+            version: 1,
+            salt: Some(salt.to_vec()),
+            nonce: nonce_bytes.to_vec(),
+            ciphertext,
+        };
+        std::fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
+
+        std::env::set_var(MASTER_PASSPHRASE_ENV, passphrase.as_str());
+        let vault = Vault::load_with_passphrase(&path, &SecretString::new(passphrase.into()))
+            .expect("v1 oauth vault should load");
+        std::env::remove_var(MASTER_PASSPHRASE_ENV);
+
+        // The legacy OAuthToken has been migrated into the new
+        // Credential shape with metadata holding refresh_token +
+        // expires_at.
+        let token = vault.get_oauth_token("myremote").expect("oauth token");
+        assert_eq!(token.access_token, "access-123");
+        assert_eq!(token.refresh_token.as_deref(), Some("refresh-456"));
+        assert_eq!(token.expires_at, Some(1_700_000_000));
     }
 }

@@ -484,7 +484,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::{merge_provider_hint, validate_principal_hint};
-    use crate::common::secret_store::InMemorySecretStore;
     use crate::providers::catalog::{ModelInfo, ProviderCatalogEntry};
     use crate::providers::templates;
     use crate::providers::LlmResolver;
@@ -576,8 +575,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let secrets = Arc::new(InMemorySecretStore::new());
-        Arc::new(LlmResolver::new(cat, secrets))
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Arc::new(crate::common::vault::Vault::for_test(tmp.path(), "test-passphrase"));
+        let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
+        Arc::new(LlmResolver::new(cat, secrets).with_vault(vault))
     }
 
     /// Principal pins a provider that exists in the catalog → hint

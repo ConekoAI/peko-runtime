@@ -128,7 +128,7 @@ impl RequestDispatcher {
             Arc::new(ExtensionHandler::new(host.clone())),
             Arc::new(ProviderMcpHandler::new(host.clone())),
             Arc::new(QuotaHandler::new(host.clone())),
-            Arc::new(CredentialHandler::new(host.clone(), host.clone())),
+            Arc::new(CredentialHandler::new(host.clone(), host.clone(), host.clone())),
             Arc::new(PrincipalHandler::new(host.clone())),
             // T-109b: `ProviderTemplates` + `ProviderAdd` are the
             // IPC seam for the desktop's "Add Provider" modal. They
