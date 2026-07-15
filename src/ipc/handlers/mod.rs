@@ -128,7 +128,7 @@ impl RequestDispatcher {
             Arc::new(ExtensionHandler::new(host.clone())),
             Arc::new(ProviderMcpHandler::new(host.clone())),
             Arc::new(QuotaHandler::new(host.clone())),
-            Arc::new(CredentialHandler::new(host.clone())),
+            Arc::new(CredentialHandler::new(host.clone(), host.clone())),
             Arc::new(PrincipalHandler::new(host.clone())),
             // T-109b: `ProviderTemplates` + `ProviderAdd` are the
             // IPC seam for the desktop's "Add Provider" modal. They
@@ -153,9 +153,7 @@ impl RequestDispatcher {
         let request_id = request.request_id();
         let response = ResponsePacket::Error {
             request_id,
-            message: format!(
-                "no handler registered for request variant (request_id={request_id})"
-            ),
+            message: format!("no handler registered for request variant (request_id={request_id})"),
         };
         send_response(sink, response).await
     }
