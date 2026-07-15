@@ -141,6 +141,11 @@ impl RootRouter {
                 self.principal_provider_id.clone(),
                 self.principal_model_id.clone(),
             ),
+            // RP2: mirror the per-message override from
+            // `RouterContext` so the resolver classifies the
+            // resolution as `ResolveSource::ExplicitOverride` when
+            // `peko send --provider ... --model ...` is used.
+            (ctx.override_provider.clone(), ctx.override_model.clone()),
             ctx.principal_id.clone(),
         );
         principal_ctx.set_root_prompt(self.root_prompt.clone());
@@ -325,6 +330,8 @@ mod tests {
             inbox_registry: Arc::new(InboxRegistry::new()),
             session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
             observability: None,
+            override_provider: None,
+            override_model: None,
         };
 
         let message = build_root_message(&ctx);

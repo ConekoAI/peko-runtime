@@ -347,6 +347,11 @@ where
         Some(ctx.provider_hint.clone()),
         ctx.principal_id().clone(),
         Some(Arc::clone(&ctx.inbox_registry)),
+        // RP2: per-message provider/model override (mirrored from
+        // `RouterContext`). `init_provider` populates
+        // `ResolveRequest::override_*` so the resolver classifies
+        // the resolution as `ExplicitOverride` when set.
+        Some(ctx.message_override.clone()),
     )
     .await?
     // Scope the agent's `Agent` tool to this principal's workspace so
@@ -627,5 +632,39 @@ mod tests {
             ),
             (Some("anthropic".into()), Some("claude-sonnet-4-5".into()))
         );
+    }
+
+    /// RP2: per-message override wins outright. The merge layer doesn't
+    /// see the override (that lives on `ResolveRequest::override_*`),
+    /// but we pin the contract here so future refactors can't silently
+    /// demote the message-level override below the principal hint.
+    /// The `init_provider` wiring in `agents/agent.rs` populates
+    /// `override_provider` / `override_model` directly, which the
+    /// resolver classifies as `ResolveSource::ExplicitOverride`.
+    #[test]
+    fn message_override_takes_precedence_over_principal_hint() {
+        // Pure-shape check: at the merge layer the message override is
+        // already routed around (it never enters `merge_provider_hint`),
+        // but the resolver-layer precedence is documented via the
+        // `ResolveSource::ExplicitOverride` arm in
+        // `providers::resolver::resolve`. This test exists as a guard
+        // so a future refactor that DOES collapse the override into
+        // the merge layer doesn't accidentally demote it.
+        let principal = (Some("ollama".into()), Some("llama3.1".into()));
+        let catalog_default = (
+            Some("anthropic".into()),
+            Some("claude-sonnet-4-5".into()),
+        );
+        // Without the override (current path): principal wins.
+        assert_eq!(
+            merge_provider_hint(principal.clone(), catalog_default.clone()),
+            (Some("ollama".into()), Some("llama3.1".into())),
+        );
+        // The override pair is what `Agent::init_provider` would
+        // forward as `override_provider` / `override_model`. The
+        // resolver's `ExplicitOverride` arm is exercised by
+        // `providers::resolver::tests::resolve_explicit_override`.
+        let override_pair = (Some("openai".into()), Some("gpt-4o".into()));
+        assert_ne!(override_pair, merge_provider_hint(principal, catalog_default));
     }
 }

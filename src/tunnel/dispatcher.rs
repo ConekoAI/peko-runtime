@@ -736,7 +736,7 @@ impl TunnelDispatcher {
         let pm = principal_manager.clone();
         let principal_id = principal.id.clone();
         let recv_handle = tokio::spawn(async move {
-            pm.receive_streaming(principal_id, caller_principal, message, channel, on_event)
+            pm.receive_streaming(principal_id, caller_principal, message, channel, on_event, None, None)
                 .await
         });
 
@@ -1247,6 +1247,8 @@ impl TunnelDispatcher {
                 caller_principal,
                 message.clone(),
                 channel,
+                None,
+                None,
             )
             .await;
 

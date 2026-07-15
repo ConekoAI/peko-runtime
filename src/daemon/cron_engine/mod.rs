@@ -322,7 +322,7 @@ impl CronEngine {
         };
 
         match pm
-            .receive(principal.id.clone(), peer, job.task_description(), channel)
+            .receive(principal.id.clone(), peer, job.task_description(), channel, None, None)
             .await
         {
             Ok(response) => {

@@ -444,6 +444,7 @@ impl Agent {
             None,
             crate::subject::PrincipalId::generate(),
             None,
+            None,
         )
         .await
     }
@@ -475,6 +476,11 @@ impl Agent {
         provider_hint: Option<(Option<String>, Option<String>)>,
         principal_id: crate::subject::PrincipalId,
         inbox_registry: Option<Arc<InboxRegistry>>,
+        // RP2: per-message provider/model override (RP8 wires the
+        // CLI flags). When `Some`, the resolver classifies the
+        // resolution as `ResolveSource::ExplicitOverride`. `None`
+        // preserves the principal-config chain.
+        message_override: Option<(Option<String>, Option<String>)>,
     ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
 
@@ -508,8 +514,16 @@ impl Agent {
         // Initialize provider if configured. `provider_hint` flows
         // through from the production caller (principal's hint) or
         // is `None` for tests / non-principal callers — see the
-        // Track B note on `init_provider`.
-        let provider = Self::init_provider(&config, llm_resolver.as_ref(), provider_hint).await?;
+        // Track B note on `init_provider`. `message_override` (RP2)
+        // is the per-message `peko send --provider/--model` flag
+        // pair; `None` preserves the principal-config chain.
+        let provider = Self::init_provider(
+            &config,
+            llm_resolver.as_ref(),
+            provider_hint,
+            message_override,
+        )
+        .await?;
 
         // Single global ExtensionCore — every agent of the principal
         // shares it. `principal_id` is the spawning principal's
@@ -752,7 +766,7 @@ impl Agent {
             Some(p) => Some(p),
             // Subagent path: no principal binding, so no provider hint;
             // the resolver falls back to the catalog default.
-            None => Self::init_provider(&config, None, None).await?,
+            None => Self::init_provider(&config, None, None, None).await?,
         };
         let llm_resolver: Option<Arc<crate::providers::LlmResolver>> = None;
 
@@ -1686,7 +1700,7 @@ impl Agent {
             }
         };
 
-        let provider = Self::init_provider(&config, None, None).await?;
+        let provider = Self::init_provider(&config, None, None, None).await?;
 
         let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
             "agent:{}:cli:default",
@@ -1929,6 +1943,11 @@ impl Agent {
         // principal path pass `None` and let the resolver pick the
         // catalog default.
         provider_hint: Option<(Option<String>, Option<String>)>,
+        // RP2: per-message provider/model override (RP8 wires the
+        // CLI flags). Forwarded to `ResolveRequest::override_*`
+        // so the resolver classifies the resolution as
+        // `ResolveSource::ExplicitOverride`. None = no override.
+        message_override: Option<(Option<String>, Option<String>)>,
     ) -> Result<Option<Arc<crate::providers::Provider>>> {
         // v3 path: ask the resolver to build a one-shot provider from
         // the supplied hint (or the runtime default). No legacy
@@ -1938,9 +1957,12 @@ impl Agent {
             return Ok(None);
         };
         let (agent_provider, agent_model) = provider_hint.unwrap_or_default();
+        let (override_provider, override_model) = message_override.unwrap_or_default();
         let req = crate::providers::resolver::ResolveRequest {
             agent_provider: agent_provider.as_deref(),
             agent_model: agent_model.as_deref(),
+            override_provider: override_provider.as_deref(),
+            override_model: override_model.as_deref(),
             ..Default::default()
         };
         match r.build(req).await {

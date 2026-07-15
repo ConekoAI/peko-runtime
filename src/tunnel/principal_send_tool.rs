@@ -171,7 +171,7 @@ impl PrincipalSendTool {
         };
         match ctx
             .principal_manager
-            .receive(principal.id.clone(), caller, message.to_string(), channel)
+            .receive(principal.id.clone(), caller, message.to_string(), channel, None, None)
             .await
         {
             Ok(response) => {
