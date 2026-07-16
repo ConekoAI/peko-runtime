@@ -49,11 +49,10 @@ pub struct RootRouter {
     resolver: Option<Arc<LlmResolver>>,
     root_prompt: AgentPrompt,
     workspace_path: PathBuf,
-    /// Per-Principal provider preference from `principal.toml`. When
-    /// `Some`, it overrides the global catalog default for any LLM call
-    /// routed through this Principal's root agent. When `None`, the
-    /// catalog default wins.
-    principal_provider_id: Option<String>,
+    /// Per-Principal configured model preference from `principal.toml`.
+    /// When `Some`, it is used for any LLM call routed through this
+    /// Principal's root agent. When `None`, the resolver will error
+    /// unless a per-message override is supplied.
     principal_model_id: Option<String>,
     /// Caller principal DID for outbound `principal_send` envelopes.
     /// Resolved at factory creation time from
@@ -74,9 +73,10 @@ pub struct RootRouter {
 impl RootRouter {
     /// Create a new root router for the given Principal workspace.
     ///
-    /// `principal_provider_id` / `principal_model_id` are the values from
-    /// `PrincipalConfig::preferred_provider_id` / `preferred_model_id`.
-    /// Pass `None, None` to inherit the global catalog default.
+    /// `principal_model_id` is the value from
+    /// `PrincipalConfig::preferred_model_id`. Pass `None` only when the
+    /// caller intends to supply a per-message override; otherwise
+    /// resolution will fail with "no model configured".
     ///
     /// `principal_caller_did` is the principal's stable DID used as
     /// `caller_principal_did` on the wire for `principal_send`.
@@ -89,7 +89,6 @@ impl RootRouter {
         resolver: Option<Arc<LlmResolver>>,
         root_prompt: AgentPrompt,
         workspace_path: PathBuf,
-        principal_provider_id: Option<String>,
         principal_model_id: Option<String>,
         principal_caller_did: Option<String>,
     ) -> Self {
@@ -98,7 +97,6 @@ impl RootRouter {
             resolver,
             root_prompt,
             workspace_path,
-            principal_provider_id,
             principal_model_id,
             principal_caller_did,
             caller_runtime_id: StdRwLock::new(None),
@@ -137,15 +135,12 @@ impl RootRouter {
             Arc::clone(&ctx.session_creation_lock),
             Arc::new(ctx.capabilities.clone()),
             self.resolver.clone(),
-            (
-                self.principal_provider_id.clone(),
-                self.principal_model_id.clone(),
-            ),
-            // RP2: mirror the per-message override from
-            // `RouterContext` so the resolver classifies the
-            // resolution as `ResolveSource::ExplicitOverride` when
-            // `peko send --provider ... --model ...` is used.
-            (ctx.override_provider.clone(), ctx.override_model.clone()),
+            self.principal_model_id.clone(),
+            // Per-message configured model override from `RouterContext`
+            // so the resolver classifies the resolution as
+            // `ResolveSource::ExplicitOverride` when `peko send --model`
+            // is used.
+            ctx.override_model.clone(),
             ctx.principal_id.clone(),
         );
         principal_ctx.set_root_prompt(self.root_prompt.clone());
@@ -330,7 +325,6 @@ mod tests {
             inbox_registry: Arc::new(InboxRegistry::new()),
             session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
             observability: None,
-            override_provider: None,
             override_model: None,
         };
 

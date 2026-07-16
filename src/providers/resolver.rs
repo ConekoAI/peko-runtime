@@ -1,35 +1,26 @@
-//! `LlmResolver` — chooses a provider/model at request time and
+//! `LlmResolver` — chooses a configured model at request time and
 //! builds a one-shot `Provider` instance.
 //!
-//! This is the structural piece that lets agents carry no provider
-//! state. Every LLM call funnels through `LlmResolver::resolve`,
-//! which applies the precedence rules and returns the
-//! `(ProviderCatalogEntry, ModelInfo)` pair needed for the call.
-//! `LlmResolver::build_provider` then looks up the API key from the
-//! `SecretStore` and constructs an `Arc<Provider>`.
+//! Every LLM call funnels through `LlmResolver::resolve`, which applies
+//! the precedence rules and returns the configured `ModelConfig`. There
+//! is no runtime default model: a model id must be supplied explicitly
+//! or pinned to the Principal/agent.
 //!
 //! ## Precedence
 //!
 //! 1. **Explicit caller override** — passed via IPC / CLI /
-//!    `peko send --provider X --model Y`. Wins unconditionally.
-//! 2. **Session-pinned choice** — set by a prior turn via
-//!    an extension/hook or the session router. Carries between turns, not within.
-//! 3. **Agent preference** — `agent.toml` `preferred_provider_id` /
-//!    `preferred_model_id`. Soft hint only.
-//! 4. **Runtime default** — `peko provider set-default <id>`.
-//! 5. **First enabled catalog entry** — last-resort fallback.
-//!
-//! All four earlier levels may be `None`; the resolver walks down
-//! until one matches an enabled entry.
+//!    `peko send --model <configured-model-id>`. Wins unconditionally.
+//! 2. **Principal-pinned choice** — set in `principal.toml` as
+//!    `preferred_model_id`. The Principal must be created with a model.
+//! 3. error — "no model configured for this call"
 //!
 //! ## Env-var bootstrap (CI / headless)
 //!
 //! On platforms without an OS keychain (or for CI), `LlmResolver`
 //! can be started with `--bootstrap-env-keys`. In that mode, if the
-//! secret store returns `Backend` (not `None`) or the requested
-//! provider has no key, the resolver falls back to the conventional
-//! `*_API_KEY` env vars. This is a read-only path: keys found this
-//! way are never written back.
+//! credential vault has no credential for the configured model, the
+//! resolver falls back to the conventional `*_API_KEY` env vars. This
+//! is a read-only path: keys found this way are never written back.
 
 use anyhow::{anyhow, Context, Result};
 use secrecy::{ExposeSecret, SecretString};
@@ -37,32 +28,26 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::common::secret_store::SecretStore;
-use crate::providers::catalog::{ModelInfo, ProviderCatalog, ProviderCatalogEntry};
+use crate::providers::catalog::{ModelCatalog, ModelConfig};
 use crate::providers::core::Provider;
-use crate::providers::factory::create_provider_for_entry;
+use crate::providers::factory::create_provider_for_model;
 
 /// Inputs to `LlmResolver::resolve`.
-///
-/// All fields are optional; the resolver walks the precedence chain
-/// until one matches an enabled catalog entry.
 #[derive(Debug, Default, Clone)]
 pub struct ResolveRequest<'a> {
-    /// Explicit caller override (`peko send --provider ... --model ...`).
-    pub override_provider: Option<&'a str>,
+    /// Explicit caller override (`peko send --model ...`).
     pub override_model: Option<&'a str>,
     /// Session-pinned choice from a prior turn.
-    pub session_provider: Option<&'a str>,
     pub session_model: Option<&'a str>,
-    /// Agent soft preferences.
-    pub agent_provider: Option<&'a str>,
+    /// Principal/agent soft preference.
     pub agent_model: Option<&'a str>,
 }
 
 /// Outcome of a successful resolution.
 #[derive(Debug, Clone)]
 pub struct ResolvedChoice {
-    pub entry: ProviderCatalogEntry,
-    pub model: ModelInfo,
+    pub config: ModelConfig,
+    pub model_id: String,
     /// Which precedence level won. Useful for diagnostics / logging.
     pub source: ResolveSource,
 }
@@ -73,8 +58,6 @@ pub enum ResolveSource {
     ExplicitOverride,
     SessionPinned,
     AgentPreference,
-    RuntimeDefault,
-    FirstEnabled,
 }
 
 impl ResolveSource {
@@ -85,59 +68,44 @@ impl ResolveSource {
             Self::ExplicitOverride => "override",
             Self::SessionPinned => "session",
             Self::AgentPreference => "agent",
-            Self::RuntimeDefault => "default",
-            Self::FirstEnabled => "first-enabled",
         }
     }
 }
 
 /// The runtime LLM resolver.
-///
-/// One instance is shared across the runtime via `Arc<LlmResolver>`.
-/// It is stateless apart from references to the catalog and secret
-/// store; multiple resolvers can coexist.
 pub struct LlmResolver {
-    catalog: Arc<ProviderCatalog>,
+    catalog: Arc<ModelCatalog>,
     secrets: Arc<dyn SecretStore>,
-    /// Optional concrete vault. When present, `resolve_api_key` prefers
-    /// `vault.get_material_for("provider:{account}", "default")` so the
-    /// resolver exercises the v2 credential API. Falls back to the
-    /// generic `SecretStore` for tests and the env-bootstrap path.
     vault: Option<Arc<crate::common::vault::Vault>>,
-    /// If true, the resolver falls back to conventional `*_API_KEY`
-    /// env vars when the secret store has no entry. Read-only path;
-    /// keys found via env are never persisted.
     bootstrap_env_keys: bool,
-    /// Test-only: a mock adapter to return instead of building a real
-    /// provider from the catalog. Used by `LlmResolver::mock`.
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     mock_adapter: Option<crate::providers::MockAdapter>,
 }
 
 impl LlmResolver {
     /// Create a new resolver backed by a generic secret store.
     #[must_use]
-    pub fn new(catalog: Arc<ProviderCatalog>, secrets: Arc<dyn SecretStore>) -> Self {
+    pub fn new(catalog: Arc<ModelCatalog>, secrets: Arc<dyn SecretStore>) -> Self {
         Self {
             catalog,
             secrets,
             vault: None,
             bootstrap_env_keys: false,
-            #[cfg(any(test, feature = "test-utils"))]
+            #[cfg(test)]
             mock_adapter: None,
         }
     }
 
-    /// Attach a concrete vault so the resolver uses the v2 credential
-    /// API (`get_material_for`) for provider API keys.
+    /// Attach a concrete vault so the resolver reads credential material
+    /// from the v2 credential API.
     #[must_use]
     pub fn with_vault(mut self, vault: Arc<crate::common::vault::Vault>) -> Self {
         self.vault = Some(vault);
         self
     }
 
-    /// Enable the env-var bootstrap path. Intended for CI and
-    /// headless deployments where the OS keychain is unavailable.
+    /// Enable the env-var bootstrap path. Intended for CI and headless
+    /// deployments where the OS keychain is unavailable.
     #[must_use]
     pub fn with_env_bootstrap(mut self) -> Self {
         self.bootstrap_env_keys = true;
@@ -145,51 +113,36 @@ impl LlmResolver {
     }
 
     /// Build a mock-backed resolver for tests.
-    ///
-    /// The returned resolver has a single catalog entry (`id = "mock"`,
-    /// model = "mock-model") marked as the runtime default. Any agent
-    /// that resolves through it will get a provider backed by the shared
-    /// `MockAdapter`, so queued responses are returned deterministically.
-    ///
-    /// `catalog_path` should point to a `providers.toml` file; the parent
-    /// directory is assumed to exist for the lifetime of the test.
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub async fn mock(
         adapter: crate::providers::MockAdapter,
         catalog_path: impl AsRef<std::path::Path>,
     ) -> (std::sync::Arc<Self>, crate::providers::MockAdapter) {
-        use crate::providers::catalog::{ApiFormat, ModelInfo, ProviderCatalogEntry};
-        use crate::providers::ProviderCatalog;
+        use crate::providers::catalog::{ApiFormat, ModelConfig};
+        use crate::providers::ModelCatalog;
 
-        let catalog = ProviderCatalog::load_or_init(catalog_path)
+        let catalog = ModelCatalog::load_or_init(catalog_path)
             .await
             .expect("mock catalog init failed");
 
-        let entry = ProviderCatalogEntry {
+        let config = ModelConfig {
             id: "mock".to_string(),
-            display_name: "Mock Provider".to_string(),
+            display_name: "Mock Model".to_string(),
             template_id: None,
             api_format: ApiFormat::OpenaiCompletions,
             base_url: String::new(),
-            models: vec![ModelInfo {
-                id: "mock-model".to_string(),
-                display_name: Some("Mock Model".to_string()),
-                context_length: None,
-                max_output_tokens: None,
-                capabilities: vec![],
-            }],
-            default_model_id: "mock-model".to_string(),
+            model_id: "mock-model".to_string(),
+            context_window: None,
+            max_output_tokens: None,
+            capabilities: vec![],
             headers: std::collections::BTreeMap::new(),
+            credential_id: None,
             requires_key: false,
             enabled: true,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
-        catalog.upsert(entry).await.expect("mock upsert failed");
-        catalog
-            .set_default(Some("mock".to_string()), None)
-            .await
-            .expect("mock default failed");
+        catalog.upsert(config).await.expect("mock upsert failed");
 
         let tmp = tempfile::tempdir().expect("mock tempdir");
         let vault = Arc::new(crate::common::vault::Vault::for_test(
@@ -213,147 +166,80 @@ impl LlmResolver {
         self.bootstrap_env_keys
     }
 
-    /// Resolve a `(provider_id, model_id)` request per the
-    /// precedence chain. Returns the catalog entry and model plus
-    /// which level won.
+    /// Resolve a configured model per the precedence chain.
     pub async fn resolve(&self, req: ResolveRequest<'_>) -> Result<ResolvedChoice> {
-        // 1. Explicit override.
-        if let Some(pid) = req.override_provider {
-            let entry = self.require_enabled_entry(pid).await?;
-            let model = resolve_model_on(&entry, req.override_model)?;
+        if let Some(id) = req.override_model {
+            let config = self.require_enabled_model(id).await?;
             return Ok(ResolvedChoice {
-                entry,
-                model,
+                model_id: config.model_id.clone(),
+                config,
                 source: ResolveSource::ExplicitOverride,
             });
         }
 
-        // 2. Session-pinned.
-        if let Some(pid) = req.session_provider {
-            if let Some(entry) = self.catalog.get_enabled(pid).await {
-                let model = resolve_model_on(&entry, req.session_model)?;
+        if let Some(id) = req.session_model {
+            if let Some(config) = self.catalog.get_enabled(id).await {
                 return Ok(ResolvedChoice {
-                    entry,
-                    model,
+                    model_id: config.model_id.clone(),
+                    config,
                     source: ResolveSource::SessionPinned,
                 });
             }
         }
 
-        // 3. Agent preference.
-        if let Some(pid) = req.agent_provider {
-            if let Some(entry) = self.catalog.get_enabled(pid).await {
-                let model = resolve_model_on(&entry, req.agent_model)?;
+        if let Some(id) = req.agent_model {
+            if let Some(config) = self.catalog.get_enabled(id).await {
                 return Ok(ResolvedChoice {
-                    entry,
-                    model,
+                    model_id: config.model_id.clone(),
+                    config,
                     source: ResolveSource::AgentPreference,
                 });
             }
         }
 
-        // 4. Runtime default.
-        let (default_pid, default_model_id) = self.catalog.get_default().await;
-        if let Some(pid) = default_pid {
-            if let Some(entry) = self.catalog.get_enabled(&pid).await {
-                let model = resolve_model_on(&entry, default_model_id.as_deref())?;
-                return Ok(ResolvedChoice {
-                    entry,
-                    model,
-                    source: ResolveSource::RuntimeDefault,
-                });
-            }
-        }
-
-        // 5. First enabled entry.
-        let enabled = self.catalog.list_enabled().await;
-        let entry = enabled
-            .first()
-            .with_context(|| "no enabled providers in the catalog")?;
-        let model = resolve_model_on(entry, None)?;
-        Ok(ResolvedChoice {
-            entry: entry.clone(),
-            model,
-            source: ResolveSource::FirstEnabled,
-        })
+        anyhow::bail!("no model configured for this call")
     }
 
-    /// Resolve a request then immediately build a `Provider` ready to
-    /// serve. This is the hot path used by `Agent::run*`.
+    /// Resolve a request then immediately build a `Provider` ready to serve.
     pub async fn build(&self, req: ResolveRequest<'_>) -> Result<(Arc<Provider>, ResolvedChoice)> {
         let choice = self.resolve(req).await?;
-        let provider = self.build_provider(&choice.entry, &choice.model).await?;
+        let provider = self.build_provider(&choice.config).await?;
         Ok((provider, choice))
     }
 
-    /// Build a one-shot `Provider` for the given entry + model.
-    ///
-    /// Looks up the API key from the `SecretStore` (with optional
-    /// env-var fallback). The adapter is constructed from the
-    /// catalog entry's `api_format` and `base_url` — it does not
-    /// carry a model id; the model is threaded per call.
-    ///
-    /// When the vault contains a rotation binding for
-    /// `provider:{id}:default`, the returned provider is configured
-    /// to advance to the next credential on HTTP 401 and retry.
-    pub async fn build_provider(
-        &self,
-        entry: &ProviderCatalogEntry,
-        model: &ModelInfo,
-    ) -> Result<Arc<Provider>> {
-        let provider = if entry.id == "mock" {
-            #[cfg(any(test, feature = "test-utils"))]
+    /// Build a one-shot `Provider` for the given configured model.
+    pub async fn build_provider(&self, config: &ModelConfig) -> Result<Arc<Provider>> {
+        let provider = if config.id == "mock" {
+            #[cfg(test)]
             if let Some(ref adapter) = self.mock_adapter {
-                Self::build_mock_provider(adapter.clone(), model)?
+                Self::build_mock_provider(adapter.clone(), config)?
             } else {
-                create_provider_for_entry(entry, "mock-key", model)?
+                create_provider_for_model(config, "mock-key")?
             }
-            #[cfg(not(any(test, feature = "test-utils")))]
-            create_provider_for_entry(entry, "mock-key", model)?
+            #[cfg(not(test))]
+            create_provider_for_model(config, "mock-key")?
         } else {
             let api_key = self
-                .resolve_api_key(&entry.id)
-                .with_context(|| format!("no API key available for provider '{}'", entry.id))?;
-            create_provider_for_entry(entry, api_key.expose_secret(), model)?
+                .resolve_api_key(config)
+                .with_context(|| format!("no API key available for model '{}'", config.id))?;
+            create_provider_for_model(config, api_key.expose_secret())?
         };
-
-        // RP3B: attach rotation state when a binding exists for this
-        // provider's default slot.
-        if let Some(vault) = &self.vault {
-            let namespace = format!("provider:{}", entry.id);
-            if vault.get_binding(&namespace, "default").is_some() {
-                let rotation = crate::providers::rotating_auth::RotationState::new(
-                    Arc::clone(vault),
-                    namespace,
-                    "default".to_string(),
-                )
-                .with_context(|| {
-                    format!(
-                        "failed to attach rotation state for provider '{}'",
-                        entry.id
-                    )
-                })?;
-                let provider = Arc::try_unwrap(provider)
-                    .unwrap_or_else(|p| (*p).clone())
-                    .with_rotation(rotation);
-                return Ok(Arc::new(provider));
-            }
-        }
 
         Ok(provider)
     }
 
     /// Test-only helper: build a `Provider` backed by the shared mock adapter.
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     fn build_mock_provider(
         adapter: crate::providers::MockAdapter,
-        model: &ModelInfo,
+        config: &ModelConfig,
     ) -> Result<Arc<Provider>> {
         use crate::providers::adapters::AnyAdapter;
         use crate::providers::core::ProviderRuntimeOptions;
 
         let options = ProviderRuntimeOptions {
-            default_model_id: model.id.clone(),
+            default_model_id: config.model_id.clone(),
+            context_window: config.context_window,
             timeout_seconds: 300,
             max_retries: 3,
             retry_delay_ms: 1000,
@@ -362,44 +248,35 @@ impl LlmResolver {
         Provider::new(AnyAdapter::Mock(adapter), "mock-key".to_string(), options).map(Arc::new)
     }
 
-    /// Internal: look up the API key for a provider.
-    ///
-    /// Resolution order:
-    /// 1. Concrete vault via `get_material_for("provider:{account}", "default")`
-    ///    (RP3A v2 credential API).
-    /// 2. Generic secret store (test backends / backward compat).
-    /// 3. If `bootstrap_env_keys` is enabled, conventional `*_API_KEY`
-    ///    env vars (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
-    fn resolve_api_key(&self, account: &str) -> Result<SecretString> {
-        // 1. Prefer the v2 vault API when a concrete vault is attached.
-        if let Some(vault) = &self.vault {
-            match vault.get_material_for(&format!("provider:{account}"), "default") {
+    /// Internal: look up the API key for a configured model.
+    fn resolve_api_key(&self, config: &ModelConfig) -> Result<SecretString> {
+        // 1. Concrete vault via credential_id.
+        if let Some(id) = &config.credential_id {
+            if let Some(vault) = &self.vault {
+                match vault.get_credential(id) {
+                    Some(c) => return Ok(c.material.clone()),
+                    None => {}
+                }
+            }
+            match self.secrets.get(id) {
                 Ok(Some(secret)) => return Ok(secret),
-                Ok(None) => {} // not present — fall through
+                Ok(None) => {}
                 Err(e) => {
                     if !self.bootstrap_env_keys {
-                        return Err(anyhow!("vault backend error for '{account}': {e}"));
+                        return Err(anyhow!("vault backend error for credential '{id}': {e}"));
                     }
                 }
             }
         }
 
-        // 2. Generic secret store fallback.
-        match self.secrets.get(account) {
-            Ok(Some(secret)) => return Ok(secret),
-            Ok(None) => {} // not present — fall through to env
-            Err(e) => {
-                // Backend error (e.g. OS keychain unavailable). Only
-                // try the env fallback if explicitly enabled.
-                if !self.bootstrap_env_keys {
-                    return Err(anyhow!("secret store backend error for '{account}': {e}"));
-                }
-            }
+        // 2. If the model does not require a key, allow an empty key.
+        if !config.requires_key {
+            return Ok(SecretString::new(String::new().into()));
         }
 
-        // 3. Env-var bootstrap.
+        // 3. Env-var bootstrap keyed by template_id or model id.
         if self.bootstrap_env_keys {
-            for var in env_var_candidates(account) {
+            for var in env_var_candidates(config) {
                 if let Ok(v) = std::env::var(var) {
                     if !v.trim().is_empty() {
                         return Ok(SecretString::from(v));
@@ -409,14 +286,15 @@ impl LlmResolver {
         }
 
         Err(anyhow!(
-            "no key for '{account}' (env bootstrap {})",
+            "no key for model '{}' (env bootstrap {})",
+            config.id,
             if self.bootstrap_env_keys { "on" } else { "off" }
         ))
     }
 
     /// Reference to the underlying catalog.
     #[must_use]
-    pub fn catalog(&self) -> &Arc<ProviderCatalog> {
+    pub fn catalog(&self) -> &Arc<ModelCatalog> {
         &self.catalog
     }
 
@@ -426,27 +304,23 @@ impl LlmResolver {
         &self.secrets
     }
 
-    /// Verify the chosen entry has an API key. Returns `Ok(Some(true))`
-    /// if present, `Ok(Some(false))` if shape looks wrong, `Ok(None)`
-    /// if missing. Used by `credential.test`.
-    pub fn test_key(&self, account: &str) -> Result<Option<bool>> {
-        match self.secrets.test_format(account) {
-            Ok(result) => Ok(result),
-            Err(e) => Err(anyhow!("secret store backend error: {e}")),
-        }
-    }
-
     /// Try every key-resolution path and report which one(s) would
     /// have worked. For diagnostics / CLI display.
-    pub fn probe(&self, account: &str) -> KeyProbeReport {
+    pub fn probe(&self, config: &ModelConfig) -> KeyProbeReport {
         let mut report = KeyProbeReport::default();
-        match self.secrets.get(account) {
-            Ok(Some(_)) => report.secret_store = Some(true),
-            Ok(None) => report.secret_store = Some(false),
-            Err(e) => report.secret_store_error = Some(e.to_string()),
+        if let Some(id) = &config.credential_id {
+            match self.secrets.get(id) {
+                Ok(Some(_)) => report.secret_store = Some(true),
+                Ok(None) => report.secret_store = Some(false),
+                Err(e) => report.secret_store_error = Some(e.to_string()),
+            }
+        } else if config.requires_key {
+            report.secret_store = Some(false);
+        } else {
+            report.secret_store = Some(true);
         }
         if self.bootstrap_env_keys {
-            for var in env_var_candidates(account) {
+            for var in env_var_candidates(config) {
                 if let Ok(v) = std::env::var(var) {
                     if !v.trim().is_empty() {
                         report.env_vars.insert(var.to_string(), true);
@@ -475,43 +349,10 @@ pub struct KeyProbeReport {
     pub env_vars: HashMap<String, bool>,
 }
 
-/// Resolve a model on a given entry. `model_id == None` falls back
-/// to the entry's declared default. The literal string `"default"` is
-/// treated as a sentinel meaning "use the provider's default model" —
-/// this matches the convention used in agent configs that predate the
-/// v3 provider catalog (e.g. `preferred_model_id = "default"`).
-fn resolve_model_on(entry: &ProviderCatalogEntry, model_id: Option<&str>) -> Result<ModelInfo> {
-    let mid = model_id.filter(|m| !m.is_empty() && *m != "default");
-    if let Some(mid) = mid {
-        if let Some(m) = entry.model(mid) {
-            return Ok(m.clone());
-        }
-        anyhow::bail!(
-            "model '{mid}' is not declared on provider '{}' (declared: {})",
-            entry.id,
-            entry
-                .models
-                .iter()
-                .map(|m| m.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-    entry
-        .model(&entry.default_model_id)
-        .cloned()
-        .with_context(|| {
-            format!(
-                "provider '{}' has no default model ({} declared models)",
-                entry.id,
-                entry.models.len()
-            )
-        })
-}
-
 /// Conventional env-var names checked during the bootstrap fallback.
-fn env_var_candidates(provider_id: &str) -> Vec<&'static str> {
-    match provider_id {
+fn env_var_candidates(config: &ModelConfig) -> Vec<&'static str> {
+    let key = config.template_id.as_deref().unwrap_or(&config.id);
+    match key {
         "openai" => vec!["OPENAI_API_KEY"],
         "anthropic" => vec!["ANTHROPIC_API_KEY"],
         "azure-openai" | "azure" => vec!["AZURE_OPENAI_API_KEY"],
@@ -527,21 +368,18 @@ fn env_var_candidates(provider_id: &str) -> Vec<&'static str> {
         "kimi" => vec!["KIMI_API_KEY"],
         "minimax" => vec!["MINIMAX_API_KEY"],
         _ => {
-            // Generic fallback: <UPPER_ID>_API_KEY
-            let upper = provider_id.to_uppercase().replace('-', "_");
+            let upper = key.to_uppercase().replace('-', "_");
             vec![Box::leak(format!("{upper}_API_KEY").into_boxed_str())]
         }
     }
 }
 
 impl LlmResolver {
-    /// Helper used by tests / direct callers that need to look up an
-    /// enabled entry by id with a clear error message.
-    async fn require_enabled_entry(&self, id: &str) -> Result<ProviderCatalogEntry> {
+    async fn require_enabled_model(&self, id: &str) -> Result<ModelConfig> {
         self.catalog
             .get_enabled(id)
             .await
-            .with_context(|| format!("provider '{id}' not found or disabled in the catalog"))
+            .with_context(|| format!("model '{id}' not found or disabled in the catalog"))
     }
 }
 
@@ -550,73 +388,57 @@ impl std::fmt::Display for ResolvedChoice {
         write!(
             f,
             "{} / {} (via {})",
-            self.entry.id,
-            self.model.id,
+            self.config.id,
+            self.model_id,
             self.source.label()
         )
     }
-}
-
-/// Convenience: pick a sensible default `model_name` for a catalog
-/// entry, used by the legacy `default_model_for_entry` adapter
-/// factory below.
-pub fn default_model_id(entry: &ProviderCatalogEntry) -> &str {
-    &entry.default_model_id
-}
-
-#[doc(hidden)]
-pub fn _model_for_entry<'a>(entry: &'a ProviderCatalogEntry) -> &'a ModelInfo {
-    // Caller guarantees the default model exists; if not, this
-    // panics — that's a programming error in the catalog seeder.
-    entry
-        .model(&entry.default_model_id)
-        .expect("catalog entry missing its declared default_model_id")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::common::secret_store::InMemorySecretStore;
-    use crate::common::vault::{Credential, CredentialKind, RotationBinding, RotationStrategy};
-    use crate::providers::catalog::ApiFormat;
     use crate::providers::templates;
     use secrecy::SecretString;
     use tempfile::tempdir;
 
-    async fn tempdir_catalog() -> (tempfile::TempDir, Arc<ProviderCatalog>) {
+    async fn tempdir_catalog() -> (tempfile::TempDir, Arc<ModelCatalog>) {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("providers.toml");
-        let cat = ProviderCatalog::load_or_init(&path).await.unwrap();
+        let path = dir.path().join("models.toml");
+        let cat = ModelCatalog::load_or_init(&path).await.unwrap();
         (dir, cat)
     }
 
-    async fn seeded_catalog() -> (tempfile::TempDir, Arc<ProviderCatalog>) {
-        let (dir, cat) = tempdir_catalog().await;
-        let openai = ProviderCatalogEntry::from_template(
+    fn openai_config() -> ModelConfig {
+        ModelConfig::from_template(
             templates::find_template("openai").unwrap(),
-            "openai",
-            None,
-        );
-        let anthropic = ProviderCatalogEntry::from_template(
+            "openai-gpt-4o",
+            "gpt-4o",
+        )
+    }
+
+    fn anthropic_config() -> ModelConfig {
+        ModelConfig::from_template(
             templates::find_template("anthropic").unwrap(),
-            "anthropic",
-            None,
-        );
-        cat.upsert(openai).await.unwrap();
-        cat.upsert(anthropic).await.unwrap();
-        cat.set_default(Some("openai".into()), None).await.unwrap();
+            "anthropic-sonnet",
+            "claude-sonnet-4-5",
+        )
+    }
+
+    async fn seeded_catalog() -> (tempfile::TempDir, Arc<ModelCatalog>) {
+        let (dir, cat) = tempdir_catalog().await;
+        cat.upsert(openai_config()).await.unwrap();
+        cat.upsert(anthropic_config()).await.unwrap();
         (dir, cat)
     }
 
-    fn resolver(cat: Arc<ProviderCatalog>) -> LlmResolver {
+    fn resolver(cat: Arc<ModelCatalog>) -> LlmResolver {
         let tmp = tempfile::tempdir().unwrap();
         let vault = Arc::new(crate::common::vault::Vault::for_test(
             tmp.path(),
             "test-passphrase",
         ));
-        vault
-            .set_provider_key("openai", &SecretString::new("sk-openai".into()))
-            .unwrap();
         let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
         LlmResolver::new(cat, secrets).with_vault(vault)
     }
@@ -627,76 +449,45 @@ mod tests {
         let r = resolver(cat);
         let choice = r
             .resolve(ResolveRequest {
-                override_provider: Some("anthropic"),
-                override_model: Some("claude-sonnet-4-5"),
+                override_model: Some("anthropic-sonnet"),
                 ..Default::default()
             })
             .await
             .unwrap();
-        assert_eq!(choice.entry.id, "anthropic");
-        assert_eq!(choice.model.id, "claude-sonnet-4-5");
+        assert_eq!(choice.config.id, "anthropic-sonnet");
+        assert_eq!(choice.model_id, "claude-sonnet-4-5");
         assert_eq!(choice.source, ResolveSource::ExplicitOverride);
     }
 
     #[tokio::test]
-    async fn session_pinned_beats_agent_and_default() {
+    async fn principal_preference_beats_error() {
         let (_d, cat) = seeded_catalog().await;
         let r = resolver(cat);
         let choice = r
             .resolve(ResolveRequest {
-                session_provider: Some("anthropic"),
-                session_model: None,
-                agent_provider: Some("openai"),
-                agent_model: None,
+                agent_model: Some("openai-gpt-4o"),
                 ..Default::default()
             })
             .await
             .unwrap();
-        assert_eq!(choice.entry.id, "anthropic");
-        assert_eq!(choice.source, ResolveSource::SessionPinned);
-    }
-
-    #[tokio::test]
-    async fn agent_preference_beats_default() {
-        let (_d, cat) = seeded_catalog().await;
-        let r = resolver(cat);
-        let choice = r
-            .resolve(ResolveRequest {
-                agent_provider: Some("anthropic"),
-                agent_model: Some("claude-3-5-haiku-latest"),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(choice.entry.id, "anthropic");
-        assert_eq!(choice.model.id, "claude-3-5-haiku-latest");
+        assert_eq!(choice.config.id, "openai-gpt-4o");
         assert_eq!(choice.source, ResolveSource::AgentPreference);
     }
 
     #[tokio::test]
-    async fn agent_model_default_sentinel_falls_back_to_provider_default() {
+    async fn override_beats_principal_preference() {
         let (_d, cat) = seeded_catalog().await;
         let r = resolver(cat);
         let choice = r
             .resolve(ResolveRequest {
-                agent_provider: Some("anthropic"),
-                agent_model: Some("default"),
+                override_model: Some("anthropic-sonnet"),
+                agent_model: Some("openai-gpt-4o"),
                 ..Default::default()
             })
             .await
             .unwrap();
-        assert_eq!(choice.entry.id, "anthropic");
-        assert_eq!(choice.model.id, "claude-sonnet-4-5");
-        assert_eq!(choice.source, ResolveSource::AgentPreference);
-    }
-
-    #[tokio::test]
-    async fn runtime_default_used_when_no_overrides() {
-        let (_d, cat) = seeded_catalog().await;
-        let r = resolver(cat);
-        let choice = r.resolve(ResolveRequest::default()).await.unwrap();
-        assert_eq!(choice.entry.id, "openai");
-        assert_eq!(choice.source, ResolveSource::RuntimeDefault);
+        assert_eq!(choice.config.id, "anthropic-sonnet");
+        assert_eq!(choice.source, ResolveSource::ExplicitOverride);
     }
 
     #[tokio::test]
@@ -705,7 +496,7 @@ mod tests {
         let r = resolver(cat);
         assert!(r
             .resolve(ResolveRequest {
-                override_provider: Some("nope"),
+                override_model: Some("nope"),
                 ..Default::default()
             })
             .await
@@ -713,38 +504,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn override_model_must_exist_on_provider() {
-        let (_d, cat) = seeded_catalog().await;
-        let r = resolver(cat);
-        assert!(r
-            .resolve(ResolveRequest {
-                override_provider: Some("openai"),
-                override_model: Some("gpt-99-imaginary"),
-                ..Default::default()
-            })
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn first_enabled_used_when_no_default() {
-        let (dir, cat) = tempdir_catalog().await;
-        cat.upsert(ProviderCatalogEntry::from_template(
-            templates::find_template("anthropic").unwrap(),
-            "anthropic",
-            None,
-        ))
-        .await
-        .unwrap();
-        let r = resolver(cat);
-        let choice = r.resolve(ResolveRequest::default()).await.unwrap();
-        assert_eq!(choice.entry.id, "anthropic");
-        assert_eq!(choice.source, ResolveSource::FirstEnabled);
-        drop(dir);
-    }
-
-    #[tokio::test]
-    async fn empty_catalog_errors() {
+    async fn no_model_configured_errors() {
         let (_d, cat) = tempdir_catalog().await;
         let r = resolver(cat);
         assert!(r.resolve(ResolveRequest::default()).await.is_err());
@@ -753,50 +513,61 @@ mod tests {
     #[tokio::test]
     async fn disabled_entries_are_skipped() {
         let (_d, cat) = seeded_catalog().await;
-        // Disable the default (openai)
         {
-            let e = cat.get("openai").await.unwrap();
-            cat.upsert(ProviderCatalogEntry {
-                enabled: false,
-                ..e
-            })
-            .await
-            .unwrap();
+            let mut cfg = openai_config();
+            cfg.enabled = false;
+            cat.upsert(cfg).await.unwrap();
         }
         let r = resolver(cat);
-        let choice = r.resolve(ResolveRequest::default()).await.unwrap();
-        // Default openai is disabled; resolver falls back to anthropic.
-        assert_eq!(choice.entry.id, "anthropic");
-        assert_eq!(choice.source, ResolveSource::FirstEnabled);
+        assert!(r
+            .resolve(ResolveRequest {
+                agent_model: Some("openai-gpt-4o"),
+                ..Default::default()
+            })
+            .await
+            .is_err());
     }
 
     #[tokio::test]
-    async fn resolve_api_key_uses_get_material_for() {
-        // RP3A: the resolver must read provider API keys through the v2
-        // vault API (`get_material_for("provider:{id}", "default")`),
-        // not the legacy trait `get(account)`.
+    async fn resolve_api_key_reads_credential_by_id() {
         let (_d, cat) = seeded_catalog().await;
+        let mut cfg = anthropic_config();
         let tmp = tempfile::tempdir().unwrap();
         let vault = Arc::new(crate::common::vault::Vault::for_test(
             tmp.path(),
             "test-passphrase",
         ));
-        vault
-            .set_provider_key("anthropic", &SecretString::new("sk-ant-v2".into()))
-            .unwrap();
+        let cred = crate::common::vault::Credential::now(
+            "llm",
+            "anthropic",
+            crate::common::vault::CredentialKind::ApiKey,
+            SecretString::new("sk-ant-v2".into()),
+        );
+        let cred_id = cred.id.clone();
+        vault.set_credential(&cred).unwrap();
+        cfg.credential_id = Some(cred_id.clone());
+        cat.upsert(cfg).await.unwrap();
+
         let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
         let r = LlmResolver::new(cat, secrets).with_vault(vault);
-        let key = r.resolve_api_key("anthropic").unwrap();
+        let key = r
+            .resolve_api_key(r.catalog.get("anthropic-sonnet").await.as_ref().unwrap())
+            .unwrap();
         assert_eq!(key.expose_secret(), "sk-ant-v2");
     }
 
     #[tokio::test]
     async fn env_bootstrap_kicks_in_when_no_key() {
         let (_d, cat) = seeded_catalog().await;
+        let mut cfg = anthropic_config();
+        cfg.template_id = Some("anthropic".into());
+        cat.upsert(cfg).await.unwrap();
         std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-from-env");
-        let secrets = Arc::new(InMemorySecretStore::new()); // empty
+        let secrets = Arc::new(InMemorySecretStore::new());
         let r = LlmResolver::new(cat, secrets).with_env_bootstrap();
-        let key = r.resolve_api_key("anthropic").unwrap();
+        let key = r
+            .resolve_api_key(r.catalog.get("anthropic-sonnet").await.as_ref().unwrap())
+            .unwrap();
         assert_eq!(key.expose_secret(), "sk-ant-from-env");
         std::env::remove_var("ANTHROPIC_API_KEY");
     }
@@ -804,23 +575,34 @@ mod tests {
     #[tokio::test]
     async fn env_bootstrap_off_by_default() {
         let (_d, cat) = seeded_catalog().await;
+        let mut cfg = openai_config();
+        cfg.template_id = Some("openai".into());
+        cfg.credential_id = None;
+        cat.upsert(cfg).await.unwrap();
         std::env::set_var("OPENAI_API_KEY", "sk-from-env");
         let secrets = Arc::new(InMemorySecretStore::new());
-        let r = LlmResolver::new(cat, secrets); // bootstrap OFF
-        assert!(r.resolve_api_key("openai").is_err());
+        let r = LlmResolver::new(cat, secrets);
+        assert!(r
+            .resolve_api_key(r.catalog.get("openai-gpt-4o").await.as_ref().unwrap())
+            .is_err());
         std::env::remove_var("OPENAI_API_KEY");
     }
 
     #[tokio::test]
     async fn probe_reports_storage_and_env() {
         let (_d, cat) = seeded_catalog().await;
+        let mut cfg = openai_config();
+        cfg.template_id = Some("openai".into());
+        cfg.credential_id = Some("cred-openai".into());
+        cat.upsert(cfg).await.unwrap();
         std::env::set_var("OPENAI_API_KEY", "sk-from-env");
         let secrets = Arc::new(InMemorySecretStore::from_pairs(&[(
-            "openai",
+            "cred-openai",
             "sk-from-store",
         )]));
         let r = LlmResolver::new(cat, secrets).with_env_bootstrap();
-        let probe = r.probe("openai");
+        let config = r.catalog.get("openai-gpt-4o").await.unwrap();
+        let probe = r.probe(&config);
         assert_eq!(probe.secret_store, Some(true));
         assert_eq!(probe.env_vars.get("OPENAI_API_KEY").copied(), Some(true));
         std::env::remove_var("OPENAI_API_KEY");
@@ -828,214 +610,56 @@ mod tests {
 
     #[tokio::test]
     async fn env_candidates_for_known_providers() {
-        assert_eq!(env_var_candidates("openai"), vec!["OPENAI_API_KEY"]);
-        assert_eq!(env_var_candidates("anthropic"), vec!["ANTHROPIC_API_KEY"]);
-        assert!(env_var_candidates("moonshot").contains(&"MOONSHOT_API_KEY"));
+        let mut cfg = openai_config();
+        cfg.template_id = Some("openai".into());
+        assert_eq!(env_var_candidates(&cfg), vec!["OPENAI_API_KEY"]);
+        let mut cfg = anthropic_config();
+        cfg.template_id = Some("anthropic".into());
+        assert_eq!(env_var_candidates(&cfg), vec!["ANTHROPIC_API_KEY"]);
     }
 
     #[tokio::test]
     async fn env_candidates_generic_fallback() {
-        assert_eq!(env_var_candidates("my-custom"), vec!["MY_CUSTOM_API_KEY"]);
+        let mut cfg = ModelConfig::from_template(
+            templates::find_template("openai").unwrap(),
+            "my-custom",
+            "my-model",
+        );
+        cfg.template_id = None;
+        assert_eq!(env_var_candidates(&cfg), vec!["MY_CUSTOM_API_KEY"]);
     }
 
-    /// End-to-end of the daemon reload path: the resolver holds an
-    /// `Arc<ProviderCatalog>` whose inner state can change under it.
-    /// Simulates a `peko provider add ... --default` happening on a
-    /// separate process while the daemon is running — the file is
-    /// rewritten under the Arc, the daemon-side caller invokes
-    /// `reload()`, and the resolver immediately observes the new
-    /// default.
     #[tokio::test]
-    async fn reload_arc_makes_resolver_observe_new_default() {
+    async fn reload_arc_makes_resolver_observe_new_entries() {
         let (_dir, cat) = tempdir_catalog().await;
-        // Seed only openai, no default.
-        cat.upsert(ProviderCatalogEntry::from_template(
-            templates::find_template("openai").unwrap(),
-            "openai",
-            None,
-        ))
-        .await
-        .unwrap();
+        cat.upsert(openai_config()).await.unwrap();
         let r = resolver(cat.clone());
-        let choice = r.resolve(ResolveRequest::default()).await.unwrap();
-        assert_eq!(choice.entry.id, "openai");
-        assert_eq!(choice.source, ResolveSource::FirstEnabled);
+        let choice = r
+            .resolve(ResolveRequest {
+                agent_model: Some("openai-gpt-4o"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(choice.config.id, "openai-gpt-4o");
 
-        // Write a brand-new catalog to disk under the same path
-        // (simulates `peko provider add` from another process) and
-        // reload.
         let path = cat.path().to_path_buf();
-        let mut new_file = crate::providers::catalog::ProviderCatalogFile::default();
-        let tmpl = templates::find_template("anthropic").unwrap();
-        new_file.entries.insert(
-            "anthropic".to_string(),
-            ProviderCatalogEntry::from_template(tmpl, "anthropic", None),
-        );
-        new_file.default_provider_id = Some("anthropic".into());
-        new_file.default_model_id = Some(tmpl.default_model.into());
+        let mut new_file = crate::providers::catalog::ModelCatalogFile::default();
+        new_file
+            .entries
+            .insert("anthropic-sonnet".to_string(), anthropic_config());
         std::fs::write(&path, toml::to_string(&new_file).unwrap()).unwrap();
 
         let count = cat.reload().await.unwrap();
         assert_eq!(count, 1);
 
-        // Same resolver, same Arc — now sees the new default.
-        let choice = r.resolve(ResolveRequest::default()).await.unwrap();
-        assert_eq!(choice.entry.id, "anthropic");
-        assert_eq!(choice.source, ResolveSource::RuntimeDefault);
-    }
-
-    /// RP3B: when no rotation binding exists, a 401 from the provider
-    /// is surfaced immediately — the plain provider does not retry.
-    #[tokio::test]
-    async fn build_provider_without_binding_does_not_rotate() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (resolver, adapter) = LlmResolver::mock(
-            crate::providers::MockAdapter::new(),
-            tmp.path().join("providers.toml"),
-        )
-        .await;
-        let entry = resolver.catalog.get("mock").await.unwrap();
-        let model = entry.model("mock-model").unwrap().clone();
-        let provider = resolver.build_provider(&entry, &model).await.unwrap();
-
-        adapter.queue_error("HTTP error 401: invalid credentials");
-        let result = provider.chat_response("hi", "mock-model", 0.7).await;
-        assert!(result.is_err(), "expected 401 to surface without rotation");
-        assert!(
-            result.unwrap_err().to_string().contains("401"),
-            "error should mention the 401 status"
-        );
-    }
-
-    /// RP3B: with a rotation binding, a 401 advances to the next
-    /// credential and retries. The success is returned and the mock
-    /// adapter sees two attempts.
-    #[tokio::test]
-    async fn build_provider_with_binding_rotates_on_401() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (resolver, adapter) = LlmResolver::mock(
-            crate::providers::MockAdapter::new(),
-            tmp.path().join("providers.toml"),
-        )
-        .await;
-
-        let vault = resolver.vault.as_ref().unwrap();
-        let c1 = Credential::now(
-            "provider:mock",
-            "default",
-            CredentialKind::ApiKey,
-            SecretString::new("key-1".into()),
-        );
-        let c2 = Credential::now(
-            "provider:mock",
-            "default",
-            CredentialKind::ApiKey,
-            SecretString::new("key-2".into()),
-        );
-        let id1 = c1.id.clone();
-        let id2 = c2.id.clone();
-        vault.set_credential(&c1).unwrap();
-        vault.set_credential(&c2).unwrap();
-        vault
-            .set_binding(
-                &RotationBinding::slot_key("provider:mock", "default"),
-                &RotationBinding {
-                    strategy: RotationStrategy::RoundRobin,
-                    ordered_credential_ids: vec![id1, id2],
-                },
-            )
-            .unwrap();
-
-        let entry = resolver.catalog.get("mock").await.unwrap();
-        let model = entry.model("mock-model").unwrap().clone();
-        let provider = resolver.build_provider(&entry, &model).await.unwrap();
-
-        adapter.queue_error("HTTP error 401: invalid credentials");
-        adapter.queue_text("rotated success");
-
-        let result = provider.chat_response("hi", "mock-model", 0.7).await;
-        assert!(
-            result.is_ok(),
-            "expected rotation to retry and succeed: {:?}",
-            result.err()
-        );
-        let text: String = result
-            .unwrap()
-            .content
-            .into_iter()
-            .filter_map(|cb| match cb {
-                crate::providers::ContentBlock::Text { text } => Some(text),
-                _ => None,
+        let choice = r
+            .resolve(ResolveRequest {
+                agent_model: Some("anthropic-sonnet"),
+                ..Default::default()
             })
-            .collect();
-        assert_eq!(text, "rotated success");
-        assert_eq!(
-            adapter.recorded_requests().len(),
-            2,
-            "rotation should have made two attempts"
-        );
-    }
-
-    /// RP3B: when every credential in the binding returns 401, the
-    /// provider surfaces the last error after one full cycle.
-    #[tokio::test]
-    async fn build_provider_with_binding_exhausts_on_all_401() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (resolver, adapter) = LlmResolver::mock(
-            crate::providers::MockAdapter::new(),
-            tmp.path().join("providers.toml"),
-        )
-        .await;
-
-        let vault = resolver.vault.as_ref().unwrap();
-        let c1 = Credential::now(
-            "provider:mock",
-            "default",
-            CredentialKind::ApiKey,
-            SecretString::new("key-1".into()),
-        );
-        let c2 = Credential::now(
-            "provider:mock",
-            "default",
-            CredentialKind::ApiKey,
-            SecretString::new("key-2".into()),
-        );
-        let id1 = c1.id.clone();
-        let id2 = c2.id.clone();
-        vault.set_credential(&c1).unwrap();
-        vault.set_credential(&c2).unwrap();
-        vault
-            .set_binding(
-                &RotationBinding::slot_key("provider:mock", "default"),
-                &RotationBinding {
-                    strategy: RotationStrategy::RoundRobin,
-                    ordered_credential_ids: vec![id1, id2],
-                },
-            )
+            .await
             .unwrap();
-
-        let entry = resolver.catalog.get("mock").await.unwrap();
-        let model = entry.model("mock-model").unwrap().clone();
-        let provider = resolver.build_provider(&entry, &model).await.unwrap();
-
-        adapter.queue_error("HTTP error 401: first credential failed");
-        adapter.queue_error("HTTP error 401: second credential failed");
-
-        let result = provider.chat_response("hi", "mock-model", 0.7).await;
-        assert!(result.is_err(), "expected exhaustion after all 401s");
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("second credential failed"),
-            "last error should be from the second credential: {err}"
-        );
-        assert_eq!(
-            adapter.recorded_requests().len(),
-            2,
-            "should attempt each credential once"
-        );
+        assert_eq!(choice.config.id, "anthropic-sonnet");
     }
-
-    // ensure we cover the unsupported-feature in cargo features
-    #[allow(dead_code)]
-    fn _format_check(_: ApiFormat) {}
 }

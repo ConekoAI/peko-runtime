@@ -130,20 +130,16 @@ impl RequestDispatcher {
             Arc::new(ExtensionHandler::new(host.clone())),
             Arc::new(ProviderMcpHandler::new(host.clone())),
             Arc::new(QuotaHandler::new(host.clone())),
-            Arc::new(CredentialHandler::new(
-                host.clone(),
-                host.clone(),
-                host.clone(),
-            )),
+            Arc::new(CredentialHandler::new(host.clone(), host.clone())),
             Arc::new(PrincipalHandler::new(host.clone())),
-            // T-109b: `ProviderTemplates` + `ProviderAdd` are the
-            // IPC seam for the desktop's "Add Provider" modal. They
+            // T-109b: `ModelTemplates` + `ModelAdd` are the
+            // IPC seam for the desktop's "Add Model" modal. They
             // sit adjacent to `ProviderMcp` (catalog/reload) so all
-            // provider-mutation variants are colocated in the
+            // model-mutation variants are colocated in the
             // dispatch table.
             Arc::new(ProviderTemplatesHandler::new(host.clone())),
             Arc::new(ProviderAddHandler::new(host.clone())),
-            // RP6: provider edit / remove / set-default live next to
+            // RP6: model update / remove / test live next to
             // the add handler so the whole catalog-mutation surface is
             // routed as one group.
             Arc::new(ProviderEditHandler::new(host)),

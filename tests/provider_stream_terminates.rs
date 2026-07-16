@@ -104,6 +104,7 @@ async fn stream_terminates_on_done_even_if_connection_stays_open() {
     let adapter = AnyAdapter::OpenAi(OpenAiAdapter::new().with_base_url(format!("http://{addr}")));
     let options = ProviderRuntimeOptions {
         default_model_id: "gpt-test".to_string(),
+        context_window: None,
         timeout_seconds: 30,
         max_retries: 0,
         retry_delay_ms: 0,
@@ -214,6 +215,7 @@ async fn stream_terminates_on_message_stop_even_if_connection_stays_open() {
         AnyAdapter::Anthropic(AnthropicAdapter::new().with_base_url(format!("http://{addr}")));
     let options = ProviderRuntimeOptions {
         default_model_id: "claude-test".to_string(),
+        context_window: None,
         timeout_seconds: 30,
         max_retries: 0,
         retry_delay_ms: 0,

@@ -664,10 +664,8 @@ impl AgenticLoop {
         // The orchestrator pins the value once at run start.
         const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 128_000;
         let context_window = match self.agent.llm_resolver() {
-            Some(resolver) => resolver
-                .catalog()
-                .model_context_length(provider.name(), &provider.model_id())
-                .await
+            Some(_) => provider
+                .context_window()
                 .map(|n| n as usize)
                 .unwrap_or(FALLBACK_CONTEXT_WINDOW_TOKENS),
             None => FALLBACK_CONTEXT_WINDOW_TOKENS,
@@ -1496,6 +1494,7 @@ mod tests {
         let any = AnyAdapter::Mock(adapter.clone());
         let options = ProviderRuntimeOptions {
             default_model_id: "mock-model".to_string(),
+            context_window: None,
             timeout_seconds: 300,
             max_retries: 3,
             retry_delay_ms: 1000,
@@ -2650,9 +2649,15 @@ mod tests {
         let adapter = MockAdapter::new();
         adapter.queue_text("hi");
         let tmp = tempfile::tempdir().unwrap();
-        let catalog = tmp.path().join("providers.toml");
+        let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog).await;
-        let (provider, _choice) = resolver.build(Default::default()).await.unwrap();
+        let (provider, _choice) = resolver
+            .build(crate::providers::resolver::ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
         QuotaScope::with(principal.clone(), async {
             QuotaScope::with(peer.clone(), async {

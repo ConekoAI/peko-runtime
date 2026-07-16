@@ -20,15 +20,13 @@ use super::{agent_prompt::AgentPrompt, Capabilities};
 /// Build an `AgentConfig` from a thin Markdown prompt + the Principal's
 /// allowed extensions.
 ///
-/// `provider_hint` is the resolved `(preferred_provider_id, preferred_model_id)`
-/// pair. The caller passes the explicit principal-config values when set, or
-/// falls back to the catalog's `default_provider_id` / `default_model_id` when
-/// the principal doesn't declare one (see [`run_root_agent_prompt`]). Without
-/// a non-`None` provider hint the root agent's `SubagentExecutor` raises the
-/// actionable "no LLM provider is configured for principal '{name}'" error
-/// pointing the user at the principal + global config paths — there is no
-/// other code path that can recover a provider for the root agent at run
-/// time.
+/// `provider_hint` is the resolved configured-model id (the principal's
+/// `preferred_model_id`, or a per-message `--model` override). Without a
+/// non-`None` hint the root agent's `SubagentExecutor` raises the
+/// actionable "no model configured for principal '{name}'" error
+/// pointing the user at the principal.toml pin — there is no runtime
+/// default model and no other code path that can recover a provider
+/// for the root agent at run time.
 ///
 /// **Track B**: the `capabilities` / `available_agents` filtering
 /// no longer touches the agent config (the per-agent extension whitelist
@@ -42,16 +40,11 @@ pub fn build_agent_config(
     prompt: &AgentPrompt,
     _capabilities: &Capabilities,
     _available_agents: &[AgentPromptSummary],
-    // **Track B**: `provider_hint` is no longer baked into the
-    // returned `AgentConfig` (the `preferred_provider_id` /
-    // `preferred_model_id` fields are gone). The caller is
-    // responsible for threading the hint to
-    // `Agent::new_with_session_manager_resolver`, which forwards it
-    // to `init_provider`. The parameter is kept here for API
-    // stability — production call sites pass `ctx.provider_hint`,
-    // and `resolve_provider_hint` already merged any catalog
-    // defaults before this function sees it.
-    _provider_hint: (Option<String>, Option<String>),
+    // Model-first: the principal's pinned configured model id, or
+    // `None`. The caller threads this to
+    // `Agent::new_with_session_manager_resolver`, which forwards it to
+    // `init_provider`.
+    _provider_hint: Option<String>,
 ) -> AgentConfig {
     // The `capabilities` / `available_agents` parameters are
     // kept for API stability but no longer affect `AgentConfig`
@@ -83,69 +76,41 @@ pub fn build_agent_config(
     }
 }
 
-/// Merge two `(provider_id, model_id)` hints with the principal-level
-/// hint taking precedence on each axis. The principal may pin only a
-/// provider (leaving the model to the catalog default) or only a model
-/// (rare but supported for routing to a non-default model on the
-/// catalog's default provider).
-fn merge_provider_hint(
-    principal: (Option<String>, Option<String>),
-    catalog_default: (Option<String>, Option<String>),
-) -> (Option<String>, Option<String>) {
-    let pid = principal.0.or(catalog_default.0);
-    let mid = principal.1.or(catalog_default.1);
-    (pid, mid)
-}
-
-/// Validate a principal's provider hint against the live catalog.
+/// Validate a principal's configured model hint against the live catalog.
 ///
-/// If the principal pins a `preferred_provider_id` that doesn't exist
-/// in the catalog — typical after `peko provider remove` or a
-/// hand-edit typo — drop the principal's hint entirely so the catalog
-/// default applies. A stale pin should never break the root agent;
-/// the operator will see the warning and either re-add the provider
-/// or fix the principal config.
-///
-/// Returns the principal hint unchanged when no validation is
-/// possible (no resolver) or the hint is valid.
+/// If the principal pins a `preferred_model_id` that doesn't exist in
+/// the catalog — typical after `peko model remove` or a hand-edit typo
+/// — drop the hint and log a warning. A stale pin should never break
+/// the root agent; the operator will see the warning and either
+/// re-add the model or fix the principal config.
 async fn validate_principal_hint(
     resolver: &crate::providers::LlmResolver,
-    principal_hint: (Option<String>, Option<String>),
-) -> (Option<String>, Option<String>) {
-    let Some(ref pid) = principal_hint.0 else {
+    principal_hint: Option<String>,
+) -> Option<String> {
+    let Some(ref id) = principal_hint else {
         return principal_hint;
     };
-    if resolver.catalog().get(pid).await.is_some() {
+    if resolver.catalog().get(id).await.is_some() {
         return principal_hint;
     }
     tracing::warn!(
-        "principal prefers provider '{pid}' but it is not in the catalog. \
-         Falling back to the catalog default. \
-         Re-add it with `peko provider add --template {pid}` or clear the \
-         principal's `preferred_provider_id` in principal.toml."
+        "principal prefers model '{id}' but it is not in the catalog. \
+         Re-add it with `peko model add ...` or clear the principal's \
+         `preferred_model_id` in principal.toml."
     );
-    (None, None)
+    None
 }
 
-/// Resolve the final provider hint for a principal context.
+/// Resolve the final configured model hint for a principal context.
 ///
-/// Precedence: per-principal `[provider]` from `principal.toml` (wins,
-/// but only when the referenced provider actually exists in the
-/// catalog), then the global catalog default, then `None` (which
-/// surfaces the actionable "no provider configured" error from
-/// `SubagentExecutor` — issue #69).
-pub(crate) async fn resolve_provider_hint(
-    ctx: &PrincipalContext,
-) -> (Option<String>, Option<String>) {
-    let catalog_default = match ctx.resolver.as_ref() {
-        Some(r) => r.catalog().get_default().await,
-        None => (None, None),
-    };
-    let validated_principal_hint = match ctx.resolver.as_ref() {
+/// Returns the principal's pinned model id when it exists in the
+/// catalog; otherwise returns `None` (which surfaces the actionable
+/// "no model configured" error from `LlmResolver`).
+pub(crate) async fn resolve_provider_hint(ctx: &PrincipalContext) -> Option<String> {
+    match ctx.resolver.as_ref() {
         Some(r) => validate_principal_hint(r, ctx.provider_hint.clone()).await,
         None => ctx.provider_hint.clone(),
-    };
-    merge_provider_hint(validated_principal_hint, catalog_default)
+    }
 }
 
 /// Run the root agent prompt in a peer-scoped
@@ -342,16 +307,16 @@ where
         config,
         Arc::clone(&session_manager),
         ctx.resolver.clone(),
-        // **Track B**: pass the principal's resolved provider hint
+        // Model-first: pass the principal's pinned configured model id
         // through; `init_provider` forwards it to the resolver.
-        Some(ctx.provider_hint.clone()),
+        ctx.provider_hint.clone(),
         ctx.principal_id().clone(),
         Some(Arc::clone(&ctx.inbox_registry)),
-        // RP2: per-message provider/model override (mirrored from
+        // Per-message configured model override (mirrored from
         // `RouterContext`). `init_provider` populates
-        // `ResolveRequest::override_*` so the resolver classifies
+        // `ResolveRequest::override_model` so the resolver classifies
         // the resolution as `ExplicitOverride` when set.
-        Some(ctx.message_override.clone()),
+        ctx.message_override.clone(),
     )
     .await?
     // Scope the agent's `Agent` tool to this principal's workspace so
@@ -393,34 +358,20 @@ where
         .with_observability(ctx.observability().cloned())
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
-            // `PathResolver::principal_dir`), so derive the two config files
-            // we can plausibly ask the user to edit without threading the
-            // PathResolver through every layer.
+            // `PathResolver::principal_dir`), so the principal.toml path is
+            // derivable without threading the PathResolver through every
+            // layer.
             let principal_toml = ctx.workspace_path.join("principal.toml");
-            let global_toml = ctx
-                .workspace_path
-                .parent()
-                .and_then(|p| p.parent())
-                .map(|p| p.join("config.toml"));
-            let global_hint = global_toml
-                .as_ref()
-                .map(|p| format!("\n  • {}", p.display()))
-                .unwrap_or_default();
             anyhow::anyhow!(
-                "no LLM provider is configured for principal '{name}'.\n\
+                "no model configured for principal '{name}'.\n\
                  \n\
-                 Add a [provider] block to one of:\n\
-                   • {principal}{global_hint}\n\
+                 Pin a configured model in {principal}:\n\
+                   preferred_model_id = \"<configured-model-id>\"\n\
                  \n\
-                 Example:\n\
-                   [provider]\n\
-                   type = \"ollama\"\n\
-                   model = \"llama3\"\n\
-                 \n\
-                 Or run: peko provider add",
+                 Add one with: peko model add --template <anthropic|openai|ollama|...> --model <wire-id>\n\
+                 List configured models: peko model list",
                 name = prompt.name,
                 principal = principal_toml.display(),
-                global_hint = global_hint,
             )
         })?)
         .with_agent_config(agent.config.clone()),
@@ -479,196 +430,4 @@ where
         .context("root agent execution failed")?;
 
     Ok(result.final_answer)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{merge_provider_hint, validate_principal_hint};
-    use crate::providers::catalog::{ModelInfo, ProviderCatalogEntry};
-    use crate::providers::templates;
-    use crate::providers::LlmResolver;
-    use std::sync::Arc;
-
-    /// Per-principal hint wins outright when both axes are set: this is
-    /// the headline behaviour for "principals automatically use default
-    /// provider unless configured otherwise".
-    #[test]
-    fn principal_hint_wins_over_catalog_default_when_both_set() {
-        let merged = merge_provider_hint(
-            (Some("ollama".into()), Some("llama3.1".into())),
-            (Some("anthropic".into()), Some("claude-sonnet-4-5".into())),
-        );
-        assert_eq!(merged, (Some("ollama".into()), Some("llama3.1".into())));
-    }
-
-    /// Principal pins the provider but leaves the model — the catalog
-    /// default's model should still apply for that axis.
-    #[test]
-    fn principal_provider_only_falls_back_to_catalog_model() {
-        let merged = merge_provider_hint(
-            (Some("ollama".into()), None),
-            (Some("anthropic".into()), Some("claude-sonnet-4-5".into())),
-        );
-        assert_eq!(
-            merged,
-            (Some("ollama".into()), Some("claude-sonnet-4-5".into()))
-        );
-    }
-
-    /// No principal hint → catalog default flows through verbatim.
-    /// This is the path 99% of Principals take.
-    #[test]
-    fn no_principal_hint_inherits_catalog_default() {
-        let merged = merge_provider_hint(
-            (None, None),
-            (Some("anthropic".into()), Some("claude-sonnet-4-5".into())),
-        );
-        assert_eq!(
-            merged,
-            (Some("anthropic".into()), Some("claude-sonnet-4-5".into()))
-        );
-    }
-
-    /// Neither side has a hint → both axes stay None, and the
-    /// SubagentExecutor raises the actionable "no provider configured"
-    /// error pointing at the config paths.
-    #[test]
-    fn no_hint_anywhere_yields_none() {
-        assert_eq!(
-            merge_provider_hint((None, None), (None, None)),
-            (None, None)
-        );
-    }
-
-    async fn seeded_resolver_with(
-        providers: &[(&str, &str)],
-        default: Option<(&str, &str)>,
-    ) -> Arc<LlmResolver> {
-        let dir = tempfile::tempdir().unwrap();
-        let cat = crate::providers::catalog::ProviderCatalog::load_or_init(
-            dir.path().join("providers.toml"),
-        )
-        .await
-        .unwrap();
-        for (id, model) in providers {
-            let tmpl = templates::find_template(id).unwrap_or_else(|| {
-                templates::find_template("ollama").unwrap() // unreachable in tests
-            });
-            let entry = ProviderCatalogEntry {
-                id: (*id).to_string(),
-                display_name: tmpl.display_name.to_string(),
-                template_id: Some(tmpl.id.to_string()),
-                api_format: tmpl.api_format,
-                base_url: tmpl.base_url.to_string(),
-                models: vec![ModelInfo::new((*model).to_string())],
-                default_model_id: (*model).to_string(),
-                headers: Default::default(),
-                requires_key: tmpl.requires_key,
-                enabled: true,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            };
-            cat.upsert(entry).await.unwrap();
-        }
-        if let Some((pid, mid)) = default {
-            cat.set_default(Some(pid.into()), Some(mid.into()))
-                .await
-                .unwrap();
-        }
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = Arc::new(crate::common::vault::Vault::for_test(
-            tmp.path(),
-            "test-passphrase",
-        ));
-        let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
-        Arc::new(LlmResolver::new(cat, secrets).with_vault(vault))
-    }
-
-    /// Principal pins a provider that exists in the catalog → hint
-    /// passes through untouched (graceful path stays the happy path).
-    #[tokio::test]
-    async fn validate_principal_hint_passes_through_known_provider() {
-        let resolver = seeded_resolver_with(&[("anthropic", "claude-sonnet-4-5")], None).await;
-        let validated = validate_principal_hint(
-            &resolver,
-            (Some("anthropic".into()), Some("claude-sonnet-4-5".into())),
-        )
-        .await;
-        assert_eq!(
-            validated,
-            (Some("anthropic".into()), Some("claude-sonnet-4-5".into()))
-        );
-    }
-
-    /// Principal pins a provider that's been deleted from the catalog
-    /// (or was a typo) → drop the principal hint so the catalog
-    /// default flows through, and the root agent keeps working.
-    #[tokio::test]
-    async fn validate_principal_hint_drops_unknown_provider() {
-        let resolver = seeded_resolver_with(
-            &[("anthropic", "claude-sonnet-4-5")],
-            Some(("anthropic", "claude-sonnet-4-5")),
-        )
-        .await;
-        let validated = validate_principal_hint(
-            &resolver,
-            (Some("ghost-provider".into()), Some("any-model".into())),
-        )
-        .await;
-        // Both axes dropped → `merge_provider_hint` then falls back to
-        // the catalog default verbatim.
-        assert_eq!(validated, (None, None));
-    }
-
-    /// No resolver context → we can't validate, so the principal hint
-    /// passes through unchanged. This matches the legacy behaviour and
-    /// keeps the test-friendly `run_root_agent_prompt` callers honest.
-    #[test]
-    fn validate_principal_hint_is_noop_when_no_hint() {
-        // A pure-function spot-check: with no principal hint set, the
-        // root agent never invokes `validate_principal_hint` with a
-        // Some(pid), but we still guarantee the helper is a no-op for
-        // the (None, _) case via the call-site guard.
-        assert_eq!(
-            merge_provider_hint(
-                (None, None),
-                (Some("anthropic".into()), Some("claude-sonnet-4-5".into()))
-            ),
-            (Some("anthropic".into()), Some("claude-sonnet-4-5".into()))
-        );
-    }
-
-    /// RP2: per-message override wins outright. The merge layer doesn't
-    /// see the override (that lives on `ResolveRequest::override_*`),
-    /// but we pin the contract here so future refactors can't silently
-    /// demote the message-level override below the principal hint.
-    /// The `init_provider` wiring in `agents/agent.rs` populates
-    /// `override_provider` / `override_model` directly, which the
-    /// resolver classifies as `ResolveSource::ExplicitOverride`.
-    #[test]
-    fn message_override_takes_precedence_over_principal_hint() {
-        // Pure-shape check: at the merge layer the message override is
-        // already routed around (it never enters `merge_provider_hint`),
-        // but the resolver-layer precedence is documented via the
-        // `ResolveSource::ExplicitOverride` arm in
-        // `providers::resolver::resolve`. This test exists as a guard
-        // so a future refactor that DOES collapse the override into
-        // the merge layer doesn't accidentally demote it.
-        let principal = (Some("ollama".into()), Some("llama3.1".into()));
-        let catalog_default = (Some("anthropic".into()), Some("claude-sonnet-4-5".into()));
-        // Without the override (current path): principal wins.
-        assert_eq!(
-            merge_provider_hint(principal.clone(), catalog_default.clone()),
-            (Some("ollama".into()), Some("llama3.1".into())),
-        );
-        // The override pair is what `Agent::init_provider` would
-        // forward as `override_provider` / `override_model`. The
-        // resolver's `ExplicitOverride` arm is exercised by
-        // `providers::resolver::tests::resolve_explicit_override`.
-        let override_pair = (Some("openai".into()), Some("gpt-4o".into()));
-        assert_ne!(
-            override_pair,
-            merge_provider_hint(principal, catalog_default)
-        );
-    }
 }

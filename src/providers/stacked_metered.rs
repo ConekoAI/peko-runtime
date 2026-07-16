@@ -107,6 +107,12 @@ impl StackedMeteredProvider {
         self.inner.model_id()
     }
 
+    /// Context window (delegates to inner).
+    #[must_use]
+    pub fn context_window(&self) -> Option<u32> {
+        self.inner.context_window()
+    }
+
     /// Whether the inner provider supports native tool calling.
     #[must_use]
     pub fn supports_native_tools(&self) -> bool {
@@ -307,9 +313,15 @@ mod tests {
         let adapter = MockAdapter::new();
         adapter.queue_text("hello");
         let tmp = tempfile::tempdir().unwrap();
-        let catalog = tmp.path().join("providers.toml");
+        let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
-        let (provider, _choice) = resolver.build(Default::default()).await.unwrap();
+        let (provider, _choice) = resolver
+            .build(crate::providers::resolver::ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
         let mut meters = Vec::new();
         let mut stack = Vec::new();
@@ -488,9 +500,15 @@ mod tests {
         let adapter = MockAdapter::new();
         adapter.queue_text("hello");
         let tmp = tempfile::tempdir().unwrap();
-        let catalog = tmp.path().join("providers.toml");
+        let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
-        let (provider, _choice) = resolver.build(Default::default()).await.unwrap();
+        let (provider, _choice) = resolver
+            .build(crate::providers::resolver::ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
         QuotaScope::with(Arc::clone(&outer), async {
             QuotaScope::with(Arc::clone(&inner), async {

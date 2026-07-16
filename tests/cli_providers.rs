@@ -97,9 +97,10 @@ fn minimax_api_key() -> Option<String> {
 /// Create a Principal that resolves to a real-LLM provider.
 ///
 /// Unlike `common::agent::create_mock_principal`, this does NOT seed the
-/// mock-llm catalog entry — the caller seeds the real provider
-/// (minimax/kimi) as the sole catalog entry first, so the root agent's
-/// provider resolution falls through to it.
+/// Create a Principal pinned to the seeded configured model. The
+/// caller seeds the real endpoint (minimax/kimi) as the sole catalog
+/// entry first and passes its configured model id — model-first
+/// create requires `--model` and validates it against the catalog.
 ///
 /// New Principals are created with an empty `[capabilities] grants`
 /// list by default. Tests that need the root agent to call tools (e.g.
@@ -108,15 +109,15 @@ fn minimax_api_key() -> Option<String> {
 ///
 /// Must be called BEFORE `DaemonGuard::spawn`: `peko principal create`
 /// writes files directly and needs no daemon.
-fn create_provider_principal(cli: &PekoCli, name: &str) {
+fn create_provider_principal(cli: &PekoCli, name: &str, model_id: &str) {
     let output = cli
         .cmd()
-        .args(["principal", "create", name])
+        .args(["principal", "create", name, "--model", model_id])
         .output()
         .expect("run `peko principal create`");
     assert!(
         output.status.success(),
-        "`peko principal create {name}` failed: stdout={} stderr={}",
+        "`peko principal create {name} --model {model_id}` failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -199,7 +200,7 @@ async fn cli_providers_minimax_smoke() {
     let cli = PekoCli::new().allow_real_llm_keys();
     let principal = "providers_minimax_smoke";
     common::agent::seed_minimax_provider_in_catalog(cli.home());
-    create_provider_principal(&cli, principal);
+    create_provider_principal(&cli, principal, "minimax");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // PS script: `peko send <principal> "Hello, can you tell me a short joke?"`
@@ -237,7 +238,7 @@ async fn cli_providers_kimi_smoke() {
     let cli = PekoCli::new().allow_real_llm_keys();
     let principal = "providers_kimi_smoke";
     common::agent::seed_kimi_provider_in_catalog(cli.home());
-    create_provider_principal(&cli, principal);
+    create_provider_principal(&cli, principal, "kimi");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // PS script: `peko send <principal> "Hi"`
@@ -276,7 +277,7 @@ async fn cli_providers_minimax_anthropic_native_tool_call() {
     let cli = PekoCli::new().allow_real_llm_keys();
     let principal = "providers_minimax_anthropic_tool_call";
     common::agent::seed_minimax_provider_in_catalog(cli.home());
-    create_provider_principal(&cli, principal);
+    create_provider_principal(&cli, principal, "minimax");
     grant_tools_to_principal(&cli, principal, &["Read"]);
 
     // The daemon's `Read` resolves relative paths against the shared

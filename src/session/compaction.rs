@@ -888,6 +888,7 @@ minimax = { "M3" = 4000 }
                 "",
                 ProviderRuntimeOptions {
                     default_model_id: "mock-model".to_string(),
+                    context_window: None,
                     timeout_seconds: 300,
                     max_retries: 3,
                     retry_delay_ms: 1000,
@@ -942,6 +943,7 @@ minimax = { "M3" = 4000 }
                 "",
                 ProviderRuntimeOptions {
                     default_model_id: "mock-model".to_string(),
+                    context_window: None,
                     timeout_seconds: 300,
                     max_retries: 3,
                     retry_delay_ms: 1000,

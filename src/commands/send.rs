@@ -8,7 +8,7 @@
 //!   peko send myprincipal --file prompt.txt
 //!   echo "Hello" | peko send myprincipal --stdin
 //!   peko send myprincipal "Hello" --no-stream
-//!   peko send myprincipal "Hello" --provider openai --model gpt-4o
+//!   peko send myprincipal "Hello" --model openai-gpt-4o
 
 use crate::commands::GlobalPaths;
 use crate::common::types::OutputFormat;
@@ -45,12 +45,8 @@ pub struct SendArgs {
     #[arg(long)]
     pub no_slash: bool,
 
-    /// Override the provider for this message only
-    #[arg(long, value_name = "PROVIDER_ID")]
-    pub provider: Option<String>,
-
-    /// Override the model for this message only (requires --provider)
-    #[arg(long, value_name = "MODEL_ID", requires = "provider")]
+    /// Override the configured model for this message only
+    #[arg(long, value_name = "MODEL_ID")]
     pub model: Option<String>,
 }
 
@@ -80,7 +76,6 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
             _paths.user(),
             args.no_slash,
             output_format,
-            args.provider.clone(),
             args.model.clone(),
         )
         .await?;
@@ -324,34 +319,24 @@ mod tests {
     }
 
     #[test]
-    fn send_parses_provider_and_model_flags() {
+    fn send_parses_model_override_flag() {
         let cli = Cli::try_parse_from([
             "peko",
             "send",
             "myprincipal",
             "hello",
-            "--provider",
-            "openai",
             "--model",
-            "gpt-4o",
+            "anthropic-claude-sonnet-4-5",
         ])
-        .expect("should parse send command with --provider and --model");
+        .expect("should parse send command with --model");
 
         match cli.command {
             Commands::Send(args) => {
                 assert_eq!(args.principal, "myprincipal");
                 assert_eq!(args.message, Some("hello".to_string()));
-                assert_eq!(args.provider, Some("openai".to_string()));
-                assert_eq!(args.model, Some("gpt-4o".to_string()));
+                assert_eq!(args.model, Some("anthropic-claude-sonnet-4-5".to_string()));
             }
             _other => panic!("expected Send command"),
         }
-    }
-
-    #[test]
-    fn send_model_requires_provider() {
-        let result =
-            Cli::try_parse_from(["peko", "send", "myprincipal", "hello", "--model", "gpt-4o"]);
-        assert!(result.is_err(), "--model without --provider should fail");
     }
 }

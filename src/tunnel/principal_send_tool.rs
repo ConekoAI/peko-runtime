@@ -177,7 +177,6 @@ impl PrincipalSendTool {
                 message.to_string(),
                 channel,
                 None,
-                None,
             )
             .await
         {

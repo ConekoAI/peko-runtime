@@ -64,9 +64,24 @@ fn assert_err(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 fn principal_create_list_show() {
     let cli = PekoCli::new();
 
+    // Create requires `--model` and validates it against the catalog.
+    // This test is fully offline (create/list/show touch the
+    // filesystem only), so a placeholder mock-llm URL is fine — the
+    // endpoint is never dialed.
+    common::agent::seed_mock_provider_in_catalog(cli.home(), "http://127.0.0.1:9/v1");
+
     // Create a Principal — writes workspace, `agents/primary.md`, identity, and
     // `principal.toml` directly.
-    let (out, err, status) = run(&cli, &["principal", "create", "test-principal"]);
+    let (out, err, status) = run(
+        &cli,
+        &[
+            "principal",
+            "create",
+            "test-principal",
+            "--model",
+            "mock-llm",
+        ],
+    );
     assert_ok(&out, &err, &status);
     assert!(
         out.contains("test-principal"),

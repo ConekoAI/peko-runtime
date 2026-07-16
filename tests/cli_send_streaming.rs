@@ -186,14 +186,14 @@ async fn send_uses_streaming_request_and_renders_chunks() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn send_forwards_provider_and_model_overrides() {
+async fn send_forwards_model_override() {
     let cli = PekoCli::new();
     let sock_path = cli.daemon_sock();
     std::fs::create_dir_all(sock_path.parent().expect("sock parent")).expect("create run dir");
     let _ = std::fs::remove_file(&sock_path);
     let server = UnixDatagram::bind(&sock_path).expect("bind fake daemon socket");
 
-    let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<(RequestedOverrides, String)>(1);
+    let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<(Option<String>, String)>(1);
 
     let server_task = tokio::spawn(async move {
         let mut buf = vec![0u8; 65536];
@@ -224,21 +224,12 @@ async fn send_forwards_provider_and_model_overrides() {
                 RequestPacket::PrincipalSendStream {
                     request_id,
                     message,
-                    override_provider,
                     override_model,
                     ..
                 } => {
                     reply_send(&server, &peer_path, request_id).await;
                     if let Some(tx) = send_tx.take() {
-                        let _ = tx
-                            .send((
-                                RequestedOverrides {
-                                    override_provider,
-                                    override_model,
-                                },
-                                message,
-                            ))
-                            .await;
+                        let _ = tx.send((override_model, message)).await;
                     }
                 }
                 _ => {}
@@ -251,10 +242,8 @@ async fn send_forwards_provider_and_model_overrides() {
         "send",
         "test-agent",
         "ping",
-        "--provider",
-        "openai",
         "--model",
-        "gpt-4o",
+        "anthropic-claude-sonnet-4-5",
     ])
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
@@ -266,23 +255,20 @@ async fn send_forwards_provider_and_model_overrides() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    let (overrides, message) = tokio::time::timeout(Duration::from_secs(5), send_rx.recv())
+    let (override_model, message) = tokio::time::timeout(Duration::from_secs(5), send_rx.recv())
         .await
         .expect("timed out waiting for the send request")
         .expect("fake daemon never saw a send request");
     server_task.abort();
 
     assert_eq!(message, "ping");
-    assert_eq!(overrides.override_provider, Some("openai".to_string()));
-    assert_eq!(overrides.override_model, Some("gpt-4o".to_string()));
+    assert_eq!(
+        override_model,
+        Some("anthropic-claude-sonnet-4-5".to_string())
+    );
     assert_eq!(
         output.status.code(),
         Some(0),
         "peko send exited non-zero\nstdout: {stdout}\nstderr: {stderr}"
     );
-}
-
-struct RequestedOverrides {
-    override_provider: Option<String>,
-    override_model: Option<String>,
 }

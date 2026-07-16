@@ -83,8 +83,7 @@ async fn create_test_principal(
         exposure: Exposure::Public,
         status: None,
         permissions: Vec::new(),
-        preferred_provider_id: None,
-        preferred_model_id: None,
+        preferred_model_id: Some("mock".to_string()),
         transport_preference,
         quota: None,
     };
@@ -111,7 +110,7 @@ async fn same_runtime_principal_send_short_circuits_offline() {
     let workspace_ref = workspace.clone();
     tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-    let catalog_path = temp.path().join("providers.toml");
+    let catalog_path = temp.path().join("models.toml");
     let (resolver, adapter) =
         LlmResolver::mock(crate::providers::MockAdapter::new(), &catalog_path).await;
 

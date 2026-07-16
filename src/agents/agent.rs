@@ -468,20 +468,14 @@ impl Agent {
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
-        // **Track B**: principal's `(provider_id, model_id)` hint,
-        // threaded from `PrincipalContext::provider_hint`. The hint
-        // is no longer stored on `AgentConfig`; it reaches
-        // `init_provider` via this parameter. `None` means "no
-        // hint — let the resolver pick the catalog default" (test
-        // fixtures, non-principal callers).
-        provider_hint: Option<(Option<String>, Option<String>)>,
+        // Model-first: a single configured model id pinned by the
+        // Principal, or `None` for non-principal callers/tests.
+        provider_hint: Option<String>,
         principal_id: crate::subject::PrincipalId,
         inbox_registry: Option<Arc<InboxRegistry>>,
-        // RP2: per-message provider/model override (RP8 wires the
-        // CLI flags). When `Some`, the resolver classifies the
-        // resolution as `ResolveSource::ExplicitOverride`. `None`
-        // preserves the principal-config chain.
-        message_override: Option<(Option<String>, Option<String>)>,
+        // Model-first: per-message configured model override
+        // (`peko send --model`). `None` preserves the principal hint.
+        message_override: Option<String>,
     ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
 
@@ -512,12 +506,11 @@ impl Agent {
             }
         }
 
-        // Initialize provider if configured. `provider_hint` flows
-        // through from the production caller (principal's hint) or
-        // is `None` for tests / non-principal callers — see the
-        // Track B note on `init_provider`. `message_override` (RP2)
-        // is the per-message `peko send --provider/--model` flag
-        // pair; `None` preserves the principal-config chain.
+        // Initialize provider if configured. `provider_hint` is the
+        // principal's pinned configured model id, or `None` for tests /
+        // non-principal callers. `message_override` is the per-message
+        // `peko send --model <id>` override; `None` preserves the
+        // principal-config chain.
         let provider = Self::init_provider(
             &config,
             llm_resolver.as_ref(),
@@ -1977,35 +1970,24 @@ impl Agent {
     async fn init_provider(
         config: &AgentConfig,
         resolver: Option<&Arc<crate::providers::LlmResolver>>,
-        // **Track B**: per-agent `preferred_*` fields were removed
-        // from `AgentConfig`. The hint now arrives as an explicit
-        // parameter — the production caller passes the principal's
-        // `(preferred_provider_id, preferred_model_id)` pair from
-        // `PrincipalContext::provider_hint`; tests that bypass the
-        // principal path pass `None` and let the resolver pick the
-        // catalog default.
-        provider_hint: Option<(Option<String>, Option<String>)>,
-        // RP2: per-message provider/model override (RP8 wires the
-        // CLI flags). Forwarded to `ResolveRequest::override_*`
-        // so the resolver classifies the resolution as
-        // `ResolveSource::ExplicitOverride`. None = no override.
-        message_override: Option<(Option<String>, Option<String>)>,
+        // Model-first: the principal's pinned configured model id, or
+        // `None` for non-principal callers/tests.
+        provider_hint: Option<String>,
+        // Model-first: per-message configured model override (e.g.
+        // `peko send --model <id>`).
+        message_override: Option<String>,
     ) -> Result<Option<Arc<crate::providers::Provider>>> {
         // v3 path: ask the resolver to build a one-shot provider from
-        // the supplied hint (or the runtime default). No legacy
-        // fallback — the inline `[provider]` block on `AgentConfig`
-        // is gone; the resolver is the only source of truth.
+        // the supplied hint. No legacy fallback — the inline `[provider]`
+        // block on `AgentConfig` is gone; the resolver is the only source
+        // of truth.
         let Some(r) = resolver else {
             return Ok(None);
         };
-        let (agent_provider, agent_model) = provider_hint.unwrap_or_default();
-        let (override_provider, override_model) = message_override.unwrap_or_default();
         let req = crate::providers::resolver::ResolveRequest {
-            agent_provider: agent_provider.as_deref(),
-            agent_model: agent_model.as_deref(),
-            override_provider: override_provider.as_deref(),
-            override_model: override_model.as_deref(),
-            ..Default::default()
+            override_model: message_override.as_deref(),
+            session_model: None,
+            agent_model: provider_hint.as_deref(),
         };
         match r.build(req).await {
             Ok((provider, choice)) => {

@@ -19,8 +19,8 @@ pub mod ext;
 pub mod interrupt;
 pub mod log;
 pub mod mcp;
+pub mod model;
 pub mod principal;
-pub mod provider;
 pub mod quota;
 pub mod registry;
 pub mod runtime;
@@ -159,9 +159,9 @@ pub enum Commands {
     #[command(subcommand, hide = true)]
     Cron(cron::CronCommands),
 
-    /// LLM Provider management
+    /// LLM model management (runtime model catalog)
     #[command(subcommand)]
-    Provider(provider::ProviderCommands),
+    Model(model::ModelCommands),
 
     /// Search the PekoHub registry for principals and extensions
     #[command(subcommand)]

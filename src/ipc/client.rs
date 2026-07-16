@@ -166,17 +166,17 @@ impl DaemonClient {
     }
 
     // ------------------------------------------------------------------
-    // Provider management
+    // Model catalog management
     // ------------------------------------------------------------------
 
-    /// Ask the daemon to re-read `providers.toml` and `vault.enc`
-    /// from disk. Used by `peko provider {add,remove,set-default}`
-    /// and `peko credential {set,delete}` after their on-disk writes
+    /// Ask the daemon to re-read `models.toml` and `vault.enc`
+    /// from disk. Used by `peko model {add,remove}` and
+    /// `peko credential {set,delete}` after their on-disk writes
     /// succeed, so the long-running daemon observes CLI mutations
     /// without a restart.
     pub async fn reload_providers(&self) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
-        let packet = RequestPacket::ProviderReload { request_id };
+        let packet = RequestPacket::ModelReload { request_id };
         self.request_response(packet).await
     }
 
@@ -189,15 +189,14 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
-    /// Live-ping the credential identified by `id` with its stored
-    /// material (or no material for local providers like Ollama) and
+    /// Live-ping the model identified by `id` with its bound credential
+    /// material (or no material for local models like Ollama) and
     /// return the structured outcome (ok, message, latency_ms,
     /// http_status, model_used, tested_at). Powers
-    /// `peko credential test <provider>` after the provider is resolved
-    /// to a credential id. Mirrors the desktop Test button's path.
+    /// `peko model test <id>` and the desktop Test button's path.
     pub async fn credential_test(&self, id: &str) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
-        let packet = RequestPacket::CredentialTest {
+        let packet = RequestPacket::ModelTest {
             request_id,
             id: id.to_string(),
         };
@@ -539,7 +538,6 @@ impl DaemonClient {
         user: impl Into<String>,
         no_slash: bool,
         output_format: crate::common::types::OutputFormat,
-        override_provider: Option<String>,
         override_model: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
@@ -550,7 +548,6 @@ impl DaemonClient {
             user: user.into(),
             no_slash,
             output_format,
-            override_provider,
             override_model,
         };
         self.send_request(packet).await
@@ -566,7 +563,6 @@ impl DaemonClient {
         user: impl Into<String>,
         no_slash: bool,
         output_format: crate::common::types::OutputFormat,
-        override_provider: Option<String>,
         override_model: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
@@ -577,7 +573,6 @@ impl DaemonClient {
             user: user.into(),
             no_slash,
             output_format,
-            override_provider,
             override_model,
         };
         self.send_request(packet).await

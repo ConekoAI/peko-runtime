@@ -1,30 +1,31 @@
-//! Provider catalog — runtime-owned list of LLM providers and their models.
+//! Model catalog — runtime-owned list of configured LLM models.
 //!
-//! The catalog replaces the previous design where provider/model/API-key
-//! were baked into every agent's config. It is a single TOML file at
-//! `~/.peko/providers.toml`, loaded once on startup and shared across
-//! the runtime via `Arc<RwLock<ProviderCatalog>>`. The OS keychain (see
-//! `common::secret_store`) holds the corresponding API keys.
+//! The catalog is a single TOML file at `~/.peko/models.toml`, loaded
+//! once on startup and shared across the runtime via
+//! `Arc<RwLock<ModelCatalog>>`. The credential vault (see
+//! `common::vault`) holds the API keys referenced by each model's
+//! `credential_id`.
 //!
 //! ## Design properties
 //!
+//! - **Model-first.** A configured model bundles endpoint info (base
+//!   URL, API format, headers), the wire model id, context-window
+//!   metadata, and a reference to a credential. There is no separate
+//!   provider layer.
 //! - **Templates vs. entries.** Preset templates
-//!   (`crate::providers::templates`) describe a known provider
-//!   (Anthropic, OpenAI, Ollama, …) with curated model lists. They are
-//!   static code. `ProviderCatalogEntry` is the runtime-owned instance
-//!   of a provider that the user has added — fully editable, persisted
-//!   to disk.
-//! - **No secrets on disk.** API keys live in the OS keychain; the
-//!   catalog only stores public metadata (id, base URL, format, model
-//!   list, default model, headers).
-//! - **Per-entry default model.** Each entry declares its own
-//!   `default_model_id` which must reference one of its `models[]`.
+//!   (`crate::providers::templates`) describe a known provider with
+//!   curated model lists. They are static code. `ModelConfig` is the
+//!   runtime-owned instance of a configured model.
+//! - **No secrets on disk.** API keys live in the vault; the catalog
+//!   only stores public metadata and a `credential_id`.
+//! - **No runtime default.** Every Principal must be created with a
+//!   configured model; per-send overrides use `--model <id>`.
 //! - **Enabled flag.** Disabled entries remain in the catalog but are
 //!   not considered for resolution.
 //!
 //! ## Persistence
 //!
-//! Writes are atomic: serialize, write to `providers.toml.tmp`, then
+//! Writes are atomic: serialize, write to `models.toml.tmp`, then
 //! rename. Reads tolerate a missing or empty file (returns an empty
 //! catalog).
 
@@ -37,14 +38,13 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::providers::templates::{ModelTemplate, ProviderTemplate};
+use crate::providers::templates::ProviderTemplate;
 
 /// Top-level API format understood by the runtime.
 ///
-/// The runtime ships adapters for these two formats. Custom providers
-/// declared via `peko provider add --custom --api-format <FMT>` must
-/// use one of these values; adding a third format requires a new
-/// adapter implementation and is intentionally not user-extensible.
+/// The runtime ships adapters for these two formats. Custom models
+/// declared via `peko model add --custom --api-format <FMT>` must use
+/// one of these values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiFormat {
@@ -83,8 +83,8 @@ impl std::fmt::Display for ApiFormat {
     }
 }
 
-/// Optional capability tags attached to a model. Used by callers
-/// (e.g. desktop UI) to filter models for features they support.
+/// Capability tags attached to a model. Used by callers (e.g. desktop
+/// UI) to filter models for features they support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelCapability {
@@ -95,72 +95,47 @@ pub enum ModelCapability {
     PromptCaching,
 }
 
-/// Curated information about a model available under a provider entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ModelInfo {
-    /// Model id as it appears on the wire (e.g. `gpt-4o`,
-    /// `claude-sonnet-4-5`).
-    pub id: String,
-    /// Human-readable display name. Optional.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    /// Maximum context length in tokens (input + output).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_length: Option<u32>,
-    /// Maximum output tokens for a single response.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_output_tokens: Option<u32>,
-    /// Capabilities advertised by the catalog author.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<ModelCapability>,
-}
-
-impl ModelInfo {
-    /// Construct a minimal `ModelInfo` with just an id.
-    #[must_use]
-    pub fn new(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            display_name: None,
-            context_length: None,
-            max_output_tokens: None,
-            capabilities: Vec::new(),
-        }
-    }
-}
-
-/// One provider entry in the runtime-owned catalog.
+/// One configured model entry in the runtime-owned catalog.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderCatalogEntry {
-    /// Stable, lowercase, filesystem- and keychain-safe provider id.
+pub struct ModelConfig {
+    /// Stable, lowercase, filesystem-safe configured model id.
     /// This is the canonical lookup key used by `LlmResolver`,
-    /// `peko provider …`, IPC handlers, and the OS keychain account.
+    /// `peko model …`, IPC handlers, and principal configs.
     pub id: String,
     /// Human-readable display name.
     pub display_name: String,
     /// Optional template id this entry was seeded from (e.g.
     /// `"anthropic"`, `"openai"`). `None` for fully custom entries.
-    /// The runtime does not enforce that a template with this id
-    /// exists — it is purely metadata so users can see where an entry
-    /// originated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
-    /// Wire format used to talk to the provider.
+    /// Wire format used to talk to the model endpoint.
     pub api_format: ApiFormat,
     /// Base URL for the API.
     pub base_url: String,
-    /// Models available under this provider.
-    #[serde(default)]
-    pub models: Vec<ModelInfo>,
-    /// Model id used when no override is supplied.
-    pub default_model_id: String,
+    /// Model id as it appears on the wire (e.g. `gpt-4o`,
+    /// `claude-sonnet-4-5`).
+    pub model_id: String,
+    /// Maximum context length in tokens (input + output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Maximum output tokens for a single response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    /// Capability tags advertised for this model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<ModelCapability>,
     /// Optional extra HTTP headers (e.g. `OpenAI-Organization`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
-    /// Whether this provider requires an API key.
+    /// Reference to a credential in the vault. `None` means the model
+    /// does not require an API key (e.g. a local Ollama endpoint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+    /// Whether this model requires an API key. Used by the UI to decide
+    /// whether to prompt for a credential.
     #[serde(default = "default_true")]
     pub requires_key: bool,
-    /// Whether this provider is eligible for resolution.
+    /// Whether this model is eligible for resolution.
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Bookkeeping.
@@ -174,49 +149,54 @@ fn default_true() -> bool {
     true
 }
 
-impl ProviderCatalogEntry {
-    /// Look up a model by id.
-    #[must_use]
-    pub fn model(&self, id: &str) -> Option<&ModelInfo> {
-        self.models.iter().find(|m| m.id == id)
-    }
-
-    /// Construct a `ProviderCatalogEntry` from a preset template, with
-    /// the user-supplied id and display name overriding the template's
-    /// defaults. Models are seeded from the template.
+impl ModelConfig {
+    /// Construct a `ModelConfig` from a preset template, with the
+    /// user-supplied configured model id and a chosen wire model id.
+    /// The template's curated metadata for that wire model is used when
+    /// available; otherwise the entry carries no context-window metadata.
     #[must_use]
     pub fn from_template(
         template: &ProviderTemplate,
         id: impl Into<String>,
-        display_name: Option<String>,
+        model_id: impl Into<String>,
     ) -> Self {
         let id = id.into();
-        let display_name = display_name.unwrap_or_else(|| template.display_name.to_string());
-        let models: Vec<ModelInfo> = template
+        let model_id = model_id.into();
+        let display_name = if let Some(m) = template.models.iter().find(|m| m.id == model_id) {
+            m.display_name
+                .map(str::to_string)
+                .unwrap_or_else(|| model_id.clone())
+        } else {
+            model_id.clone()
+        };
+        let (context_window, max_output_tokens, capabilities) = template
             .models
             .iter()
-            .map(|m: &ModelTemplate| ModelInfo {
-                id: m.id.to_string(),
-                display_name: m.display_name.map(str::to_string),
-                context_length: m.context_length,
-                max_output_tokens: m.max_output_tokens,
-                capabilities: m.capabilities.to_vec(),
+            .find(|m| m.id == model_id)
+            .map(|m| {
+                (
+                    m.context_length,
+                    m.max_output_tokens,
+                    m.capabilities.to_vec(),
+                )
             })
-            .collect();
-        let default_model_id = template.default_model.to_string();
+            .unwrap_or((None, None, Vec::new()));
         Self {
             id,
             display_name,
             template_id: Some(template.id.to_string()),
             api_format: template.api_format,
             base_url: template.base_url.to_string(),
-            models,
-            default_model_id,
+            model_id,
+            context_window,
+            max_output_tokens,
+            capabilities,
             headers: template
                 .headers
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
+            credential_id: None,
             requires_key: template.requires_key,
             enabled: true,
             created_at: Utc::now(),
@@ -225,61 +205,42 @@ impl ProviderCatalogEntry {
     }
 }
 
-/// On-disk schema for `~/.peko/providers.toml`.
-///
-/// The catalog file is the source of truth at rest. `version` is bumped
-/// when the schema changes incompatibly. `entries` is a map keyed by
-/// provider id so duplicate ids are rejected at deserialization time.
+/// On-disk schema for `~/.peko/models.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderCatalogFile {
+pub struct ModelCatalogFile {
     #[serde(default = "default_catalog_version")]
     pub version: String,
     #[serde(default)]
-    pub entries: BTreeMap<String, ProviderCatalogEntry>,
-    /// Runtime default provider id. Optional — the runtime may also
-    /// have a default set via CLI/IPC without persisting it here.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_provider_id: Option<String>,
-    /// Runtime default model id. Must reference a model on
-    /// `default_provider_id` if both are set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_model_id: Option<String>,
+    pub entries: BTreeMap<String, ModelConfig>,
 }
 
-impl Default for ProviderCatalogFile {
+impl Default for ModelCatalogFile {
     fn default() -> Self {
         Self {
             version: default_catalog_version(),
             entries: BTreeMap::new(),
-            default_provider_id: None,
-            default_model_id: None,
         }
     }
 }
 
 fn default_catalog_version() -> String {
-    "3.0".to_string()
+    "4.0".to_string()
 }
 
-/// In-memory provider catalog, shared across the runtime.
-///
-/// Reads and writes go through this type. Mutations acquire a write
-/// lock and persist to disk via `persist()`. The catalog is also
-/// responsible for surfacing which entries exist, which are enabled,
-/// and resolving default + lookup queries used by `LlmResolver`.
-pub struct ProviderCatalog {
+/// In-memory model catalog, shared across the runtime.
+pub struct ModelCatalog {
     path: PathBuf,
-    inner: RwLock<ProviderCatalogFile>,
+    inner: RwLock<ModelCatalogFile>,
 }
 
-impl ProviderCatalog {
+impl ModelCatalog {
     /// Default filename under the config directory.
-    pub const FILENAME: &'static str = "providers.toml";
+    pub const FILENAME: &'static str = "models.toml";
 
     /// Load the catalog from `path`, or create an empty one if the file
     /// does not exist. A corrupt file is logged and treated as empty
-    /// (with a backup written to `providers.toml.bak`) so the runtime
-    /// can still start.
+    /// (with a backup written to `models.toml.bak`) so the runtime can
+    /// still start.
     pub async fn load_or_init(path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let path = path.as_ref().to_path_buf();
         let file = if path.exists() {
@@ -287,15 +248,15 @@ impl ProviderCatalog {
                 Ok(f) => f,
                 Err(e) => {
                     warn!(
-                        "providers.toml at {} is corrupt ({e}); backing up and starting empty",
+                        "models.toml at {} is corrupt ({e}); backing up and starting empty",
                         path.display()
                     );
                     let _ = std::fs::copy(&path, path.with_extension("toml.bak"));
-                    ProviderCatalogFile::default()
+                    ModelCatalogFile::default()
                 }
             }
         } else {
-            ProviderCatalogFile::default()
+            ModelCatalogFile::default()
         };
         Ok(Arc::new(Self {
             path,
@@ -303,44 +264,34 @@ impl ProviderCatalog {
         }))
     }
 
-    fn read_file(path: &Path) -> Result<ProviderCatalogFile> {
+    fn read_file(path: &Path) -> Result<ModelCatalogFile> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let parsed: ProviderCatalogFile =
+        let parsed: ModelCatalogFile =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         Ok(parsed)
     }
 
     /// Return a snapshot of the catalog file.
-    pub async fn snapshot(&self) -> ProviderCatalogFile {
+    pub async fn snapshot(&self) -> ModelCatalogFile {
         self.inner.read().await.clone()
     }
 
-    /// Re-read the on-disk catalog into this Arc's inner state. Used by
-    /// the daemon after a CLI mutation (`peko provider add`, etc.) so
-    /// the long-running process sees the new catalog without being
-    /// restarted. The existing `Arc<ProviderCatalog>` reference held
-    /// by the daemon stays valid — every reader goes through the
-    /// `RwLock`, so swaps are atomic with respect to in-flight reads.
-    ///
-    /// A missing or unreadable file is logged and treated as no-op so
-    /// a transient fs hiccup doesn't blank the daemon's in-memory
-    /// state. Returns the entry count after reload so callers can
-    /// confirm what they got.
+    /// Re-read the on-disk catalog into this Arc's inner state.
     pub async fn reload(&self) -> Result<usize> {
         let file = if self.path.exists() {
             match Self::read_file(&self.path) {
                 Ok(f) => f,
                 Err(e) => {
                     warn!(
-                        "providers.toml reload at {} failed ({e}); keeping prior in-memory state",
+                        "models.toml reload at {} failed ({e}); keeping prior in-memory state",
                         self.path.display()
                     );
                     return Ok(self.inner.read().await.entries.len());
                 }
             }
         } else {
-            ProviderCatalogFile::default()
+            ModelCatalogFile::default()
         };
         let count = file.entries.len();
         let mut guard = self.inner.write().await;
@@ -349,7 +300,7 @@ impl ProviderCatalog {
     }
 
     /// List all enabled entries.
-    pub async fn list_enabled(&self) -> Vec<ProviderCatalogEntry> {
+    pub async fn list_enabled(&self) -> Vec<ModelConfig> {
         let guard = self.inner.read().await;
         guard
             .entries
@@ -360,42 +311,32 @@ impl ProviderCatalog {
     }
 
     /// List every entry, including disabled ones.
-    pub async fn list_all(&self) -> Vec<ProviderCatalogEntry> {
+    pub async fn list_all(&self) -> Vec<ModelConfig> {
         let guard = self.inner.read().await;
         guard.entries.values().cloned().collect()
     }
 
     /// Look up an entry by id.
-    pub async fn get(&self, id: &str) -> Option<ProviderCatalogEntry> {
+    pub async fn get(&self, id: &str) -> Option<ModelConfig> {
         let guard = self.inner.read().await;
         guard.entries.get(id).cloned()
     }
 
     /// Look up an enabled entry by id.
-    pub async fn get_enabled(&self, id: &str) -> Option<ProviderCatalogEntry> {
+    pub async fn get_enabled(&self, id: &str) -> Option<ModelConfig> {
         let guard = self.inner.read().await;
         guard.entries.get(id).filter(|e| e.enabled).cloned()
     }
 
-    /// Resolve the maximum context length in tokens for a given
-    /// `(provider_id, model_id)` pair declared in the catalog.
-    ///
-    /// Returns `None` when the provider is unknown, the model is not
-    /// declared on that provider, the entry is disabled, or the model
-    /// has no `context_length` set (e.g. a user-customised model
-    /// without curated metadata).
-    ///
-    /// This is the **single source of truth** for "the model max
-    /// context". Callers that need a concrete budget (compaction,
-    /// dry-run reporting, request shaping) consult this instead of
-    /// hard-coded fallbacks.
-    pub async fn model_context_length(&self, provider_id: &str, model_id: &str) -> Option<u32> {
-        let entry = self.get_enabled(provider_id).await?;
-        entry.model(model_id).and_then(|m| m.context_length)
+    /// Resolve the maximum context length in tokens for a configured
+    /// model id. Returns `None` when the model is unknown, disabled, or
+    /// has no `context_window` set.
+    pub async fn context_window(&self, id: &str) -> Option<u32> {
+        self.get_enabled(id).await.and_then(|m| m.context_window)
     }
 
     /// Add or replace an entry. Bumps `updated_at`.
-    pub async fn upsert(&self, entry: ProviderCatalogEntry) -> Result<()> {
+    pub async fn upsert(&self, entry: ModelConfig) -> Result<()> {
         {
             let mut guard = self.inner.write().await;
             let mut entry = entry;
@@ -417,85 +358,6 @@ impl ProviderCatalog {
         Ok(removed)
     }
 
-    /// Set the runtime default provider + model. Both fields must
-    /// reference each other consistently if both are present.
-    pub async fn set_default(
-        &self,
-        provider_id: Option<String>,
-        model_id: Option<String>,
-    ) -> Result<()> {
-        {
-            let mut guard = self.inner.write().await;
-            if let Some(ref pid) = provider_id {
-                let entry = guard.entries.get(pid).with_context(|| {
-                    format!("cannot set default: provider '{pid}' is not in the catalog")
-                })?;
-                if let Some(ref mid) = model_id {
-                    if entry.model(mid).is_none() {
-                        anyhow::bail!("model '{mid}' is not declared on provider '{pid}'");
-                    }
-                }
-            }
-            guard.default_provider_id = provider_id;
-            guard.default_model_id = model_id;
-        }
-        self.persist().await
-    }
-
-    /// Read the runtime default.
-    pub async fn get_default(&self) -> (Option<String>, Option<String>) {
-        let guard = self.inner.read().await;
-        (
-            guard.default_provider_id.clone(),
-            guard.default_model_id.clone(),
-        )
-    }
-
-    /// Resolve a `(provider_id, model_id)` request using simple
-    /// precedence: explicit caller ids first, otherwise the catalog's
-    /// stored default, otherwise the first enabled entry.
-    ///
-    /// `LlmResolver` calls this with caller-supplied overrides already
-    /// resolved; this is the inner step that just validates membership
-    /// and falls back to defaults.
-    pub async fn resolve_default(
-        &self,
-        override_provider: Option<&str>,
-        override_model: Option<&str>,
-    ) -> Result<(ProviderCatalogEntry, ModelInfo)> {
-        // 1. explicit override (provider must exist; model must exist
-        //    on the provider or default to provider's default model).
-        if let Some(pid) = override_provider {
-            let entry = self
-                .get_enabled(pid)
-                .await
-                .with_context(|| format!("provider '{pid}' not found or disabled"))?;
-            let model = resolve_model_on(&entry, override_model)?;
-            return Ok((entry, model));
-        }
-
-        // 2. persisted default.
-        let (default_pid, default_model_id) = self.get_default().await;
-        if let Some(pid) = default_pid {
-            if let Some(entry) = self.get_enabled(&pid).await {
-                let model = resolve_model_on(&entry, default_model_id.as_deref())?;
-                return Ok((entry, model));
-            }
-            warn!(
-                "persisted default provider '{pid}' is missing or disabled; \
-                 falling back to first enabled entry"
-            );
-        }
-
-        // 3. first enabled entry.
-        let enabled = self.list_enabled().await;
-        let entry = enabled
-            .first()
-            .with_context(|| "no enabled providers in the catalog")?;
-        let model = resolve_model_on(entry, None)?;
-        Ok((entry.clone(), model))
-    }
-
     /// Atomically persist the in-memory catalog to disk.
     pub async fn persist(&self) -> Result<()> {
         let snapshot = {
@@ -506,13 +368,13 @@ impl ProviderCatalog {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating catalog parent dir {}", parent.display()))?;
         }
-        let serialized = toml::to_string_pretty(&snapshot).context("serializing providers.toml")?;
+        let serialized = toml::to_string_pretty(&snapshot).context("serializing models.toml")?;
         let tmp = self.path.with_extension("toml.tmp");
         std::fs::write(&tmp, &serialized).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, &self.path)
             .with_context(|| format!("renaming {} -> {}", tmp.display(), self.path.display()))?;
         info!(
-            "persisted provider catalog to {} ({} entries)",
+            "persisted model catalog to {} ({} entries)",
             self.path.display(),
             snapshot.entries.len()
         );
@@ -526,48 +388,16 @@ impl ProviderCatalog {
     }
 }
 
-fn resolve_model_on<'a>(
-    entry: &'a ProviderCatalogEntry,
-    model_id: Option<&str>,
-) -> Result<ModelInfo> {
-    if let Some(mid) = model_id {
-        if let Some(m) = entry.model(mid) {
-            return Ok(m.clone());
-        }
-        anyhow::bail!(
-            "model '{mid}' is not declared on provider '{}' \
-             (declared models: {})",
-            entry.id,
-            entry
-                .models
-                .iter()
-                .map(|m| m.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-    entry
-        .model(&entry.default_model_id)
-        .cloned()
-        .with_context(|| {
-            format!(
-                "provider '{}' has no default model ({} declared models)",
-                entry.id,
-                entry.models.len()
-            )
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::templates;
     use tempfile::tempdir;
 
-    fn temp_catalog() -> (tempfile::TempDir, Arc<ProviderCatalog>) {
+    fn temp_catalog() -> (tempfile::TempDir, Arc<ModelCatalog>) {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("providers.toml");
-        let cat = tokio_test::block_on(ProviderCatalog::load_or_init(&path)).unwrap();
+        let path = dir.path().join("models.toml");
+        let cat = tokio_test::block_on(ModelCatalog::load_or_init(&path)).unwrap();
         (dir, cat)
     }
 
@@ -586,145 +416,62 @@ mod tests {
         let (_dir, cat) = temp_catalog();
         let snap = tokio_test::block_on(cat.snapshot());
         assert_eq!(snap.entries.len(), 0);
-        assert_eq!(snap.version, "3.0");
+        assert_eq!(snap.version, "4.0");
     }
 
     #[test]
     fn upsert_persists_to_disk() {
         let (dir, cat) = temp_catalog();
-        let tmpl = &templates::find_template("anthropic").unwrap();
-        let entry = ProviderCatalogEntry::from_template(tmpl, "anthropic", None);
+        let tmpl = templates::find_template("anthropic").unwrap();
+        let entry = ModelConfig::from_template(tmpl, "anthropic-haiku", "claude-3-5-haiku-latest");
         tokio_test::block_on(cat.upsert(entry)).unwrap();
 
-        let reloaded = tokio_test::block_on(ProviderCatalog::load_or_init(
-            dir.path().join("providers.toml"),
-        ))
-        .unwrap();
-        let got = tokio_test::block_on(reloaded.get("anthropic")).unwrap();
+        let reloaded =
+            tokio_test::block_on(ModelCatalog::load_or_init(dir.path().join("models.toml")))
+                .unwrap();
+        let got = tokio_test::block_on(reloaded.get("anthropic-haiku")).unwrap();
         assert_eq!(got.api_format, ApiFormat::AnthropicMessages);
         assert!(got.requires_key);
+        assert_eq!(got.model_id, "claude-3-5-haiku-latest");
     }
 
     #[test]
     fn remove_returns_true_then_false() {
         let (_dir, cat) = temp_catalog();
-        let tmpl = &templates::find_template("openai").unwrap();
-        let entry = ProviderCatalogEntry::from_template(tmpl, "openai", None);
+        let tmpl = templates::find_template("openai").unwrap();
+        let entry = ModelConfig::from_template(tmpl, "openai-gpt-4o", "gpt-4o");
         tokio_test::block_on(cat.upsert(entry)).unwrap();
-        assert!(tokio_test::block_on(cat.remove("openai")).unwrap());
-        assert!(!tokio_test::block_on(cat.remove("openai")).unwrap());
+        assert!(tokio_test::block_on(cat.remove("openai-gpt-4o")).unwrap());
+        assert!(!tokio_test::block_on(cat.remove("openai-gpt-4o")).unwrap());
     }
 
     #[test]
-    fn set_default_validates_membership() {
+    fn context_window_resolves_from_catalog() {
         let (_dir, cat) = temp_catalog();
-        let tmpl = &templates::find_template("openai").unwrap();
-        let entry = ProviderCatalogEntry::from_template(tmpl, "openai", None);
+        let tmpl = templates::find_template("anthropic").unwrap();
+        let entry = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
         tokio_test::block_on(cat.upsert(entry)).unwrap();
 
-        // happy path
-        tokio_test::block_on(cat.set_default(Some("openai".into()), None)).unwrap();
-
-        // unknown provider
-        assert!(tokio_test::block_on(cat.set_default(Some("nope".into()), None)).is_err());
-
-        // model not on provider
-        assert!(tokio_test::block_on(
-            cat.set_default(Some("openai".into()), Some("gpt-999-not-real".into()))
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn resolve_default_precedence() {
-        let (_dir, cat) = temp_catalog();
-        let tmpl = &templates::find_template("openai").unwrap();
-        let entry = ProviderCatalogEntry::from_template(tmpl, "openai", None);
-        tokio_test::block_on(cat.upsert(entry)).unwrap();
-
-        // no default, no override -> first enabled
-        let (e, m) = tokio_test::block_on(cat.resolve_default(None, None)).unwrap();
-        assert_eq!(e.id, "openai");
-        assert_eq!(m.id, e.default_model_id);
-
-        // override wins
-        let (e2, m2) =
-            tokio_test::block_on(cat.resolve_default(Some("openai"), Some(&e.models[0].id)))
-                .unwrap();
-        assert_eq!(e2.id, "openai");
-        assert_eq!(m2.id, e.models[0].id);
-
-        // unknown override -> error
-        assert!(tokio_test::block_on(cat.resolve_default(Some("nope"), None)).is_err());
-    }
-
-    #[test]
-    fn empty_catalog_resolve_default_errors() {
-        let (_dir, cat) = temp_catalog();
-        assert!(tokio_test::block_on(cat.resolve_default(None, None)).is_err());
-    }
-
-    /// `model_context_length` is the SoT for model max context. Seed
-    /// the catalog from the Anthropic template and verify hit,
-    /// miss-within-provider, unknown-provider, and disabled-entry
-    /// paths.
-    #[test]
-    fn model_context_length_resolves_from_catalog() {
-        let (_dir, cat) = temp_catalog();
-        let tmpl = &templates::find_template("anthropic").unwrap();
-        let entry = ProviderCatalogEntry::from_template(tmpl, "anthropic", None);
-        tokio_test::block_on(cat.upsert(entry)).unwrap();
-
-        // hit
-        let got = tokio_test::block_on(cat.model_context_length("anthropic", "claude-sonnet-4-5"));
-        assert_eq!(got, Some(200_000));
-
-        // model not declared on this provider
         assert_eq!(
-            tokio_test::block_on(cat.model_context_length("anthropic", "not-a-real-model")),
-            None
+            tokio_test::block_on(cat.context_window("anthropic-sonnet")),
+            Some(200_000)
         );
-
-        // provider unknown
         assert_eq!(
-            tokio_test::block_on(cat.model_context_length("nope", "claude-sonnet-4-5")),
+            tokio_test::block_on(cat.context_window("unknown-model")),
             None
         );
     }
 
-    /// Disabled entries must NOT report a context length even if they
-    /// declare one — `get_enabled` semantics propagate.
     #[test]
-    fn model_context_length_returns_none_for_disabled_entry() {
+    fn context_window_returns_none_for_disabled_entry() {
         let (_dir, cat) = temp_catalog();
-        let tmpl = &templates::find_template("anthropic").unwrap();
-        let mut entry = ProviderCatalogEntry::from_template(tmpl, "anthropic", None);
+        let tmpl = templates::find_template("anthropic").unwrap();
+        let mut entry = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
         entry.enabled = false;
         tokio_test::block_on(cat.upsert(entry)).unwrap();
 
         assert_eq!(
-            tokio_test::block_on(cat.model_context_length("anthropic", "claude-sonnet-4-5")),
-            None
-        );
-    }
-
-    /// A model with no `context_length` (e.g. user-added model without
-    /// curated metadata) reports `None` rather than 0 — the caller
-    /// decides how to handle the unknown.
-    #[test]
-    fn model_context_length_returns_none_when_model_has_no_length() {
-        let (_dir, cat) = temp_catalog();
-        let mut entry = ProviderCatalogEntry::from_template(
-            &templates::find_template("anthropic").unwrap(),
-            "anthropic",
-            None,
-        );
-        // Synthesise a model with no context_length by setting it to None.
-        entry.models[0].context_length = None;
-        tokio_test::block_on(cat.upsert(entry)).unwrap();
-
-        assert_eq!(
-            tokio_test::block_on(cat.model_context_length("anthropic", "claude-sonnet-4-5")),
+            tokio_test::block_on(cat.context_window("anthropic-sonnet")),
             None
         );
     }
@@ -732,90 +479,68 @@ mod tests {
     #[test]
     fn corrupt_catalog_falls_back_to_empty() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("providers.toml");
+        let path = dir.path().join("models.toml");
         std::fs::write(&path, "this is not valid toml = = =").unwrap();
 
-        let cat = tokio_test::block_on(ProviderCatalog::load_or_init(&path)).unwrap();
+        let cat = tokio_test::block_on(ModelCatalog::load_or_init(&path)).unwrap();
         let snap = tokio_test::block_on(cat.snapshot());
         assert!(snap.entries.is_empty());
-
-        // backup file was written
         assert!(path.with_extension("toml.bak").exists());
     }
 
     #[test]
-    fn entry_from_template_seeds_models_and_headers() {
-        let tmpl = &templates::find_template("anthropic").unwrap();
-        let entry = ProviderCatalogEntry::from_template(tmpl, "anthropic", None);
+    fn entry_from_template_seeds_metadata() {
+        let tmpl = templates::find_template("anthropic").unwrap();
+        let entry = ModelConfig::from_template(tmpl, "anthropic-haiku", "claude-3-5-haiku-latest");
         assert_eq!(entry.template_id.as_deref(), Some("anthropic"));
-        assert!(!entry.models.is_empty(), "template should ship models");
-        // default model id must be a real declared model id
-        assert!(entry.model(&entry.default_model_id).is_some());
+        assert_eq!(entry.model_id, "claude-3-5-haiku-latest");
+        assert!(entry.context_window.is_some());
     }
 
-    /// `reload()` re-reads the file into the existing Arc. This is the
-    /// contract the daemon depends on: long-running processes get
-    /// fresh state without re-instantiating the catalog or breaking
-    /// the `Arc<ProviderCatalog>` reference held by the resolver.
     #[tokio::test]
     async fn reload_picks_up_disk_changes_through_same_arc() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("providers.toml");
-        let cat = ProviderCatalog::load_or_init(&path).await.unwrap();
+        let path = dir.path().join("models.toml");
+        let cat = ModelCatalog::load_or_init(&path).await.unwrap();
 
-        // Initial state: empty.
         assert_eq!(cat.list_all().await.len(), 0);
 
-        // Write a provider to disk directly (bypassing the in-memory
-        // upsert API) — this simulates `peko provider add` on a
-        // separate process while the daemon holds the Arc.
         let tmpl = templates::find_template("anthropic").unwrap();
-        let entry = ProviderCatalogEntry::from_template(tmpl, "anthropic", None);
-        let file = ProviderCatalogFile {
-            entries: std::iter::once(("anthropic".to_string(), entry)).collect(),
-            default_provider_id: None,
-            default_model_id: None,
+        let entry = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
+        let file = ModelCatalogFile {
+            entries: std::iter::once(("anthropic-sonnet".to_string(), entry)).collect(),
             ..Default::default()
         };
-        std::fs::write(
-            &path,
-            toml::to_string(&file).expect("serialize provider file"),
-        )
-        .unwrap();
+        std::fs::write(&path, toml::to_string(&file).expect("serialize model file")).unwrap();
 
-        // Same Arc, no reload yet → still empty.
         assert_eq!(cat.list_all().await.len(), 0);
 
-        // Reload → sees the new entry through the same Arc.
         let count = cat.reload().await.unwrap();
         assert_eq!(count, 1);
         assert_eq!(cat.list_all().await.len(), 1);
-        assert_eq!(cat.get("anthropic").await.unwrap().id, "anthropic");
+        assert_eq!(
+            cat.get("anthropic-sonnet").await.unwrap().id,
+            "anthropic-sonnet"
+        );
     }
 
-    /// `reload()` keeps the prior in-memory state on a read failure so
-    /// a transient fs hiccup doesn't blank the daemon.
     #[tokio::test]
     async fn reload_keeps_prior_state_on_read_failure() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("providers.toml");
-        let cat = ProviderCatalog::load_or_init(&path).await.unwrap();
+        let path = dir.path().join("models.toml");
+        let cat = ModelCatalog::load_or_init(&path).await.unwrap();
 
-        // Seed an entry.
         let tmpl = templates::find_template("ollama").unwrap();
-        cat.upsert(ProviderCatalogEntry::from_template(tmpl, "ollama", None))
+        cat.upsert(ModelConfig::from_template(tmpl, "ollama-llama", "llama3.1"))
             .await
             .unwrap();
         assert_eq!(cat.list_all().await.len(), 1);
 
-        // Corrupt the on-disk file.
         std::fs::write(&path, "this is not valid toml = = =").unwrap();
 
-        // Reload should swallow the read failure and keep the
-        // in-memory entry intact.
         let count = cat.reload().await.unwrap();
         assert_eq!(count, 1, "should report the prior in-memory count");
         assert_eq!(cat.list_all().await.len(), 1);
-        assert_eq!(cat.get("ollama").await.unwrap().id, "ollama");
+        assert_eq!(cat.get("ollama-llama").await.unwrap().id, "ollama-llama");
     }
 }

@@ -76,9 +76,8 @@ pub(crate) struct AppState {
     principal_service: Arc<StatelessAgentService>,
 
     /// Shared LLM resolver. Re-read in place via
-    /// `ProviderCatalog::reload` after `peko provider {add,remove,
-    /// set-default}` so the long-running daemon observes CLI
-    /// mutations without a restart.
+    /// `ModelCatalog::reload` after `peko model {add,remove}` so the
+    /// long-running daemon observes CLI mutations without a restart.
     resolver: Arc<crate::providers::LlmResolver>,
 
     /// Shared credential vault. Re-read in place via `Vault::reload`
@@ -516,15 +515,15 @@ impl AppState {
 
         // v3: Build the `LlmResolver` here so every agent cold-start
         // goes through `LlmResolver::build` instead of the deprecated
-        // inline-[provider] path. Catalog is `~/.peko/providers.toml`,
+        // inline-[provider] path. Catalog is `~/.peko/models.toml`,
         // secrets are the OS keychain. Test harnesses that need a
         // env-var fallback (no keychain on CI) flip
         // `PEKO_TEST_RESOLVER_BOOTSTRAP=1`; the daemon picks that up
         // via `LlmResolver::with_env_bootstrap()` below.
-        let catalog_path = path_resolver.config_dir().join("providers.toml");
-        let catalog = crate::providers::ProviderCatalog::load_or_init(&catalog_path)
+        let catalog_path = path_resolver.config_dir().join("models.toml");
+        let catalog = crate::providers::ModelCatalog::load_or_init(&catalog_path)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to load provider catalog: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to load model catalog: {e}"))?;
         let secrets: Arc<dyn crate::common::secret_store::SecretStore> =
             Arc::clone(&vault) as Arc<dyn crate::common::secret_store::SecretStore>;
         let mut resolver_builder =
@@ -934,29 +933,29 @@ impl AppState {
         }
     }
 
-    /// Re-read the provider catalog and the credential vault from
-    /// disk. Called by the IPC `ProviderReload` handler so CLI
-    /// mutations (`peko provider {add,remove,set-default}`,
-    /// `peko credential {set,delete}`) are visible to the long-running
-    /// daemon without a restart.
+    /// Re-read the model catalog and the credential vault from
+    /// disk. Called by the IPC `ModelReload` handler so CLI
+    /// mutations (`peko model {add,remove}`, `peko credential
+    /// {set,delete}`) are visible to the long-running daemon without
+    /// a restart.
     ///
-    /// Returns `(providers_count, keys_count)` for the IPC response so
+    /// Returns `(models_count, keys_count)` for the IPC response so
     /// the caller can confirm what was reloaded. A reload that
     /// partially fails (e.g. corrupt vault) keeps the prior in-memory
     /// state and surfaces the error rather than blanking the daemon.
-    pub async fn reload_providers(&self) -> anyhow::Result<(usize, usize)> {
-        let providers_count = self
+    pub async fn reload_models(&self) -> anyhow::Result<(usize, usize)> {
+        let models_count = self
             .resolver
             .catalog()
             .reload()
             .await
-            .map_err(|e| anyhow::anyhow!("provider catalog reload failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("model catalog reload failed: {e}"))?;
         let keys_count = self
             .vault
             .reload()
             .map_err(|e| anyhow::anyhow!("vault reload failed: {e}"))?;
-        tracing::info!("Provider reload: {providers_count} providers, {keys_count} vault entries");
-        Ok((providers_count, keys_count))
+        tracing::info!("Model reload: {models_count} models, {keys_count} vault entries");
+        Ok((models_count, keys_count))
     }
 
     /// Re-read the MCP server configuration from `mcp.toml` and the
@@ -2361,14 +2360,75 @@ impl crate::ipc::handlers::extension::ExtensionHost for AppState {
     }
 }
 
+/// Project a catalog [`ModelConfig`](crate::providers::catalog::ModelConfig)
+/// into the `ModelSummary` IPC wire shape. Shared by the `ModelList`
+/// snapshot and the add/update hosts so every surface emits identical
+/// rows for the same catalog entry.
+fn model_summary_from_config(
+    entry: &crate::providers::catalog::ModelConfig,
+) -> crate::ipc::packet::ModelSummary {
+    crate::ipc::packet::ModelSummary {
+        id: entry.id.clone(),
+        display_name: entry.display_name.clone(),
+        template_id: entry.template_id.clone(),
+        api_type: match entry.api_format {
+            crate::providers::catalog::ApiFormat::OpenaiCompletions => "openai".to_string(),
+            crate::providers::catalog::ApiFormat::AnthropicMessages => "anthropic".to_string(),
+        },
+        base_url: entry.base_url.clone(),
+        model_id: entry.model_id.clone(),
+        context_window: entry.context_window,
+        max_output_tokens: entry.max_output_tokens,
+        capabilities: entry
+            .capabilities
+            .iter()
+            .map(|c| capability_wire(c).to_string())
+            .collect(),
+        headers: entry.headers.clone(),
+        credential_id: entry.credential_id.clone(),
+        requires_key: entry.requires_key,
+        is_local: !entry.requires_key,
+        enabled: entry.enabled,
+    }
+}
+
+/// Stable wire id for a `ModelCapability` (matches the enum's
+/// snake_case serde names). Exhaustive on purpose: a new variant
+/// fails the build here until its wire id is chosen.
+fn capability_wire(c: &crate::providers::catalog::ModelCapability) -> &'static str {
+    use crate::providers::catalog::ModelCapability as C;
+    match c {
+        C::ToolUse => "tool_use",
+        C::Vision => "vision",
+        C::JsonMode => "json_mode",
+        C::Streaming => "streaming",
+        C::PromptCaching => "prompt_caching",
+    }
+}
+
+/// Parse a capability wire id produced by [`capability_wire`].
+/// Unknown tags are dropped by the caller (filter_map) rather than
+/// failing the whole update.
+fn capability_from_wire(s: &str) -> Option<crate::providers::catalog::ModelCapability> {
+    use crate::providers::catalog::ModelCapability as C;
+    match s {
+        "tool_use" => Some(C::ToolUse),
+        "vision" => Some(C::Vision),
+        "json_mode" => Some(C::JsonMode),
+        "streaming" => Some(C::Streaming),
+        "prompt_caching" => Some(C::PromptCaching),
+        _ => None,
+    }
+}
+
 /// F7 eleventh narrow handle: the port the `provider_mcp` IPC domain
-/// handler uses to live-reload the provider registry and MCP config
+/// handler uses to live-reload the model catalog and MCP config
 /// from disk. Trait lives in `ipc::handlers::provider_mcp`. Both
 /// methods are async because they drive live config-file reloads.
 #[async_trait::async_trait]
-impl crate::ipc::handlers::provider_mcp::ProviderMcpHost for AppState {
-    async fn reload_providers(&self) -> anyhow::Result<(usize, usize)> {
-        AppState::reload_providers(self).await
+impl crate::ipc::handlers::provider_mcp::ModelMcpHost for AppState {
+    async fn reload_models(&self) -> anyhow::Result<(usize, usize)> {
+        AppState::reload_models(self).await
     }
 
     async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
@@ -2376,35 +2436,18 @@ impl crate::ipc::handlers::provider_mcp::ProviderMcpHost for AppState {
     }
 
     /// Snapshot every catalog entry (enabled + disabled) as the
-    /// `ProviderInfo` wire shape. Reads go through
+    /// `ModelSummary` wire shape. Reads go through
     /// `self.resolver.catalog()` so the response matches what the
     /// resolver and every other daemon-side consumer see — including
     /// user-added entries that don't appear in the static
     /// `BUILT_IN_TEMPLATES`.
-    async fn list_catalog_providers(&self) -> Vec<crate::ipc::packet::ProviderInfo> {
+    async fn list_catalog_models(&self) -> Vec<crate::ipc::packet::ModelSummary> {
         let catalog = self.resolver.catalog();
-        let entries = catalog.list_all().await;
-        let (default_pid, _) = catalog.get_default().await;
-        entries
-            .into_iter()
-            .map(|entry| crate::ipc::packet::ProviderInfo {
-                id: entry.id.clone(),
-                display_name: entry.display_name.clone(),
-                api_type: match entry.api_format {
-                    crate::providers::catalog::ApiFormat::OpenaiCompletions => "openai".to_string(),
-                    crate::providers::catalog::ApiFormat::AnthropicMessages => {
-                        "anthropic".to_string()
-                    }
-                },
-                base_url: entry.base_url.clone(),
-                requires_key: entry.requires_key,
-                is_local: !entry.requires_key,
-                enabled: entry.enabled,
-                models: entry.models.clone(),
-                default_model_id: entry.default_model_id.clone(),
-                headers: entry.headers.clone(),
-                is_default: default_pid.as_deref() == Some(entry.id.as_str()),
-            })
+        catalog
+            .list_all()
+            .await
+            .iter()
+            .map(model_summary_from_config)
             .collect()
     }
 }
@@ -2415,10 +2458,32 @@ impl crate::ipc::handlers::provider_mcp::ProviderMcpHost for AppState {
 /// are a `&'static [ProviderTemplate]` — no I/O, no locking, no
 /// async work. Mirrors the credential-host shape (also a pure-read
 /// surface).
-impl crate::ipc::handlers::provider_templates::ProviderTemplatesHost for AppState {
-    fn list_templates(&self) -> Vec<crate::ipc::packet::ProviderTemplateInfo> {
+impl crate::ipc::handlers::provider_templates::ModelTemplatesHost for AppState {
+    fn list_templates(&self) -> Vec<crate::ipc::packet::ModelPresetInfo> {
+        use crate::providers::catalog::ApiFormat;
         crate::providers::templates::iter_templates()
-            .map(crate::ipc::handlers::provider_templates::template_info_from_static)
+            .map(|t| crate::ipc::packet::ModelPresetInfo {
+                id: t.id.to_string(),
+                display_name: t.display_name.to_string(),
+                api_type: match t.api_format {
+                    ApiFormat::OpenaiCompletions => "openai",
+                    ApiFormat::AnthropicMessages => "anthropic",
+                }
+                .to_string(),
+                base_url: t.base_url.to_string(),
+                requires_key: t.requires_key,
+                default_model: t.default_model.to_string(),
+                models: t
+                    .models
+                    .iter()
+                    .map(|m| crate::ipc::packet::ModelTemplateInfo {
+                        id: m.id.to_string(),
+                        display_name: m.display_name.map(str::to_string),
+                        context_length: m.context_length,
+                        max_output_tokens: m.max_output_tokens,
+                    })
+                    .collect(),
+            })
             .collect()
     }
 }
@@ -2426,33 +2491,53 @@ impl crate::ipc::handlers::provider_templates::ProviderTemplatesHost for AppStat
 /// F7 fifteenth narrow handle: the port the `provider_add` IPC
 /// domain handler uses (T-109b). Trait lives in
 /// `ipc::handlers::provider_add`. Async because catalog mutations
-/// (`ProviderCatalog::upsert`, `set_default`) and the vault write
-/// are I/O. The body is intentionally a 1:1 mirror of the CLI's
-/// `peko provider add` (`commands/provider.rs:280-399`) — same
-/// template vs. custom branch, same `--key` / `--set-default`
-/// folding — so the IPC and CLI surfaces never disagree on the
-/// resulting catalog state (F6/F7 symmetry rule).
+/// (`ModelCatalog::upsert`) and the vault write are I/O. The body is
+/// intentionally a 1:1 mirror of the CLI's `peko model add`
+/// (`commands/model.rs:add_cmd`) — same template vs. custom branch,
+/// same `--key` folding into an `llm`-namespace credential — so the
+/// IPC and CLI surfaces never disagree on the resulting catalog state
+/// (F6/F7 symmetry rule).
 #[async_trait::async_trait]
-impl crate::ipc::handlers::provider_add::ProviderAddHost for AppState {
-    async fn add_provider(
+impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
+    async fn add_model(
         &self,
-        args: crate::ipc::packet::ProviderAddArgs,
-    ) -> anyhow::Result<crate::ipc::packet::ProviderInfo> {
-        use crate::providers::catalog::{ApiFormat, ModelInfo, ProviderCatalogEntry};
+        args: crate::ipc::packet::ModelAddArgs,
+    ) -> anyhow::Result<crate::ipc::packet::ModelSummary> {
+        use crate::common::vault::{Credential, CredentialKind};
+        use crate::providers::catalog::{ApiFormat, ModelConfig};
         use crate::providers::templates;
         use secrecy::SecretString;
 
-        let entry: ProviderCatalogEntry = if let Some(template_id) = args.template.as_deref() {
-            // Template mode — mirror `add_cmd:297-304`.
+        // The wire id the API expects. Required in both modes, same
+        // as the CLI (`--model <wire-id>`).
+        let model_id = args
+            .model
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("--model <wire-id> is required"))?;
+        if model_id.is_empty() {
+            anyhow::bail!("--model must not be empty");
+        }
+
+        let mut entry: ModelConfig = if let Some(template_id) = args.template.as_deref() {
+            // Template mode — mirror the CLI's `{template}-{model}`
+            // default id and display-name override.
             let tmpl = templates::find_template(template_id).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "unknown template '{template_id}'. Run `peko provider templates` to list available ones."
+                    "unknown template '{template_id}'. Run `peko model templates` to list available ones."
                 )
             })?;
-            let id = args.name.unwrap_or_else(|| tmpl.id.to_string());
-            ProviderCatalogEntry::from_template(tmpl, id, args.display_name)
+            let id = args
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("{}-{model_id}", tmpl.id));
+            let mut entry = ModelConfig::from_template(tmpl, id, model_id);
+            if let Some(dn) = args.display_name.clone() {
+                entry.display_name = dn;
+            }
+            entry
         } else if args.custom {
-            // Custom mode — mirror `add_cmd:305-346`.
+            // Custom mode — mirror the CLI's required-flag checks.
             let api_format_str = args
                 .api_format
                 .as_deref()
@@ -2472,26 +2557,18 @@ impl crate::ipc::handlers::provider_add::ProviderAddHost for AppState {
             if id.is_empty() {
                 anyhow::bail!("--name must not be empty");
             }
-            if args.model.is_empty() {
-                anyhow::bail!(
-                    "--custom providers must declare at least one --model <model-id> (use the id the API expects on the wire)"
-                );
-            }
-            let default_model_id = args.model[0].clone();
-            let models: Vec<ModelInfo> = args
-                .model
-                .iter()
-                .map(|mid| ModelInfo::new(mid.clone()))
-                .collect();
-            ProviderCatalogEntry {
+            ModelConfig {
                 id: id.clone(),
                 display_name: args.display_name.clone().unwrap_or_else(|| id.clone()),
                 template_id: None,
                 api_format,
                 base_url,
-                models,
-                default_model_id,
+                model_id,
+                context_window: None,
+                max_output_tokens: None,
+                capabilities: Vec::new(),
                 headers: Default::default(),
+                credential_id: None,
                 requires_key: args.requires_key.unwrap_or(true),
                 enabled: true,
                 created_at: chrono::Utc::now(),
@@ -2507,101 +2584,78 @@ impl crate::ipc::handlers::provider_add::ProviderAddHost for AppState {
                 "either --template <id> or --custom is required.\n\
                  \n\
                  Quick start:\n\
-                   peko provider add --template anthropic --key \"$ANTHROPIC_API_KEY\" --default\n\
+                   peko model add --template anthropic --model claude-sonnet-4-5 --key \"$ANTHROPIC_API_KEY\"\n\
                  \n\
                  List templates:\n\
-                   peko provider templates"
+                   peko model templates"
             );
         };
 
-        // `self.resolver.catalog()` returns the daemon's in-memory
-        // `Arc<ProviderCatalog>` — same instance the resolver and
-        // every other consumer read. `upsert` stamps `updated_at`
-        // and persists to `providers.toml` atomically, so the
-        // mutation is visible to the next `ProviderList` IPC call
-        // without a reload hop (the CLI's `notify_daemon_reload`
-        // pattern doesn't apply — we ARE the daemon).
-        self.resolver.catalog().upsert(entry.clone()).await?;
-
-        // Fold in the optional key, same as the CLI's
-        // `add_cmd:357-382`. Silently skipped for key-less providers
-        // (e.g. Ollama templates) so the same call works for both
-        // with-key and without-key templates.
+        // Fold in the optional key, same as the CLI: store the
+        // material as a generic `llm`-namespace credential named
+        // after the model and point the entry's `credential_id` at
+        // it. Silently refused for key-less models (e.g. Ollama
+        // presets) so a misconfigured request fails loudly instead
+        // of storing an orphaned key.
         if let Some(key) = args.key.as_deref() {
             if key.is_empty() {
                 anyhow::bail!("--key must not be empty");
             }
-            if entry.requires_key {
-                let secret = SecretString::from(key.to_string());
-                self.vault
-                    .set_provider_key(&entry.id, &secret)
-                    .map_err(|e| {
-                        anyhow::anyhow!("failed to store key for '{}' in vault: {e}", entry.id)
-                    })?;
-            } else {
+            if !entry.requires_key {
                 anyhow::bail!(
-                    "--key supplied but provider '{}' does not require a key (set --requires-key true to override)",
+                    "--key supplied but model '{}' does not require a key",
                     entry.id
                 );
             }
+            let credential = Credential::now(
+                "llm".to_string(),
+                entry.id.clone(),
+                CredentialKind::ApiKey,
+                SecretString::from(key.to_string()),
+            );
+            let cid = credential.id.clone();
+            self.vault.set_credential(&credential).map_err(|e| {
+                anyhow::anyhow!("failed to store key for '{}' in vault: {e}", entry.id)
+            })?;
+            entry.credential_id = Some(cid);
         }
 
-        // Fold in the optional default promotion, same as the CLI's
-        // `add_cmd:387-393`.
-        if args.set_default.unwrap_or(false) {
-            let model = args
-                .default_model
-                .clone()
-                .unwrap_or_else(|| entry.default_model_id.clone());
-            self.resolver
-                .catalog()
-                .set_default(Some(entry.id.clone()), Some(model))
-                .await?;
-        }
+        // `self.resolver.catalog()` returns the daemon's in-memory
+        // `Arc<ModelCatalog>` — same instance the resolver and every
+        // other consumer read. `upsert` stamps `updated_at` and
+        // persists to `models.toml` atomically, so the mutation is
+        // visible to the next `ModelList` IPC call without a reload
+        // hop (the CLI's `notify_daemon_reload` pattern doesn't
+        // apply — we ARE the daemon).
+        self.resolver.catalog().upsert(entry.clone()).await?;
 
         // Build the catalog-summary view the handler wraps in
-        // `ResponsePacket::ProviderAdded`. Mirrors the projection
-        // `provider_mcp.rs` uses for `ProviderList` rows so the two
-        // surfaces stay in sync.
-        let (default_pid, _) = self.resolver.catalog().get_default().await;
-        Ok(crate::ipc::packet::ProviderInfo {
-            id: entry.id.clone(),
-            display_name: entry.display_name.clone(),
-            api_type: match entry.api_format {
-                ApiFormat::OpenaiCompletions => "openai".to_string(),
-                ApiFormat::AnthropicMessages => "anthropic".to_string(),
-            },
-            base_url: entry.base_url.clone(),
-            requires_key: entry.requires_key,
-            is_local: !entry.requires_key,
-            enabled: entry.enabled,
-            models: entry.models.clone(),
-            default_model_id: entry.default_model_id.clone(),
-            headers: entry.headers.clone(),
-            is_default: default_pid.as_deref() == Some(entry.id.as_str()),
-        })
+        // `ResponsePacket::ModelAdded`. Uses the same projection as
+        // the `ModelList` rows so the two surfaces stay in sync.
+        Ok(model_summary_from_config(&entry))
     }
 }
 
 /// F7 fifteenth narrow handle (RP6): the port the `provider_edit`
 /// IPC domain handler uses for catalog mutations after the initial
 /// add. Trait lives in `ipc::handlers::provider_edit`. Async because
-/// catalog reads/writes are I/O. Mirrors `peko provider {remove,
-/// set-default}` and adds the `provider_update` path the desktop's
-/// "Edit Provider" modal needs.
+/// catalog reads/writes are I/O. Mirrors `peko model {remove, test}`
+/// and adds the `model_update` path the desktop's "Edit Model"
+/// modal needs. There is no default-model concept anymore — every
+/// principal pins its own configured model.
 #[async_trait::async_trait]
-impl crate::ipc::handlers::provider_edit::ProviderEditHost for AppState {
-    async fn update_provider(
+impl crate::ipc::handlers::provider_edit::ModelEditHost for AppState {
+    async fn update_model(
         &self,
-        args: crate::ipc::packet::ProviderUpdateArgs,
-    ) -> anyhow::Result<crate::ipc::packet::ProviderInfo> {
-        use crate::providers::catalog::{ApiFormat, ProviderCatalogEntry};
+        args: crate::ipc::packet::ModelUpdateArgs,
+    ) -> anyhow::Result<crate::ipc::packet::ModelSummary> {
+        use crate::providers::catalog::ApiFormat;
 
         let catalog = self.resolver.catalog();
-        let mut entry: ProviderCatalogEntry = catalog
+        let mut entry = catalog
             .get(&args.id)
             .await
-            .ok_or_else(|| anyhow::anyhow!("provider '{}' not found in catalog", args.id))?;
+            .ok_or_else(|| anyhow::anyhow!("model '{}' not found in catalog", args.id))?;
 
         if let Some(display_name) = args.display_name {
             entry.display_name = display_name;
@@ -2616,14 +2670,39 @@ impl crate::ipc::handlers::provider_edit::ProviderEditHost for AppState {
             entry.api_format = ApiFormat::from_wire(&api_format_str)
                 .ok_or_else(|| anyhow::anyhow!("unknown api_format '{api_format_str}'"))?;
         }
-        if let Some(models) = args.models {
-            entry.models = models;
+        if let Some(model_id) = args.model_id {
+            if model_id.is_empty() {
+                anyhow::bail!("model_id must not be empty");
+            }
+            entry.model_id = model_id;
         }
-        if let Some(default_model_id) = args.default_model_id {
-            entry.default_model_id = default_model_id;
+        if let Some(context_window) = args.context_window {
+            entry.context_window = Some(context_window);
+        }
+        if let Some(max_output_tokens) = args.max_output_tokens {
+            entry.max_output_tokens = Some(max_output_tokens);
+        }
+        if let Some(capabilities) = args.capabilities {
+            entry.capabilities = capabilities
+                .iter()
+                .filter_map(|c| capability_from_wire(c))
+                .collect();
         }
         if let Some(headers) = args.headers {
             entry.headers = headers;
+        }
+        if let Some(credential_id) = args.credential_id {
+            // Empty string clears the reference (e.g. the user
+            // detached a key); a non-empty value must point at an
+            // existing vault credential.
+            if credential_id.is_empty() {
+                entry.credential_id = None;
+            } else {
+                if self.vault.get_credential(&credential_id).is_none() {
+                    anyhow::bail!("credential not found in vault: {credential_id}");
+                }
+                entry.credential_id = Some(credential_id);
+            }
         }
         if let Some(requires_key) = args.requires_key {
             entry.requires_key = requires_key;
@@ -2632,66 +2711,50 @@ impl crate::ipc::handlers::provider_edit::ProviderEditHost for AppState {
             entry.enabled = enabled;
         }
 
-        // Validate that the default model is declared on the entry.
-        if entry.model(&entry.default_model_id).is_none() {
-            let declared: Vec<&str> = entry.models.iter().map(|m| m.id.as_str()).collect();
-            anyhow::bail!(
-                "default_model_id '{}' is not declared on provider '{}' (declared: {})",
-                entry.default_model_id,
-                entry.id,
-                declared.join(", ")
-            );
-        }
-
         // `upsert` stamps `updated_at` and persists atomically.
         catalog.upsert(entry.clone()).await?;
 
-        let (default_pid, _) = catalog.get_default().await;
-        Ok(crate::ipc::packet::ProviderInfo {
-            id: entry.id.clone(),
-            display_name: entry.display_name.clone(),
-            api_type: match entry.api_format {
-                ApiFormat::OpenaiCompletions => "openai".to_string(),
-                ApiFormat::AnthropicMessages => "anthropic".to_string(),
-            },
-            base_url: entry.base_url.clone(),
-            requires_key: entry.requires_key,
-            is_local: !entry.requires_key,
-            enabled: entry.enabled,
-            models: entry.models.clone(),
-            default_model_id: entry.default_model_id.clone(),
-            headers: entry.headers.clone(),
-            is_default: default_pid.as_deref() == Some(entry.id.as_str()),
-        })
+        Ok(model_summary_from_config(&entry))
     }
 
-    async fn remove_provider(&self, id: &str) -> anyhow::Result<bool> {
+    async fn remove_model(&self, id: &str) -> anyhow::Result<bool> {
         self.resolver.catalog().remove(id).await
     }
 
-    async fn set_default_provider(
+    async fn model_test(
         &self,
-        provider: &str,
-        model: Option<String>,
-    ) -> anyhow::Result<(String, String)> {
-        let catalog = self.resolver.catalog();
-        let entry = catalog
-            .get(provider)
+        id: &str,
+    ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
+        let entry = self
+            .resolver
+            .catalog()
+            .get(id)
             .await
-            .ok_or_else(|| anyhow::anyhow!("provider '{provider}' not found in catalog"))?;
+            .ok_or_else(|| anyhow::anyhow!("model not found in catalog: {id}"))?;
 
-        let effective_model = model
-            .clone()
-            .unwrap_or_else(|| entry.default_model_id.clone());
-        if entry.model(&effective_model).is_none() {
-            anyhow::bail!("model '{effective_model}' is not declared on provider '{provider}'");
+        // Resolve the credential material from the vault, if the
+        // entry references one — same flow as `peko model test`.
+        let api_key = match &entry.credential_id {
+            Some(cid) => {
+                let credential = self
+                    .vault
+                    .get_credential(cid)
+                    .ok_or_else(|| anyhow::anyhow!("credential not found in vault: {cid}"))?;
+                Some(credential.material)
+            }
+            None => None,
+        };
+
+        let outcome = crate::providers::validator::Validator::test(&entry, api_key.as_ref()).await;
+
+        // Record the outcome on the credential so `credential list`
+        // shows the last-tested marker.
+        if let Some(cid) = &entry.credential_id {
+            if let Err(e) = self.vault.record_test(cid, outcome.ok) {
+                tracing::warn!(credential_id = %cid, error = %e, "failed to record credential test outcome");
+            }
         }
-
-        catalog
-            .set_default(Some(provider.to_string()), model)
-            .await?;
-
-        Ok((provider.to_string(), effective_model))
+        Ok(outcome)
     }
 }
 
@@ -2834,89 +2897,6 @@ impl crate::ipc::handlers::credential::BindingHost for AppState {
         self.vault
             .delete_binding(key)
             .map_err(|e| anyhow::anyhow!("vault refused to delete binding '{key}': {e}"))
-    }
-}
-
-// Live-credential-test companion to [`CredentialHost`]. Powers
-// `peko credential test <id>` and the desktop Test button. Resolves
-// the credential by id, then (for provider-namespace credentials)
-// looks up the catalog entry and hands the material to the validator.
-#[async_trait::async_trait]
-impl crate::ipc::handlers::credential::CredentialTestLiveHost for AppState {
-    async fn test_credential_live(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
-        let credential = self
-            .vault
-            .get_credential(id)
-            .ok_or_else(|| anyhow::anyhow!("credential not found: {id}"))?;
-
-        let provider_id = credential
-            .namespace
-            .strip_prefix("provider:")
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "credential '{}' has namespace '{}'; live test only supports provider:* namespaces",
-                    id,
-                    credential.namespace
-                )
-            })?;
-
-        let entry = self
-            .resolver
-            .catalog()
-            .get(provider_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("unknown provider: {provider_id}"))?;
-
-        let key = if entry.requires_key {
-            Some(&credential.material)
-        } else {
-            None
-        };
-
-        let outcome = crate::providers::validator::Validator::test(&entry, key).await;
-        if let Err(e) = self.vault.record_test(id, outcome.ok) {
-            tracing::warn!(credential_id = %id, error = %e, "failed to record credential test outcome");
-        }
-        Ok(outcome)
-    }
-
-    async fn test_binding_rotation(
-        &self,
-        key: &str,
-    ) -> anyhow::Result<Vec<crate::ipc::packet::BindingTestResult>> {
-        let (namespace, name) = key.rsplit_once(':').ok_or_else(|| {
-            anyhow::anyhow!("invalid binding key '{key}'; expected 'namespace:name'")
-        })?;
-
-        let binding = self
-            .vault
-            .get_binding(namespace, name)
-            .ok_or_else(|| anyhow::anyhow!("binding not found: {key}"))?;
-
-        let mut results = Vec::with_capacity(binding.ordered_credential_ids.len());
-        for id in binding.ordered_credential_ids {
-            let outcome = match self.test_credential_live(&id).await {
-                Ok(o) => o,
-                Err(e) => crate::providers::validator::CredentialTestOutcome {
-                    ok: false,
-                    message: e.to_string(),
-                    latency_ms: 0,
-                    http_status: None,
-                    model_used: None,
-                },
-            };
-            results.push(crate::ipc::packet::BindingTestResult {
-                id,
-                ok: outcome.ok,
-                http_status: outcome.http_status,
-                message: outcome.message,
-            });
-        }
-
-        Ok(results)
     }
 }
 

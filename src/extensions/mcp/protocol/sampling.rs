@@ -117,19 +117,33 @@ impl ServerRequestHandler for SamplingRequestHandler {
             .map(convert_mcp_tool)
             .collect();
 
-        // Resolve the default provider/model first. `resolver.build`
-        // is not metered (it just resolves config) and we need `choice`
-        // outside the QuotaScope to fill `CreateMessageResult::model`.
+        // Resolve a host model. MCP sampling has no per-request model
+        // selector, so we fall back to the first enabled model in the
+        // catalog. This is a pragmatic default for the pre-launch MCP
+        // bridge; future work can thread an explicit model preference
+        // through the MCP request.
+        let models = self.resolver.catalog().list_enabled().await;
+        if models.is_empty() {
+            return Err(JsonRpcError {
+                code: JsonRpcError::INTERNAL_ERROR,
+                message: "No enabled model in the catalog for MCP sampling".to_string(),
+                data: None,
+            });
+        }
+        let agent_model = models[0].id.clone();
         let (provider, choice) = self
             .resolver
-            .build(ResolveRequest::default())
+            .build(ResolveRequest {
+                agent_model: Some(&agent_model),
+                ..Default::default()
+            })
             .await
             .map_err(|e| JsonRpcError {
                 code: JsonRpcError::INTERNAL_ERROR,
                 message: format!("Failed to resolve host model: {}", e),
                 data: None,
             })?;
-        let model_id = choice.model.id.clone();
+        let model_id = choice.model_id.clone();
 
         // F19: open `QuotaScope::with` so the `MeteredProvider` built
         // below auto-charges this server's principal. We move the
@@ -169,7 +183,7 @@ impl ServerRequestHandler for SamplingRequestHandler {
         let result = CreateMessageResult {
             role: SamplingRole::Assistant,
             content: SamplingContent::Text { text: content },
-            model: choice.model.id.clone(),
+            model: choice.model_id.clone(),
             stop_reason: Some(map_stop_reason(&response.stop_reason)),
         };
 
@@ -236,7 +250,7 @@ mod tests {
         let adapter = crate::providers::MockAdapter::new();
         adapter.queue_text("Hello from the host model");
         let tmp = tempfile::tempdir().unwrap();
-        let catalog_path = tmp.path().join("providers.toml");
+        let catalog_path = tmp.path().join("models.toml");
         let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog_path).await;
 
         let handler =
@@ -305,7 +319,7 @@ mod tests {
         adapter.queue_text("first");
         adapter.queue_text("second");
         let tmp = tempfile::tempdir().unwrap();
-        let catalog_path = tmp.path().join("providers.toml");
+        let catalog_path = tmp.path().join("models.toml");
         let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog_path).await;
 
         // Build a meter with a high input-token limit so a successful

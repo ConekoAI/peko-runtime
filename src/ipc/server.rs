@@ -876,7 +876,7 @@ mod buffer_tests {
         );
     }
 
-    /// Round-trip a `provider_list`-shaped response large enough that
+    /// Round-trip a `model_list`-shaped response large enough that
     /// the *default* macOS `SO_SNDBUF` (2048 B) would reject it with
     /// `EMSGSIZE`, and verify the bumped server can deliver it back
     /// without truncation. This mirrors the exact failure mode the
@@ -886,24 +886,27 @@ mod buffer_tests {
     async fn unix_datagram_round_trips_response_larger_than_default_sndbuf() {
         // 15 entries × ~200 B ≈ 3 KiB — comfortably over the macOS
         // 2048 B default, comfortably under `IPC_SEND_BUFFER_BYTES`.
-        let providers: Vec<crate::ipc::packet::ProviderInfo> = (0..15)
-            .map(|i| crate::ipc::packet::ProviderInfo {
-                id: format!("test-provider-{i:02}-with-a-longer-id"),
-                display_name: format!("Test Provider {i:02}"),
+        let models: Vec<crate::ipc::packet::ModelSummary> = (0..15)
+            .map(|i| crate::ipc::packet::ModelSummary {
+                id: format!("test-model-{i:02}-with-a-longer-id"),
+                display_name: format!("Test Model {i:02}"),
+                template_id: None,
                 api_type: "openai".into(),
-                base_url: format!("https://api.test-provider-{i:02}.com/v1"),
+                base_url: format!("https://api.test-model-{i:02}.com/v1"),
+                model_id: "gpt-5".into(),
+                context_window: None,
+                max_output_tokens: None,
+                capabilities: vec![],
+                headers: Default::default(),
+                credential_id: None,
                 requires_key: true,
                 is_local: false,
                 enabled: true,
-                models: vec![],
-                default_model_id: "gpt-5".into(),
-                headers: Default::default(),
-                is_default: false,
             })
             .collect();
-        let response = ResponsePacket::ProviderList {
+        let response = ResponsePacket::ModelList {
             request_id: 1,
-            providers,
+            models,
         };
 
         let server_path = std::env::temp_dir().join(format!(

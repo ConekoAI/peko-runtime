@@ -825,7 +825,6 @@ mod tests {
             exposure: Default::default(),
             status: None,
             permissions: Vec::new(),
-            preferred_provider_id: None,
             preferred_model_id: None,
             transport_preference: Default::default(),
             quota: None,

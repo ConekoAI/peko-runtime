@@ -102,36 +102,39 @@ async fn create_test_workspace(
     tokio::fs::create_dir_all(&data_dir).await?;
     tokio::fs::create_dir_all(&cache_dir).await?;
 
-    // Determine provider: use mock LLM if MOCK_LLM_URL is set, otherwise minimax.
-    // v3 splits provider config out of the actor's identity: the agent/principal
-    // carries only soft hints, and the actual base_url + api_key live in the v3
-    // provider catalog at `<config_dir>/providers.toml`. We seed the catalog
-    // entry here, then write a Principal config that doesn't reference a
-    // provider at all — the resolver picks the default.
+    // Determine the model: use mock LLM if MOCK_LLM_URL is set, otherwise
+    // minimax. Model-first splits endpoint config out of the actor's
+    // identity: the actual base_url + api_key live in the model catalog
+    // at `<config_dir>/models.toml`, and the principal config pins the
+    // configured model via `preferred_model_id` — there is no runtime
+    // default, so an unpinned principal fails resolution with
+    // "no model configured".
     //
     // This mirrors `tests/common/agent.rs::seed_mock_provider_in_catalog`
     // + `create_mock_principal_with_tools` used by the cli_subagent /
     // cli_extensions_l3 integration suites.
-    if let Ok(mock_llm_url) = std::env::var("MOCK_LLM_URL") {
+    let pinned_model_id = if let Ok(mock_llm_url) = std::env::var("MOCK_LLM_URL") {
         if mock_llm_url.is_empty() {
             return Err(anyhow::anyhow!("MOCK_LLM_URL is set but empty"));
         }
-        // Seed the v3 catalog with a `mock-llm` entry so the daemon's
+        // Seed the catalog with a `mock-llm` entry so the daemon's
         // LlmResolver finds it on first lookup. The api_key
         // `mock-llm-test-key` matches what `PekoCli::cmd` exports as
         // `MOCK_LLM_API_KEY` under the `PEKO_TEST_RESOLVER_BOOTSTRAP=1`
         // headless fallback (CI mode).
         seed_mock_provider_catalog(workspace_dir, &mock_llm_url, "mock-llm-test-key")?;
+        "mock-llm"
     } else {
         let api_key = std::env::var("MINIMAX_API_KEY").map_err(|_| {
             anyhow::anyhow!("MINIMAX_API_KEY or MOCK_LLM_URL environment variable not set")
         })?;
-        // Seed the v3 catalog with a `minimax` entry pointing at the
+        // Seed the catalog with a `minimax` entry pointing at the
         // production Minimax endpoint. The API key is loaded from the
         // OS keychain (or, under PEKO_TEST_RESOLVER_BOOTSTRAP=1, the
         // MINIMAX_API_KEY env var).
         seed_minimax_catalog_entry(workspace_dir, &api_key)?;
-    }
+        "minimax"
+    };
 
     // Create the Principal's directory + principal.toml. The Principal's
     // identity is generated lazily by `PrincipalManager::load` if the
@@ -160,6 +163,11 @@ description = "E2E test principal"
 # PekoHub rejects every chat attempt before the user/grant check.
 exposure = "private"
 
+# Model-first: the principal must pin a configured model from
+# `<config_dir>/models.toml` — the resolver has no runtime default
+# and fails unpinned calls with "no model configured".
+preferred_model_id = "{pinned_model_id}"
+
 [identity]
 display_name = "E2E Test Principal"
 
@@ -187,41 +195,36 @@ granted_by = {{ kind = "user", id = "system" }}
 // v3 provider-catalog seeders (PR #44: removed inline [provider] block)
 // ---------------------------------------------------------------------------
 
-/// Seed a v3 `mock-llm` catalog entry under `<workspace_dir>/config/`
+/// Seed a `mock-llm` catalog entry under `<workspace_dir>/config/`
 /// so the daemon's `LlmResolver` finds it on first lookup. The path
 /// matches `AppState::with_data_dir(workspace_path, ..., config =
 /// { config_dir: workspace_path.join("config"), ... })` — the catalog
-/// resolver reads `<config_dir>/providers.toml`.
+/// resolver reads `<config_dir>/models.toml`.
 fn seed_mock_provider_catalog(
     workspace_dir: &std::path::Path,
     mock_llm_url: &str,
     api_key: &str,
 ) -> anyhow::Result<()> {
-    use crate::providers::catalog::{
-        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
-    };
+    use crate::providers::catalog::{ApiFormat, ModelCatalogFile, ModelConfig};
     use std::collections::BTreeMap;
 
     let config_dir = workspace_dir.join("config");
     std::fs::create_dir_all(&config_dir)?;
-    let catalog_path = config_dir.join("providers.toml");
+    let catalog_path = config_dir.join("models.toml");
     let base_url = mock_llm_url.trim_end_matches('/').to_string();
     let now = chrono::Utc::now();
-    let entry = ProviderCatalogEntry {
+    let entry = ModelConfig {
         id: "mock-llm".to_string(),
         display_name: "mock-llm".to_string(),
         template_id: None,
         api_format: ApiFormat::OpenaiCompletions,
         base_url,
-        default_model_id: "default".to_string(),
-        models: vec![ModelInfo {
-            id: "default".to_string(),
-            display_name: None,
-            context_length: None,
-            max_output_tokens: None,
-            capabilities: vec![],
-        }],
+        model_id: "default".to_string(),
+        context_window: None,
+        max_output_tokens: None,
+        capabilities: vec![],
         headers: BTreeMap::new(),
+        credential_id: None,
         requires_key: true,
         enabled: true,
         created_at: now,
@@ -229,11 +232,9 @@ fn seed_mock_provider_catalog(
     };
     let mut entries = BTreeMap::new();
     entries.insert("mock-llm".to_string(), entry);
-    let file = ProviderCatalogFile {
-        version: "3.0".to_string(),
+    let file = ModelCatalogFile {
+        version: "4.0".to_string(),
         entries,
-        default_provider_id: None,
-        default_model_id: None,
     };
     let toml = toml::to_string_pretty(&file).expect("serialize catalog");
     std::fs::write(&catalog_path, toml)?;
@@ -244,36 +245,31 @@ fn seed_mock_provider_catalog(
     Ok(())
 }
 
-/// Seed a v3 `minimax` catalog entry under `<workspace_dir>/config/`
+/// Seed a `minimax` catalog entry under `<workspace_dir>/config/`
 /// pointing at the production Minimax endpoint.
 fn seed_minimax_catalog_entry(
     workspace_dir: &std::path::Path,
     api_key: &str,
 ) -> anyhow::Result<()> {
-    use crate::providers::catalog::{
-        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
-    };
+    use crate::providers::catalog::{ApiFormat, ModelCatalogFile, ModelConfig};
     use std::collections::BTreeMap;
 
     let config_dir = workspace_dir.join("config");
     std::fs::create_dir_all(&config_dir)?;
-    let catalog_path = config_dir.join("providers.toml");
+    let catalog_path = config_dir.join("models.toml");
     let now = chrono::Utc::now();
-    let entry = ProviderCatalogEntry {
+    let entry = ModelConfig {
         id: "minimax".to_string(),
         display_name: "Minimax".to_string(),
         template_id: None,
         api_format: ApiFormat::AnthropicMessages,
         base_url: "https://api.minimaxi.com/anthropic".to_string(),
-        default_model_id: "MiniMax-M3".to_string(),
-        models: vec![ModelInfo {
-            id: "MiniMax-M3".to_string(),
-            display_name: None,
-            context_length: None,
-            max_output_tokens: None,
-            capabilities: vec![],
-        }],
+        model_id: "MiniMax-M3".to_string(),
+        context_window: None,
+        max_output_tokens: None,
+        capabilities: vec![],
         headers: BTreeMap::new(),
+        credential_id: None,
         requires_key: true,
         enabled: true,
         created_at: now,
@@ -281,11 +277,9 @@ fn seed_minimax_catalog_entry(
     };
     let mut entries = BTreeMap::new();
     entries.insert("minimax".to_string(), entry);
-    let file = ProviderCatalogFile {
-        version: "3.0".to_string(),
+    let file = ModelCatalogFile {
+        version: "4.0".to_string(),
         entries,
-        default_provider_id: None,
-        default_model_id: None,
     };
     let toml = toml::to_string_pretty(&file).expect("serialize catalog");
     std::fs::write(&catalog_path, toml)?;

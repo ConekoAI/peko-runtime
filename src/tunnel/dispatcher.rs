@@ -741,7 +741,6 @@ impl TunnelDispatcher {
                 channel,
                 on_event,
                 None,
-                None,
             )
             .await
         });
@@ -1255,7 +1254,6 @@ impl TunnelDispatcher {
                 message.clone(),
                 channel,
                 None,
-                None,
             )
             .await;
 
@@ -1562,7 +1560,6 @@ mod tests {
             exposure,
             status: None,
             permissions,
-            preferred_provider_id: None,
             preferred_model_id: None,
             transport_preference: Default::default(),
             quota: None,
