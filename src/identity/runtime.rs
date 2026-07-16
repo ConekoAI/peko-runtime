@@ -107,6 +107,15 @@ impl RuntimeIdentity {
             return Ok(identity);
         }
 
+        if let Some(identity) = Self::try_reconstruct_from_vault(vault)? {
+            Self::write_identity_file(&identity_path, &identity)?;
+            info!(
+                "Reconstructed runtime identity from vault at: {:?}",
+                identity_path
+            );
+            return Ok(identity);
+        }
+
         let (identity, private_key_bytes) = Self::generate()?;
 
         // Store private key in the vault.
@@ -118,19 +127,79 @@ impl RuntimeIdentity {
             )
             .with_context(|| "Failed to store runtime identity private key in vault")?;
 
-        // Ensure parent directory exists
-        if let Some(parent) = identity_path.parent() {
+        Self::write_identity_file(&identity_path, &identity)?;
+        info!("Saved new runtime identity to: {:?}", identity_path);
+        Ok(identity)
+    }
+
+    fn try_reconstruct_from_vault(vault: &Vault) -> Result<Option<Self>> {
+        use crate::common::vault::{CredentialFilter, CredentialKind};
+        let summaries = vault.list_credentials(&CredentialFilter {
+            namespace: Some("identity".to_string()),
+            kind: Some(CredentialKind::PrivateKey),
+            include_system: true,
+        });
+        for summary in summaries {
+            if let Some(c) = vault.get_credential(&summary.id) {
+                match Self::reconstruct_from_credential(&c) {
+                    Ok(Some(identity)) => return Ok(Some(identity)),
+                    Ok(None) => continue,
+                    Err(e) => {
+                        return Err(e.context(
+                            "identity.toml is missing and the vault contains a malformed identity credential"
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn reconstruct_from_credential(c: &crate::common::vault::Credential) -> Result<Option<Self>> {
+        if c.namespace != "identity" || c.kind != crate::common::vault::CredentialKind::PrivateKey
+        {
+            return Ok(None);
+        }
+        let algorithm = c
+            .metadata
+            .get("algorithm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if algorithm != "ed25519-raw-base64" {
+            return Ok(None);
+        }
+        let key_bytes = BASE64
+            .decode(c.material.expose_secret())
+            .with_context(|| "failed to base64-decode identity private key")?;
+        if key_bytes.len() != 32 {
+            anyhow::bail!(
+                "identity private key is {} bytes, expected 32",
+                key_bytes.len()
+            );
+        }
+        let mut secret_key_bytes = [0u8; 32];
+        secret_key_bytes.copy_from_slice(&key_bytes);
+        let signing_key = SigningKey::from_bytes(&secret_key_bytes);
+        let public_key_bytes = signing_key.verifying_key().to_bytes();
+        let runtime_did = public_key_to_did_key(&public_key_bytes);
+        let key_id = format!("{runtime_did}#keys-1");
+        Ok(Some(Self {
+            runtime_did,
+            key_id,
+            created_at: c.created_at,
+        }))
+    }
+
+    fn write_identity_file(path: &std::path::Path, identity: &Self) -> Result<()> {
+        if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create runtime directory: {parent:?}"))?;
         }
-
-        let toml = toml::to_string_pretty(&identity)
+        let toml = toml::to_string_pretty(identity)
             .with_context(|| "Failed to serialize identity to TOML")?;
-        fs::write(&identity_path, toml)
-            .with_context(|| format!("Failed to write identity file: {identity_path:?}"))?;
-
-        info!("Saved new runtime identity to: {:?}", identity_path);
-        Ok(identity)
+        fs::write(path, toml)
+            .with_context(|| format!("Failed to write identity file: {path:?}"))?;
+        Ok(())
     }
 
     /// Load the private signing key for this identity from the vault.
@@ -263,6 +332,34 @@ mod tests {
         let content = fs::read_to_string(identity_file_path(&resolver)).unwrap();
         assert!(!content.contains("encrypted_private_key"));
         assert!(!content.contains("[keys]"));
+    }
+
+    /// If `identity.toml` is missing but the private key exists in the
+    /// vault, the runtime identity is reconstructed from the vault rather
+    /// than generating a new keypair.
+    #[test]
+    fn reconstruct_identity_from_vault_when_toml_missing() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "identity-test");
+        let resolver = PathResolver::with_dirs(
+            dir.path().to_path_buf(),
+            dir.path().join("data"),
+            dir.path().join("cache"),
+        );
+
+        let identity = RuntimeIdentity::generate_or_load(&resolver, &vault).unwrap();
+        let original_did = identity.runtime_did.clone();
+
+        // Delete the public metadata file, keep the vault.
+        fs::remove_file(identity_file_path(&resolver)).unwrap();
+
+        let reconstructed = RuntimeIdentity::generate_or_load(&resolver, &vault).unwrap();
+        assert_eq!(reconstructed.runtime_did, original_did);
+        assert_eq!(reconstructed.key_id, identity.key_id);
+        assert!(identity_file_path(&resolver).exists());
+
+        let private_key = reconstructed.load_private_key(&vault).unwrap();
+        assert!(private_key.is_some());
     }
 
     #[test]
