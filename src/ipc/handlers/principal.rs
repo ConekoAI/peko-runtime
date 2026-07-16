@@ -312,6 +312,8 @@ impl RequestHandler for PrincipalHandler {
                 user,
                 no_slash,
                 output_format,
+                override_provider,
+                override_model,
             } => {
                 run_principal_send(
                     request_id,
@@ -320,6 +322,8 @@ impl RequestHandler for PrincipalHandler {
                     user,
                     no_slash,
                     output_format,
+                    override_provider,
+                    override_model,
                     host,
                     sink,
                     PrincipalSendResponseKind::OneShot,
@@ -334,6 +338,8 @@ impl RequestHandler for PrincipalHandler {
                 user,
                 no_slash,
                 output_format,
+                override_provider,
+                override_model,
             } => {
                 run_principal_send(
                     request_id,
@@ -342,6 +348,8 @@ impl RequestHandler for PrincipalHandler {
                     user,
                     no_slash,
                     output_format,
+                    override_provider,
+                    override_model,
                     host,
                     sink,
                     PrincipalSendResponseKind::Streaming,
@@ -1123,6 +1131,8 @@ async fn run_principal_send(
     user: String,
     no_slash: bool,
     output_format: crate::common::types::OutputFormat,
+    override_provider: Option<String>,
+    override_model: Option<String>,
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,
     response_kind: PrincipalSendResponseKind,
@@ -1218,8 +1228,8 @@ async fn run_principal_send(
             peer.clone(),
             message.clone(),
             channel,
-            None,
-            None,
+            override_provider,
+            override_model,
         )
         .await
     {

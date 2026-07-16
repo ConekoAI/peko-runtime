@@ -599,6 +599,12 @@ pub enum RequestPacket {
         /// Preferred output format for slash-command responses.
         #[serde(default)]
         output_format: OutputFormat,
+        /// Per-message provider override (e.g. `peko send --provider ...`).
+        #[serde(default)]
+        override_provider: Option<String>,
+        /// Per-message model override (e.g. `peko send --model ...`).
+        #[serde(default)]
+        override_model: Option<String>,
     },
 
     /// Streaming principal send. The daemon emits a sequence of
@@ -620,6 +626,12 @@ pub enum RequestPacket {
         /// Preferred output format for slash-command responses.
         #[serde(default)]
         output_format: OutputFormat,
+        /// Per-message provider override (e.g. `peko send --provider ...`).
+        #[serde(default)]
+        override_provider: Option<String>,
+        /// Per-message model override (e.g. `peko send --model ...`).
+        #[serde(default)]
+        override_model: Option<String>,
     },
 
     /// Soft-cancel or steer an in-flight `PrincipalSendStream` run.
@@ -2170,6 +2182,8 @@ mod tests {
             user: "alice".to_string(),
             no_slash: true,
             output_format: OutputFormat::Json,
+            override_provider: Some("openai".to_string()),
+            override_model: Some("gpt-4o".to_string()),
         };
 
         let bytes = req.to_bytes().unwrap();
@@ -2183,6 +2197,8 @@ mod tests {
                 user,
                 no_slash,
                 output_format,
+                override_provider,
+                override_model,
             } => {
                 assert_eq!(request_id, 42);
                 assert_eq!(name, "helper");
@@ -2190,6 +2206,8 @@ mod tests {
                 assert_eq!(user, "alice");
                 assert!(no_slash);
                 assert_eq!(output_format, OutputFormat::Json);
+                assert_eq!(override_provider, Some("openai".to_string()));
+                assert_eq!(override_model, Some("gpt-4o".to_string()));
             }
             _ => panic!("Wrong variant"),
         }
@@ -4407,6 +4425,8 @@ mod tests {
             user: "alice".to_string(),
             no_slash: true,
             output_format: OutputFormat::Json,
+            override_provider: Some("openai".to_string()),
+            override_model: Some("gpt-4o".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -4418,6 +4438,8 @@ mod tests {
                 user,
                 no_slash,
                 output_format,
+                override_provider,
+                override_model,
             } => {
                 assert_eq!(request_id, 5000);
                 assert_eq!(name, "helper");
@@ -4425,6 +4447,8 @@ mod tests {
                 assert_eq!(user, "alice");
                 assert!(no_slash);
                 assert_eq!(output_format, OutputFormat::Json);
+                assert_eq!(override_provider, Some("openai".to_string()));
+                assert_eq!(override_model, Some("gpt-4o".to_string()));
             }
             _ => panic!("Wrong variant"),
         }
@@ -4442,6 +4466,8 @@ mod tests {
             user: "alice".to_string(),
             no_slash: true,
             output_format: OutputFormat::Json,
+            override_provider: Some("anthropic".to_string()),
+            override_model: Some("claude-haiku-4-5".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -4453,6 +4479,8 @@ mod tests {
                 user,
                 no_slash,
                 output_format,
+                override_provider,
+                override_model,
             } => {
                 assert_eq!(request_id, 5100);
                 assert_eq!(name, "helper");
@@ -4460,6 +4488,8 @@ mod tests {
                 assert_eq!(user, "alice");
                 assert!(no_slash);
                 assert_eq!(output_format, OutputFormat::Json);
+                assert_eq!(override_provider, Some("anthropic".to_string()));
+                assert_eq!(override_model, Some("claude-haiku-4-5".to_string()));
             }
             _ => panic!("Wrong variant"),
         }
@@ -4804,6 +4834,8 @@ mod tests {
             user: "u".to_string(),
             no_slash: false,
             output_format: OutputFormat::Human,
+            override_provider: None,
+            override_model: None,
         };
         assert_eq!(req_send.request_id(), 1);
 
