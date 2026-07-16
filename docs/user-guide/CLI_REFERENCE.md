@@ -101,6 +101,9 @@ peko send <PRINCIPAL> [MESSAGE]
 | `-f, --file <PATH>` | - | Read message from file |
 | `--stdin` | - | Read message from stdin |
 | `--no-stream` | - | Disable streaming, wait for full response |
+| `--provider <PROVIDER_ID>` | - | Override the provider for this message only |
+| `--model <MODEL_ID>` | - | Override the model for this message only (requires `--provider`) |
+| `--no-slash` | - | Do not treat `/`-prefixed messages as slash commands |
 
 #### Examples
 
@@ -116,6 +119,9 @@ echo "Hello!" | peko send my-principal --stdin
 
 # Disable streaming
 peko send my-principal "Hello!" --no-stream
+
+# Override provider/model for a single message
+peko send my-principal "Hello!" --provider openai --model gpt-4o
 ```
 
 ---

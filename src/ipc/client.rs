@@ -539,6 +539,8 @@ impl DaemonClient {
         user: impl Into<String>,
         no_slash: bool,
         output_format: crate::common::types::OutputFormat,
+        override_provider: Option<String>,
+        override_model: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalSend {
@@ -548,6 +550,8 @@ impl DaemonClient {
             user: user.into(),
             no_slash,
             output_format,
+            override_provider,
+            override_model,
         };
         self.send_request(packet).await
     }
@@ -562,6 +566,8 @@ impl DaemonClient {
         user: impl Into<String>,
         no_slash: bool,
         output_format: crate::common::types::OutputFormat,
+        override_provider: Option<String>,
+        override_model: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalSendStream {
@@ -571,6 +577,8 @@ impl DaemonClient {
             user: user.into(),
             no_slash,
             output_format,
+            override_provider,
+            override_model,
         };
         self.send_request(packet).await
     }
