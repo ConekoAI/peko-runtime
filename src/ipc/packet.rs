@@ -247,6 +247,8 @@ pub enum RequestPacket {
         namespace: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        include_system: Option<bool>,
     },
 
     /// Fetch the full record for one credential (id, namespace, name,
@@ -1793,6 +1795,8 @@ pub struct CredentialRow {
     pub last_tested_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_tested_ok: Option<bool>,
+    #[serde(default)]
+    pub system_owned: bool,
 }
 
 /// Full credential record returned by `CredentialGet`. Includes
@@ -1812,6 +1816,8 @@ pub struct Credential {
     pub last_tested_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_tested_ok: Option<bool>,
+    #[serde(default)]
+    pub system_owned: bool,
 }
 
 /// Rotation binding wire shape. Carries the slot key (the map key
@@ -3042,6 +3048,7 @@ mod tests {
             request_id: 901,
             namespace: Some("provider:openai".to_string()),
             kind: Some("api_key".to_string()),
+            include_system: Some(true),
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -3062,10 +3069,12 @@ mod tests {
                 request_id,
                 namespace,
                 kind,
+                include_system,
             } => {
                 assert_eq!(request_id, 901);
                 assert_eq!(namespace.as_deref(), Some("provider:openai"));
                 assert_eq!(kind.as_deref(), Some("api_key"));
+                assert_eq!(include_system, Some(true));
             }
             _ => panic!("Wrong variant"),
         }
@@ -3087,6 +3096,7 @@ mod tests {
                     has_key: true,
                     last_tested_at: Some("2026-07-15T11:48:00Z".to_string()),
                     last_tested_ok: Some(true),
+                    system_owned: false,
                 },
                 CredentialRow {
                     id: "id-openai".to_string(),
@@ -3096,6 +3106,7 @@ mod tests {
                     has_key: false,
                     last_tested_at: None,
                     last_tested_ok: None,
+                    system_owned: false,
                 },
             ],
         };

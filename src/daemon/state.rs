@@ -2771,10 +2771,12 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
         &self,
         namespace: Option<&str>,
         kind: Option<crate::common::vault::CredentialKind>,
+        include_system: bool,
     ) -> Vec<crate::ipc::packet::CredentialRow> {
         let filter = crate::common::vault::CredentialFilter {
             namespace: namespace.map(String::from),
             kind,
+            include_system,
         };
         self.vault
             .list_credentials(&filter)
@@ -2787,6 +2789,7 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
                 has_key: summary.has_key,
                 last_tested_at: summary.last_tested_at.map(|dt| dt.to_rfc3339()),
                 last_tested_ok: summary.last_tested_ok,
+                system_owned: summary.system_owned,
             })
             .collect()
     }
@@ -2795,6 +2798,7 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
         self.vault
             .get_credential(id)
             .map(|c| crate::ipc::packet::Credential {
+                system_owned: c.is_system_owned(),
                 id: c.id,
                 namespace: c.namespace,
                 name: c.name,
@@ -2833,6 +2837,7 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
             .list_credentials(&crate::common::vault::CredentialFilter {
                 namespace: Some(namespace.to_string()),
                 kind: None,
+                include_system: true,
             })
             .into_iter()
             .find(|s| s.name == name)

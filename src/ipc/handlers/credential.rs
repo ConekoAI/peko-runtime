@@ -34,6 +34,7 @@ pub(crate) trait CredentialHost: Send + Sync {
         &self,
         namespace: Option<&str>,
         kind: Option<CredentialKind>,
+        include_system: bool,
     ) -> Vec<CredentialRow>;
 
     /// Fetch the full (non-material) record for one credential.
@@ -128,6 +129,7 @@ impl RequestHandler for CredentialHandler {
                 request_id,
                 namespace,
                 kind,
+                include_system,
             } => {
                 let kind = match kind {
                     Some(k) => match parse_kind(&k) {
@@ -143,7 +145,7 @@ impl RequestHandler for CredentialHandler {
                     },
                     None => None,
                 };
-                let providers = self.host.list_credentials(namespace.as_deref(), kind);
+                let providers = self.host.list_credentials(namespace.as_deref(), kind, include_system.unwrap_or(false));
                 let response = ResponsePacket::CredentialsListed {
                     request_id,
                     providers,
@@ -378,6 +380,7 @@ mod tests {
             &self,
             _namespace: Option<&str>,
             _kind: Option<CredentialKind>,
+            _include_system: bool,
         ) -> Vec<CredentialRow> {
             self.rows.clone()
         }
@@ -482,6 +485,7 @@ mod tests {
                 has_key: true,
                 last_tested_at: None,
                 last_tested_ok: None,
+                system_owned: false,
             },
             CredentialRow {
                 id: "id-openai".to_string(),
@@ -491,6 +495,7 @@ mod tests {
                 has_key: false,
                 last_tested_at: None,
                 last_tested_ok: None,
+                system_owned: false,
             },
         ]);
         let handler = handler(host);
@@ -503,6 +508,7 @@ mod tests {
                     request_id: 7,
                     namespace: None,
                     kind: None,
+                    include_system: None,
                 },
                 &test_caller(),
                 &sink,
@@ -568,6 +574,7 @@ mod tests {
                     request_id: 8,
                     namespace: None,
                     kind: None,
+                    include_system: None,
                 },
                 &test_caller(),
                 &sink,
@@ -746,5 +753,73 @@ mod tests {
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(60));
         assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
         assert_eq!(*deletes.lock().unwrap(), vec!["id-minimax".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn credential_list_include_system_forwards_flag() {
+        struct FlagHost {
+            flag: Arc<Mutex<Option<bool>>>,
+        }
+        impl CredentialHost for FlagHost {
+            fn list_credentials(
+                &self,
+                _namespace: Option<&str>,
+                _kind: Option<CredentialKind>,
+                include_system: bool,
+            ) -> Vec<CredentialRow> {
+                *self.flag.lock().unwrap() = Some(include_system);
+                Vec::new()
+            }
+            fn get_credential(&self,
+                _id: &str,
+            ) -> Option<CredentialWire> {
+                None
+            }
+            fn get_credential_material(&self,
+                _id: &str,
+            ) -> Option<SecretString> {
+                None
+            }
+            fn set_credential(
+                &self,
+                _namespace: &str,
+                _name: &str,
+                _kind: CredentialKind,
+                _material: &SecretString,
+                _metadata: Option<serde_json::Value>,
+            ) -> anyhow::Result<String> {
+                Ok("id-stub".to_string())
+            }
+            fn delete_credential(&self,
+                _id: &str,
+            ) -> anyhow::Result<bool> {
+                Ok(true)
+            }
+        }
+
+        let flag = Arc::new(Mutex::new(None));
+        let handler = CredentialHandler::new(
+            Arc::new(FlagHost { flag: flag.clone() }),
+            Arc::new(StubBindingHost),
+        );
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = CaptureSink(buf.clone());
+
+        handler
+            .handle(
+                RequestPacket::CredentialList {
+                    request_id: 9,
+                    namespace: None,
+                    kind: None,
+                    include_system: Some(true),
+                },
+                &test_caller(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .expect("handle should succeed");
+
+        assert_eq!(*flag.lock().unwrap(), Some(true));
     }
 }

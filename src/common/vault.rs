@@ -168,6 +168,9 @@ pub enum VaultError {
 
     #[error("invalid secret entry type for key '{0}'")]
     InvalidEntryType(String),
+
+    #[error("credential '{0}' is runtime-owned; use the runtime-specific command instead")]
+    SystemCredential(String),
 }
 
 /// Encrypted envelope written to disk.
@@ -435,9 +438,19 @@ pub struct Credential {
     /// / network failure). `None` until the first test runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_tested_ok: Option<bool>,
+    /// Whether this credential is runtime-owned and should be hidden
+    /// from user-facing surfaces and protected from generic mutation.
+    /// Defaults to `false` for backward compatibility with older v2
+    /// vault files; the reserved namespaces `identity` and `tunnel`
+    /// are also treated as system-owned regardless of this flag.
+    #[serde(default)]
+    pub system_owned: bool,
 }
 
-/// Custom serde for the `material: SecretString` field. We unwrap
+/// Reserved namespaces that hold runtime-owned credentials.
+fn is_system_namespace(namespace: &str) -> bool {
+    matches!(namespace, "identity" | "tunnel")
+}
 /// the secret on the way in and out so the on-disk format is
 /// identical to a plain `String`. The on-disk vault is itself
 /// encrypted, so this isn't a security regression vs. the old
@@ -458,6 +471,13 @@ where
 }
 
 impl Credential {
+    /// True if this credential is runtime-owned, either by explicit
+    /// flag or by living in a reserved system namespace.
+    #[must_use]
+    pub fn is_system_owned(&self) -> bool {
+        self.system_owned || is_system_namespace(&self.namespace)
+    }
+
     /// Generate a fresh UUID v4 for a new credential.
     pub fn generate_id() -> String {
         Uuid::new_v4().to_string()
@@ -482,6 +502,7 @@ impl Credential {
             updated_at: now,
             last_tested_at: None,
             last_tested_ok: None,
+            system_owned: false,
         }
     }
 
@@ -510,6 +531,7 @@ impl Credential {
             updated_at: now,
             last_tested_at: None,
             last_tested_ok: None,
+            system_owned: false,
         }
     }
 
@@ -535,6 +557,7 @@ impl Credential {
             updated_at: now,
             last_tested_at: None,
             last_tested_ok: None,
+            system_owned: false,
         }
     }
 
@@ -557,6 +580,7 @@ impl Credential {
             updated_at: now,
             last_tested_at: None,
             last_tested_ok: None,
+            system_owned: true,
         }
     }
 
@@ -574,6 +598,7 @@ impl Credential {
             updated_at: now,
             last_tested_at: None,
             last_tested_ok: None,
+            system_owned: true,
         }
     }
 
@@ -610,6 +635,7 @@ impl Credential {
             updated_at: now,
             last_tested_at: None,
             last_tested_ok: None,
+            system_owned: false,
         }
     }
 
@@ -631,6 +657,7 @@ impl Credential {
             updated_at: now,
             last_tested_at: None,
             last_tested_ok: None,
+            system_owned: false,
         }
     }
 
@@ -647,6 +674,7 @@ impl Credential {
             has_key: true,
             last_tested_at: self.last_tested_at,
             last_tested_ok: self.last_tested_ok,
+            system_owned: self.is_system_owned(),
         }
     }
 }
@@ -668,14 +696,20 @@ pub struct CredentialSummary {
     pub last_tested_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_tested_ok: Option<bool>,
+    /// Whether this credential is runtime-owned. User-facing lists
+    /// exclude system credentials by default.
+    #[serde(default)]
+    pub system_owned: bool,
 }
 
 /// Filter for [`Vault::list_credentials`]. Any `None` field matches
-/// all values.
+/// all values. System-owned credentials are excluded unless
+/// `include_system` is set to `true`.
 #[derive(Debug, Clone, Default)]
 pub struct CredentialFilter {
     pub namespace: Option<String>,
     pub kind: Option<CredentialKind>,
+    pub include_system: bool,
 }
 
 impl CredentialFilter {
@@ -690,6 +724,9 @@ impl CredentialFilter {
             if c.kind != k {
                 return false;
             }
+        }
+        if c.is_system_owned() && !self.include_system {
+            return false;
         }
         true
     }
@@ -1182,7 +1219,8 @@ impl Vault {
             c.id = id;
         }
         c.metadata = serde_json::json!({ "algorithm": algorithm });
-        self.set_credential(&c)
+        c.system_owned = true;
+        self.set_credential_internal(&c)
     }
 
     /// Get a runtime identity private key by key id.
@@ -1195,7 +1233,7 @@ impl Vault {
         let ids = self.credential_ids_for_slot("identity", key_id);
         let mut any = false;
         for id in ids {
-            if self.delete_credential(&id)? {
+            if self.delete_credential_internal(&id)? {
                 any = true;
             }
         }
@@ -1217,7 +1255,8 @@ impl Vault {
         if let Some(id) = self.credential_id_for_slot("tunnel", runtime_id) {
             c.id = id;
         }
-        self.set_credential(&c)
+        c.system_owned = true;
+        self.set_credential_internal(&c)
     }
 
     /// Get a PekoHub tunnel private key by runtime id.
@@ -1230,7 +1269,7 @@ impl Vault {
         let ids = self.credential_ids_for_slot("tunnel", runtime_id);
         let mut any = false;
         for id in ids {
-            if self.delete_credential(&id)? {
+            if self.delete_credential_internal(&id)? {
                 any = true;
             }
         }
@@ -1344,7 +1383,17 @@ impl Vault {
 
     /// Insert or overwrite a credential by `id`. `updated_at` is
     /// bumped to "now" on overwrite; `created_at` is preserved.
+    /// Rejects runtime-owned credentials; use the typed system
+    /// adapters (`set_identity_private_key`, `set_tunnel_private_key`)
+    /// for those.
     pub fn set_credential(&self, c: &Credential) -> Result<()> {
+        if c.is_system_owned() {
+            return Err(VaultError::SystemCredential(c.id.clone()).into());
+        }
+        self.set_credential_internal(c)
+    }
+
+    fn set_credential_internal(&self, c: &Credential) -> Result<()> {
         {
             let mut inner = self
                 .inner
@@ -1361,8 +1410,23 @@ impl Vault {
     }
 
     /// Delete the credential with this `id`. Returns `true` if a
-    /// credential was removed.
+    /// credential was removed. Rejects deletion of runtime-owned
+    /// credentials; use the typed system adapters for those.
     pub fn delete_credential(&self, id: &str) -> Result<bool> {
+        let inner = self
+            .inner
+            .read()
+            .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+        if let Some(c) = inner.file.credentials.get(id) {
+            if c.is_system_owned() {
+                return Err(VaultError::SystemCredential(id.to_string()).into());
+            }
+        }
+        drop(inner);
+        self.delete_credential_internal(id)
+    }
+
+    fn delete_credential_internal(&self, id: &str) -> Result<bool> {
         let removed = {
             let mut inner = self
                 .inner
@@ -2247,6 +2311,7 @@ impl crate::common::secret_store::SecretStore for Vault {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use secrecy::SecretString;
     use tempfile::TempDir;
 
@@ -3038,5 +3103,110 @@ mod tests {
         assert_eq!(token.access_token, "access-123");
         assert_eq!(token.refresh_token.as_deref(), Some("refresh-456"));
         assert_eq!(token.expires_at, Some(1_700_000_000));
+    }
+
+    /// System-owned credentials are hidden from default listings and can
+    /// be surfaced with `include_system`.
+    #[test]
+    fn system_credentials_excluded_by_default_and_included_when_requested() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        vault
+            .set_provider_key("openai", &SecretString::new("sk-1".into()))
+            .unwrap();
+        vault
+            .set_identity_private_key(
+                "did:key:z6MkTest#keys-1",
+                "ed25519-raw-base64",
+                &base64::engine::general_purpose::STANDARD.encode([0u8; 32]),
+            )
+            .unwrap();
+
+        let default_list = vault.list_credentials(&CredentialFilter::default());
+        assert_eq!(default_list.len(), 1);
+        assert_eq!(default_list[0].namespace, "provider:openai");
+
+        let with_system = vault.list_credentials(&CredentialFilter {
+            include_system: true,
+            ..Default::default()
+        });
+        assert_eq!(with_system.len(), 2);
+        assert!(with_system.iter().any(|s| s.namespace == "identity" && s.system_owned));
+    }
+
+    /// The reserved `identity` and `tunnel` namespaces are treated as
+    /// system-owned even when the on-disk flag is `false`, protecting
+    /// pre-existing v2 credentials.
+    #[test]
+    fn reserved_namespaces_treated_as_system_regardless_of_flag() {
+        let mut c = Credential::now(
+            "identity",
+            "default",
+            CredentialKind::PrivateKey,
+            SecretString::new("m".into()),
+        );
+        c.system_owned = false;
+        assert!(c.is_system_owned());
+        assert!(!CredentialFilter::default().matches(&c));
+        assert!(CredentialFilter {
+            include_system: true,
+            ..Default::default()
+        }
+        .matches(&c));
+    }
+
+    /// Generic `set_credential` refuses to write a system-owned credential.
+    #[test]
+    fn generic_set_rejects_system_credential() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        let c = Credential::now(
+            "identity",
+            "default",
+            CredentialKind::PrivateKey,
+            SecretString::new("m".into()),
+        );
+        let err = vault.set_credential(&c).unwrap_err();
+        assert!(
+            err.to_string().contains("runtime-owned"),
+            "error should explain runtime ownership: {err}"
+        );
+    }
+
+    /// Generic `delete_credential` refuses to delete a system-owned credential.
+    #[test]
+    fn generic_delete_rejects_system_credential() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        vault
+            .set_identity_private_key("kid", "ed25519-raw-base64", "abc")
+            .unwrap();
+        let summaries = vault.list_credentials(&CredentialFilter {
+            include_system: true,
+            ..Default::default()
+        });
+        let id = summaries[0].id.clone();
+        let err = vault.delete_credential(&id).unwrap_err();
+        assert!(
+            err.to_string().contains("runtime-owned"),
+            "error should explain runtime ownership: {err}"
+        );
+    }
+
+    /// The typed system adapters may mutate system-owned credentials.
+    #[test]
+    fn typed_adapter_can_delete_system_credential() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        vault
+            .set_identity_private_key("kid", "ed25519-raw-base64", "abc")
+            .unwrap();
+        assert!(vault.delete_identity_private_key("kid").unwrap());
+        assert!(vault
+            .list_credentials(&CredentialFilter {
+                include_system: true,
+                ..Default::default()
+            })
+            .is_empty());
     }
 }

@@ -63,6 +63,9 @@ pub enum CredentialCommands {
         /// Filter by kind.
         #[arg(long, value_name = "KIND")]
         kind: Option<String>,
+        /// Include runtime-owned credentials (identity, tunnel).
+        #[arg(long)]
+        include_system: bool,
     },
     /// Migrate legacy provider keys from the OS keychain into the vault.
     ///
@@ -86,8 +89,17 @@ pub async fn execute(cmd: CredentialCommands, paths: &GlobalPaths) -> Result<()>
         } => set_cmd(&vault, &namespace, &name, &kind, material, metadata).await,
         CredentialCommands::Get { id } => get_cmd(&vault, &id).await,
         CredentialCommands::Delete { id } => delete_cmd(&vault, &id).await,
-        CredentialCommands::List { namespace, kind } => {
-            list_cmd(&vault, namespace.as_deref(), kind.as_deref()).await
+        CredentialCommands::List {
+            namespace,
+            kind,
+            include_system,
+        } => {
+            list_cmd(&vault,
+                namespace.as_deref(),
+                kind.as_deref(),
+                include_system,
+            )
+            .await
         }
         CredentialCommands::Migrate => migrate_cmd(&vault).await,
     }
@@ -113,9 +125,22 @@ async fn set_cmd(
     }
     let id = credential.id.clone();
 
-    vault
-        .set_credential(&credential)
-        .with_context(|| format!("failed to store credential '{namespace}/{name}' in vault"))?;
+    match vault.set_credential(&credential) {
+        Ok(()) => {}
+        Err(e) => {
+            if e.downcast_ref::<crate::common::vault::VaultError>()
+                .is_some_and(|err| matches!(err, crate::common::vault::VaultError::SystemCredential(_)))
+            {
+                anyhow::bail!(
+                    "credential '{namespace}/{name}' is runtime-owned and cannot be changed with this command; \
+                     use the runtime-specific command instead"
+                );
+            }
+            return Err(e).with_context(|| {
+                format!("failed to store credential '{namespace}/{name}' in vault")
+            });
+        }
+    }
     println!("Stored credential '{namespace}/{name}' (id {id}).");
     notify_daemon_reload().await;
     Ok(())
@@ -146,19 +171,35 @@ async fn get_cmd(vault: &Vault, id: &str) -> Result<()> {
 }
 
 async fn delete_cmd(vault: &Vault, id: &str) -> Result<()> {
-    if vault
-        .delete_credential(id)
-        .with_context(|| format!("failed to delete credential '{id}'"))?
-    {
-        println!("Deleted credential '{id}'.");
-        notify_daemon_reload().await;
-    } else {
-        println!("No credential '{id}'.");
+    match vault.delete_credential(id) {
+        Ok(true) => {
+            println!("Deleted credential '{id}'.");
+            notify_daemon_reload().await;
+        }
+        Ok(false) => {
+            println!("No credential '{id}'.");
+        }
+        Err(e) => {
+            if e.downcast_ref::<crate::common::vault::VaultError>()
+                .is_some_and(|err| matches!(err, crate::common::vault::VaultError::SystemCredential(_)))
+            {
+                anyhow::bail!(
+                    "credential '{id}' is runtime-owned and cannot be deleted with this command; \
+                     use the runtime-specific command instead"
+                );
+            }
+            return Err(e).with_context(|| format!("failed to delete credential '{id}'"));
+        }
     }
     Ok(())
 }
 
-async fn list_cmd(vault: &Vault, namespace: Option<&str>, kind: Option<&str>) -> Result<()> {
+async fn list_cmd(
+    vault: &Vault,
+    namespace: Option<&str>,
+    kind: Option<&str>,
+    include_system: bool,
+) -> Result<()> {
     let kind = match kind {
         Some(k) => Some(parse_kind(k).with_context(|| format!("unknown credential kind '{k}'"))?),
         None => None,
@@ -166,6 +207,7 @@ async fn list_cmd(vault: &Vault, namespace: Option<&str>, kind: Option<&str>) ->
     let filter = CredentialFilter {
         namespace: namespace.map(String::from),
         kind,
+        include_system,
     };
     let summaries = vault.list_credentials(&filter);
     if summaries.is_empty() {
@@ -285,6 +327,7 @@ fn find_credential_id_for_slot(vault: &Vault, namespace: &str, name: &str) -> Op
         .list_credentials(&CredentialFilter {
             namespace: Some(namespace.to_string()),
             kind: None,
+            include_system: true,
         })
         .into_iter()
         .find(|s| s.name == name)
@@ -440,6 +483,7 @@ mod tests {
         let llm_only = vault.list_credentials(&CredentialFilter {
             namespace: Some("llm".to_string()),
             kind: None,
+            include_system: false,
         });
         assert_eq!(llm_only.len(), 1);
         assert_eq!(llm_only[0].namespace, "llm");
@@ -447,42 +491,75 @@ mod tests {
         let api_key_only = vault.list_credentials(&CredentialFilter {
             namespace: None,
             kind: Some(CredentialKind::ApiKey),
+            include_system: false,
         });
         assert_eq!(api_key_only.len(), 2);
     }
 
-    /// Generic `set` command parses from argv.
+    /// `list --include-system` parses from argv.
     #[test]
-    fn set_args_parse() {
+    fn list_include_system_parses() {
         let cli = Cli::try_parse_from([
             "peko",
             "credential",
-            "set",
-            "mcp:analytics",
-            "default",
-            "--kind",
-            "api_key",
-            "--material",
-            "secret",
-            "--metadata",
-            "foo=bar",
+            "list",
+            "--include-system",
         ])
         .unwrap();
         match cli.command {
-            crate::commands::Commands::Credential(CredentialCommands::Set {
+            crate::commands::Commands::Credential(CredentialCommands::List {
                 namespace,
-                name,
                 kind,
-                material,
-                metadata,
+                include_system,
             }) => {
-                assert_eq!(namespace, "mcp:analytics");
-                assert_eq!(name, "default");
-                assert_eq!(kind, "api_key");
-                assert_eq!(material.as_deref(), Some("secret"));
-                assert_eq!(metadata, vec![("foo".to_string(), "bar".to_string())]);
+                assert!(namespace.is_none());
+                assert!(kind.is_none());
+                assert!(include_system);
             }
-            _ => panic!("expected credential set"),
+            _ => panic!("expected credential list"),
         }
+    }
+
+    /// System-owned credentials are excluded from default `list` output.
+    #[tokio::test]
+    async fn list_excludes_system_credentials_by_default() {
+        let (_tmp, vault) = test_vault();
+        set_cmd(
+            &vault,
+            "llm",
+            "openai",
+            "api_key",
+            Some("sk-1".to_string()),
+            vec![],
+        )
+        .await
+        .unwrap();
+        vault
+            .set_identity_private_key("kid", "ed25519-raw-base64", "abc")
+            .unwrap();
+
+        list_cmd(&vault, None, None, false).await.unwrap();
+        let summaries = vault.list_credentials(&CredentialFilter::default());
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].namespace, "llm");
+    }
+
+    /// Generic `delete` on a system credential fails with a clear error.
+    #[tokio::test]
+    async fn delete_system_credential_rejected() {
+        let (_tmp, vault) = test_vault();
+        vault
+            .set_identity_private_key("kid", "ed25519-raw-base64", "abc")
+            .unwrap();
+        let id = vault
+            .list_credentials(&CredentialFilter {
+                include_system: true,
+                ..Default::default()
+            })[0]
+            .id
+            .clone();
+
+        let err = delete_cmd(&vault, &id).await.unwrap_err();
+        assert!(err.to_string().contains("runtime-owned"));
     }
 }
