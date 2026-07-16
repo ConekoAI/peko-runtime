@@ -102,16 +102,18 @@ fn hub_and_llm_urls() -> Option<(String, String)> {
 /// The runtime's `instance_announce` derives `allowedUsers` fresh on
 /// every announce from `[[permissions]]`, so leaving it empty here
 /// gives PekoHub an `allowedUsers = []` on the first announce.
-fn write_principal(cli: &PekoCli, principal_name: &str, _mock_llm_url: &str) {
+fn write_principal(cli: &PekoCli, principal_name: &str, mock_llm_url: &str) {
     // `peko principal create` writes the workspace, identity, default
     // `agents/primary.md` prompt, and `principal.toml` — the daemon's
-    // `load_principal` requires this scaffold. The seed catalog entry
-    // (`mock-llm`) is written by `DaemonGuard::spawn` via
-    // `seed_mock_provider_in_catalog`, so `peko principal create` here
-    // is daemon-free.
+    // `load_principal` requires this scaffold. It runs before
+    // `DaemonGuard::spawn`, so seed the `mock-llm` catalog entry here
+    // too (idempotent — the guard re-seeds the same values on spawn)
+    // and pin the principal to it: create requires `--model` and
+    // validates it against the catalog.
+    common::agent::seed_mock_provider_in_catalog(cli.home(), mock_llm_url);
     let output = cli
         .cmd()
-        .args(["principal", "create", principal_name])
+        .args(["principal", "create", principal_name, "--model", "mock-llm"])
         .output()
         .expect("run `peko principal create`");
     assert!(

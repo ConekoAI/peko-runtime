@@ -1,21 +1,21 @@
 //! `provider_templates` domain request handler (T-109b).
 //!
-//! Owns the `RequestPacket::ProviderTemplates` IPC variant. The
-//! desktop's "Add Provider" modal calls this so the template picker
-//! can show the curated list of known providers (Anthropic, OpenAI,
-//! Groq, Ollama, …) with their default base URL, API format, and
-//! curated model list — the same surface the CLI's
-//! `peko provider templates` already prints, but over IPC so the
+//! Owns the `RequestPacket::ModelTemplates` IPC variant. The
+//! desktop's "Add Model" modal calls this so the preset picker
+//! can show the curated list of known model presets (Anthropic,
+//! OpenAI, Groq, Ollama, …) with their default base URL, API format,
+//! and curated model list — the same surface the CLI's
+//! `peko model presets` already prints, but over IPC so the
 //! desktop doesn't shell out.
 //!
-//! The handler holds a narrow [`ProviderTemplatesHost`] port; the
+//! The handler holds a narrow [`ModelTemplatesHost`] port; the
 //! daemon-side implementation (`AppState`) is reached only through
 //! the trait, so this module never imports
 //! `crate::daemon::state::AppState` directly.
 //!
 //! Boundary rules:
 //! - Dependency inversion: the consumer (`ipc::handlers::provider_templates`)
-//!   defines the [`ProviderTemplatesHost`] trait; the producer
+//!   defines the [`ModelTemplatesHost`] trait; the producer
 //!   (`daemon::state`) implements it (same pattern as the rest of
 //!   the F6/F7 handler family).
 //! - F6: this module must not import any other `ipc::handlers::*` module.
@@ -26,7 +26,7 @@ use async_trait::async_trait;
 
 use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::RequestHandler;
-use crate::ipc::packet::{ProviderTemplateInfo, RequestPacket, ResponsePacket};
+use crate::ipc::packet::{ModelPresetInfo, RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
@@ -34,31 +34,31 @@ use crate::providers::catalog::ApiFormat;
 use crate::providers::templates::{self, ModelTemplate, ProviderTemplate};
 
 /// Narrow port the `provider_templates` handler uses to read the
-/// built-in template list.
+/// built-in preset list.
 ///
 /// Sync because `BUILT_IN_TEMPLATES` is a `&'static [ProviderTemplate]`
 /// — no I/O, no locking, no async work. Keeping the trait sync
 /// (same shape as the pure-read credential port in
 /// `ipc::handlers::credential`) avoids the `async_trait` boxing
 /// overhead. The trait is reachable from `AppState` so a future
-/// test can stub the templates without spinning up a catalog.
-pub(crate) trait ProviderTemplatesHost: Send + Sync {
-    /// Snapshot the built-in templates as owned, serializable
-    /// `ProviderTemplateInfo`s ready to ship over IPC. The static
+/// test can stub the presets without spinning up a catalog.
+pub(crate) trait ModelTemplatesHost: Send + Sync {
+    /// Snapshot the built-in presets as owned, serializable
+    /// `ModelPresetInfo`s ready to ship over IPC. The static
     /// lifetimes of the in-runtime templates are projected away —
     /// each entry becomes a fully owned `String` / `u32` shape.
-    fn list_templates(&self) -> Vec<ProviderTemplateInfo>;
+    fn list_templates(&self) -> Vec<ModelPresetInfo>;
 }
 
 /// `provider_templates` domain request handler. Constructed with
-/// an `Arc<dyn ProviderTemplatesHost>` (typically
+/// an `Arc<dyn ModelTemplatesHost>` (typically
 /// `Arc::new(app_state.clone())` from the dispatcher).
 pub(crate) struct ProviderTemplatesHandler {
-    host: Arc<dyn ProviderTemplatesHost>,
+    host: Arc<dyn ModelTemplatesHost>,
 }
 
 impl ProviderTemplatesHandler {
-    pub(crate) fn new(host: Arc<dyn ProviderTemplatesHost>) -> Self {
+    pub(crate) fn new(host: Arc<dyn ModelTemplatesHost>) -> Self {
         Self { host }
     }
 }
@@ -70,10 +70,10 @@ impl ProviderTemplatesHandler {
 ///    serialized without a lifetime.
 /// 2. The `headers` and `capabilities` slices are dropped (T-109b
 ///    scope decision — the modal doesn't render them, and the
-///    catalog entry the user creates from a template starts with
-///    the template's defaults intact so no information is lost).
-fn template_to_info(t: &ProviderTemplate) -> ProviderTemplateInfo {
-    ProviderTemplateInfo {
+///    catalog entry the user creates from a preset starts with
+///    the preset's defaults intact so no information is lost).
+fn template_to_info(t: &ProviderTemplate) -> ModelPresetInfo {
+    ModelPresetInfo {
         id: t.id.to_string(),
         display_name: t.display_name.to_string(),
         api_type: match t.api_format {
@@ -105,7 +105,7 @@ impl RequestHandler for ProviderTemplatesHandler {
     }
 
     fn matches(&self, request: &RequestPacket) -> bool {
-        matches!(request, RequestPacket::ProviderTemplates { .. })
+        matches!(request, RequestPacket::ModelTemplates { .. })
     }
 
     async fn handle(
@@ -116,11 +116,11 @@ impl RequestHandler for ProviderTemplatesHandler {
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         match request {
-            RequestPacket::ProviderTemplates { request_id } => {
-                let providers = self.host.list_templates();
-                let response = ResponsePacket::ProviderTemplates {
+            RequestPacket::ModelTemplates { request_id } => {
+                let presets = self.host.list_templates();
+                let response = ResponsePacket::ModelTemplates {
                     request_id,
-                    providers,
+                    presets,
                 };
                 send_response(sink, response).await?;
             }
@@ -132,11 +132,11 @@ impl RequestHandler for ProviderTemplatesHandler {
     }
 }
 
-// Allow the test module to construct a `ProviderTemplateInfo` from
+// Allow the test module to construct a `ModelPresetInfo` from
 // a known-good `&'static ProviderTemplate` without going through
 // `AppState`. Mirrors the `tests` blocks in the other handlers.
 #[allow(dead_code)]
-pub(crate) fn template_info_from_static(t: &ProviderTemplate) -> ProviderTemplateInfo {
+pub(crate) fn template_info_from_static(t: &ProviderTemplate) -> ModelPresetInfo {
     template_to_info(t)
 }
 
@@ -152,21 +152,21 @@ fn ensure_templates_iter_link(_: std::marker::PhantomData<()>) {
 #[cfg(test)]
 mod tests {
     //! Pin the wire shape so a runtime regression surfaces as a
-    //! test failure rather than as the desktop's "Add Provider"
+    //! test failure rather than as the desktop's "Add Model"
     //! modal falling back to an empty picker. Mirrors
     //! `credential_list_emits_rows_with_has_key_flag` and
-    //! `provider_list_emits_all_builtin_entries`.
+    //! `model_list_emits_catalog_entries`.
 
     use super::*;
     use crate::ipc::response_sink::ResponseSink;
     use std::sync::{Arc, Mutex};
 
-    /// Stub host — each test stages the templates it wants to
+    /// Stub host — each test stages the presets it wants to
     /// exercise. We don't need a real `AppState` here because the
     /// projection (`template_to_info`) is a pure function.
-    struct StubHost(Vec<ProviderTemplateInfo>);
-    impl ProviderTemplatesHost for StubHost {
-        fn list_templates(&self) -> Vec<ProviderTemplateInfo> {
+    struct StubHost(Vec<ModelPresetInfo>);
+    impl ModelTemplatesHost for StubHost {
+        fn list_templates(&self) -> Vec<ModelPresetInfo> {
             self.0.clone()
         }
     }
@@ -188,8 +188,8 @@ mod tests {
         PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"))
     }
 
-    fn anthropic_info() -> ProviderTemplateInfo {
-        ProviderTemplateInfo {
+    fn anthropic_info() -> ModelPresetInfo {
+        ModelPresetInfo {
             id: "anthropic".to_string(),
             display_name: "Anthropic".to_string(),
             api_type: "anthropic".to_string(),
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_templates_emits_seeded_rows() {
+    async fn model_templates_emits_seeded_rows() {
         let host = StubHost(vec![anthropic_info()]);
         let handler = ProviderTemplatesHandler::new(Arc::new(host));
         let buf = Arc::new(Mutex::new(Vec::new()));
@@ -214,7 +214,7 @@ mod tests {
 
         handler
             .handle(
-                RequestPacket::ProviderTemplates { request_id: 51 },
+                RequestPacket::ModelTemplates { request_id: 51 },
                 &test_caller(),
                 &sink,
                 &test_peer(),
@@ -228,20 +228,20 @@ mod tests {
 
         assert_eq!(
             json.get("type").and_then(|v| v.as_str()),
-            Some("provider_templates"),
-            "response kind must be provider_templates (T-109b wire shape)"
+            Some("model_templates"),
+            "response kind must be model_templates"
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(51));
 
-        let providers = json
-            .get("providers")
+        let presets = json
+            .get("presets")
             .and_then(|v| v.as_array())
-            .expect("response should have a providers array");
-        assert_eq!(providers.len(), 1);
+            .expect("response should have a presets array");
+        assert_eq!(presets.len(), 1);
 
         // Field names must match what the desktop's Tauri command
-        // projection reads in `provider_admin.rs`.
-        let p = &providers[0];
+        // projection reads.
+        let p = &presets[0];
         assert_eq!(p.get("id").and_then(|v| v.as_str()), Some("anthropic"));
         assert_eq!(
             p.get("display_name").and_then(|v| v.as_str()),
@@ -278,11 +278,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_templates_emits_empty_array_when_no_templates() {
-        // Edge case: a profile that has zero built-in templates (e.g.
+    async fn model_templates_emits_empty_array_when_no_templates() {
+        // Edge case: a profile that has zero built-in presets (e.g.
         // a future build that ships no presets) must emit an empty
-        // `providers` array — not null, not absent — so the desktop
-        // modal reduces to "no templates available" without an
+        // `presets` array — not null, not absent — so the desktop
+        // modal reduces to "no presets available" without an
         // undefined-property error.
         let host = StubHost(Vec::new());
         let handler = ProviderTemplatesHandler::new(Arc::new(host));
@@ -291,7 +291,7 @@ mod tests {
 
         handler
             .handle(
-                RequestPacket::ProviderTemplates { request_id: 52 },
+                RequestPacket::ModelTemplates { request_id: 52 },
                 &test_caller(),
                 &sink,
                 &test_peer(),
@@ -302,18 +302,18 @@ mod tests {
         let bytes = buf.lock().unwrap().clone();
         let json: serde_json::Value =
             serde_json::from_slice(&bytes).expect("response should be valid JSON");
-        let providers = json
-            .get("providers")
+        let presets = json
+            .get("presets")
             .and_then(|v| v.as_array())
-            .expect("response should have a providers array (possibly empty)");
-        assert!(providers.is_empty());
+            .expect("response should have a presets array (possibly empty)");
+        assert!(presets.is_empty());
     }
 
     #[test]
     fn template_projection_preserves_anthropic_shape() {
         // Pure-function pin: the projection from `&'static
-        // ProviderTemplate` to `ProviderTemplateInfo` must keep the
-        // anthropic template's wire shape stable. If a future
+        // ProviderTemplate` to `ModelPresetInfo` must keep the
+        // anthropic preset's wire shape stable. If a future
         // template change adds a new model, this test breaks at
         // compile time (model count differs) — the on-call reviewer
         // can decide whether to add a new round-trip or revert the

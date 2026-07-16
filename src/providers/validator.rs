@@ -1,32 +1,27 @@
-//! Live credential validation.
+//! Live model validation.
 //!
-//! `Vault::test_provider_key` (and `LlmResolver::test_key`) only check
-//! the shape of a stored key — they don't talk to the network. That
-//! check is fast and offline but it can't tell the difference between
-//! `sk-opena-12345` (passes the `starts_with("sk-")` shape check for
-//! OpenAI, then 401s on the real API) and a real key.
+//! `LlmResolver::test_key` only checks the shape of a stored key — it
+//! doesn't talk to the network. This module closes that gap.
+//! `Validator::test` makes the cheapest possible authenticated call
+//! against the model's actual API and returns a [`CredentialTestOutcome`]
+//! with the HTTP status, latency, human-readable reason, and (for
+//! Anthropic-format models) the model id that was used. It's the live
+//! counterpart to the shape check and is what `peko model test` and the
+//! desktop's Test button call.
 //!
-//! This module closes that gap. `Validator::test` makes the cheapest
-//! possible authenticated call against the provider's actual API and
-//! returns a [`CredentialTestOutcome`] with the HTTP status, latency,
-//! human-readable reason, and (for Anthropic-format providers) the
-//! model id that was used. It's the live counterpart to the shape
-//! check and is what `peko credential test` and the desktop's Test
-//! button both call today.
+//! Per-format dispatch mirrors [`crate::providers::factory::create_provider_for_model`]:
 //!
-//! Per-format dispatch mirrors [`crate::providers::factory::create_provider_for_entry`]:
-//!
-//! | `entry.api_format` | Method | Path | Body |
+//! | `config.api_format` | Method | Path | Body |
 //! |---|---|---|---|
-//! | `OpenaiCompletions`   | `GET`  | `/models` (relative to `entry.base_url`) | — |
-//! | `AnthropicMessages`   | `POST` | `/v1/messages` | `{"model": "<default_model_id>", "messages": [{"role":"user","content":"ping"}], "max_tokens": 1}` |
+//! | `OpenaiCompletions`   | `GET`  | `/models` (relative to `config.base_url`) | — |
+//! | `AnthropicMessages`   | `POST` | `/v1/messages` | `{"model": "<config.model_id>", "messages": [{"role":"user","content":"ping"}], "max_tokens": 1}` |
 //!
 //! The validator deliberately does NOT go through the metered provider
-//! wrappers: a user-initiated credential ping must not charge quota,
-//! and the cheap list-models call doesn't consume tokens anyway. For
+//! wrappers: a user-initiated model ping must not charge quota, and the
+//! cheap list-models call doesn't consume tokens anyway. For
 //! Anthropic-format, the `max_tokens: 1` body makes the messages call
-//! billable but small — the outcome's `model_used` field surfaces
-//! which model was used so the UI can warn the user.
+//! billable but small — the outcome's `model_used` field surfaces which
+//! model was used so the UI can warn the user.
 
 use std::time::Instant;
 
@@ -34,7 +29,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
 use crate::providers::adapters::{AnthropicAdapter, AnyAdapter, ApiAdapter, OpenAiAdapter};
-use crate::providers::catalog::{ApiFormat, ProviderCatalogEntry};
+use crate::providers::catalog::{ApiFormat, ModelConfig};
 use crate::providers::transport::client::{AuthConfig, HttpClient};
 
 /// How long to wait for the ping before giving up.
@@ -78,25 +73,24 @@ pub struct CredentialTestOutcome {
 pub struct Validator;
 
 impl Validator {
-    /// Ping the provider identified by `entry` with `api_key` (or no
-    /// key at all for local providers like Ollama) and report what
-    /// happened.
+    /// Ping the model identified by `config` with `api_key` (or no key at
+    /// all for local models like Ollama) and report what happened.
     ///
-    /// `api_key` is `Some` for providers with `requires_key = true` and
-    /// `None` otherwise. The catalog entry controls everything else:
-    /// `base_url`, `api_format`, and `default_model_id` (for the
-    /// Anthropic-format messages body).
+    /// `api_key` is `Some` for models with `requires_key = true` and
+    /// `None` otherwise. The model config controls everything else:
+    /// `base_url`, `api_format`, and `model_id` (for the Anthropic-format
+    /// messages body).
     pub async fn test(
-        entry: &ProviderCatalogEntry,
+        config: &ModelConfig,
         api_key: Option<&SecretString>,
     ) -> CredentialTestOutcome {
         // Pre-flight: empty base URL means the user never configured
         // one (e.g. azure-openai's default template). Don't even try
         // to dial — surface a clear "go set one in Settings" error.
-        if entry.base_url.trim().is_empty() {
+        if config.base_url.trim().is_empty() {
             return CredentialTestOutcome {
                 ok: false,
-                message: "No base URL configured; set one in Settings → Add Provider".to_string(),
+                message: "No base URL configured; set one in Settings → Models".to_string(),
                 latency_ms: 0,
                 http_status: None,
                 model_used: None,
@@ -109,14 +103,14 @@ impl Validator {
         // adapter is otherwise unused — we build our own `HttpClient`
         // so we can suppress retries (the default policy would mask
         // 429s by waiting and retrying, which is wrong for a ping).
-        let adapter = build_adapter(entry);
+        let adapter = build_adapter(config);
 
-        let (auth, extra_headers) = match (&api_key, entry.requires_key) {
+        let (auth, extra_headers) = match (&api_key, config.requires_key) {
             (Some(key), _) => (
                 adapter.auth_config(key.expose_secret()),
                 adapter.extra_headers(),
             ),
-            // Local / keyless provider (Ollama). The HTTP request still
+            // Local / keyless model (Ollama). The HTTP request still
             // goes out; we just don't attach an Authorization header.
             (None, false) => (
                 AuthConfig::Bearer {
@@ -124,13 +118,13 @@ impl Validator {
                 },
                 adapter.extra_headers(),
             ),
-            // Vault says "no key" but the entry requires one — that's
+            // Vault says "no key" but the model requires one — that's
             // a misconfiguration on the user's side. Bail without
             // making the network call.
             (None, true) => {
                 return CredentialTestOutcome {
                     ok: false,
-                    message: format!("No key stored for '{}'", entry.id),
+                    message: format!("No key stored for '{}'", config.id),
                     latency_ms: started.elapsed().as_millis() as u32,
                     http_status: None,
                     model_used: None,
@@ -139,7 +133,7 @@ impl Validator {
         };
 
         let client = match HttpClient::with_headers(
-            entry.base_url.clone(),
+            config.base_url.clone(),
             auth,
             VALIDATOR_TIMEOUT_SECS,
             extra_headers,
@@ -156,10 +150,10 @@ impl Validator {
             }
         };
 
-        let outcome = match entry.api_format {
+        let outcome = match config.api_format {
             ApiFormat::OpenaiCompletions => ping_openai_compat(&client).await,
             ApiFormat::AnthropicMessages => {
-                ping_anthropic_messages(&client, &entry.default_model_id).await
+                ping_anthropic_messages(&client, &config.model_id).await
             }
         };
 
@@ -175,26 +169,26 @@ impl Validator {
 /// `extra_headers`. The adapter's `base_url` is unused — the
 /// `HttpClient` we build carries the real base URL. Mirrors the
 /// construction in
-/// [`crate::providers::factory::create_provider_for_entry`].
-fn build_adapter(entry: &ProviderCatalogEntry) -> AnyAdapter {
-    match entry.api_format {
+/// [`crate::providers::factory::create_provider_for_model`].
+fn build_adapter(config: &ModelConfig) -> AnyAdapter {
+    match config.api_format {
         ApiFormat::OpenaiCompletions => {
-            // Even when `entry.base_url` is empty (we already bailed
+            // Even when `config.base_url` is empty (we already bailed
             // on that above), construct the adapter so we can read its
             // default auth/headers — the URL never reaches the wire
             // because the HttpClient is the one that actually dials.
-            let adapter = if entry.base_url.is_empty() {
+            let adapter = if config.base_url.is_empty() {
                 OpenAiAdapter::new()
             } else {
-                OpenAiAdapter::new().with_base_url(&entry.base_url)
+                OpenAiAdapter::new().with_base_url(&config.base_url)
             };
             AnyAdapter::OpenAi(adapter)
         }
         ApiFormat::AnthropicMessages => {
-            let adapter = if entry.base_url.is_empty() {
+            let adapter = if config.base_url.is_empty() {
                 AnthropicAdapter::new()
             } else {
-                AnthropicAdapter::new().with_base_url(&entry.base_url)
+                AnthropicAdapter::new().with_base_url(&config.base_url)
             };
             AnyAdapter::Anthropic(adapter)
         }
@@ -402,18 +396,21 @@ mod tests {
         id: &str,
         api_format: ApiFormat,
         base_url: String,
-        default_model: &str,
+        model_id: &str,
         requires_key: bool,
-    ) -> ProviderCatalogEntry {
-        ProviderCatalogEntry {
+    ) -> ModelConfig {
+        ModelConfig {
             id: id.to_string(),
             display_name: id.to_string(),
             template_id: None,
             api_format,
             base_url,
-            models: vec![],
-            default_model_id: default_model.to_string(),
+            model_id: model_id.to_string(),
+            context_window: None,
+            max_output_tokens: None,
+            capabilities: vec![],
             headers: Default::default(),
+            credential_id: None,
             requires_key,
             enabled: true,
             created_at: chrono::Utc::now(),

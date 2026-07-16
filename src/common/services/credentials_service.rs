@@ -107,6 +107,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(vault_passphrase)]
     fn test_registry_token_roundtrip() {
         let paths = temp_paths();
         let service = CredentialsService::new(paths).unwrap();

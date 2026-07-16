@@ -328,7 +328,6 @@ impl CronEngine {
                 job.task_description(),
                 channel,
                 None,
-                None,
             )
             .await
         {
@@ -662,7 +661,7 @@ mod tests {
         let workspace = tmp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-        let catalog_path = tmp.path().join("providers.toml");
+        let catalog_path = tmp.path().join("models.toml");
         let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
         adapter.queue_text("Hello from cron");
         Arc::new(
@@ -717,8 +716,7 @@ mod tests {
                 granted_at: chrono::Utc::now().to_rfc3339(),
                 granted_by: Subject::User("test-owner".to_string()),
             }],
-            preferred_provider_id: None,
-            preferred_model_id: None,
+            preferred_model_id: Some("mock".to_string()),
             transport_preference: Default::default(),
             quota: None,
         }

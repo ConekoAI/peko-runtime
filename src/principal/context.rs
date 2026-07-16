@@ -64,16 +64,17 @@ pub struct PrincipalContext {
     /// LLM resolver used to validate provider hints and surface
     /// catalog defaults.
     pub resolver: Option<Arc<LlmResolver>>,
-    /// Per-principal provider/model preference from `principal.toml`.
-    /// When `Some`, overrides the catalog default for this principal.
-    pub provider_hint: (Option<String>, Option<String>),
+    /// Per-principal configured model preference from `principal.toml`.
+    /// When `Some`, this model id is used for every LLM call for this
+    /// principal unless overridden per-message.
+    pub provider_hint: Option<String>,
 
-    /// Per-message provider/model override (RP2). Mirrored from
-    /// `RouterContext` at root-agent construction time and threaded
-    /// into `Agent::init_provider` so the resolver classifies the
-    /// resolution as `ResolveSource::ExplicitOverride`. `None, None`
-    /// preserves the principal-config → catalog-default chain.
-    pub message_override: (Option<String>, Option<String>),
+    /// Per-message configured model override (e.g. `peko send --model`).
+    /// Mirrored from `RouterContext` at root-agent construction time and
+    /// threaded into `Agent::init_provider` so the resolver classifies
+    /// the resolution as `ResolveSource::ExplicitOverride`. `None`
+    /// preserves the principal-config chain.
+    pub message_override: Option<String>,
 
     /// Built-in default prompt body — the compiled-in root agent
     /// prompt or a workspace-relative override. Captured at
@@ -119,10 +120,10 @@ impl PrincipalContext {
         session_creation_lock: Arc<tokio::sync::Mutex<()>>,
         capabilities: Arc<Capabilities>,
         resolver: Option<Arc<LlmResolver>>,
-        provider_hint: (Option<String>, Option<String>),
-        // RP2: per-message provider/model override. Mirrored from
+        provider_hint: Option<String>,
+        // Per-message configured model override. Mirrored from
         // `RouterContext` and consumed by `Agent::init_provider`.
-        message_override: (Option<String>, Option<String>),
+        message_override: Option<String>,
         principal_id: PrincipalId,
     ) -> Self {
         let sessions_dir = memory.sessions_dir().clone();
@@ -404,8 +405,8 @@ mod tests {
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
             None,
-            (None, None),
-            (None, None),
+            None,
+            None,
             PrincipalId::generate(),
         );
 
@@ -429,8 +430,8 @@ mod tests {
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
             None,
-            (None, None),
-            (None, None),
+            None,
+            None,
             PrincipalId::generate(),
         );
 
@@ -464,8 +465,8 @@ mod tests {
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
             None,
-            (None, None),
-            (None, None),
+            None,
+            None,
             id.clone(),
         );
         assert_eq!(ctx.principal_id(), &id);

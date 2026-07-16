@@ -1,16 +1,16 @@
 //! `provider_edit` domain request handler (RP6).
 //!
-//! Owns the `RequestPacket::{ProviderUpdate, ProviderRemove,
-//! ProviderSetDefault}` IPC variants. These let the desktop mutate the
-//! provider catalog without shelling out to the CLI.
+//! Owns the `RequestPacket::{ModelUpdate, ModelRemove, ModelTest}`
+//! IPC variants. These let the desktop mutate the model catalog and
+//! live-validate entries without shelling out to the CLI.
 //!
-//! The handler holds a narrow [`ProviderEditHost`] port; the daemon-side
+//! The handler holds a narrow [`ModelEditHost`] port; the daemon-side
 //! implementation (`AppState`) is reached only through the trait, so this
 //! module never imports `crate::daemon::state::AppState` directly.
 //!
 //! Boundary rules:
 //! - Dependency inversion: the consumer (`ipc::handlers::provider_edit`)
-//!   defines the [`ProviderEditHost`] trait; the producer
+//!   defines the [`ModelEditHost`] trait; the producer
 //!   (`daemon::state`) implements it (same pattern as the rest of the
 //!   F6/F7 handler family).
 //! - F6: this module must not import any other `ipc::handlers::*` module.
@@ -21,7 +21,7 @@ use async_trait::async_trait;
 
 use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::RequestHandler;
-use crate::ipc::packet::{ProviderInfo, ProviderUpdateArgs, RequestPacket, ResponsePacket};
+use crate::ipc::packet::{ModelSummary, ModelUpdateArgs, RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
@@ -29,37 +29,38 @@ use crate::ipc::server::PeerAddr;
 /// Narrow port the `provider_edit` handler uses to mutate the
 /// catalog. Split into three methods so each IPC variant maps to
 /// exactly one host call; the daemon-side impl owns the
-/// `ProviderCatalog` interactions.
+/// `ModelCatalog` interactions.
 #[async_trait]
-pub(crate) trait ProviderEditHost: Send + Sync {
+pub(crate) trait ModelEditHost: Send + Sync {
     /// Merge `args` into the existing catalog entry identified by
     /// `args.id` and persist the result. Returns the updated
     /// catalog-summary view.
-    async fn update_provider(&self, args: ProviderUpdateArgs) -> anyhow::Result<ProviderInfo>;
+    async fn update_model(&self, args: ModelUpdateArgs) -> anyhow::Result<ModelSummary>;
 
-    /// Remove the provider with this id. Returns `true` when an entry
+    /// Remove the model with this id. Returns `true` when an entry
     /// was actually removed.
-    async fn remove_provider(&self, id: &str) -> anyhow::Result<bool>;
+    async fn remove_model(&self, id: &str) -> anyhow::Result<bool>;
 
-    /// Promote `provider` (and optionally `model`) to the runtime
-    /// default. Returns the provider id and the effective model id
-    /// that was stored.
-    async fn set_default_provider(
+    /// Live-ping the model identified by `id` and report the
+    /// structured outcome. Returns `Err` for configuration-level
+    /// errors; HTTP-level failures come back as a structured
+    /// [`crate::providers::validator::CredentialTestOutcome`] with
+    /// `ok = false`.
+    async fn model_test(
         &self,
-        provider: &str,
-        model: Option<String>,
-    ) -> anyhow::Result<(String, String)>;
+        id: &str,
+    ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome>;
 }
 
 /// `provider_edit` domain request handler. Constructed with an
-/// `Arc<dyn ProviderEditHost>` (typically `Arc::new(app_state.clone())`
+/// `Arc<dyn ModelEditHost>` (typically `Arc::new(app_state.clone())`
 /// from the dispatcher).
 pub(crate) struct ProviderEditHandler {
-    host: Arc<dyn ProviderEditHost>,
+    host: Arc<dyn ModelEditHost>,
 }
 
 impl ProviderEditHandler {
-    pub(crate) fn new(host: Arc<dyn ProviderEditHost>) -> Self {
+    pub(crate) fn new(host: Arc<dyn ModelEditHost>) -> Self {
         Self { host }
     }
 }
@@ -73,9 +74,9 @@ impl RequestHandler for ProviderEditHandler {
     fn matches(&self, request: &RequestPacket) -> bool {
         matches!(
             request,
-            RequestPacket::ProviderUpdate { .. }
-                | RequestPacket::ProviderRemove { .. }
-                | RequestPacket::ProviderSetDefault { .. }
+            RequestPacket::ModelUpdate { .. }
+                | RequestPacket::ModelRemove { .. }
+                | RequestPacket::ModelTest { .. }
         )
     }
 
@@ -87,22 +88,19 @@ impl RequestHandler for ProviderEditHandler {
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         match request {
-            RequestPacket::ProviderUpdate { request_id, args } => {
+            RequestPacket::ModelUpdate { request_id, args } => {
                 if args.id.is_empty() {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: "provider id must not be empty".to_string(),
+                        message: "model id must not be empty".to_string(),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
                 }
 
-                match self.host.update_provider(args).await {
-                    Ok(provider) => {
-                        let response = ResponsePacket::ProviderUpdated {
-                            request_id,
-                            provider,
-                        };
+                match self.host.update_model(args).await {
+                    Ok(model) => {
+                        let response = ResponsePacket::ModelUpdated { request_id, model };
                         send_response(sink, response).await?;
                     }
                     Err(e) => {
@@ -114,19 +112,19 @@ impl RequestHandler for ProviderEditHandler {
                     }
                 }
             }
-            RequestPacket::ProviderRemove { request_id, id } => {
+            RequestPacket::ModelRemove { request_id, id } => {
                 if id.is_empty() {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: "provider id must not be empty".to_string(),
+                        message: "model id must not be empty".to_string(),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
                 }
 
-                match self.host.remove_provider(&id).await {
+                match self.host.remove_model(&id).await {
                     Ok(removed) => {
-                        let response = ResponsePacket::ProviderRemoved {
+                        let response = ResponsePacket::ModelRemoved {
                             request_id,
                             id,
                             removed,
@@ -142,37 +140,37 @@ impl RequestHandler for ProviderEditHandler {
                     }
                 }
             }
-            RequestPacket::ProviderSetDefault {
-                request_id,
-                provider,
-                model,
-            } => {
-                if provider.is_empty() {
+            RequestPacket::ModelTest { request_id, id } => {
+                if id.is_empty() {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: "provider id must not be empty".to_string(),
+                        message: "model id must not be empty".to_string(),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
                 }
 
-                match self.host.set_default_provider(&provider, model).await {
-                    Ok((provider, model)) => {
-                        let response = ResponsePacket::ProviderDefaultSet {
-                            request_id,
-                            provider,
-                            model,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("{e:#}"),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
+                let outcome = match self.host.model_test(&id).await {
+                    Ok(o) => o,
+                    Err(e) => crate::providers::validator::CredentialTestOutcome {
+                        ok: false,
+                        message: e.to_string(),
+                        latency_ms: 0,
+                        http_status: None,
+                        model_used: None,
+                    },
+                };
+                let response = ResponsePacket::ModelTested {
+                    request_id,
+                    id,
+                    ok: outcome.ok,
+                    message: outcome.message,
+                    latency_ms: outcome.latency_ms,
+                    http_status: outcome.http_status,
+                    model_used: outcome.model_used,
+                    tested_at: chrono::Utc::now().to_rfc3339(),
+                };
+                send_response(sink, response).await?;
             }
             // `matches()` returned true, so the exhaustive list above
             // covers every owned variant. This arm is unreachable.
@@ -184,8 +182,8 @@ impl RequestHandler for ProviderEditHandler {
 
 #[cfg(test)]
 mod tests {
-    //! Pin the wire shape for provider edit/remove/set-default so a
-    //! runtime regression surfaces as a test failure rather than as the
+    //! Pin the wire shape for model update/remove/test so a runtime
+    //! regression surfaces as a test failure rather than as the
     //! desktop's Settings panel silently failing.
 
     use super::*;
@@ -193,34 +191,33 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     struct StubHost {
-        update_ok: Option<ProviderInfo>,
+        update_ok: Option<ModelSummary>,
         remove_ok: Option<bool>,
-        set_default_ok: Option<(String, String)>,
+        test_ok: Option<crate::providers::validator::CredentialTestOutcome>,
     }
     #[async_trait]
-    impl ProviderEditHost for StubHost {
-        async fn update_provider(&self, _args: ProviderUpdateArgs) -> anyhow::Result<ProviderInfo> {
+    impl ModelEditHost for StubHost {
+        async fn update_model(&self, _args: ModelUpdateArgs) -> anyhow::Result<ModelSummary> {
             match &self.update_ok {
                 Some(p) => Ok(p.clone()),
                 None => anyhow::bail!("stub host: no update staged"),
             }
         }
 
-        async fn remove_provider(&self, _id: &str) -> anyhow::Result<bool> {
+        async fn remove_model(&self, _id: &str) -> anyhow::Result<bool> {
             match self.remove_ok {
                 Some(b) => Ok(b),
                 None => anyhow::bail!("stub host: no remove staged"),
             }
         }
 
-        async fn set_default_provider(
+        async fn model_test(
             &self,
-            _provider: &str,
-            _model: Option<String>,
-        ) -> anyhow::Result<(String, String)> {
-            match &self.set_default_ok {
-                Some(t) => Ok(t.clone()),
-                None => anyhow::bail!("stub host: no default staged"),
+            _id: &str,
+        ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
+            match &self.test_ok {
+                Some(o) => Ok(o.clone()),
+                None => anyhow::bail!("stub host: no test staged"),
             }
         }
     }
@@ -242,28 +239,31 @@ mod tests {
         PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"))
     }
 
-    fn stub_provider() -> ProviderInfo {
-        ProviderInfo {
+    fn stub_model() -> ModelSummary {
+        ModelSummary {
             id: "openai".to_string(),
             display_name: "OpenAI".to_string(),
+            template_id: Some("openai".to_string()),
             api_type: "openai".to_string(),
             base_url: "https://api.openai.com".to_string(),
+            model_id: "gpt-4o".to_string(),
+            context_window: Some(128_000),
+            max_output_tokens: Some(16_384),
+            capabilities: vec![],
+            headers: Default::default(),
+            credential_id: None,
             requires_key: true,
             is_local: false,
             enabled: true,
-            models: vec![],
-            default_model_id: "gpt-4o".to_string(),
-            headers: Default::default(),
-            is_default: false,
         }
     }
 
     #[tokio::test]
-    async fn provider_update_empty_id_returns_error_response() {
+    async fn model_update_empty_id_returns_error_response() {
         let host = StubHost {
             update_ok: None,
             remove_ok: None,
-            set_default_ok: None,
+            test_ok: None,
         };
         let handler = ProviderEditHandler::new(Arc::new(host));
         let buf = Arc::new(Mutex::new(Vec::new()));
@@ -271,9 +271,9 @@ mod tests {
 
         handler
             .handle(
-                RequestPacket::ProviderUpdate {
+                RequestPacket::ModelUpdate {
                     request_id: 81,
-                    args: ProviderUpdateArgs {
+                    args: ModelUpdateArgs {
                         id: "".to_string(),
                         ..Default::default()
                     },
@@ -296,11 +296,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_update_emits_provider_updated() {
+    async fn model_update_emits_model_updated() {
         let host = StubHost {
-            update_ok: Some(stub_provider()),
+            update_ok: Some(stub_model()),
             remove_ok: None,
-            set_default_ok: None,
+            test_ok: None,
         };
         let handler = ProviderEditHandler::new(Arc::new(host));
         let buf = Arc::new(Mutex::new(Vec::new()));
@@ -308,9 +308,9 @@ mod tests {
 
         handler
             .handle(
-                RequestPacket::ProviderUpdate {
+                RequestPacket::ModelUpdate {
                     request_id: 82,
-                    args: ProviderUpdateArgs {
+                    args: ModelUpdateArgs {
                         id: "openai".to_string(),
                         display_name: Some("OpenAI (edited)".to_string()),
                         ..Default::default()
@@ -328,20 +328,20 @@ mod tests {
             serde_json::from_slice(&bytes).expect("response should be valid JSON");
         assert_eq!(
             json.get("type").and_then(|v| v.as_str()),
-            Some("provider_updated"),
-            "successful update must produce a provider_updated packet"
+            Some("model_updated"),
+            "successful update must produce a model_updated packet"
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(82));
-        let provider = json.get("provider").expect("response should have provider");
-        assert_eq!(provider.get("id").and_then(|v| v.as_str()), Some("openai"));
+        let model = json.get("model").expect("response should have model");
+        assert_eq!(model.get("id").and_then(|v| v.as_str()), Some("openai"));
     }
 
     #[tokio::test]
-    async fn provider_remove_emits_provider_removed() {
+    async fn model_remove_emits_model_removed() {
         let host = StubHost {
             update_ok: None,
             remove_ok: Some(true),
-            set_default_ok: None,
+            test_ok: None,
         };
         let handler = ProviderEditHandler::new(Arc::new(host));
         let buf = Arc::new(Mutex::new(Vec::new()));
@@ -349,7 +349,7 @@ mod tests {
 
         handler
             .handle(
-                RequestPacket::ProviderRemove {
+                RequestPacket::ModelRemove {
                     request_id: 83,
                     id: "openai".to_string(),
                 },
@@ -365,7 +365,7 @@ mod tests {
             serde_json::from_slice(&bytes).expect("response should be valid JSON");
         assert_eq!(
             json.get("type").and_then(|v| v.as_str()),
-            Some("provider_removed")
+            Some("model_removed")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(83));
         assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("openai"));
@@ -373,11 +373,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_set_default_emits_provider_default_set() {
+    async fn model_test_emits_model_tested() {
         let host = StubHost {
             update_ok: None,
             remove_ok: None,
-            set_default_ok: Some(("openai".to_string(), "gpt-4o".to_string())),
+            test_ok: Some(crate::providers::validator::CredentialTestOutcome {
+                ok: false,
+                message: "HTTP 401: invalid api key".to_string(),
+                latency_ms: 187,
+                http_status: Some(401),
+                model_used: Some("gpt-4o".to_string()),
+            }),
         };
         let handler = ProviderEditHandler::new(Arc::new(host));
         let buf = Arc::new(Mutex::new(Vec::new()));
@@ -385,10 +391,9 @@ mod tests {
 
         handler
             .handle(
-                RequestPacket::ProviderSetDefault {
+                RequestPacket::ModelTest {
                     request_id: 84,
-                    provider: "openai".to_string(),
-                    model: None,
+                    id: "openai".to_string(),
                 },
                 &test_caller(),
                 &sink,
@@ -402,12 +407,64 @@ mod tests {
             serde_json::from_slice(&bytes).expect("response should be valid JSON");
         assert_eq!(
             json.get("type").and_then(|v| v.as_str()),
-            Some("provider_default_set")
+            Some("model_tested")
         );
+        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(84));
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("openai"));
+        assert_eq!(json.get("ok").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(json.get("latency_ms").and_then(|v| v.as_u64()), Some(187));
+        assert_eq!(json.get("http_status").and_then(|v| v.as_u64()), Some(401));
         assert_eq!(
-            json.get("provider").and_then(|v| v.as_str()),
-            Some("openai")
+            json.get("model_used").and_then(|v| v.as_str()),
+            Some("gpt-4o")
         );
-        assert_eq!(json.get("model").and_then(|v| v.as_str()), Some("gpt-4o"));
+        assert!(
+            json.get("tested_at")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "tested_at should be a non-empty ISO-8601 string"
+        );
+    }
+
+    #[tokio::test]
+    async fn model_test_maps_host_error_to_structured_failure() {
+        let host = StubHost {
+            update_ok: None,
+            remove_ok: None,
+            test_ok: None, // host will bail with "no test staged"
+        };
+        let handler = ProviderEditHandler::new(Arc::new(host));
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = CaptureSink(buf.clone());
+
+        handler
+            .handle(
+                RequestPacket::ModelTest {
+                    request_id: 85,
+                    id: "openai".to_string(),
+                },
+                &test_caller(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .expect("handler should not bubble Err");
+
+        let bytes = buf.lock().unwrap().clone();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("response should be valid JSON");
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("model_tested")
+        );
+        assert_eq!(json.get("ok").and_then(|v| v.as_bool()), Some(false));
+        assert!(
+            json.get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.contains("no test staged"))
+                .unwrap_or(false),
+            "message should carry the original error reason"
+        );
     }
 }

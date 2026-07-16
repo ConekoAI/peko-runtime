@@ -1,9 +1,9 @@
 //! `credential` domain request handler (T-107 + RP3A).
 //!
 //! Owns the credential + rotation-binding IPC surface. The consumer-side
-//! port traits ([`CredentialHost`], [`BindingHost`], and
-//! [`CredentialTestLiveHost`]) live here; the daemon-side implementation
-//! in `AppState` reaches them through the narrow ports.
+//! port traits ([`CredentialHost`] and [`BindingHost`]) live here; the
+//! daemon-side implementation in `AppState` reaches them through the
+//! narrow ports.
 //!
 //! Boundary rules:
 //! - Dependency inversion: the consumer (`ipc::handlers::credential`)
@@ -82,46 +82,16 @@ pub(crate) trait BindingHost: Send + Sync {
     fn delete_binding(&self, key: &str) -> anyhow::Result<bool>;
 }
 
-/// Narrow port for the async live-ping variant.
-#[async_trait]
-pub(crate) trait CredentialTestLiveHost: Send + Sync {
-    /// Live-ping the credential identified by `id` and report the
-    /// structured outcome. Returns `Err` for configuration-level
-    /// errors; HTTP-level failures come back as a structured
-    /// [`CredentialTestOutcome`] with `ok = false`.
-    async fn test_credential_live(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome>;
-
-    /// Live-ping every credential in the rotation binding for `key`
-    /// and return per-credential outcomes.
-    async fn test_binding_rotation(
-        &self,
-        key: &str,
-    ) -> anyhow::Result<Vec<crate::ipc::packet::BindingTestResult>>;
-}
-
 /// `credential` + `binding` domain request handler. Constructed with one
-/// `Arc<dyn CredentialHost>`, one `Arc<dyn BindingHost>`, and one
-/// `Arc<dyn CredentialTestLiveHost>`.
+/// `Arc<dyn CredentialHost>` and one `Arc<dyn BindingHost>`.
 pub(crate) struct CredentialHandler {
     host: Arc<dyn CredentialHost>,
     binding_host: Arc<dyn BindingHost>,
-    test_host: Arc<dyn CredentialTestLiveHost>,
 }
 
 impl CredentialHandler {
-    pub(crate) fn new(
-        host: Arc<dyn CredentialHost>,
-        binding_host: Arc<dyn BindingHost>,
-        test_host: Arc<dyn CredentialTestLiveHost>,
-    ) -> Self {
-        Self {
-            host,
-            binding_host,
-            test_host,
-        }
+    pub(crate) fn new(host: Arc<dyn CredentialHost>, binding_host: Arc<dyn BindingHost>) -> Self {
+        Self { host, binding_host }
     }
 }
 
@@ -137,14 +107,12 @@ impl RequestHandler for CredentialHandler {
             RequestPacket::CredentialList { .. }
                 | RequestPacket::CredentialGet { .. }
                 | RequestPacket::CredentialGetMaterial { .. }
-                | RequestPacket::CredentialTest { .. }
                 | RequestPacket::CredentialSet { .. }
                 | RequestPacket::CredentialDelete { .. }
                 | RequestPacket::BindingList { .. }
                 | RequestPacket::BindingGet { .. }
                 | RequestPacket::BindingSet { .. }
                 | RequestPacket::BindingDelete { .. }
-                | RequestPacket::BindingTestRotation { .. }
         )
     }
 
@@ -227,29 +195,6 @@ impl RequestHandler for CredentialHandler {
                         send_response(sink, response).await?;
                     }
                 }
-            }
-            RequestPacket::CredentialTest { request_id, id } => {
-                let outcome = match self.test_host.test_credential_live(&id).await {
-                    Ok(o) => o,
-                    Err(e) => crate::providers::validator::CredentialTestOutcome {
-                        ok: false,
-                        message: e.to_string(),
-                        latency_ms: 0,
-                        http_status: None,
-                        model_used: None,
-                    },
-                };
-                let response = ResponsePacket::CredentialTested {
-                    request_id,
-                    id,
-                    ok: outcome.ok,
-                    message: outcome.message,
-                    latency_ms: outcome.latency_ms,
-                    http_status: outcome.http_status,
-                    model_used: outcome.model_used,
-                    tested_at: chrono::Utc::now().to_rfc3339(),
-                };
-                send_response(sink, response).await?;
             }
             RequestPacket::CredentialSet {
                 request_id,
@@ -373,28 +318,6 @@ impl RequestHandler for CredentialHandler {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("failed to delete binding '{key}': {e}"),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
-            RequestPacket::BindingTestRotation { request_id, key } => {
-                // Walk every credential in the binding and run a live
-                // test. Implemented against the test host in the daemon;
-                // the handler here just forwards the results.
-                match self.test_host.test_binding_rotation(&key).await {
-                    Ok(results) => {
-                        let response = ResponsePacket::BindingTested {
-                            request_id,
-                            key,
-                            results,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("failed to test rotation binding '{key}': {e}"),
                         };
                         send_response(sink, response).await?;
                     }
@@ -527,26 +450,6 @@ mod tests {
         }
     }
 
-    struct StubTestHost {
-        outcome: crate::providers::validator::CredentialTestOutcome,
-    }
-    #[async_trait]
-    impl CredentialTestLiveHost for StubTestHost {
-        async fn test_credential_live(
-            &self,
-            _id: &str,
-        ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
-            Ok(self.outcome.clone())
-        }
-
-        async fn test_binding_rotation(
-            &self,
-            _key: &str,
-        ) -> anyhow::Result<Vec<crate::ipc::packet::BindingTestResult>> {
-            Ok(Vec::new())
-        }
-    }
-
     struct CaptureSink(Arc<Mutex<Vec<u8>>>);
     #[async_trait]
     impl ResponseSink for CaptureSink {
@@ -564,12 +467,8 @@ mod tests {
         PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"))
     }
 
-    fn handler(host: StubHost, test_host: StubTestHost) -> CredentialHandler {
-        CredentialHandler::new(
-            Arc::new(host),
-            Arc::new(StubBindingHost),
-            Arc::new(test_host),
-        )
+    fn handler(host: StubHost) -> CredentialHandler {
+        CredentialHandler::new(Arc::new(host), Arc::new(StubBindingHost))
     }
 
     #[tokio::test]
@@ -594,16 +493,7 @@ mod tests {
                 last_tested_ok: None,
             },
         ]);
-        let test_host = StubTestHost {
-            outcome: crate::providers::validator::CredentialTestOutcome {
-                ok: true,
-                message: "unused".into(),
-                latency_ms: 0,
-                http_status: None,
-                model_used: None,
-            },
-        };
-        let handler = handler(host, test_host);
+        let handler = handler(host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -668,16 +558,7 @@ mod tests {
     #[tokio::test]
     async fn credential_list_emits_empty_array_when_vault_is_empty() {
         let host = stub_host(Vec::new());
-        let test_host = StubTestHost {
-            outcome: crate::providers::validator::CredentialTestOutcome {
-                ok: true,
-                message: "unused".into(),
-                latency_ms: 0,
-                http_status: None,
-                model_used: None,
-            },
-        };
-        let handler = handler(host, test_host);
+        let handler = handler(host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -707,142 +588,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credential_test_emits_structured_outcome_with_latency_and_reason() {
-        let host = stub_host(Vec::new());
-        let test_host = StubTestHost {
-            outcome: crate::providers::validator::CredentialTestOutcome {
-                ok: false,
-                message: "HTTP 401: invalid api key".to_string(),
-                latency_ms: 187,
-                http_status: Some(401),
-                model_used: Some("claude-haiku-4-5".to_string()),
-            },
-        };
-        let handler = handler(host, test_host);
-        let buf = Arc::new(Mutex::new(Vec::new()));
-        let sink = CaptureSink(buf.clone());
-
-        handler
-            .handle(
-                RequestPacket::CredentialTest {
-                    request_id: 42,
-                    id: "id-minimax".to_string(),
-                },
-                &test_caller(),
-                &sink,
-                &test_peer(),
-            )
-            .await
-            .expect("handle should succeed");
-
-        let bytes = buf.lock().unwrap().clone();
-        let json: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("response should be valid JSON");
-
-        assert_eq!(
-            json.get("type").and_then(|v| v.as_str()),
-            Some("credential_tested")
-        );
-        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(42));
-        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
-        assert_eq!(json.get("ok").and_then(|v| v.as_bool()), Some(false));
-        assert_eq!(
-            json.get("message").and_then(|v| v.as_str()),
-            Some("HTTP 401: invalid api key")
-        );
-        assert_eq!(json.get("latency_ms").and_then(|v| v.as_u64()), Some(187));
-        assert_eq!(json.get("http_status").and_then(|v| v.as_u64()), Some(401));
-        assert_eq!(
-            json.get("model_used").and_then(|v| v.as_str()),
-            Some("claude-haiku-4-5")
-        );
-        assert!(
-            json.get("tested_at")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.is_empty())
-                .unwrap_or(false),
-            "tested_at should be a non-empty ISO-8601 string"
-        );
-    }
-
-    #[tokio::test]
-    async fn credential_test_maps_unknown_provider_error_to_structured_failure() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        struct FailingTestHost(AtomicUsize);
-        #[async_trait]
-        impl CredentialTestLiveHost for FailingTestHost {
-            async fn test_credential_live(
-                &self,
-                _id: &str,
-            ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                Err(anyhow::anyhow!("unknown credential: id-minimax"))
-            }
-
-            async fn test_binding_rotation(
-                &self,
-                _key: &str,
-            ) -> anyhow::Result<Vec<crate::ipc::packet::BindingTestResult>> {
-                Ok(Vec::new())
-            }
-        }
-
-        let host = stub_host(Vec::new());
-        let test_host = FailingTestHost(AtomicUsize::new(0));
-        let handler = CredentialHandler::new(
-            Arc::new(host),
-            Arc::new(StubBindingHost),
-            Arc::new(test_host),
-        );
-        let buf = Arc::new(Mutex::new(Vec::new()));
-        let sink = CaptureSink(buf.clone());
-
-        handler
-            .handle(
-                RequestPacket::CredentialTest {
-                    request_id: 43,
-                    id: "id-minimax".to_string(),
-                },
-                &test_caller(),
-                &sink,
-                &test_peer(),
-            )
-            .await
-            .expect("handler should not bubble Err");
-
-        let bytes = buf.lock().unwrap().clone();
-        let json: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("response should be valid JSON");
-
-        assert_eq!(
-            json.get("type").and_then(|v| v.as_str()),
-            Some("credential_tested")
-        );
-        assert_eq!(json.get("ok").and_then(|v| v.as_bool()), Some(false));
-        assert_eq!(json.get("http_status").and_then(|v| v.as_u64()), None);
-        assert!(
-            json.get("message")
-                .and_then(|v| v.as_str())
-                .map(|s| s.contains("unknown credential"))
-                .unwrap_or(false),
-            "message should carry the original error reason"
-        );
-    }
-
-    #[tokio::test]
     async fn credential_set_forwards_api_key_to_host_and_replies_with_done() {
         let host = stub_host(Vec::new());
         let writes = host.writes.clone();
-        let test_host = StubTestHost {
-            outcome: crate::providers::validator::CredentialTestOutcome {
-                ok: true,
-                message: "unused".into(),
-                latency_ms: 0,
-                http_status: None,
-                model_used: None,
-            },
-        };
-        let handler = handler(host, test_host);
+        let handler = handler(host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -886,16 +635,7 @@ mod tests {
     async fn credential_set_rejects_empty_key_with_error_response() {
         let host = stub_host(Vec::new());
         let writes = host.writes.clone();
-        let test_host = StubTestHost {
-            outcome: crate::providers::validator::CredentialTestOutcome {
-                ok: true,
-                message: "unused".into(),
-                latency_ms: 0,
-                http_status: None,
-                model_used: None,
-            },
-        };
-        let handler = handler(host, test_host);
+        let handler = handler(host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -941,16 +681,7 @@ mod tests {
     async fn credential_set_maps_vault_failure_to_error_response() {
         let mut host = stub_host(Vec::new());
         host.set_err = Some("argon2id derivation failed".to_string());
-        let test_host = StubTestHost {
-            outcome: crate::providers::validator::CredentialTestOutcome {
-                ok: true,
-                message: "unused".into(),
-                latency_ms: 0,
-                http_status: None,
-                model_used: None,
-            },
-        };
-        let handler = handler(host, test_host);
+        let handler = handler(host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -988,16 +719,7 @@ mod tests {
     async fn credential_delete_forwards_id_to_host_and_replies_done() {
         let host = stub_host(Vec::new());
         let deletes = host.deletes.clone();
-        let test_host = StubTestHost {
-            outcome: crate::providers::validator::CredentialTestOutcome {
-                ok: true,
-                message: "unused".into(),
-                latency_ms: 0,
-                http_status: None,
-                model_used: None,
-            },
-        };
-        let handler = handler(host, test_host);
+        let handler = handler(host);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 

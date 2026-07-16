@@ -312,7 +312,6 @@ impl RequestHandler for PrincipalHandler {
                 user,
                 no_slash,
                 output_format,
-                override_provider,
                 override_model,
             } => {
                 run_principal_send(
@@ -322,7 +321,6 @@ impl RequestHandler for PrincipalHandler {
                     user,
                     no_slash,
                     output_format,
-                    override_provider,
                     override_model,
                     host,
                     sink,
@@ -338,7 +336,6 @@ impl RequestHandler for PrincipalHandler {
                 user,
                 no_slash,
                 output_format,
-                override_provider,
                 override_model,
             } => {
                 run_principal_send(
@@ -348,7 +345,6 @@ impl RequestHandler for PrincipalHandler {
                     user,
                     no_slash,
                     output_format,
-                    override_provider,
                     override_model,
                     host,
                     sink,
@@ -947,8 +943,7 @@ impl RequestHandler for PrincipalHandler {
                 request_id,
                 name,
                 description,
-                preferred_provider_id,
-                preferred_model_id,
+                model_id,
             } => {
                 use crate::common::identifiers::validate_agent_name;
                 use crate::principal::config::{
@@ -1026,8 +1021,7 @@ impl RequestHandler for PrincipalHandler {
                     exposure: Exposure::Private,
                     status: None,
                     permissions: Vec::new(),
-                    preferred_provider_id,
-                    preferred_model_id,
+                    preferred_model_id: Some(model_id),
                     transport_preference: Default::default(),
                     quota: None,
                 };
@@ -1131,7 +1125,6 @@ async fn run_principal_send(
     user: String,
     no_slash: bool,
     output_format: crate::common::types::OutputFormat,
-    override_provider: Option<String>,
     override_model: Option<String>,
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,
@@ -1228,7 +1221,6 @@ async fn run_principal_send(
             peer.clone(),
             message.clone(),
             channel,
-            override_provider,
             override_model,
         )
         .await

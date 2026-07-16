@@ -303,9 +303,15 @@ mod tests {
         let adapter = MockAdapter::new();
         adapter.queue_text("hello");
         let tmp = tempfile::tempdir().unwrap();
-        let catalog = tmp.path().join("providers.toml");
+        let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
-        let (provider, _choice) = resolver.build(Default::default()).await.unwrap();
+        let (provider, _choice) = resolver
+            .build(crate::providers::resolver::ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
         let cfg = QuotaConfig {
             input_tokens: input_limit,
@@ -343,9 +349,15 @@ mod tests {
         adapter.queue_text("first");
         adapter.queue_text("second");
         let tmp = tempfile::tempdir().unwrap();
-        let catalog = tmp.path().join("providers.toml");
+        let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
-        let (provider, _) = resolver.build(Default::default()).await.unwrap();
+        let (provider, _) = resolver
+            .build(crate::providers::resolver::ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         let meter = Arc::new(
             QuotaMeter::load_or_init(
                 QuotaConfig {
@@ -384,9 +396,15 @@ mod tests {
         let adapter = MockAdapter::new();
         adapter.queue_text("hello");
         let tmp = tempfile::tempdir().unwrap();
-        let catalog = tmp.path().join("providers.toml");
+        let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
-        let (provider, _) = resolver.build(Default::default()).await.unwrap();
+        let (provider, _) = resolver
+            .build(crate::providers::resolver::ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         let metered = MeteredProvider::passthrough(provider);
         // Even with a request_count=0 limit, passthrough should succeed
         // because the meter is `unlimited()`.
@@ -416,9 +434,15 @@ mod tests {
         let adapter = MockAdapter::new();
         adapter.queue_text("hello");
         let tmp = tempfile::tempdir().unwrap();
-        let catalog = tmp.path().join("providers.toml");
+        let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
-        let (provider, _) = resolver.build(Default::default()).await.unwrap();
+        let (provider, _) = resolver
+            .build(crate::providers::resolver::ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
         let meter = Arc::new(
             QuotaMeter::load_or_init(
@@ -446,9 +470,15 @@ mod tests {
         let adapter = MockAdapter::new();
         adapter.queue_text("hello");
         let tmp = tempfile::tempdir().unwrap();
-        let catalog = tmp.path().join("providers.toml");
+        let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
-        let (provider, _) = resolver.build(Default::default()).await.unwrap();
+        let (provider, _) = resolver
+            .build(crate::providers::resolver::ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
         // No QuotaScope::with active in this task.
         let metered = MeteredProvider::from_current_scope(provider);
@@ -497,9 +527,15 @@ mod tests {
             },
         ]));
         let tmp = tempfile::tempdir().unwrap();
-        let catalog = tmp.path().join("providers.toml");
+        let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
-        let (provider, _) = resolver.build(Default::default()).await.unwrap();
+        let (provider, _) = resolver
+            .build(crate::providers::resolver::ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         let meter = Arc::new(
             QuotaMeter::load_or_init(
                 QuotaConfig {

@@ -1,9 +1,9 @@
 use clap::Parser;
 use clap_complete::generate;
 use peko::commands::{
-    auth, capability, config, credential, cron, daemon, ext, init_logging, interrupt, log,
-    principal, provider, quota, registry, runtime, search, send, system, tunnel, update, vault,
-    version, Cli, Commands, GlobalPaths,
+    auth, capability, config, credential, cron, daemon, ext, init_logging, interrupt, log, model,
+    principal, quota, registry, runtime, search, send, system, tunnel, update, vault, version, Cli,
+    Commands, GlobalPaths,
 };
 
 /// Peko - Lightweight Multi-Agent Runtime
@@ -114,7 +114,7 @@ async fn run_command(
         Commands::System(cmd) => system::handle_system(cmd, paths, json).await,
         Commands::Daemon(cmd) => daemon::handle_daemon(cmd, paths, json).await,
         Commands::Cron(cmd) => cron::handle_cron(cmd, paths, json).await,
-        Commands::Provider(cmd) => provider::execute(cmd, paths).await,
+        Commands::Model(cmd) => model::execute(cmd, paths).await,
         Commands::Search(cmd) => search::handle_search(cmd, paths, json).await,
         Commands::Registry(cmd) => registry::handle_registry(cmd, paths, json),
         Commands::Runtime(cmd) => runtime::handle_runtime(cmd, paths, json).await,

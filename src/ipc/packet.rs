@@ -208,26 +208,24 @@ pub enum RequestPacket {
     /// Create a new Principal on disk + in-memory manager. The handler
     /// writes `agents/primary.md` before invoking `manager.create`
     /// (the manager scans `agents/` on load) and assigns ownership to
-    /// the calling subject. Mirrors `peko principal new <name>` but
+    /// the calling subject. Mirrors `peko principal create <name>` but
     /// without dropping the caller to the CLI.
     ///
-    /// Optional fields are `#[serde(default)]` so older clients that
-    /// only send the name still round-trip cleanly.
+    /// `model_id` is the configured model the principal pins at
+    /// creation. It is required: every principal must be created with
+    /// a configured model.
     #[serde(rename = "principal_create")]
     PrincipalCreate {
         request_id: u64,
         name: String,
         #[serde(default)]
         description: Option<String>,
-        #[serde(default)]
-        preferred_provider_id: Option<String>,
-        #[serde(default)]
-        preferred_model_id: Option<String>,
+        model_id: String,
     },
 
-    // ─── Provider listing ───────────────────────────────────────────
-    #[serde(rename = "provider_list")]
-    ProviderList { request_id: u64 },
+    // ─── Model catalog listing ──────────────────────────────────────
+    #[serde(rename = "model_list")]
+    ModelList { request_id: u64 },
 
     /// Enumerate credentials in the vault. The optional `namespace`
     /// and `kind` filters restrict the listing; missing filters match
@@ -271,14 +269,13 @@ pub enum RequestPacket {
         reason: String,
     },
 
-    /// Live-ping the credential identified by `id` and report whether
-    /// the API accepted its material. Powers both
-    /// `peko credential test <id>` and the desktop's Test button —
-    /// the existing shape-only check in `Vault::test_provider_key`
-    /// couldn't tell `sk-opena-12345` from a real key. Mirrors
+    /// Live-ping the model identified by `id` and report whether the
+    /// endpoint answered. Replaces the pre-migration `CredentialTest`:
+    /// validation now happens at the model level (base URL + wire
+    /// format + credential), mirroring
     /// `providers::validator::Validator::test`.
-    #[serde(rename = "credential_test")]
-    CredentialTest { request_id: u64, id: String },
+    #[serde(rename = "model_test")]
+    ModelTest { request_id: u64, id: String },
 
     /// Insert or overwrite a credential at `(namespace, name)` with
     /// the given material. The vault assigns a fresh UUID on insert
@@ -342,67 +339,47 @@ pub enum RequestPacket {
     #[serde(rename = "binding_delete")]
     BindingDelete { request_id: u64, key: String },
 
-    /// Walk every credential in the binding's `ordered_credential_ids`
-    /// and run a live test against each one. The reply is
-    /// [`ResponsePacket::BindingTested`] with per-credential outcomes.
-    #[serde(rename = "binding_test_rotation")]
-    BindingTestRotation { request_id: u64, key: String },
-
-    /// Re-read the provider catalog and the credential vault from
-    /// disk. Sent by `peko provider {add,remove,set-default}` and
+    /// Re-read the model catalog and the credential vault from
+    /// disk. Sent by `peko model {add,remove}` and
     /// `peko credential {set,delete}` so the long-running daemon
     /// observes CLI mutations without a restart.
-    #[serde(rename = "provider_reload")]
-    ProviderReload { request_id: u64 },
+    #[serde(rename = "model_reload")]
+    ModelReload { request_id: u64 },
 
-    /// Enumerate the built-in provider templates the runtime ships
-    /// with. Sent by the desktop's "Add Provider" modal so the
-    /// picker can show the curated list of known providers
+    /// Enumerate the built-in model presets the runtime ships
+    /// with. Sent by the desktop's "Add Model" modal so the
+    /// picker can show the curated list of known presets
     /// (Anthropic, OpenAI, Groq, Ollama, …) with their default
     /// base URL, API format, and curated model list. Mirrors the
-    /// CLI's `peko provider templates` path, but over IPC so the
+    /// CLI's `peko model presets` path, but over IPC so the
     /// desktop doesn't shell out.
-    #[serde(rename = "provider_templates")]
-    ProviderTemplates { request_id: u64 },
+    #[serde(rename = "model_templates")]
+    ModelTemplates { request_id: u64 },
 
-    /// Add a provider to the catalog — either from a built-in
-    /// template (`args.template`) or fully custom
+    /// Add a model to the catalog — either from a built-in
+    /// preset (`args.template`) or fully custom
     /// (`args.custom` + `api_format` + `base_url` + `model`).
-    /// Optionally stores a key in the vault and promotes the new
-    /// entry to the runtime default in the same round-trip.
-    /// Mirrors `peko provider add` so the desktop modal can do
+    /// Optionally stores a key in the vault in the same round-trip.
+    /// Mirrors `peko model add` so the desktop modal can do
     /// the same thing without a shell-out.
-    #[serde(rename = "provider_add")]
-    ProviderAdd {
-        request_id: u64,
-        args: ProviderAddArgs,
-    },
+    #[serde(rename = "model_add")]
+    ModelAdd { request_id: u64, args: ModelAddArgs },
 
-    /// Update an existing provider catalog entry. All fields except
+    /// Update an existing model catalog entry. All fields except
     /// `id` are optional; omitted fields keep their current values.
-    /// The daemon persists the merged entry to `providers.toml` and
+    /// The daemon persists the merged entry to `models.toml` and
     /// returns the updated catalog-summary view.
-    #[serde(rename = "provider_update")]
-    ProviderUpdate {
+    #[serde(rename = "model_update")]
+    ModelUpdate {
         request_id: u64,
-        args: ProviderUpdateArgs,
+        args: ModelUpdateArgs,
     },
 
-    /// Remove a provider from the catalog. Returns `removed: true` if
+    /// Remove a model from the catalog. Returns `removed: true` if
     /// an entry with this id existed. Idempotent — removing a missing
     /// id is not an error.
-    #[serde(rename = "provider_remove")]
-    ProviderRemove { request_id: u64, id: String },
-
-    /// Promote a provider (and optionally a specific model) to the
-    /// runtime default. Mirrors `peko provider set-default`.
-    #[serde(rename = "provider_set_default")]
-    ProviderSetDefault {
-        request_id: u64,
-        provider: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
-    },
+    #[serde(rename = "model_remove")]
+    ModelRemove { request_id: u64, id: String },
 
     /// Re-read the MCP server configuration from `mcp.toml` and the
     /// credential vault from disk. Sent by `peko ext mcp {add,auth,remove}`
@@ -599,10 +576,7 @@ pub enum RequestPacket {
         /// Preferred output format for slash-command responses.
         #[serde(default)]
         output_format: OutputFormat,
-        /// Per-message provider override (e.g. `peko send --provider ...`).
-        #[serde(default)]
-        override_provider: Option<String>,
-        /// Per-message model override (e.g. `peko send --model ...`).
+        /// Per-message configured model override (e.g. `peko send --model ...`).
         #[serde(default)]
         override_model: Option<String>,
     },
@@ -626,10 +600,7 @@ pub enum RequestPacket {
         /// Preferred output format for slash-command responses.
         #[serde(default)]
         output_format: OutputFormat,
-        /// Per-message provider override (e.g. `peko send --provider ...`).
-        #[serde(default)]
-        override_provider: Option<String>,
-        /// Per-message model override (e.g. `peko send --model ...`).
+        /// Per-message configured model override (e.g. `peko send --model ...`).
         #[serde(default)]
         override_model: Option<String>,
     },
@@ -815,25 +786,23 @@ impl RequestPacket {
             | Self::PrincipalList { request_id }
             | Self::PrincipalGet { request_id, .. }
             | Self::PrincipalCreate { request_id, .. }
-            | Self::ProviderList { request_id }
-            | Self::ProviderReload { request_id }
-            | Self::ProviderTemplates { request_id }
-            | Self::ProviderAdd { request_id, .. }
-            | Self::ProviderUpdate { request_id, .. }
-            | Self::ProviderRemove { request_id, .. }
-            | Self::ProviderSetDefault { request_id, .. }
+            | Self::ModelList { request_id }
+            | Self::ModelReload { request_id }
+            | Self::ModelTemplates { request_id }
+            | Self::ModelAdd { request_id, .. }
+            | Self::ModelUpdate { request_id, .. }
+            | Self::ModelRemove { request_id, .. }
+            | Self::ModelTest { request_id, .. }
             | Self::McpReload { request_id }
             | Self::CredentialList { request_id, .. }
             | Self::CredentialGet { request_id, .. }
             | Self::CredentialGetMaterial { request_id, .. }
-            | Self::CredentialTest { request_id, .. }
             | Self::CredentialSet { request_id, .. }
             | Self::CredentialDelete { request_id, .. }
             | Self::BindingList { request_id }
             | Self::BindingGet { request_id, .. }
             | Self::BindingSet { request_id, .. }
             | Self::BindingDelete { request_id, .. }
-            | Self::BindingTestRotation { request_id, .. }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::ExtensionList { request_id, .. }
@@ -1105,13 +1074,13 @@ pub enum ResponsePacket {
         providers: Vec<CredentialRow>,
     },
 
-    /// Reply to [`RequestPacket::CredentialTest`]. Carries the
+    /// Reply to [`RequestPacket::ModelTest`]. Carries the
     /// structured outcome so the UI can render latency + reason
     /// without re-parsing strings. `tested_at` is an ISO-8601 UTC
     /// stamp the validator computes at response-build time so
     /// callers don't have to read the daemon's wall clock.
-    #[serde(rename = "credential_tested")]
-    CredentialTested {
+    #[serde(rename = "model_tested")]
+    ModelTested {
         request_id: u64,
         id: String,
         ok: bool,
@@ -1174,15 +1143,6 @@ pub enum ResponsePacket {
     #[serde(rename = "binding_deleted")]
     BindingDeleted { request_id: u64, key: String },
 
-    /// Reply to [`RequestPacket::BindingTestRotation`]. Per-credential
-    /// outcomes in the order they appear in the binding.
-    #[serde(rename = "binding_tested")]
-    BindingTested {
-        request_id: u64,
-        key: String,
-        results: Vec<BindingTestResult>,
-    },
-
     /// System status response
     #[serde(rename = "system_status")]
     SystemStatus {
@@ -1204,70 +1164,58 @@ pub enum ResponsePacket {
         warnings: u32,
     },
 
-    /// Provider list response
-    #[serde(rename = "provider_list")]
-    ProviderList {
+    /// Model list response
+    #[serde(rename = "model_list")]
+    ModelList {
         request_id: u64,
-        providers: Vec<ProviderInfo>,
+        models: Vec<ModelSummary>,
     },
 
-    /// Provider reload response. Reports the post-reload entry counts
-    /// so the CLI can confirm what was reloaded.
-    #[serde(rename = "provider_reloaded")]
-    ProviderReloaded {
+    /// Model catalog reload response. Reports the post-reload entry
+    /// counts so the CLI can confirm what was reloaded.
+    #[serde(rename = "model_reloaded")]
+    ModelReloaded {
         request_id: u64,
-        providers_count: usize,
+        models_count: usize,
         keys_count: usize,
     },
 
-    /// Result of `ProviderTemplates`. One row per built-in
-    /// template. The desktop uses this to populate the
-    /// "Add Provider" modal's template picker; the picker is
+    /// Result of `ModelTemplates`. One row per built-in
+    /// preset. The desktop uses this to populate the
+    /// "Add Model" modal's preset picker; the picker is
     /// read-only at runtime, so we ship the whole list in one
     /// round-trip rather than paginating.
-    #[serde(rename = "provider_templates")]
-    ProviderTemplates {
+    #[serde(rename = "model_templates")]
+    ModelTemplates {
         request_id: u64,
-        providers: Vec<ProviderTemplateInfo>,
+        presets: Vec<ModelPresetInfo>,
     },
 
-    /// Result of `ProviderAdd`. Returns the catalog-summary view
-    /// (`ProviderInfo`) of the newly-inserted entry so the desktop
-    /// can refresh `useProviders()` without a follow-up list call.
-    /// If `args.set_default` was true, the response is emitted
-    /// after the default has been promoted.
-    #[serde(rename = "provider_added")]
-    ProviderAdded {
+    /// Result of `ModelAdd`. Returns the catalog-summary view
+    /// (`ModelSummary`) of the newly-inserted entry so the desktop
+    /// can refresh its model list without a follow-up list call.
+    #[serde(rename = "model_added")]
+    ModelAdded {
         request_id: u64,
-        provider: ProviderInfo,
+        model: ModelSummary,
     },
 
-    /// Result of `ProviderUpdate`. Returns the catalog-summary view
-    /// of the merged entry so the desktop can refresh the provider
+    /// Result of `ModelUpdate`. Returns the catalog-summary view
+    /// of the merged entry so the desktop can refresh the model
     /// list and the edit modal without a follow-up call.
-    #[serde(rename = "provider_updated")]
-    ProviderUpdated {
+    #[serde(rename = "model_updated")]
+    ModelUpdated {
         request_id: u64,
-        provider: ProviderInfo,
+        model: ModelSummary,
     },
 
-    /// Result of `ProviderRemove`. `removed` is `true` when an entry
+    /// Result of `ModelRemove`. `removed` is `true` when an entry
     /// was actually deleted; idempotent removes return `false`.
-    #[serde(rename = "provider_removed")]
-    ProviderRemoved {
+    #[serde(rename = "model_removed")]
+    ModelRemoved {
         request_id: u64,
         id: String,
         removed: bool,
-    },
-
-    /// Result of `ProviderSetDefault`. `model` is the model id that
-    /// was promoted (the caller-supplied model, or the provider's
-    /// default model id when none was supplied).
-    #[serde(rename = "provider_default_set")]
-    ProviderDefaultSet {
-        request_id: u64,
-        provider: String,
-        model: String,
     },
 
     /// MCP configuration reload response. Reports the post-reload server
@@ -1600,64 +1548,76 @@ pub enum ResponsePacket {
 }
 
 /// Summary of an extension for IPC responses
-/// Provider info for listing available LLM providers.
+/// Catalog-summary view of one configured model entry.
 ///
-/// Post-RP1 this struct is the canonical catalog-summary view
-/// (replaces the legacy shape that omitted `models[]`, `context_length`,
-/// `enabled`, `headers`, and the explicit `default_model_id`). The
-/// wire field for the API format stays the short form
-/// (`"openai"` / `"anthropic"`) so the desktop's existing rendering
-/// code keeps working without a coord change; the field is renamed
-/// `api_format` to match the catalog's terminology.
+/// This is the canonical list-row shape for the model-first catalog
+/// (`models.toml`). The wire field for the API format stays the short
+/// form (`"openai"` / `"anthropic"`) so the desktop's existing
+/// rendering code keeps working without a coord change; the runtime
+/// translates to/from the catalog's `ApiFormat`
+/// (`openai_completions` / `anthropic_messages`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderInfo {
+pub struct ModelSummary {
     pub id: String,
     pub display_name: String,
+    /// Template/preset id this entry was seeded from. `None` for
+    /// fully custom entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
     /// Short wire id: `"openai"` or `"anthropic"`. The desktop's
     /// existing renderer reads this field, so the on-wire value stays
     /// stable; the runtime translates to/from the catalog's
     /// `ApiFormat` (`openai_completions` / `anthropic_messages`).
     #[serde(rename = "api_format")]
     pub api_type: String,
-    /// Base URL configured for this provider. Empty for templates
+    /// Base URL configured for this model. Empty for presets
     /// where the user must supply a deployment URL (e.g.
     /// `azure-openai`).
     pub base_url: String,
+    /// Model id as it appears on the wire (e.g. `gpt-4o`,
+    /// `claude-sonnet-4-5`).
+    pub model_id: String,
+    /// Maximum context length in tokens (input + output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Maximum output tokens for a single response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    /// Capability tags advertised for this model (snake_case wire
+    /// ids of `ModelCapability`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    /// Optional extra HTTP headers (e.g. `OpenAI-Organization`).
+    /// Empty for most entries; non-empty for vendors that require a
+    /// tenant header.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Reference to a credential in the vault. `None` means the model
+    /// does not require an API key (e.g. a local Ollama endpoint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
     pub requires_key: bool,
     /// True iff the catalog entry has `requires_key = false` (local
-    /// provider like Ollama). Surfaced to the desktop so it can hide
+    /// model like Ollama). Surfaced to the desktop so it can hide
     /// the "Add Key" CTA.
     pub is_local: bool,
     /// Catalog `enabled` flag. Disabled entries still appear in the
     /// list so the desktop can render them greyed-out / at the bottom
-    /// of the providers panel.
+    /// of the models panel.
     pub enabled: bool,
-    /// Declared models. The desktop's "Edit Provider" modal edits
-    /// these rows; the model picker (CreatePrincipal) reads them.
-    pub models: Vec<crate::providers::catalog::ModelInfo>,
-    /// Catalog-declared default model id. Distinct from any legacy
-    /// `default_model` field (which used the human label).
-    pub default_model_id: String,
-    /// Optional extra HTTP headers (e.g. `OpenAI-Organization`).
-    /// Empty for most entries; non-empty for vendors that require a
-    /// tenant header.
-    pub headers: BTreeMap<String, String>,
-    /// True iff this entry is the runtime's current default provider.
-    /// The desktop highlights this row with a star.
-    pub is_default: bool,
 }
 
-/// One model declared by a built-in provider template.
+/// One model declared by a built-in model preset.
 ///
 /// This is the IPC mirror of `providers::templates::ModelTemplate` —
 /// a smaller, owned, serializable shape suitable for the desktop's
-/// "Add Provider" modal. The static `&'static str` and capability
+/// "Add Model" modal. The static `&'static str` and capability
 /// slices from the in-runtime template are projected into owned
 /// `String`s / optional `u32`s so the struct can be sent over the
 /// wire without a lifetime. `headers` and `capabilities` from the
 /// in-runtime template are intentionally omitted — the modal
 /// doesn't need them, and the catalog entry the user creates from
-/// a template starts with the template's defaults intact.
+/// a preset starts with the preset's defaults intact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelTemplateInfo {
     pub id: String,
@@ -1669,24 +1629,23 @@ pub struct ModelTemplateInfo {
     pub max_output_tokens: Option<u32>,
 }
 
-/// One built-in provider template, projected from the in-runtime
+/// One built-in model preset, projected from the in-runtime
 /// `BUILT_IN_TEMPLATES` array into an owned, serializable shape for
-/// the desktop's "Add Provider" modal. The wire shape is intentionally
-/// richer than `ProviderInfo` (which is the catalog-summary view) so
+/// the desktop's "Add Model" modal. The wire shape is intentionally
+/// richer than `ModelSummary` (which is the catalog-summary view) so
 /// the picker can show the curated model list and context length —
 /// the choices that actually drive a one-screen decision.
 ///
 /// Field names are snake_case to match the rest of the IPC envelope;
-/// the Tauri command at `peko-desktop/src-tauri/src/commands/`
-/// `provider_admin.rs` projects this into the camelCase TS surface.
+/// the Tauri command projects this into the camelCase TS surface.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderTemplateInfo {
+pub struct ModelPresetInfo {
     pub id: String,
     pub display_name: String,
-    /// `"openai"` or `"anthropic"` — matches `ProviderInfo::api_type`
+    /// `"openai"` or `"anthropic"` — matches `ModelSummary::api_type`
     /// and the underlying `ApiFormat` enum's snake-case wire ids.
     pub api_type: String,
-    /// Base URL. Empty string for templates where the user must
+    /// Base URL. Empty string for presets where the user must
     /// supply a deployment URL (e.g. `azure-openai`).
     pub base_url: String,
     pub requires_key: bool,
@@ -1694,52 +1653,50 @@ pub struct ProviderTemplateInfo {
     pub models: Vec<ModelTemplateInfo>,
 }
 
-/// Arguments for `RequestPacket::ProviderAdd`.
+/// Arguments for `RequestPacket::ModelAdd`.
 ///
-/// This mirrors the CLI's `provider add` `AddArgs` so the desktop
+/// This mirrors the CLI's `model add` args so the desktop
 /// modal can drive exactly the same surface that
-/// `peko provider add` exposes. `template` and `custom` are
+/// `peko model add` exposes. `template` and `custom` are
 /// mutually exclusive; the handler refuses bare invocations the
 /// same way the CLI does (per the F6/F7 symmetry rule — the
 /// "either --template or --custom is required" guard stays in
 /// both the CLI and the IPC so the two surfaces never disagree).
 ///
-/// `key` and `set_default` are best-effort: if the user supplies
-/// them, the handler folds them into the same vault + catalog
-/// writes the CLI would do (`vault.set_provider_key`,
-/// `catalog.set_default`).
+/// `key` is best-effort: if the user supplies it, the handler folds
+/// it into the same vault write the CLI would do.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProviderAddArgs {
-    /// Seed from a built-in preset template (e.g. `"anthropic"`,
+pub struct ModelAddArgs {
+    /// Seed from a built-in preset (e.g. `"anthropic"`,
     /// `"openai"`, `"ollama"`). Mutually exclusive with `custom`.
     #[serde(default)]
     pub template: Option<String>,
-    /// Override the catalog id (template or custom). Defaults to
-    /// the template id when omitted for a template-mode add.
+    /// Override the catalog id (preset or custom). Defaults to
+    /// the preset id when omitted for a preset-mode add.
     #[serde(default)]
     pub name: Option<String>,
     /// Override the catalog display name.
     #[serde(default)]
     pub display_name: Option<String>,
     /// Add a fully custom (OpenAI-compatible or Anthropic-
-    /// compatible) provider. Mutually exclusive with `template`.
+    /// compatible) model. Mutually exclusive with `template`.
     #[serde(default)]
     pub custom: bool,
-    /// API format for a custom provider. One of
+    /// API format for a custom model. One of
     /// `"openai_completions"` | `"anthropic_messages"`. Maps to
     /// `ApiFormat::from_wire`.
     #[serde(default)]
     pub api_format: Option<String>,
-    /// Base URL for a custom provider.
+    /// Base URL for a custom model.
     #[serde(default)]
     pub base_url: Option<String>,
-    /// Whether the custom provider requires an API key.
+    /// Whether the custom model requires an API key.
     /// Defaults to `true` when omitted.
     #[serde(default)]
     pub requires_key: Option<bool>,
-    /// One or more model ids to declare. The first becomes the
-    /// default model for the new entry. The CLI accepts the
-    /// same vector and uses the same defaulting rule.
+    /// One or more wire model ids to declare. The first becomes the
+    /// entry's `model_id`. The CLI accepts the same vector and uses
+    /// the same defaulting rule.
     #[serde(default)]
     pub model: Vec<String>,
     /// Store an API key in the vault immediately. Equivalent to
@@ -1747,57 +1704,66 @@ pub struct ProviderAddArgs {
     /// the new entry does not require a key.
     #[serde(default)]
     pub key: Option<String>,
-    /// Promote the new entry to the runtime default after adding
-    /// it. Equivalent to `peko provider set-default <id>` after
-    /// the add.
-    #[serde(default)]
-    pub set_default: Option<bool>,
-    /// Override the default model id used when `set_default` is
-    /// true. Defaults to the entry's `default_model_id` (i.e. the
-    /// template's curated choice, or the first model for a
-    /// custom add) when omitted.
-    #[serde(default)]
-    pub default_model: Option<String>,
 }
 
-/// Arguments for `RequestPacket::ProviderUpdate`.
+/// Arguments for `RequestPacket::ModelUpdate`.
 ///
 /// Every field except `id` is optional. Omitted fields leave the
 /// existing catalog entry untouched; supplied fields replace the
-/// current value. The daemon validates that `default_model_id`,
-/// when provided, references one of the (updated) `models`, and
-/// rewrites `providers.toml` atomically.
+/// current value. The daemon rewrites `models.toml` atomically.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProviderUpdateArgs {
+pub struct ModelUpdateArgs {
     /// Catalog id of the entry to edit.
     pub id: String,
     /// Replace the display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    /// Replace the base URL.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
     /// Replace the API format. One of `"openai_completions"` |
     /// `"anthropic_messages"`; maps through `ApiFormat::from_wire`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_format: Option<String>,
-    /// Replace the full model list. When supplied, the existing list
-    /// is overwritten (not merged).
+    /// Replace the base URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub models: Option<Vec<crate::providers::catalog::ModelInfo>>,
-    /// Replace the default model id. Must reference a model in the
-    /// (possibly updated) `models` list.
+    pub base_url: Option<String>,
+    /// Replace the wire model id (e.g. `gpt-4o`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_model_id: Option<String>,
+    pub model_id: Option<String>,
+    /// Replace the context-window size (tokens).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Replace the max output tokens for a single response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    /// Replace the capability tags (snake_case wire ids of
+    /// `ModelCapability`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<String>>,
     /// Replace the extra HTTP headers map.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<BTreeMap<String, String>>,
+    /// Replace the credential reference (vault credential id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
     /// Replace the `requires_key` flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires_key: Option<bool>,
     /// Replace the `enabled` flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+}
+
+/// Structured outcome of a live model ping. Mirrors
+/// `providers::validator::CredentialTestOutcome` in an owned,
+/// serializable shape suitable for the `ModelTested` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelTestResult {
+    pub ok: bool,
+    pub message: String,
+    pub latency_ms: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_used: Option<String>,
 }
 
 /// One row of `CredentialsListed`. Redacted — never carries the
@@ -1855,17 +1821,6 @@ pub struct RotationBindingWire {
     pub key: String,
     pub strategy: String,
     pub order: Vec<String>,
-}
-
-/// Per-credential outcome inside `BindingTested`. Mirrors the
-/// relevant fields of `CredentialTested` without the request-id /
-/// tested_at envelope (those are on the parent response).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BindingTestResult {
-    pub id: String,
-    pub ok: bool,
-    pub http_status: Option<u16>,
-    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2000,16 +1955,15 @@ impl ResponsePacket {
             | Self::PrincipalCreated { request_id, .. }
             | Self::SystemStatus { request_id, .. }
             | Self::SystemDoctor { request_id, .. }
-            | Self::ProviderList { request_id, .. }
-            | Self::ProviderReloaded { request_id, .. }
-            | Self::ProviderTemplates { request_id, .. }
-            | Self::ProviderAdded { request_id, .. }
-            | Self::ProviderUpdated { request_id, .. }
-            | Self::ProviderRemoved { request_id, .. }
-            | Self::ProviderDefaultSet { request_id, .. }
+            | Self::ModelList { request_id, .. }
+            | Self::ModelReloaded { request_id, .. }
+            | Self::ModelTemplates { request_id, .. }
+            | Self::ModelAdded { request_id, .. }
+            | Self::ModelUpdated { request_id, .. }
+            | Self::ModelRemoved { request_id, .. }
+            | Self::ModelTested { request_id, .. }
             | Self::McpReloaded { request_id, .. }
             | Self::CredentialsListed { request_id, .. }
-            | Self::CredentialTested { request_id, .. }
             | Self::CredentialSetDone { request_id, .. }
             | Self::CredentialDeleted { request_id, .. }
             | Self::CredentialGot { request_id, .. }
@@ -2017,7 +1971,6 @@ impl ResponsePacket {
             | Self::BindingsListed { request_id, .. }
             | Self::BindingSetDone { request_id, .. }
             | Self::BindingDeleted { request_id, .. }
-            | Self::BindingTested { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::CapabilityGranted { request_id, .. }
             | Self::CapabilityRevoked { request_id, .. }
@@ -2083,16 +2036,15 @@ impl ResponsePacket {
             Self::PrincipalCreated { .. } => "PrincipalCreated",
             Self::SystemStatus { .. } => "SystemStatus",
             Self::SystemDoctor { .. } => "SystemDoctor",
-            Self::ProviderList { .. } => "ProviderList",
-            Self::ProviderReloaded { .. } => "ProviderReloaded",
-            Self::ProviderTemplates { .. } => "ProviderTemplates",
-            Self::ProviderAdded { .. } => "ProviderAdded",
-            Self::ProviderUpdated { .. } => "ProviderUpdated",
-            Self::ProviderRemoved { .. } => "ProviderRemoved",
-            Self::ProviderDefaultSet { .. } => "ProviderDefaultSet",
+            Self::ModelList { .. } => "ModelList",
+            Self::ModelReloaded { .. } => "ModelReloaded",
+            Self::ModelTemplates { .. } => "ModelTemplates",
+            Self::ModelAdded { .. } => "ModelAdded",
+            Self::ModelUpdated { .. } => "ModelUpdated",
+            Self::ModelRemoved { .. } => "ModelRemoved",
+            Self::ModelTested { .. } => "ModelTested",
             Self::McpReloaded { .. } => "McpReloaded",
             Self::CredentialsListed { .. } => "CredentialsListed",
-            Self::CredentialTested { .. } => "CredentialTested",
             Self::CredentialSetDone { .. } => "CredentialSetDone",
             Self::CredentialDeleted { .. } => "CredentialDeleted",
             Self::CredentialGot { .. } => "CredentialGot",
@@ -2100,7 +2052,6 @@ impl ResponsePacket {
             Self::BindingsListed { .. } => "BindingsListed",
             Self::BindingSetDone { .. } => "BindingSetDone",
             Self::BindingDeleted { .. } => "BindingDeleted",
-            Self::BindingTested { .. } => "BindingTested",
             Self::ExtensionList { .. } => "ExtensionList",
             Self::CapabilityGranted { .. } => "CapabilityGranted",
             Self::CapabilityRevoked { .. } => "CapabilityRevoked",
@@ -2182,7 +2133,6 @@ mod tests {
             user: "alice".to_string(),
             no_slash: true,
             output_format: OutputFormat::Json,
-            override_provider: Some("openai".to_string()),
             override_model: Some("gpt-4o".to_string()),
         };
 
@@ -2197,7 +2147,6 @@ mod tests {
                 user,
                 no_slash,
                 output_format,
-                override_provider,
                 override_model,
             } => {
                 assert_eq!(request_id, 42);
@@ -2206,7 +2155,6 @@ mod tests {
                 assert_eq!(user, "alice");
                 assert!(no_slash);
                 assert_eq!(output_format, OutputFormat::Json);
-                assert_eq!(override_provider, Some("openai".to_string()));
                 assert_eq!(override_model, Some("gpt-4o".to_string()));
             }
             _ => panic!("Wrong variant"),
@@ -2769,38 +2717,38 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_templates_request_roundtrip() {
-        // T-109b: pin the request wire shape for the desktop's
-        // "Add Provider" modal's template picker. The bare request
+    fn test_model_templates_request_roundtrip() {
+        // Pin the request wire shape for the desktop's
+        // "Add Model" modal's preset picker. The bare request
         // is just `{ type, request_id }` — no payload — but we round-
         // trip the envelope anyway so a future field addition
         // surfaces as a test diff.
-        let req = RequestPacket::ProviderTemplates { request_id: 911 };
+        let req = RequestPacket::ModelTemplates { request_id: 911 };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             json.get("type").and_then(|v| v.as_str()),
-            Some("provider_templates")
+            Some("model_templates")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(911));
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::ProviderTemplates { request_id } => assert_eq!(request_id, 911),
+            RequestPacket::ModelTemplates { request_id } => assert_eq!(request_id, 911),
             _ => panic!("Wrong variant"),
         }
     }
 
     #[test]
-    fn test_provider_templates_response_roundtrip() {
-        // T-109b: pin the response shape — the desktop's modal
-        // picks up `providers[]` with the full model list and
+    fn test_model_templates_response_roundtrip() {
+        // Pin the response shape — the desktop's modal
+        // picks up `presets[]` with the full model list and
         // context lengths. `headers` and `capabilities` are
-        // intentionally omitted (T-109b scope decision) so the
-        // modal only ships the fields it actually renders.
-        let resp = ResponsePacket::ProviderTemplates {
+        // intentionally omitted so the modal only ships the fields
+        // it actually renders.
+        let resp = ResponsePacket::ModelTemplates {
             request_id: 912,
-            providers: vec![ProviderTemplateInfo {
+            presets: vec![ModelPresetInfo {
                 id: "anthropic".to_string(),
                 display_name: "Anthropic".to_string(),
                 api_type: "anthropic".to_string(),
@@ -2819,19 +2767,19 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             json.get("type").and_then(|v| v.as_str()),
-            Some("provider_templates")
+            Some("model_templates")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(912));
 
-        let providers = json
-            .get("providers")
+        let presets = json
+            .get("presets")
             .and_then(|v| v.as_array())
-            .expect("response should have a providers array");
-        assert_eq!(providers.len(), 1);
+            .expect("response should have a presets array");
+        assert_eq!(presets.len(), 1);
 
         // Field names must match what the desktop's Tauri command
-        // projection reads in `provider_admin.rs`.
-        let p = &providers[0];
+        // projection reads.
+        let p = &presets[0];
         assert_eq!(p.get("id").and_then(|v| v.as_str()), Some("anthropic"));
         assert_eq!(
             p.get("display_name").and_then(|v| v.as_str()),
@@ -2872,30 +2820,30 @@ mod tests {
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ProviderTemplates {
+            ResponsePacket::ModelTemplates {
                 request_id,
-                providers,
+                presets,
             } => {
                 assert_eq!(request_id, 912);
-                assert_eq!(providers.len(), 1);
-                assert_eq!(providers[0].id, "anthropic");
-                assert_eq!(providers[0].models[0].context_length, Some(200_000));
+                assert_eq!(presets.len(), 1);
+                assert_eq!(presets[0].id, "anthropic");
+                assert_eq!(presets[0].models[0].context_length, Some(200_000));
             }
             _ => panic!("Wrong variant"),
         }
     }
 
     #[test]
-    fn test_provider_add_request_roundtrip() {
-        // T-109b: pin the request shape for `peko provider add` over
+    fn test_model_add_request_roundtrip() {
+        // Pin the request shape for `peko model add` over
         // IPC. All fields are Option / Vec / bool with #[serde(default)]
-        // so a bare request (template mode, no overrides) round-trips
+        // so a bare request (preset mode, no overrides) round-trips
         // without losing defaulting. The handler treats a bare request
         // (no `template`, no `custom`) as an error — same guard as the
         // CLI — but the wire shape is defined either way.
-        let req = RequestPacket::ProviderAdd {
+        let req = RequestPacket::ModelAdd {
             request_id: 913,
-            args: ProviderAddArgs {
+            args: ModelAddArgs {
                 template: Some("anthropic".to_string()),
                 name: None,
                 display_name: None,
@@ -2905,16 +2853,11 @@ mod tests {
                 requires_key: None,
                 model: vec![],
                 key: Some("sk-test".to_string()),
-                set_default: Some(true),
-                default_model: Some("claude-sonnet-4-5".to_string()),
             },
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            json.get("type").and_then(|v| v.as_str()),
-            Some("provider_add")
-        );
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("model_add"));
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(913));
 
         let args = json
@@ -2926,18 +2869,13 @@ mod tests {
         );
         assert_eq!(args.get("custom").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(args.get("key").and_then(|v| v.as_str()), Some("sk-test"));
-        assert_eq!(
-            args.get("set_default").and_then(|v| v.as_bool()),
-            Some(true)
-        );
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::ProviderAdd { request_id, args } => {
+            RequestPacket::ModelAdd { request_id, args } => {
                 assert_eq!(request_id, 913);
                 assert_eq!(args.template.as_deref(), Some("anthropic"));
                 assert_eq!(args.key.as_deref(), Some("sk-test"));
-                assert_eq!(args.set_default, Some(true));
                 assert!(!args.custom);
                 assert!(args.model.is_empty());
             }
@@ -2946,72 +2884,64 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_added_response_roundtrip() {
-        // T-109b + RP1: pin the response shape — the desktop uses
-        // the returned `provider` to refresh `useProviders()`
-        // without a follow-up list call. Post-RP1 the shape mirrors
-        // `ProviderList`'s row exactly (id / display_name /
-        // api_format / base_url / requires_key / is_local / enabled
-        // / models[] / default_model_id / headers).
-        let resp = ResponsePacket::ProviderAdded {
+    fn test_model_added_response_roundtrip() {
+        // Pin the response shape — the desktop uses
+        // the returned `model` to refresh its model list
+        // without a follow-up list call.
+        let resp = ResponsePacket::ModelAdded {
             request_id: 914,
-            provider: ProviderInfo {
+            model: ModelSummary {
                 id: "anthropic".to_string(),
                 display_name: "Anthropic".to_string(),
+                template_id: Some("anthropic".to_string()),
                 api_type: "anthropic".to_string(),
                 base_url: "https://api.anthropic.com".to_string(),
+                model_id: "claude-sonnet-4-5".to_string(),
+                context_window: Some(200_000),
+                max_output_tokens: Some(8_192),
+                capabilities: vec![],
+                headers: Default::default(),
+                credential_id: None,
                 requires_key: true,
                 is_local: false,
                 enabled: true,
-                models: vec![crate::providers::catalog::ModelInfo {
-                    id: "claude-sonnet-4-5".to_string(),
-                    display_name: Some("Claude Sonnet 4.5".to_string()),
-                    context_length: Some(200_000),
-                    max_output_tokens: Some(8_192),
-                    capabilities: vec![],
-                }],
-                default_model_id: "claude-sonnet-4-5".to_string(),
-                headers: Default::default(),
-                is_default: false,
             },
         };
         let bytes = resp.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             json.get("type").and_then(|v| v.as_str()),
-            Some("provider_added")
+            Some("model_added")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(914));
 
-        let provider = json
-            .get("provider")
-            .expect("response should have a provider object");
+        let model = json
+            .get("model")
+            .expect("response should have a model object");
+        assert_eq!(model.get("id").and_then(|v| v.as_str()), Some("anthropic"));
         assert_eq!(
-            provider.get("id").and_then(|v| v.as_str()),
-            Some("anthropic")
-        );
-        assert_eq!(
-            provider.get("display_name").and_then(|v| v.as_str()),
+            model.get("display_name").and_then(|v| v.as_str()),
             Some("Anthropic")
         );
         assert_eq!(
-            provider.get("api_format").and_then(|v| v.as_str()),
+            model.get("api_format").and_then(|v| v.as_str()),
             Some("anthropic")
         );
         assert_eq!(
-            provider.get("requires_key").and_then(|v| v.as_bool()),
+            model.get("model_id").and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-5")
+        );
+        assert_eq!(
+            model.get("requires_key").and_then(|v| v.as_bool()),
             Some(true)
         );
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ProviderAdded {
-                request_id,
-                provider,
-            } => {
+            ResponsePacket::ModelAdded { request_id, model } => {
                 assert_eq!(request_id, 914);
-                assert_eq!(provider.id, "anthropic");
-                assert!(provider.requires_key);
+                assert_eq!(model.id, "anthropic");
+                assert!(model.requires_key);
             }
             _ => panic!("Wrong variant"),
         }
@@ -3020,13 +2950,12 @@ mod tests {
     #[test]
     fn test_principal_create_request_roundtrip() {
         // All fields populated — round-trips without losing the
-        // optional provider/model fields.
+        // optional description field.
         let req = RequestPacket::PrincipalCreate {
             request_id: 302,
             name: "alice".to_string(),
             description: Some("personal assistant".to_string()),
-            preferred_provider_id: Some("openai".to_string()),
-            preferred_model_id: Some("gpt-4o".to_string()),
+            model_id: "gpt-4o".to_string(),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -3035,26 +2964,24 @@ mod tests {
                 request_id,
                 name,
                 description,
-                preferred_provider_id,
-                preferred_model_id,
+                model_id,
             } => {
                 assert_eq!(request_id, 302);
                 assert_eq!(name, "alice");
                 assert_eq!(description.as_deref(), Some("personal assistant"));
-                assert_eq!(preferred_provider_id.as_deref(), Some("openai"));
-                assert_eq!(preferred_model_id.as_deref(), Some("gpt-4o"));
+                assert_eq!(model_id, "gpt-4o");
             }
             _ => panic!("Wrong variant"),
         }
 
-        // Minimal payload — name only. `#[serde(default)]` lets older
-        // clients send the bare variant without breaking the round-trip.
+        // Minimal payload — name + model_id. `#[serde(default)]` lets
+        // older clients omit `description` without breaking the
+        // round-trip.
         let minimal = RequestPacket::PrincipalCreate {
             request_id: 303,
             name: "bob".to_string(),
             description: None,
-            preferred_provider_id: None,
-            preferred_model_id: None,
+            model_id: "claude-sonnet-4-5".to_string(),
         };
         let bytes = minimal.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -3063,14 +2990,12 @@ mod tests {
                 request_id,
                 name,
                 description,
-                preferred_provider_id,
-                preferred_model_id,
+                model_id,
             } => {
                 assert_eq!(request_id, 303);
                 assert_eq!(name, "bob");
                 assert!(description.is_none());
-                assert!(preferred_provider_id.is_none());
-                assert!(preferred_model_id.is_none());
+                assert_eq!(model_id, "claude-sonnet-4-5");
             }
             _ => panic!("Wrong variant"),
         }
@@ -3211,36 +3136,36 @@ mod tests {
     }
 
     #[test]
-    fn test_credential_test_request_roundtrip() {
-        // RP3A: live-credential-test is keyed by credential id now.
-        let req = RequestPacket::CredentialTest {
+    fn test_model_test_request_roundtrip() {
+        // Model-first: live-model-test is keyed by catalog model id.
+        let req = RequestPacket::ModelTest {
             request_id: 911,
-            id: "id-minimax".to_string(),
+            id: "minimax".to_string(),
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             json.get("type").and_then(|v| v.as_str()),
-            Some("credential_test")
+            Some("model_test")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(911));
-        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("minimax"));
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::CredentialTest { request_id, id } => {
+            RequestPacket::ModelTest { request_id, id } => {
                 assert_eq!(request_id, 911);
-                assert_eq!(id, "id-minimax");
+                assert_eq!(id, "minimax");
             }
             _ => panic!("Wrong variant"),
         }
     }
 
     #[test]
-    fn test_credential_tested_response_roundtrip() {
-        let resp = ResponsePacket::CredentialTested {
+    fn test_model_tested_response_roundtrip() {
+        let resp = ResponsePacket::ModelTested {
             request_id: 912,
-            id: "id-anthropic".to_string(),
+            id: "anthropic".to_string(),
             ok: false,
             message: "HTTP 401: invalid api key".to_string(),
             latency_ms: 187,
@@ -3252,13 +3177,10 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             json.get("type").and_then(|v| v.as_str()),
-            Some("credential_tested")
+            Some("model_tested")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(912));
-        assert_eq!(
-            json.get("id").and_then(|v| v.as_str()),
-            Some("id-anthropic")
-        );
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("anthropic"));
         assert_eq!(json.get("ok").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(
             json.get("message").and_then(|v| v.as_str()),
@@ -3277,7 +3199,7 @@ mod tests {
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::CredentialTested {
+            ResponsePacket::ModelTested {
                 request_id,
                 id,
                 ok,
@@ -3288,7 +3210,7 @@ mod tests {
                 tested_at,
             } => {
                 assert_eq!(request_id, 912);
-                assert_eq!(id, "id-anthropic");
+                assert_eq!(id, "anthropic");
                 assert!(!ok);
                 assert_eq!(message, "HTTP 401: invalid api key");
                 assert_eq!(latency_ms, 187);
@@ -4425,7 +4347,6 @@ mod tests {
             user: "alice".to_string(),
             no_slash: true,
             output_format: OutputFormat::Json,
-            override_provider: Some("openai".to_string()),
             override_model: Some("gpt-4o".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
@@ -4438,7 +4359,6 @@ mod tests {
                 user,
                 no_slash,
                 output_format,
-                override_provider,
                 override_model,
             } => {
                 assert_eq!(request_id, 5000);
@@ -4447,7 +4367,6 @@ mod tests {
                 assert_eq!(user, "alice");
                 assert!(no_slash);
                 assert_eq!(output_format, OutputFormat::Json);
-                assert_eq!(override_provider, Some("openai".to_string()));
                 assert_eq!(override_model, Some("gpt-4o".to_string()));
             }
             _ => panic!("Wrong variant"),
@@ -4466,7 +4385,6 @@ mod tests {
             user: "alice".to_string(),
             no_slash: true,
             output_format: OutputFormat::Json,
-            override_provider: Some("anthropic".to_string()),
             override_model: Some("claude-haiku-4-5".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
@@ -4479,7 +4397,6 @@ mod tests {
                 user,
                 no_slash,
                 output_format,
-                override_provider,
                 override_model,
             } => {
                 assert_eq!(request_id, 5100);
@@ -4488,7 +4405,6 @@ mod tests {
                 assert_eq!(user, "alice");
                 assert!(no_slash);
                 assert_eq!(output_format, OutputFormat::Json);
-                assert_eq!(override_provider, Some("anthropic".to_string()));
                 assert_eq!(override_model, Some("claude-haiku-4-5".to_string()));
             }
             _ => panic!("Wrong variant"),
@@ -4834,7 +4750,6 @@ mod tests {
             user: "u".to_string(),
             no_slash: false,
             output_format: OutputFormat::Human,
-            override_provider: None,
             override_model: None,
         };
         assert_eq!(req_send.request_id(), 1);

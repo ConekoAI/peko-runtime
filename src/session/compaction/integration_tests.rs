@@ -9,7 +9,7 @@
 //! - Cache validation and invalidation
 
 use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole};
-use crate::providers::catalog::{ProviderCatalog, ProviderCatalogEntry};
+use crate::providers::catalog::{ModelCatalog, ModelConfig};
 use crate::providers::templates;
 use crate::session::compaction::{
     summary_format::{
@@ -36,9 +36,9 @@ async fn test_dual_threshold_ratio_fires() {
         max_compactions_per_session: 10,
     };
 
-    let catalog = catalog_with_known_providers().await;
+    let catalog = catalog_with_known_models().await;
     let context_window = catalog
-        .model_context_length("openai", "gpt-4o")
+        .context_window("openai-gpt-4o")
         .await
         .expect("gpt-4o context length is known") as usize;
 
@@ -55,40 +55,35 @@ async fn test_dual_threshold_ratio_fires() {
 
 #[tokio::test]
 async fn test_catalog_known_models() {
-    let catalog = catalog_with_known_providers().await;
+    let catalog = catalog_with_known_models().await;
+    assert_eq!(catalog.context_window("openai-gpt-4o").await, Some(128_000));
     assert_eq!(
-        catalog.model_context_length("openai", "gpt-4o").await,
-        Some(128_000)
-    );
-    assert_eq!(
-        catalog
-            .model_context_length("anthropic", "claude-sonnet-4-5")
-            .await,
+        catalog.context_window("anthropic-sonnet").await,
         Some(200_000)
     );
-    // Unknown provider/model pair → None.
-    assert_eq!(catalog.model_context_length("nope", "nope").await, None);
+    // Unknown configured model id → None.
+    assert_eq!(catalog.context_window("nope").await, None);
 }
 
 /// Build a transient in-memory catalog seeded with the built-in OpenAI
 /// and Anthropic templates. Used by the integration tests below; not
 /// production code.
-async fn catalog_with_known_providers() -> std::sync::Arc<ProviderCatalog> {
+async fn catalog_with_known_models() -> std::sync::Arc<ModelCatalog> {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("providers.toml");
-    let catalog = ProviderCatalog::load_or_init(&path).await.expect("catalog");
+    let path = dir.path().join("models.toml");
+    let catalog = ModelCatalog::load_or_init(&path).await.expect("catalog");
 
-    let anthropic = ProviderCatalogEntry::from_template(
+    let anthropic = ModelConfig::from_template(
         templates::find_template("anthropic").expect("anthropic template"),
-        "anthropic",
-        None,
+        "anthropic-sonnet",
+        "claude-sonnet-4-5",
     );
     catalog.upsert(anthropic).await.expect("upsert anthropic");
 
-    let openai = ProviderCatalogEntry::from_template(
+    let openai = ModelConfig::from_template(
         templates::find_template("openai").expect("openai template"),
-        "openai",
-        None,
+        "openai-gpt-4o",
+        "gpt-4o",
     );
     catalog.upsert(openai).await.expect("upsert openai");
 

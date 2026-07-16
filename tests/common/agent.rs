@@ -4,7 +4,6 @@
 //! the catalog entry `mock-llm` (seeded by `seed_mock_provider_in_catalog`
 //! below). The catalog entry holds the actual base_url and api_key.
 //! Lives in the `~/.peko/agents/<name>/` layout the CLI expects.
-
 #![allow(dead_code)]
 
 use super::cli::PekoCli;
@@ -57,9 +56,10 @@ enable_async_tools = true
 /// therefore create a Principal, not an agent.
 ///
 /// Steps:
-///  1. Seed `mock-llm` as the sole catalog entry, so the root agent's
-///     provider resolution falls through to it (last-resort "first enabled
-///     catalog entry" rule in `LlmResolver`).
+///  1. Seed `mock-llm` as the sole catalog entry and pin the Principal
+///     to it via `peko principal create --model mock-llm` (model-first:
+///     there is no resolver fallback — an unpinned principal fails every
+///     send with "no model configured").
 ///  2. Run the real `peko principal create <name>` command, exercising the
 ///     actual framework: it writes the workspace, `agents/root/AGENT.md`
 ///     prompt, identity, and `principal.toml`.
@@ -100,12 +100,12 @@ pub fn create_mock_principal_with_tools(
 
     let output = cli
         .cmd()
-        .args(["principal", "create", name])
+        .args(["principal", "create", name, "--model", "mock-llm"])
         .output()
         .expect("run `peko principal create`");
     assert!(
         output.status.success(),
-        "`peko principal create {name}` failed: stdout={} stderr={}",
+        "`peko principal create {name} --model mock-llm` failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -142,6 +142,57 @@ pub fn create_mock_principal_with_tools(
     .expect("write principal.toml");
 }
 
+/// Seed one configured-model entry in the model catalog at
+/// `~/.peko/models.toml`. All three public seeders below delegate
+/// here; the only differences are the entry's id, endpoint format,
+/// base URL, and wire model id.
+///
+/// Idempotent: re-running with the same parameters overwrites the
+/// entry with the same values.
+fn seed_model_in_catalog(
+    home: &Path,
+    id: &str,
+    display_name: &str,
+    api_format: peko::providers::catalog::ApiFormat,
+    base_url: &str,
+    wire_model_id: &str,
+) {
+    use peko::providers::catalog::{ModelCatalogFile, ModelConfig};
+    use std::collections::BTreeMap;
+
+    let peko_dir = home.join(".peko");
+    let catalog_path = peko_dir.join("models.toml");
+    if let Some(parent) = catalog_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let now = chrono::Utc::now();
+    let entry = ModelConfig {
+        id: id.to_string(),
+        display_name: display_name.to_string(),
+        template_id: None,
+        api_format,
+        base_url: base_url.to_string(),
+        model_id: wire_model_id.to_string(),
+        context_window: None,
+        max_output_tokens: None,
+        capabilities: vec![],
+        headers: BTreeMap::new(),
+        credential_id: None,
+        requires_key: true,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+    let mut entries = BTreeMap::new();
+    entries.insert(id.to_string(), entry);
+    let file = ModelCatalogFile {
+        version: "4.0".to_string(),
+        entries,
+    };
+    let toml = toml::to_string_pretty(&file).expect("serialize catalog");
+    std::fs::write(&catalog_path, toml).expect("write catalog");
+}
+
 /// Seed a `mock-llm` catalog entry pointing at `mock_llm_url`. The
 /// test harness invokes this before spawning the daemon so the
 /// daemon's `LlmResolver` finds the entry on first lookup.
@@ -154,140 +205,40 @@ pub fn create_mock_principal_with_tools(
 /// Idempotent: re-running with the same `mock_llm_url` overwrites
 /// the entry with the same values.
 pub fn seed_mock_provider_in_catalog(home: &Path, mock_llm_url: &str) {
-    use peko::providers::catalog::{
-        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
-    };
-    use std::collections::BTreeMap;
-
-    let peko_dir = home.join(".peko");
-    let catalog_path = peko_dir.join("providers.toml");
-    if let Some(parent) = catalog_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let base_url = mock_llm_url.trim_end_matches('/').to_string();
-    let now = chrono::Utc::now();
-    let entry = ProviderCatalogEntry {
-        id: "mock-llm".to_string(),
-        display_name: "mock-llm".to_string(),
-        template_id: None,
-        api_format: ApiFormat::OpenaiCompletions,
-        base_url,
-        default_model_id: "default".to_string(),
-        models: vec![ModelInfo {
-            id: "default".to_string(),
-            display_name: None,
-            context_length: None,
-            max_output_tokens: None,
-            capabilities: vec![],
-        }],
-        headers: BTreeMap::new(),
-        requires_key: true,
-        enabled: true,
-        created_at: now,
-        updated_at: now,
-    };
-    let mut entries = BTreeMap::new();
-    entries.insert("mock-llm".to_string(), entry);
-    let file = ProviderCatalogFile {
-        version: "3.0".to_string(),
-        entries,
-        default_provider_id: None,
-        default_model_id: None,
-    };
-    let toml = toml::to_string_pretty(&file).expect("serialize catalog");
-    std::fs::write(&catalog_path, toml).expect("write catalog");
+    seed_model_in_catalog(
+        home,
+        "mock-llm",
+        "mock-llm",
+        peko::providers::catalog::ApiFormat::OpenaiCompletions,
+        mock_llm_url.trim_end_matches('/'),
+        "default",
+    );
 }
 
 /// Seed a `minimax` catalog entry pointing at the production MiniMax
 /// (Anthropic-compatible) endpoint. The API key is read from the
 /// `MINIMAX_API_KEY` env var via `PEKO_TEST_RESOLVER_BOOTSTRAP=1`.
 pub fn seed_minimax_provider_in_catalog(home: &Path) {
-    use peko::providers::catalog::{
-        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
-    };
-    use std::collections::BTreeMap;
-
-    let peko_dir = home.join(".peko");
-    let catalog_path = peko_dir.join("providers.toml");
-    if let Some(parent) = catalog_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let now = chrono::Utc::now();
-    let entry = ProviderCatalogEntry {
-        id: "minimax".to_string(),
-        display_name: "MiniMax".to_string(),
-        template_id: None,
-        api_format: ApiFormat::AnthropicMessages,
-        base_url: "https://api.minimaxi.com/anthropic".to_string(),
-        default_model_id: "MiniMax-M3".to_string(),
-        models: vec![ModelInfo {
-            id: "MiniMax-M3".to_string(),
-            display_name: None,
-            context_length: None,
-            max_output_tokens: None,
-            capabilities: vec![],
-        }],
-        headers: BTreeMap::new(),
-        requires_key: true,
-        enabled: true,
-        created_at: now,
-        updated_at: now,
-    };
-    let mut entries = BTreeMap::new();
-    entries.insert("minimax".to_string(), entry);
-    let file = ProviderCatalogFile {
-        version: "3.0".to_string(),
-        entries,
-        default_provider_id: None,
-        default_model_id: None,
-    };
-    let toml = toml::to_string_pretty(&file).expect("serialize catalog");
-    std::fs::write(&catalog_path, toml).expect("write catalog");
+    seed_model_in_catalog(
+        home,
+        "minimax",
+        "MiniMax",
+        peko::providers::catalog::ApiFormat::AnthropicMessages,
+        "https://api.minimaxi.com/anthropic",
+        "MiniMax-M3",
+    );
 }
 
 /// Seed a `kimi` catalog entry pointing at the Kimi Code API endpoint.
 /// The API key is read from the `KIMI_API_KEY` env var via
 /// `PEKO_TEST_RESOLVER_BOOTSTRAP=1`.
 pub fn seed_kimi_provider_in_catalog(home: &Path) {
-    use peko::providers::catalog::{
-        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
-    };
-    use std::collections::BTreeMap;
-
-    let peko_dir = home.join(".peko");
-    let catalog_path = peko_dir.join("providers.toml");
-    if let Some(parent) = catalog_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let now = chrono::Utc::now();
-    let entry = ProviderCatalogEntry {
-        id: "kimi".to_string(),
-        display_name: "Kimi (Kimi Code API)".to_string(),
-        template_id: None,
-        api_format: ApiFormat::AnthropicMessages,
-        base_url: "https://api.kimi.com/coding".to_string(),
-        default_model_id: "kimi-for-coding".to_string(),
-        models: vec![ModelInfo {
-            id: "kimi-for-coding".to_string(),
-            display_name: None,
-            context_length: None,
-            max_output_tokens: None,
-            capabilities: vec![],
-        }],
-        headers: BTreeMap::new(),
-        requires_key: true,
-        enabled: true,
-        created_at: now,
-        updated_at: now,
-    };
-    let mut entries = BTreeMap::new();
-    entries.insert("kimi".to_string(), entry);
-    let file = ProviderCatalogFile {
-        version: "3.0".to_string(),
-        entries,
-        default_provider_id: None,
-        default_model_id: None,
-    };
-    let toml = toml::to_string_pretty(&file).expect("serialize catalog");
-    std::fs::write(&catalog_path, toml).expect("write catalog");
+    seed_model_in_catalog(
+        home,
+        "kimi",
+        "Kimi (Kimi Code API)",
+        peko::providers::catalog::ApiFormat::AnthropicMessages,
+        "https://api.kimi.com/coding",
+        "kimi-for-coding",
+    );
 }

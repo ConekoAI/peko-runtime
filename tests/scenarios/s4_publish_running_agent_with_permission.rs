@@ -181,10 +181,12 @@ fn write_principal_with_perm(
     // provider pointer.)
     seed_mock_provider_in_catalog(cli.home(), mock_llm_url);
 
-    // Scaffold: identity, agents/primary.md, principal.toml.
+    // Scaffold: identity, agents/primary.md, principal.toml — pinned
+    // to the seeded `mock-llm` model (model-first: create requires
+    // `--model` and validates it against the catalog).
     let output = cli
         .cmd()
-        .args(["principal", "create", principal_name])
+        .args(["principal", "create", principal_name, "--model", "mock-llm"])
         .output()
         .expect("run `peko principal create`");
     assert!(

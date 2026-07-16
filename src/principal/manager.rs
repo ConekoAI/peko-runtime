@@ -535,10 +535,8 @@ impl PrincipalManager {
         peer: Subject,
         message: String,
         channel: ChannelContext,
-        // RP2: per-message provider/model override (RP8 wires the
-        // CLI flags). `None`/`None` preserves the prior
-        // principal-config → catalog-default → first-enabled chain.
-        override_provider: Option<String>,
+        // Per-message configured model override (`peko send --model`).
+        // `None` preserves the principal's pinned model.
         override_model: Option<String>,
     ) -> Result<RouterContext, PrincipalManagerError> {
         // Enforce Principal-level permissions before any routing or session work.
@@ -638,7 +636,6 @@ impl PrincipalManager {
             inbox_registry: Arc::clone(&self.inbox_registry),
             session_creation_lock: self.session_creation_lock(principal.id.clone()).await,
             observability: self.observability.clone(),
-            override_provider,
             override_model,
         })
     }
@@ -687,11 +684,9 @@ impl PrincipalManager {
         peer: Subject,
         message: String,
         channel: ChannelContext,
-        // RP2: per-message provider/model override. RP8 wires the CLI
-        // flags; existing callers (tunnel, cron, principal_send tool,
-        // `peko send` non-flag mode) pass `None, None` and the
-        // existing principal-config → catalog-default chain applies.
-        override_provider: Option<String>,
+        // Per-message configured model override. Existing callers (tunnel,
+        // cron, principal_send tool, `peko send` non-flag mode) pass
+        // `None` and use the principal's pinned model.
         override_model: Option<String>,
     ) -> Result<PrincipalResponse, PrincipalManagerError> {
         let principal = self
@@ -707,14 +702,7 @@ impl PrincipalManager {
         }
 
         let ctx = self
-            .build_router_context(
-                &principal,
-                peer,
-                message,
-                channel,
-                override_provider,
-                override_model,
-            )
+            .build_router_context(&principal, peer, message, channel, override_model)
             .await?;
 
         // Serial queue per peer: only one root-agent run may be active for a
@@ -760,8 +748,7 @@ impl PrincipalManager {
         message: String,
         channel: ChannelContext,
         on_event: Box<dyn Fn(crate::engine::AgenticEvent) + Send + Sync>,
-        // RP2: per-message provider/model override (RP8 wires CLI flags).
-        override_provider: Option<String>,
+        // Per-message configured model override (RP8 wires CLI flags).
         override_model: Option<String>,
     ) -> Result<PrincipalResponse, PrincipalManagerError> {
         let principal = self
@@ -777,14 +764,7 @@ impl PrincipalManager {
         }
 
         let ctx = self
-            .build_router_context(
-                &principal,
-                peer,
-                message,
-                channel,
-                override_provider,
-                override_model,
-            )
+            .build_router_context(&principal, peer, message, channel, override_model)
             .await?;
 
         // Same serial-queue discipline as `receive`: only one root-agent
@@ -887,7 +867,7 @@ mod tests {
         let workspace = temp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-        let catalog_path = temp.path().join("providers.toml");
+        let catalog_path = temp.path().join("models.toml");
         let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
         let manager = Arc::new(
             PrincipalManager::with_path_resolver(
@@ -960,8 +940,7 @@ mod tests {
                 granted_at: chrono::Utc::now().to_rfc3339(),
                 granted_by: Subject::User("test-owner".to_string()),
             }],
-            preferred_provider_id: None,
-            preferred_model_id: None,
+            preferred_model_id: Some("mock".to_string()),
             transport_preference: Default::default(),
             quota: None,
         }
@@ -991,7 +970,6 @@ mod tests {
                     peer.clone(),
                     format!("message {i}"),
                     cli_channel(),
-                    None,
                     None,
                 )
                 .await
@@ -1029,14 +1007,7 @@ mod tests {
         for i in 0..peers {
             let peer = Subject::User(format!("peer-{i}"));
             let response = manager
-                .receive(
-                    id.clone(),
-                    peer,
-                    format!("hello {i}"),
-                    cli_channel(),
-                    None,
-                    None,
-                )
+                .receive(id.clone(), peer, format!("hello {i}"), cli_channel(), None)
                 .await
                 .expect("receive should succeed");
             assert!(response.content.contains(&format!("peer reply {i}")));
@@ -1084,7 +1055,6 @@ mod tests {
                         peer.clone(),
                         format!("hello {i}"),
                         cli_channel(),
-                        None,
                         None,
                     )
                     .await
@@ -1146,7 +1116,7 @@ mod tests {
             let peer = peer.clone();
             let handle = tokio::spawn(async move {
                 manager
-                    .receive(id, peer, format!("hello {i}"), cli_channel(), None, None)
+                    .receive(id, peer, format!("hello {i}"), cli_channel(), None)
                     .await
             });
             handles.push(handle);
@@ -1284,7 +1254,7 @@ mod tests {
             .expect("update_config should succeed");
         let stranger = Subject::User("stranger".to_string());
         let result = manager
-            .receive(id, stranger, "hello".to_string(), cli_channel(), None, None)
+            .receive(id, stranger, "hello".to_string(), cli_channel(), None)
             .await;
         assert!(
             matches!(result, Err(PrincipalManagerError::PermissionDenied(_))),
@@ -1301,14 +1271,7 @@ mod tests {
         // Owner always passes.
         let owner = Subject::User("test-owner".to_string());
         let response = manager
-            .receive(
-                id.clone(),
-                owner,
-                "hello".to_string(),
-                cli_channel(),
-                None,
-                None,
-            )
+            .receive(id.clone(), owner, "hello".to_string(), cli_channel(), None)
             .await
             .expect("owner should be allowed");
         assert!(response.content.contains("owner reply"));
@@ -1329,7 +1292,7 @@ mod tests {
         adapter.queue_text("friend reply".to_string());
         let friend = Subject::User("friend".to_string());
         let response = manager
-            .receive(id, friend, "hi".to_string(), cli_channel(), None, None)
+            .receive(id, friend, "hi".to_string(), cli_channel(), None)
             .await
             .expect("grantee should be allowed");
         assert!(response.content.contains("friend reply"));
@@ -1364,7 +1327,6 @@ mod tests {
                 "hello".to_string(),
                 cli_channel(),
                 None,
-                None,
             )
             .await
             .expect("build_router_context should succeed");
@@ -1396,12 +1358,12 @@ mod tests {
         let _ = temp;
     }
 
-    /// RP2: the per-message provider/model override pair survives
+    /// Per-message configured model override survives
     /// `build_router_context` and lands on `RouterContext` so the
     /// root router can mirror it onto `PrincipalContext`.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn build_router_context_with_override_pair() {
+    async fn build_router_context_with_override_model() {
         let (_temp, manager, _adapter, _id) = setup().await;
         let principal = manager.get_by_name("stressy").await.expect("principal");
 
@@ -1411,22 +1373,20 @@ mod tests {
                 Subject::User("test-owner".to_string()),
                 "hello".to_string(),
                 cli_channel(),
-                Some("openai".to_string()),
-                Some("gpt-4o".to_string()),
+                Some("openai-gpt-4o".to_string()),
             )
             .await
             .expect("build_router_context should succeed");
 
-        assert_eq!(ctx.override_provider.as_deref(), Some("openai"));
-        assert_eq!(ctx.override_model.as_deref(), Some("gpt-4o"));
+        assert_eq!(ctx.override_model.as_deref(), Some("openai-gpt-4o"));
     }
 
-    /// RP2: when the caller doesn't supply an override, the fields
-    /// stay `None` so the resolver falls back to the principal-config
-    /// → catalog-default chain.
+    /// When the caller doesn't supply an override, the field stays
+    /// `None` so the resolver falls back to the principal's pinned
+    /// model.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn build_router_context_without_override_pair() {
+    async fn build_router_context_without_override_model() {
         let (_temp, manager, _adapter, _id) = setup().await;
         let principal = manager.get_by_name("stressy").await.expect("principal");
 
@@ -1437,12 +1397,10 @@ mod tests {
                 "hello".to_string(),
                 cli_channel(),
                 None,
-                None,
             )
             .await
             .expect("build_router_context should succeed");
 
-        assert!(ctx.override_provider.is_none());
         assert!(ctx.override_model.is_none());
     }
 }

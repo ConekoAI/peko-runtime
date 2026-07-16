@@ -54,9 +54,19 @@ use peko::ipc::DaemonClient;
 /// "local" }`, which satisfies the local-socket caller owner check in the
 /// `PrincipalGrantPermission` handler.
 fn create_principal(cli: &PekoCli, name: &str) {
+    // Runs before `DaemonGuard::spawn`, so seed the `mock-llm` catalog
+    // entry here too (idempotent — the guard re-seeds the same values
+    // from MOCK_LLM_URL on spawn) and pin the principal to it: create
+    // requires `--model` and validates it against the catalog. These
+    // grant/revoke tests never dial the LLM, so a placeholder URL is
+    // fine when MOCK_LLM_URL isn't set.
+    let mock_url = std::env::var_os("MOCK_LLM_URL")
+        .map(|u| u.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "http://127.0.0.1:9/v1".to_string());
+    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
     let output = cli
         .cmd()
-        .args(["principal", "create", name])
+        .args(["principal", "create", name, "--model", "mock-llm"])
         .output()
         .expect("run `peko principal create`");
     assert!(
