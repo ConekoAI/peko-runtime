@@ -140,24 +140,24 @@ peko send <PRINCIPAL> --stdin                      # Read message from stdin
 peko send <PRINCIPAL> "Hello" --no-stream          # Wait for full response
 ```
 
-#### Authentication (v3: catalog + keychain)
+#### Authentication (v3: catalog + vault)
 ```bash
 # 1. Add a provider entry to the runtime catalog (`~/.peko/providers.toml`)
 peko provider add openai --template openai
 peko provider add my-local --api-format openai_completions --base-url http://localhost:8080
 
-# 2. Store the API key in the OS keychain (one per provider)
-peko credential set openai            # prompts for the key
-peko credential set my-local --key $MY_KEY
+# 2. Store the API key in the encrypted vault (one per provider)
+peko provider set-key openai --material "$OPENAI_API_KEY"
+# or: peko credential provider-set-key openai --material "$OPENAI_API_KEY"
 
 # 3. Create a Principal — it inherits the catalog default provider
 peko principal create alice
 
-# Inspect / manage the catalog
+# Inspect / manage the catalog and vault
 peko provider list
 peko provider set-default openai
-peko credential list
-peko credential test openai
+peko credential list --namespace provider:openai
+peko credential provider-test openai
 
 # PekoHub registry token (separate flow)
 peko login --api-key ph_xxx --registry https://hub.example.com

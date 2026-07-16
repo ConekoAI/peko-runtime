@@ -21,7 +21,7 @@
 //!
 //! ```text
 //! peko provider add --template anthropic
-//! peko credential set anthropic
+//! peko provider set-key anthropic --material "$ANTHROPIC_API_KEY"
 //! peko provider set-default anthropic --model claude-sonnet-4-5
 //! ```
 //!
@@ -35,6 +35,10 @@
 //! ```
 
 use crate::commands::GlobalPaths;
+use crate::commands::credential::{
+    load_known_provider_ids, provider_rotate_add_cmd, provider_set_key_cmd,
+    validate_known_provider,
+};
 use crate::providers::catalog::{ApiFormat, ModelInfo, ProviderCatalog, ProviderCatalogEntry};
 use crate::providers::templates;
 use anyhow::{Context, Result};
@@ -70,6 +74,22 @@ pub enum ProviderCommands {
     },
     /// Show the current runtime default provider + model.
     GetDefault,
+    /// Store the default API key for a provider in the vault.
+    SetKey {
+        /// Provider id.
+        provider: String,
+        /// API key material (omit for hidden prompt).
+        #[arg(long, value_name = "SECRET")]
+        material: Option<String>,
+    },
+    /// Add a rotated/secondary API key for a provider.
+    RotateAdd {
+        /// Provider id.
+        provider: String,
+        /// API key material (omit for hidden prompt).
+        #[arg(long, value_name = "SECRET")]
+        material: Option<String>,
+    },
 }
 
 /// Arguments for `peko provider add`.
@@ -133,6 +153,12 @@ pub async fn execute(cmd: ProviderCommands, paths: &GlobalPaths) -> Result<()> {
             set_default_cmd(&provider, model.as_deref(), paths).await
         }
         ProviderCommands::GetDefault => get_default_cmd(paths).await,
+        ProviderCommands::SetKey { provider, material } => {
+            set_key_cmd(&provider, material, paths).await
+        }
+        ProviderCommands::RotateAdd { provider, material } => {
+            rotate_add_cmd(&provider, material, paths).await
+        }
     }
 }
 
@@ -216,7 +242,7 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool) -> Result<()> {
                 "      requires_key:  {}{}",
                 e.requires_key,
                 if e.requires_key {
-                    " (use `peko credential set <id>`)"
+                    " (use `peko provider set-key <id>`)"
                 } else {
                     ""
                 }
@@ -259,7 +285,7 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool) -> Result<()> {
     }
 
     // Surface orphaned vault keys: API keys stored via
-    // `peko credential set <id>` for a provider id that never made it
+    // `peko provider set-key <id>` for a provider id that never made it
     // into the catalog (typo, deleted catalog entry, etc.). These
     // are invisible in the catalog-only view above but still
     // appear in the desktop's `credential_list` IPC, which causes
@@ -283,7 +309,7 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool) -> Result<()> {
             for o in &orphans {
                 println!("  - {o}");
             }
-            println!("  Clean up with: peko credential delete <id>");
+            println!("  Clean up with: peko credential provider-delete-key <provider>");
         }
     }
 
@@ -405,7 +431,7 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
         // No key supplied, key required — tell the user exactly what to
         // run, no prompt.
         println!(
-            "Next: store its API key with: peko credential set {} --key \"$YOUR_KEY\"",
+            "Next: store its API key with: peko provider set-key {} --material \"$YOUR_KEY\"",
             entry.id
         );
     }
@@ -464,6 +490,26 @@ async fn get_default_cmd(paths: &GlobalPaths) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn set_key_cmd(provider: &str, material: Option<String>, paths: &GlobalPaths) -> Result<()> {
+    let known_provider_ids = load_known_provider_ids(paths).await;
+    validate_known_provider(provider, &known_provider_ids)?;
+    let vault = crate::common::vault::Vault::load(paths.resolver().vault())
+        .context("failed to load credential vault")?;
+    provider_set_key_cmd(&vault, provider, material, &known_provider_ids).await
+}
+
+async fn rotate_add_cmd(
+    provider: &str,
+    material: Option<String>,
+    paths: &GlobalPaths,
+) -> Result<()> {
+    let known_provider_ids = load_known_provider_ids(paths).await;
+    validate_known_provider(provider, &known_provider_ids)?;
+    let vault = crate::common::vault::Vault::load(paths.resolver().vault())
+        .context("failed to load credential vault")?;
+    provider_rotate_add_cmd(&vault, provider, material).await
 }
 
 #[cfg(test)]
@@ -704,5 +750,162 @@ mod tests {
             err.to_string().contains("does not require a key"),
             "expected key-less rejection, got: {err}"
         );
+    }
+
+    /// `set-key` and `rotate-add` flags parse from argv.
+    #[test]
+    fn set_key_args_parse() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "provider",
+            "set-key",
+            "anthropic",
+            "--material",
+            "sk-test",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::commands::Commands::Provider(ProviderCommands::SetKey { provider, material }) => {
+                assert_eq!(provider, "anthropic");
+                assert_eq!(material.as_deref(), Some("sk-test"));
+            }
+            _ => panic!("expected provider set-key"),
+        }
+    }
+
+    #[test]
+    fn rotate_add_args_parse() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "provider",
+            "rotate-add",
+            "anthropic",
+            "--material",
+            "sk-test",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::commands::Commands::Provider(ProviderCommands::RotateAdd { provider, material }) => {
+                assert_eq!(provider, "anthropic");
+                assert_eq!(material.as_deref(), Some("sk-test"));
+            }
+            _ => panic!("expected provider rotate-add"),
+        }
+    }
+
+    /// `provider set-key` writes the default API key for a provider.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn set_key_writes_provider_default_credential() {
+        use crate::common::vault::Vault;
+        use secrecy::{ExposeSecret, SecretString};
+
+        let paths = fresh_paths();
+        let cat = open_catalog(&paths).await.unwrap();
+        cat.upsert(ProviderCatalogEntry {
+            id: "anthropic".to_string(),
+            display_name: "Anthropic".to_string(),
+            template_id: None,
+            api_format: ApiFormat::AnthropicMessages,
+            base_url: "http://example".to_string(),
+            models: vec![ModelInfo::new("model".to_string())],
+            default_model_id: "model".to_string(),
+            headers: Default::default(),
+            requires_key: true,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+        set_key_cmd("anthropic", Some("sk-ant-set-key".to_string()), &paths)
+            .await
+            .expect("set-key should succeed");
+
+        let passphrase = SecretString::new("test-provider-cmd".to_string().into());
+        let vault = Vault::load_with_passphrase(paths.resolver().vault(), &passphrase).unwrap();
+        let stored = vault.get_provider_key("anthropic").expect("key should be stored");
+        assert_eq!(stored.expose_secret(), "sk-ant-set-key");
+    }
+
+    /// `provider rotate-add` creates alt-N credentials without touching
+    /// the default slot.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn rotate_add_creates_alt_credentials() {
+        use crate::common::vault::{CredentialFilter, CredentialKind, Vault};
+        use secrecy::SecretString;
+
+        let paths = fresh_paths();
+        let cat = open_catalog(&paths).await.unwrap();
+        cat.upsert(ProviderCatalogEntry {
+            id: "anthropic".to_string(),
+            display_name: "Anthropic".to_string(),
+            template_id: None,
+            api_format: ApiFormat::AnthropicMessages,
+            base_url: "http://example".to_string(),
+            models: vec![ModelInfo::new("model".to_string())],
+            default_model_id: "model".to_string(),
+            headers: Default::default(),
+            requires_key: true,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+        set_key_cmd("anthropic", Some("sk-ant-default".to_string()), &paths)
+            .await
+            .unwrap();
+        rotate_add_cmd("anthropic", Some("sk-ant-alt-1".to_string()), &paths)
+            .await
+            .unwrap();
+        rotate_add_cmd("anthropic", Some("sk-ant-alt-2".to_string()), &paths)
+            .await
+            .unwrap();
+
+        let passphrase = SecretString::new("test-provider-cmd".to_string().into());
+        let vault = Vault::load_with_passphrase(paths.resolver().vault(), &passphrase).unwrap();
+        let anthropic = vault.list_credentials(&CredentialFilter {
+            namespace: Some("provider:anthropic".to_string()),
+            kind: Some(CredentialKind::ApiKey),
+        });
+        let mut names: Vec<_> = anthropic.iter().map(|s| s.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["alt-1", "alt-2", "default"]);
+    }
+
+    /// `provider set-key` rejects unknown provider ids with a suggestion.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn set_key_rejects_unknown_provider() {
+        let paths = fresh_paths();
+        // Seed the catalog with a known provider so the suggestion path is
+        // exercised. The catalog is empty by default in fresh_paths.
+        let cat = open_catalog(&paths).await.unwrap();
+        cat.upsert(ProviderCatalogEntry {
+            id: "minimax".to_string(),
+            display_name: "MiniMax".to_string(),
+            template_id: None,
+            api_format: ApiFormat::OpenaiCompletions,
+            base_url: "http://example".to_string(),
+            models: vec![ModelInfo::new("model".to_string())],
+            default_model_id: "model".to_string(),
+            headers: Default::default(),
+            requires_key: true,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+        let err = set_key_cmd("miniax", Some("sk".to_string()), &paths)
+            .await
+            .expect_err("must reject unknown provider");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("Did you mean: 'minimax'"), "got: {msg}");
     }
 }

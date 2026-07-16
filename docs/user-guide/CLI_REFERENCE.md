@@ -159,42 +159,84 @@ for the operator surface.
 
 ---
 
-### `credential` — Provider API key management
+### `credential` — Vault credential management
 
-Store and inspect provider API keys. Keys live in the OS keychain
-(`~/.peko/providers.toml` references the provider id; the secret itself
-is in the OS secret service). This is the v3 replacement for the
-removed `peko auth set/list/remove/test` flow.
+Manage secrets in the encrypted vault (`{config_dir}/vault.enc`).
+Credentials are generic namespace-keyed records. Provider API keys live
+at `provider:<id>/default`, but the same vault can hold MCP server
+secrets, OAuth tokens, registry credentials, or arbitrary secrets under
+any namespace.
 
 ```bash
 peko credential <COMMAND>
 ```
 
-#### Subcommands
+#### Generic subcommands
 
 | Subcommand | Description |
 |-----------|-------------|
-| `set <provider>` | Store an API key (hidden prompt; `--key` for non-interactive). |
-| `delete <provider>` | Remove a stored key. |
-| `list` | List provider ids that currently have a stored key. |
-| `test <provider>` | Format-only check (presence + shape). |
+| `set <namespace> <name>` | Store or overwrite a credential. Requires `--kind`. |
+| `get <id>` | Show a credential record (the secret material is never printed). |
+| `delete <id>` | Remove a credential by id. |
+| `list [--namespace <ns>] [--kind <kind>]` | List stored credentials. |
+| `test <id>` | Live validation against the credential's consumer. |
+
+`--kind` accepts: `api_key`, `bearer_token`, `oauth_token`, `basic_auth`,
+`private_key`, `generic_secret`.
+
+#### Provider sugar
+
+| Subcommand | Description |
+|-----------|-------------|
+| `provider-set-key <provider> [--material <SECRET>]` | Store the default API key for a known provider. |
+| `provider-delete-key <provider>` | Delete the default API key for a provider. |
+| `provider-test <provider>` | Live-test the default API key for a provider. |
+
+These commands validate the provider id against the runtime catalog and
+offer nearest-neighbor suggestions for typos.
+
+#### Rotation bindings
+
+| Subcommand | Description |
+|-----------|-------------|
+| `binding list` | List all rotation bindings. |
+| `binding get <namespace:name>` | Show a binding. |
+| `binding set <namespace:name> --strategy <STRATEGY> --order <id1> <id2> ...` | Create or overwrite a binding. |
+| `binding delete <namespace:name>` | Remove a binding. |
+| `binding test-rotation <namespace:name>` | Test each credential in a binding in order. |
+
+`--strategy` accepts `round_robin`, `last_resort`, and `random`;
+current consumers use `round_robin`.
 
 #### Examples
 
 ```bash
-# Store the OpenAI API key
-peko credential set openai
+# Store a generic credential (e.g. an MCP server API key)
+peko credential set mcp:analytics default \
+  --kind api_key --material "$ANALYTICS_API_KEY"
 
-# Non-interactive (CI / scripting)
-peko credential set openai --key "$OPENAI_API_KEY"
+# Store a provider API key
+peko credential provider-set-key openai --material "$OPENAI_API_KEY"
+# or the shorter provider-form
+peko provider set-key openai --material "$OPENAI_API_KEY"
+
+# Add a secondary key for rotation
+peko provider rotate-add anthropic --material "$ANTHROPIC_ALT_KEY"
 
 # Inspect + verify
-peko credential list
-peko credential test openai
+peko credential list --namespace provider:openai
+peko credential provider-test openai
 
-# Rotate
-peko credential delete openai
-peko credential set openai --key "$NEW_OPENAI_KEY"
+# Rotation binding
+ALT=$(peko provider rotate-add anthropic --material "$ANTHROPIC_ALT_KEY" 2>&1 | grep -oE 'alt-[0-9]+' | head -1)
+ID=$(peko credential list --namespace provider:anthropic | awk '/default/ {print $1}')
+peko credential binding set provider:anthropic:default \
+  --strategy round_robin --order "$ID" "$ALT"
+peko credential binding test-rotation provider:anthropic:default
+
+# Remove
+peko credential delete <id>
+peko credential provider-delete-key openai
 ```
 
 ---
@@ -220,6 +262,8 @@ peko provider <COMMAND>
 | `remove <id>` | Remove an entry from the catalog. |
 | `set-default <id> [--model M]` | Set the runtime default provider / model. |
 | `get-default` | Print the current default provider + model. |
+| `set-key <provider> [--material <SECRET>]` | Store the default API key in the vault. |
+| `rotate-add <provider> [--material <SECRET>]` | Add a secondary API key at `provider:<provider>/alt-N`. |
 
 #### Examples
 
@@ -232,6 +276,10 @@ peko provider add my-local \
     --api-format openai_completions \
     --base-url http://localhost:8080 \
     --default-model default
+
+# Store / rotate API keys
+peko provider set-key openai --material "$OPENAI_API_KEY"
+peko provider rotate-add anthropic --material "$ANTHROPIC_ALT_KEY"
 
 # Inspect
 peko provider list
