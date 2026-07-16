@@ -56,8 +56,8 @@ use futures::StreamExt;
 
 use crate::common::types::message::LlmMessage;
 use crate::common::types::message::TokenUsage;
-use crate::quota::{QuotaMeter, QuotaScope};
 use crate::providers::traits::{ChatOptions, ToolDefinition};
+use crate::quota::{QuotaMeter, QuotaScope};
 
 use super::core::Provider;
 use super::traits::{ChatResponse, StreamEvent};
@@ -82,8 +82,7 @@ impl MeteredProvider {
     /// `Arc` clone per call.
     #[must_use]
     pub fn from_current_scope(inner: Arc<Provider>) -> Self {
-        let meter = QuotaScope::current()
-            .unwrap_or_else(|| Arc::new(QuotaMeter::unlimited()));
+        let meter = QuotaScope::current().unwrap_or_else(|| Arc::new(QuotaMeter::unlimited()));
         Self { inner, meter }
     }
 
@@ -219,9 +218,7 @@ impl MeteredProvider {
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
         options: &ChatOptions,
-    ) -> anyhow::Result<
-        Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>,
-    > {
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>> {
         let inner_stream = self
             .inner
             .stream_with_tools(model_id, messages, tools, options)
@@ -317,7 +314,9 @@ mod tests {
             cycle: QuotaCycle::Hourly,
         };
         let meter = Arc::new(
-            QuotaMeter::load_or_init(cfg, None, Utc::now()).await.unwrap(),
+            QuotaMeter::load_or_init(cfg, None, Utc::now())
+                .await
+                .unwrap(),
         );
         let metered = MeteredProvider::with_explicit_meter(provider, Arc::clone(&meter));
         (metered, meter)
@@ -331,8 +330,10 @@ mod tests {
         // The mock returns a minimal usage. Just verify the meter
         // incremented from 0.
         let snap = meter.snapshot();
-        assert!(snap.input_tokens > 0 || snap.output_tokens > 0,
-                "some token should be charged");
+        assert!(
+            snap.input_tokens > 0 || snap.output_tokens > 0,
+            "some token should be charged"
+        );
         assert_eq!(snap.request_count, 1);
     }
 
@@ -396,7 +397,9 @@ mod tests {
             cycle: QuotaCycle::Hourly,
         };
         let meter = Arc::new(
-            QuotaMeter::load_or_init(cfg, None, Utc::now()).await.unwrap(),
+            QuotaMeter::load_or_init(cfg, None, Utc::now())
+                .await
+                .unwrap(),
         );
         // The passthrough uses ITS OWN unlimited meter, not the
         // one we just built. Verify by checking the snap of the
@@ -489,7 +492,9 @@ mod tests {
                 cache_read_input_tokens: 0,
                 reasoning_output_tokens: 0,
             },
-            StreamEvent::Done { stop_reason: crate::providers::StopReason::Stop },
+            StreamEvent::Done {
+                stop_reason: crate::providers::StopReason::Stop,
+            },
         ]));
         let tmp = tempfile::tempdir().unwrap();
         let catalog = tmp.path().join("providers.toml");
@@ -524,7 +529,10 @@ mod tests {
             let _ = event;
         }
         let snap = meter.snapshot();
-        assert_eq!(snap.request_count, 1, "Usage event should have charged exactly once");
+        assert_eq!(
+            snap.request_count, 1,
+            "Usage event should have charged exactly once"
+        );
         assert_eq!(snap.input_tokens, 5);
         assert_eq!(snap.output_tokens, 2);
     }

@@ -6,12 +6,12 @@
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::providers::adapters::{AnyAdapter, ApiAdapter};
 use crate::providers::rotating_auth::{is_auth_failure, RotationState};
-use crate::providers::transport::HttpClient;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, StreamEvent, ToolDefinition,
 };
-use secrecy::ExposeSecret;
+use crate::providers::transport::HttpClient;
 use futures::StreamExt;
+use secrecy::ExposeSecret;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -124,10 +124,7 @@ impl Provider {
     ///
     /// Used by the auth-rotation path after a 401 advances the cursor
     /// to the next credential in a binding.
-    pub fn rebuild_with_material(
-        &self,
-        api_key: impl Into<String>,
-    ) -> anyhow::Result<Self> {
+    pub fn rebuild_with_material(&self, api_key: impl Into<String>) -> anyhow::Result<Self> {
         let mut rebuilt = Self::new(self.adapter.clone(), api_key, self.options.clone())?;
         rebuilt.rotation = self.rotation.clone();
         Ok(rebuilt)
@@ -176,10 +173,7 @@ impl Provider {
                     let Some(material) = rotation.current_material() else {
                         return Err(e);
                     };
-                    provider = Some(
-                        current
-                            .rebuild_with_material(material.expose_secret())?,
-                    );
+                    provider = Some(current.rebuild_with_material(material.expose_secret())?);
                 }
             }
         }
@@ -326,11 +320,14 @@ impl Provider {
                     return mock.chat_with_tools(model_id, messages, Some(tools), options);
                 }
 
-                let (path, body) = provider
-                    .adapter
-                    .build_request(model_id, messages, Some(tools), options, false)?;
-                let response: serde_json::Value =
-                    provider.client.post_json(&path, &body).await?;
+                let (path, body) = provider.adapter.build_request(
+                    model_id,
+                    messages,
+                    Some(tools),
+                    options,
+                    false,
+                )?;
+                let response: serde_json::Value = provider.client.post_json(&path, &body).await?;
                 provider.adapter.parse_response(model_id, response)
             }
         })
@@ -354,9 +351,13 @@ impl Provider {
                     return mock.stream_with_tools(model_id, messages, Some(tools), options);
                 }
 
-                let (path, body) = provider
-                    .adapter
-                    .build_request(model_id, messages, Some(tools), options, true)?;
+                let (path, body) = provider.adapter.build_request(
+                    model_id,
+                    messages,
+                    Some(tools),
+                    options,
+                    true,
+                )?;
                 let stream = provider.client.post_stream(&path, &body).await?;
 
                 // Parse SSE and convert to StreamEvent using a channel-based approach
@@ -365,7 +366,8 @@ impl Provider {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<StreamEvent>>(100);
 
                 tokio::spawn(async move {
-                    let mut sse_stream = crate::providers::transport::sse::SseParser::parse_stream(stream);
+                    let mut sse_stream =
+                        crate::providers::transport::sse::SseParser::parse_stream(stream);
                     while let Some(result) = sse_stream.next().await {
                         // The OpenAI-style `[DONE]` sentinel and the Anthropic-style
                         // `message_stop` event (which `parse_sse_event` maps to
@@ -380,14 +382,17 @@ impl Provider {
                         // delivered. Providers that neither emit a Done event nor
                         // close the connection will still hang; the only safe
                         // mitigation there is the per-request HTTP timeout.
-                        let is_openai_done = matches!(&result, Ok(event) if event.data.trim() == "[DONE]");
+                        let is_openai_done =
+                            matches!(&result, Ok(event) if event.data.trim() == "[DONE]");
 
                         let output = match result {
-                            Ok(event) => match adapter.parse_sse_event(&model_id_owned, &event.data) {
-                                Ok(Some(stream_event)) => Some(Ok(stream_event)),
-                                Ok(None) => None,
-                                Err(e) => Some(Err(e)),
-                            },
+                            Ok(event) => {
+                                match adapter.parse_sse_event(&model_id_owned, &event.data) {
+                                    Ok(Some(stream_event)) => Some(Ok(stream_event)),
+                                    Ok(None) => None,
+                                    Err(e) => Some(Err(e)),
+                                }
+                            }
                             Err(e) => Some(Err(e)),
                         };
 
@@ -447,9 +452,13 @@ impl Provider {
                     headers: std::collections::HashMap::new(),
                 };
 
-                let (path, body) = provider
-                    .adapter
-                    .build_request(&model_id_owned, &messages, None, &options, true)?;
+                let (path, body) = provider.adapter.build_request(
+                    &model_id_owned,
+                    &messages,
+                    None,
+                    &options,
+                    true,
+                )?;
 
                 // Emit running event
                 let _ = event_tx
@@ -469,7 +478,10 @@ impl Provider {
 
                 while let Some(result) = parser.next().await {
                     match result {
-                        Ok(event) => match provider.adapter.parse_sse_event(&model_id_owned, &event.data) {
+                        Ok(event) => match provider
+                            .adapter
+                            .parse_sse_event(&model_id_owned, &event.data)
+                        {
                             Ok(Some(StreamEvent::TextDelta { delta, .. })) => {
                                 accumulated_text.push_str(&delta);
                                 sequence += 1;
@@ -596,9 +608,13 @@ mod tests {
 
         let adapter = MockAdapter::new();
         let rotation = RotationState::new(vault, "provider:mock".into(), "default".into()).unwrap();
-        let provider = Provider::new(AnyAdapter::Mock(adapter.clone()), "any-key", runtime_options())
-            .unwrap()
-            .with_rotation(rotation);
+        let provider = Provider::new(
+            AnyAdapter::Mock(adapter.clone()),
+            "any-key",
+            runtime_options(),
+        )
+        .unwrap()
+        .with_rotation(rotation);
         (dir, provider, adapter)
     }
 

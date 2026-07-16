@@ -49,15 +49,13 @@ use crate::engine::AgenticEvent;
 use crate::extensions::framework::async_exec::executor::SteeringMessage;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
-use crate::ipc::packet::{
-    PrincipalSendControlMode, RequestPacket, ResponsePacket,
-};
+use crate::ipc::packet::{PrincipalSendControlMode, RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use crate::principal::manager::PrincipalManager;
-use crate::principal::routers::root::root_session_id;
 use crate::principal::router::{ChannelContext, ChannelKind};
+use crate::principal::routers::root::root_session_id;
 use crate::principal::{Principal, RouteDecision, RouterError};
 use crate::registry::packaging::TrustStore;
 use crate::session::events::SessionEvent;
@@ -303,14 +301,8 @@ impl RequestHandler for PrincipalHandler {
                 target_request_id,
                 mode,
             } => {
-                handle_principal_send_control(
-                    request_id,
-                    target_request_id,
-                    mode,
-                    host,
-                    sink,
-                )
-                .await?;
+                handle_principal_send_control(request_id, target_request_id, mode, host, sink)
+                    .await?;
             }
 
             RequestPacket::PrincipalSend {
@@ -365,37 +357,31 @@ impl RequestHandler for PrincipalHandler {
                 since_secs,
             } => {
                 let caller_subject = caller.subject();
-                let response = match read_principal_log(
-                    host,
-                    &name,
-                    peer,
-                    limit,
-                    since_secs,
-                    caller_subject,
-                )
-                .await
-                {
-                    Ok(resp) => ResponsePacket::PrincipalLog {
-                        request_id,
-                        name: resp.name,
-                        peer: resp.peer,
-                        session_id: resp.session_id,
-                        events: resp.events,
-                        truncated: resp.truncated,
-                    },
-                    Err(PrincipalLogError::NotFound(msg)) => ResponsePacket::Error {
-                        request_id,
-                        message: format!("[not_found] {msg}"),
-                    },
-                    Err(PrincipalLogError::Forbidden(msg)) => ResponsePacket::Error {
-                        request_id,
-                        message: format!("[forbidden] {msg}"),
-                    },
-                    Err(PrincipalLogError::Internal(msg)) => ResponsePacket::Error {
-                        request_id,
-                        message: format!("[internal_error] {msg}"),
-                    },
-                };
+                let response =
+                    match read_principal_log(host, &name, peer, limit, since_secs, caller_subject)
+                        .await
+                    {
+                        Ok(resp) => ResponsePacket::PrincipalLog {
+                            request_id,
+                            name: resp.name,
+                            peer: resp.peer,
+                            session_id: resp.session_id,
+                            events: resp.events,
+                            truncated: resp.truncated,
+                        },
+                        Err(PrincipalLogError::NotFound(msg)) => ResponsePacket::Error {
+                            request_id,
+                            message: format!("[not_found] {msg}"),
+                        },
+                        Err(PrincipalLogError::Forbidden(msg)) => ResponsePacket::Error {
+                            request_id,
+                            message: format!("[forbidden] {msg}"),
+                        },
+                        Err(PrincipalLogError::Internal(msg)) => ResponsePacket::Error {
+                            request_id,
+                            message: format!("[internal_error] {msg}"),
+                        },
+                    };
                 send_response(sink, response).await?;
             }
 
@@ -524,25 +510,23 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 registry_host,
                 registry_token,
-            } => {
-                match push_principal_package(host, &name, registry_host, registry_token).await {
-                    Ok(digest) => {
-                        let response = ResponsePacket::PrincipalPushed {
-                            request_id,
-                            name,
-                            digest,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal push failed: {e}"),
-                        };
-                        send_response(sink, response).await?;
-                    }
+            } => match push_principal_package(host, &name, registry_host, registry_token).await {
+                Ok(digest) => {
+                    let response = ResponsePacket::PrincipalPushed {
+                        request_id,
+                        name,
+                        digest,
+                    };
+                    send_response(sink, response).await?;
                 }
-            }
+                Err(e) => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("Principal push failed: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                }
+            },
 
             RequestPacket::PrincipalPullPreview {
                 request_id,
@@ -866,8 +850,9 @@ impl RequestHandler for PrincipalHandler {
                 {
                     Ok(_) => {
                         if let Some(dispatcher) = host.tunnel_dispatcher().await {
-                            if let Err(e) =
-                                dispatcher.set_instance_status(&name, status_enum.into()).await
+                            if let Err(e) = dispatcher
+                                .set_instance_status(&name, status_enum.into())
+                                .await
                             {
                                 warn!(
                                     principal = %name,
@@ -1028,7 +1013,8 @@ impl RequestHandler for PrincipalHandler {
                     governance: PrincipalGovernanceConfig::default(),
                     memory: PrincipalMemoryConfig::default(),
                     routing: PrincipalRoutingConfig::default(),
-                    capabilities: crate::extensions::framework::types::Capabilities::starter_bundle(),
+                    capabilities: crate::extensions::framework::types::Capabilities::starter_bundle(
+                    ),
                     exposure: Exposure::Private,
                     status: None,
                     permissions: Vec::new(),
@@ -1041,7 +1027,10 @@ impl RequestHandler for PrincipalHandler {
                 match host.principal_manager().create(config).await {
                     Ok(principal) => {
                         let summary = principal.summary().await;
-                        let response = ResponsePacket::PrincipalCreated { request_id, principal: summary };
+                        let response = ResponsePacket::PrincipalCreated {
+                            request_id,
+                            principal: summary,
+                        };
                         send_response(sink, response).await?;
                     }
                     Err(e) => {
@@ -1224,7 +1213,14 @@ async fn run_principal_send(
     // two variants.
     let router_ctx = match host
         .principal_manager()
-        .build_router_context(&principal, peer.clone(), message.clone(), channel, None, None)
+        .build_router_context(
+            &principal,
+            peer.clone(),
+            message.clone(),
+            channel,
+            None,
+            None,
+        )
         .await
     {
         Ok(ctx) => ctx,
@@ -1383,11 +1379,7 @@ async fn load_principal(host: &dyn PrincipalHost, name: &str) -> Option<Arc<Prin
         return Some(principal);
     }
 
-    let resolver = PathResolver::with_dirs(
-        host.config_dir(),
-        host.data_dir(),
-        host.cache_dir(),
-    );
+    let resolver = PathResolver::with_dirs(host.config_dir(), host.data_dir(), host.cache_dir());
     let config_path = resolver.principal_config(name);
     if config_path.exists() {
         if let Err(e) = manager.load(&config_path).await {
@@ -1633,8 +1625,7 @@ async fn push_principal_package(
         .await?;
 
     let host_url = registry_host.unwrap_or_else(|| "pekohub.org".to_string());
-    let mut reg_config =
-        crate::registry::config::load_from_workspace(host.data_dir());
+    let mut reg_config = crate::registry::config::load_from_workspace(host.data_dir());
 
     if let Some(token) = registry_token {
         reg_config.add_source(crate::registry::config::RegistrySource {
@@ -1680,8 +1671,7 @@ async fn preview_principal_pull(
         .unwrap_or_else(|_| "pekohub.org".to_string())
     });
 
-    let mut reg_config =
-        crate::registry::config::load_from_workspace(host.data_dir());
+    let mut reg_config = crate::registry::config::load_from_workspace(host.data_dir());
     if let Some(token) = registry_token {
         reg_config.add_source(crate::registry::config::RegistrySource {
             url: host_url.clone(),
@@ -1731,8 +1721,7 @@ async fn pull_principal_package(
         .unwrap_or_else(|_| "pekohub.org".to_string())
     });
 
-    let mut reg_config =
-        crate::registry::config::load_from_workspace(host.data_dir());
+    let mut reg_config = crate::registry::config::load_from_workspace(host.data_dir());
     if let Some(token) = registry_token {
         reg_config.add_source(crate::registry::config::RegistrySource {
             url: host_url.clone(),

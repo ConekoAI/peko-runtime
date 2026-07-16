@@ -365,14 +365,8 @@ impl MockAdapter {
                         .usage
                         .cache_creation_input_tokens
                         .unwrap_or(0),
-                    cache_read_input_tokens: response
-                        .usage
-                        .cache_read_input_tokens
-                        .unwrap_or(0),
-                    reasoning_output_tokens: response
-                        .usage
-                        .reasoning_output_tokens
-                        .unwrap_or(0),
+                    cache_read_input_tokens: response.usage.cache_read_input_tokens.unwrap_or(0),
+                    reasoning_output_tokens: response.usage.reasoning_output_tokens.unwrap_or(0),
                 });
                 evs.push(StreamEvent::Done {
                     stop_reason: response.stop_reason,

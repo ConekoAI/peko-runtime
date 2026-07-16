@@ -60,7 +60,11 @@ impl ToolRegistry {
     /// Look up the owning extension for `tool_name` from `principal_id`'s
     /// perspective: probes `(name, principal_id)` then `(name, system())`
     /// and returns whichever is present. None means the tool is unknown.
-    async fn lookup_owner(&self, tool_name: &str, principal_id: &PrincipalId) -> Option<ExtensionId> {
+    async fn lookup_owner(
+        &self,
+        tool_name: &str,
+        principal_id: &PrincipalId,
+    ) -> Option<ExtensionId> {
         let owners = self.tool_owners.read().await;
         if let Some(ext_id) = owners.get(&(tool_name.to_string(), principal_id.clone())) {
             return Some(ext_id.clone());
@@ -69,7 +73,9 @@ impl ToolRegistry {
             std::ptr::from_ref(principal_id),
             std::ptr::from_ref(PrincipalId::system()),
         ) {
-            if let Some(ext_id) = owners.get(&(tool_name.to_string(), PrincipalId::system().clone())) {
+            if let Some(ext_id) =
+                owners.get(&(tool_name.to_string(), PrincipalId::system().clone()))
+            {
                 return Some(ext_id.clone());
             }
         }
@@ -212,8 +218,7 @@ impl ToolRegistry {
     async fn visible_names(&self, principal_id: &PrincipalId) -> std::collections::HashSet<String> {
         self.tool_index
             .read(|map| {
-                let mut seen: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 for key in map.keys() {
                     if &key.1 == PrincipalId::system() {
                         seen.insert(key.0.clone());
@@ -257,7 +262,9 @@ impl ToolRegistry {
                         owners.get(&(name.clone(), PrincipalId::system().clone()))
                     }
                 });
-                ext_id.map(|id| id.0.clone()).unwrap_or_else(|| name.clone())
+                ext_id
+                    .map(|id| id.0.clone())
+                    .unwrap_or_else(|| name.clone())
             })
             .collect()
     }
@@ -305,7 +312,9 @@ mod tests {
         // An empty capability set must fail-closed.
         let caps = Capabilities::new();
         assert!(
-            !registry.is_tool_enabled("Read", &caps, None, system()).await,
+            !registry
+                .is_tool_enabled("Read", &caps, None, system())
+                .await,
             "empty capability set should deny every tool"
         );
     }

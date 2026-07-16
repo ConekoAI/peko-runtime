@@ -430,7 +430,11 @@ impl ExtensionCore {
 
         // ADR-019: Allow re-registration for dynamic enable/disable
         // If tool already registered, unregister it first (idempotent)
-        if self.get_tool_metadata(&tool_name, principal_id).await.is_some() {
+        if self
+            .get_tool_metadata(&tool_name, principal_id)
+            .await
+            .is_some()
+        {
             let _ = self.unregister_tool(&tool_name, principal_id).await;
         }
 
@@ -541,7 +545,10 @@ impl ExtensionCore {
         tool_name: &str,
         principal_id: &PrincipalId,
     ) -> Option<ToolMetadata> {
-        let hook_id = self.tool_registry.get_tool_hook_id(tool_name, principal_id).await?;
+        let hook_id = self
+            .tool_registry
+            .get_tool_hook_id(tool_name, principal_id)
+            .await?;
         let hooks = self.hook_registry.hooks.read().await;
         hooks.get(&hook_id)?.tool_metadata.clone()
     }
@@ -560,7 +567,9 @@ impl ExtensionCore {
         tool_name: &str,
         principal_id: &PrincipalId,
     ) -> Option<HookId> {
-        self.tool_registry.get_tool_hook_id(tool_name, principal_id).await
+        self.tool_registry
+            .get_tool_hook_id(tool_name, principal_id)
+            .await
     }
 
     /// List all registered tools visible to `principal_id`.
@@ -578,7 +587,10 @@ impl ExtensionCore {
         let hooks = self.hook_registry.hooks.read().await;
         let mut out = Vec::with_capacity(names.len());
         for name in names {
-            let Some(hook_id) = self.tool_registry.get_tool_hook_id(&name, principal_id).await
+            let Some(hook_id) = self
+                .tool_registry
+                .get_tool_hook_id(&name, principal_id)
+                .await
             else {
                 continue;
             };
@@ -630,7 +642,12 @@ impl ExtensionCore {
         for metadata in all {
             if self
                 .tool_registry
-                .is_tool_enabled(&metadata.name, capabilities, active_extensions, principal_id)
+                .is_tool_enabled(
+                    &metadata.name,
+                    capabilities,
+                    active_extensions,
+                    principal_id,
+                )
                 .await
             {
                 filtered.push(metadata.to_tool_definition());
@@ -649,11 +666,7 @@ impl ExtensionCore {
     /// * `principal_id` - The principal scope whose tool entry should be
     ///   removed (use `PrincipalId::system()` to remove a system-global entry)
     #[instrument(skip(self), fields(tool_name = %tool_name, principal_id = %principal_id))]
-    pub async fn unregister_tool(
-        &self,
-        tool_name: &str,
-        principal_id: &PrincipalId,
-    ) -> Result<()> {
+    pub async fn unregister_tool(&self, tool_name: &str, principal_id: &PrincipalId) -> Result<()> {
         let hook_id = self
             .tool_registry
             .unregister_tool(tool_name, principal_id)

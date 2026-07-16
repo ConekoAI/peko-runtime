@@ -313,7 +313,6 @@ pub enum RequestPacket {
     CredentialDelete { request_id: u64, id: String },
 
     // ─── Rotation bindings (RP3A) ───────────────────────────────────
-
     /// Enumerate every rotation binding currently configured in the
     /// vault. Each binding carries its slot key (`{namespace}:{name}`),
     /// strategy, and ordered list of credential ids.
@@ -377,6 +376,32 @@ pub enum RequestPacket {
     ProviderAdd {
         request_id: u64,
         args: ProviderAddArgs,
+    },
+
+    /// Update an existing provider catalog entry. All fields except
+    /// `id` are optional; omitted fields keep their current values.
+    /// The daemon persists the merged entry to `providers.toml` and
+    /// returns the updated catalog-summary view.
+    #[serde(rename = "provider_update")]
+    ProviderUpdate {
+        request_id: u64,
+        args: ProviderUpdateArgs,
+    },
+
+    /// Remove a provider from the catalog. Returns `removed: true` if
+    /// an entry with this id existed. Idempotent — removing a missing
+    /// id is not an error.
+    #[serde(rename = "provider_remove")]
+    ProviderRemove { request_id: u64, id: String },
+
+    /// Promote a provider (and optionally a specific model) to the
+    /// runtime default. Mirrors `peko provider set-default`.
+    #[serde(rename = "provider_set_default")]
+    ProviderSetDefault {
+        request_id: u64,
+        provider: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
 
     /// Re-read the MCP server configuration from `mcp.toml` and the
@@ -782,6 +807,9 @@ impl RequestPacket {
             | Self::ProviderReload { request_id }
             | Self::ProviderTemplates { request_id }
             | Self::ProviderAdd { request_id, .. }
+            | Self::ProviderUpdate { request_id, .. }
+            | Self::ProviderRemove { request_id, .. }
+            | Self::ProviderSetDefault { request_id, .. }
             | Self::McpReload { request_id }
             | Self::CredentialList { request_id, .. }
             | Self::CredentialGet { request_id, .. }
@@ -1088,10 +1116,7 @@ pub enum ResponsePacket {
     /// `id` echo lets the desktop update its local UI without
     /// re-issuing a `credential_list` round-trip.
     #[serde(rename = "credential_set_done")]
-    CredentialSetDone {
-        request_id: u64,
-        id: String,
-    },
+    CredentialSetDone { request_id: u64, id: String },
 
     /// Reply to [`RequestPacket::CredentialDelete`]. See
     /// [`ResponsePacket::CredentialSetDone`] for the same notes on
@@ -1203,6 +1228,34 @@ pub enum ResponsePacket {
     ProviderAdded {
         request_id: u64,
         provider: ProviderInfo,
+    },
+
+    /// Result of `ProviderUpdate`. Returns the catalog-summary view
+    /// of the merged entry so the desktop can refresh the provider
+    /// list and the edit modal without a follow-up call.
+    #[serde(rename = "provider_updated")]
+    ProviderUpdated {
+        request_id: u64,
+        provider: ProviderInfo,
+    },
+
+    /// Result of `ProviderRemove`. `removed` is `true` when an entry
+    /// was actually deleted; idempotent removes return `false`.
+    #[serde(rename = "provider_removed")]
+    ProviderRemoved {
+        request_id: u64,
+        id: String,
+        removed: bool,
+    },
+
+    /// Result of `ProviderSetDefault`. `model` is the model id that
+    /// was promoted (the caller-supplied model, or the provider's
+    /// default model id when none was supplied).
+    #[serde(rename = "provider_default_set")]
+    ProviderDefaultSet {
+        request_id: u64,
+        provider: String,
+        model: String,
     },
 
     /// MCP configuration reload response. Reports the post-reload server
@@ -1577,6 +1630,9 @@ pub struct ProviderInfo {
     /// Empty for most entries; non-empty for vendors that require a
     /// tenant header.
     pub headers: BTreeMap<String, String>,
+    /// True iff this entry is the runtime's current default provider.
+    /// The desktop highlights this row with a star.
+    pub is_default: bool,
 }
 
 /// One model declared by a built-in provider template.
@@ -1690,6 +1746,46 @@ pub struct ProviderAddArgs {
     /// custom add) when omitted.
     #[serde(default)]
     pub default_model: Option<String>,
+}
+
+/// Arguments for `RequestPacket::ProviderUpdate`.
+///
+/// Every field except `id` is optional. Omitted fields leave the
+/// existing catalog entry untouched; supplied fields replace the
+/// current value. The daemon validates that `default_model_id`,
+/// when provided, references one of the (updated) `models`, and
+/// rewrites `providers.toml` atomically.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderUpdateArgs {
+    /// Catalog id of the entry to edit.
+    pub id: String,
+    /// Replace the display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Replace the base URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Replace the API format. One of `"openai_completions"` |
+    /// `"anthropic_messages"`; maps through `ApiFormat::from_wire`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_format: Option<String>,
+    /// Replace the full model list. When supplied, the existing list
+    /// is overwritten (not merged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<crate::providers::catalog::ModelInfo>>,
+    /// Replace the default model id. Must reference a model in the
+    /// (possibly updated) `models` list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model_id: Option<String>,
+    /// Replace the extra HTTP headers map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<BTreeMap<String, String>>,
+    /// Replace the `requires_key` flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_key: Option<bool>,
+    /// Replace the `enabled` flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 /// One row of `CredentialsListed`. Redacted — never carries the
@@ -1896,6 +1992,9 @@ impl ResponsePacket {
             | Self::ProviderReloaded { request_id, .. }
             | Self::ProviderTemplates { request_id, .. }
             | Self::ProviderAdded { request_id, .. }
+            | Self::ProviderUpdated { request_id, .. }
+            | Self::ProviderRemoved { request_id, .. }
+            | Self::ProviderDefaultSet { request_id, .. }
             | Self::McpReloaded { request_id, .. }
             | Self::CredentialsListed { request_id, .. }
             | Self::CredentialTested { request_id, .. }
@@ -1976,6 +2075,9 @@ impl ResponsePacket {
             Self::ProviderReloaded { .. } => "ProviderReloaded",
             Self::ProviderTemplates { .. } => "ProviderTemplates",
             Self::ProviderAdded { .. } => "ProviderAdded",
+            Self::ProviderUpdated { .. } => "ProviderUpdated",
+            Self::ProviderRemoved { .. } => "ProviderRemoved",
+            Self::ProviderDefaultSet { .. } => "ProviderDefaultSet",
             Self::McpReloaded { .. } => "McpReloaded",
             Self::CredentialsListed { .. } => "CredentialsListed",
             Self::CredentialTested { .. } => "CredentialTested",
@@ -2852,6 +2954,7 @@ mod tests {
                 }],
                 default_model_id: "claude-sonnet-4-5".to_string(),
                 headers: Default::default(),
+                is_default: false,
             },
         };
         let bytes = resp.to_bytes().unwrap();
@@ -3211,7 +3314,9 @@ mod tests {
             Some("sk-test-123")
         );
         assert_eq!(
-            json.get("metadata").and_then(|v| v.as_object()).map(|m| m.len()),
+            json.get("metadata")
+                .and_then(|v| v.as_object())
+                .map(|m| m.len()),
             Some(1)
         );
 
@@ -3231,7 +3336,9 @@ mod tests {
                 assert_eq!(kind, "api_key");
                 assert_eq!(material, "sk-test-123");
                 assert_eq!(
-                    metadata.as_ref().and_then(|m| m.get("foo").and_then(|v| v.as_str())),
+                    metadata
+                        .as_ref()
+                        .and_then(|m| m.get("foo").and_then(|v| v.as_str())),
                     Some("bar")
                 );
             }
@@ -3256,10 +3363,7 @@ mod tests {
             Some("credential_set_done")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(922));
-        assert_eq!(
-            json.get("id").and_then(|v| v.as_str()),
-            Some("id-minimax")
-        );
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {

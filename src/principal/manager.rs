@@ -16,7 +16,6 @@ use crate::auth::ownership::{check_permission, Permission, Resource};
 use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::common::types::OutputFormat;
-use crate::subject::PrincipalDID;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::async_exec::executor::SteeringMessage;
 use crate::extensions::framework::store::ExtensionStore;
@@ -25,6 +24,7 @@ use crate::identity::storage::KeyStorage;
 use crate::observability::Observability;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
+use crate::subject::PrincipalDID;
 
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
@@ -707,7 +707,14 @@ impl PrincipalManager {
         }
 
         let ctx = self
-            .build_router_context(&principal, peer, message, channel, override_provider, override_model)
+            .build_router_context(
+                &principal,
+                peer,
+                message,
+                channel,
+                override_provider,
+                override_model,
+            )
             .await?;
 
         // Serial queue per peer: only one root-agent run may be active for a
@@ -770,7 +777,14 @@ impl PrincipalManager {
         }
 
         let ctx = self
-            .build_router_context(&principal, peer, message, channel, override_provider, override_model)
+            .build_router_context(
+                &principal,
+                peer,
+                message,
+                channel,
+                override_provider,
+                override_model,
+            )
             .await?;
 
         // Same serial-queue discipline as `receive`: only one root-agent
@@ -1015,7 +1029,14 @@ mod tests {
         for i in 0..peers {
             let peer = Subject::User(format!("peer-{i}"));
             let response = manager
-                .receive(id.clone(), peer, format!("hello {i}"), cli_channel(), None, None)
+                .receive(
+                    id.clone(),
+                    peer,
+                    format!("hello {i}"),
+                    cli_channel(),
+                    None,
+                    None,
+                )
                 .await
                 .expect("receive should succeed");
             assert!(response.content.contains(&format!("peer reply {i}")));
@@ -1280,7 +1301,14 @@ mod tests {
         // Owner always passes.
         let owner = Subject::User("test-owner".to_string());
         let response = manager
-            .receive(id.clone(), owner, "hello".to_string(), cli_channel(), None, None)
+            .receive(
+                id.clone(),
+                owner,
+                "hello".to_string(),
+                cli_channel(),
+                None,
+                None,
+            )
             .await
             .expect("owner should be allowed");
         assert!(response.content.contains("owner reply"));

@@ -95,7 +95,11 @@ mod tests {
     use crate::providers::templates;
 
     fn anthropic_entry() -> ProviderCatalogEntry {
-        ProviderCatalogEntry::from_template(templates::find_template("anthropic").unwrap(), "anthropic", None)
+        ProviderCatalogEntry::from_template(
+            templates::find_template("anthropic").unwrap(),
+            "anthropic",
+            None,
+        )
     }
 
     #[test]

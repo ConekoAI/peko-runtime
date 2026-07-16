@@ -22,8 +22,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::auth::api_key::ApiKeyStore;
-use crate::auth::config::AuthConfig;
 use crate::auth::caller::CallerContext;
+use crate::auth::config::AuthConfig;
 use crate::auth::types::ApiKeyScope;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{ApiKeySummary, RequestPacket, ResponsePacket};
@@ -165,10 +165,7 @@ impl RequestHandler for AuthHandler {
                 } else if let Some(store) = self.host.api_key_store() {
                     match store.revoke_key(&key_id).await {
                         Ok(true) => {
-                            let response = ResponsePacket::AuthApiKeyRevoked {
-                                request_id,
-                                key_id,
-                            };
+                            let response = ResponsePacket::AuthApiKeyRevoked { request_id, key_id };
                             send_response(sink, response).await?;
                         }
                         Ok(false) => {

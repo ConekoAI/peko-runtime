@@ -239,10 +239,8 @@ mod tests {
         let catalog_path = tmp.path().join("providers.toml");
         let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog_path).await;
 
-        let handler = SamplingRequestHandler::new(
-            resolver,
-            Arc::new(crate::quota::QuotaMeter::unlimited()),
-        );
+        let handler =
+            SamplingRequestHandler::new(resolver, Arc::new(crate::quota::QuotaMeter::unlimited()));
         let req = CreateMessageRequest {
             messages: vec![SamplingMessage {
                 role: SamplingRole::User,

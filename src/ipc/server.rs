@@ -134,6 +134,7 @@ impl PeerAddr {
 fn bump_send_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
     let fd = socket.as_raw_fd();
     let buf_len = IPC_SEND_BUFFER_BYTES as libc::c_int;
+    let buf_len_ptr = std::ptr::addr_of!(buf_len);
     // SAFETY: `fd` is a live socket owned by `socket`, and `buf_len` is
     // a valid `c_int`. `SOL_SOCKET` / `SO_SNDBUF` are the kernel
     // constants we want. `setsockopt` does not take ownership of the
@@ -143,7 +144,34 @@ fn bump_send_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
             fd,
             libc::SOL_SOCKET,
             libc::SO_SNDBUF,
-            &buf_len as *const _ as *const libc::c_void,
+            buf_len_ptr.cast::<libc::c_void>(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if rc != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Raise the kernel-side `SO_RCVBUF` of a socket to
+/// [`IPC_SEND_BUFFER_BYTES`].
+///
+/// Mirrors [`bump_send_buffer`] for the receive side. The round-trip
+/// test needs this so the client socket can queue the large response
+/// the server sends without dropping it with `ENOBUFS` on macOS.
+#[cfg(all(unix, test))]
+fn bump_recv_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
+    let fd = socket.as_raw_fd();
+    let buf_len = IPC_SEND_BUFFER_BYTES as libc::c_int;
+    let buf_len_ptr = std::ptr::addr_of!(buf_len);
+    let rc = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            buf_len_ptr.cast::<libc::c_void>(),
             std::mem::size_of::<libc::c_int>() as libc::socklen_t,
         )
     };
@@ -819,6 +847,7 @@ mod buffer_tests {
     //! these tests assert both that the helper succeeds and that a
     //! large round-tripped payload actually fits.
 
+    use super::bump_recv_buffer;
     use super::bump_send_buffer;
     use crate::ipc::packet::{RequestPacket, ResponsePacket};
     use std::os::fd::AsRawFd;
@@ -869,6 +898,7 @@ mod buffer_tests {
                 models: vec![],
                 default_model_id: "gpt-5".into(),
                 headers: Default::default(),
+                is_default: false,
             })
             .collect();
         let response = ResponsePacket::ProviderList {
@@ -890,6 +920,7 @@ mod buffer_tests {
         let server = UnixDatagram::bind(&server_path).expect("server bind");
         bump_send_buffer(&server).expect("bump server buffer");
         let client = UnixDatagram::bind(&client_path).expect("client bind");
+        bump_recv_buffer(&client).expect("bump client buffer");
 
         let bytes = serde_json::to_vec(&response).expect("serialize response");
         assert!(

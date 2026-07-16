@@ -227,8 +227,8 @@ impl ToolRuntime {
         // once per process under PrincipalId::system(). The `register_builtins`
         // call shape is the daemon-init path.
         for tool in &tools {
-            if let Err(e) = BuiltinToolAdapter::register_tool_system(extension_core, tool.clone())
-                .await
+            if let Err(e) =
+                BuiltinToolAdapter::register_tool_system(extension_core, tool.clone()).await
             {
                 tracing::warn!(
                     "Failed to register built-in tool '{}' with ExtensionCore: {}",

@@ -576,7 +576,10 @@ mod tests {
                 .unwrap();
         }
         let tmp = tempfile::tempdir().unwrap();
-        let vault = Arc::new(crate::common::vault::Vault::for_test(tmp.path(), "test-passphrase"));
+        let vault = Arc::new(crate::common::vault::Vault::for_test(
+            tmp.path(),
+            "test-passphrase",
+        ));
         let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
         Arc::new(LlmResolver::new(cat, secrets).with_vault(vault))
     }
@@ -652,10 +655,7 @@ mod tests {
         // so a future refactor that DOES collapse the override into
         // the merge layer doesn't accidentally demote it.
         let principal = (Some("ollama".into()), Some("llama3.1".into()));
-        let catalog_default = (
-            Some("anthropic".into()),
-            Some("claude-sonnet-4-5".into()),
-        );
+        let catalog_default = (Some("anthropic".into()), Some("claude-sonnet-4-5".into()));
         // Without the override (current path): principal wins.
         assert_eq!(
             merge_provider_hint(principal.clone(), catalog_default.clone()),
@@ -666,6 +666,9 @@ mod tests {
         // resolver's `ExplicitOverride` arm is exercised by
         // `providers::resolver::tests::resolve_explicit_override`.
         let override_pair = (Some("openai".into()), Some("gpt-4o".into()));
-        assert_ne!(override_pair, merge_provider_hint(principal, catalog_default));
+        assert_ne!(
+            override_pair,
+            merge_provider_hint(principal, catalog_default)
+        );
     }
 }

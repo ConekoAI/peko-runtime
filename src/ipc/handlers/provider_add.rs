@@ -101,7 +101,10 @@ impl RequestHandler for ProviderAddHandler {
 
                 match self.host.add_provider(args).await {
                     Ok(provider) => {
-                        let response = ResponsePacket::ProviderAdded { request_id, provider };
+                        let response = ResponsePacket::ProviderAdded {
+                            request_id,
+                            provider,
+                        };
                         send_response(sink, response).await?;
                     }
                     Err(e) => {
@@ -185,6 +188,7 @@ mod tests {
             models: vec![],
             default_model_id: "claude-sonnet-4-5".to_string(),
             headers: Default::default(),
+            is_default: false,
         }
     }
 
@@ -269,8 +273,14 @@ mod tests {
         let provider = json
             .get("provider")
             .expect("response should have a provider object");
-        assert_eq!(provider.get("id").and_then(|v| v.as_str()), Some("anthropic"));
-        assert_eq!(provider.get("requires_key").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            provider.get("id").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
+        assert_eq!(
+            provider.get("requires_key").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     #[tokio::test]

@@ -301,11 +301,7 @@ impl TunnelDispatcher {
 
     /// Generate a stable instance ID from runtime DID and agent name.
     fn instance_id(&self, agent_name: &str) -> String {
-        let name = format!(
-            "{}:{}",
-            self.host.runtime_did(),
-            agent_name
-        );
+        let name = format!("{}:{}", self.host.runtime_did(), agent_name);
         uuid::Uuid::new_v5(&INSTANCE_ID_NAMESPACE, name.as_bytes()).to_string()
     }
 
@@ -655,21 +651,23 @@ impl TunnelDispatcher {
         }
 
         // Resolve the calling user from the PekoHub-proxied headers/JWT.
-        let caller_user =
-            match resolve_bridge_caller(&bridge_payload, self.host.jwt_validator().as_ref())
-                .await
-            {
-                Ok(caller) => caller,
-                Err(e) => {
-                    warn!(
-                        "Tunnel caller resolution failed for {}: {}",
-                        principal_name, e
-                    );
-                    return self
-                        .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
-                        .await;
-                }
-            };
+        let caller_user = match resolve_bridge_caller(
+            &bridge_payload,
+            self.host.jwt_validator().as_ref(),
+        )
+        .await
+        {
+            Ok(caller) => caller,
+            Err(e) => {
+                warn!(
+                    "Tunnel caller resolution failed for {}: {}",
+                    principal_name, e
+                );
+                return self
+                    .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
+                    .await;
+            }
+        };
         let caller_principal = Subject::from_bridge_user(&caller_user);
 
         // The audit emit's `agent_did` positional argument is the
@@ -736,8 +734,16 @@ impl TunnelDispatcher {
         let pm = principal_manager.clone();
         let principal_id = principal.id.clone();
         let recv_handle = tokio::spawn(async move {
-            pm.receive_streaming(principal_id, caller_principal, message, channel, on_event, None, None)
-                .await
+            pm.receive_streaming(
+                principal_id,
+                caller_principal,
+                message,
+                channel,
+                on_event,
+                None,
+                None,
+            )
+            .await
         });
 
         // Forward each token delta as a raw-text `StreamChunk`.
@@ -1062,7 +1068,8 @@ impl TunnelDispatcher {
                 if instance_id == payload.instance_id {
                     let did = principal.did().await;
                     let status = self.get_instance_status(&name).await;
-                    let transport_preference = principal.config.read().await.transport_preference.into();
+                    let transport_preference =
+                        principal.config.read().await.transport_preference.into();
                     let announce_payload = InstanceAnnouncePayload {
                         id: instance_id,
                         instance_type: InstanceType::Principal,
@@ -1440,11 +1447,11 @@ mod tests {
     use super::*;
     use crate::auth::{Permission, PermissionGrant, Subject};
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
+    use crate::extensions::framework::types::Capabilities;
     use crate::principal::config::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
-    use crate::extensions::framework::types::Capabilities;
     use crate::tunnel::protocol::{InstanceExposure, InstanceType};
     use tempfile::TempDir;
     use tokio::sync::mpsc;

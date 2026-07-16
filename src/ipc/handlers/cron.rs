@@ -131,10 +131,7 @@ impl RequestHandler for CronHandler {
                 {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!(
-                            "Principal '{}' is not loaded",
-                            job.principal_name
-                        ),
+                        message: format!("Principal '{}' is not loaded", job.principal_name),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -168,10 +165,7 @@ impl RequestHandler for CronHandler {
                 }
             }
 
-            RequestPacket::CronRemove {
-                request_id,
-                job_id,
-            } => {
+            RequestPacket::CronRemove { request_id, job_id } => {
                 let cron_db = self.host.data_dir().join("cron.json");
                 match CronScheduler::new(&cron_db) {
                     Ok(scheduler) => match scheduler.delete_job(&job_id) {
@@ -204,10 +198,7 @@ impl RequestHandler for CronHandler {
                 }
             }
 
-            RequestPacket::CronRun {
-                request_id,
-                job_id,
-            } => {
+            RequestPacket::CronRun { request_id, job_id } => {
                 let cron_db = self.host.data_dir().join("cron.json");
                 match CronScheduler::new(&cron_db) {
                     Ok(scheduler) => match scheduler.get_job(&job_id) {

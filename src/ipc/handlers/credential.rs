@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::auth::caller::CallerContext;
 use crate::common::vault::{CredentialKind, RotationStrategy};
@@ -50,6 +50,11 @@ pub(crate) trait CredentialHost: Send + Sync {
         material: &SecretString,
         metadata: Option<serde_json::Value>,
     ) -> anyhow::Result<String>;
+
+    /// Fetch the secret material for one credential. This is the only
+    /// CredentialHost method that exposes the secret; the handler is
+    /// expected to audit-log the reveal before returning it over IPC.
+    fn get_credential_material(&self, id: &str) -> Option<SecretString>;
 
     /// Remove the credential with this `id`. Returns `Ok(true)` if a
     /// credential was removed (idempotent delete).
@@ -88,6 +93,13 @@ pub(crate) trait CredentialTestLiveHost: Send + Sync {
         &self,
         id: &str,
     ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome>;
+
+    /// Live-ping every credential in the rotation binding for `key`
+    /// and return per-credential outcomes.
+    async fn test_binding_rotation(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<Vec<crate::ipc::packet::BindingTestResult>>;
 }
 
 /// `credential` + `binding` domain request handler. Constructed with one
@@ -198,11 +210,23 @@ impl RequestHandler for CredentialHandler {
                 // the daemon implementation routes this directly to the
                 // vault and returns the secret string.
                 tracing::info!(credential_id = %id, reason = %reason, "credential material revealed via IPC");
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: "credential_get_material not implemented in this handler".to_string(),
-                };
-                send_response(sink, response).await?;
+                match self.host.get_credential_material(&id) {
+                    Some(secret) => {
+                        let response = ResponsePacket::CredentialMaterial {
+                            request_id,
+                            id,
+                            material: secret.expose_secret().to_string(),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("credential not found: {id}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
             }
             RequestPacket::CredentialTest { request_id, id } => {
                 let outcome = match self.test_host.test_credential_live(&id).await {
@@ -266,7 +290,9 @@ impl RequestHandler for CredentialHandler {
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("failed to store credential '{namespace}/{name}': {e}"),
+                            message: format!(
+                                "failed to store credential '{namespace}/{name}': {e}"
+                            ),
                         };
                         send_response(sink, response).await?;
                     }
@@ -353,15 +379,26 @@ impl RequestHandler for CredentialHandler {
                 }
             }
             RequestPacket::BindingTestRotation { request_id, key } => {
-                // Walk every credential id in the binding and run a live
-                // test. This is implemented directly against the test
-                // host in the daemon; the handler here just forwards.
-                let response = ResponsePacket::BindingTested {
-                    request_id,
-                    key,
-                    results: Vec::new(),
-                };
-                send_response(sink, response).await?;
+                // Walk every credential in the binding and run a live
+                // test. Implemented against the test host in the daemon;
+                // the handler here just forwards the results.
+                match self.test_host.test_binding_rotation(&key).await {
+                    Ok(results) => {
+                        let response = ResponsePacket::BindingTested {
+                            request_id,
+                            key,
+                            results,
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("failed to test rotation binding '{key}': {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
             }
             // `matches()` returned true, so the exhaustive list above
             // covers every owned variant. This arm is unreachable.
@@ -423,6 +460,10 @@ mod tests {
         }
 
         fn get_credential(&self, _id: &str) -> Option<CredentialWire> {
+            None
+        }
+
+        fn get_credential_material(&self, _id: &str) -> Option<SecretString> {
             None
         }
 
@@ -497,6 +538,13 @@ mod tests {
         ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
             Ok(self.outcome.clone())
         }
+
+        async fn test_binding_rotation(
+            &self,
+            _key: &str,
+        ) -> anyhow::Result<Vec<crate::ipc::packet::BindingTestResult>> {
+            Ok(Vec::new())
+        }
     }
 
     struct CaptureSink(Arc<Mutex<Vec<u8>>>);
@@ -517,7 +565,11 @@ mod tests {
     }
 
     fn handler(host: StubHost, test_host: StubTestHost) -> CredentialHandler {
-        CredentialHandler::new(Arc::new(host), Arc::new(StubBindingHost), Arc::new(test_host))
+        CredentialHandler::new(
+            Arc::new(host),
+            Arc::new(StubBindingHost),
+            Arc::new(test_host),
+        )
     }
 
     #[tokio::test]
@@ -588,23 +640,29 @@ mod tests {
 
         // Field names must match the desktop's CredentialRow exactly.
         let minimax = &providers[0];
-        assert_eq!(minimax.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
+        assert_eq!(
+            minimax.get("id").and_then(|v| v.as_str()),
+            Some("id-minimax")
+        );
         assert_eq!(
             minimax.get("namespace").and_then(|v| v.as_str()),
             Some("provider:minimax")
         );
-        assert_eq!(minimax.get("name").and_then(|v| v.as_str()), Some("default"));
-        assert_eq!(minimax.get("kind").and_then(|v| v.as_str()), Some("api_key"));
+        assert_eq!(
+            minimax.get("name").and_then(|v| v.as_str()),
+            Some("default")
+        );
+        assert_eq!(
+            minimax.get("kind").and_then(|v| v.as_str()),
+            Some("api_key")
+        );
         assert_eq!(minimax.get("has_key").and_then(|v| v.as_bool()), Some(true));
         assert!(minimax.get("last_tested_at").map_or(true, |v| v.is_null()));
         assert!(minimax.get("last_tested_ok").is_none());
 
         let openai = &providers[1];
         assert_eq!(openai.get("id").and_then(|v| v.as_str()), Some("id-openai"));
-        assert_eq!(
-            openai.get("has_key").and_then(|v| v.as_bool()),
-            Some(false)
-        );
+        assert_eq!(openai.get("has_key").and_then(|v| v.as_bool()), Some(false));
     }
 
     #[tokio::test]
@@ -686,10 +744,7 @@ mod tests {
             Some("credential_tested")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(42));
-        assert_eq!(
-            json.get("id").and_then(|v| v.as_str()),
-            Some("id-minimax")
-        );
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
         assert_eq!(json.get("ok").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(
             json.get("message").and_then(|v| v.as_str()),
@@ -722,6 +777,13 @@ mod tests {
             ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Err(anyhow::anyhow!("unknown credential: id-minimax"))
+            }
+
+            async fn test_binding_rotation(
+                &self,
+                _key: &str,
+            ) -> anyhow::Result<Vec<crate::ipc::packet::BindingTestResult>> {
+                Ok(Vec::new())
             }
         }
 

@@ -459,7 +459,10 @@ pub async fn load_and_register_tools(
     let tools = adapter.discover_tools(tools_dir.as_ref()).await;
     let mut count = 0;
     for tool in tools {
-        if let Err(e) = adapter.register_tool(core, &tool.manifest, principal_id).await {
+        if let Err(e) = adapter
+            .register_tool(core, &tool.manifest, principal_id)
+            .await
+        {
             warn!(tool = %tool.manifest.name, error = %e, "Failed to register universal tool");
         } else {
             count += 1;
@@ -564,10 +567,9 @@ mod tests {
         create_test_tool(temp.path(), "tool1", "First tool");
 
         let core = crate::extensions::framework::ExtensionCore::new();
-        let count =
-            load_and_register_tools(&core, temp.path(), PrincipalId::system())
-                .await
-                .unwrap();
+        let count = load_and_register_tools(&core, temp.path(), PrincipalId::system())
+            .await
+            .unwrap();
 
         assert_eq!(count, 1);
         assert_eq!(core.tool_count(PrincipalId::system()).await, 1);

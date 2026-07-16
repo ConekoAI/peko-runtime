@@ -13,16 +13,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use ed25519_dalek::SigningKey;
 use crate::auth::Subject;
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::core::init_global_core;
+use crate::principal::config::{Exposure, TransportPreference};
 use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };
-use crate::subject::PrincipalDID;
 use crate::providers::LlmResolver;
+use crate::subject::PrincipalDID;
 use crate::tools::Tool;
 use crate::tunnel::a2a_pending::PendingA2aResponses;
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
@@ -31,7 +30,8 @@ use crate::tunnel::hub_directory::{AgentDirectory, AgentResolution, DirectoryErr
 use crate::tunnel::known_runtimes::KnownRuntimes;
 use crate::tunnel::local_directory::LocalFirstAgentDirectory;
 use crate::tunnel::principal_send_tool::{PrincipalSendResult, PrincipalSendTool};
-use crate::principal::config::{Exposure, TransportPreference};
+use async_trait::async_trait;
+use ed25519_dalek::SigningKey;
 use tokio::sync::RwLock;
 
 /// A directory client that panics if consulted. Wrapping it inside

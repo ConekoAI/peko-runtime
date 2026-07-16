@@ -164,10 +164,7 @@ mod tests {
         let (_dir, vault) = test_vault_with_binding();
         let state = RotationState::new(vault, "provider:mock".into(), "default".into()).unwrap();
         assert_eq!(state.len(), 2);
-        assert_eq!(
-            state.current_material().unwrap().expose_secret(),
-            "key-1"
-        );
+        assert_eq!(state.current_material().unwrap().expose_secret(), "key-1");
     }
 
     #[test]
@@ -175,15 +172,9 @@ mod tests {
         let (_dir, vault) = test_vault_with_binding();
         let state = RotationState::new(vault, "provider:mock".into(), "default".into()).unwrap();
         state.advance();
-        assert_eq!(
-            state.current_material().unwrap().expose_secret(),
-            "key-2"
-        );
+        assert_eq!(state.current_material().unwrap().expose_secret(), "key-2");
         state.advance();
-        assert_eq!(
-            state.current_material().unwrap().expose_secret(),
-            "key-1"
-        );
+        assert_eq!(state.current_material().unwrap().expose_secret(), "key-1");
     }
 
     #[test]

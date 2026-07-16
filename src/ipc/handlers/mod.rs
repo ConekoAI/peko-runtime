@@ -32,6 +32,7 @@ pub(crate) mod extension;
 pub(crate) mod instance;
 pub(crate) mod principal;
 pub(crate) mod provider_add;
+pub(crate) mod provider_edit;
 pub(crate) mod provider_mcp;
 pub(crate) mod provider_templates;
 pub(crate) mod quota;
@@ -49,6 +50,7 @@ use extension::ExtensionHandler;
 use instance::InstanceHandler;
 use principal::PrincipalHandler;
 use provider_add::ProviderAddHandler;
+use provider_edit::ProviderEditHandler;
 use provider_mcp::ProviderMcpHandler;
 use provider_templates::ProviderTemplatesHandler;
 use quota::QuotaHandler;
@@ -115,7 +117,7 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 16] = [
+        let handlers: [Arc<dyn RequestHandler>; 17] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
@@ -128,7 +130,11 @@ impl RequestDispatcher {
             Arc::new(ExtensionHandler::new(host.clone())),
             Arc::new(ProviderMcpHandler::new(host.clone())),
             Arc::new(QuotaHandler::new(host.clone())),
-            Arc::new(CredentialHandler::new(host.clone(), host.clone(), host.clone())),
+            Arc::new(CredentialHandler::new(
+                host.clone(),
+                host.clone(),
+                host.clone(),
+            )),
             Arc::new(PrincipalHandler::new(host.clone())),
             // T-109b: `ProviderTemplates` + `ProviderAdd` are the
             // IPC seam for the desktop's "Add Provider" modal. They
@@ -136,7 +142,11 @@ impl RequestDispatcher {
             // provider-mutation variants are colocated in the
             // dispatch table.
             Arc::new(ProviderTemplatesHandler::new(host.clone())),
-            Arc::new(ProviderAddHandler::new(host)),
+            Arc::new(ProviderAddHandler::new(host.clone())),
+            // RP6: provider edit / remove / set-default live next to
+            // the add handler so the whole catalog-mutation surface is
+            // routed as one group.
+            Arc::new(ProviderEditHandler::new(host)),
         ];
 
         for handler in &handlers {

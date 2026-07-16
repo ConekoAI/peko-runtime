@@ -251,9 +251,9 @@ impl VaultFileV1 {
 
     fn credential_from_legacy(legacy_key: &str, entry: &VaultEntry) -> Option<Credential> {
         match entry {
-            VaultEntry::ProviderApiKey { provider, key } => {
-                Some(Credential::from_legacy_provider_key(provider, key, legacy_key))
-            }
+            VaultEntry::ProviderApiKey { provider, key } => Some(
+                Credential::from_legacy_provider_key(provider, key, legacy_key),
+            ),
             VaultEntry::RegistryToken {
                 host,
                 token,
@@ -271,9 +271,9 @@ impl VaultFileV1 {
             } => Some(Credential::from_legacy_identity_key(
                 key_id, algorithm, key, legacy_key,
             )),
-            VaultEntry::TunnelPrivateKey { runtime_id, key } => {
-                Some(Credential::from_legacy_tunnel_key(runtime_id, key, legacy_key))
-            }
+            VaultEntry::TunnelPrivateKey { runtime_id, key } => Some(
+                Credential::from_legacy_tunnel_key(runtime_id, key, legacy_key),
+            ),
             VaultEntry::OAuthToken {
                 server,
                 access_token,
@@ -286,9 +286,7 @@ impl VaultFileV1 {
                 *expires_at,
                 legacy_key,
             )),
-            VaultEntry::Secret { value } => {
-                Some(Credential::from_legacy_secret(value, legacy_key))
-            }
+            VaultEntry::Secret { value } => Some(Credential::from_legacy_secret(value, legacy_key)),
         }
     }
 }
@@ -541,7 +539,12 @@ impl Credential {
     }
 
     /// Migrate a legacy `IdentityPrivateKey` entry.
-    fn from_legacy_identity_key(key_id: &str, algorithm: &str, key: &str, legacy_key: &str) -> Self {
+    fn from_legacy_identity_key(
+        key_id: &str,
+        algorithm: &str,
+        key: &str,
+        legacy_key: &str,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Self::legacy_id(legacy_key),
@@ -585,10 +588,16 @@ impl Credential {
         let now = Utc::now();
         let mut metadata = serde_json::Map::new();
         if let Some(rt) = refresh_token {
-            metadata.insert("refresh_token".to_string(), serde_json::Value::String(rt.to_string()));
+            metadata.insert(
+                "refresh_token".to_string(),
+                serde_json::Value::String(rt.to_string()),
+            );
         }
         if let Some(exp) = expires_at {
-            metadata.insert("expires_at".to_string(), serde_json::Value::Number(exp.into()));
+            metadata.insert(
+                "expires_at".to_string(),
+                serde_json::Value::Number(exp.into()),
+            );
         }
         Self {
             id: Self::legacy_id(legacy_key),
@@ -916,9 +925,8 @@ impl Vault {
                 })?;
                 Self::derive_key_from_passphrase(passphrase.expose_secret(), salt)?
             }
-            UnlockMethod::Keychain => Self::retrieve_dek_from_keychain().with_context(|| {
-                format!("while reloading vault at {}", self.path.display())
-            })?,
+            UnlockMethod::Keychain => Self::retrieve_dek_from_keychain()
+                .with_context(|| format!("while reloading vault at {}", self.path.display()))?,
         };
         let plaintext = Self::decrypt(&envelope, &dek)?;
         let file = Self::parse_vault_file(&plaintext)?;
@@ -1372,11 +1380,7 @@ impl Vault {
     /// the resolver when there's no rotation binding (the common
     /// case). Returns `Ok(None)` when no credential exists at the
     /// slot; callers treat that as "no key configured".
-    pub fn get_material_for(
-        &self,
-        namespace: &str,
-        name: &str,
-    ) -> Result<Option<SecretString>> {
+    pub fn get_material_for(&self, namespace: &str, name: &str) -> Result<Option<SecretString>> {
         let inner = self
             .inner
             .read()
@@ -1575,18 +1579,14 @@ impl Vault {
 
     fn legacy_entry_material(entry: &VaultEntry) -> Option<SecretString> {
         match entry {
-            VaultEntry::ProviderApiKey { key, .. } => {
-                Some(SecretString::new(key.clone().into()))
-            }
+            VaultEntry::ProviderApiKey { key, .. } => Some(SecretString::new(key.clone().into())),
             VaultEntry::RegistryToken { token, .. } => {
                 Some(SecretString::new(token.clone().into()))
             }
             VaultEntry::IdentityPrivateKey { key, .. } => {
                 Some(SecretString::new(key.clone().into()))
             }
-            VaultEntry::TunnelPrivateKey { key, .. } => {
-                Some(SecretString::new(key.clone().into()))
-            }
+            VaultEntry::TunnelPrivateKey { key, .. } => Some(SecretString::new(key.clone().into())),
             VaultEntry::OAuthToken { access_token, .. } => {
                 Some(SecretString::new(access_token.clone().into()))
             }
@@ -1838,9 +1838,7 @@ impl Vault {
                     .with_context(|| "failed to parse vault contents as v1 VaultFile")?;
                 Ok(v1.into_v2())
             }
-            other => anyhow::bail!(
-                "unsupported vault file version: {other} (expected 1 or 2)"
-            ),
+            other => anyhow::bail!("unsupported vault file version: {other} (expected 1 or 2)"),
         }
     }
 
@@ -2873,7 +2871,11 @@ mod tests {
         );
         vault.set_credential(&c).unwrap();
 
-        assert!(vault.get_credential(&c.id).unwrap().last_tested_at.is_none());
+        assert!(vault
+            .get_credential(&c.id)
+            .unwrap()
+            .last_tested_at
+            .is_none());
         vault.record_test(&c.id, true).unwrap();
 
         let got = vault.get_credential(&c.id).unwrap();

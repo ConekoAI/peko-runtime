@@ -32,8 +32,9 @@ pub struct ExtensionServices {
     /// Implements principal-to-principal message dispatch
     /// ([`crate::common::types::principal_message::PrincipalMessageService`]).
     /// Held as a trait object to avoid a framework → agents dependency.
-    principal_message_service:
-        std::sync::RwLock<Option<Arc<dyn crate::common::types::principal_message::PrincipalMessageService>>>,
+    principal_message_service: std::sync::RwLock<
+        Option<Arc<dyn crate::common::types::principal_message::PrincipalMessageService>>,
+    >,
 
     /// Cross-runtime a2a dispatch context (issue #29). Set by the
     /// daemon-state after the tunnel client is built and the
@@ -161,7 +162,10 @@ impl ExtensionServices {
     pub fn principal_message_service(
         &self,
     ) -> Option<Arc<dyn crate::common::types::principal_message::PrincipalMessageService>> {
-        self.principal_message_service.read().ok().and_then(|g| g.clone())
+        self.principal_message_service
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     /// Set the cross-runtime a2a dispatch context (issue #29). The

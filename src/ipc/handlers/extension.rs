@@ -50,9 +50,7 @@ pub(crate) trait ExtensionHost: Send + Sync {
     /// Built-in extension services — the registered `ExtensionCore`
     /// (`Services.list_builtin_extensions`) used to surface builtin
     /// extensions alongside installed ones in `ExtensionList`.
-    fn extension_services(
-        &self,
-    ) -> &Arc<crate::extensions::framework::services::Services>;
+    fn extension_services(&self) -> &Arc<crate::extensions::framework::services::Services>;
 }
 
 /// `extension` domain request handler. Constructed with an
@@ -160,19 +158,18 @@ impl RequestHandler for ExtensionHandler {
 
             RequestPacket::ExtensionInstall { request_id, path } => {
                 let store = self.host.extension_store();
-                let install_path = match crate::commands::ext::prepare_install_path(
-                    std::path::Path::new(&path),
-                ) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Failed to prepare extension for install: {e}"),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
-                };
+                let install_path =
+                    match crate::commands::ext::prepare_install_path(std::path::Path::new(&path)) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Failed to prepare extension for install: {e}"),
+                            };
+                            send_response(sink, response).await?;
+                            return Ok(());
+                        }
+                    };
 
                 match store.install(&install_path).await {
                     Ok(ext_id) => {

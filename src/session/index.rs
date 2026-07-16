@@ -154,12 +154,7 @@ impl SessionEntry {
     /// `last_total_tokens` is the `total_tokens` reported by the
     /// provider on the last assistant turn. `input` and `output` are
     /// the incremental tokens for this turn.
-    pub fn record_tokens(
-        &mut self,
-        last_total_tokens: usize,
-        input: usize,
-        output: usize,
-    ) {
+    pub fn record_tokens(&mut self, last_total_tokens: usize, input: usize, output: usize) {
         self.last_total_tokens = last_total_tokens;
         self.total_input_tokens += input;
         self.total_output_tokens += output;

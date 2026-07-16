@@ -569,13 +569,15 @@ mod tests {
             _workspace: std::path::PathBuf,
             _config: crate::extensions::framework::async_exec::executor::AsyncToolConfig,
         ) -> Result<crate::extensions::framework::async_exec::executor::AsyncTaskReceipt> {
-            Ok(crate::extensions::framework::async_exec::executor::AsyncTaskReceipt {
-                task_id,
-                status: AsyncTaskStatus::Running,
-                estimated_duration_secs: None,
-                task_file: None,
-                params: None,
-            })
+            Ok(
+                crate::extensions::framework::async_exec::executor::AsyncTaskReceipt {
+                    task_id,
+                    status: AsyncTaskStatus::Running,
+                    estimated_duration_secs: None,
+                    task_file: None,
+                    params: None,
+                },
+            )
         }
 
         async fn get_status(

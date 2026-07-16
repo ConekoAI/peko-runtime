@@ -105,7 +105,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn ts(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> DateTime<Utc> {
-        chrono::Utc.with_ymd_and_hms(year, month, day, hour, min, sec).single().unwrap()
+        chrono::Utc
+            .with_ymd_and_hms(year, month, day, hour, min, sec)
+            .single()
+            .unwrap()
     }
 
     #[test]
@@ -160,7 +163,11 @@ mod tests {
     #[tokio::test]
     async fn save_creates_parent_directories() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("nested").join("deeper").join("quota_state.json");
+        let path = dir
+            .path()
+            .join("nested")
+            .join("deeper")
+            .join("quota_state.json");
         let s = QuotaState::fresh(QuotaCycle::Daily, ts(2026, 7, 12, 0, 0, 0));
         s.save(&path).await.unwrap();
         assert!(path.exists());
