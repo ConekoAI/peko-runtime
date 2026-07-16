@@ -1,9 +1,21 @@
 # Peko Desktop × Peko Runtime — Manual Test Plan
 
-> **Status:** v0.3 (sidecar lifecycle, ADR-043 — engine adoption)
-> **Last updated:** 2026-07-14
+> **Status:** v0.4 (provider/credential UI, per-message overrides)
+> **Last updated:** 2026-07-16
 > **Maintained by:** Peko engineering
 > **Audience:** non-technical testers verifying core functionality before the next feature drop
+>
+> **What changed in v0.4**
+> - **RP6** restructured Settings → Credentials into an accordion of provider
+>   cards. Providers can be edited, removed, enabled/disabled, and set as the
+>   runtime default. Each provider card expands to show its stored
+>   credentials, an "add credential" form, and a rotation-binding panel.
+> - **RP7** added a model dropdown to the **Create a Principal** modal. After
+>   picking a provider, the user can optionally pin a model; otherwise the
+>   principal inherits the provider's default model.
+> - **RP8** added `--provider` and `--model` flags to `peko send`, letting a
+>   single message override the resolved provider/model without changing the
+>   principal's configuration.
 >
 > **What changed in v0.3 (engine adoption)**
 > The desktop now co-exists with `peko daemon start` from the CLI. If a
@@ -12,7 +24,7 @@
 > child) and the chat works normally. The desktop's own sidecar is only
 > spawned if no daemon is running.
 >
-> Visible change for the user: the engine is now **invisible on the happy
+> Visible change for the user: the engine is **invisible on the happy
 > path** — the header pill and the Dashboard engine card are gone, and the
 > status footer is empty when the engine is healthy. Engine state surfaces
 > in the chrome only when something needs the user's attention:
@@ -20,12 +32,9 @@
 > - **Failed** engine → a red recovery card appears at the top of the
 >   layout (above any page) with a "Restart engine" button.
 > - **Version mismatch** → a yellow banner above the page content.
-> - **Adopted** engine → the user sees nothing different, but the
->   diagnostics panel in Settings → Daemon shows a "Borrowed from a CLI
->   daemon" banner with the adopted lockfile path.
 >
-> §1 (engine lifecycle), §8.3 (Settings → Daemon), and §12.2 (crash
-> recovery) are rewritten below; the rest of the plan is unchanged.
+> §1 (engine lifecycle), §2 (principals), §8 (settings), and §12.2 (crash
+> recovery) are rewritten below to reflect v0.3/v0.4.
 
 This checklist exercises **peko-desktop** (the Tauri/React UI) against **peko-runtime** (the daemon) end-to-end. Work through it top-to-bottom. Every row has an **Expected** column — if what you see differs, mark the test **Fail**, choose a **Severity**, and write a short **Note** describing what actually happened.
 
@@ -146,11 +155,12 @@ If you set `PEKO_HOME`, `PEKO_CONFIG_DIR`, or `PEKO_DATA_DIR` earlier, swap thos
 | T-104 | **Owned-engine close path** — close the desktop window (X button / `⌘W` / `Alt+F4`). | Engine process exits within a few seconds. Re-run the `pgrep` from T-101 and confirm it's gone. No `zombie peko process holding the lockfile` left behind. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This path applies when the desktop spawned its own sidecar (the path T-101 → T-102 takes). For the **borrowed-engine** close path (desktop adopted a CLI daemon), see T-107a — the engine is expected to *survive* the desktop close, by design. |
 | T-105 | **First-run walkthrough (T-105)** — assuming a fresh profile (no principals, no credentials, `peko.onboarding.seen` not set in localStorage — see T-009..T-013 for the reset recipe), launch the desktop. | The **First-run walkthrough** overlay auto-appears full-screen above any route. It shows four steps: **(1) pick provider**, **(2) paste API key**, **(3) test credential**, **(4) create principal**. Each step has its own Skip control and a top-level "Skip for now" closes the overlay without creating anything. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If the overlay does NOT appear on a fresh profile, or if any of the four steps is missing, mark **M**. After T-105 the localStorage flag `peko.onboarding.seen = "1"` is set even when the user skipped — the "Replay onboarding" escape hatch lives in Settings → About. |
 | T-105a | Look at the two stat cards on the Dashboard (now reachable by clicking the Dashboard nav rail item — the walkthrough overlay is dismissed after T-105's last step or Skip) | **Principals: N** and **Extensions: M** — both real numbers (≥ 0), not "undefined" | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-107 | **Adoption** — with the desktop closed, start a CLI daemon: `peko daemon start`. Then launch the desktop. | App opens. **Nothing in the chrome changes** — still no header pill, no Dashboard card, status footer empty. The engine's "borrowed from CLI daemon" state is **not surfaced** to the desktop user (T-103 invisibility contract — there is no Settings → Daemon tab). | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If any chrome element claims the engine is "running" or "stopped" without telling the user whose process it is, mark **m** — that's a regression of the invisibility rule. T-107 was originally about a Settings → Daemon tab; that tab was removed in T-107 (T-107 itself replaced the old T-106 row) so the borrowed-from-CLI banner it referenced no longer exists in the UI. |
+| T-107 | **Adoption** — with the desktop closed, start a CLI daemon: `peko daemon start`. Then launch the desktop. | App opens. **Nothing in the chrome changes** — still no header pill, no Dashboard card, status footer empty. The engine's "borrowed from CLI daemon" state is **not surfaced** to the desktop user (T-103 invisibility contract — there is no Settings → Daemon tab). | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If any chrome element claims the engine is "running" or "stopped" without telling the user whose process it is, mark **m** — that's a regression of the invisibility rule. |
 | T-107a | With the desktop open and a CLI daemon borrowed (state from T-107), close the desktop. Re-run `pgrep -f "peko daemon"`. | The CLI daemon is still alive. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Adoption is mirror-only — the desktop must not stop a process it did not start. |
-| T-107b | Reopen the desktop. | Chat works. No engine chrome appears. The diagnostics panel still shows the "Borrowed from a CLI daemon" banner. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reopening the desktop after the CLI daemon survives confirms adoption round-trips cleanly. |
-| T-107c | **Liveness** — with the desktop open and a CLI daemon borrowed, in another terminal find the CLI daemon's PID (`pgrep -f "peko daemon"`) and `kill -9 <pid>`. | Within ~5 seconds a red **Engine couldn't start** recovery card appears at the top of the layout (above any page) with a **Restart engine** button. The status footer turns red. Click **Restart engine** on that card. Within ~5 seconds the card disappears, the status footer is empty again, and chat works. The diagnostics panel now shows **owns_process = true** and the lockfile is `desktop.lock` (the desktop has spawned its own sidecar). | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the worst-case "borrowed daemon dies" path — proves the liveness poll + supervisor recovery works. |
-| T-108 | **CLI awareness** — close the desktop. Run `peko daemon start`. Then `peko daemon start` again. | The second `peko daemon start` prints something like `⚠️  Daemon is already running (owned by headless daemon, version X)`. Now stop the daemon (`peko daemon stop`). Launch the desktop (`pnpm tauri dev`). With the desktop open, run `peko daemon start`. | It prints `⚠️  Daemon is already running (owned by sidecar daemon, version X)`. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The `mode` field is new in v0.3 — if the warning is missing or doesn't include the mode, the runtime wasn't rebuilt against this PR. |
+| T-107b | Reopen the desktop. | Chat works. No engine chrome appears. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reopening the desktop after the CLI daemon survives confirms adoption round-trips cleanly. |
+| T-107c | **Liveness** — with the desktop open and a CLI daemon borrowed, in another terminal find the CLI daemon's PID (`pgrep -f "peko daemon"`) and `kill -9 <pid>`. | Within ~5 seconds a red **Engine couldn't start** recovery card appears at the top of the layout (above any page) with a **Restart engine** button. The status footer turns red. Click **Restart engine** on that card. Within ~5 seconds the card disappears, the status footer is empty again, and chat works. The desktop has now spawned its own sidecar (owns_process = true). | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the worst-case "borrowed daemon dies" path — proves the liveness poll + supervisor recovery works. |
+| T-108a | **CLI awareness (headless)** — with the desktop closed, run `peko daemon start`. Then run `peko daemon start` again. | The second `peko daemon start` prints something like `⚠️  Daemon is already running (owned by headless daemon, version X)`. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-108b | **CLI awareness (sidecar)** — stop the daemon (`peko daemon stop`), launch the desktop (`pnpm tauri dev`), and with the desktop open run `peko daemon start`. | It prints `⚠️  Daemon is already running (owned by sidecar daemon, version X)`. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The `mode` field is new in v0.3 — if the warning is missing or doesn't include the mode, the runtime wasn't rebuilt against this PR. |
 
 ---
 
@@ -160,8 +170,9 @@ A **Principal** is a long-lived AI assistant — it owns its memory, identity, a
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-201 | From the Dashboard, click **New Principal** (or open the sidebar empty-state CTA "Create your first principal" if the list is empty). Fill **Name** = `alice`, optionally a description, optionally a provider pill, and click **Create**. | Modal closes. The new `alice` principal appears in the sidebar without a manual refresh. The wire path is `principalCreate()` (api.ts) → `principal_create` IPC (peko-runtime PR #185) → `PrincipalManager::create`. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | **Replaces the old CLI invocation** — desktop users should not need the CLI for principal creation. The CLI still works and is covered by `tests/cli_basics.rs::principal_create_list_show` for regression. |
+| T-201 | From the Dashboard, click **New Principal** (or open the sidebar empty-state CTA "Create your first principal" if the list is empty). Fill **Name** = `alice`, optionally a description, optionally pick a **provider** pill, optionally pick a **model** from the dropdown that appears, and click **Create**. | Modal closes. The new `alice` principal appears in the sidebar without a manual refresh. The wire path is `principalCreate()` (api.ts) → `principal_create` IPC (peko-runtime PR #185) → `PrincipalManager::create`. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | **Replaces the old CLI invocation** — desktop users should not need the CLI for principal creation. The model dropdown only appears after a provider is selected and only lists models exposed by that provider's catalog entry. |
 | T-201a | **CLI regression** — open a terminal and run `peko principal new bob --provider openai --model gpt-4o-mini --description "CLI regression"` | Bob is created; appears in the sidebar after a refresh | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the CLI path that the desktop modal replaced; keep it green for automation users. |
+| T-201b | **CLI per-message override regression** — with `bob` selected, run `peko send bob "Say the model name" --provider openai --model gpt-4o-mini --no-stream` | Command succeeds and the response reflects the requested provider/model. The principal's stored defaults are unchanged. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Validates RP8 `--provider` / `--model` wiring. |
 | T-202 | In the desktop, refresh the sidebar (or switch pages and back) | Sidebar lists **alice** with a bot icon and a green dot (local, connected) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-203 | Click **alice** in the sidebar | Main panel navigates to **Chat** for alice (URL becomes `/chat/alice`) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-204 | Type `ali` in the **Search principals…** box | Only alice remains in the list | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
@@ -217,9 +228,9 @@ A **Principal** is a long-lived AI assistant — it owns its memory, identity, a
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-314 | Settings → Credentials → pick your provider → click **Delete** | Credential removed (no error) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-314 | Settings → **Credentials** → expand your provider card → click **Delete** on a credential row and confirm | Credential removed (no error) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-315 | Try to send a chat message | Reply area shows an error chip ("no API key" / similar); app does NOT crash | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-316 | Re-set the credential in Settings → paste key → **Save** | Saved without error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-316 | Re-set the credential in Settings → **Credentials** → expand the provider card → **Add credential** → paste key → **Save** | Saved without error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-317 | Send another chat message | Reply streams normally | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 ---
@@ -276,40 +287,52 @@ Skip this section if PekoHub login isn't configured.
 
 ### 8.1 Credentials tab
 
+> The Credentials tab is now an accordion of provider cards (RP6). Each
+> card shows the provider's display name, API type, enabled toggle,
+> default-provider star, edit pencil, and remove trash. Expanding a card
+> reveals the credentials stored under `provider:<id>`, a small form to
+> add another credential, and a rotation-binding panel for the provider's
+> default slot. Orphaned vault keys (credentials whose provider id no
+> longer matches the catalog) are surfaced below the accordion.
+
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-801 | Open Settings → **Credentials** | Provider dropdown lists providers you've added (e.g. `openai`) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-802 | Pick `openai`. Existing key shows as masked dots; input is editable | Key is **masked** in the display (•) — clear-text leak would be a security bug | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-803 | Click **Test** with the correct key | Success indicator (green ✓ / "ok") | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-804 | Replace the key with a deliberately wrong one, click **Test** | Failure indicator (red ✗ / "auth failed") | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-805 | Restore the correct key, save | Saved without error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-801 | Open Settings → **Credentials** | A list of provider cards appears (one per catalog entry). Built-in providers are shown even if they have no credentials yet. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-801a | If the list is empty, verify the empty-state message | A "No providers available" or equivalent empty state renders, with a button to open the Add Provider modal. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-802 | Click a provider card (or its chevron) to expand it | Expanded body shows: (1) existing credentials under that provider, (2) an **Add credential** form, (3) a **Rotation binding** panel. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If the provider has no models or no credentials, the relevant sections still render cleanly. |
+| T-803 | In the **Add credential** form, enter a name and API key, then click **Save** | A new credential row appears under the provider. The key value is **masked** (•) — clear-text leak would be a security bug. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-804 | Click **Test** on the newly added credential | Success indicator (green ✓ / "ok") | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-805 | Replace the key with a deliberately wrong one, click **Test** | Failure indicator (red ✗ / "auth failed") | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-806 | Click **Delete** on a credential row and confirm | Row disappears; no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-807 | Click the **Enabled** toggle on a provider card | Toggle flips; provider state is persisted (expand the card again or refresh to confirm). | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-808 | Click the **Set as default** star on a provider card | The star highlights; other providers' stars are no longer highlighted. The runtime's default provider has changed. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-808a | Click the **Edit** pencil on a provider card, change a field (e.g. display name), and save. | The **Edit Provider** modal opens pre-filled; after saving, the card reflects the change without a manual refresh. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-808b | Click the **Remove** trash on a custom-added provider and confirm | Provider card disappears from the accordion. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Built-in providers may not be removable; that's acceptable. |
+| T-809 | In the **Rotation binding** panel of an expanded provider, enter two comma-separated credential ids and click **Save binding** | Binding saved; panel shows the saved order. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-810 | Click **Test rotation** | Success indicator (the bound credentials are exercised). | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-811 | Click **Delete** in the rotation binding panel | Binding removed; panel returns to the empty form. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-812 | (Regression) create a credential with a typo'd provider namespace (e.g. via CLI `peko credential set miniax`) | The Credentials tab shows an **Orphaned vault keys** strip below the accordion with the typo'd provider id. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 ### 8.2 Runtimes tab
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-806 | Settings → **Runtimes** | At least one runtime listed: **local** with status `connected` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-807 | If you have a remote PekoHub runtime added, click **Reconnect** | Status goes `connecting` → `connected` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-821 | Settings → **Runtimes** | At least one runtime listed: **local** with status `connected` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-822 | If you have a remote PekoHub runtime added, click **Reconnect** | Status goes `connecting` → `connected` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
-### 8.3 General / Daemon / About
+### 8.3 General / About
 
-> The Daemon tab is now opt-in by route (Settings), not by an
-> arm-and-reveal toggle. The "Show internal status" two-click pattern
-> was removed in v0.3 — the engine is no longer a happy-path
-> decoration, so the diagnostics panel can be reachable directly.
-> The **Engine diagnostics** section lives below the **Log Level**
-> picker and shows: state, PID, version (actual), expected version,
-> **Match** row, uptime, lockfile, socket, launch mode, restart count,
-> recent log lines, and a **Restart engine** button.
+> The engine is invisible on the happy path. There is no **Daemon** tab in
+> Settings, and no exposed engine diagnostics panel. The only engine chrome
+> is the red **Engine couldn't start** recovery card that appears at the
+> top of the layout when the supervisor gives up. Engine details (PID,
+> lockfile, etc.) are intentionally not surfaced to end users.
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-808 | Settings → **General** | Form renders, values save when edited | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-809 | Settings → **Daemon** (engine surface) | Status card shows **Engine is running** with version + PID, plus a short note explaining "the engine starts automatically and restarts itself — no manual controls are needed." Below it: the **Log Level** picker, then the **Engine diagnostics** section (no two-click arm). Changes persist after restart of the app. **No** Start / Stop / Restart buttons. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If Start/Stop/Restart buttons are present, mark **M** — that surface was supposed to be removed in PR #30. If a "Show internal status" arm-and-reveal text is present, mark **m** — the arm pattern was removed in v0.3. |
-| T-809b | In the **Engine diagnostics** section, click **Restart engine** (button is enabled only when the desktop owns the engine). | Engine flips through `Restarting…` back to `Running` within ~5 seconds. PID is unchanged (the supervisor kept the same child process after a graceful cycle) or a fresh PID if a fork happened. The **Restart engine** button is enabled again. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reserved for support/dev — most users should just close and reopen the app. |
-| T-809c | With a CLI daemon borrowed (T-107), open Settings → **Daemon** → **Engine diagnostics**. | A **Borrowed from a CLI daemon** indigo banner is shown above the diagnostics grid. The **Restart engine** button is **disabled**. Hover the button — tooltip reads "Restart is disabled while the engine is borrowed from a CLI daemon. Run `peko daemon stop && peko daemon start` from the terminal, or close and reopen this window to spawn a fresh sidecar." | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Confirms the panel recognises adoption and refuses to kill a process the desktop does not own. |
-| T-810 | Settings → **About** | Shows peko-desktop version + peko-runtime version (real numbers, not "undefined") | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-810a | **Replay onboarding** — Settings → **About** has a **Replay onboarding** button (or equivalent). Click it. | The First-run walkthrough overlay re-opens. Closing it (Skip or complete) does NOT cause it to auto-reappear again unless the button is clicked again. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Escape hatch for the localStorage flag set by T-105. Without this, a tester who clicked Skip during T-105 cannot re-test the walkthrough without clearing localStorage by hand. |
+| T-831 | Settings → **General** | Form renders, values save when edited. No engine-related controls are present. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-832 | Settings → **About** | Shows peko-desktop version + peko-runtime version (real numbers, not "undefined") | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-833 | **Replay onboarding** — Settings → **About** has a **Replay onboarding** button (or equivalent). Click it. | The First-run walkthrough overlay re-opens. Closing it (Skip or complete) does NOT cause it to auto-reappear again unless the button is clicked again. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Escape hatch for the localStorage flag set by T-105. Without this, a tester who clicked Skip during T-105 cannot re-test the walkthrough without clearing localStorage by hand. |
 
 ---
 
@@ -353,19 +376,20 @@ Skip this section if PekoHub login isn't configured.
 
 > The supervisor owns the engine process. There is no `peko daemon stop` that
 > can usefully be run from the terminal — the desktop owns the bundled
-> binary, not the one on your PATH. To exercise crash recovery, kill the
-> sidecar's process directly (it's a regular OS process). In v0.3 there
-> is no header pill or Dashboard card to flip on recovery — the
-> supervisor restarts in the background and the chrome stays empty on
-> success. A **Failed** state surfaces as a layout-level recovery card
-> (the only place the engine is user-visible in the chrome).
+> binary, not the one on your PATH. To exercise crash recovery, find the
+> sidecar's process ID with `pgrep -f "peko daemon"` and kill it directly.
+> In v0.3 there is no header pill, Dashboard card, or Settings → Daemon
+> diagnostics panel — the supervisor restarts in the background and the
+> chrome stays empty on success. A **Failed** state surfaces as a
+> layout-level recovery card (the only place the engine is user-visible in
+> the chrome).
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-1203 | With the desktop open, note the engine PID (Settings → Daemon → Engine diagnostics → PID row). In a terminal: `kill -9 <pid>` (or `taskkill /F /PID <pid>` on Windows). | The chrome stays quiet (no header pill, no Dashboard card). Within ~2 seconds the supervisor's liveness loop restarts the engine. The status footer stays empty. A new chat send still works. The diagnostics panel may briefly show the PID row flipping. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The supervisor gives the engine exactly one auto-restart attempt before giving up. If a header pill or Dashboard card appears during recovery, mark **m** — v0.3 removed those. |
+| T-1203 | With the desktop open, find the engine PID (`pgrep -f "peko daemon"`). In a terminal: `kill -9 <pid>` (or `taskkill /F /PID <pid>` on Windows). | The chrome stays quiet (no header pill, no Dashboard card). Within ~2 seconds the supervisor's liveness loop restarts the engine. The status footer stays empty. A new chat send still works. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The supervisor gives the engine exactly one auto-restart attempt before giving up. If any engine chrome appears during recovery, mark **m** — v0.3 removed those surfaces. |
 | T-1204 | Kill the engine a second time within 30 seconds of the first kill. | A red **Engine couldn't start** recovery card appears at the top of the layout (above any page) with a **Restart engine** button. The status footer turns red. Subsequent chat sends fail gracefully with an error chip — the app does NOT crash. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Two fails in a row = supervisor gives up. This is intentional: a misconfigured box should not spin the CPU. The recovery card is the v0.3 user-visible surface for a `Failed` engine. |
-| T-1204a | In the **Failed** state, click **Restart engine** on the layout-level recovery card. | Card flips through `Restarting…` back to `Running` within ~5 seconds. The recovery card disappears, the status footer is empty again, chat works. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the supported way out of a `Failed` state without closing the desktop. |
-| T-1204b | Close and reopen the desktop (X then relaunch). | On relaunch the engine comes up fresh. The header has no engine pill, the Dashboard has no engine card, the status footer is empty. The Failed recovery card is gone. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The supported recovery path for end users. The layout-level Restart is for end users; the diagnostics-panel Restart is for support/dev. |
+| T-1204a | In the **Failed** state, click **Restart engine** on the layout-level recovery card. | Card flips through `Restarting…` back to `Running` within ~5 seconds. The recovery card disappears, the status footer is empty again, chat works. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the supported way out of a **Failed** state without closing the desktop. |
+| T-1204b | Close and reopen the desktop (X then relaunch). | On relaunch the engine comes up fresh. The header has no engine pill, the Dashboard has no engine card, the status footer is empty. The Failed recovery card is gone. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The supported recovery path for end users. |
 | T-1204c | (Optional, advanced) Force a version mismatch by editing the desktop's bundled `binaries/peko-<triple>` symlink to point at a deliberately mismatched runtime (e.g. `ln -sf /tmp/fake-peko binaries/peko-<triple>` where `/tmp/fake-peko` writes `PEKO_VERSION=99.0.0` to stderr). Restart the desktop. | On startup the engine reports a version that doesn't match the desktop's expected version. The header and Dashboard stay quiet (no engine chrome on the happy path); a yellow **Engine version mismatch** banner appears above the page content describing both versions. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reinstalling the desktop fixes the mismatch — the release process guarantees they stay in lockstep. |
 
 ### 12.3 Privacy boundary (ADR-042)
