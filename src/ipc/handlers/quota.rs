@@ -63,12 +63,13 @@ impl QuotaHandler {
     /// `QuotaState` (used counters, window bounds) and the
     /// `QuotaConfig` (limits + cycle) so the CLI can render the
     /// status without a second round-trip.
-    async fn quota_status_response(
-        &self,
-        request_id: u64,
-        principal_name: &str,
-    ) -> ResponsePacket {
-        let Some(principal) = self.host.principal_manager().get_by_name(principal_name).await else {
+    async fn quota_status_response(&self, request_id: u64, principal_name: &str) -> ResponsePacket {
+        let Some(principal) = self
+            .host
+            .principal_manager()
+            .get_by_name(principal_name)
+            .await
+        else {
             return ResponsePacket::Error {
                 request_id,
                 message: format!("principal not found: {principal_name}"),
@@ -89,11 +90,7 @@ impl QuotaHandler {
     /// registry is attached — the CLI surfaces this as a config
     /// problem (daemon not started with `--enable-peers` or
     /// equivalent).
-    async fn peer_status_response(
-        &self,
-        request_id: u64,
-        peer_id: &str,
-    ) -> ResponsePacket {
+    async fn peer_status_response(&self, request_id: u64, peer_id: &str) -> ResponsePacket {
         let Some(registry) = self.host.peer_registry() else {
             return ResponsePacket::Error {
                 request_id,

@@ -26,8 +26,7 @@ use crate::identity::runtime::RuntimeIdentity;
 use crate::identity::runtime_metadata::RuntimeMetadata;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
-    HostInfoResponse, KnownRuntimeResponse, RequestPacket, ResponsePacket,
-    RuntimeMetadataResponse,
+    HostInfoResponse, KnownRuntimeResponse, RequestPacket, ResponsePacket, RuntimeMetadataResponse,
 };
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
@@ -157,12 +156,7 @@ impl RequestHandler for RuntimeHandler {
                 display_name,
             } => {
                 let mut registry = self.host.known_runtimes().write().await;
-                registry.register(
-                    &runtime_id,
-                    &display_name,
-                    None,
-                    TrustLevel::Untrusted,
-                );
+                registry.register(&runtime_id, &display_name, None, TrustLevel::Untrusted);
                 let resolver = crate::common::paths::PathResolver::with_dirs(
                     self.host.config_dir(),
                     self.host.data_dir(),

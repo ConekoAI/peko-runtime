@@ -17,8 +17,8 @@
 //!   connections, not supervised child processes.
 
 use crate::common::vault::Vault;
-use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
 use crate::daemon::background_runtime::{BackgroundRuntimeManager, RuntimeState};
+use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
 use crate::extensions::mcp::protocol::{
     client::{ClientError, McpClient, ServerRequestHandler},
     config::{McpConfig, McpServerConfig, TransportType},
@@ -310,10 +310,10 @@ impl McpManager {
     ) -> Option<Arc<dyn ServerRequestHandler>> {
         let resolver = self.llm_resolver.as_ref()?;
         let meter = self.resolve_quota_meter(principal_id).await;
-        Some(Arc::new(SamplingRequestHandler::new(
-            Arc::clone(resolver),
-            meter,
-        )) as Arc<dyn ServerRequestHandler>)
+        Some(
+            Arc::new(SamplingRequestHandler::new(Arc::clone(resolver), meter))
+                as Arc<dyn ServerRequestHandler>,
+        )
     }
 
     /// F19: resolve the principal's quota meter from
@@ -441,11 +441,7 @@ impl McpManager {
     /// auto-start, `peko ext start`, etc.) — sampling will run
     /// without charging. Tool-call-driven auto-start passes the
     /// caller's `principal_id` so sampling charges the right meter.
-    pub async fn start_server(
-        &self,
-        name: &str,
-        principal_id: Option<&str>,
-    ) -> Result<()> {
+    pub async fn start_server(&self, name: &str, principal_id: Option<&str>) -> Result<()> {
         // First, check and fix stale state without holding a long-lived borrow.
         let is_managed: bool;
         {
@@ -501,7 +497,8 @@ impl McpManager {
                 // Delegate to BackgroundRuntimeManager via McpRuntimeAdapter
                 let config = handle.config.clone();
                 drop(servers); // release lock before async call
-                self.start_managed_server(name, &config, principal_id).await?;
+                self.start_managed_server(name, &config, principal_id)
+                    .await?;
                 let mut servers = self.servers.write().await;
                 if let Some(handle) = servers.get_mut(name) {
                     handle.state.running = true;
@@ -1397,6 +1394,9 @@ mod tests {
             msg.contains("no vault credential"),
             "expected missing-credential error, got: {msg}"
         );
-        assert!(msg.contains("mcp:remote/default"), "error should name the slot: {msg}");
+        assert!(
+            msg.contains("mcp:remote/default"),
+            "error should name the slot: {msg}"
+        );
     }
 }

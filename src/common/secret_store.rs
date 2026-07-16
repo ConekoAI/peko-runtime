@@ -269,5 +269,4 @@ mod tests {
         assert!(store.set("with space", &key).is_err());
         assert!(store.set("", &key).is_err());
     }
-
 }

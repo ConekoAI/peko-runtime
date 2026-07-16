@@ -86,10 +86,7 @@ pub fn synthesize_stream_from_blocking(
         input: response.usage.input,
         output: response.usage.output,
         total: response.usage.total,
-        cache_creation_input_tokens: response
-            .usage
-            .cache_creation_input_tokens
-            .unwrap_or(0),
+        cache_creation_input_tokens: response.usage.cache_creation_input_tokens.unwrap_or(0),
         cache_read_input_tokens: response.usage.cache_read_input_tokens.unwrap_or(0),
         reasoning_output_tokens: response.usage.reasoning_output_tokens.unwrap_or(0),
     }));

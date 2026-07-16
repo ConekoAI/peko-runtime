@@ -382,12 +382,7 @@ mod tests {
         let reserved =
             ReservedParamsConfig::new().with_vault("api_key", "mcp:my-server", "default");
 
-        let proxy = InjectableMcpToolProxy::new(
-            "my-server".to_string(),
-            tool,
-            manager,
-            reserved,
-        );
+        let proxy = InjectableMcpToolProxy::new("my-server".to_string(), tool, manager, reserved);
 
         let args = json!({"query": "hello"});
         let result = proxy

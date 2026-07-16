@@ -167,10 +167,7 @@ impl AgentTool {
     /// back to the global layout. Pass `None` for the legacy global-only
     /// lookup (standalone / test path).
     #[must_use]
-    pub fn with_workspace(
-        executor: Arc<SubagentExecutor>,
-        workspace: Option<PathBuf>,
-    ) -> Self {
+    pub fn with_workspace(executor: Arc<SubagentExecutor>, workspace: Option<PathBuf>) -> Self {
         Self {
             executor,
             workspace,
@@ -245,7 +242,9 @@ impl AgentTool {
         // registered (standalone / test path), fail-open to preserve existing
         // behavior.
         if let Some(caps) = self.executor.principal_capabilities() {
-            let required = crate::extensions::framework::types::Capability::new(format!("agent:{subagent_type}"));
+            let required = crate::extensions::framework::types::Capability::new(format!(
+                "agent:{subagent_type}"
+            ));
             if !caps.is_granted(&required) {
                 anyhow::bail!(
                     "Subagent '{}' is not enabled for this principal. \
@@ -718,8 +717,8 @@ Examples:
 mod tests {
     use super::*;
     use crate::extensions::framework::types::Capabilities;
-    use crate::subject::PrincipalId;
     use crate::session::manager::SessionManager;
+    use crate::subject::PrincipalId;
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -887,8 +886,7 @@ mod tests {
         // SAFETY: tests run single-threaded for the env var window.
         unsafe { std::env::set_var("PEKO_HOME", peko_home.path()) };
 
-        let global_agents_dir =
-            peko_home.path().join("agents").join("fallback-agent");
+        let global_agents_dir = peko_home.path().join("agents").join("fallback-agent");
         std::fs::create_dir_all(&global_agents_dir).unwrap();
         std::fs::write(
             global_agents_dir.join("config.toml"),
@@ -923,9 +921,13 @@ model_id = "gpt-4o"
             }
         }
 
-        let config = result.unwrap_or_else(|e| panic!("expected global fallback to succeed: {e:?}"));
+        let config =
+            result.unwrap_or_else(|e| panic!("expected global fallback to succeed: {e:?}"));
         assert_eq!(config.name, "Fallback Agent");
-        assert_eq!(config.description.as_deref(), Some("Global fallback for missing principal agent"));
+        assert_eq!(
+            config.description.as_deref(),
+            Some("Global fallback for missing principal agent")
+        );
     }
 
     /// Companion to the fallback test: when the workspace is bound but no

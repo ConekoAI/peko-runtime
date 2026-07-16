@@ -400,17 +400,19 @@ impl StatelessAgentService {
                     })
                     .collect();
 
-                Ok(crate::common::types::principal_message::PrincipalMessageResponse {
-                    content: result.response,
-                    session_id,
-                    is_new_session,
-                    usage: result.usage,
-                    tool_calls,
-                    duration_ms,
-                    iterations: result.iterations,
-                    success: result.success,
-                    error: result.error,
-                })
+                Ok(
+                    crate::common::types::principal_message::PrincipalMessageResponse {
+                        content: result.response,
+                        session_id,
+                        is_new_session,
+                        usage: result.usage,
+                        tool_calls,
+                        duration_ms,
+                        iterations: result.iterations,
+                        success: result.success,
+                        error: result.error,
+                    },
+                )
             }
             Err(e) => Err(e),
         }
@@ -1207,10 +1209,12 @@ mod tests {
 
     #[test]
     fn test_message_request_builder() {
-        let request = crate::common::types::principal_message::PrincipalMessageRequest::new("my-agent", "Hello")
-            .with_session("sess_123")
-            .with_new_session(false)
-            .with_timeout(60);
+        let request = crate::common::types::principal_message::PrincipalMessageRequest::new(
+            "my-agent", "Hello",
+        )
+        .with_session("sess_123")
+        .with_new_session(false)
+        .with_timeout(60);
 
         assert_eq!(request.agent_name, "my-agent");
         assert_eq!(request.message, "Hello");
@@ -1221,7 +1225,9 @@ mod tests {
 
     #[test]
     fn test_message_request_builder_defaults() {
-        let request = crate::common::types::principal_message::PrincipalMessageRequest::new("my-agent", "Hello");
+        let request = crate::common::types::principal_message::PrincipalMessageRequest::new(
+            "my-agent", "Hello",
+        );
 
         assert_eq!(request.agent_name, "my-agent");
         assert_eq!(request.message, "Hello");
@@ -1233,8 +1239,9 @@ mod tests {
     #[test]
     fn test_message_request_with_session_opt() {
         // Test with Some
-        let request1 = crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
-            .with_session_opt(Some("session-id".to_string()));
+        let request1 =
+            crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
+                .with_session_opt(Some("session-id".to_string()));
         assert_eq!(request1.session_id, Some("session-id".to_string()));
 
         // Test with None
@@ -1250,16 +1257,19 @@ mod tests {
 
     #[test]
     fn test_message_request_caller_agent_opt_filters_empty() {
-        let req1 = crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
-            .with_caller_agent_opt(Some("researcher".to_string()));
+        let req1 =
+            crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
+                .with_caller_agent_opt(Some("researcher".to_string()));
         assert_eq!(req1.caller_agent, Some("researcher".to_string()));
 
-        let req2 = crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
-            .with_caller_agent_opt(Some(String::new()));
+        let req2 =
+            crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
+                .with_caller_agent_opt(Some(String::new()));
         assert_eq!(req2.caller_agent, None);
 
-        let req3 = crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
-            .with_caller_agent_opt(None);
+        let req3 =
+            crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
+                .with_caller_agent_opt(None);
         assert_eq!(req3.caller_agent, None);
     }
 

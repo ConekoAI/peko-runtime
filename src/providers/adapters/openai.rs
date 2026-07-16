@@ -3,11 +3,11 @@
 //! Handles conversion between unified types and `OpenAI` Chat Completions API format.
 
 use super::{extract_text_content, role_to_string, ToolCallAccumulator};
-use crate::providers::transport::AuthConfig;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolDefinition,
 };
+use crate::providers::transport::AuthConfig;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

@@ -219,10 +219,7 @@ mod tests {
             .unwrap();
 
         let compactor = SessionCompactor::new();
-        let report = compactor
-            .dry_run(&session, 128_000, None)
-            .await
-            .unwrap();
+        let report = compactor.dry_run(&session, 128_000, None).await.unwrap();
 
         assert_eq!(report.message_count, 0);
         assert_eq!(report.messages_to_compact, 0);

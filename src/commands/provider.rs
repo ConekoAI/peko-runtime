@@ -34,11 +34,10 @@
 //!                   --model llama-3.1-8b
 //! ```
 
-use crate::commands::GlobalPaths;
 use crate::commands::credential::{
-    load_known_provider_ids, provider_rotate_add_cmd, provider_set_key_cmd,
-    validate_known_provider,
+    load_known_provider_ids, provider_rotate_add_cmd, provider_set_key_cmd, validate_known_provider,
 };
+use crate::commands::GlobalPaths;
 use crate::providers::catalog::{ApiFormat, ModelInfo, ProviderCatalog, ProviderCatalogEntry};
 use crate::providers::templates;
 use anyhow::{Context, Result};
@@ -765,7 +764,10 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            crate::commands::Commands::Provider(ProviderCommands::SetKey { provider, material }) => {
+            crate::commands::Commands::Provider(ProviderCommands::SetKey {
+                provider,
+                material,
+            }) => {
                 assert_eq!(provider, "anthropic");
                 assert_eq!(material.as_deref(), Some("sk-test"));
             }
@@ -785,7 +787,10 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            crate::commands::Commands::Provider(ProviderCommands::RotateAdd { provider, material }) => {
+            crate::commands::Commands::Provider(ProviderCommands::RotateAdd {
+                provider,
+                material,
+            }) => {
                 assert_eq!(provider, "anthropic");
                 assert_eq!(material.as_deref(), Some("sk-test"));
             }
@@ -825,7 +830,9 @@ mod tests {
 
         let passphrase = SecretString::new("test-provider-cmd".to_string().into());
         let vault = Vault::load_with_passphrase(paths.resolver().vault(), &passphrase).unwrap();
-        let stored = vault.get_provider_key("anthropic").expect("key should be stored");
+        let stored = vault
+            .get_provider_key("anthropic")
+            .expect("key should be stored");
         assert_eq!(stored.expose_secret(), "sk-ant-set-key");
     }
 

@@ -797,7 +797,8 @@ impl ExtensionTypeAdapter for McpAdapter {
             .map(|k| k.as_str())
             .unwrap_or(&manifest.name);
 
-        self.register_server_tools(core, server_name, principal_id).await
+        self.register_server_tools(core, server_name, principal_id)
+            .await
     }
 }
 
@@ -937,7 +938,11 @@ impl HookHandler for McpServerInitHandler {
         if let Some(core) = crate::extensions::framework::core::global_core() {
             let adapter = McpAdapter::new(self.manager.clone());
             match adapter
-                .register_server_tools(&core, &self.server_name, crate::subject::PrincipalId::system())
+                .register_server_tools(
+                    &core,
+                    &self.server_name,
+                    crate::subject::PrincipalId::system(),
+                )
                 .await
             {
                 Ok(count) => {
@@ -1414,7 +1419,11 @@ pub async fn load_and_register_servers(
             let _ = adapter.ensure_server_config(config_path).await;
         }
         match adapter
-            .register_server_tools(core, &server.manifest.name, crate::subject::PrincipalId::system())
+            .register_server_tools(
+                core,
+                &server.manifest.name,
+                crate::subject::PrincipalId::system(),
+            )
             .await
         {
             Ok(n) => total_tools += n,

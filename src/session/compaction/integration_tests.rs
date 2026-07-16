@@ -40,8 +40,7 @@ async fn test_dual_threshold_ratio_fires() {
     let context_window = catalog
         .model_context_length("openai", "gpt-4o")
         .await
-        .expect("gpt-4o context length is known")
-        as usize;
+        .expect("gpt-4o context length is known") as usize;
 
     let threshold = context_window.saturating_sub(config.reserve_tokens);
     let ratio = (threshold as f64 / context_window as f64) * 100.0;

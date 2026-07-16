@@ -322,7 +322,14 @@ impl CronEngine {
         };
 
         match pm
-            .receive(principal.id.clone(), peer, job.task_description(), channel, None, None)
+            .receive(
+                principal.id.clone(),
+                peer,
+                job.task_description(),
+                channel,
+                None,
+                None,
+            )
             .await
         {
             Ok(response) => {
@@ -613,6 +620,7 @@ mod tests {
     use crate::common::paths::PathResolver;
     use crate::engine::tool_runtime::ToolRuntime;
     use crate::extensions::framework::core::init_global_core;
+    use crate::principal::config::Exposure;
     use crate::principal::{
         Capabilities, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
@@ -621,7 +629,6 @@ mod tests {
     use crate::providers::mock::MockAdapter;
     use crate::providers::resolver::LlmResolver;
     use crate::subject::Subject;
-    use crate::principal::config::Exposure;
     use chrono::{Duration, Utc};
     use std::sync::Arc;
     use tempfile::TempDir;

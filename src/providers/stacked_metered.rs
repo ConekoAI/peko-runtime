@@ -42,8 +42,8 @@ use futures::StreamExt;
 
 use crate::common::types::message::LlmMessage;
 use crate::common::types::message::TokenUsage;
-use crate::quota::{QuotaMeter, QuotaScope};
 use crate::providers::traits::{ChatOptions, ToolDefinition};
+use crate::quota::{QuotaMeter, QuotaScope};
 
 use super::core::Provider;
 use super::traits::{ChatResponse, StreamEvent};
@@ -210,9 +210,7 @@ impl StackedMeteredProvider {
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
         options: &ChatOptions,
-    ) -> anyhow::Result<
-        Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>,
-    > {
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>> {
         let inner_stream = self
             .inner
             .stream_with_tools(model_id, messages, tools, options)
@@ -409,8 +407,8 @@ mod tests {
         // Inner meter has request_count=0 → trips on first call.
         // Outer meter has plenty of headroom.
         let (stacked, meters) = make_stacked(vec![
-            (None, None, Some(10)),  // outer: high cap, would accept
-            (None, None, Some(0)),   // inner: 0 cap, trips on first call
+            (None, None, Some(10)), // outer: high cap, would accept
+            (None, None, Some(0)),  // inner: 0 cap, trips on first call
         ])
         .await;
         let result = stacked
@@ -436,7 +434,7 @@ mod tests {
     async fn stacked_charges_skip_unlimited_meters() {
         let (stacked, meters) = make_stacked(vec![
             (Some(1_000_000), None, None), // limited
-            (None, None, None),             // unlimited (default config)
+            (None, None, None),            // unlimited (default config)
             (Some(1_000_000), None, None), // limited
         ])
         .await;

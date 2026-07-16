@@ -250,16 +250,13 @@ impl BuiltinToolAdapter {
         let cron_disabled = disabled_set.contains("cron");
         if config.enable_cron {
             if !cron_disabled && !disabled_set.contains("croncreate") {
-                Self::register_tool_system(core, Arc::new(CronCreateTool::new()))
-                    .await?;
+                Self::register_tool_system(core, Arc::new(CronCreateTool::new())).await?;
             }
             if !cron_disabled && !disabled_set.contains("crondelete") {
-                Self::register_tool_system(core, Arc::new(CronDeleteTool::new()))
-                    .await?;
+                Self::register_tool_system(core, Arc::new(CronDeleteTool::new())).await?;
             }
             if !cron_disabled && !disabled_set.contains("cronlist") {
-                Self::register_tool_system(core, Arc::new(CronListTool::new()))
-                    .await?;
+                Self::register_tool_system(core, Arc::new(CronListTool::new())).await?;
             }
         }
 

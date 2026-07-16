@@ -264,8 +264,7 @@ impl McpRuntimeStarter {
                 Arc::new(SamplingRequestHandler::new(
                     Arc::clone(resolver),
                     Arc::new(crate::quota::QuotaMeter::unlimited()),
-                ))
-                    as Arc<dyn ServerRequestHandler>
+                )) as Arc<dyn ServerRequestHandler>
             });
 
         let adapter = Arc::new(McpRuntimeAdapter::new(

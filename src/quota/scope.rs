@@ -102,7 +102,9 @@ impl QuotaScope {
     where
         F: Future<Output = T>,
     {
-        let existing = QUOTA_METER_STACK.try_with(|s| s.clone()).unwrap_or_default();
+        let existing = QUOTA_METER_STACK
+            .try_with(|s| s.clone())
+            .unwrap_or_default();
         let mut next = existing;
         next.push(meter);
         QUOTA_METER_STACK.scope(next, fut).await
@@ -129,29 +131,32 @@ impl QuotaScope {
     /// to charge every meter in the stack on every LLM call.
     #[must_use]
     pub fn collect_stack() -> Vec<Arc<QuotaMeter>> {
-        QUOTA_METER_STACK.try_with(|s| s.clone()).unwrap_or_default()
+        QUOTA_METER_STACK
+            .try_with(|s| s.clone())
+            .unwrap_or_default()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use crate::quota::QuotaConfig;
+    use chrono::Utc;
 
     #[tokio::test]
     async fn with_makes_meter_current_inside_scope() {
-        let meter = Arc::new(QuotaMeter::load_or_init(
-            QuotaConfig::default(),
-            None,
-            Utc::now(),
-        ).await.unwrap());
+        let meter = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
 
         QuotaScope::with(meter.clone(), async {
             let current = QuotaScope::current();
             assert!(current.is_some(), "scope must be active");
             assert!(Arc::ptr_eq(&current.unwrap(), &meter));
-        }).await;
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -162,50 +167,53 @@ mod tests {
 
     #[tokio::test]
     async fn scope_does_not_leak_after_await() {
-        let meter = Arc::new(QuotaMeter::load_or_init(
-            QuotaConfig::default(),
-            None,
-            Utc::now(),
-        ).await.unwrap());
+        let meter = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
 
         QuotaScope::with(meter, async {
             // After the inner scope returns, no scope is active.
-        }).await;
+        })
+        .await;
         assert!(QuotaScope::current().is_none());
     }
 
     #[tokio::test]
     async fn nested_scope_uses_inner_meter() {
-        let outer = Arc::new(QuotaMeter::load_or_init(
-            QuotaConfig::default(),
-            None,
-            Utc::now(),
-        ).await.unwrap());
-        let inner = Arc::new(QuotaMeter::load_or_init(
-            QuotaConfig::default(),
-            None,
-            Utc::now(),
-        ).await.unwrap());
+        let outer = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
+        let inner = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
 
         QuotaScope::with(outer.clone(), async {
             assert!(Arc::ptr_eq(&QuotaScope::current().unwrap(), &outer));
             QuotaScope::with(inner.clone(), async {
                 // Inner scope shadows outer — current() returns inner.
                 assert!(Arc::ptr_eq(&QuotaScope::current().unwrap(), &inner));
-            }).await;
+            })
+            .await;
             // Back to outer.
             assert!(Arc::ptr_eq(&QuotaScope::current().unwrap(), &outer));
-        }).await;
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn scope_propagates_through_await() {
         // The task-local survives `.await` points within the same task.
-        let meter = Arc::new(QuotaMeter::load_or_init(
-            QuotaConfig::default(),
-            None,
-            Utc::now(),
-        ).await.unwrap());
+        let meter = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
 
         QuotaScope::with(meter.clone(), async {
             // Suspend and resume — scope must still be active.
@@ -213,7 +221,8 @@ mod tests {
             let current = QuotaScope::current();
             assert!(current.is_some());
             assert!(Arc::ptr_eq(&current.unwrap(), &meter));
-        }).await;
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -222,11 +231,11 @@ mod tests {
         // a new task that does NOT inherit the parent's task-local.
         // The compactor worker and subagent executor must each
         // re-open `QuotaScope::with` inside their spawned futures.
-        let meter = Arc::new(QuotaMeter::load_or_init(
-            QuotaConfig::default(),
-            None,
-            Utc::now(),
-        ).await.unwrap());
+        let meter = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
 
         let observed_in_spawn = Arc::new(std::sync::Mutex::new(true));
 
@@ -235,8 +244,11 @@ mod tests {
             let observed = Arc::clone(&observed_in_spawn);
             let _handle = tokio::spawn(async move {
                 *observed.lock().unwrap() = QuotaScope::current().is_some();
-            }).await.unwrap();
-        }).await;
+            })
+            .await
+            .unwrap();
+        })
+        .await;
 
         // Inside the spawned task, no scope was active.
         assert!(
@@ -258,16 +270,16 @@ mod tests {
     /// returns the full vec with the outermost first.
     #[tokio::test]
     async fn collect_stack_walks_nested_scopes_in_order() {
-        let outer = Arc::new(QuotaMeter::load_or_init(
-            QuotaConfig::default(),
-            None,
-            Utc::now(),
-        ).await.unwrap());
-        let inner = Arc::new(QuotaMeter::load_or_init(
-            QuotaConfig::default(),
-            None,
-            Utc::now(),
-        ).await.unwrap());
+        let outer = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
+        let inner = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
 
         QuotaScope::with(outer.clone(), async {
             QuotaScope::with(inner.clone(), async {
@@ -278,13 +290,15 @@ mod tests {
                 // current() returns the innermost (most recent push).
                 let cur = QuotaScope::current().unwrap();
                 assert!(Arc::ptr_eq(&cur, &inner));
-            }).await;
+            })
+            .await;
 
             // After the inner scope returns, only the outer remains.
             let stack = QuotaScope::collect_stack();
             assert_eq!(stack.len(), 1);
             assert!(Arc::ptr_eq(&stack[0], &outer));
-        }).await;
+        })
+        .await;
 
         // After both scopes return, the stack is empty.
         assert!(QuotaScope::collect_stack().is_empty());
@@ -294,9 +308,21 @@ mod tests {
     /// Foreshadows future dimensions (org → tenant → principal → peer).
     #[tokio::test]
     async fn collect_stack_preserves_three_levels() {
-        let a = Arc::new(QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now()).await.unwrap());
-        let b = Arc::new(QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now()).await.unwrap());
-        let c = Arc::new(QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now()).await.unwrap());
+        let a = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
+        let b = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
+        let c = Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, Utc::now())
+                .await
+                .unwrap(),
+        );
 
         QuotaScope::with(a.clone(), async {
             QuotaScope::with(b.clone(), async {
@@ -306,8 +332,11 @@ mod tests {
                     assert!(Arc::ptr_eq(&stack[0], &a));
                     assert!(Arc::ptr_eq(&stack[1], &b));
                     assert!(Arc::ptr_eq(&stack[2], &c));
-                }).await;
-            }).await;
-        }).await;
+                })
+                .await;
+            })
+            .await;
+        })
+        .await;
     }
 }

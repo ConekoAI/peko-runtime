@@ -179,13 +179,11 @@ impl Agent {
         // `<workspace>/agents/<name>/AGENT.md`. Otherwise the `Agent` tool
         // resolves from the global agent registry only.
         let workspace = self.principal_workspace.clone();
-        tools.push(Arc::new(
-            AgentTool::with_workspace_and_session(
-                self.subagent_executor.clone(),
-                workspace,
-                Box::new(self.session_key_provider.clone()),
-            ),
-        ));
+        tools.push(Arc::new(AgentTool::with_workspace_and_session(
+            self.subagent_executor.clone(),
+            workspace,
+            Box::new(self.session_key_provider.clone()),
+        )));
 
         // Add planning todo (Task*) tools backed by the agent's session storage.
         if self.config.enable_task_tools {
@@ -273,7 +271,10 @@ impl Agent {
         if let Some(caps) = self.principal_capabilities.as_ref() {
             let before_count = tools.len();
             tools.retain(|tool| {
-                let required = crate::extensions::framework::types::Capability::new(format!("tool:{}", tool.name()));
+                let required = crate::extensions::framework::types::Capability::new(format!(
+                    "tool:{}",
+                    tool.name()
+                ));
                 caps.is_granted(&required)
             });
             tracing::debug!("Filtered {} tools to {}", before_count, tools.len());
@@ -726,7 +727,9 @@ impl Agent {
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<crate::providers::Provider>>,
         principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
-        principal_active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
+        principal_active_extensions: Option<
+            crate::extensions::framework::types::ActiveExtensionSet,
+        >,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
         let extension_core = global_core().expect("Global ExtensionCore not initialized");
@@ -863,7 +866,10 @@ impl Agent {
             AgentState::Idle => self.state.set_idle(),
             AgentState::Busy => self.state.set_busy(),
         }
-        debug!("Agent {} state: {:?} -> {:?}", self.config.name, prev, state);
+        debug!(
+            "Agent {} state: {:?} -> {:?}",
+            self.config.name, prev, state
+        );
     }
 
     /// Get the provider as an `Arc`.
@@ -961,7 +967,15 @@ impl Agent {
         // an unlimited meter (no charging, no persistence).
         let quota_meter = Arc::new(crate::quota::QuotaMeter::unlimited());
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, session_key, None, None, quota_meter, None)
+            .build_agentic_loop(
+                agent_arc,
+                provider,
+                session_key,
+                None,
+                None,
+                quota_meter,
+                None,
+            )
             .await?;
 
         let result = match loop_.run(prompt, on_event).await {
@@ -1032,7 +1046,15 @@ impl Agent {
         let quota_meter =
             quota_meter.unwrap_or_else(|| Arc::new(crate::quota::QuotaMeter::unlimited()));
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, Some(session_id), None, cancel, quota_meter, peer_meter)
+            .build_agentic_loop(
+                agent_arc,
+                provider,
+                Some(session_id),
+                None,
+                cancel,
+                quota_meter,
+                peer_meter,
+            )
             .await?;
 
         let result = match loop_
@@ -1122,7 +1144,15 @@ impl Agent {
         let quota_meter =
             quota_meter.unwrap_or_else(|| Arc::new(crate::quota::QuotaMeter::unlimited()));
         let loop_ = match self
-            .build_agentic_loop(agent_arc, provider, session_id, caller_id, cancel, quota_meter, peer_meter)
+            .build_agentic_loop(
+                agent_arc,
+                provider,
+                session_id,
+                caller_id,
+                cancel,
+                quota_meter,
+                peer_meter,
+            )
             .await
         {
             Ok(loop_) => loop_,
@@ -1179,7 +1209,15 @@ impl Agent {
         // F19: same unlimited fallback as the other `execute_*` paths.
         let quota_meter = Arc::new(crate::quota::QuotaMeter::unlimited());
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, session_id, caller_id, None, quota_meter, None)
+            .build_agentic_loop(
+                agent_arc,
+                provider,
+                session_id,
+                caller_id,
+                None,
+                quota_meter,
+                None,
+            )
             .await?;
 
         let streaming_config = crate::engine::OrchestratorConfig::live();
@@ -1420,7 +1458,9 @@ impl Agent {
     /// `None` means the agent is unbound and no capability-based
     /// filtering is applied.
     #[must_use]
-    pub fn principal_capabilities(&self) -> Option<&Arc<crate::extensions::framework::types::Capabilities>> {
+    pub fn principal_capabilities(
+        &self,
+    ) -> Option<&Arc<crate::extensions::framework::types::Capabilities>> {
         self.principal_capabilities.as_ref()
     }
 
@@ -1429,7 +1469,9 @@ impl Agent {
     /// The engine consults this set at tool execution time to verify
     /// that the tool's owning extension is active.
     #[must_use]
-    pub fn principal_active_extensions(&self) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
+    pub fn principal_active_extensions(
+        &self,
+    ) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
         self.principal_active_extensions.as_ref()
     }
 

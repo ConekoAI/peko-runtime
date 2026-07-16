@@ -28,9 +28,9 @@ use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::observability::Observability;
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
-use crate::subject::PrincipalId;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
+use crate::subject::PrincipalId;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 
 use super::Capabilities;
@@ -321,12 +321,9 @@ async fn install_principal_tool_bag(
     // Per-principal enablement and workspace state are resolved at handle
     // time from the `ToolContext` carried with each invocation. Scoped to
     // this principal_id so concurrent principals each see their own Skill.
-    if let Err(e) = BuiltinToolAdapter::register_tool(
-        core.as_ref(),
-        Arc::new(SkillTool::new()),
-        principal_id,
-    )
-    .await
+    if let Err(e) =
+        BuiltinToolAdapter::register_tool(core.as_ref(), Arc::new(SkillTool::new()), principal_id)
+            .await
     {
         tracing::warn!("SkillTool registration failed during core build: {e}");
     }

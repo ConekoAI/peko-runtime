@@ -134,24 +134,22 @@ impl RequestHandler for ProviderMcpHandler {
                 }
             }
 
-            RequestPacket::McpReload { request_id } => {
-                match self.host.reload_mcp_config().await {
-                    Ok(servers_count) => {
-                        let response = ResponsePacket::McpReloaded {
-                            request_id,
-                            servers_count,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("mcp reload failed: {e}"),
-                        };
-                        send_response(sink, response).await?;
-                    }
+            RequestPacket::McpReload { request_id } => match self.host.reload_mcp_config().await {
+                Ok(servers_count) => {
+                    let response = ResponsePacket::McpReloaded {
+                        request_id,
+                        servers_count,
+                    };
+                    send_response(sink, response).await?;
                 }
-            }
+                Err(e) => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("mcp reload failed: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                }
+            },
 
             // `matches()` returned true, so the exhaustive list above
             // covers every owned variant. This arm is unreachable.
@@ -205,6 +203,7 @@ mod tests {
             models: vec![],
             default_model_id: "claude-sonnet-4-5".to_string(),
             headers: Default::default(),
+            is_default: false,
         }
     }
 
@@ -220,6 +219,7 @@ mod tests {
             models: vec![],
             default_model_id: "llama3.1".to_string(),
             headers: Default::default(),
+            is_default: false,
         }
     }
 
@@ -236,6 +236,7 @@ mod tests {
             models: vec![],
             default_model_id: "MiniMax-M3".to_string(),
             headers: Default::default(),
+            is_default: false,
         }
     }
 
@@ -263,11 +264,7 @@ mod tests {
         // host, so we stage the equivalent rows here and assert the
         // wire shape — including `api_format`, `base_url`, `enabled`,
         // `default_model_id`, and `models`.
-        let host = StubHost(vec![
-            anthropic_info(),
-            ollama_info(),
-            disabled_info(),
-        ]);
+        let host = StubHost(vec![anthropic_info(), ollama_info(), disabled_info()]);
         let handler = ProviderMcpHandler::new(Arc::new(host));
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
@@ -339,10 +336,7 @@ mod tests {
 
         // The disabled row must round-trip `enabled = false`.
         let disabled = &providers[2];
-        assert_eq!(
-            disabled.get("id").and_then(|v| v.as_str()),
-            Some("minimax")
-        );
+        assert_eq!(disabled.get("id").and_then(|v| v.as_str()), Some("minimax"));
         assert_eq!(
             disabled.get("enabled").and_then(|v| v.as_bool()),
             Some(false)
@@ -367,6 +361,7 @@ mod tests {
             models: vec![],
             default_model_id: "custom-model".to_string(),
             headers: Default::default(),
+            is_default: false,
         };
         let host = StubHost(vec![custom.clone()]);
         let handler = ProviderMcpHandler::new(Arc::new(host));

@@ -61,8 +61,7 @@ impl RequestHandler for InstanceHandler {
     fn matches(&self, request: &RequestPacket) -> bool {
         matches!(
             request,
-            RequestPacket::InstanceSetStatus { .. }
-                | RequestPacket::InstanceSetExposure { .. }
+            RequestPacket::InstanceSetStatus { .. } | RequestPacket::InstanceSetExposure { .. }
         )
     }
 

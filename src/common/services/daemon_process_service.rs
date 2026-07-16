@@ -88,7 +88,11 @@ impl DaemonProcessService {
     ///   dir from racing on the same lockfile.
     #[must_use]
     pub fn pid_file_path(&self, sidecar_mode: bool) -> PathBuf {
-        let name = if sidecar_mode { "desktop.lock" } else { "daemon.pid" };
+        let name = if sidecar_mode {
+            "desktop.lock"
+        } else {
+            "daemon.pid"
+        };
         self.resolver.config_dir().join("run").join(name)
     }
 
@@ -314,8 +318,12 @@ impl DaemonProcessService {
     /// within the timeout.
     pub async fn spawn_daemon(&self, interval_secs: u64) -> anyhow::Result<Child> {
         // Backwards-compatible wrapper: defaults to the runtime default cap.
-        self.spawn_daemon_with(interval_secs, crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS, false)
-            .await
+        self.spawn_daemon_with(
+            interval_secs,
+            crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
+            false,
+        )
+        .await
     }
 
     /// Spawn the daemon as a background child process.
@@ -534,7 +542,8 @@ mod tests {
     /// `is_sidecar_lock_held` returns false when no lockfile exists.
     #[test]
     fn test_is_sidecar_lock_held_no_file() {
-        let temp_dir = std::env::temp_dir().join(format!("PEKO_test_sidecar_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("PEKO_test_sidecar_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 

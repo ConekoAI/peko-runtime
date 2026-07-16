@@ -13,6 +13,7 @@ pub mod routers;
 pub mod slash;
 
 pub use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, Capability};
+pub use crate::quota::QuotaMeter;
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use capability_evaluator::CapabilityEvaluator;
@@ -21,7 +22,6 @@ pub use config::{
     PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
     PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
 };
-pub use crate::quota::QuotaMeter;
 pub use context::PrincipalContext;
 pub use extension_store::{ExtensionCatalog, ExtensionCatalogItem};
 pub use factory::{
@@ -29,8 +29,8 @@ pub use factory::{
     PrincipalMemoryFactory, PrincipalRouterFactory,
 };
 pub use manager::{PrincipalManager, PrincipalManagerError};
-pub use peer::{Peer, PeerConfig, PeerError, PeerRegistry};
 pub use memory::{MemoryError, PrincipalMemory, SessionArtifact};
+pub use peer::{Peer, PeerConfig, PeerError, PeerRegistry};
 pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,
     PrincipalRouter, RouteDecision, RouterContext, RouterError,
@@ -143,5 +143,3 @@ fn synthetic_local_did(name: &str, id: &PrincipalId) -> PrincipalDID {
 // longer required just to host this test.
 #[cfg(all(test, feature = "test-utils"))]
 mod tests;
-
-

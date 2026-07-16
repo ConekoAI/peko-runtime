@@ -224,7 +224,11 @@ impl QuotaMeter {
         //    the guard, then await the save — holding the mutex
         //    across an await point would make this non-Send.
         if let Some(path) = self.state_path.clone() {
-            let snapshot = self.state.lock().expect("quota state mutex poisoned").clone();
+            let snapshot = self
+                .state
+                .lock()
+                .expect("quota state mutex poisoned")
+                .clone();
             if let Err(e) = snapshot.save(&path).await {
                 tracing::warn!("failed to persist quota state to {}: {}", path.display(), e);
             }
@@ -248,7 +252,11 @@ impl QuotaMeter {
             state.request_count = 0;
         }
         if let Some(path) = self.state_path.clone() {
-            let snapshot = self.state.lock().expect("quota state mutex poisoned").clone();
+            let snapshot = self
+                .state
+                .lock()
+                .expect("quota state mutex poisoned")
+                .clone();
             if let Err(e) = snapshot.save(&path).await {
                 tracing::warn!("failed to persist quota state to {}: {}", path.display(), e);
             }
@@ -259,7 +267,10 @@ impl QuotaMeter {
     /// quota status` to render the running totals.
     #[must_use]
     pub fn snapshot(&self) -> QuotaState {
-        self.state.lock().expect("quota state mutex poisoned").clone()
+        self.state
+            .lock()
+            .expect("quota state mutex poisoned")
+            .clone()
     }
 
     /// View of the configured limits (the `[quota]` TOML block).
@@ -268,10 +279,7 @@ impl QuotaMeter {
         // Return a clone so callers can use the value without
         // holding the lock (and without `&self.config` lifetime
         // gymnastics). The struct is small and Clone is cheap.
-        self.config
-            .lock()
-            .expect("quota config poisoned")
-            .clone()
+        self.config.lock().expect("quota config poisoned").clone()
     }
 
     /// Where state is persisted, if at all.
@@ -293,10 +301,7 @@ impl QuotaMeter {
     /// fresh window, callers should follow up with
     /// [`Self::reset`].
     pub fn set_config(&self, new_config: QuotaConfig) {
-        *self
-            .config
-            .lock()
-            .expect("quota config poisoned") = new_config;
+        *self.config.lock().expect("quota config poisoned") = new_config;
     }
 
     /// F19: sync version of [`Self::charge`]. Used by the streaming
@@ -343,7 +348,9 @@ mod tests {
     use tempfile::TempDir;
 
     fn ts(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(year, month, day, hour, min, sec).single().unwrap()
+        Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
+            .single()
+            .unwrap()
     }
 
     fn cfg(input: Option<u64>, output: Option<u64>, requests: Option<u64>) -> QuotaConfig {
@@ -398,13 +405,10 @@ mod tests {
         // limit=100 means up to 100 input tokens per window are
         // allowed; the 101st trips. Two charges of 60 each sum to
         // 120, exceeding 100.
-        let meter = QuotaMeter::load_or_init(
-            cfg(Some(100), None, None),
-            None,
-            ts(2026, 7, 12, 14, 0, 0),
-        )
-        .await
-        .unwrap();
+        let meter =
+            QuotaMeter::load_or_init(cfg(Some(100), None, None), None, ts(2026, 7, 12, 14, 0, 0))
+                .await
+                .unwrap();
         meter.charge(&usage(60, 0)).await.unwrap();
         let err = meter.charge(&usage(60, 0)).await.unwrap_err();
         match err {
@@ -419,13 +423,10 @@ mod tests {
     #[tokio::test]
     async fn charge_trips_output_limit() {
         // limit=50 output tokens; one charge of 60 trips.
-        let meter = QuotaMeter::load_or_init(
-            cfg(None, Some(50), None),
-            None,
-            ts(2026, 7, 12, 14, 0, 0),
-        )
-        .await
-        .unwrap();
+        let meter =
+            QuotaMeter::load_or_init(cfg(None, Some(50), None), None, ts(2026, 7, 12, 14, 0, 0))
+                .await
+                .unwrap();
         let err = meter.charge(&usage(0, 60)).await.unwrap_err();
         match err {
             QuotaError::OutputTokensExceeded { used, limit, .. } => {
@@ -439,13 +440,10 @@ mod tests {
     #[tokio::test]
     async fn charge_trips_request_count_limit() {
         // limit=2 means up to 2 requests per window; the 3rd trips.
-        let meter = QuotaMeter::load_or_init(
-            cfg(None, None, Some(2)),
-            None,
-            ts(2026, 7, 12, 14, 0, 0),
-        )
-        .await
-        .unwrap();
+        let meter =
+            QuotaMeter::load_or_init(cfg(None, None, Some(2)), None, ts(2026, 7, 12, 14, 0, 0))
+                .await
+                .unwrap();
         meter.charge(&usage(10, 10)).await.unwrap();
         meter.charge(&usage(10, 10)).await.unwrap();
         let err = meter.charge(&usage(10, 10)).await.unwrap_err();
@@ -482,13 +480,9 @@ mod tests {
         // `advance_if_needed` call gets to assert behavior. Pinning
         // to `now` keeps the test self-consistent across days.
         let start = Utc::now();
-        let meter = QuotaMeter::load_or_init(
-            cfg(Some(100), Some(100), Some(100)),
-            None,
-            start,
-        )
-        .await
-        .unwrap();
+        let meter = QuotaMeter::load_or_init(cfg(Some(100), Some(100), Some(100)), None, start)
+            .await
+            .unwrap();
         meter.charge(&usage(80, 80)).await.unwrap();
         assert_eq!(meter.snapshot().input_tokens, 80);
 
@@ -503,10 +497,16 @@ mod tests {
         // `window_bounds` floors `now` to the hour, so the new
         // window is `[floor(next.hour), floor(next.hour) + 1h)`.
         let expected_start = next
-            .with_minute(0).unwrap()
-            .with_second(0).unwrap()
-            .with_nanosecond(0).unwrap();
-        assert_eq!(snap.window_start, expected_start, "window_start should be the hour boundary");
+            .with_minute(0)
+            .unwrap()
+            .with_second(0)
+            .unwrap()
+            .with_nanosecond(0)
+            .unwrap();
+        assert_eq!(
+            snap.window_start, expected_start,
+            "window_start should be the hour boundary"
+        );
         assert_eq!(
             snap.window_end,
             expected_start + chrono::Duration::hours(1),
@@ -559,13 +559,14 @@ mod tests {
         // Reload with a Daily cycle.
         let mut cfg_daily = m2.config().clone();
         cfg_daily.cycle = QuotaCycle::Daily;
-        let m3 = QuotaMeter::load_or_init(cfg_daily, Some(path.clone()), ts(2026, 7, 12, 14, 30, 0))
-            .await
-            .unwrap();
+        let m3 =
+            QuotaMeter::load_or_init(cfg_daily, Some(path.clone()), ts(2026, 7, 12, 14, 30, 0))
+                .await
+                .unwrap();
         let _ = m3; // Silence unused warning.
-        // Drift is detected inside `charge`'s advance step; verify
-        // by manually invoking advance_if_needed on a meter whose
-        // config has drifted from its persisted state.
+                    // Drift is detected inside `charge`'s advance step; verify
+                    // by manually invoking advance_if_needed on a meter whose
+                    // config has drifted from its persisted state.
         let m4 = QuotaMeter::load_or_init(
             cfg(Some(100), Some(100), Some(100)),
             Some(path.clone()),
@@ -578,7 +579,11 @@ mod tests {
         // charge triggers drift-detection advance.
         m4.charge(&usage(0, 0)).await.unwrap();
         let snap = m4.snapshot();
-        assert_eq!(snap.cycle, QuotaCycle::Hourly, "drift should have reset to new config's cycle");
+        assert_eq!(
+            snap.cycle,
+            QuotaCycle::Hourly,
+            "drift should have reset to new config's cycle"
+        );
     }
 
     #[tokio::test]
@@ -601,12 +606,16 @@ mod tests {
 
     #[tokio::test]
     async fn no_config_means_unlimited() {
-        let meter = QuotaMeter::load_or_init(QuotaConfig::default(), None, ts(2026, 7, 12, 14, 0, 0))
-            .await
-            .unwrap();
+        let meter =
+            QuotaMeter::load_or_init(QuotaConfig::default(), None, ts(2026, 7, 12, 14, 0, 0))
+                .await
+                .unwrap();
         // Even pathological usage shouldn't trip anything.
         for _ in 0..1000 {
-            meter.charge(&usage(u64::MAX / 2, u64::MAX / 2)).await.unwrap();
+            meter
+                .charge(&usage(u64::MAX / 2, u64::MAX / 2))
+                .await
+                .unwrap();
         }
         assert!(!meter.is_exhausted());
     }
@@ -617,13 +626,10 @@ mod tests {
         // cache reads/writes and reasoning into `input` / `output`
         // via `TokenUsage::accumulate`. We test that pre-folded
         // usage trips the input_tokens limit correctly.
-        let meter = QuotaMeter::load_or_init(
-            cfg(Some(100), None, None),
-            None,
-            ts(2026, 7, 12, 14, 0, 0),
-        )
-        .await
-        .unwrap();
+        let meter =
+            QuotaMeter::load_or_init(cfg(Some(100), None, None), None, ts(2026, 7, 12, 14, 0, 0))
+                .await
+                .unwrap();
         let u = TokenUsage {
             // Simulates a caller who has already run
             // `accumulate()`: 60 non-cached input + 20 cache

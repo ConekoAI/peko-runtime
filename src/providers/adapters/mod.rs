@@ -6,10 +6,10 @@
 //! - OpenAI-Compatible: Same as `OpenAI` with different base URL
 
 use crate::providers::mock::MockAdapter;
-use crate::providers::transport::AuthConfig;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StreamEvent, ToolDefinition,
 };
+use crate::providers::transport::AuthConfig;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;

@@ -36,12 +36,12 @@ use crate::extensions::framework::async_exec::executor::{
     AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
     SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
 };
-use crate::observability::Observability;
 use crate::extensions::framework::types::Capabilities;
-use crate::subject::PrincipalId;
+use crate::observability::Observability;
 use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 use crate::session::types::SpawnCleanupPolicy;
+use crate::subject::PrincipalId;
 
 /// Channel for announcing completed subagent runs
 pub type AnnouncementSender = mpsc::Sender<CompletedRun>;
@@ -228,7 +228,9 @@ impl SubagentExecutor {
 
     /// Get the active extension set, if bound.
     #[must_use]
-    pub fn active_extensions(&self) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
+    pub fn active_extensions(
+        &self,
+    ) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
         self.active_extensions.as_ref()
     }
 

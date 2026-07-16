@@ -15,8 +15,8 @@ use crate::commands::GlobalPaths;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use crate::quota::{QuotaConfig, QuotaCycle, QuotaState};
 use anyhow::{Context, Result};
-use clap::Subcommand;
 use chrono::{DateTime, Utc};
+use clap::Subcommand;
 use std::str::FromStr;
 
 /// Quota management subcommands.
@@ -95,10 +95,12 @@ impl FromStr for QuotaCycle {
             "daily" => Ok(Self::Daily),
             "weekly" => Ok(Self::Weekly),
             "monthly" => Ok(Self::Monthly),
-            other => Err(Box::leak(format!(
-                "invalid quota cycle '{other}': expected hourly, daily, weekly, or monthly"
-            )
-            .into_boxed_str())),
+            other => Err(Box::leak(
+                format!(
+                    "invalid quota cycle '{other}': expected hourly, daily, weekly, or monthly"
+                )
+                .into_boxed_str(),
+            )),
         }
     }
 }
@@ -110,11 +112,7 @@ async fn connect_daemon() -> Result<DaemonClient> {
 }
 
 /// Top-level dispatcher for `peko quota <sub>`.
-pub async fn handle_quota(
-    cmd: QuotaCommands,
-    _paths: &GlobalPaths,
-    json: bool,
-) -> Result<()> {
+pub async fn handle_quota(cmd: QuotaCommands, _paths: &GlobalPaths, json: bool) -> Result<()> {
     match cmd {
         QuotaCommands::Status { name, peer } => status(name, peer, json).await,
         QuotaCommands::Set {
@@ -226,8 +224,10 @@ async fn reset(name: String, is_peer: bool, json: bool) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&snapshot)?);
             } else {
                 let target = if is_peer { "peer" } else { "principal" };
-                println!("✅ Quota reset for {target} '{name}' — fresh window started at {}.",
-                         state.window_start.to_rfc3339());
+                println!(
+                    "✅ Quota reset for {target} '{name}' — fresh window started at {}.",
+                    state.window_start.to_rfc3339()
+                );
             }
             Ok(())
         }
@@ -248,11 +248,9 @@ fn render_status(name: &str, config: &QuotaConfig, state: &QuotaState, json: boo
     println!("📊 Quota for '{name}':");
     println!("  cycle:      {}", config.cycle);
 
-    let fmt_limit = |label: &str, limit: Option<u64>, used: u64| {
-        match limit {
-            Some(n) => println!("  {label:<11} {used:>10} / {n:<10}"),
-            None => println!("  {label:<11} {used:>10} / {:<10} (unlimited)", "∞"),
-        }
+    let fmt_limit = |label: &str, limit: Option<u64>, used: u64| match limit {
+        Some(n) => println!("  {label:<11} {used:>10} / {n:<10}"),
+        None => println!("  {label:<11} {used:>10} / {:<10} (unlimited)", "∞"),
     };
     fmt_limit("input:", config.input_tokens, state.input_tokens);
     fmt_limit("output:", config.output_tokens, state.output_tokens);
@@ -278,24 +276,33 @@ mod tests {
     #[test]
     fn parse_cycle_accepts_canonical_lowercase_forms() {
         for s in ["hourly", "daily", "weekly", "monthly"] {
-            assert!(
-                QuotaCycle::from_str(s).is_ok(),
-                "{s} should parse"
-            );
+            assert!(QuotaCycle::from_str(s).is_ok(), "{s} should parse");
         }
     }
 
     #[test]
     fn parse_cycle_is_case_insensitive() {
-        assert!(matches!(QuotaCycle::from_str("DAILY"), Ok(QuotaCycle::Daily)));
-        assert!(matches!(QuotaCycle::from_str("Hourly"), Ok(QuotaCycle::Hourly)));
+        assert!(matches!(
+            QuotaCycle::from_str("DAILY"),
+            Ok(QuotaCycle::Daily)
+        ));
+        assert!(matches!(
+            QuotaCycle::from_str("Hourly"),
+            Ok(QuotaCycle::Hourly)
+        ));
     }
 
     #[test]
     fn parse_cycle_rejects_unknown_forms() {
         let err = QuotaCycle::from_str("yearly").unwrap_err();
-        assert!(err.contains("yearly"), "error should mention the bad input: {err}");
-        assert!(err.contains("hourly"), "error should list valid options: {err}");
+        assert!(
+            err.contains("yearly"),
+            "error should mention the bad input: {err}"
+        );
+        assert!(
+            err.contains("hourly"),
+            "error should list valid options: {err}"
+        );
     }
 
     #[test]
@@ -372,10 +379,7 @@ mod tests {
         // present, the `peer` field on the parsed subcommand is true.
         match parse_set(&["set", "carol", "--input", "1000", "--peer"]) {
             QuotaCommands::Set {
-                name,
-                input,
-                peer,
-                ..
+                name, input, peer, ..
             } => {
                 assert_eq!(name, "carol");
                 assert_eq!(input, Some(1000));
@@ -389,10 +393,7 @@ mod tests {
     fn cli_set_default_peer_is_false() {
         match parse_set(&["set", "carol", "--input", "1000"]) {
             QuotaCommands::Set {
-                name,
-                input,
-                peer,
-                ..
+                name, input, peer, ..
             } => {
                 assert_eq!(name, "carol");
                 assert_eq!(input, Some(1000));

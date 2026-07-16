@@ -120,10 +120,7 @@ impl McpToolProxy {
                 let manager = self.manager.write().await;
                 // F19: forward the calling principal to the auto-started
                 // server so its sampling handler charges the right meter.
-                if let Err(e) = manager
-                    .start_server(&self.server_name, principal_id)
-                    .await
-                {
+                if let Err(e) = manager.start_server(&self.server_name, principal_id).await {
                     return Err(anyhow::anyhow!(
                         "MCP server '{}' failed to start: {}",
                         self.server_name,

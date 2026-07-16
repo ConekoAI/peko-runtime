@@ -196,12 +196,7 @@ pub(crate) async fn load_known_provider_ids(paths: &GlobalPaths) -> Vec<String> 
     let Ok(catalog) = ProviderCatalog::load_or_init(&catalog_path).await else {
         return Vec::new();
     };
-    catalog
-        .list_all()
-        .await
-        .into_iter()
-        .map(|e| e.id)
-        .collect()
+    catalog.list_all().await.into_iter().map(|e| e.id).collect()
 }
 
 async fn set_cmd(
@@ -217,12 +212,7 @@ async fn set_cmd(
     let material = read_material(material, "Credential material: ")?;
     let secret = secrecy::SecretString::from(material);
 
-    let mut credential = Credential::now(
-        namespace.to_string(),
-        name.to_string(),
-        kind,
-        secret,
-    );
+    let mut credential = Credential::now(namespace.to_string(), name.to_string(), kind, secret);
     credential.metadata = build_metadata(metadata_pairs);
     if let Some(id) = find_credential_id_for_slot(vault, namespace, name) {
         credential.id = id;
@@ -245,7 +235,9 @@ async fn get_cmd(vault: &Vault, id: &str) -> Result<()> {
     println!("namespace:    {}", credential.namespace);
     println!("name:         {}", credential.name);
     println!("kind:         {}", credential.kind.as_str());
-    if !credential.metadata.is_null() && credential.metadata != serde_json::Value::Object(serde_json::Map::new()) {
+    if !credential.metadata.is_null()
+        && credential.metadata != serde_json::Value::Object(serde_json::Map::new())
+    {
         println!("metadata:     {}", credential.metadata);
     }
     println!("created_at:   {}", credential.created_at.to_rfc3339());
@@ -272,16 +264,9 @@ async fn delete_cmd(vault: &Vault, id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn list_cmd(
-    vault: &Vault,
-    namespace: Option<&str>,
-    kind: Option<&str>,
-) -> Result<()> {
+async fn list_cmd(vault: &Vault, namespace: Option<&str>, kind: Option<&str>) -> Result<()> {
     let kind = match kind {
-        Some(k) => Some(
-            parse_kind(k)
-                .with_context(|| format!("unknown credential kind '{k}'"))?,
-        ),
+        Some(k) => Some(parse_kind(k).with_context(|| format!("unknown credential kind '{k}'"))?),
         None => None,
     };
     let filter = CredentialFilter {
@@ -296,8 +281,12 @@ async fn list_cmd(
     println!("Credentials ({}):", summaries.len());
     for s in summaries {
         let tested = match (s.last_tested_at, s.last_tested_ok) {
-            (Some(dt), Some(true)) => format!(" | last tested {} ✓", dt.format("%Y-%m-%d %H:%M UTC")),
-            (Some(dt), Some(false)) => format!(" | last tested {} ✗", dt.format("%Y-%m-%d %H:%M UTC")),
+            (Some(dt), Some(true)) => {
+                format!(" | last tested {} ✓", dt.format("%Y-%m-%d %H:%M UTC"))
+            }
+            (Some(dt), Some(false)) => {
+                format!(" | last tested {} ✗", dt.format("%Y-%m-%d %H:%M UTC"))
+            }
             _ => String::new(),
         };
         println!(
@@ -322,9 +311,7 @@ async fn test_cmd(vault: &Vault, id: &str) -> Result<()> {
     let client = match crate::ipc::DaemonClient::connect().await {
         Ok(c) => c,
         Err(e) => {
-            anyhow::bail!(
-                "cannot reach the daemon (is `peko daemon start` running?): {e}"
-            );
+            anyhow::bail!("cannot reach the daemon (is `peko daemon start` running?): {e}");
         }
     };
     let resp = client.credential_test(id).await?;
@@ -351,8 +338,7 @@ pub(crate) async fn provider_set_key_cmd(
     vault
         .set_provider_key(provider, &secret)
         .with_context(|| format!("failed to store key for '{provider}' in vault"))?;
-    let id = find_default_credential_id(vault, provider)
-        .unwrap_or_else(|| "unknown".to_string());
+    let id = find_default_credential_id(vault, provider).unwrap_or_else(|| "unknown".to_string());
     println!("Stored API key for '{provider}' (id {id}).");
     notify_daemon_reload().await;
     Ok(())
@@ -422,13 +408,13 @@ async fn binding_execute(vault: &Vault, cmd: BindingCommands) -> Result<()> {
     match cmd {
         BindingCommands::List => binding_list_cmd(vault).await,
         BindingCommands::Get { key } => binding_get_cmd(vault, &key).await,
-        BindingCommands::Set { key, strategy, order } => {
-            binding_set_cmd(vault, &key, &strategy, order).await
-        }
+        BindingCommands::Set {
+            key,
+            strategy,
+            order,
+        } => binding_set_cmd(vault, &key, &strategy, order).await,
         BindingCommands::Delete { key } => binding_delete_cmd(vault, &key).await,
-        BindingCommands::TestRotation { key } => {
-            binding_test_rotation_cmd(vault, &key).await
-        }
+        BindingCommands::TestRotation { key } => binding_test_rotation_cmd(vault, &key).await,
     }
 }
 
@@ -441,12 +427,7 @@ async fn binding_list_cmd(vault: &Vault) -> Result<()> {
     println!("Rotation bindings ({}):", bindings.len());
     for (key, binding) in bindings {
         let ids = binding.ordered_credential_ids.join(", ");
-        println!(
-            "  {} -> {} [{}]",
-            key,
-            binding.strategy.as_str(),
-            ids
-        );
+        println!("  {} -> {} [{}]", key, binding.strategy.as_str(), ids);
     }
     Ok(())
 }
@@ -457,10 +438,7 @@ async fn binding_get_cmd(vault: &Vault, key: &str) -> Result<()> {
         Some(binding) => {
             println!("key:      {key}");
             println!("strategy: {}", binding.strategy.as_str());
-            println!(
-                "order:    {}",
-                binding.ordered_credential_ids.join(", ")
-            );
+            println!("order:    {}", binding.ordered_credential_ids.join(", "));
         }
         None => println!("No binding '{key}'."),
     }
@@ -529,9 +507,7 @@ async fn binding_test_rotation_cmd(vault: &Vault, key: &str) -> Result<()> {
     let client = match crate::ipc::DaemonClient::connect().await {
         Ok(c) => c,
         Err(e) => {
-            anyhow::bail!(
-                "cannot reach the daemon (is `peko daemon start` running?): {e}"
-            );
+            anyhow::bail!("cannot reach the daemon (is `peko daemon start` running?): {e}");
         }
     };
 
@@ -643,9 +619,7 @@ pub(crate) fn parse_strategy(s: &str) -> Option<RotationStrategy> {
 fn parse_metadata_pair(s: &str) -> Result<(String, String), String> {
     match s.split_once('=') {
         Some((k, v)) => Ok((k.to_string(), v.to_string())),
-        None => Err(format!(
-            "metadata must be in the form KEY=VALUE, got '{s}'"
-        )),
+        None => Err(format!("metadata must be in the form KEY=VALUE, got '{s}'")),
     }
 }
 
@@ -727,10 +701,7 @@ pub(crate) fn validate_known_provider(provider: &str, known_provider_ids: &[Stri
         msg.push_str(&format!("\nKnown provider ids: {}", quoted.join(", ")));
         let suggestions = nearest_neighbors(provider, known_provider_ids, 3);
         if !suggestions.is_empty() {
-            let q: Vec<String> = suggestions
-                .iter()
-                .map(|s| format!("'{s}'"))
-                .collect();
+            let q: Vec<String> = suggestions.iter().map(|s| format!("'{s}'")).collect();
             msg.push_str(&format!("\nDid you mean: {}", q.join(", ")));
         }
     }
@@ -743,12 +714,9 @@ pub(crate) fn validate_known_provider(provider: &str, known_provider_ids: &[Stri
 /// both the currently-stored provider keys and the catalog so a
 /// fresh typo (never stored) still gets a suggestion toward a known
 /// provider id.
-fn suggest_for_missing(
-    target: &str,
-    stored_keys: &[String],
-    known_provider_ids: &[String],
-) {
-    let mut candidates: Vec<String> = Vec::with_capacity(stored_keys.len() + known_provider_ids.len());
+fn suggest_for_missing(target: &str, stored_keys: &[String], known_provider_ids: &[String]) {
+    let mut candidates: Vec<String> =
+        Vec::with_capacity(stored_keys.len() + known_provider_ids.len());
     for s in stored_keys {
         if !candidates.contains(s) {
             candidates.push(s.clone());
@@ -806,7 +774,10 @@ fn render_credential_tested(
         let mut lines = vec![format!("✗ {label}: {message}")];
         if let Some(code) = http_status {
             lines.push(format!("  HTTP {code} after {latency_ms}ms"));
-        } else if message.contains("unknown provider") || message.contains("no key stored") || message.contains("credential not found") {
+        } else if message.contains("unknown provider")
+            || message.contains("no key stored")
+            || message.contains("credential not found")
+        {
             lines.push(format!("  ({latency_ms}ms — request was not sent)"));
         } else {
             lines.push(format!("  connection failed after {latency_ms}ms"));
@@ -818,10 +789,7 @@ fn render_credential_tested(
 /// True iff the validator's failure message names a configuration
 /// gap the user can fix from this command.
 #[cfg(test)]
-fn message_invites_suggestion(
-    _provider: &str,
-    resp: &crate::ipc::packet::ResponsePacket,
-) -> bool {
+fn message_invites_suggestion(_provider: &str, resp: &crate::ipc::packet::ResponsePacket) -> bool {
     if let crate::ipc::packet::ResponsePacket::CredentialTested { message, .. } = resp {
         message.contains("no key stored")
             || message.contains("unknown provider")
@@ -865,9 +833,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
         curr[0] = i;
         for j in 1..=b.len() {
             let cost = usize::from(a[i - 1] != b[j - 1]);
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -905,10 +871,7 @@ mod tests {
     /// Out-of-range distance (>= 4) drops the candidate entirely.
     #[test]
     fn nearest_neighbors_drops_distant_candidates() {
-        let candidates = vec![
-            "anthropic".to_string(),
-            "openai".to_string(),
-        ];
+        let candidates = vec!["anthropic".to_string(), "openai".to_string()];
         let got = nearest_neighbors("miniax", &candidates, 3);
         assert!(got.is_empty(), "got: {got:?}");
     }
@@ -947,8 +910,7 @@ mod tests {
 
     #[test]
     fn validate_known_provider_handles_empty_catalog() {
-        let err =
-            validate_known_provider("minimax", &[]).expect_err("empty catalog must reject");
+        let err = validate_known_provider("minimax", &[]).expect_err("empty catalog must reject");
         let msg = format!("{err:#}");
         assert!(msg.contains("The provider catalog is empty"), "got: {msg}");
     }
@@ -967,7 +929,10 @@ mod tests {
     #[test]
     fn parse_kind_accepts_all_variants() {
         assert_eq!(parse_kind("api_key"), Some(CredentialKind::ApiKey));
-        assert_eq!(parse_kind("bearer_token"), Some(CredentialKind::BearerToken));
+        assert_eq!(
+            parse_kind("bearer_token"),
+            Some(CredentialKind::BearerToken)
+        );
         assert_eq!(parse_kind("oauth_token"), Some(CredentialKind::OAuthToken));
         assert_eq!(parse_kind("basic_auth"), Some(CredentialKind::BasicAuth));
         assert_eq!(parse_kind("private_key"), Some(CredentialKind::PrivateKey));
@@ -1013,10 +978,7 @@ mod tests {
 
         let full = vault.get_credential(&summaries[0].id).unwrap();
         assert_eq!(full.metadata["region"], "us-east");
-        assert_eq!(
-            full.material.expose_secret(),
-            "analytics-key"
-        );
+        assert_eq!(full.material.expose_secret(), "analytics-key");
     }
 
     #[tokio::test]
@@ -1032,7 +994,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let id = vault.list_credentials(&CredentialFilter::default())[0].id.clone();
+        let id = vault.list_credentials(&CredentialFilter::default())[0]
+            .id
+            .clone();
 
         // get_cmd prints to stdout; we just verify it does not panic and
         // the vault record is intact.
@@ -1052,7 +1016,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let id = vault.list_credentials(&CredentialFilter::default())[0].id.clone();
+        let id = vault.list_credentials(&CredentialFilter::default())[0]
+            .id
+            .clone();
 
         delete_cmd(&vault, &id).await.unwrap();
         assert!(vault.get_credential(&id).is_none());
@@ -1202,7 +1168,9 @@ mod tests {
                 SecretString::new("k1".into()),
             ))
             .unwrap();
-        let id1 = vault.list_credentials(&CredentialFilter::default())[0].id.clone();
+        let id1 = vault.list_credentials(&CredentialFilter::default())[0]
+            .id
+            .clone();
         vault
             .set_credential(&Credential::now(
                 "provider:anthropic",
@@ -1211,7 +1179,9 @@ mod tests {
                 SecretString::new("k2".into()),
             ))
             .unwrap();
-        let id2 = vault.list_credentials(&CredentialFilter::default())[1].id.clone();
+        let id2 = vault.list_credentials(&CredentialFilter::default())[1]
+            .id
+            .clone();
 
         binding_set_cmd(
             &vault,
@@ -1222,9 +1192,7 @@ mod tests {
         .await
         .unwrap();
 
-        let binding = vault
-            .get_binding("provider:anthropic", "default")
-            .unwrap();
+        let binding = vault.get_binding("provider:anthropic", "default").unwrap();
         assert_eq!(binding.strategy, RotationStrategy::RoundRobin);
         assert_eq!(binding.ordered_credential_ids, vec![id1, id2]);
     }
@@ -1240,7 +1208,9 @@ mod tests {
                 SecretString::new("k1".into()),
             ))
             .unwrap();
-        let id1 = vault.list_credentials(&CredentialFilter::default())[0].id.clone();
+        let id1 = vault.list_credentials(&CredentialFilter::default())[0]
+            .id
+            .clone();
 
         // Without a daemon, test-rotation will fail at daemon connect.
         // We verify the binding resolution path by checking that the
@@ -1294,8 +1264,7 @@ mod tests {
             request_id: 2,
             id: "id-anthropic".to_string(),
             ok: true,
-            message: "Connection successful (1 token billed via claude-haiku-4-5)"
-                .to_string(),
+            message: "Connection successful (1 token billed via claude-haiku-4-5)".to_string(),
             latency_ms: 312,
             http_status: Some(200),
             model_used: Some("claude-haiku-4-5".to_string()),
@@ -1423,7 +1392,11 @@ mod tests {
         let (lines, exit) = render_credential_tested("openai", &resp);
         assert_eq!(exit, 1);
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("unexpected response"), "got: {}", lines[0]);
+        assert!(
+            lines[0].contains("unexpected response"),
+            "got: {}",
+            lines[0]
+        );
         assert!(lines[0].contains("up-to-date"), "got: {}", lines[0]);
     }
 
@@ -1504,7 +1477,11 @@ mod tests {
         .unwrap();
         match cli.command {
             crate::commands::Commands::Credential(CredentialCommands::Binding(
-                BindingCommands::Set { key, strategy, order },
+                BindingCommands::Set {
+                    key,
+                    strategy,
+                    order,
+                },
             )) => {
                 assert_eq!(key, "provider:anthropic:default");
                 assert_eq!(strategy, "round_robin");

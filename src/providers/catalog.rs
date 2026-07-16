@@ -389,11 +389,7 @@ impl ProviderCatalog {
     /// context". Callers that need a concrete budget (compaction,
     /// dry-run reporting, request shaping) consult this instead of
     /// hard-coded fallbacks.
-    pub async fn model_context_length(
-        &self,
-        provider_id: &str,
-        model_id: &str,
-    ) -> Option<u32> {
+    pub async fn model_context_length(&self, provider_id: &str, model_id: &str) -> Option<u32> {
         let entry = self.get_enabled(provider_id).await?;
         entry.model(model_id).and_then(|m| m.context_length)
     }
@@ -680,9 +676,7 @@ mod tests {
         tokio_test::block_on(cat.upsert(entry)).unwrap();
 
         // hit
-        let got = tokio_test::block_on(
-            cat.model_context_length("anthropic", "claude-sonnet-4-5"),
-        );
+        let got = tokio_test::block_on(cat.model_context_length("anthropic", "claude-sonnet-4-5"));
         assert_eq!(got, Some(200_000));
 
         // model not declared on this provider

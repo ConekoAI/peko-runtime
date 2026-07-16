@@ -192,7 +192,10 @@ impl LlmResolver {
             .expect("mock default failed");
 
         let tmp = tempfile::tempdir().expect("mock tempdir");
-        let vault = Arc::new(crate::common::vault::Vault::for_test(tmp.path(), "mock-passphrase"));
+        let vault = Arc::new(crate::common::vault::Vault::for_test(
+            tmp.path(),
+            "mock-passphrase",
+        ));
         let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
         let resolver = std::sync::Arc::new(Self {
             catalog,
@@ -607,7 +610,10 @@ mod tests {
 
     fn resolver(cat: Arc<ProviderCatalog>) -> LlmResolver {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = Arc::new(crate::common::vault::Vault::for_test(tmp.path(), "test-passphrase"));
+        let vault = Arc::new(crate::common::vault::Vault::for_test(
+            tmp.path(),
+            "test-passphrase",
+        ));
         vault
             .set_provider_key("openai", &SecretString::new("sk-openai".into()))
             .unwrap();
@@ -771,7 +777,10 @@ mod tests {
         // not the legacy trait `get(account)`.
         let (_d, cat) = seeded_catalog().await;
         let tmp = tempfile::tempdir().unwrap();
-        let vault = Arc::new(crate::common::vault::Vault::for_test(tmp.path(), "test-passphrase"));
+        let vault = Arc::new(crate::common::vault::Vault::for_test(
+            tmp.path(),
+            "test-passphrase",
+        ));
         vault
             .set_provider_key("anthropic", &SecretString::new("sk-ant-v2".into()))
             .unwrap();

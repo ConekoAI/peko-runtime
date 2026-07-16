@@ -14,17 +14,20 @@
 use crate::agents::prompt::SystemPromptService;
 use crate::agents::Agent;
 use crate::common::types::message::{ContentBlock, LlmMessage};
-use futures::StreamExt;
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
 use crate::extensions::framework::types::SessionSnapshot;
 use crate::extensions::framework::{HookInput, HookPoint};
-use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS, StackedMeteredProvider};
+use crate::providers::{
+    ChatOptions, MessageRole, StackedMeteredProvider, StopReason, TokenUsage, ToolDefinition,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+};
 use crate::quota::QuotaScope;
 use crate::session::Session;
 use anyhow::Result;
 use chrono::Utc;
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -528,7 +531,6 @@ impl AgenticLoop {
         run_id: String,
         streaming_config: crate::engine::OrchestratorConfig,
     ) -> Result<AgenticResult> {
-
         // F19: open a `QuotaScope::with` so every LLM call inside this
         // run auto-charges `self.quota_meter` via `MeteredProvider`.
         // F20: when `self.peer_meter` is `Some`, nest a second
@@ -550,8 +552,7 @@ impl AgenticLoop {
             // Body uses StackedMeteredProvider so both meters charge.
             QuotaScope::with(meter, async move {
                 QuotaScope::with(pm, async move {
-                    let stacked =
-                        StackedMeteredProvider::from_current_scope(provider_clone);
+                    let stacked = StackedMeteredProvider::from_current_scope(provider_clone);
                     self.run_inner_with_meter(
                         messages,
                         session,
@@ -572,8 +573,17 @@ impl AgenticLoop {
             // `MeteredProvider`).
             QuotaScope::with(meter, async move {
                 let stacked = StackedMeteredProvider::from_current_scope(provider_clone);
-                self.run_inner_with_meter(messages, session, on_event, run_id, streaming_config, stacked).await
-            }).await
+                self.run_inner_with_meter(
+                    messages,
+                    session,
+                    on_event,
+                    run_id,
+                    streaming_config,
+                    stacked,
+                )
+                .await
+            })
+            .await
         }
     }
 
@@ -599,7 +609,6 @@ impl AgenticLoop {
         streaming_config: crate::engine::OrchestratorConfig,
         provider: StackedMeteredProvider,
     ) -> Result<AgenticResult> {
-
         // Get session_id once at start
         let session_id = {
             let s = session.read().await;
@@ -797,9 +806,7 @@ impl AgenticLoop {
             // `MeteredProvider` inside the BackgroundCompactor's
             // worker task (which opens its own `QuotaScope::with`
             // around the LLM call). No manual charge here.
-            if let Some(compaction_usage) =
-                compaction_orchestrator.last_compaction_usage()
-            {
+            if let Some(compaction_usage) = compaction_orchestrator.last_compaction_usage() {
                 debug!(
                     "Compaction summarization used {} input + {} output tokens; folding into total_usage",
                     compaction_usage.input, compaction_usage.output
@@ -1027,8 +1034,7 @@ impl AgenticLoop {
                                         iteration_usage.input += input
                                             + cache_creation_input_tokens
                                             + cache_read_input_tokens;
-                                        iteration_usage.output +=
-                                            output + reasoning_output_tokens;
+                                        iteration_usage.output += output + reasoning_output_tokens;
                                         iteration_usage.total += total
                                             + cache_creation_input_tokens
                                             + cache_read_input_tokens
@@ -1042,20 +1048,17 @@ impl AgenticLoop {
                                         if cache_creation_input_tokens > 0 {
                                             *iteration_usage
                                                 .cache_creation_input_tokens
-                                                .get_or_insert(0) +=
-                                                cache_creation_input_tokens;
+                                                .get_or_insert(0) += cache_creation_input_tokens;
                                         }
                                         if cache_read_input_tokens > 0 {
                                             *iteration_usage
                                                 .cache_read_input_tokens
-                                                .get_or_insert(0) +=
-                                                cache_read_input_tokens;
+                                                .get_or_insert(0) += cache_read_input_tokens;
                                         }
                                         if reasoning_output_tokens > 0 {
                                             *iteration_usage
                                                 .reasoning_output_tokens
-                                                .get_or_insert(0) +=
-                                                reasoning_output_tokens;
+                                                .get_or_insert(0) += reasoning_output_tokens;
                                         }
                                     }
                                     _ => {}
@@ -2549,8 +2552,8 @@ mod tests {
     // check (when present) trips before the LLM call.
     // -----------------------------------------------------------------
 
-    use crate::quota::{QuotaConfig, QuotaCycle, QuotaMeter};
     use crate::providers::LlmResolver;
+    use crate::quota::{QuotaConfig, QuotaCycle, QuotaMeter};
 
     /// `with_peer_meter(Some(meter))` stores the meter on the loop;
     /// `with_peer_meter(None)` clears it.

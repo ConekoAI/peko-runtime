@@ -118,7 +118,10 @@ impl RequestHandler for ProviderTemplatesHandler {
         match request {
             RequestPacket::ProviderTemplates { request_id } => {
                 let providers = self.host.list_templates();
-                let response = ResponsePacket::ProviderTemplates { request_id, providers };
+                let response = ResponsePacket::ProviderTemplates {
+                    request_id,
+                    providers,
+                };
                 send_response(sink, response).await?;
             }
             // `matches()` returned true, so the exhaustive list above
@@ -240,8 +243,14 @@ mod tests {
         // projection reads in `provider_admin.rs`.
         let p = &providers[0];
         assert_eq!(p.get("id").and_then(|v| v.as_str()), Some("anthropic"));
-        assert_eq!(p.get("display_name").and_then(|v| v.as_str()), Some("Anthropic"));
-        assert_eq!(p.get("api_type").and_then(|v| v.as_str()), Some("anthropic"));
+        assert_eq!(
+            p.get("display_name").and_then(|v| v.as_str()),
+            Some("Anthropic")
+        );
+        assert_eq!(
+            p.get("api_type").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
         assert_eq!(
             p.get("base_url").and_then(|v| v.as_str()),
             Some("https://api.anthropic.com")
@@ -252,11 +261,20 @@ mod tests {
             Some("claude-sonnet-4-5")
         );
 
-        let models = p.get("models").and_then(|v| v.as_array()).expect("models array");
+        let models = p
+            .get("models")
+            .and_then(|v| v.as_array())
+            .expect("models array");
         assert_eq!(models.len(), 1);
         let m = &models[0];
-        assert_eq!(m.get("context_length").and_then(|v| v.as_u64()), Some(200_000));
-        assert_eq!(m.get("max_output_tokens").and_then(|v| v.as_u64()), Some(8_192));
+        assert_eq!(
+            m.get("context_length").and_then(|v| v.as_u64()),
+            Some(200_000)
+        );
+        assert_eq!(
+            m.get("max_output_tokens").and_then(|v| v.as_u64()),
+            Some(8_192)
+        );
     }
 
     #[tokio::test]

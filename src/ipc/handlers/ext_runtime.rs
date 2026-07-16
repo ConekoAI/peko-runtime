@@ -21,7 +21,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::auth::caller::CallerContext;
-use crate::daemon::background_runtime::{BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext};
+use crate::daemon::background_runtime::{
+    BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext,
+};
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;

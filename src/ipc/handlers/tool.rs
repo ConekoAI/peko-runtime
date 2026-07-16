@@ -196,7 +196,10 @@ impl ToolHandler {
                     &principal.agent_prompts,
                     &global_items,
                 );
-                (Some(caps.to_strings()), Some(catalog.active_extensions().to_vec()))
+                (
+                    Some(caps.to_strings()),
+                    Some(catalog.active_extensions().to_vec()),
+                )
             }
             None => {
                 warn!(

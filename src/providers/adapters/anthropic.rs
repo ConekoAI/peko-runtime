@@ -3,11 +3,11 @@
 //! Handles conversion between unified types and Anthropic Messages API format.
 
 use super::{extract_text_content, ToolCallAccumulator};
-use crate::providers::transport::AuthConfig;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolDefinition,
 };
+use crate::providers::transport::AuthConfig;
 use crate::providers::DEFAULT_MAX_OUTPUT_TOKENS;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -327,7 +327,10 @@ impl super::ApiAdapter for AnthropicAdapter {
                 input: u64::from(result.usage.input_tokens),
                 output: u64::from(result.usage.output_tokens),
                 total: u64::from(result.usage.input_tokens + result.usage.output_tokens),
-                cache_creation_input_tokens: result.usage.cache_creation_input_tokens.map(u64::from),
+                cache_creation_input_tokens: result
+                    .usage
+                    .cache_creation_input_tokens
+                    .map(u64::from),
                 cache_read_input_tokens: result.usage.cache_read_input_tokens.map(u64::from),
                 // Anthropic folds thinking/reasoning into output_tokens already;
                 // no separate `reasoning_output_tokens` from the wire.
@@ -465,10 +468,10 @@ impl super::ApiAdapter for AnthropicAdapter {
                     };
                     // Delta may refresh cache fields; prefer delta values
                     // when present, fall back to `message_start`.
-                    let cache_creation =
-                        delta_usage.cache_creation_input_tokens.unwrap_or(cache_creation);
-                    let cache_read =
-                        delta_usage.cache_read_input_tokens.unwrap_or(cache_read);
+                    let cache_creation = delta_usage
+                        .cache_creation_input_tokens
+                        .unwrap_or(cache_creation);
+                    let cache_read = delta_usage.cache_read_input_tokens.unwrap_or(cache_read);
                     let output = delta_usage.output_tokens;
                     return Ok(Some(StreamEvent::Usage {
                         input: u64::from(input),
@@ -819,12 +822,16 @@ mod tests {
                 "cache_read_input_tokens":4096
             }}
         }"#;
-        let _ = adapter.parse_sse_event("claude-3-sonnet", start_data).unwrap();
+        let _ = adapter
+            .parse_sse_event("claude-3-sonnet", start_data)
+            .unwrap();
 
         // message_delta updates output_tokens; cache fields are not in
         // the delta here, so message_start values carry through.
         let delta_data = r#"{"type":"message_delta","usage":{"output_tokens":50}}"#;
-        let event = adapter.parse_sse_event("claude-3-sonnet", delta_data).unwrap();
+        let event = adapter
+            .parse_sse_event("claude-3-sonnet", delta_data)
+            .unwrap();
         match event {
             Some(crate::providers::StreamEvent::Usage {
                 input,

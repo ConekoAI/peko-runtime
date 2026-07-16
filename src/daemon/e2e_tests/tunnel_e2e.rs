@@ -51,10 +51,10 @@
 
 use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use crate::common::vault::Vault;
 use crate::daemon::state::{AppState, DaemonConfigSnapshot};
 use crate::tunnel::PekoHubCredential;
-use crate::common::vault::Vault;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 // Helpers used to live in `tests/common/{crypto,auth,harness}.rs`. They are
 // reused from there via `#[path = ...]` so this test file doesn't have to

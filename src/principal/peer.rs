@@ -256,7 +256,9 @@ impl PeerRegistry {
         tokio::fs::create_dir_all(&dir).await?;
         let peer_toml = dir.join("peer.toml");
 
-        let peer_cfg = PeerConfig { quota: Some(cfg.clone()) };
+        let peer_cfg = PeerConfig {
+            quota: Some(cfg.clone()),
+        };
         let toml_str =
             toml::to_string_pretty(&peer_cfg).map_err(|e| PeerError::Config(e.to_string()))?;
         tokio::fs::write(&peer_toml, toml_str).await?;
@@ -356,13 +358,9 @@ async fn load_one_peer(
         QuotaConfig::default()
     };
 
-    let quota_meter = QuotaMeter::load_or_init(
-        quota_config,
-        Some(quota_state_path),
-        now,
-    )
-    .await
-    .map_err(|e| PeerError::QuotaInit(e.to_string()))?;
+    let quota_meter = QuotaMeter::load_or_init(quota_config, Some(quota_state_path), now)
+        .await
+        .map_err(|e| PeerError::QuotaInit(e.to_string()))?;
 
     Ok(Arc::new(Peer {
         peer_id: peer_id.to_string(),
@@ -533,12 +531,9 @@ mod tests {
         // Pre-create a peer directory with a config.
         let peer_dir = root.join("carol");
         tokio::fs::create_dir_all(&peer_dir).await.unwrap();
-        tokio::fs::write(
-            peer_dir.join("peer.toml"),
-            "[quota]\ninput_tokens = 500\n",
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(peer_dir.join("peer.toml"), "[quota]\ninput_tokens = 500\n")
+            .await
+            .unwrap();
 
         let reg = PeerRegistry::load_or_init(root, Utc::now()).await.unwrap();
         let carol = reg.get("carol").await.unwrap();
