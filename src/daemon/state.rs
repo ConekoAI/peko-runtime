@@ -2379,11 +2379,6 @@ fn model_summary_from_config(
         model_id: entry.model_id.clone(),
         context_window: entry.context_window,
         max_output_tokens: entry.max_output_tokens,
-        capabilities: entry
-            .capabilities
-            .iter()
-            .map(|c| capability_wire(c).to_string())
-            .collect(),
         headers: entry.headers.clone(),
         credential_id: entry.credential_id.clone(),
         requires_key: entry.requires_key,
@@ -2392,34 +2387,6 @@ fn model_summary_from_config(
     }
 }
 
-/// Stable wire id for a `ModelCapability` (matches the enum's
-/// snake_case serde names). Exhaustive on purpose: a new variant
-/// fails the build here until its wire id is chosen.
-fn capability_wire(c: &crate::providers::catalog::ModelCapability) -> &'static str {
-    use crate::providers::catalog::ModelCapability as C;
-    match c {
-        C::ToolUse => "tool_use",
-        C::Vision => "vision",
-        C::JsonMode => "json_mode",
-        C::Streaming => "streaming",
-        C::PromptCaching => "prompt_caching",
-    }
-}
-
-/// Parse a capability wire id produced by [`capability_wire`].
-/// Unknown tags are dropped by the caller (filter_map) rather than
-/// failing the whole update.
-fn capability_from_wire(s: &str) -> Option<crate::providers::catalog::ModelCapability> {
-    use crate::providers::catalog::ModelCapability as C;
-    match s {
-        "tool_use" => Some(C::ToolUse),
-        "vision" => Some(C::Vision),
-        "json_mode" => Some(C::JsonMode),
-        "streaming" => Some(C::Streaming),
-        "prompt_caching" => Some(C::PromptCaching),
-        _ => None,
-    }
-}
 
 /// F7 eleventh narrow handle: the port the `provider_mcp` IPC domain
 /// handler uses to live-reload the model catalog and MCP config
@@ -2566,7 +2533,6 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
                 model_id,
                 context_window: None,
                 max_output_tokens: None,
-                capabilities: Vec::new(),
                 headers: Default::default(),
                 credential_id: None,
                 requires_key: args.requires_key.unwrap_or(true),
@@ -2597,6 +2563,18 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
         // it. Silently refused for key-less models (e.g. Ollama
         // presets) so a misconfigured request fails loudly instead
         // of storing an orphaned key.
+        if let Some(cid) = args.credential_id.as_deref() {
+            if cid.is_empty() {
+                anyhow::bail!("--credential-id must not be empty");
+            }
+            if args.key.is_some() {
+                anyhow::bail!("--key and --credential-id are mutually exclusive");
+            }
+            if self.vault.get_credential(cid).is_none() {
+                anyhow::bail!("credential not found in vault: {cid}");
+            }
+            entry.credential_id = Some(cid.to_string());
+        }
         if let Some(key) = args.key.as_deref() {
             if key.is_empty() {
                 anyhow::bail!("--key must not be empty");
@@ -2622,11 +2600,28 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
 
         // `self.resolver.catalog()` returns the daemon's in-memory
         // `Arc<ModelCatalog>` — same instance the resolver and every
-        // other consumer read. `upsert` stamps `updated_at` and
-        // persists to `models.toml` atomically, so the mutation is
-        // visible to the next `ModelList` IPC call without a reload
-        // hop (the CLI's `notify_daemon_reload` pattern doesn't
-        // apply — we ARE the daemon).
+        // other consumer read. Refuse to silently overwrite an
+        // existing entry: catalog ids must be unique (they're how
+        // principals and `peko send --model` reference the model),
+        // so the user must use the Edit Model modal to mutate an
+        // existing entry rather than discover the loss in a 401
+        // later. `upsert` stamps `updated_at` and persists to
+        // `models.toml` atomically, so the mutation is visible to
+        // the next `ModelList` IPC call without a reload hop (the
+        // CLI's `notify_daemon_reload` pattern doesn't apply — we
+        // ARE the daemon).
+        if self
+            .resolver
+            .catalog()
+            .get(&entry.id)
+            .await
+            .is_some()
+        {
+            anyhow::bail!(
+                "model id '{}' already exists. Open Edit Model to change it, or remove it first.",
+                entry.id
+            );
+        }
         self.resolver.catalog().upsert(entry.clone()).await?;
 
         // Build the catalog-summary view the handler wraps in
@@ -2681,12 +2676,6 @@ impl crate::ipc::handlers::provider_edit::ModelEditHost for AppState {
         }
         if let Some(max_output_tokens) = args.max_output_tokens {
             entry.max_output_tokens = Some(max_output_tokens);
-        }
-        if let Some(capabilities) = args.capabilities {
-            entry.capabilities = capabilities
-                .iter()
-                .filter_map(|c| capability_from_wire(c))
-                .collect();
         }
         if let Some(headers) = args.headers {
             entry.headers = headers;

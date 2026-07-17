@@ -896,7 +896,6 @@ mod buffer_tests {
                 model_id: "gpt-5".into(),
                 context_window: None,
                 max_output_tokens: None,
-                capabilities: vec![],
                 headers: Default::default(),
                 credential_id: None,
                 requires_key: true,

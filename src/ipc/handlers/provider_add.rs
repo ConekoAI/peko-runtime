@@ -181,7 +181,6 @@ mod tests {
             model_id: "claude-sonnet-4-5".to_string(),
             context_window: Some(200_000),
             max_output_tokens: Some(8_192),
-            capabilities: vec![],
             headers: Default::default(),
             credential_id: None,
             requires_key: true,

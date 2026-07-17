@@ -134,7 +134,6 @@ impl LlmResolver {
             model_id: "mock-model".to_string(),
             context_window: None,
             max_output_tokens: None,
-            capabilities: vec![],
             headers: std::collections::BTreeMap::new(),
             credential_id: None,
             requires_key: false,

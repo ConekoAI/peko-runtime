@@ -408,7 +408,6 @@ mod tests {
             model_id: model_id.to_string(),
             context_window: None,
             max_output_tokens: None,
-            capabilities: vec![],
             headers: Default::default(),
             credential_id: None,
             requires_key,

@@ -306,7 +306,6 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
             model_id,
             context_window: args.context_window,
             max_output_tokens: args.max_output_tokens,
-            capabilities: Vec::new(),
             headers: Default::default(),
             credential_id: None,
             requires_key: true,
@@ -366,6 +365,11 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
     let entry_id = entry.id.clone();
     let entry_display = entry.display_name.clone();
 
+    if cat.get(&entry_id).await.is_some() {
+        anyhow::bail!(
+            "model id '{entry_id}' already exists. Run `peko model edit {entry_id}` (not yet implemented) or `peko model remove {entry_id}` and re-add."
+        );
+    }
     cat.upsert(entry).await?;
     println!("Added model '{entry_id}' ({entry_display}).");
 
