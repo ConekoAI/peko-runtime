@@ -53,6 +53,7 @@ pub fn create_provider_for_model(config: &ModelConfig, api_key: &str) -> Result<
         timeout_seconds: PROVIDER_TIMEOUT_SECS,
         max_retries: PROVIDER_MAX_RETRIES,
         retry_delay_ms: PROVIDER_RETRY_DELAY_MS,
+        extra_headers: config.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
     };
 
     Provider::new(adapter, api_key.to_string(), options).map(Arc::new)
@@ -88,5 +89,25 @@ mod tests {
         config.id = "anthropic-empty".to_string();
         let provider = create_provider_for_model(&config, "sk-test").unwrap();
         assert_eq!(provider.model_id(), config.model_id);
+    }
+
+    #[test]
+    fn model_headers_propagate_to_provider() {
+        // Catalog-level headers must land on the Provider's
+        // `ProviderRuntimeOptions::extra_headers` so the HTTP
+        // client attaches them on every outbound request.
+        let mut config = anthropic_config();
+        config.headers = std::collections::BTreeMap::from([
+            (
+                "anthropic-beta".to_string(),
+                "interleaved-thinking-2025-05-08".to_string(),
+            ),
+            ("X-Org".to_string(), "acme".to_string()),
+        ]);
+        let provider = create_provider_for_model(&config, "sk-test").unwrap();
+        let opts = provider.options();
+        assert!(opts.extra_headers.iter().any(|(k, v)| k == "anthropic-beta"
+            && v == "interleaved-thinking-2025-05-08"));
+        assert!(opts.extra_headers.iter().any(|(k, v)| k == "X-Org" && v == "acme"));
     }
 }
