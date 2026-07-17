@@ -101,7 +101,11 @@ impl From<SessionEntry> for SessionInfo {
 /// canonical Rust names without writing a per-field `rename =`
 /// annotation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum HistoryEvent {
     /// Session-start marker. Carries the session id (e.g.
     /// `"root:user:local"`) and the wall-clock time the session was

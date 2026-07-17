@@ -94,7 +94,8 @@ pub async fn execute(cmd: CredentialCommands, paths: &GlobalPaths) -> Result<()>
             kind,
             include_system,
         } => {
-            list_cmd(&vault,
+            list_cmd(
+                &vault,
                 namespace.as_deref(),
                 kind.as_deref(),
                 include_system,
@@ -129,7 +130,9 @@ async fn set_cmd(
         Ok(()) => {}
         Err(e) => {
             if e.downcast_ref::<crate::common::vault::VaultError>()
-                .is_some_and(|err| matches!(err, crate::common::vault::VaultError::SystemCredential(_)))
+                .is_some_and(|err| {
+                    matches!(err, crate::common::vault::VaultError::SystemCredential(_))
+                })
             {
                 anyhow::bail!(
                     "credential '{namespace}/{name}' is runtime-owned and cannot be changed with this command; \
@@ -181,7 +184,9 @@ async fn delete_cmd(vault: &Vault, id: &str) -> Result<()> {
         }
         Err(e) => {
             if e.downcast_ref::<crate::common::vault::VaultError>()
-                .is_some_and(|err| matches!(err, crate::common::vault::VaultError::SystemCredential(_)))
+                .is_some_and(|err| {
+                    matches!(err, crate::common::vault::VaultError::SystemCredential(_))
+                })
             {
                 anyhow::bail!(
                     "credential '{id}' is runtime-owned and cannot be deleted with this command; \
@@ -499,13 +504,7 @@ mod tests {
     /// `list --include-system` parses from argv.
     #[test]
     fn list_include_system_parses() {
-        let cli = Cli::try_parse_from([
-            "peko",
-            "credential",
-            "list",
-            "--include-system",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["peko", "credential", "list", "--include-system"]).unwrap();
         match cli.command {
             crate::commands::Commands::Credential(CredentialCommands::List {
                 namespace,
@@ -551,11 +550,10 @@ mod tests {
         vault
             .set_identity_private_key("kid", "ed25519-raw-base64", "abc")
             .unwrap();
-        let id = vault
-            .list_credentials(&CredentialFilter {
-                include_system: true,
-                ..Default::default()
-            })[0]
+        let id = vault.list_credentials(&CredentialFilter {
+            include_system: true,
+            ..Default::default()
+        })[0]
             .id
             .clone();
 

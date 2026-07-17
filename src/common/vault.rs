@@ -3131,7 +3131,9 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(with_system.len(), 2);
-        assert!(with_system.iter().any(|s| s.namespace == "identity" && s.system_owned));
+        assert!(with_system
+            .iter()
+            .any(|s| s.namespace == "identity" && s.system_owned));
     }
 
     /// The reserved `identity` and `tunnel` namespaces are treated as

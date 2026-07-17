@@ -145,7 +145,11 @@ impl RequestHandler for CredentialHandler {
                     },
                     None => None,
                 };
-                let providers = self.host.list_credentials(namespace.as_deref(), kind, include_system.unwrap_or(false));
+                let providers = self.host.list_credentials(
+                    namespace.as_deref(),
+                    kind,
+                    include_system.unwrap_or(false),
+                );
                 let response = ResponsePacket::CredentialsListed {
                     request_id,
                     providers,
@@ -770,14 +774,10 @@ mod tests {
                 *self.flag.lock().unwrap() = Some(include_system);
                 Vec::new()
             }
-            fn get_credential(&self,
-                _id: &str,
-            ) -> Option<CredentialWire> {
+            fn get_credential(&self, _id: &str) -> Option<CredentialWire> {
                 None
             }
-            fn get_credential_material(&self,
-                _id: &str,
-            ) -> Option<SecretString> {
+            fn get_credential_material(&self, _id: &str) -> Option<SecretString> {
                 None
             }
             fn set_credential(
@@ -790,9 +790,7 @@ mod tests {
             ) -> anyhow::Result<String> {
                 Ok("id-stub".to_string())
             }
-            fn delete_credential(&self,
-                _id: &str,
-            ) -> anyhow::Result<bool> {
+            fn delete_credential(&self, _id: &str) -> anyhow::Result<bool> {
                 Ok(true)
             }
         }

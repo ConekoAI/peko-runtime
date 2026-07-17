@@ -83,7 +83,10 @@ fn merge_extra_headers(
     let mut out: Vec<(String, String)> = adapter.extra_headers();
     for (name, value) in model_headers {
         let needle = name.to_ascii_lowercase();
-        if let Some(existing) = out.iter_mut().find(|(n, _)| n.to_ascii_lowercase() == needle) {
+        if let Some(existing) = out
+            .iter_mut()
+            .find(|(n, _)| n.to_ascii_lowercase() == needle)
+        {
             existing.1 = value.clone();
         } else {
             out.push((name.clone(), value.clone()));
@@ -109,7 +112,7 @@ impl Provider {
                 adapter.auth_config(&api_key),
                 options.timeout_seconds,
                 merged_headers,
-                )?
+            )?
         } else {
             if api_key.is_empty() {
                 return Err(anyhow::anyhow!("API key is required"));

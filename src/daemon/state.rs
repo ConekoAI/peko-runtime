@@ -2387,7 +2387,6 @@ fn model_summary_from_config(
     }
 }
 
-
 /// F7 eleventh narrow handle: the port the `provider_mcp` IPC domain
 /// handler uses to live-reload the model catalog and MCP config
 /// from disk. Trait lives in `ipc::handlers::provider_mcp`. Both
@@ -2610,13 +2609,7 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
         // the next `ModelList` IPC call without a reload hop (the
         // CLI's `notify_daemon_reload` pattern doesn't apply — we
         // ARE the daemon).
-        if self
-            .resolver
-            .catalog()
-            .get(&entry.id)
-            .await
-            .is_some()
-        {
+        if self.resolver.catalog().get(&entry.id).await.is_some() {
             anyhow::bail!(
                 "model id '{}' already exists. Open Edit Model to change it, or remove it first.",
                 entry.id
