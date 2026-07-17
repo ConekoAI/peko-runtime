@@ -223,6 +223,28 @@ pub enum RequestPacket {
         model_id: String,
     },
 
+    /// Update an existing Principal's mutable config. All fields
+    /// except `name` are optional; omitted fields keep their current
+    /// values. Requires `ManageSettings` permission on the principal.
+    #[serde(rename = "principal_update")]
+    PrincipalUpdate {
+        request_id: u64,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exposure: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preferred_model_id: Option<String>,
+    },
+
+    /// Remove a Principal and delete its workspace/data. Requires
+    /// `ManageSettings` permission on the principal.
+    #[serde(rename = "principal_remove")]
+    PrincipalRemove { request_id: u64, name: String },
+
     // ─── Model catalog listing ──────────────────────────────────────
     #[serde(rename = "model_list")]
     ModelList { request_id: u64 },
@@ -788,6 +810,8 @@ impl RequestPacket {
             | Self::PrincipalList { request_id }
             | Self::PrincipalGet { request_id, .. }
             | Self::PrincipalCreate { request_id, .. }
+            | Self::PrincipalUpdate { request_id, .. }
+            | Self::PrincipalRemove { request_id, .. }
             | Self::ModelList { request_id }
             | Self::ModelReload { request_id }
             | Self::ModelTemplates { request_id }
@@ -1060,6 +1084,25 @@ pub enum ResponsePacket {
     PrincipalCreated {
         request_id: u64,
         principal: crate::principal::PrincipalSummary,
+    },
+
+    /// Result of `PrincipalUpdate`. Echoes the updated principal's
+    /// summary so the caller can refresh its local state without a
+    /// follow-up `PrincipalGet`.
+    #[serde(rename = "principal_updated")]
+    PrincipalUpdated {
+        request_id: u64,
+        principal: crate::principal::PrincipalSummary,
+    },
+
+    /// Result of `PrincipalRemove`. `removed` is `true` when the
+    /// principal existed and was deleted; idempotent removes return
+    /// `false`.
+    #[serde(rename = "principal_removed")]
+    PrincipalRemoved {
+        request_id: u64,
+        name: String,
+        removed: bool,
     },
 
     /// Result of `CredentialList`. One row per provider id that the
@@ -1954,6 +1997,8 @@ impl ResponsePacket {
             | Self::PrincipalList { request_id, .. }
             | Self::PrincipalGet { request_id, .. }
             | Self::PrincipalCreated { request_id, .. }
+            | Self::PrincipalUpdated { request_id, .. }
+            | Self::PrincipalRemoved { request_id, .. }
             | Self::SystemStatus { request_id, .. }
             | Self::SystemDoctor { request_id, .. }
             | Self::ModelList { request_id, .. }
@@ -2035,6 +2080,8 @@ impl ResponsePacket {
             Self::PrincipalList { .. } => "PrincipalList",
             Self::PrincipalGet { .. } => "PrincipalGet",
             Self::PrincipalCreated { .. } => "PrincipalCreated",
+            Self::PrincipalUpdated { .. } => "PrincipalUpdated",
+            Self::PrincipalRemoved { .. } => "PrincipalRemoved",
             Self::SystemStatus { .. } => "SystemStatus",
             Self::SystemDoctor { .. } => "SystemDoctor",
             Self::ModelList { .. } => "ModelList",
@@ -2647,6 +2694,7 @@ mod tests {
                 description: Some("test principal".to_string()),
                 exposure: crate::principal::config::Exposure::default(),
                 status: None,
+                preferred_model_id: None,
                 capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
@@ -2678,6 +2726,7 @@ mod tests {
                 description: None,
                 exposure: crate::principal::config::Exposure::default(),
                 status: None,
+                preferred_model_id: None,
                 capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 2,
                 workspace_path: "/tmp/helper".to_string(),
@@ -3002,6 +3051,144 @@ mod tests {
     }
 
     #[test]
+    fn test_principal_update_request_roundtrip() {
+        let req = RequestPacket::PrincipalUpdate {
+            request_id: 304,
+            name: "alice".to_string(),
+            description: Some("updated description".to_string()),
+            status: Some("busy".to_string()),
+            exposure: Some("public".to_string()),
+            preferred_model_id: Some("claude-sonnet-4-5".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains("\"type\":\"principal_update\""),
+            "expected principal_update wire tag, got: {json}"
+        );
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalUpdate {
+                request_id,
+                name,
+                description,
+                status,
+                exposure,
+                preferred_model_id,
+            } => {
+                assert_eq!(request_id, 304);
+                assert_eq!(name, "alice");
+                assert_eq!(description.as_deref(), Some("updated description"));
+                assert_eq!(status.as_deref(), Some("busy"));
+                assert_eq!(exposure.as_deref(), Some("public"));
+                assert_eq!(preferred_model_id.as_deref(), Some("claude-sonnet-4-5"));
+            }
+            _ => panic!("Wrong variant"),
+        }
+
+        // Minimal payload — only the name is required; omitted fields
+        // round-trip as None.
+        let minimal = RequestPacket::PrincipalUpdate {
+            request_id: 305,
+            name: "bob".to_string(),
+            description: None,
+            status: None,
+            exposure: None,
+            preferred_model_id: None,
+        };
+        let bytes = minimal.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalUpdate {
+                request_id,
+                name,
+                description,
+                status,
+                exposure,
+                preferred_model_id,
+            } => {
+                assert_eq!(request_id, 305);
+                assert_eq!(name, "bob");
+                assert!(description.is_none());
+                assert!(status.is_none());
+                assert!(exposure.is_none());
+                assert!(preferred_model_id.is_none());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_remove_request_roundtrip() {
+        let req = RequestPacket::PrincipalRemove {
+            request_id: 306,
+            name: "alice".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains("\"type\":\"principal_remove\""),
+            "expected principal_remove wire tag, got: {json}"
+        );
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalRemove { request_id, name } => {
+                assert_eq!(request_id, 306);
+                assert_eq!(name, "alice");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_updated_response_roundtrip() {
+        let resp = ResponsePacket::PrincipalUpdated {
+            request_id: 604,
+            principal: crate::principal::PrincipalSummary {
+                name: "alice".to_string(),
+                did: crate::subject::PrincipalDID("did:peko:local:alice".to_string()),
+                owner: crate::auth::Subject::User("alice".to_string()),
+                description: Some("updated".to_string()),
+                exposure: crate::principal::config::Exposure::Public,
+                status: Some(crate::principal::config::Status::Busy),
+                preferred_model_id: None,
+                capabilities: crate::extensions::framework::types::Capabilities::default(),
+                agent_prompt_count: 1,
+                workspace_path: "/tmp/alice".to_string(),
+            },
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalUpdated { request_id, principal } => {
+                assert_eq!(request_id, 604);
+                assert_eq!(principal.name, "alice");
+                assert_eq!(principal.description.as_deref(), Some("updated"));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_removed_response_roundtrip() {
+        let resp = ResponsePacket::PrincipalRemoved {
+            request_id: 605,
+            name: "alice".to_string(),
+            removed: true,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalRemoved { request_id, name, removed } => {
+                assert_eq!(request_id, 605);
+                assert_eq!(name, "alice");
+                assert!(removed);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
     fn test_principal_created_response_roundtrip() {
         let resp = ResponsePacket::PrincipalCreated {
             request_id: 603,
@@ -3012,6 +3199,7 @@ mod tests {
                 description: Some("personal assistant".to_string()),
                 exposure: crate::principal::config::Exposure::default(),
                 status: None,
+                preferred_model_id: None,
                 capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
@@ -3492,6 +3680,22 @@ mod tests {
             name: "helper".to_string(),
         };
         assert_eq!(req_principal_get.request_id(), 2);
+
+        let req_principal_update = RequestPacket::PrincipalUpdate {
+            request_id: 3,
+            name: "helper".to_string(),
+            description: None,
+            status: None,
+            exposure: None,
+            preferred_model_id: None,
+        };
+        assert_eq!(req_principal_update.request_id(), 3);
+
+        let req_principal_remove = RequestPacket::PrincipalRemove {
+            request_id: 4,
+            name: "helper".to_string(),
+        };
+        assert_eq!(req_principal_remove.request_id(), 4);
     }
 
     #[test]
@@ -3507,6 +3711,30 @@ mod tests {
             principal: None,
         };
         assert_eq!(resp_principal_get.request_id(), 11);
+
+        let resp_principal_updated = ResponsePacket::PrincipalUpdated {
+            request_id: 12,
+            principal: crate::principal::PrincipalSummary {
+                name: "helper".to_string(),
+                did: crate::subject::PrincipalDID("did:peko:local:helper".to_string()),
+                owner: crate::auth::Subject::User("alice".to_string()),
+                description: None,
+                exposure: crate::principal::config::Exposure::default(),
+                status: None,
+                preferred_model_id: None,
+                capabilities: crate::extensions::framework::types::Capabilities::default(),
+                agent_prompt_count: 0,
+                workspace_path: "/tmp/helper".to_string(),
+            },
+        };
+        assert_eq!(resp_principal_updated.request_id(), 12);
+
+        let resp_principal_removed = ResponsePacket::PrincipalRemoved {
+            request_id: 13,
+            name: "helper".to_string(),
+            removed: true,
+        };
+        assert_eq!(resp_principal_removed.request_id(), 13);
     }
 
     #[test]
