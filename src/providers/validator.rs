@@ -105,19 +105,30 @@ impl Validator {
         // 429s by waiting and retrying, which is wrong for a ping).
         let adapter = build_adapter(config);
 
-        let (auth, extra_headers) = match (&api_key, config.requires_key) {
-            (Some(key), _) => (
-                adapter.auth_config(key.expose_secret()),
-                adapter.extra_headers(),
-            ),
+        let mut extra_headers = adapter.extra_headers();
+        // Merge catalog-level headers on top of adapter defaults;
+        // same precedence rule as `Provider::new` so a Test ping
+        // reaches the endpoint with the same headers a real call
+        // would.
+        for (name, value) in &config.headers {
+            let needle = name.to_ascii_lowercase();
+            if let Some(existing) = extra_headers
+                .iter_mut()
+                .find(|(n, _)| n.to_ascii_lowercase() == needle)
+            {
+                existing.1 = value.clone();
+            } else {
+                extra_headers.push((name.clone(), value.clone()));
+            }
+        }
+
+        let auth = match (&api_key, config.requires_key) {
+            (Some(key), _) => adapter.auth_config(key.expose_secret()),
             // Local / keyless model (Ollama). The HTTP request still
             // goes out; we just don't attach an Authorization header.
-            (None, false) => (
-                AuthConfig::Bearer {
-                    token: String::new(),
-                },
-                adapter.extra_headers(),
-            ),
+            (None, false) => AuthConfig::Bearer {
+                token: String::new(),
+            },
             // Vault says "no key" but the model requires one — that's
             // a misconfiguration on the user's side. Bail without
             // making the network call.

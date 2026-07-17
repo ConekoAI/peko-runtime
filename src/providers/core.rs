@@ -19,7 +19,7 @@ use tracing::{error, info};
 ///
 /// Replaces the old `ProviderConfig` shape. The catalog is the
 /// single source of truth for models; the only fields the
-/// `Provider` struct itself needs are the five below.
+/// `Provider` struct itself needs are the six below.
 #[derive(Debug, Clone)]
 pub struct ProviderRuntimeOptions {
     /// Catalog-declared default model id, surfaced through
@@ -33,6 +33,12 @@ pub struct ProviderRuntimeOptions {
     pub max_retries: u32,
     /// Initial backoff between retries, in milliseconds.
     pub retry_delay_ms: u64,
+    /// Per-model extra HTTP headers from the catalog entry, e.g.
+    /// `anthropic-beta: interleaved-thinking-2025-05-08` or
+    /// `OpenAI-Organization`. Merged with the adapter's built-in
+    /// headers (e.g. `anthropic-version`); model-level headers
+    /// win on name conflict so a user override is honored.
+    pub extra_headers: Vec<(String, String)>,
 }
 
 impl Default for ProviderRuntimeOptions {
@@ -43,6 +49,7 @@ impl Default for ProviderRuntimeOptions {
             timeout_seconds: 300,
             max_retries: 3,
             retry_delay_ms: 1000,
+            extra_headers: Vec::new(),
         }
     }
 }
@@ -64,6 +71,27 @@ pub struct Provider {
     options: ProviderRuntimeOptions,
 }
 
+/// Merge the adapter's built-in headers with the catalog entry's
+/// per-model overrides. Adapter headers come first; model headers
+/// come second and win on header-name conflict so a user override
+/// (e.g. a newer `anthropic-version`) is honored. Comparison is
+/// case-insensitive to match HTTP/1.1 header semantics.
+fn merge_extra_headers(
+    adapter: &AnyAdapter,
+    model_headers: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = adapter.extra_headers();
+    for (name, value) in model_headers {
+        let needle = name.to_ascii_lowercase();
+        if let Some(existing) = out.iter_mut().find(|(n, _)| n.to_ascii_lowercase() == needle) {
+            existing.1 = value.clone();
+        } else {
+            out.push((name.clone(), value.clone()));
+        }
+    }
+    out
+}
+
 impl Provider {
     /// Create a new provider
     pub fn new(
@@ -74,13 +102,14 @@ impl Provider {
         let api_key = api_key.into();
 
         // Mock adapter does not need a real HTTP client or API key
+        let merged_headers = merge_extra_headers(&adapter, &options.extra_headers);
         let client = if matches!(adapter, AnyAdapter::Mock(_)) {
             HttpClient::with_headers(
                 adapter.base_url(),
                 adapter.auth_config(&api_key),
                 options.timeout_seconds,
-                adapter.extra_headers(),
-            )?
+                merged_headers,
+                )?
         } else {
             if api_key.is_empty() {
                 return Err(anyhow::anyhow!("API key is required"));
@@ -91,7 +120,7 @@ impl Provider {
                 adapter.base_url(),
                 auth,
                 options.timeout_seconds,
-                adapter.extra_headers(),
+                merged_headers,
             )?;
 
             // Wire retry policy from the runtime options.
@@ -153,6 +182,14 @@ impl Provider {
     #[must_use]
     pub fn context_window(&self) -> Option<u32> {
         self.options.context_window
+    }
+
+    /// Borrow the resolved runtime options (model id, context
+    /// window, headers, …). Useful for tests that want to assert
+    /// how the catalog entry was projected onto the live provider.
+    #[must_use]
+    pub fn options(&self) -> &ProviderRuntimeOptions {
+        &self.options
     }
 
     /// Check if this provider supports native tool calling
@@ -530,6 +567,7 @@ mod tests {
             timeout_seconds: 300,
             max_retries: 3,
             retry_delay_ms: 1000,
+            extra_headers: Vec::new(),
         }
     }
 
@@ -557,6 +595,7 @@ mod tests {
             timeout_seconds: 60,
             max_retries: 1,
             retry_delay_ms: 100,
+            extra_headers: Vec::new(),
         };
         let provider = Provider::new(adapter, "test_key", opts).unwrap();
         assert_eq!(provider.model_id(), "gpt-5-test");

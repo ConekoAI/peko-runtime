@@ -1498,6 +1498,7 @@ mod tests {
             timeout_seconds: 300,
             max_retries: 3,
             retry_delay_ms: 1000,
+            extra_headers: Vec::new(),
         };
         let provider = Provider::new(any, "mock_key", options).unwrap();
         (Arc::new(provider), adapter)
