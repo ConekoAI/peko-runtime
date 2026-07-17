@@ -988,7 +988,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
     PrincipalConfig {
         name: name.to_string(),
         did: None,
-        owner: Subject::User("default".to_string()),
+        owner: Subject::User("local".to_string()),
         identity: PrincipalIdentityConfig {
             display_name: Some(name.to_string()),
             description: Some(format!("The {name} Principal")),
@@ -1018,7 +1018,7 @@ fn default_agent_prompt(name: &str) -> String {
     // `format!` treats `{...}` as a substitution argument and `{{` as
     // a literal `{`.
     format!(
-        "---\ndescription: \"Default assistant for {name}\"\n---\n\n\
+        "---\nname: primary\ndescription: \"Default assistant for {name}\"\n---\n\n\
         You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
         {{{{memory}}}}\n"
     )
@@ -1219,6 +1219,16 @@ mod tests {
     fn default_agent_prompt_contains_name() {
         let prompt = default_agent_prompt("spot");
         assert!(prompt.contains("spot"));
+        // The strict agent adapter requires both `name` and `description`
+        // in the frontmatter; the generated default must parse cleanly.
+        assert!(
+            prompt.contains("name: primary"),
+            "default agent prompt frontmatter must include a name; got: {prompt}"
+        );
+        assert!(
+            prompt.contains("description:"),
+            "default agent prompt frontmatter must include a description; got: {prompt}"
+        );
         // The default supervisor template must opt in to the
         // `{{memory}}` placeholder so casual users see their MEMORY.md
         // content without authoring a custom template.

@@ -88,11 +88,30 @@ impl From<SessionEntry> for SessionInfo {
 }
 
 /// History event types
+///
+/// Wire shape is the contract between `peko-runtime` and the desktop
+/// (`peko-desktop/src/types/index.ts:88`). The enum tag is `kind`
+/// (not `type`) with snake_case variant names; field names are
+/// camelCase. Earlier versions used `tag = "type"` with PascalCase
+/// variants and snake_case fields — the desktop type declared
+/// `kind: "session" | "message" | "tool_call" | ...` with camelCase
+/// fields, so every event silently failed the kind discriminator on
+/// the frontend and was filtered out by `historyEventsToChatItems`.
+/// `rename_all_fields` (serde ≥1.0.197) is what lets us declare the
+/// canonical Rust names without writing a per-field `rename =`
+/// annotation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum HistoryEvent {
+    /// Session-start marker. Carries the session id (e.g.
+    /// `"root:user:local"`) and the wall-clock time the session was
+    /// created so the desktop Activity route can render a header row
+    /// without joining against the response envelope.
     Session {
-        timestamp: String,
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "startedAt")]
+        started_at: String,
     },
     Message {
         role: String,
@@ -103,24 +122,30 @@ pub enum HistoryEvent {
         tool_name: String,
         args: serde_json::Value,
         tool_call_id: String,
+        timestamp: String,
     },
     ToolResult {
         tool_call_id: String,
         output: Option<String>,
         error: Option<String>,
+        timestamp: String,
     },
     Thinking {
         content: String,
+        timestamp: String,
     },
     ModelChange {
         provider: String,
         model_id: String,
+        timestamp: String,
     },
     Compaction {
         summary: String,
+        timestamp: String,
     },
     Custom {
         custom_type: String,
+        timestamp: String,
     },
 }
 
@@ -189,12 +214,31 @@ pub struct HistorySummary {
 /// `HistoryQuery` (`include_tool_calls`, `include_thinking`) is applied
 /// at the call site, not here.
 ///
+/// `session_id` and `session_started_at` are passed through so the
+/// `HistoryEvent::Session` marker can carry them — the desktop's
+/// `HistoryEvent` union has `{ kind: "session", sessionId, startedAt }`
+/// and the desktop renders those without joining the response envelope.
+///
 /// Returns `None` for events that have no display representation
 /// (a2a traffic, spawn-request internals, session-end markers).
-pub fn session_event_to_history(event: &SessionEvent) -> Option<HistoryEvent> {
+pub fn session_event_to_history(
+    event: &SessionEvent,
+    session_id: &str,
+    session_started_at: &str,
+) -> Option<HistoryEvent> {
     Some(match event {
         SessionEvent::SessionCreated(e) => HistoryEvent::Session {
-            timestamp: e.envelope.ts.to_rfc3339(),
+            session_id: session_id.to_string(),
+            // Use the caller-supplied `session_started_at` as the
+            // single source of truth — for `SessionService::get_history`
+            // it's the first SessionCreated's ts; for the IPC path it's
+            // the first event's ts (with SessionCreated preferred). The
+            // envelope on this specific SessionCreated should agree.
+            started_at: if session_started_at.is_empty() {
+                e.envelope.ts.to_rfc3339()
+            } else {
+                session_started_at.to_string()
+            },
         },
         SessionEvent::MessageV2(msg) => HistoryEvent::Message {
             role: match msg.role() {
@@ -211,14 +255,17 @@ pub fn session_event_to_history(event: &SessionEvent) -> Option<HistoryEvent> {
             tool_name: e.tool.clone(),
             args: e.args.clone(),
             tool_call_id: e.tool_call_id.clone(),
+            timestamp: e.envelope.ts.to_rfc3339(),
         },
         SessionEvent::ToolResult(e) => HistoryEvent::ToolResult {
             tool_call_id: e.tool_call_id.clone(),
             output: e.output.clone(),
             error: e.error.clone(),
+            timestamp: e.envelope.ts.to_rfc3339(),
         },
         SessionEvent::Thinking(e) => HistoryEvent::Thinking {
             content: e.content.clone(),
+            timestamp: e.envelope.ts.to_rfc3339(),
         },
         SessionEvent::System(e) => HistoryEvent::Message {
             role: "system".to_string(),
@@ -227,6 +274,7 @@ pub fn session_event_to_history(event: &SessionEvent) -> Option<HistoryEvent> {
         },
         SessionEvent::HookTrigger(e) => HistoryEvent::Custom {
             custom_type: format!("hook:{:?}", e.hook_type),
+            timestamp: e.envelope.ts.to_rfc3339(),
         },
         SessionEvent::SpawnRequest(_)
         | SessionEvent::SpawnResult(_)
@@ -345,9 +393,21 @@ impl SessionService {
             .with_context(|| format!("Failed to load events for session '{session_id}'"))?;
 
         // Convert and filter
+        // Pre-compute session_started_at from the first SessionCreated event
+        // so the Session marker we emit at index 0 carries a meaningful value.
+        // (CLI's `peko log` doesn't render the Session marker, but the IPC
+        // path does; keep both call sites using the same converter.)
+        let session_started_at = events
+            .iter()
+            .find_map(|e| match e {
+                SessionEvent::SessionCreated(c) => Some(c.envelope.ts.to_rfc3339()),
+                _ => None,
+            })
+            .unwrap_or_default();
+
         let mut history_events: Vec<HistoryEvent> = events
             .iter()
-            .filter_map(|event| self.convert_event(event, &query))
+            .filter_map(|event| self.convert_event(event, session_id, &session_started_at, &query))
             .collect();
 
         // Apply pagination (newest first)
@@ -669,7 +729,13 @@ impl SessionService {
     /// at the call site, not here.
     ///
     /// Convert `SessionEvent` to `HistoryEvent`, applying query filters.
-    fn convert_event(&self, event: &SessionEvent, query: &HistoryQuery) -> Option<HistoryEvent> {
+    fn convert_event(
+        &self,
+        event: &SessionEvent,
+        session_id: &str,
+        session_started_at: &str,
+        query: &HistoryQuery,
+    ) -> Option<HistoryEvent> {
         let event_type = event.event_type();
 
         // Filter based on query params
@@ -681,7 +747,7 @@ impl SessionService {
             return None;
         }
 
-        session_event_to_history(event)
+        session_event_to_history(event, session_id, session_started_at)
     }
 }
 

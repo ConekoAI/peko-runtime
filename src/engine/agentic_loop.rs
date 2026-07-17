@@ -218,27 +218,44 @@ impl AgenticLoop {
     /// complete events at the end. This is the unified path — the core always
     /// streams; presentation decides whether to show deltas or wait for finals.
     ///
+    /// `user_text` is persisted verbatim as the user message in the session JSONL.
+    /// `pre_user_messages` are ephemeral LLM-only turns inserted immediately before
+    /// the user turn; they are never persisted.
+    ///
     /// If `existing_session` is provided, it will be used instead of creating a new one.
     /// If `history` is provided, those messages will be used as the starting point.
     pub async fn run_with_resume(
         &self,
-        prompt: &str,
+        user_text: &str,
+        pre_user_messages: Vec<LlmMessage>,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         session: Arc<RwLock<Session>>,
         history: Option<Vec<LlmMessage>>,
     ) -> Result<AgenticResult> {
         let config = crate::engine::OrchestratorConfig::final_only();
-        self.run_streaming_with_resume(prompt, on_event, session, history, config)
-            .await
+        self.run_streaming_with_resume(
+            user_text,
+            pre_user_messages,
+            on_event,
+            session,
+            history,
+            config,
+        )
+        .await
     }
 
     /// Run the agent with streaming support, optionally resuming from an existing session.
     ///
     /// Uses `DeliveryMode::Live` or `DeliveryMode::Block` for real-time output.
     /// The core loop is the same as `run_with_resume`; only the orchestrator config differs.
+    ///
+    /// `user_text` is persisted verbatim as the user message in the session JSONL.
+    /// `pre_user_messages` are ephemeral LLM-only turns inserted immediately before
+    /// the user turn; they are never persisted.
     pub async fn run_streaming_with_resume(
         &self,
-        prompt: &str,
+        user_text: &str,
+        pre_user_messages: Vec<LlmMessage>,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         session: Arc<RwLock<Session>>,
         history: Option<Vec<LlmMessage>>,
@@ -327,13 +344,18 @@ impl AgenticLoop {
             msgs
         };
 
-        // Add user message
-        messages.push(LlmMessage::user(prompt.to_string()));
+        // Append ephemeral LLM-only context turns (e.g. recalled prior-session
+        // summaries) before the new user turn. These are intentionally not
+        // persisted; only the raw `user_text` is stored in the session JSONL.
+        messages.extend(pre_user_messages);
 
-        // Add user message to session
+        // Add user message
+        messages.push(LlmMessage::user(user_text.to_string()));
+
+        // Persist only the raw user text, never the composed LLM prompt.
         {
             let mut s = session.write().await;
-            s.add_user(prompt).await?;
+            s.add_user(user_text).await?;
         }
 
         // Continue with the unified run logic
@@ -515,7 +537,7 @@ impl AgenticLoop {
             }
         }
 
-        self.run_with_resume(prompt, on_event, session, None).await
+        self.run_with_resume(prompt, Vec::new(), on_event, session, None).await
     }
 
     /// Unified agent loop — always streams internally; delivery mode controls presentation.
@@ -1362,7 +1384,8 @@ impl AgenticLoop {
     ///
     /// # Arguments
     ///
-    /// * `prompt` - The user prompt
+    /// * `user_text` - The user prompt; persisted verbatim as the user message
+    /// * `pre_user_messages` - Ephemeral LLM-only turns inserted before the user turn
     /// * `on_event` - Callback for agentic events (called for each streaming event)
     /// * `session` - Session for context storage
     /// * `history` - Optional message history to resume from
@@ -1374,6 +1397,7 @@ impl AgenticLoop {
     /// let result = agentic_loop
     ///     .run_streaming(
     ///         "What's the weather?",
+    ///         Vec::new(),
     ///         |event| println!("{:?}", event),
     ///         session,
     ///         None,
@@ -1383,7 +1407,8 @@ impl AgenticLoop {
     /// ```
     pub async fn run_streaming(
         &self,
-        prompt: &str,
+        user_text: &str,
+        pre_user_messages: Vec<LlmMessage>,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         session: Arc<RwLock<Session>>,
         history: Option<Vec<LlmMessage>>,
@@ -1458,13 +1483,18 @@ impl AgenticLoop {
             msgs
         };
 
-        // Add user message
-        messages.push(LlmMessage::user(prompt.to_string()));
+        // Append ephemeral LLM-only context turns (e.g. recalled prior-session
+        // summaries) before the new user turn. These are intentionally not
+        // persisted; only the raw `user_text` is stored in the session JSONL.
+        messages.extend(pre_user_messages);
 
-        // Add user message to session
+        // Add user message
+        messages.push(LlmMessage::user(user_text.to_string()));
+
+        // Persist only the raw user text, never the composed LLM prompt.
         {
             let mut s = session.write().await;
-            s.add_user(prompt).await?;
+            s.add_user(user_text).await?;
         }
 
         // Run the streaming loop
@@ -1666,6 +1696,7 @@ mod tests {
         let result = loop_
             .run_with_resume(
                 "Say hello",
+                Vec::new(),
                 move |event| {
                     events_clone.lock().unwrap().push(event);
                 },
@@ -1731,6 +1762,7 @@ mod tests {
         let result = loop_
             .run_streaming_with_resume(
                 "Stream something",
+                Vec::new(),
                 move |event| {
                     events_clone.lock().unwrap().push(event);
                 },
@@ -1784,7 +1816,7 @@ mod tests {
 
         let session = test_session("rt003-agent", temp_dir.path()).await;
         let result = loop_
-            .run_with_resume("Test timeout", |_| {}, session, None)
+            .run_with_resume("Test timeout", Vec::new(), |_| {}, session, None)
             .await;
 
         assert!(result.is_ok());
@@ -1820,6 +1852,7 @@ mod tests {
         let result = loop_
             .run_with_resume(
                 "Trigger error",
+                Vec::new(),
                 move |event| {
                     events_clone.lock().unwrap().push(event);
                 },
@@ -1873,7 +1906,7 @@ mod tests {
         let session_clone = session.clone();
 
         let result = loop_
-            .run_with_resume("Persist this", |_| {}, session, None)
+            .run_with_resume("Persist this", Vec::new(), |_| {}, session, None)
             .await;
 
         assert!(result.is_ok());
@@ -1899,6 +1932,97 @@ mod tests {
             .iter()
             .any(|m| matches!(m.role, MessageRole::Assistant));
         assert!(has_assistant, "Session should contain assistant message");
+    }
+
+    // ===================================================================
+    // RT-005b: pre-user LLM context must NOT leak into persisted user text
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_rt005_session_persistence_with_context() {
+        // Force the encrypted-file identity fallback — see
+        // `crate::identity::init_test_env` for the rationale.
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("Persisted answer with context");
+
+        let config = test_agent_config("rt005b-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
+
+        let session = test_session("rt005b-agent", temp_dir.path()).await;
+        let session_clone = session.clone();
+
+        let recalled = LlmMessage::system("Prior context:\n- [session s1]: earlier chat");
+        let result = loop_
+            .run_with_resume("Persist this", vec![recalled], |_| {}, session, None)
+            .await;
+
+        assert!(result.is_ok());
+
+        // 1. The persisted session history must contain the raw user text only.
+        let session_guard = session_clone.read().await;
+        let history = session_guard.load_history().await.unwrap();
+        drop(session_guard);
+
+        let user_texts: Vec<&str> = history
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .filter_map(|m| m.content.iter().find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            }))
+            .collect();
+        assert_eq!(
+            user_texts,
+            vec!["Persist this"],
+            "persisted user message must be exactly the raw user text; got {user_texts:?}"
+        );
+
+        // 2. The LLM request must include the ephemeral recalled-context
+        //    system message before the user turn.
+        let recorded = mock.recorded_requests();
+        assert!(
+            !recorded.is_empty(),
+            "mock should have recorded at least one request"
+        );
+        let req = &recorded[0];
+        let sys_idx = req.messages.iter().position(|m| {
+            matches!(m.role, MessageRole::System)
+                && m.content.iter().any(|b| {
+                    if let ContentBlock::Text { text } = b {
+                        text.contains("Prior context:")
+                    } else {
+                        false
+                    }
+                })
+        });
+        let user_idx = req.messages.iter().position(|m| {
+            matches!(m.role, MessageRole::User)
+                && m.content.iter().any(|b| {
+                    if let ContentBlock::Text { text } = b {
+                        text == "Persist this"
+                    } else {
+                        false
+                    }
+                })
+        });
+        assert!(
+            sys_idx.is_some(),
+            "LLM request should contain the recalled-context system message in: {:?}",
+            req.messages.iter().map(|m| format!("{:?}", m.role)).collect::<Vec<_>>()
+        );
+        assert!(
+            user_idx.is_some(),
+            "LLM request should contain the raw user message"
+        );
+        assert!(
+            sys_idx.unwrap() < user_idx.unwrap(),
+            "recalled context must precede the user turn"
+        );
     }
 
     // ===================================================================
@@ -1932,7 +2056,7 @@ mod tests {
 
         let session = test_session("rt006-agent", temp_dir.path()).await;
         let result = loop_
-            .run_with_resume("Trigger tool loop", |_| {}, session, None)
+            .run_with_resume("Trigger tool loop", Vec::new(), |_| {}, session, None)
             .await;
 
         assert!(result.is_ok(), "Loop should complete without panic");
@@ -2002,7 +2126,7 @@ mod tests {
 
         let session = test_session("tool-loop-agent", temp_dir.path()).await;
         let result = loop_
-            .run_with_resume("Use echo tool", |_| {}, session, None)
+            .run_with_resume("Use echo tool", Vec::new(), |_| {}, session, None)
             .await;
 
         assert!(
@@ -2158,7 +2282,7 @@ mod tests {
         let session = test_session("para-tools-agent", temp_dir.path()).await;
         let started = Instant::now();
         let result = loop_
-            .run_with_resume("Run both tools", |_| {}, session, None)
+            .run_with_resume("Run both tools", Vec::new(), |_| {}, session, None)
             .await;
         let total_elapsed = started.elapsed();
 
@@ -2271,7 +2395,7 @@ mod tests {
         });
 
         let result = loop_
-            .run_with_resume("Trigger completion drain", |_| {}, session, None)
+            .run_with_resume("Trigger completion drain", Vec::new(), |_| {}, session, None)
             .await;
 
         assert!(
@@ -2400,7 +2524,7 @@ mod tests {
         );
 
         let result = loop_
-            .run_with_resume("Trigger steering drain", |_| {}, session, None)
+            .run_with_resume("Trigger steering drain", Vec::new(), |_| {}, session, None)
             .await;
 
         assert!(
@@ -2491,6 +2615,7 @@ mod tests {
         let result = loop_
             .run_with_resume(
                 "Will be interrupted",
+                Vec::new(),
                 move |event| {
                     events_clone.lock().unwrap().push(event);
                 },

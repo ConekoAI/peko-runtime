@@ -124,7 +124,8 @@ pub(crate) async fn resolve_provider_hint(ctx: &PrincipalContext) -> Option<Stri
 pub async fn run_root_agent_prompt(
     prompt: &AgentPrompt,
     peer: Subject,
-    message: String,
+    user_text: String,
+    pre_user_messages: Vec<LlmMessage>,
     session_id: String,
     available_agents: Vec<AgentPromptSummary>,
     ctx: &PrincipalContext,
@@ -132,7 +133,8 @@ pub async fn run_root_agent_prompt(
     run_root_agent_prompt_with_callback(
         prompt,
         peer,
-        message,
+        user_text,
+        pre_user_messages,
         session_id,
         available_agents,
         ctx,
@@ -155,7 +157,8 @@ pub async fn run_root_agent_prompt(
 pub async fn run_root_agent_prompt_streaming<F>(
     prompt: &AgentPrompt,
     peer: Subject,
-    message: String,
+    user_text: String,
+    pre_user_messages: Vec<LlmMessage>,
     session_id: String,
     available_agents: Vec<AgentPromptSummary>,
     ctx: &PrincipalContext,
@@ -168,7 +171,8 @@ where
     run_root_agent_prompt_with_callback(
         prompt,
         peer,
-        message,
+        user_text,
+        pre_user_messages,
         session_id,
         available_agents,
         ctx,
@@ -181,7 +185,8 @@ where
 async fn run_root_agent_prompt_with_callback<F>(
     prompt: &AgentPrompt,
     peer: Subject,
-    message: String,
+    user_text: String,
+    pre_user_messages: Vec<LlmMessage>,
     session_id: String,
     available_agents: Vec<AgentPromptSummary>,
     ctx: &PrincipalContext,
@@ -417,7 +422,8 @@ where
     // from this entrypoint.
     let result = agent
         .execute_streaming_with_session(
-            &message,
+            &user_text,
+            pre_user_messages,
             session,
             Some(history),
             None, // caller_id: attribution is handled at the dispatcher boundary

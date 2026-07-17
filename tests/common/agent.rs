@@ -175,7 +175,6 @@ fn seed_model_in_catalog(
         model_id: wire_model_id.to_string(),
         context_window: None,
         max_output_tokens: None,
-        capabilities: vec![],
         headers: BTreeMap::new(),
         credential_id: None,
         requires_key: true,

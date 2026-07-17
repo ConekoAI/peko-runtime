@@ -303,7 +303,7 @@ impl GlobalPaths {
 
         let services = crate::common::services::ServiceContainer::new(resolver.clone());
 
-        let user = cli.user.clone().unwrap_or_else(|| "default".to_string());
+        let user = cli.user.clone().unwrap_or_else(|| "local".to_string());
 
         Self {
             config_dir,
