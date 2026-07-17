@@ -1061,6 +1061,7 @@ async fn execute_subagent_task(
     let result = subagent
         .execute_with_session(
             &combined_prompt,
+            Vec::new(), // subagents carry no recalled context
             child_session,
             None, // history: None => full system prompt (with tools) is prepended
             cancel,

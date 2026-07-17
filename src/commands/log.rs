@@ -170,8 +170,11 @@ fn parse_duration_secs(input: &str) -> Result<u64> {
 /// Render one `HistoryEvent` to stdout in the default human view.
 fn render_history_event(ev: &HistoryEvent) {
     match ev {
-        HistoryEvent::Session { timestamp } => {
-            println!("── session started ({}) ──", timestamp_short(timestamp));
+        HistoryEvent::Session {
+            session_id: _,
+            started_at,
+        } => {
+            println!("── session started ({}) ──", timestamp_short(started_at));
         }
         HistoryEvent::Message {
             role,
@@ -189,6 +192,7 @@ fn render_history_event(ev: &HistoryEvent) {
             tool_name,
             args,
             tool_call_id,
+            timestamp,
         } => {
             let arg_preview = args
                 .as_object()
@@ -213,13 +217,14 @@ fn render_history_event(ev: &HistoryEvent) {
                 .unwrap_or_else(|| truncate(args.to_string().as_str(), 80));
             println!(
                 "[{}] ⤳ tool_call {tool_name} {arg_preview}  ({tool_call_id})",
-                timestamp_short(&now_iso())
+                timestamp_short(timestamp)
             );
         }
         HistoryEvent::ToolResult {
             tool_call_id,
             output,
             error,
+            timestamp: _,
         } => {
             let (status, body) = match (output.as_deref(), error.as_deref()) {
                 (_, Some(err)) => ("error", err),
@@ -231,16 +236,29 @@ fn render_history_event(ev: &HistoryEvent) {
                 truncate(body, 200)
             );
         }
-        HistoryEvent::Thinking { content } => {
+        HistoryEvent::Thinking {
+            content,
+            timestamp: _,
+        } => {
             println!("💭 {}", truncate(content, 200));
         }
-        HistoryEvent::ModelChange { provider, model_id } => {
+        HistoryEvent::ModelChange {
+            provider,
+            model_id,
+            timestamp: _,
+        } => {
             println!("── model: {provider}/{model_id} ──");
         }
-        HistoryEvent::Compaction { summary } => {
+        HistoryEvent::Compaction {
+            summary,
+            timestamp: _,
+        } => {
             println!("── compacted: {} ──", truncate(summary, 200));
         }
-        HistoryEvent::Custom { custom_type } => {
+        HistoryEvent::Custom {
+            custom_type,
+            timestamp: _,
+        } => {
             println!("• <{custom_type}>");
         }
     }
@@ -283,9 +301,11 @@ fn capitalize(s: &str) -> String {
     out
 }
 
-/// RFC3339 timestamp for "now". Used to render timestamps on tool_call
-/// rows (the `HistoryEvent::ToolCall` shape doesn't carry its own
-/// timestamp field — see `session_service.rs:94`). Cheap to call.
+/// RFC3339 timestamp for "now". Reserved for callers that need a
+/// "rendered at" stamp independent of any event timestamp. Not used
+/// by `render_history_event` directly — events carry their own
+/// `timestamp` field (see `session_service.rs::HistoryEvent`).
+#[allow(dead_code)]
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }

@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::sync::Arc;
 
+use crate::common::types::message::LlmMessage;
 use crate::observability::Observability;
 use crate::session::InboxRegistry;
 
@@ -28,6 +30,35 @@ pub enum ContextInjectionKind {
     Session,
     File,
     Todo,
+}
+
+impl fmt::Display for ContextInjectionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Memory => write!(f, "memory"),
+            Self::Session => write!(f, "session"),
+            Self::File => write!(f, "file"),
+            Self::Todo => write!(f, "todo"),
+        }
+    }
+}
+
+/// Format recalled context injections as an ephemeral system-role message
+/// for the LLM. Returns an empty vector when there is nothing to recall.
+pub fn recalled_context_messages(injections: &[ContextInjection]) -> Vec<LlmMessage> {
+    if injections.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = vec!["Prior context:".to_string()];
+    for injection in injections {
+        lines.push(format!(
+            "- [{} {}]: {}",
+            injection.kind, injection.id, injection.content
+        ));
+    }
+
+    vec![LlmMessage::system(lines.join("\n"))]
 }
 
 /// Context passed to a `PrincipalRouter`.
@@ -148,4 +179,42 @@ pub enum RouterError {
     LoopDetected,
     #[error("permission denied: {0}")]
     PermissionDenied(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::types::message::{ContentBlock, MessageRole};
+
+    #[test]
+    fn test_recalled_context_messages_empty() {
+        let msgs = recalled_context_messages(&[]);
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn test_recalled_context_messages_single_session() {
+        let injections = vec![ContextInjection {
+            kind: ContextInjectionKind::Session,
+            id: "s1".to_string(),
+            content: "previous summary".to_string(),
+        }];
+        let msgs = recalled_context_messages(&injections);
+        assert_eq!(msgs.len(), 1);
+        assert!(matches!(msgs[0].role, MessageRole::System));
+        let text = match msgs[0].content.first() {
+            Some(ContentBlock::Text { text }) => text.as_str(),
+            _ => panic!("expected text block"),
+        };
+        assert!(text.starts_with("Prior context:"));
+        assert!(text.contains("- [session s1]: previous summary"));
+    }
+
+    #[test]
+    fn test_context_injection_kind_display() {
+        assert_eq!(ContextInjectionKind::Memory.to_string(), "memory");
+        assert_eq!(ContextInjectionKind::Session.to_string(), "session");
+        assert_eq!(ContextInjectionKind::File.to_string(), "file");
+        assert_eq!(ContextInjectionKind::Todo.to_string(), "todo");
+    }
 }

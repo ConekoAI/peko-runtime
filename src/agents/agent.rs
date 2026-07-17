@@ -987,6 +987,11 @@ impl Agent {
     ///
     /// Directly creates an `AgenticLoop` and runs it with session resumption.
     ///
+    /// `user_text` is persisted verbatim as the user message in the
+    /// session JSONL. `pre_user_messages` are ephemeral LLM-only turns
+    /// inserted immediately before the user turn (e.g. recalled context
+    /// from prior sessions); they are never persisted.
+    ///
     /// `cancel` is the soft-interrupt `CancellationToken` (PR #128) the
     /// child agent should observe at iteration boundaries. When the
     /// parent agent's `CancellationToken` is flipped (e.g. via
@@ -996,7 +1001,8 @@ impl Agent {
     /// plumbing, tests).
     pub async fn execute_with_session(
         &self,
-        prompt: &str,
+        user_text: &str,
+        pre_user_messages: Vec<crate::common::types::message::LlmMessage>,
         session: Arc<tokio::sync::RwLock<crate::session::Session>>,
         history: Option<Vec<crate::common::types::message::LlmMessage>>,
         cancel: Option<tokio_util::sync::CancellationToken>,
@@ -1051,7 +1057,7 @@ impl Agent {
             .await?;
 
         let result = match loop_
-            .run_with_resume(prompt, on_event, session, history)
+            .run_with_resume(user_text, pre_user_messages, on_event, session, history)
             .await
         {
             Ok(result) => Ok(result),
@@ -1068,6 +1074,11 @@ impl Agent {
     /// Execute with streaming support using the provided session.
     ///
     /// Directly creates an `AgenticLoop` with live streaming delivery mode.
+    ///
+    /// `user_text` is persisted verbatim as the user message in the
+    /// session JSONL. `pre_user_messages` are ephemeral LLM-only turns
+    /// inserted immediately before the user turn (e.g. recalled context
+    /// from prior sessions); they are never persisted.
     ///
     /// `caller_id` is the resolved caller identity for the request
     /// (pekohub sub, API key id, or `None` for local CLI invocations) —
@@ -1089,7 +1100,8 @@ impl Agent {
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_streaming_with_session<F>(
         &self,
-        prompt: &str,
+        user_text: &str,
+        pre_user_messages: Vec<crate::common::types::message::LlmMessage>,
         session: std::sync::Arc<tokio::sync::RwLock<crate::session::Session>>,
         history: Option<Vec<crate::common::types::message::LlmMessage>>,
         caller_id: Option<String>,
@@ -1158,7 +1170,14 @@ impl Agent {
         let streaming_config = crate::engine::OrchestratorConfig::live();
 
         let result = loop_
-            .run_streaming_with_resume(prompt, on_event, session, history, streaming_config)
+            .run_streaming_with_resume(
+                user_text,
+                pre_user_messages,
+                on_event,
+                session,
+                history,
+                streaming_config,
+            )
             .await;
 
         self.set_state(AgentState::Idle);

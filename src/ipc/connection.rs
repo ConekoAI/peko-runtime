@@ -292,6 +292,24 @@ impl ConnectionManager {
         let socket = UnixDatagram::bind(&tmp_path)
             .map_err(|e| anyhow::anyhow!("Failed to bind Unix socket: {e}"))?;
 
+        // Raise the receive buffer so a multi-KiB response (e.g.
+        // `principal_log` returning a populated session JSONL) doesn't
+        // hit `ENOBUFS` on macOS. The default SO_RCVBUF on macOS is
+        // small enough that anything over a few KiB is silently
+        // dropped by the receiver's queue; the daemon's server socket
+        // already bumps SO_SNDBUF on its side, but that doesn't help
+        // if our local kernel queue is the bottleneck.
+        //
+        // Mirrors the desktop-side fix in
+        // `peko-desktop/src-tauri/src/sidecar/mod.rs` for the foreign-
+        // daemon adoption probe.
+        if let Err(e) = crate::ipc::server::bump_recv_buffer(&socket) {
+            tracing::warn!(
+                "failed to bump client unix socket SO_RCVBUF to 256KiB: {e}; \
+                 large responses may hit ENOBUFS"
+            );
+        }
+
         // Test connectivity with a ping
         let ping = super::packet::RequestPacket::Ping { request_id: 0 };
         let ping_bytes = ping.to_bytes()?;

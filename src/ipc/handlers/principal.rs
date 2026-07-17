@@ -983,7 +983,7 @@ impl RequestHandler for PrincipalHandler {
                     return Ok(());
                 }
                 let prompt_body = format!(
-                    "---\ndescription: \"Default assistant for {name}\"\n---\n\n\
+                    "---\nname: primary\ndescription: \"Default assistant for {name}\"\n---\n\n\
                      You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
                      {{{{memory}}}}\n"
                 );
@@ -1863,8 +1863,17 @@ async fn read_principal_log(
 
     // ── Stream the session JSONL ─────────────────────────────────
     let effective_limit = limit.unwrap_or(50).clamp(1, 1000);
+    // Session files live as `<session_id>.jsonl` (matches
+    // `PathResolver::agent_session_file`'s write side — see
+    // `common/paths.rs:452`). Earlier this handler joined the bare
+    // session_id without the extension and silently read zero events
+    // even though the disk file existed.
     let (events, truncated) = load_principal_session_events(
-        principal.memory.sessions_dir().join(&session_id),
+        principal
+            .memory
+            .sessions_dir()
+            .join(format!("{session_id}.jsonl")),
+        &session_id,
         since_secs,
         effective_limit,
     )
@@ -1887,9 +1896,18 @@ async fn read_principal_log(
 /// via the second tuple field when the file held more events than the
 /// limit allows for.
 ///
+/// `session_id` is forwarded to the canonical converter so the
+/// emitted `Session` marker carries it (the desktop renders the
+/// `{kind:"session", sessionId, startedAt}` row without joining the
+/// response envelope). `session_started_at` is derived from the first
+/// `SessionCreated` event in the file; for sessions created before
+/// that event was written we fall back to the file's first event
+/// timestamp, and finally to an empty string.
+///
 /// Missing files (`session.jsonl` not yet created) yield `(vec![], false)`.
 async fn load_principal_session_events(
     path: std::path::PathBuf,
+    session_id: &str,
     since_secs: Option<u64>,
     limit: usize,
 ) -> anyhow::Result<(Vec<HistoryEvent>, bool)> {
@@ -1900,10 +1918,35 @@ async fn load_principal_session_events(
     let cutoff = since_secs.map(|s| Utc::now() - chrono::Duration::seconds(s as i64));
     let raw = tokio::fs::read_to_string(&path).await?;
 
-    // Two-pass: collect (ts, HistoryEvent) tuples preserving order,
-    // then apply the since+limit window in document order. This
-    // matches `SessionService::get_history`'s semantic (oldest-first
-    // within the window).
+    // First pass: derive session_started_at from the first
+    // SessionCreated event, falling back to the file's first event
+    // timestamp. This way the Session marker carries a meaningful
+    // wall-clock value even for sessions whose on-disk JSONL was
+    // written before SessionCreated was a thing.
+    let mut session_started_at: Option<String> = None;
+    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+        let event: SessionEvent = match serde_json::from_str(line) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let ts_str = event.envelope().ts.to_rfc3339();
+        match &event {
+            SessionEvent::SessionCreated(_) => {
+                session_started_at = Some(ts_str);
+                break;
+            }
+            _ => {
+                if session_started_at.is_none() {
+                    session_started_at = Some(ts_str);
+                }
+            }
+        }
+    }
+    let session_started_at = session_started_at.unwrap_or_default();
+
+    // Second pass: convert each event with the resolved
+    // session_started_at. Two-pass keeps the converter pure and avoids
+    // mutating session_started_at mid-iteration.
     let mut ordered: Vec<(chrono::DateTime<Utc>, HistoryEvent)> = Vec::new();
 
     for line in raw.lines().filter(|l| !l.trim().is_empty()) {
@@ -1917,7 +1960,7 @@ async fn load_principal_session_events(
                 continue;
             }
         }
-        if let Some(hist) = session_event_to_history(&event) {
+        if let Some(hist) = session_event_to_history(&event, session_id, &session_started_at) {
             ordered.push((ts, hist));
         }
     }

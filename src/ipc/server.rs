@@ -158,11 +158,17 @@ fn bump_send_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
 /// Raise the kernel-side `SO_RCVBUF` of a socket to
 /// [`IPC_SEND_BUFFER_BYTES`].
 ///
-/// Mirrors [`bump_send_buffer`] for the receive side. The round-trip
-/// test needs this so the client socket can queue the large response
-/// the server sends without dropping it with `ENOBUFS` on macOS.
-#[cfg(all(unix, test))]
-fn bump_recv_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
+/// Mirrors [`bump_send_buffer`] for the receive side. The CLI client
+/// socket (`ipc::connection::connect_unix_*`) needs this so multi-KiB
+/// responses (e.g. `principal_log` with a populated session JSONL)
+/// don't hit `ENOBUFS` on macOS, where the default `SO_RCVBUF` for
+/// `AF_UNIX/SOCK_DGRAM` is small enough to drop anything over a
+/// couple KiB. The round-trip test reuses the same helper so the
+/// client and server buffers stay in sync.
+///
+/// Idempotent and side-effect-only; safe to call on every connection.
+#[cfg(unix)]
+pub fn bump_recv_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
     let fd = socket.as_raw_fd();
     let buf_len = IPC_SEND_BUFFER_BYTES as libc::c_int;
     let buf_len_ptr = std::ptr::addr_of!(buf_len);

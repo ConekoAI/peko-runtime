@@ -648,6 +648,7 @@ impl StatelessAgentService {
         let execute_result = agent
             .execute_with_session(
                 &prompt,
+                Vec::new(), // stateless service carries no recalled context
                 session.clone(),
                 Some(history),
                 None,
@@ -955,6 +956,7 @@ impl StatelessAgentService {
             let result = agent
                 .execute_streaming_with_session(
                     &prompt,
+                    Vec::new(), // stateless service carries no recalled context
                     session,
                     Some(history.clone()),
                     caller_id,

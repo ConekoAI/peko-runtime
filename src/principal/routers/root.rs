@@ -21,7 +21,8 @@ use crate::principal::agent_runner::{run_root_agent_prompt, run_root_agent_promp
 use crate::principal::context::PrincipalContext;
 use crate::principal::memory::{PrincipalMemory, SessionArtifact};
 use crate::principal::router::{
-    AgentPromptSummary, PrincipalRouter, RouteDecision, RouterContext, RouterError,
+    recalled_context_messages, AgentPromptSummary, PrincipalRouter, RouteDecision, RouterContext,
+    RouterError,
 };
 // F19: removed `use crate::quota::QuotaMeter;` — the router no
 // longer carries a quota meter field.
@@ -181,13 +182,15 @@ impl PrincipalRouter for RootRouter {
         let peer = ctx.peer.clone();
         let session_id = root_session_id(&peer);
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
-        let message = build_root_message(&ctx);
+        let user_text = ctx.message.clone();
+        let pre_user_messages = recalled_context_messages(&ctx.recalled_context);
         let principal_ctx = self.build_context(&ctx);
 
         let response = run_root_agent_prompt(
             &self.root_prompt,
             peer.clone(),
-            message,
+            user_text,
+            pre_user_messages,
             session_id.clone(),
             available_agents,
             &principal_ctx,
@@ -220,13 +223,15 @@ impl PrincipalRouter for RootRouter {
         let peer = ctx.peer.clone();
         let session_id = root_session_id(&peer);
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
-        let message = build_root_message(&ctx);
+        let user_text = ctx.message.clone();
+        let pre_user_messages = recalled_context_messages(&ctx.recalled_context);
         let principal_ctx = self.build_context(&ctx);
 
         let response = run_root_agent_prompt_streaming(
             &self.root_prompt,
             peer.clone(),
-            message,
+            user_text,
+            pre_user_messages,
             session_id.clone(),
             available_agents,
             &principal_ctx,
@@ -253,36 +258,9 @@ impl PrincipalRouter for RootRouter {
     }
 }
 
-fn build_root_message(ctx: &RouterContext) -> String {
-    let mut parts = Vec::new();
-
-    if !ctx.recalled_context.is_empty() {
-        parts.push("Prior context:".to_string());
-        for injection in &ctx.recalled_context {
-            parts.push(format!(
-                "- [{} {}]: {}",
-                format!("{:?}", injection.kind).to_lowercase(),
-                injection.id,
-                injection.content
-            ));
-        }
-    }
-
-    parts.push(format!("User ({}) says:\n{}", ctx.peer, ctx.message));
-
-    parts.join("\n\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::Subject;
-    use crate::principal::config::{
-        PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
-    };
-    use crate::principal::router::{ChannelContext, ChannelKind, ContextInjectionKind};
-    use crate::principal::{Capabilities, ExtensionCatalog};
-    use crate::session::InboxRegistry;
 
     #[test]
     fn test_default_root_prompt_loads() {
@@ -292,44 +270,5 @@ mod tests {
             prompt.body.contains("agent_catalog"),
             "root agent prompt should mention agent_catalog"
         );
-    }
-
-    #[test]
-    fn test_build_root_message_includes_context() {
-        let ctx = RouterContext {
-            principal_id: crate::subject::PrincipalId::generate(),
-            principal_name: "test".to_string(),
-            peer: Subject::User("alice".to_string()),
-            message: "hello".to_string(),
-            channel: ChannelContext {
-                kind: ChannelKind::Cli,
-                streaming: false,
-            },
-            routing: PrincipalRoutingConfig::default(),
-            recalled_context: vec![crate::principal::router::ContextInjection {
-                kind: ContextInjectionKind::Session,
-                id: "s1".to_string(),
-                content: "previous summary".to_string(),
-            }],
-            available_agents: vec![AgentPromptSummary {
-                id: "primary".to_string(),
-                name: "primary".to_string(),
-                description: Some("Generalist".to_string()),
-                enabled: true,
-            }],
-            capabilities: Capabilities::default(),
-            intent: PrincipalIntentConfig::default(),
-            governance: PrincipalGovernanceConfig::default(),
-            extension_store: ExtensionCatalog::default(),
-            active_extensions: crate::principal::ActiveExtensionSet::empty(),
-            inbox_registry: Arc::new(InboxRegistry::new()),
-            session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
-            observability: None,
-            override_model: None,
-        };
-
-        let message = build_root_message(&ctx);
-        assert!(message.contains("User (user:alice) says:"));
-        assert!(message.contains("previous summary"));
     }
 }
