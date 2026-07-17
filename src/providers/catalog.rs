@@ -71,9 +71,7 @@ impl ApiFormat {
     #[must_use]
     pub fn from_wire(s: &str) -> Option<Self> {
         match s {
-            "openai_completions" | "openai-completions" | "openai" => {
-                Some(Self::OpenaiCompletions)
-            }
+            "openai_completions" | "openai-completions" | "openai" => Some(Self::OpenaiCompletions),
             "anthropic_messages" | "anthropic-messages" | "anthropic" => {
                 Some(Self::AnthropicMessages)
             }

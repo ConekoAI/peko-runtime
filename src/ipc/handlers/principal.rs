@@ -1157,9 +1157,7 @@ impl RequestHandler for PrincipalHandler {
                                 (config.status, config.exposure)
                             };
                             if let Some(status) = status_opt {
-                                let _ = dispatcher
-                                    .set_instance_status(&name, status.into())
-                                    .await;
+                                let _ = dispatcher.set_instance_status(&name, status.into()).await;
                             }
                             let _ = dispatcher
                                 .set_instance_exposure(&name, exposure_opt.into())

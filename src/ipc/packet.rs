@@ -3160,7 +3160,10 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::PrincipalUpdated { request_id, principal } => {
+            ResponsePacket::PrincipalUpdated {
+                request_id,
+                principal,
+            } => {
                 assert_eq!(request_id, 604);
                 assert_eq!(principal.name, "alice");
                 assert_eq!(principal.description.as_deref(), Some("updated"));
@@ -3179,7 +3182,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::PrincipalRemoved { request_id, name, removed } => {
+            ResponsePacket::PrincipalRemoved {
+                request_id,
+                name,
+                removed,
+            } => {
                 assert_eq!(request_id, 605);
                 assert_eq!(name, "alice");
                 assert!(removed);

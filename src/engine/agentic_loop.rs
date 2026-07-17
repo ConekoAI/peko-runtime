@@ -537,7 +537,8 @@ impl AgenticLoop {
             }
         }
 
-        self.run_with_resume(prompt, Vec::new(), on_event, session, None).await
+        self.run_with_resume(prompt, Vec::new(), on_event, session, None)
+            .await
     }
 
     /// Unified agent loop — always streams internally; delivery mode controls presentation.
@@ -1971,10 +1972,12 @@ mod tests {
         let user_texts: Vec<&str> = history
             .iter()
             .filter(|m| matches!(m.role, MessageRole::User))
-            .filter_map(|m| m.content.iter().find_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            }))
+            .filter_map(|m| {
+                m.content.iter().find_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
             .collect();
         assert_eq!(
             user_texts,
@@ -2013,7 +2016,10 @@ mod tests {
         assert!(
             sys_idx.is_some(),
             "LLM request should contain the recalled-context system message in: {:?}",
-            req.messages.iter().map(|m| format!("{:?}", m.role)).collect::<Vec<_>>()
+            req.messages
+                .iter()
+                .map(|m| format!("{:?}", m.role))
+                .collect::<Vec<_>>()
         );
         assert!(
             user_idx.is_some(),
@@ -2395,7 +2401,13 @@ mod tests {
         });
 
         let result = loop_
-            .run_with_resume("Trigger completion drain", Vec::new(), |_| {}, session, None)
+            .run_with_resume(
+                "Trigger completion drain",
+                Vec::new(),
+                |_| {},
+                session,
+                None,
+            )
             .await;
 
         assert!(

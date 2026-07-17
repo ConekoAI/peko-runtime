@@ -156,8 +156,7 @@ impl RuntimeIdentity {
     }
 
     fn reconstruct_from_credential(c: &crate::common::vault::Credential) -> Result<Option<Self>> {
-        if c.namespace != "identity" || c.kind != crate::common::vault::CredentialKind::PrivateKey
-        {
+        if c.namespace != "identity" || c.kind != crate::common::vault::CredentialKind::PrivateKey {
             return Ok(None);
         }
         let algorithm = c
