@@ -239,6 +239,8 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalSetStatus { .. }
                 | RequestPacket::PrincipalSetExposure { .. }
                 | RequestPacket::PrincipalCreate { .. }
+                | RequestPacket::PrincipalUpdate { .. }
+                | RequestPacket::PrincipalRemove { .. }
         )
     }
 
@@ -1044,6 +1046,191 @@ impl RequestHandler for PrincipalHandler {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("principal_create failed: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::PrincipalUpdate {
+                request_id,
+                name,
+                description,
+                status,
+                exposure,
+                preferred_model_id,
+            } => {
+                use crate::principal::config::{Exposure, Status};
+
+                let principal = match load_principal(host, &name).await {
+                    Some(p) => p,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal '{}' not found", name),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+
+                let caller_subject = caller.subject();
+                let config = principal.config.read().await;
+                let resource = principal_resource(&name, &config);
+                if let Err(denied) =
+                    check_permission(&resource, Permission::ManageSettings, &caller_subject)
+                {
+                    warn!("PrincipalUpdate denied: {}", denied);
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: denied.to_string(),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+                drop(config);
+
+                // Validate supplied enum strings before touching config.
+                let status_enum = match status {
+                    None => None,
+                    Some(s) if s.is_empty() => Some(None),
+                    Some(s) => match s.as_str() {
+                        "online" => Some(Some(Status::Online)),
+                        "offline" => Some(Some(Status::Offline)),
+                        "busy" => Some(Some(Status::Busy)),
+                        "error" => Some(Some(Status::Error)),
+                        other => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!(
+                                    "Invalid status '{other}'. Expected: online, offline, busy, error"
+                                ),
+                            };
+                            send_response(sink, response).await?;
+                            return Ok(());
+                        }
+                    },
+                };
+                let exposure_enum = match exposure {
+                    None => None,
+                    Some(s) => match s.as_str() {
+                        "unexposed" => Some(Exposure::Unexposed),
+                        "private" => Some(Exposure::Private),
+                        "public" => Some(Exposure::Public),
+                        other => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!(
+                                    "Invalid exposure '{other}'. Expected: unexposed, private, public"
+                                ),
+                            };
+                            send_response(sink, response).await?;
+                            return Ok(());
+                        }
+                    },
+                };
+
+                match host
+                    .principal_manager()
+                    .update_config(&name, |config| {
+                        if let Some(description) = description {
+                            config.identity.description = Some(description);
+                        }
+                        if let Some(status) = status_enum {
+                            config.status = status;
+                        }
+                        if let Some(exposure) = exposure_enum {
+                            config.exposure = exposure;
+                        }
+                        if let Some(model_id) = preferred_model_id {
+                            config.preferred_model_id = Some(model_id);
+                        }
+                    })
+                    .await
+                {
+                    Ok(principal) => {
+                        // Best-effort publish status/exposure changes to
+                        // the hub when a tunnel dispatcher is active.
+                        if let Some(dispatcher) = host.tunnel_dispatcher().await {
+                            let (status_opt, exposure_opt) = {
+                                let config = principal.config.read().await;
+                                (config.status, config.exposure)
+                            };
+                            if let Some(status) = status_opt {
+                                let _ = dispatcher
+                                    .set_instance_status(&name, status.into())
+                                    .await;
+                            }
+                            let _ = dispatcher
+                                .set_instance_exposure(&name, exposure_opt.into())
+                                .await;
+                        }
+                        let response = ResponsePacket::PrincipalUpdated {
+                            request_id,
+                            principal: principal.summary().await,
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Failed to update principal: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::PrincipalRemove { request_id, name } => {
+                let principal = match load_principal(host, &name).await {
+                    Some(p) => p,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal '{}' not found", name),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+
+                let caller_subject = caller.subject();
+                let config = principal.config.read().await;
+                let resource = principal_resource(&name, &config);
+                if let Err(denied) =
+                    check_permission(&resource, Permission::ManageSettings, &caller_subject)
+                {
+                    warn!("PrincipalRemove denied: {}", denied);
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: denied.to_string(),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+                drop(config);
+
+                match host.principal_manager().remove(&name).await {
+                    Ok(()) => {
+                        let response = ResponsePacket::PrincipalRemoved {
+                            request_id,
+                            name,
+                            removed: true,
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    Err(crate::principal::manager::PrincipalManagerError::NotFound(_)) => {
+                        let response = ResponsePacket::PrincipalRemoved {
+                            request_id,
+                            name,
+                            removed: false,
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Failed to remove principal: {e}"),
                         };
                         send_response(sink, response).await?;
                     }
