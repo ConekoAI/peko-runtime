@@ -50,6 +50,16 @@ pub enum PrincipalCommands {
         name: String,
     },
 
+    /// Remove a Principal and all its data
+    Remove {
+        /// Principal name
+        name: String,
+
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
     /// Send a message to a Principal
     Send {
         /// Principal name
@@ -208,6 +218,7 @@ pub async fn handle_principal(
         PrincipalCommands::Create { name, model } => create_principal(&name, &model, paths).await,
         PrincipalCommands::List => list_principals(paths).await,
         PrincipalCommands::Show { name } => show_principal(&name, paths).await,
+        PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths).await,
         PrincipalCommands::Send { name, message } => {
             send_to_principal(&name, &message, paths).await
         }
@@ -378,6 +389,24 @@ async fn show_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
             .unwrap_or("(no description)");
         println!("    - {} ({}): {desc}", agent_name, prompt.path.display());
     }
+    Ok(())
+}
+
+async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths) -> Result<()> {
+    let manager = build_manager(paths);
+    // Load first so the principal is registered in the in-memory manager,
+    // and so a missing principal fails with a clear error before prompting.
+    let _principal = load_principal(name, &manager, paths).await?;
+
+    if !yes
+        && !confirm_prompt(&format!("Remove principal '{name}' and all its data?"))?
+    {
+        println!("Remove cancelled.");
+        return Ok(());
+    }
+
+    manager.remove(name).await?;
+    println!("Removed principal '{name}'");
     Ok(())
 }
 
@@ -1212,6 +1241,20 @@ mod tests {
                 assert_eq!(agent, "primary");
             }
             _other => panic!("expected Principal agent show command"),
+        }
+    }
+
+    #[test]
+    fn principal_remove_parses() {
+        let cli = Cli::try_parse_from(["peko", "principal", "remove", "myprincipal", "--yes"])
+            .expect("should parse principal remove with --yes");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Remove { name, yes }) => {
+                assert_eq!(name, "myprincipal");
+                assert!(yes);
+            }
+            _other => panic!("expected Principal remove command"),
         }
     }
 
