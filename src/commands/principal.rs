@@ -398,9 +398,7 @@ async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths) -> Result<
     // and so a missing principal fails with a clear error before prompting.
     let _principal = load_principal(name, &manager, paths).await?;
 
-    if !yes
-        && !confirm_prompt(&format!("Remove principal '{name}' and all its data?"))?
-    {
+    if !yes && !confirm_prompt(&format!("Remove principal '{name}' and all its data?"))? {
         println!("Remove cancelled.");
         return Ok(());
     }
