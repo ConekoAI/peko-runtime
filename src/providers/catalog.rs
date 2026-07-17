@@ -66,12 +66,17 @@ impl ApiFormat {
         }
     }
 
-    /// Parse from wire id.
+    /// Parse from wire id. Accepts both the canonical enum forms and the
+    /// short "openai"/"anthropic" ids emitted by the desktop UI.
     #[must_use]
     pub fn from_wire(s: &str) -> Option<Self> {
         match s {
-            "openai_completions" | "openai-completions" => Some(Self::OpenaiCompletions),
-            "anthropic_messages" | "anthropic-messages" => Some(Self::AnthropicMessages),
+            "openai_completions" | "openai-completions" | "openai" => {
+                Some(Self::OpenaiCompletions)
+            }
+            "anthropic_messages" | "anthropic-messages" | "anthropic" => {
+                Some(Self::AnthropicMessages)
+            }
             _ => None,
         }
     }
@@ -81,18 +86,6 @@ impl std::fmt::Display for ApiFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
-}
-
-/// Capability tags attached to a model. Used by callers (e.g. desktop
-/// UI) to filter models for features they support.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelCapability {
-    ToolUse,
-    Vision,
-    JsonMode,
-    Streaming,
-    PromptCaching,
 }
 
 /// One configured model entry in the runtime-owned catalog.
@@ -121,9 +114,6 @@ pub struct ModelConfig {
     /// Maximum output tokens for a single response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
-    /// Capability tags advertised for this model.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<ModelCapability>,
     /// Optional extra HTTP headers (e.g. `OpenAI-Organization`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
@@ -169,18 +159,12 @@ impl ModelConfig {
         } else {
             model_id.clone()
         };
-        let (context_window, max_output_tokens, capabilities) = template
+        let (context_window, max_output_tokens) = template
             .models
             .iter()
             .find(|m| m.id == model_id)
-            .map(|m| {
-                (
-                    m.context_length,
-                    m.max_output_tokens,
-                    m.capabilities.to_vec(),
-                )
-            })
-            .unwrap_or((None, None, Vec::new()));
+            .map(|m| (m.context_length, m.max_output_tokens))
+            .unwrap_or((None, None));
         Self {
             id,
             display_name,
@@ -190,7 +174,6 @@ impl ModelConfig {
             model_id,
             context_window,
             max_output_tokens,
-            capabilities,
             headers: template
                 .headers
                 .iter()
@@ -409,6 +392,18 @@ mod tests {
             assert_eq!(fmt, back);
         }
         assert!(ApiFormat::from_wire("garbage").is_none());
+    }
+
+    #[test]
+    fn api_format_accepts_short_desktop_ids() {
+        assert_eq!(
+            ApiFormat::from_wire("openai"),
+            Some(ApiFormat::OpenaiCompletions)
+        );
+        assert_eq!(
+            ApiFormat::from_wire("anthropic"),
+            Some(ApiFormat::AnthropicMessages)
+        );
     }
 
     #[test]

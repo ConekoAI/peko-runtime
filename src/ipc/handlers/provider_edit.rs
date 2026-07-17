@@ -249,7 +249,6 @@ mod tests {
             model_id: "gpt-4o".to_string(),
             context_window: Some(128_000),
             max_output_tokens: Some(16_384),
-            capabilities: vec![],
             headers: Default::default(),
             credential_id: None,
             requires_key: true,

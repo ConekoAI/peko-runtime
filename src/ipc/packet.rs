@@ -1585,10 +1585,6 @@ pub struct ModelSummary {
     /// Maximum output tokens for a single response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
-    /// Capability tags advertised for this model (snake_case wire
-    /// ids of `ModelCapability`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<String>,
     /// Optional extra HTTP headers (e.g. `OpenAI-Organization`).
     /// Empty for most entries; non-empty for vendors that require a
     /// tenant header.
@@ -1613,13 +1609,12 @@ pub struct ModelSummary {
 ///
 /// This is the IPC mirror of `providers::templates::ModelTemplate` —
 /// a smaller, owned, serializable shape suitable for the desktop's
-/// "Add Model" modal. The static `&'static str` and capability
-/// slices from the in-runtime template are projected into owned
-/// `String`s / optional `u32`s so the struct can be sent over the
-/// wire without a lifetime. `headers` and `capabilities` from the
-/// in-runtime template are intentionally omitted — the modal
-/// doesn't need them, and the catalog entry the user creates from
-/// a preset starts with the preset's defaults intact.
+/// "Add Model" modal. The static `&'static str` slices from the
+/// in-runtime template are projected into owned `String`s /
+/// optional `u32`s so the struct can be sent over the wire without a
+/// lifetime. `headers` from the in-runtime template are intentionally
+/// omitted — the modal doesn't need them, and the catalog entry the
+/// user creates from a preset starts with the preset's defaults intact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelTemplateInfo {
     pub id: String,
@@ -1706,6 +1701,10 @@ pub struct ModelAddArgs {
     /// the new entry does not require a key.
     #[serde(default)]
     pub key: Option<String>,
+    /// Reference an existing vault credential by id instead of
+    /// storing a new key. Mutually exclusive with `key`.
+    #[serde(default)]
+    pub credential_id: Option<String>,
 }
 
 /// Arguments for `RequestPacket::ModelUpdate`.
@@ -1736,10 +1735,6 @@ pub struct ModelUpdateArgs {
     /// Replace the max output tokens for a single response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
-    /// Replace the capability tags (snake_case wire ids of
-    /// `ModelCapability`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<Vec<String>>,
     /// Replace the extra HTTP headers map.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<BTreeMap<String, String>>,
@@ -2749,9 +2744,8 @@ mod tests {
     fn test_model_templates_response_roundtrip() {
         // Pin the response shape — the desktop's modal
         // picks up `presets[]` with the full model list and
-        // context lengths. `headers` and `capabilities` are
-        // intentionally omitted so the modal only ships the fields
-        // it actually renders.
+        // context lengths. `headers` is intentionally omitted so the
+        // modal only ships the fields it actually renders.
         let resp = ResponsePacket::ModelTemplates {
             request_id: 912,
             presets: vec![ModelPresetInfo {
@@ -2859,6 +2853,7 @@ mod tests {
                 requires_key: None,
                 model: vec![],
                 key: Some("sk-test".to_string()),
+                credential_id: None,
             },
         };
         let bytes = req.to_bytes().unwrap();
@@ -2905,7 +2900,6 @@ mod tests {
                 model_id: "claude-sonnet-4-5".to_string(),
                 context_window: Some(200_000),
                 max_output_tokens: Some(8_192),
-                capabilities: vec![],
                 headers: Default::default(),
                 credential_id: None,
                 requires_key: true,

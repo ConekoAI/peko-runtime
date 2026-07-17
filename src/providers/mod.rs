@@ -28,7 +28,7 @@ pub mod validator;
 pub use adapters::{
     AnthropicAdapter, AnyAdapter, ApiAdapter, OpenAiAdapter, OpenAiCompatibleAdapter,
 };
-pub use catalog::{ApiFormat, ModelCapability, ModelCatalog, ModelCatalogFile, ModelConfig};
+pub use catalog::{ApiFormat, ModelCatalog, ModelCatalogFile, ModelConfig};
 pub use core::{Provider, ProviderRuntimeOptions};
 pub use factory::create_provider_for_model;
 pub use metered::MeteredProvider;

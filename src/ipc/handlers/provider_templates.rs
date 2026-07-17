@@ -68,10 +68,10 @@ impl ProviderTemplatesHandler {
 /// The two shape differences vs. the in-runtime template:
 /// 1. `&'static str` → owned `String` so the struct can be
 ///    serialized without a lifetime.
-/// 2. The `headers` and `capabilities` slices are dropped (T-109b
-///    scope decision — the modal doesn't render them, and the
-///    catalog entry the user creates from a preset starts with
-///    the preset's defaults intact so no information is lost).
+/// 2. The `headers` slice is dropped (T-109b scope decision — the
+///    modal doesn't render them, and the catalog entry the user
+///    creates from a preset starts with the preset's defaults intact
+///    so no information is lost).
 fn template_to_info(t: &ProviderTemplate) -> ModelPresetInfo {
     ModelPresetInfo {
         id: t.id.to_string(),
