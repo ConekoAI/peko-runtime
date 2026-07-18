@@ -244,17 +244,31 @@ pub fn session_event_to_history(
                 session_started_at.to_string()
             },
         },
-        SessionEvent::MessageV2(msg) => HistoryEvent::Message {
-            role: match msg.role() {
-                crate::common::types::message::MessageRole::User => "user",
-                crate::common::types::message::MessageRole::Assistant => "assistant",
-                crate::common::types::message::MessageRole::System => "system",
-                crate::common::types::message::MessageRole::Tool => "tool",
+        SessionEvent::MessageV2(msg) => {
+            // System prompts and other LLM-only instructions are persisted so
+            // the runtime can resume a session, but they are not part of the
+            // user-facing conversation. Exposing them here caused desktop chat
+            // bubbles to render the root-agent prompt as an assistant message
+            // and to merge adjacent non-user chunks (e.g. model-change JSON)
+            // into the assistant reply.
+            if matches!(
+                msg.role(),
+                crate::common::types::message::MessageRole::System
+            ) {
+                return None;
             }
-            .to_string(),
-            content: msg.text_content(),
-            timestamp: msg.envelope.ts.to_rfc3339(),
-        },
+            HistoryEvent::Message {
+                role: match msg.role() {
+                    crate::common::types::message::MessageRole::User => "user",
+                    crate::common::types::message::MessageRole::Assistant => "assistant",
+                    crate::common::types::message::MessageRole::System => "system",
+                    crate::common::types::message::MessageRole::Tool => "tool",
+                }
+                .to_string(),
+                content: msg.text_content(),
+                timestamp: msg.envelope.ts.to_rfc3339(),
+            }
+        }
         SessionEvent::ToolCall(e) => HistoryEvent::ToolCall {
             tool_name: e.tool.clone(),
             args: e.args.clone(),
@@ -271,10 +285,45 @@ pub fn session_event_to_history(
             content: e.content.clone(),
             timestamp: e.envelope.ts.to_rfc3339(),
         },
-        SessionEvent::System(e) => HistoryEvent::Message {
-            role: "system".to_string(),
-            content: e.detail.to_string(),
-            timestamp: e.envelope.ts.to_rfc3339(),
+        SessionEvent::System(e) => match e.event.as_str() {
+            // Surface model changes as a dedicated history kind so `peko log`
+            // can render a divider and the desktop chat surface can filter it
+            // out instead of merging it into the assistant reply.
+            "model_change" => {
+                let provider = e
+                    .detail
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let model_id = e
+                    .detail
+                    .get("model_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                HistoryEvent::ModelChange {
+                    provider,
+                    model_id,
+                    timestamp: e.envelope.ts.to_rfc3339(),
+                }
+            }
+            // Compaction markers are activity metadata, not chat content.
+            "compaction" => {
+                let summary = e
+                    .detail
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                HistoryEvent::Compaction {
+                    summary,
+                    timestamp: e.envelope.ts.to_rfc3339(),
+                }
+            }
+            // Hide generic system annotations (session_resumed, context
+            // truncated, etc.) from the user-facing log view.
+            _ => return None,
         },
         SessionEvent::HookTrigger(e) => HistoryEvent::Custom {
             custom_type: format!("hook:{:?}", e.hook_type),
@@ -779,5 +828,86 @@ mod tests {
         let info: SessionInfo = entry.into();
         assert_eq!(info.id, "sess_123");
         assert_eq!(info.agent_name, "myagent");
+    }
+
+    #[test]
+    fn test_session_event_to_history_hides_system_prompt() {
+        use crate::session::message::SessionMessage;
+        let event = SessionEvent::MessageV2(SessionMessage::system(
+            "You are the root agent for a Principal...",
+        ));
+        assert!(
+            session_event_to_history(&event, "sess_123", "").is_none(),
+            "persisted system prompts must not appear in the user-facing log"
+        );
+    }
+
+    #[test]
+    fn test_session_event_to_history_keeps_user_and_assistant() {
+        use crate::session::message::SessionMessage;
+        let user = SessionEvent::MessageV2(SessionMessage::user(
+            "hello",
+            crate::session::message::MessageSource::User,
+        ));
+        let assistant = SessionEvent::MessageV2(SessionMessage::assistant_text(
+            "hi there",
+            "anthropic",
+            "MiniMax-M3",
+        ));
+
+        let user_hist = session_event_to_history(&user, "sess_123", "").unwrap();
+        let assistant_hist = session_event_to_history(&assistant, "sess_123", "").unwrap();
+
+        assert!(
+            matches!(user_hist, HistoryEvent::Message { role, content, .. } if role == "user" && content == "hello")
+        );
+        assert!(
+            matches!(assistant_hist, HistoryEvent::Message { role, content, .. } if role == "assistant" && content == "hi there")
+        );
+    }
+
+    #[test]
+    fn test_session_event_to_history_model_change() {
+        use crate::session::events::{EventEnvelope, SystemEvent};
+        let event = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope::new(),
+            event: "model_change".to_string(),
+            detail: serde_json::json!({"provider": "anthropic", "model_id": "MiniMax-M3"}),
+        });
+        let hist = session_event_to_history(&event, "sess_123", "").unwrap();
+        assert!(
+            matches!(hist, HistoryEvent::ModelChange { provider, model_id, .. }
+                if provider == "anthropic" && model_id == "MiniMax-M3"
+            ),
+            "model_change system events should surface as ModelChange history, not as a message"
+        );
+    }
+
+    #[test]
+    fn test_session_event_to_history_compaction() {
+        use crate::session::events::{EventEnvelope, SystemEvent};
+        let event = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope::new(),
+            event: "compaction".to_string(),
+            detail: serde_json::json!({"summary": "summarized prior turns", "messages_compacted": 4}),
+        });
+        let hist = session_event_to_history(&event, "sess_123", "").unwrap();
+        assert!(
+            matches!(hist, HistoryEvent::Compaction { summary, .. } if summary == "summarized prior turns")
+        );
+    }
+
+    #[test]
+    fn test_session_event_to_history_hides_generic_system_annotations() {
+        use crate::session::events::{EventEnvelope, SystemEvent};
+        let event = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope::new(),
+            event: "session_resumed".to_string(),
+            detail: serde_json::json!({"reason": "steering"}),
+        });
+        assert!(
+            session_event_to_history(&event, "sess_123", "").is_none(),
+            "generic system annotations should be hidden from the user-facing log"
+        );
     }
 }
