@@ -22,7 +22,8 @@ use crate::extensions::framework::core::context::HookContext;
 use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::types::{
-    ExtensionId, HookId, HookOutput, HookResult, ToolMetadata,
+    Capabilities, Capability, ExtensionId, HookId, HookOutput, HookResult, ToolMetadata,
+    ToolRuntimeContext,
 };
 use async_trait::async_trait;
 #[cfg(test)]
@@ -107,7 +108,30 @@ impl AutoPromptHandler {
 
 #[async_trait]
 impl HookHandler for AutoPromptHandler {
-    async fn handle(&self, _ctx: HookContext) -> HookResult {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Capability gate: every registered tool fires this hook, so the
+        // `Available Tools` prompt section would otherwise list tools the
+        // principal does not have granted. The system prompt builder seeds
+        // `ctx.state["tool_context"]` with the principal's grants; when the
+        // required `tool:<name>` is missing, pass through so the section
+        // omits this entry. Built-ins are owned by pseudo-extensions and
+        // are gated solely by their `tool:<name>` grant.
+        if let Some(tc) = ctx.get_state::<ToolRuntimeContext>("tool_context") {
+            if let Some(caps) = tc.capabilities.as_ref() {
+                let granted = Capabilities::with_grants(caps.iter().cloned());
+                // `Capability::new` lowercases its argument on construction,
+                // so grant matching is case-insensitive even though
+                // `self.tool_name` preserves the registered casing.
+                if !granted.is_granted(&Capability::new(format!("tool:{}", self.tool_name))) {
+                    debug!(
+                        tool_name = %self.tool_name,
+                        "Auto-prompt suppressed: capability not granted"
+                    );
+                    return HookResult::PassThrough;
+                }
+            }
+        }
+
         let text = format!("### {}\n\n{}", self.tool_name, self.description);
         HookResult::Continue(HookOutput::Text(text))
     }
@@ -320,6 +344,90 @@ mod tests {
             }
             _ => panic!("Expected Continue with Text, got {result:?}"),
         }
+    }
+
+    /// When the principal's grants do not include `tool:<name>`, the
+    /// auto-prompt handler must omit the entry from the system prompt's
+    /// "Available Tools" section. Without this gate the prompt section
+    /// would lie about what the principal can invoke, and after a
+    /// `peko capability revoke` the LLM would still try to call revoked
+    /// tools — falling back to raw `<tool_call>` text since the native
+    /// tool catalog is now empty.
+    #[tokio::test]
+    async fn auto_prompt_suppressed_when_capability_not_granted() {
+        let meta = sample_metadata("Read");
+        let handler = AutoPromptHandler::from_metadata(&meta, 100);
+
+        let mut ctx = HookContext::new(
+            HookPoint::PromptSystemSection {
+                section: "tools".to_string(),
+                priority: 100,
+            },
+            crate::extensions::framework::types::HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+        let tc = ToolRuntimeContext::new().with_capabilities(["tool:Write".to_string()]);
+        ctx.set_state("tool_context", tc);
+
+        let result = handler.handle(ctx).await;
+        assert!(
+            matches!(result, HookResult::PassThrough),
+            "expected PassThrough when tool:Read is not granted, got {result:?}"
+        );
+    }
+
+    /// The complementary case: when the grant IS present the handler
+    /// emits the tool description as before.
+    #[tokio::test]
+    async fn auto_prompt_emitted_when_capability_granted() {
+        let meta = sample_metadata("Read");
+        let handler = AutoPromptHandler::from_metadata(&meta, 100);
+
+        let mut ctx = HookContext::new(
+            HookPoint::PromptSystemSection {
+                section: "tools".to_string(),
+                priority: 100,
+            },
+            crate::extensions::framework::types::HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+        // Grant uses the original-case tool name; matching is
+        // case-insensitive so this exercises the canonicalization path.
+        let tc = ToolRuntimeContext::new().with_capabilities(["tool:Read".to_string()]);
+        ctx.set_state("tool_context", tc);
+
+        let result = handler.handle(ctx).await;
+        match result {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(text.contains("### Read"));
+                assert!(text.contains("The Read tool"));
+            }
+            other => panic!("Expected Continue with Text, got {other:?}"),
+        }
+    }
+
+    /// `tool:*` is a wildcard that satisfies the per-tool grant check.
+    #[tokio::test]
+    async fn auto_prompt_wildcard_capability_covers_tool() {
+        let meta = sample_metadata("Bash");
+        let handler = AutoPromptHandler::from_metadata(&meta, 100);
+
+        let mut ctx = HookContext::new(
+            HookPoint::PromptSystemSection {
+                section: "tools".to_string(),
+                priority: 100,
+            },
+            crate::extensions::framework::types::HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+        let tc = ToolRuntimeContext::new().with_capabilities(["tool:*".to_string()]);
+        ctx.set_state("tool_context", tc);
+
+        let result = handler.handle(ctx).await;
+        assert!(
+            matches!(result, HookResult::Continue(HookOutput::Text(_))),
+            "wildcard grant should permit the prompt, got {result:?}"
+        );
     }
 
     #[tokio::test]

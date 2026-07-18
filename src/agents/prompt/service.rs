@@ -90,6 +90,19 @@ impl SystemPromptService {
             .with_principal_id(agent.principal_id().to_string())
             .with_body(agent.config.prompt.clone().unwrap_or_default());
 
+        // Forward the principal's grants so `AutoPromptHandler` omits tools
+        // the principal does not have enabled. Without these two lines the
+        // per-iteration rebuild would re-emit the original tool list even
+        // after a `peko capability revoke` — causing the LLM to keep trying
+        // to call revoked tools via raw `<tool_call>` text. Matches
+        // `build_with_session_context` above.
+        if let Some(caps) = agent.principal_capabilities() {
+            builder = builder.with_capabilities(caps.to_strings());
+        }
+        if let Some(active) = agent.principal_active_extensions() {
+            builder = builder.with_active_extensions(active.to_vec());
+        }
+
         if let Some(memory) = crate::agents::prompt::memory::load_principal_memory(&workspace_dir) {
             builder = builder.with_principal_memory(memory);
         }
