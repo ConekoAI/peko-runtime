@@ -1877,6 +1877,10 @@ pub struct ExtensionSummary {
     pub enabled: bool,
     pub runtime: String, // "running", "stopped", or "n/a"
     pub description: String,
+    /// Capabilities this extension declares it provides (e.g. `tool:Read`).
+    pub provides: Vec<String>,
+    /// Capabilities this extension requires to function.
+    pub requires: Vec<String>,
 }
 
 /// A single doctor check result
@@ -3933,6 +3937,8 @@ mod tests {
                 enabled: true,
                 runtime: "running".to_string(),
                 description: "A test extension".to_string(),
+                provides: vec!["tool:Read".to_string()],
+                requires: vec![],
             }],
             total: 1,
         };
