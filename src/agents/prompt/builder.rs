@@ -291,9 +291,29 @@ impl SystemPromptBuilder {
                 };
                 let core = core.clone();
 
+                // Seed the principal's capability grants + active extension
+                // snapshot into the hook context so each tool's
+                // `AutoPromptHandler` can omit itself when not granted.
+                // Without this, every registered tool fires its prompt hook
+                // unconditionally and the LLM sees tools the principal
+                // does not actually have, which both misleads the user and
+                // causes the LLM to fall back to raw `<tool_call>` text when
+                // the native tool catalog drops them after a revoke.
+                let principal_id = self.principal_id.clone();
+                let capabilities = self.capabilities.clone();
+                let active_extensions = self.active_extensions.clone();
+                let workspace = self.workspace.to_string_lossy().to_string();
                 let result = tokio::task::block_in_place(move || {
                     tokio::runtime::Handle::current().block_on(async move {
-                        core.invoke_hook_text(hook_point, HookInput::Unit).await
+                        core.invoke_hook_text_with_principal(
+                            hook_point,
+                            HookInput::Unit,
+                            principal_id.as_deref(),
+                            capabilities,
+                            active_extensions,
+                            Some(workspace),
+                        )
+                        .await
                     })
                 });
 
