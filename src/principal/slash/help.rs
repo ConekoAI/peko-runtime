@@ -61,6 +61,10 @@ async fn list_enabled_extensions(
     let mut extensions = Vec::new();
 
     for b in &builtins {
+        let mut provides = Vec::new();
+        if b.ext_type == "tool" {
+            provides.push(format!("tool:{}", b.name));
+        }
         extensions.push(ExtensionSummary {
             id: b.id.clone(),
             name: b.name.clone(),
@@ -70,6 +74,8 @@ async fn list_enabled_extensions(
             enabled: b.enabled,
             runtime: "n/a".to_string(),
             description: String::new(),
+            provides,
+            requires: Vec::new(),
         });
     }
 
@@ -83,6 +89,8 @@ async fn list_enabled_extensions(
             enabled: true,
             runtime: "n/a".to_string(),
             description: ext.manifest.description.clone(),
+            provides: ext.manifest.provides.clone(),
+            requires: ext.manifest.requires.clone(),
         });
     }
 
@@ -272,6 +280,8 @@ mod tests {
             enabled: true,
             runtime: "running".to_string(),
             description: format!("The {name} extension"),
+            provides: Vec::new(),
+            requires: Vec::new(),
         }
     }
 

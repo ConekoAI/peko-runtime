@@ -116,16 +116,32 @@ impl RequestHandler for ExtensionHandler {
 
                 let mut extensions = Vec::new();
 
+                // Aggregate all built-in tool capabilities into a single
+                // "Built-in Tools" extension. The desktop treats extensions as
+                // capability bundles, and per-tool rows are too granular.
+                let mut builtin_provides = Vec::new();
+                let mut builtin_enabled = false;
                 for b in &builtins {
+                    if b.ext_type == "tool" {
+                        builtin_provides.push(format!("tool:{}", b.name));
+                        builtin_enabled = builtin_enabled || b.enabled;
+                    }
+                }
+                builtin_provides.sort_unstable();
+                builtin_provides.dedup();
+
+                if ext_type.as_ref().map_or(true, |t| t == "builtin") {
                     extensions.push(crate::ipc::packet::ExtensionSummary {
-                        id: b.id.clone(),
-                        name: b.name.clone(),
-                        ext_type: b.ext_type.clone(),
+                        id: "builtin:core".to_string(),
+                        name: "Built-in Tools".to_string(),
+                        ext_type: "builtin".to_string(),
                         version: "n/a".to_string(),
                         source: "built-in".to_string(),
-                        enabled: b.enabled,
+                        enabled: builtin_enabled,
                         runtime: "n/a".to_string(),
-                        description: String::new(),
+                        description: "Core tool capabilities built into the runtime".to_string(),
+                        provides: builtin_provides,
+                        requires: Vec::new(),
                     });
                 }
 
@@ -144,6 +160,8 @@ impl RequestHandler for ExtensionHandler {
                         enabled: true,
                         runtime: "n/a".to_string(),
                         description: ext.manifest.description.clone(),
+                        provides: ext.manifest.provides.clone(),
+                        requires: ext.manifest.requires.clone(),
                     });
                 }
 
