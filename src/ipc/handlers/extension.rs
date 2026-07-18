@@ -46,11 +46,6 @@ pub(crate) trait ExtensionHost: Send + Sync {
     /// info / bundle). The handler reloads it on every `ExtensionList`
     /// to stay in sync with CLI-side writes (see module docs).
     fn extension_store(&self) -> &Arc<ExtensionStore>;
-
-    /// Built-in extension services — the registered `ExtensionCore`
-    /// (`Services.list_builtin_extensions`) used to surface builtin
-    /// extensions alongside installed ones in `ExtensionList`.
-    fn extension_services(&self) -> &Arc<crate::extensions::framework::services::Services>;
 }
 
 /// `extension` domain request handler. Constructed with an
@@ -109,24 +104,21 @@ impl RequestHandler for ExtensionHandler {
                     }
                 }
                 let store = self.host.extension_store();
-                let ext_services = self.host.extension_services();
 
                 let installed = store.list_extensions().await;
-                let builtins = ext_services.list_builtin_extensions().await;
 
                 let mut extensions = Vec::new();
 
                 // Aggregate all built-in tool capabilities into a single
-                // "Built-in Tools" extension. The desktop treats extensions as
-                // capability bundles, and per-tool rows are too granular.
-                let mut builtin_provides = Vec::new();
-                let mut builtin_enabled = false;
-                for b in &builtins {
-                    if b.ext_type == "tool" {
-                        builtin_provides.push(format!("tool:{}", b.name));
-                        builtin_enabled = builtin_enabled || b.enabled;
-                    }
-                }
+                // "Built-in Tools" extension. Use the static tool-name catalog
+                // (the same source the per-principal ExtensionCatalog uses) so
+                // the bundle is stable and complete, instead of the live hook
+                // registry which only contains tools registered so far.
+                let mut builtin_provides: Vec<String> =
+                    crate::extensions::framework::adapters::builtin_tools::all_tool_names()
+                        .into_iter()
+                        .map(|name| format!("tool:{name}"))
+                        .collect();
                 builtin_provides.sort_unstable();
                 builtin_provides.dedup();
 
@@ -137,7 +129,7 @@ impl RequestHandler for ExtensionHandler {
                         ext_type: "builtin".to_string(),
                         version: "n/a".to_string(),
                         source: "built-in".to_string(),
-                        enabled: builtin_enabled,
+                        enabled: true,
                         runtime: "n/a".to_string(),
                         description: "Core tool capabilities built into the runtime".to_string(),
                         provides: builtin_provides,

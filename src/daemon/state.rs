@@ -2354,10 +2354,6 @@ impl crate::ipc::handlers::extension::ExtensionHost for AppState {
     fn extension_store(&self) -> &Arc<ExtensionStore> {
         AppState::extension_store(self)
     }
-
-    fn extension_services(&self) -> &Arc<crate::extensions::framework::services::Services> {
-        AppState::extension_services(self)
-    }
 }
 
 /// Project a catalog [`ModelConfig`](crate::providers::catalog::ModelConfig)
