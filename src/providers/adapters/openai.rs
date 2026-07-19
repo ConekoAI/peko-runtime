@@ -3,6 +3,7 @@
 //! Handles conversion between unified types and `OpenAI` Chat Completions API format.
 
 use super::{extract_text_content, role_to_string, ToolCallAccumulator};
+use crate::common::types::message::ImageSource;
 use crate::providers::cache_retention::CacheRetention;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
@@ -54,7 +55,13 @@ impl OpenAiAdapter {
             .iter()
             .map(|m| {
                 let role = role_to_string(m.role);
-                let content = extract_text_content(&m.content);
+                // F28: emit content as a string for text-only blocks
+                // (matches the pre-F28 wire shape byte-for-byte) or as
+                // a content-part array when the message contains an
+                // Image block. The array path is OpenAI's
+                // multimodal-input shape per
+                // https://platform.openai.com/docs/guides/vision
+                let content = build_chat_completions_content(&m.content);
 
                 // Extract tool calls from content blocks
                 let tool_calls: Option<Vec<OpenAiToolCall>> = if m.role == MessageRole::Assistant {
@@ -484,7 +491,13 @@ impl super::ApiAdapter for OpenAiAdapter {
 #[derive(Debug, Serialize)]
 struct OpenAiMessage {
     role: String,
-    content: String,
+    /// F28: `Value` so we can emit either the pre-F28
+    /// `content: "..."` string for text-only messages or the
+    /// content-part array (`[{type:"text",...}, {type:"image_url",...}]`)
+    /// when the message carries an `Image` block. Default serde
+    /// behaviour keeps the existing string-shape serialisation when
+    /// we pass `Value::String(s)`.
+    content: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OpenAiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -642,6 +655,53 @@ fn tool_choice_openai(choice: &ToolChoice) -> Value {
             "function": {"name": name},
         }),
     }
+}
+
+/// F28: project `ContentBlock` slices onto Chat Completions'
+/// `content` field. Text-only messages emit the pre-F28 string
+/// (`"hello"`); messages carrying an `Image` block emit a
+/// content-part array of the form `[{type:"text",...}, {type:"image_url",
+/// image_url:{url,...}}]` per OpenAI's Vision guide.
+///
+/// `ImageSource::Url { url }` is passed through verbatim;
+/// `ImageSource::Base64 { data }` is joined with the block's
+/// `mime_type` into a `data:` URL (the form OpenAI's chat.completions
+/// vision accepts for inline images).
+fn build_chat_completions_content(blocks: &[ContentBlock]) -> Value {
+    let has_image = blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }));
+    if !has_image {
+        // Pre-F28 wire shape — text-only messages still emit `content: "..."`.
+        return Value::String(extract_text_content(blocks));
+    }
+
+    let mut parts: Vec<Value> = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } => {
+                parts.push(json!({"type": "text", "text": text}));
+            }
+            ContentBlock::Image { source, mime_type } => {
+                let url = match source {
+                    ImageSource::Url { url } => url.clone(),
+                    ImageSource::Base64 { data } => {
+                        format!("data:{};base64,{}", mime_type, data)
+                    }
+                };
+                parts.push(json!({
+                    "type": "image_url",
+                    "image_url": {"url": url},
+                }));
+            }
+            // Tool-call / tool-result / thinking blocks do not appear
+            // on user/assistant content arrays in Chat Completions
+            // (they live on their own fields). Silently skip so a
+            // future caller's accidental mix doesn't crash.
+            _ => {}
+        }
+    }
+    Value::Array(parts)
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1353,5 +1413,122 @@ mod tests {
         assert_eq!(ServiceTier::Auto.as_wire_str(), Some("auto"));
         assert_eq!(ServiceTier::Flex.as_wire_str(), Some("flex"));
         assert_eq!(ServiceTier::Priority.as_wire_str(), Some("priority"));
+    }
+
+    // ---------- F28: multimodal image content (Chat Completions) ----------
+
+    /// F28 baseline: a text-only user message keeps the pre-F28 wire
+    /// shape (`content: "..."` as a JSON string). The path through
+    /// `build_chat_completions_content` short-circuits to
+    /// `extract_text_content` when no Image blocks are present.
+    #[test]
+    fn test_build_request_text_only_message_emits_string_content() {
+        let adapter = OpenAiAdapter::new();
+        let (_, body) = adapter
+            .build_request(
+                "gpt-4o-mini",
+                &[LlmMessage::user("hello")],
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["messages"][0]["content"], "hello");
+        assert!(body["messages"][0]["content"].is_string());
+    }
+
+    /// F28: an image-only user message emits a single-element
+    /// content-part array. `ImageSource::Url` is passed through
+    /// verbatim on the wire (the platform host will fetch).
+    #[test]
+    fn test_build_request_image_url_emits_content_part_array() {
+        let adapter = OpenAiAdapter::new();
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Image {
+                source: ImageSource::Url {
+                    url: "https://example.com/cat.png".to_string(),
+                },
+                mime_type: "image/png".to_string(),
+            }],
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
+            tool_call_id: None,
+            usage: None,
+        };
+        let (_, body) = adapter
+            .build_request("gpt-4o-mini", &[msg], None, &ChatOptions::default(), false)
+            .unwrap();
+        let parts = body["messages"][0]["content"]
+            .as_array()
+            .expect("content must be an array when an Image block is present");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "image_url");
+        assert_eq!(parts[0]["image_url"]["url"], "https://example.com/cat.png");
+    }
+
+    /// F28: `ImageSource::Base64 { data }` + `mime_type` form a
+    /// `data:` URL on the wire — the shape OpenAI's chat.completions
+    /// vision accepts for inline images.
+    #[test]
+    fn test_build_request_image_base64_emits_data_url() {
+        let adapter = OpenAiAdapter::new();
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Image {
+                source: ImageSource::Base64 {
+                    data: "aGVsbG8=".to_string(),
+                },
+                mime_type: "image/png".to_string(),
+            }],
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
+            tool_call_id: None,
+            usage: None,
+        };
+        let (_, body) = adapter
+            .build_request("gpt-4o-mini", &[msg], None, &ChatOptions::default(), false)
+            .unwrap();
+        let parts = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "image_url");
+        assert_eq!(
+            parts[0]["image_url"]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
+    }
+
+    /// F28 mixed: a user message with text + image emits a multi-part
+    /// content array. Order matches `m.content` order so callers can
+    /// put text before / after the image as they wish.
+    #[test]
+    fn test_build_request_text_plus_image_emits_multi_part_array() {
+        let adapter = OpenAiAdapter::new();
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "what's in this picture?".to_string(),
+                },
+                ContentBlock::Image {
+                    source: ImageSource::Url {
+                        url: "https://example.com/cat.png".to_string(),
+                    },
+                    mime_type: "image/png".to_string(),
+                },
+            ],
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
+            tool_call_id: None,
+            usage: None,
+        };
+        let (_, body) = adapter
+            .build_request("gpt-4o-mini", &[msg], None, &ChatOptions::default(), false)
+            .unwrap();
+        let parts = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "what's in this picture?");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "https://example.com/cat.png");
     }
 }

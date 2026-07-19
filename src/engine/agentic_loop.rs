@@ -388,6 +388,116 @@ impl AgenticLoop {
             .await
     }
 
+    /// F28: rich-input overload of [`Self::run_streaming_with_resume`].
+    /// Accepts a fully-formed `LlmMessage` so callers (e.g. MCP
+    /// sampling) can attach multimodal `ContentBlock::Image` blocks
+    /// to the user turn.
+    ///
+    /// The session JSONL stores text-only user messages (the on-disk
+    /// shape didn't change in F28). The persisted text is the joined
+    /// text content of the rich message; non-text blocks drop on the
+    /// session-storage floor — the LLM still sees them because we
+    /// push the full rich `LlmMessage` onto `messages` for the
+    /// request body.
+    ///
+    /// Use [`Self::run_streaming_with_resume`] when the caller only
+    /// has a text prompt — that path stays byte-for-byte equivalent
+    /// to the pre-F28 shape (single `LlmMessage::user(text)` turn,
+    /// session JSONL carries the text).
+    pub async fn run_streaming_with_resume_rich(
+        &self,
+        user_message: LlmMessage,
+        pre_user_messages: Vec<LlmMessage>,
+        on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
+        session: Arc<RwLock<Session>>,
+        history: Option<Vec<LlmMessage>>,
+        streaming_config: crate::engine::OrchestratorConfig,
+    ) -> Result<AgenticResult> {
+        let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
+
+        let session_id = {
+            let s = session.read().await;
+            s.id.clone()
+        };
+        info!(
+            "Starting v4 rich-input streaming agentic loop for agent: {} (session: {})",
+            self.agent.name(),
+            session_id
+        );
+
+        // Phase 1: seed messages the same way as the text-only path.
+        let mut messages = if let Some(h) = history {
+            let has_system = h
+                .first()
+                .is_some_and(|m| matches!(m.role, MessageRole::System));
+            if has_system {
+                h
+            } else {
+                let mut msgs = vec![LlmMessage {
+                    role: MessageRole::System,
+                    content: vec![ContentBlock::Text {
+                        text: format!("You are {}.", self.agent.name()),
+                    }],
+                    ..Default::default()
+                }];
+                msgs.extend(h);
+                msgs
+            }
+        } else {
+            vec![LlmMessage {
+                role: MessageRole::System,
+                content: vec![ContentBlock::Text {
+                    text: format!("You are {}.", self.agent.name()),
+                }],
+                ..Default::default()
+            }]
+        };
+
+        messages.extend(pre_user_messages);
+        messages.push(user_message.clone());
+
+        // Persist only the text portion of the rich user message —
+        // session JSONL keeps the pre-F28 text-only shape.
+        let persisted_text = user_message
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        {
+            let mut s = session.write().await;
+            // `add_user` already errors on empty input; persist an
+            // empty placeholder when an image-only message arrives
+            // so the session JSONL still gets the user turn marker.
+            s.add_user(if persisted_text.is_empty() {
+                "[image attached]".to_string()
+            } else {
+                persisted_text
+            })
+            .await?;
+        }
+
+        // Drop the unused dummy binding; we already persisted above.
+        let _ = session_id;
+
+        // Emit start event now (text-only path emits it earlier in
+        // `run_streaming_with_resume`; we delay it here so we don't
+        // emit twice when the text-only caller also calls this path
+        // by accident). For consistency with the unified
+        // orchestrator contract, emit start here too.
+        on_event(AgenticEvent::Lifecycle {
+            run_id: run_id.clone(),
+            phase: LifecyclePhase::Start,
+            error: None,
+        });
+
+        self.run_inner(messages, session, on_event, run_id, streaming_config)
+            .await
+    }
+
     /// Like [`Self::run_streaming_with_resume`] but skips the user-message
     /// persistence step. Used by the steering path: the IPC handler has
     /// already called `session.add_user(content)` to persist the queued

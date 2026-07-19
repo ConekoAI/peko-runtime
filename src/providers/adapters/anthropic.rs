@@ -3,6 +3,7 @@
 //! Handles conversion between unified types and Anthropic Messages API format.
 
 use super::{extract_text_content, ToolCallAccumulator};
+use crate::common::types::message::ImageSource;
 use crate::providers::cache_retention::CacheRetention;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
@@ -122,9 +123,65 @@ impl AnthropicAdapter {
                     system_prompt = Some(extract_text_content(&msg.content));
                 }
                 MessageRole::User => {
+                    // F28: user messages may carry ContentBlock::Image
+                    // (multimodal input). When the message has any
+                    // non-text block, fall through to the
+                    // content-block-array path (`Content::Blocks`)
+                    // because Anthropic's wire format requires an
+                    // array of typed blocks for multimodal input.
+                    // Text-only messages keep the pre-F28 shortcut
+                    // `Content::Text("...")`.
+                    let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
+                    for block in &msg.content {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                blocks.push(AnthropicContentBlock::Text {
+                                    text: text.clone(),
+                                    cache_control: None,
+                                })
+                            }
+                            ContentBlock::Image { source, mime_type } => {
+                                let source_value = match source {
+                                    ImageSource::Url { url } => json!({
+                                        "type": "url",
+                                        "url": url,
+                                    }),
+                                    ImageSource::Base64 { data } => json!({
+                                        "type": "base64",
+                                        "media_type": mime_type,
+                                        "data": data,
+                                    }),
+                                };
+                                blocks.push(AnthropicContentBlock::Image {
+                                    source: source_value,
+                                    cache_control: None,
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    let content = if blocks
+                        .iter()
+                        .all(|b| matches!(b, AnthropicContentBlock::Text { .. }))
+                    {
+                        // Pre-F28 wire shape: a single text block can
+                        // be flattened to Content::Text.
+                        let text = blocks
+                            .into_iter()
+                            .filter_map(|b| match b {
+                                AnthropicContentBlock::Text { text, .. } => Some(text),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("");
+                        Content::Text(text)
+                    } else {
+                        Content::Blocks(blocks)
+                    };
                     anthropic_messages.push(AnthropicMessage {
                         role: "user".to_string(),
-                        content: Content::Text(extract_text_content(&msg.content)),
+                        content,
                     });
                 }
                 MessageRole::Assistant => {
@@ -842,6 +899,17 @@ enum AnthropicContentBlock {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
+    },
+    /// F28: Anthropic multimodal image input. `source` carries the
+    /// Anthropic-native image-source object
+    /// (`{"type":"base64","media_type":"...","data":"..."}` or
+    /// `{"type":"url","url":"..."}`). We pass through serde_json's
+    /// `Value` so a future Anthropic source type is wire-compatible
+    /// without an enum churn.
+    Image {
+        source: Value,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         cache_control: Option<CacheControl>,
     },
@@ -1848,5 +1916,105 @@ mod tests {
             crate::providers::ThinkingKeep::All.as_wire_str(),
             Some("all")
         );
+    }
+
+    // ---------- F28: multimodal image content (Anthropic) ----------
+
+    /// F28 baseline: a text-only user message keeps the pre-F28 wire
+    /// shape — Anthropic's `Content::Text("...")` shortcut.
+    #[test]
+    fn test_build_request_text_only_user_keeps_text_content() {
+        let adapter = AnthropicAdapter::new();
+        let (_, body) = adapter
+            .build_request(
+                "claude-opus-4-6",
+                &[LlmMessage::user("hello")],
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        // Anthropic user-role messages are arrays of typed blocks; a
+        // shortcut `content: "..."` (string) is replaced on the wire
+        // by the API itself, but we emit it here so test/fixture
+        // round-trips stay byte-for-byte compatible.
+        assert_eq!(body["messages"][0]["content"], "hello");
+    }
+
+    /// F28: a user message with an image URL becomes an Anthropic
+    /// `image` block whose source carries the URL form
+    /// (`{"type":"url","url":"..."}`).
+    #[test]
+    fn test_build_request_user_image_url_emits_anthropic_image_block() {
+        let adapter = AnthropicAdapter::new();
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "what's in this picture?".to_string(),
+                },
+                ContentBlock::Image {
+                    source: ImageSource::Url {
+                        url: "https://example.com/cat.png".to_string(),
+                    },
+                    mime_type: "image/png".to_string(),
+                },
+            ],
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
+            tool_call_id: None,
+            usage: None,
+        };
+        let (_, body) = adapter
+            .build_request(
+                "claude-opus-4-6",
+                &[msg],
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        let blocks = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "what's in this picture?");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["type"], "url");
+        assert_eq!(blocks[1]["source"]["url"], "https://example.com/cat.png");
+    }
+
+    /// F28: a base64 image block becomes an Anthropic `image` block
+    /// with `{"type":"base64","media_type":"...","data":"..."}`.
+    #[test]
+    fn test_build_request_user_image_base64_emits_anthropic_image_block() {
+        let adapter = AnthropicAdapter::new();
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Image {
+                source: ImageSource::Base64 {
+                    data: "aGVsbG8=".to_string(),
+                },
+                mime_type: "image/png".to_string(),
+            }],
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
+            tool_call_id: None,
+            usage: None,
+        };
+        let (_, body) = adapter
+            .build_request(
+                "claude-opus-4-6",
+                &[msg],
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        let blocks = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert_eq!(blocks[0]["source"]["data"], "aGVsbG8=");
     }
 }

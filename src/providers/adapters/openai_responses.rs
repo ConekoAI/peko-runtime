@@ -19,6 +19,7 @@
 //! (`"24h"` when `CacheRetention::Long`).
 
 use super::{extract_text_content, ToolCallAccumulator};
+use crate::common::types::message::ImageSource;
 use crate::providers::cache_retention::CacheRetention;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
@@ -150,10 +151,15 @@ impl OpenAiResponsesAdapter {
                 }
             }
             MessageRole::User => {
-                let text = extract_text_content(&msg.content);
+                // F28: user messages may now carry ContentBlock::Image
+                // (multimodal input). Emit a content-part array of
+                // `input_text` + `input_image` so multimodal model ids
+                // (gpt-4o, gpt-5) accept the prompt. Text-only
+                // messages still emit the pre-F28 single-part shape.
+                let parts = build_responses_input_parts(&msg.content);
                 vec![ResponsesInputItem::Message {
                     role: "user".to_string(),
-                    content: vec![ResponsesContentPart::InputText { text }],
+                    content: parts,
                 }]
             }
             MessageRole::Assistant => {
@@ -207,6 +213,46 @@ impl OpenAiResponsesAdapter {
             })
             .collect()
     }
+}
+
+/// F28: project `ContentBlock` slices onto Responses-API `content`
+/// parts for user-role messages. Text-only messages emit a
+/// single-element `input_text` array (matches the pre-F28 wire
+/// shape byte-for-byte). Image blocks surface as `input_image`
+/// parts with the URL carried verbatim; base64 blocks become
+/// `data:` URLs joined with the block's `mime_type`.
+fn build_responses_input_parts(blocks: &[ContentBlock]) -> Vec<ResponsesContentPart> {
+    let has_image = blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }));
+    if !has_image {
+        // Pre-F28 wire shape.
+        return vec![ResponsesContentPart::InputText {
+            text: extract_text_content(blocks),
+        }];
+    }
+
+    let mut parts: Vec<ResponsesContentPart> = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } => {
+                if !text.is_empty() {
+                    parts.push(ResponsesContentPart::InputText { text: text.clone() });
+                }
+            }
+            ContentBlock::Image { source, mime_type } => {
+                let url = match source {
+                    ImageSource::Url { url } => url.clone(),
+                    ImageSource::Base64 { data } => {
+                        format!("data:{};base64,{}", mime_type, data)
+                    }
+                };
+                parts.push(ResponsesContentPart::InputImage { image_url: url });
+            }
+            _ => {}
+        }
+    }
+    parts
 }
 
 impl super::ApiAdapter for OpenAiResponsesAdapter {
@@ -352,9 +398,35 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
             match item {
                 ResponsesOutputItem::Message { content: parts, .. } => {
                     for part in parts {
-                        if let ResponsesContentPart::OutputText { text } = part {
-                            if !text.is_empty() {
-                                content.push(ContentBlock::Text { text });
+                        match part {
+                            ResponsesContentPart::OutputText { text } => {
+                                if !text.is_empty() {
+                                    content.push(ContentBlock::Text { text });
+                                }
+                            }
+                            // F28: Responses can return output_image
+                            // parts from multimodal-capable model ids.
+                            // URL form is plain `https://`; `data:`
+                            // URLs are also accepted (base64 inline).
+                            // Mime type is best-effort inferred — we
+                            // default to `image/png` when the URL
+                            // doesn't carry one, matching the most
+                            // common Responses output.
+                            ResponsesContentPart::OutputImage { image_url } => {
+                                let (data, mime_type) = split_data_url(&image_url);
+                                let source = if let Some(data) = data {
+                                    ImageSource::Base64 { data }
+                                } else {
+                                    ImageSource::Url {
+                                        url: image_url.clone(),
+                                    }
+                                };
+                                content.push(ContentBlock::Image { source, mime_type });
+                            }
+                            ResponsesContentPart::InputText { .. }
+                            | ResponsesContentPart::InputImage { .. } => {
+                                // Input-only variants never appear on
+                                // the response side; ignore defensively.
                             }
                         }
                     }
@@ -665,8 +737,29 @@ enum ResponsesInputItem {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ResponsesContentPart {
-    InputText { text: String },
-    OutputText { text: String },
+    InputText {
+        text: String,
+    },
+    OutputText {
+        text: String,
+    },
+    /// F28: OpenAI Responses input image. The wire value of
+    /// `image_url` is either an `https://` URL or a `data:` URL when
+    /// the original block was base64. `detail` is intentionally
+    /// omitted (default behaviour) so the model's standard
+    /// auto-resolution kicks in.
+    InputImage {
+        #[serde(rename = "image_url")]
+        image_url: String,
+    },
+    /// F28: parse-only — Responses can return output images
+    /// (`output_image` content part). We surface them as
+    /// `ContentBlock::Image` blocks in `parse_response` so the engine
+    /// loop's streaming accumulator handles them.
+    OutputImage {
+        #[serde(rename = "image_url")]
+        image_url: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -750,6 +843,28 @@ fn i64_to_u64(n: i64) -> u64 {
     } else {
         n as u64
     }
+}
+
+/// F28: split a `data:<mime>;base64,<data>` URL into its parts.
+/// Returns `(Some(data), mime_type)` when the input is a data URL,
+/// or `(None, url)` (passthrough) for plain `https://` URLs. Used by
+/// the response-side image extraction so callers see a
+/// `ContentBlock::Image { source: Base64 {..} }` instead of a
+/// raw `data:` URL string.
+fn split_data_url(url: &str) -> (Option<String>, String) {
+    if let Some(rest) = url.strip_prefix("data:") {
+        if let Some((mime, payload)) = rest.split_once(";base64,") {
+            return (Some(payload.to_string()), mime.to_string());
+        }
+        // Malformed data URL — fall through to a URL passthrough
+        // rather than dropping the image silently.
+    }
+    let mime = if url.starts_with("data:image/") {
+        "image/png".to_string()
+    } else {
+        "image/png".to_string()
+    };
+    (None, mime)
 }
 
 /// F26: project `ToolChoice` onto Responses' wire shape. Shared
@@ -1680,6 +1795,105 @@ mod tests {
     }
 
     // ---- helpers -------------------------------------------------------
+
+    /// F28 baseline: a text-only user message keeps the pre-F28 wire
+    /// shape — a single-element `input_text` content part array.
+    #[test]
+    fn test_build_request_user_text_only_emits_input_text_part() {
+        let openai_adapter = OpenAiResponsesAdapter::new();
+        let (_, body) = openai_adapter
+            .build_request(
+                "gpt-4o-mini",
+                &[LlmMessage::user("hello")],
+                None,
+                &options_default(),
+                false,
+            )
+            .unwrap();
+        let parts = body["input"][0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "input_text");
+        assert_eq!(parts[0]["text"], "hello");
+    }
+
+    /// F28: a user message with an image URL emits an `input_image`
+    /// content part whose `image_url` is the URL verbatim.
+    #[test]
+    fn test_build_request_user_image_url_emits_input_image_part() {
+        let openai_adapter = OpenAiResponsesAdapter::new();
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Image {
+                source: ImageSource::Url {
+                    url: "https://example.com/cat.png".to_string(),
+                },
+                mime_type: "image/png".to_string(),
+            }],
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
+            tool_call_id: None,
+            usage: None,
+        };
+        let (_, body) = openai_adapter
+            .build_request("gpt-4o-mini", &[msg], None, &options_default(), false)
+            .unwrap();
+        let parts = body["input"][0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "input_image");
+        assert_eq!(parts[0]["image_url"], "https://example.com/cat.png");
+    }
+
+    /// F28: a base64 image block becomes a `data:` URL on the wire.
+    #[test]
+    fn test_build_request_user_image_base64_emits_data_url() {
+        let openai_adapter = OpenAiResponsesAdapter::new();
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Image {
+                source: ImageSource::Base64 {
+                    data: "aGVsbG8=".to_string(),
+                },
+                mime_type: "image/jpeg".to_string(),
+            }],
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
+            tool_call_id: None,
+            usage: None,
+        };
+        let (_, body) = openai_adapter
+            .build_request("gpt-4o-mini", &[msg], None, &options_default(), false)
+            .unwrap();
+        let parts = body["input"][0]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "input_image");
+        assert_eq!(parts[0]["image_url"], "data:image/jpeg;base64,aGVsbG8=");
+    }
+
+    /// F28 output: an `output_image` content part on a Responses
+    /// response is surfaced as a `ContentBlock::Image` with a
+    /// `Base64` source so callers can pass it back as input.
+    #[test]
+    fn test_parse_response_output_image_surfaces_image_block() {
+        let openai_adapter = OpenAiResponsesAdapter::new();
+        let body = json!({
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_image",
+                    "image_url": "data:image/png;base64,QUJDRA=="
+                }]
+            }]
+        });
+        let resp = openai_adapter.parse_response("gpt-image-1", body).unwrap();
+        assert_eq!(resp.content.len(), 1);
+        match &resp.content[0] {
+            ContentBlock::Image { source, mime_type } => {
+                assert!(matches!(source, ImageSource::Base64 { data } if data == "QUJDRA=="));
+                assert_eq!(mime_type, "image/png");
+            }
+            other => panic!("expected Image block, got {other:?}"),
+        }
+    }
 
     fn options_default() -> ChatOptions {
         ChatOptions {
