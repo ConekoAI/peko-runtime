@@ -121,6 +121,11 @@ impl super::ApiAdapter for OpenAiCompatibleAdapter {
             token: api_key.to_string(),
         }
     }
+
+    fn supports_prompt_cache_control(&self) -> bool {
+        // Compat wrappers ride the inner OpenAI adapter's behavior.
+        self.inner.supports_prompt_cache_control()
+    }
 }
 
 #[cfg(test)]

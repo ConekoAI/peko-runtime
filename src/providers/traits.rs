@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::providers::cache_retention::CacheRetention;
+
 // Re-export the message-domain types that are part of the public
 // provider surface so adapter modules can pull them all from
 // `crate::providers::traits::*` without an extra import.
@@ -173,6 +175,16 @@ pub struct ChatOptions {
     pub api_key: Option<String>,
     /// Additional headers
     pub headers: std::collections::HashMap<String, String>,
+    /// Prompt-cache retention policy (F23). `Default` lets the
+    /// provider pick its own TTL; `Long` requests the longest TTL
+    /// the provider supports; `None` disables cache markers and
+    /// session-affinity fields entirely.
+    pub cache_retention: CacheRetention,
+    /// Stable session identifier used as the cache key. Anthropic
+    /// adapters map this to `metadata.user_id`; OpenAI adapters map
+    /// it to `prompt_cache_key`. When `None`, the caller relies on
+    /// the provider's automatic prefix-detection only.
+    pub prompt_cache_key: Option<String>,
 }
 
 /// Response from chat completion

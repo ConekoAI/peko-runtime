@@ -207,6 +207,15 @@ pub trait ApiAdapter: Send + Sync {
     fn supports_native_tools(&self) -> bool {
         true
     }
+
+    /// Whether this adapter emits prompt-cache markers (`cache_control`
+    /// blocks for Anthropic, `prompt_cache_key` for OpenAI) when the
+    /// caller supplies `prompt_cache_key` or `cache_retention != None`.
+    /// Default `true`. Mock / canned-response adapters override to
+    /// `false` since their bodies are discarded.
+    fn supports_prompt_cache_control(&self) -> bool {
+        true
+    }
 }
 
 /// Helper function to convert unified `MessageRole` to string
@@ -322,6 +331,15 @@ impl ApiAdapter for AnyAdapter {
             Self::Anthropic(a) => a.supports_native_tools(),
             Self::OpenAiCompatible(a) => a.supports_native_tools(),
             Self::Mock(a) => a.supports_native_tools(),
+        }
+    }
+
+    fn supports_prompt_cache_control(&self) -> bool {
+        match self {
+            Self::OpenAi(a) => a.supports_prompt_cache_control(),
+            Self::Anthropic(a) => a.supports_prompt_cache_control(),
+            Self::OpenAiCompatible(a) => a.supports_prompt_cache_control(),
+            Self::Mock(a) => a.supports_prompt_cache_control(),
         }
     }
 }

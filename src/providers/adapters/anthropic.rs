@@ -3,6 +3,7 @@
 //! Handles conversion between unified types and Anthropic Messages API format.
 
 use super::{extract_text_content, ToolCallAccumulator};
+use crate::providers::cache_retention::CacheRetention;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolDefinition,
@@ -92,7 +93,10 @@ impl AnthropicAdapter {
                     for block in &msg.content {
                         match block {
                             ContentBlock::Text { text } => {
-                                blocks.push(AnthropicContentBlock::Text { text: text.clone() });
+                                blocks.push(AnthropicContentBlock::Text {
+                                    text: text.clone(),
+                                    cache_control: None,
+                                });
                             }
                             ContentBlock::ToolCall {
                                 id,
@@ -103,6 +107,7 @@ impl AnthropicAdapter {
                                     id: id.clone(),
                                     name: name.clone(),
                                     input: arguments.clone(),
+                                    cache_control: None,
                                 });
                             }
                             _ => {}
@@ -111,7 +116,7 @@ impl AnthropicAdapter {
 
                     let content = if blocks.len() == 1 {
                         match &blocks[0] {
-                            AnthropicContentBlock::Text { text } => Content::Text(text.clone()),
+                            AnthropicContentBlock::Text { text, .. } => Content::Text(text.clone()),
                             _ => Content::Blocks(blocks),
                         }
                     } else {
@@ -140,6 +145,7 @@ impl AnthropicAdapter {
                                 tool_use_id: tool_call_id.clone(),
                                 content: result_text,
                                 is_error: Some(*is_error),
+                                cache_control: None,
                             });
                         }
                     }
@@ -151,10 +157,12 @@ impl AnthropicAdapter {
                                     tool_use_id,
                                     content,
                                     is_error,
+                                    ..
                                 } => Content::Blocks(vec![AnthropicContentBlock::ToolResult {
                                     tool_use_id: tool_use_id.clone(),
                                     content: content.clone(),
                                     is_error: *is_error,
+                                    cache_control: None,
                                 }]),
                                 _ => Content::Blocks(tool_result_blocks),
                             }
@@ -197,6 +205,7 @@ impl AnthropicAdapter {
                 name: t.name.clone(),
                 description: t.description.clone(),
                 input_schema: strip_schema_combinators(&t.parameters),
+                cache_control: None,
             })
             .collect()
     }
@@ -245,7 +254,7 @@ impl super::ApiAdapter for AnthropicAdapter {
         options: &ChatOptions,
         stream: bool,
     ) -> Result<(String, Value)> {
-        let (system, anthropic_messages) = self.convert_messages(messages);
+        let (system, mut anthropic_messages) = self.convert_messages(messages);
 
         let mut body = json!({
             "model": model_id,
@@ -254,16 +263,57 @@ impl super::ApiAdapter for AnthropicAdapter {
             "stream": stream,
         });
 
-        if let Some(system) = system {
-            body["system"] = json!(system);
+        // F23: switch `system` from a flat string to a `Vec<TextBlockParam>` so
+        // we can attach `cache_control` to the sole block. Anthropic's API
+        // accepts both shapes — the array form is required for the marker.
+        if let Some(system_text) = system {
+            let system_block = vec![AnthropicContentBlock::Text {
+                text: system_text,
+                cache_control: CacheControl::for_retention(options.cache_retention),
+            }];
+            body["system"] = json!(system_block);
         }
 
         if let Some(temp) = options.temperature {
             body["temperature"] = json!(temp);
         }
 
+        let cache_marker = CacheControl::for_retention(options.cache_retention);
+
         if let Some(tools) = tools {
-            body["tools"] = json!(self.convert_tools(tools));
+            let mut anthropic_tools = self.convert_tools(tools);
+            // F23: stamp the marker on the last tool definition.
+            if let Some(marker) = cache_marker.as_ref() {
+                if let Some(last) = anthropic_tools.last_mut() {
+                    last.cache_control = Some(marker.clone());
+                }
+            }
+            body["tools"] = json!(anthropic_tools);
+        }
+
+        // F23: stamp the marker on the last message's trailing cacheable block
+        // (skip `ToolUse`/`ToolResult` — Anthropic only honors the marker on
+        // `text` blocks for prefix caching).
+        if let Some(marker) = cache_marker.as_ref() {
+            if let Some(last_msg) = anthropic_messages.last_mut() {
+                if let Content::Blocks(blocks) = &mut last_msg.content {
+                    for block in blocks.iter_mut().rev() {
+                        if let AnthropicContentBlock::Text { cache_control, .. } = block {
+                            *cache_control = Some(marker.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+            body["messages"] = json!(anthropic_messages);
+        }
+
+        // F23: Anthropic's analog of `prompt_cache_key`. Sets
+        // `metadata.user_id` so Anthropic can co-locate cached entries
+        // for the same session across processes (kimi-code's
+        // `provider-manager.ts:281-283` precedent).
+        if let Some(key) = options.prompt_cache_key.as_deref() {
+            body["metadata"] = json!({ "user_id": key });
         }
 
         debug!(
@@ -533,22 +583,64 @@ enum Content {
     Blocks(Vec<AnthropicContentBlock>),
 }
 
+/// Anthropic `cache_control` marker (F23).
+///
+/// Attached to a system block, the last tool, or the trailing block
+/// of the last message to create a prompt-cache breakpoint. `Long`
+/// retention requests Anthropic's 1-hour TTL; `Default` uses the
+/// 5-minute ephemeral window. `CacheRetention::None` makes the marker
+/// absent on every block — the wire shape matches the pre-F23 form.
+#[derive(Debug, Clone, Serialize)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    cache_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttl: Option<&'static str>,
+}
+
+impl CacheControl {
+    /// Build a `CacheControl` block for the given retention policy.
+    /// Returns `None` when caching is disabled (`CacheRetention::None`).
+    fn for_retention(retention: CacheRetention) -> Option<Self> {
+        match retention {
+            CacheRetention::None => None,
+            CacheRetention::Default => Some(Self {
+                cache_type: "ephemeral",
+                ttl: None,
+            }),
+            CacheRetention::Long => Some(Self {
+                cache_type: "ephemeral",
+                ttl: Some("1h"),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicContentBlock {
     Text {
         text: String,
+        /// F23: optional cache-control marker. Skipped from the wire
+        /// when `None` (the common case for blocks that are not
+        /// prompt-cache breakpoints).
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
     },
     ToolUse {
         id: String,
         name: String,
         input: Value,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
     },
     ToolResult {
         tool_use_id: String,
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
     },
 }
 
@@ -557,6 +649,11 @@ struct AnthropicTool {
     name: String,
     description: String,
     input_schema: Value,
+    /// F23: cache-control marker on the last tool definition, marking
+    /// the end of the cacheable prefix for the toolset. Skipped when
+    /// `None`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -891,5 +988,216 @@ mod tests {
         assert_eq!(parsed.usage.cache_creation_input_tokens, Some(500));
         assert_eq!(parsed.usage.cache_read_input_tokens, Some(2000));
         assert_eq!(parsed.usage.reasoning_output_tokens, None);
+    }
+
+    // ---------- F23: prompt-cache wiring on the request body ----------
+
+    fn sample_messages() -> Vec<LlmMessage> {
+        vec![
+            LlmMessage::system("You are a helpful assistant."),
+            LlmMessage::user("Hello."),
+        ]
+    }
+
+    /// `system` becomes a `Vec<TextBlockParam>` (length 1) with
+    /// `cache_control` on the sole block when caching is enabled.
+    #[test]
+    fn test_build_request_system_is_block_array_with_cache_control() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            cache_retention: CacheRetention::Long,
+            ..Default::default()
+        };
+
+        let (_, body) = adapter
+            .build_request("claude-3-sonnet", &sample_messages(), None, &options, false)
+            .unwrap();
+
+        let system = body["system"].as_array().expect("system is an array");
+        assert_eq!(system.len(), 1);
+        let block = &system[0];
+        assert_eq!(block["type"], "text");
+        assert_eq!(block["text"], "You are a helpful assistant.");
+        assert_eq!(block["cache_control"]["type"], "ephemeral");
+        assert_eq!(block["cache_control"]["ttl"], "1h");
+    }
+
+    /// `cache_control` lands on the last tool only — earlier tools
+    /// remain marker-free so Anthropic only sees the trailing
+    /// breakpoint.
+    #[test]
+    fn test_build_request_cache_control_on_last_tool() {
+        let adapter = AnthropicAdapter::new();
+        let tools = vec![
+            ToolDefinition {
+                name: "Read".to_string(),
+                description: "Read a file".to_string(),
+                parameters: json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "Write".to_string(),
+                description: "Write a file".to_string(),
+                parameters: json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "Edit".to_string(),
+                description: "Edit a file".to_string(),
+                parameters: json!({"type": "object"}),
+            },
+        ];
+        let options = ChatOptions {
+            cache_retention: CacheRetention::Default,
+            ..Default::default()
+        };
+
+        let (_, body) = adapter
+            .build_request(
+                "claude-3-sonnet",
+                &sample_messages(),
+                Some(&tools),
+                &options,
+                false,
+            )
+            .unwrap();
+
+        let tool_list = body["tools"].as_array().expect("tools is an array");
+        assert_eq!(tool_list.len(), 3);
+        assert!(tool_list[0].get("cache_control").is_none());
+        assert!(tool_list[1].get("cache_control").is_none());
+        assert_eq!(tool_list[2]["cache_control"]["type"], "ephemeral");
+        assert!(tool_list[2]["cache_control"].get("ttl").is_none());
+    }
+
+    /// `cache_control` lands on the trailing Text block of the last
+    /// message, skipping any preceding ToolUse blocks. Mirrors
+    /// kimi-code's `injectCacheControlOnLastBlock` semantics.
+    #[test]
+    fn test_build_request_cache_control_on_last_message_text_block() {
+        let adapter = AnthropicAdapter::new();
+        // Last message ends with ToolUse then Text — the marker
+        // must skip ToolUse and land on the trailing Text block.
+        let messages = vec![
+            LlmMessage::user("Find and summarize files."),
+            LlmMessage {
+                role: MessageRole::Assistant,
+                content: vec![
+                    ContentBlock::ToolCall {
+                        id: "tool_1".to_string(),
+                        name: "Read".to_string(),
+                        arguments: json!({"path": "/tmp/x"}),
+                    },
+                    ContentBlock::Text {
+                        text: "Here's what I found.".to_string(),
+                    },
+                ],
+                ..Default::default()
+            },
+        ];
+        let options = ChatOptions {
+            cache_retention: CacheRetention::Default,
+            ..Default::default()
+        };
+
+        let (_, body) = adapter
+            .build_request("claude-3-sonnet", &messages, None, &options, false)
+            .unwrap();
+
+        let last_msg = body["messages"].as_array().unwrap().last().unwrap();
+        let blocks = last_msg["content"].as_array().expect("multi-block content");
+        assert_eq!(blocks.len(), 2);
+        // ToolUse is first; no marker.
+        assert_eq!(blocks[0]["type"], "tool_use");
+        assert!(blocks[0].get("cache_control").is_none());
+        // Trailing Text gets the marker.
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["cache_control"]["type"], "ephemeral");
+    }
+
+    /// `CacheRetention::None` produces the pre-F23 wire shape — no
+    /// `cache_control` on system, no `cache_control` on tools, no
+    /// `cache_control` on any message block.
+    #[test]
+    fn test_build_request_cache_retention_none_strips_all_markers() {
+        let adapter = AnthropicAdapter::new();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let messages = vec![
+            LlmMessage::system("sys"),
+            LlmMessage::user("u"),
+            LlmMessage {
+                role: MessageRole::Assistant,
+                content: vec![
+                    ContentBlock::ToolCall {
+                        id: "t".to_string(),
+                        name: "Read".to_string(),
+                        arguments: json!({}),
+                    },
+                    ContentBlock::Text {
+                        text: "answer".to_string(),
+                    },
+                ],
+                ..Default::default()
+            },
+        ];
+        let options = ChatOptions {
+            cache_retention: CacheRetention::None,
+            ..Default::default()
+        };
+
+        let (_, body) = adapter
+            .build_request("claude-3-sonnet", &messages, Some(&tools), &options, false)
+            .unwrap();
+
+        // System block exists but has no cache_control.
+        let system = body["system"].as_array().unwrap();
+        assert!(system[0].get("cache_control").is_none());
+        // Tool has no cache_control.
+        let tool_list = body["tools"].as_array().unwrap();
+        assert!(tool_list[0].get("cache_control").is_none());
+        // No message block carries cache_control.
+        for msg in body["messages"].as_array().unwrap() {
+            if let Some(blocks) = msg["content"].as_array() {
+                for block in blocks {
+                    assert!(
+                        block.get("cache_control").is_none(),
+                        "block unexpectedly carries cache_control: {block}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `prompt_cache_key` translates to `metadata.user_id` on the
+    /// Anthropic request body (kimi-code's analog at
+    /// `provider-manager.ts:281-283`).
+    #[test]
+    fn test_build_request_metadata_user_id_set_when_session_id_present() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            prompt_cache_key: Some("sess-123".to_string()),
+            ..Default::default()
+        };
+
+        let (_, body) = adapter
+            .build_request("claude-3-sonnet", &sample_messages(), None, &options, false)
+            .unwrap();
+
+        assert_eq!(body["metadata"]["user_id"], "sess-123");
+    }
+
+    /// `CacheControl::for_retention` returns the right shape for each
+    /// variant — the helper is the source of truth for the wire form.
+    #[test]
+    fn test_cache_control_for_retention_shapes() {
+        assert!(CacheControl::for_retention(CacheRetention::None).is_none());
+        let default = CacheControl::for_retention(CacheRetention::Default).unwrap();
+        assert_eq!(default.cache_type, "ephemeral");
+        assert!(default.ttl.is_none());
+        let long = CacheControl::for_retention(CacheRetention::Long).unwrap();
+        assert_eq!(long.cache_type, "ephemeral");
+        assert_eq!(long.ttl, Some("1h"));
     }
 }

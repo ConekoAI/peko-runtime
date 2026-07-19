@@ -58,6 +58,13 @@ pub fn create_provider_for_model(config: &ModelConfig, api_key: &str) -> Result<
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
+        // F23: cache plumbing. The session id is plumbed by callers
+        // (the agentic loop sets it via the new field). The factory
+        // just needs to surface the field; an empty `session_id` is
+        // equivalent to the legacy "rely on automatic prefix
+        // detection" behavior.
+        session_id: None,
+        cache_retention: Default::default(),
     };
 
     Provider::new(adapter, api_key.to_string(), options).map(Arc::new)

@@ -130,6 +130,13 @@ impl MeteredProvider {
         self.inner.supports_native_tools()
     }
 
+    /// Whether the inner provider supports prompt-cache markers.
+    /// Delegates to the wrapped `Provider`.
+    #[must_use]
+    pub fn supports_prompt_cache_control(&self) -> bool {
+        self.inner.supports_prompt_cache_control()
+    }
+
     /// Simple chat (no system prompt). Wraps `chat_response_with_system`
     /// and charges.
     pub async fn chat(

@@ -19,8 +19,9 @@ use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
 use crate::providers::{
-    synthetic_stream::synthesize_stream_from_blocking, ChatOptions, MessageRole,
-    StackedMeteredProvider, StopReason, TokenUsage, ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS,
+    clamp_openai_prompt_cache_key, synthetic_stream::synthesize_stream_from_blocking,
+    CacheRetention, ChatOptions, MessageRole, StackedMeteredProvider, StopReason, TokenUsage,
+    ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS,
 };
 use crate::quota::QuotaScope;
 use crate::session::Session;
@@ -121,6 +122,15 @@ pub struct AgenticLoop {
     /// actually visible. Falls back to `provider.model_id()` when the
     /// agent didn't have a resolved id (e.g. test fixtures).
     resolved_model_id: String,
+    /// F23: cache-stable system-prompt prefix. Rendered once at
+    /// session start and re-rendered only on profile or tool-table
+    /// mutation (tracked via `cache_stable_signature`). The
+    /// `Arc<String>` lets the loop hand the same heap allocation to
+    /// the provider every iteration so the prefix bytes are
+    /// byte-identical turn-over-turn, which is what the prompt-cache
+    /// markers (Anthropic `cache_control`, OpenAI `prompt_cache_key`)
+    /// rely on for cache hits.
+    cache_stable_prompt: std::sync::Mutex<Option<(u64, Arc<String>)>>,
 }
 
 impl AgenticLoop {
@@ -172,6 +182,11 @@ impl AgenticLoop {
             quota_meter: Arc::new(crate::quota::QuotaMeter::unlimited()),
             peer_meter: None,
             resolved_model_id,
+            // F23: cache-stable prefix starts un-rendered. The first
+            // iteration of `run_inner_with_meter` triggers
+            // `render_cache_stable` via the `cache_stable_prompt`
+            // access in the messages[0] rebuild block.
+            cache_stable_prompt: std::sync::Mutex::new(None),
         }
     }
 
@@ -746,18 +761,115 @@ impl AgenticLoop {
             // ADR-019 Phase 2: Build tool definitions dynamically each iteration
             let tool_defs = self.build_tool_definitions().await;
 
-            // Phase 1: Rebuild system prompt every iteration via
-            // `PromptRenderer`. The renderer is the single source of
-            // truth; `messages[0]` is unconditionally overwritten with
-            // the freshly built body. The previous conditional
-            // (`messages[0].role == System`) was fragile: any code
-            // path that inserted a non-system message at position 0
-            // silently disabled the rebuild. The new path always wins.
+            // F23: Rebuild the system prompt via the two-phase render
+            // (`cache_stable` + `per_turn`) so the byte-stable prefix
+            // hits the provider's prompt cache turn-over-turn. The
+            // cache-stable prefix is re-rendered only when the
+            // tool-table signature changes (profile change is a
+            // loop-level concern; today's loop is bound to a single
+            // agent for its lifetime, so tool_defs is the only
+            // mutation signal we observe). The per-turn suffix is
+            // rebuilt every iteration because it carries volatile
+            // fields like `{{iteration_budget}}`, `{{quota_state}}`,
+            // `{{session_context}}`, and `{{capability_diff}}`.
+            //
+            // The previous Phase-1 path rebuilt the entire prompt
+            // every iteration. That defeated provider prefix caches
+            // because volatile fields landed inline with the body
+            // and mutated the prefix bytes turn-over-turn. Today we
+            // keep the rebuild path (still always-overwrites
+            // `messages[0]`) but split it into cache-stable +
+            // per-turn so cache markers on the prefix can do their
+            // job.
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
                 let ctx = self.build_turn_context(iteration, &tool_defs);
                 let renderer = PromptRenderer::new(Arc::clone(&self.extension_core));
-                let fresh_prompt = renderer.render_for_iteration(&ctx).await;
-                messages[0] = LlmMessage::system(fresh_prompt);
+
+                // F23: signature = hash of tool-table contents.
+                // Names + (truncated) descriptions; sufficient to
+                // detect extension activations / capability flips
+                // that change the tool catalog seen by the prompt.
+                // Hashing a small slice avoids the cost of a full
+                // schema dump.
+                let tool_signature = {
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut h = DefaultHasher::new();
+                    for td in &tool_defs {
+                        td.name.hash(&mut h);
+                    }
+                    h.finish()
+                };
+
+                // Decide whether to render under no lock; the
+                // decision is just `bool`, and the lock is acquired
+                // separately to either clone the cached `Arc` or
+                // install a freshly-rendered one. The `std::sync`
+                // `MutexGuard` is `!Send`, so we cannot hold it
+                // across the renderer's `.await`; the split-acquire
+                // pattern keeps every lock acquisition local to a
+                // `Send`-safe block.
+                let needs_render = {
+                    let slot = self
+                        .cache_stable_prompt
+                        .lock()
+                        .expect("cache_stable_prompt mutex poisoned");
+                    match slot.as_ref() {
+                        Some((sig, _)) => *sig != tool_signature,
+                        None => true,
+                    }
+                };
+
+                let cache_stable: Arc<String> = if needs_render {
+                    let rendered = renderer.render_cache_stable(&ctx).await;
+                    let arc = Arc::new(rendered);
+                    let mut slot = self
+                        .cache_stable_prompt
+                        .lock()
+                        .expect("cache_stable_prompt mutex poisoned");
+                    // Re-check: if a concurrent caller raced us
+                    // and stored a value with the same signature
+                    // between our two locks, prefer theirs (same
+                    // prefix bytes for the same signature).
+                    match slot.as_ref() {
+                        Some((sig, s)) if *sig == tool_signature => Arc::clone(s),
+                        _ => {
+                            *slot = Some((tool_signature, Arc::clone(&arc)));
+                            arc
+                        }
+                    }
+                } else {
+                    // Fast path: clone the cached `Arc`. If the
+                    // slot is empty (race: another caller cleared
+                    // it between our two locks), fall back to a
+                    // fresh render under a single lock acquisition.
+                    let cached = {
+                        let slot = self
+                            .cache_stable_prompt
+                            .lock()
+                            .expect("cache_stable_prompt mutex poisoned");
+                        slot.as_ref().map(|(_, s)| Arc::clone(s))
+                    };
+                    match cached {
+                        Some(arc) => arc,
+                        None => {
+                            let rendered = renderer.render_cache_stable(&ctx).await;
+                            let arc = Arc::new(rendered);
+                            let mut slot = self
+                                .cache_stable_prompt
+                                .lock()
+                                .expect("cache_stable_prompt mutex poisoned");
+                            *slot = Some((tool_signature, Arc::clone(&arc)));
+                            arc
+                        }
+                    }
+                };
+
+                // Per-turn suffix is always rebuilt — it carries
+                // the volatile fields.
+                let per_turn = renderer.render_per_turn(&ctx).await;
+                let assembled = PromptRenderer::assemble_system_prompt(&cache_stable, &per_turn);
+                messages[0] = LlmMessage::system(assembled);
             }
 
             // ============================================================
@@ -816,11 +928,33 @@ impl AgenticLoop {
             });
 
             // Chat options
+            //
+            // F23: thread `session_id` and the adapter's prompt-cache
+            // capabilities into `ChatOptions` so the provider's
+            // request builder can attach `prompt_cache_key` (OpenAI) or
+            // `metadata.user_id` (Anthropic). The session id is
+            // declared at the top of `run_inner_with_meter` and is
+            // stable for the loop's lifetime, so we hand it through
+            // every iteration verbatim. Mock adapters return
+            // `supports_prompt_cache_control() == false` so
+            // `project_cache_options` collapses both fields to
+            // defaults — which means mock-backed tests don't observe
+            // any cache wiring on the wire.
+            let supports_cache = provider.supports_prompt_cache_control();
             let options = ChatOptions {
                 temperature: Some(0.7),
                 max_tokens: Some(DEFAULT_MAX_OUTPUT_TOKENS),
-                api_key: None,
-                headers: std::collections::HashMap::new(),
+                cache_retention: if supports_cache {
+                    CacheRetention::Default
+                } else {
+                    CacheRetention::None
+                },
+                prompt_cache_key: if supports_cache {
+                    Some(clamp_openai_prompt_cache_key(&session_id))
+                } else {
+                    None
+                },
+                ..Default::default()
             };
 
             // Debug: print messages being sent
@@ -1656,7 +1790,7 @@ mod tests {
             timeout_seconds: 300,
             max_retries: 3,
             retry_delay_ms: 1000,
-            extra_headers: Vec::new(),
+            ..Default::default()
         };
         let provider = Provider::new(any, "mock_key", options).unwrap();
         (Arc::new(provider), adapter)

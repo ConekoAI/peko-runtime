@@ -5,6 +5,8 @@
 
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::providers::adapters::{AnyAdapter, ApiAdapter};
+use crate::providers::cache_retention::CacheRetention;
+use crate::providers::openai_prompt_cache::clamp_openai_prompt_cache_key;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, StreamEvent, ToolDefinition,
 };
@@ -39,6 +41,16 @@ pub struct ProviderRuntimeOptions {
     /// headers (e.g. `anthropic-version`); model-level headers
     /// win on name conflict so a user override is honored.
     pub extra_headers: Vec<(String, String)>,
+    /// Stable session identifier used as the prompt-cache key
+    /// (`prompt_cache_key` on OpenAI, `metadata.user_id` on
+    /// Anthropic). When `None`, the provider's automatic
+    /// prefix-detection is relied on. F23.
+    pub session_id: Option<String>,
+    /// Prompt-cache retention policy (F23). `Default` lets the
+    /// provider pick its own TTL; `Long` requests the longest TTL
+    /// the provider supports; `None` disables cache markers and
+    /// session-affinity fields entirely.
+    pub cache_retention: CacheRetention,
 }
 
 impl Default for ProviderRuntimeOptions {
@@ -50,6 +62,8 @@ impl Default for ProviderRuntimeOptions {
             max_retries: 3,
             retry_delay_ms: 1000,
             extra_headers: Vec::new(),
+            session_id: None,
+            cache_retention: CacheRetention::Default,
         }
     }
 }
@@ -93,6 +107,29 @@ fn merge_extra_headers(
         }
     }
     out
+}
+
+/// Build the prompt-cache fields on `ChatOptions` from the runtime
+/// options. When the adapter does not support cache control, both
+/// fields are left at their defaults (`CacheRetention::Default`,
+/// `prompt_cache_key: None`) so legacy callers keep their current
+/// wire shape.
+///
+/// OpenAI's `prompt_cache_key` is clamped to 64 UTF-32 chars per
+/// OpenAI's spec; Anthropic accepts any length and we forward the
+/// session id verbatim (its adapters map to `metadata.user_id`).
+fn project_cache_options(
+    adapter: &AnyAdapter,
+    options: &ProviderRuntimeOptions,
+) -> (CacheRetention, Option<String>) {
+    if !adapter.supports_prompt_cache_control() {
+        return (CacheRetention::Default, None);
+    }
+    let prompt_cache_key = options
+        .session_id
+        .as_deref()
+        .map(clamp_openai_prompt_cache_key);
+    (options.cache_retention, prompt_cache_key)
 }
 
 impl Provider {
@@ -201,6 +238,15 @@ impl Provider {
         self.adapter.supports_native_tools()
     }
 
+    /// Whether this provider's adapter emits prompt-cache markers
+    /// (`cache_control` blocks for Anthropic, `prompt_cache_key` for
+    /// OpenAI) when the caller supplies a `prompt_cache_key` or
+    /// `cache_retention != None`. Mock adapters return `false`.
+    #[must_use]
+    pub fn supports_prompt_cache_control(&self) -> bool {
+        self.adapter.supports_prompt_cache_control()
+    }
+
     /// Complete a prompt (legacy/simple interface)
     pub async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
         let m = self.model_id();
@@ -281,11 +327,13 @@ impl Provider {
                     vec![LlmMessage::user(message)]
                 };
 
+                let (cache_retention, prompt_cache_key) =
+                    project_cache_options(&provider.adapter, &provider.options);
                 let options = ChatOptions {
                     temperature: Some(temperature as f32),
-                    max_tokens: None,
-                    api_key: None,
-                    headers: std::collections::HashMap::new(),
+                    cache_retention,
+                    prompt_cache_key,
+                    ..Default::default()
                 };
 
                 if let AnyAdapter::Mock(mock) = &provider.adapter {
@@ -446,11 +494,13 @@ impl Provider {
                 // Build simple completion request
                 let messages = vec![LlmMessage::user(prompt)];
 
+                let (cache_retention, prompt_cache_key) =
+                    project_cache_options(&provider.adapter, &provider.options);
                 let options = ChatOptions {
                     temperature: Some(0.7),
-                    max_tokens: None,
-                    api_key: None,
-                    headers: std::collections::HashMap::new(),
+                    cache_retention,
+                    prompt_cache_key,
+                    ..Default::default()
                 };
 
                 let (path, body) = provider.adapter.build_request(
@@ -570,7 +620,7 @@ mod tests {
             timeout_seconds: 300,
             max_retries: 3,
             retry_delay_ms: 1000,
-            extra_headers: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -598,7 +648,7 @@ mod tests {
             timeout_seconds: 60,
             max_retries: 1,
             retry_delay_ms: 100,
-            extra_headers: Vec::new(),
+            ..Default::default()
         };
         let provider = Provider::new(adapter, "test_key", opts).unwrap();
         assert_eq!(provider.model_id(), "gpt-5-test");

@@ -12,11 +12,13 @@
 //! 2. If unique API: Implement `ApiAdapter` trait
 
 pub mod adapters;
+pub mod cache_retention;
 pub mod catalog;
 pub mod core;
 pub mod factory;
 pub mod metered;
 pub mod mock;
+pub mod openai_prompt_cache;
 pub mod resolver;
 pub mod stacked_metered;
 pub mod synthetic_stream;
@@ -33,12 +35,14 @@ pub use core::{Provider, ProviderRuntimeOptions};
 pub use factory::create_provider_for_model;
 pub use metered::MeteredProvider;
 pub use mock::{MockAdapter, MockResponse};
+pub use openai_prompt_cache::clamp_openai_prompt_cache_key;
 pub use resolver::{KeyProbeReport, LlmResolver, ResolveRequest, ResolveSource, ResolvedChoice};
 pub use stacked_metered::StackedMeteredProvider;
 pub use templates::{find_template, iter_templates, ModelTemplate, ProviderTemplate};
 pub use transport::{AuthConfig, HttpClient, SseParser};
 // Domain types (canonical source: `common::types::message`)
 pub use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
+pub use cache_retention::CacheRetention;
 // Provider interface types (canonical source: `providers::traits`)
 pub use traits::{
     BlockType, ChatOptions, ChatResponse, ContentBlockId, ContentDelta, StopReason, StreamEvent,

@@ -3,6 +3,7 @@
 //! Handles conversion between unified types and `OpenAI` Chat Completions API format.
 
 use super::{extract_text_content, role_to_string, ToolCallAccumulator};
+use crate::providers::cache_retention::CacheRetention;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolDefinition,
@@ -156,6 +157,21 @@ impl super::ApiAdapter for OpenAiAdapter {
         // Add stream_options to include usage in streaming responses
         if stream {
             body["stream_options"] = json!({"include_usage": true});
+        }
+
+        // F23: prompt-cache wiring. OpenAI Chat Completions accepts
+        // `prompt_cache_key` (≤64 UTF-32 chars) and
+        // `prompt_cache_retention` ("24h") on the body. `CacheRetention::None`
+        // opts out; the engine loop already gates on
+        // `Provider::supports_prompt_cache_control()` so an unsupported
+        // adapter never reaches here with these fields set.
+        if options.cache_retention.is_enabled() {
+            if let Some(key) = options.prompt_cache_key.as_deref() {
+                body["prompt_cache_key"] = json!(key);
+            }
+            if options.cache_retention == CacheRetention::Long {
+                body["prompt_cache_retention"] = json!("24h");
+            }
         }
 
         debug!("OpenAI request: {}", serde_json::to_string_pretty(&body)?);
@@ -640,5 +656,88 @@ mod tests {
         assert_eq!(parsed.usage.cache_creation_input_tokens, None);
         assert_eq!(parsed.usage.cache_read_input_tokens, Some(800));
         assert_eq!(parsed.usage.reasoning_output_tokens, Some(200));
+    }
+
+    // ---------- F23: prompt-cache wiring on the request body ----------
+
+    /// `prompt_cache_key` lands on the wire when the caller supplies it
+    /// (and the retention policy is enabled — which `Default` is).
+    #[test]
+    fn test_build_request_prompt_cache_key_emitted() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+        let options = ChatOptions {
+            prompt_cache_key: Some("sess-1".to_string()),
+            ..Default::default()
+        };
+
+        let (_, body) = adapter
+            .build_request("gpt-4o-mini", &messages, None, &options, false)
+            .unwrap();
+
+        assert_eq!(body["prompt_cache_key"], "sess-1");
+    }
+
+    /// `CacheRetention::Long` sets `prompt_cache_retention = "24h"` on
+    /// the body so OpenAI retains the cached prefix for a day.
+    #[test]
+    fn test_build_request_long_retention_sets_24h() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+        let options = ChatOptions {
+            cache_retention: CacheRetention::Long,
+            prompt_cache_key: Some("sess-1".to_string()),
+            ..Default::default()
+        };
+
+        let (_, body) = adapter
+            .build_request("gpt-4o-mini", &messages, None, &options, false)
+            .unwrap();
+
+        assert_eq!(body["prompt_cache_key"], "sess-1");
+        assert_eq!(body["prompt_cache_retention"], "24h");
+    }
+
+    /// `CacheRetention::Default` omits `prompt_cache_retention` so
+    /// OpenAI uses its standard TTL (no override field).
+    #[test]
+    fn test_build_request_default_retention_omits_retention_field() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+        let options = ChatOptions {
+            prompt_cache_key: Some("sess-1".to_string()),
+            ..Default::default()
+        };
+
+        let (_, body) = adapter
+            .build_request("gpt-4o-mini", &messages, None, &options, false)
+            .unwrap();
+
+        assert_eq!(body["prompt_cache_key"], "sess-1");
+        assert!(
+            body.get("prompt_cache_retention").is_none(),
+            "Default retention should not emit a retention field"
+        );
+    }
+
+    /// `CacheRetention::None` strips both cache-key fields, so the
+    /// request body matches the pre-F23 wire shape even if the caller
+    /// somehow set a key (defensive — the engine loop already filters).
+    #[test]
+    fn test_build_request_retention_none_strips_cache_fields() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+        let options = ChatOptions {
+            cache_retention: CacheRetention::None,
+            prompt_cache_key: Some("sess-1".to_string()),
+            ..Default::default()
+        };
+
+        let (_, body) = adapter
+            .build_request("gpt-4o-mini", &messages, None, &options, false)
+            .unwrap();
+
+        assert!(body.get("prompt_cache_key").is_none());
+        assert!(body.get("prompt_cache_retention").is_none());
     }
 }
