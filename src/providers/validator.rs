@@ -267,7 +267,11 @@ async fn ping_anthropic_messages(client: &HttpClient, model: &str) -> Credential
     let model_owned = model.to_string();
 
     match client
-        .post_json::<serde_json::Value, serde_json::Value>("/v1/messages", &body)
+        .post_json::<serde_json::Value, serde_json::Value>(
+            "/v1/messages",
+            &body,
+            &[], // no per-request headers for the ping
+        )
         .await
     {
         Ok(_) => CredentialTestOutcome {

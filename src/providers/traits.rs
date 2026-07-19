@@ -164,6 +164,79 @@ pub enum StopReason {
     Aborted,
 }
 
+/// Reasoning-effort knob surfaced to callers (F25).
+///
+/// Each adapter maps this onto its provider-native field:
+/// - OpenAI Chat Completions: `body["reasoning_effort"] = "low"|"medium"|"high"`
+/// - OpenAI Responses:        `body["reasoning"] = {effort, summary}`
+/// - Anthropic:               `thinking: {type:"adaptive"}` + `output_config`
+///                            for Opus 4-6+ / Sonnet 5 / Fable 5+, otherwise
+///                            `thinking: {type:"enabled", budget_tokens: N}`
+///                            with an effort→budget mapping
+///                            (low→1024, medium→4096, high→32_000).
+///
+/// `None` means "do not request reasoning" (default — most callers
+/// won't have reasoning enabled). `Adaptive` is honored only on
+/// adapters that detect adaptive-capable model ids; others fall
+/// back to a `High` budget mapping.
+/// `XHigh` and `Max` map to OpenAI's wire vocabulary (`"xhigh"`,
+/// `"max"`) but are silently clamped on adapters that don't yet
+/// support them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThinkingEffort {
+    #[default]
+    None,
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+    Adaptive,
+}
+
+impl ThinkingEffort {
+    /// True when the caller asked for any reasoning field on the wire.
+    /// `None` is the only "off" variant — every other value triggers
+    /// the per-adapter reasoning emission.
+    #[must_use]
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// Wire-string for Chat Completions' `reasoning_effort` field.
+    /// Returns `None` for `Self::None` (caller decides whether to
+    /// emit the field at all) and `None` for `Adaptive` (Chat
+    /// Completions has no adaptive mode — the caller should map it
+    /// to `High` first if targeting Chat Completions).
+    #[must_use]
+    pub fn as_chat_completions_str(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Low => Some("low"),
+            Self::Medium => Some("medium"),
+            Self::High => Some("high"),
+            Self::XHigh => Some("xhigh"),
+            Self::Max => Some("max"),
+            Self::Adaptive => None,
+        }
+    }
+
+    /// Effort → Anthropic `budget_tokens` (only honored for budget
+    /// mode — adaptive mode ignores the integer). The mapping comes
+    /// from codex-rs's `reasoning_effort_to_budget_tokens` table.
+    #[must_use]
+    pub fn to_anthropic_budget_tokens(self) -> u32 {
+        match self {
+            Self::None | Self::Adaptive => 0, // caller drops the field
+            Self::Low => 1024,
+            Self::Medium => 4096,
+            Self::High => 32_000,
+            Self::XHigh => 64_000,
+            Self::Max => 128_000,
+        }
+    }
+}
+
 /// Options for chat completion
 #[derive(Debug, Clone, Default)]
 pub struct ChatOptions {
@@ -185,6 +258,22 @@ pub struct ChatOptions {
     /// it to `prompt_cache_key`. When `None`, the caller relies on
     /// the provider's automatic prefix-detection only.
     pub prompt_cache_key: Option<String>,
+    /// F25: reasoning-effort knob. Defaults to `None` (no reasoning
+    /// on the wire) so the per-adapter request bodies stay byte-for-
+    /// byte identical to the pre-F25 shape.
+    pub thinking_effort: ThinkingEffort,
+    /// F25: Responses-only. When `Some(b)`, emit
+    /// `reasoning.summary = "auto"` when `b == true`; when `None`,
+    /// suppress the summary key entirely. Chat Completions and
+    /// Anthropic ignore this field.
+    pub thinking_summary: Option<bool>,
+    /// F25: Responses-only. When `true` (the default for callers
+    /// that set a `thinking_effort`), emit
+    /// `include: ["reasoning.encrypted_content"]` so the model
+    /// returns an encrypted reasoning payload that the caller can
+    /// pass back into `previous_response_id` chains. Set to `false`
+    /// to suppress — useful for low-log retention profiles.
+    pub encrypted_reasoning: bool,
 }
 
 /// Response from chat completion

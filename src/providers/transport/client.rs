@@ -193,16 +193,26 @@ impl HttpClient {
     }
 
     /// Send a POST request with JSON body and parse JSON response
+    ///
+    /// `per_request_headers` (F25) carries dynamic headers that depend
+    /// on the caller's `ChatOptions` (e.g. `anthropic-beta:
+    /// interleaved-thinking-2025-05-08`). They override static
+    /// `extra_headers` on name collision.
     pub async fn post_json<T: Serialize, R: DeserializeOwned>(
         &self,
         path: &str,
         body: &T,
+        per_request_headers: &[(String, String)],
     ) -> anyhow::Result<R> {
         let body_json = serde_json::to_value(body)?;
         let operation = || async {
-            let request = self
+            let mut request = self
                 .build_request(reqwest::Method::POST, path)
                 .json(&body_json);
+            // F25: per-request headers override the static set.
+            for (name, value) in per_request_headers {
+                request = request.header(name.as_str(), value.as_str());
+            }
 
             debug!("Sending POST request to {}{}", self.base_url, path);
 
@@ -237,17 +247,24 @@ impl HttpClient {
     }
 
     /// Send a POST request with JSON body and return streaming response
+    ///
+    /// See `post_json` for the `per_request_headers` parameter.
     pub async fn post_stream(
         &self,
         path: &str,
         body: &impl Serialize,
+        per_request_headers: &[(String, String)],
     ) -> anyhow::Result<impl Stream<Item = anyhow::Result<Bytes>>> {
         let body_json = serde_json::to_value(body)?;
         let operation = || async {
-            let request = self
+            let mut request = self
                 .build_request(reqwest::Method::POST, path)
                 .json(&body_json)
                 .header("Accept", "text/event-stream");
+            // F25: per-request headers override the static set.
+            for (name, value) in per_request_headers {
+                request = request.header(name.as_str(), value.as_str());
+            }
 
             debug!(
                 "Sending streaming POST request to {}{}",

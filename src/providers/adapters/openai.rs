@@ -174,6 +174,14 @@ impl super::ApiAdapter for OpenAiAdapter {
             }
         }
 
+        // F25: reasoning-effort knob. Maps to Chat Completions'
+        // `reasoning_effort` string. `Adaptive` has no Chat
+        // Completions counterpart — drop it (callers targeting
+        // adaptive should use the Responses adapter instead).
+        if let Some(effort) = options.thinking_effort.as_chat_completions_str() {
+            body["reasoning_effort"] = json!(effort);
+        }
+
         debug!("OpenAI request: {}", serde_json::to_string_pretty(&body)?);
 
         Ok(("/chat/completions".to_string(), body))
@@ -203,8 +211,46 @@ impl super::ApiAdapter for OpenAiAdapter {
 
         let message = choice.message;
 
-        // Extract content blocks
+        // F25: reasoning surface on the blocking path comes FIRST
+        // so callers can render reasoning before the visible
+        // answer. Probe in the same order as the streaming key
+        // probe (`reasoning_content` → `reasoning_details` →
+        // `reasoning`) and emit a `Thinking` block when present.
         let mut content = Vec::new();
+        if let Some(text) = message
+            .reasoning_content
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            content.push(ContentBlock::Thinking {
+                text: text.to_string(),
+                signature: None,
+            });
+        } else if let Some(details) = message.reasoning_details.as_ref() {
+            let text: String = details
+                .iter()
+                .filter_map(|d| d.text.as_deref())
+                .collect::<Vec<_>>()
+                .join("");
+            if !text.is_empty() {
+                content.push(ContentBlock::Thinking {
+                    text,
+                    signature: None,
+                });
+            }
+        } else if let Some(value) = message.reasoning.as_ref() {
+            let text = reasoning_text_from_reasoning_field(value);
+            if !text.is_empty() {
+                content.push(ContentBlock::Thinking {
+                    text,
+                    signature: None,
+                });
+            }
+        }
+
+        // Visible text comes after reasoning so the canonical order
+        // matches the streaming delta path (which interleaves
+        // ThinkingDelta before TextDelta in time).
         if !message.content.is_empty() {
             content.push(ContentBlock::Text {
                 text: message.content,
@@ -294,6 +340,46 @@ impl super::ApiAdapter for OpenAiAdapter {
         };
 
         let delta = choice.delta;
+
+        // F25: reasoning-content probe. Some providers (Moonshot/Kimi,
+        // DeepSeek, OpenAI o-series) emit reasoning under different
+        // keys: `reasoning_content` (string) or
+        // `reasoning_details[*].text` (array). The server decides
+        // which to use — we probe in a fixed order and surface the
+        // first hit as a ThinkingDelta so the engine loop can
+        // display it alongside the assistant's text.
+        if let Some(text) = choice
+            .reasoning_content
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            return Ok(Some(StreamEvent::ThinkingDelta {
+                content_index: 0,
+                delta: text.to_string(),
+            }));
+        }
+        if let Some(details) = choice.reasoning_details.as_ref() {
+            let text: String = details
+                .iter()
+                .filter_map(|d| d.text.as_deref())
+                .collect::<Vec<_>>()
+                .join("");
+            if !text.is_empty() {
+                return Ok(Some(StreamEvent::ThinkingDelta {
+                    content_index: 0,
+                    delta: text,
+                }));
+            }
+        }
+        if let Some(value) = choice.reasoning.as_ref() {
+            let text = reasoning_text_from_reasoning_field(value);
+            if !text.is_empty() {
+                return Ok(Some(StreamEvent::ThinkingDelta {
+                    content_index: 0,
+                    delta: text,
+                }));
+            }
+        }
 
         // Handle text content
         if let Some(text) = delta.content {
@@ -437,6 +523,18 @@ struct OpenAiResponseMessage {
     content: String,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAiToolCall>>,
+    /// F25: reasoning surface. `reasoning_content` (Moonshot/Kimi)
+    /// or `reasoning_details[*].text` (OpenAI o-series). Captured
+    /// but not always surfaced — the engine loop currently ignores
+    /// reasoning on the blocking path; we keep the field
+    /// available for callers that want it.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning_details: Option<Vec<OpenAiReasoningDetail>>,
+    /// Some shims emit a bare `reasoning` value (string or array).
+    #[serde(default)]
+    reasoning: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -478,6 +576,43 @@ struct OpenAiStreamChunk {
 struct OpenAiStreamChoice {
     delta: OpenAiDelta,
     finish_reason: Option<String>,
+    /// F25: non-standard SSE extras some providers emit alongside
+    /// the delta — `reasoning_content` (Moonshot/Kimi/DeepSeek),
+    /// `reasoning_details` (OpenAI o-series). Field-level serde so
+    /// unknown keys from other providers stay invisible.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning_details: Option<Vec<OpenAiReasoningDetail>>,
+    /// Some shims emit a bare `reasoning` field instead of the
+    /// `*_content` / `*_details` variants. Captured here as a
+    /// `Value` so the caller can probe string vs array.
+    #[serde(default)]
+    reasoning: Option<Value>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenAiReasoningDetail {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    r#type: Option<String>,
+}
+
+/// Probe a reasoning field (`reasoning_content`, `reasoning_details`,
+/// or a bare `reasoning` value) and flatten it into a single string.
+/// Mirrors kimi-code's `openai-legacy.ts:77-89` key probe.
+fn reasoning_text_from_reasoning_field(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -504,6 +639,7 @@ struct OpenAiDeltaFunction {
 mod tests {
     use super::*;
     use crate::providers::adapters::ApiAdapter;
+    use crate::providers::traits::ThinkingEffort;
 
     #[test]
     fn test_adapter_creation() {
@@ -739,5 +875,270 @@ mod tests {
 
         assert!(body.get("prompt_cache_key").is_none());
         assert!(body.get("prompt_cache_retention").is_none());
+    }
+
+    // ---------- F25: reasoning-effort wiring ----------
+
+    /// Default `ChatOptions` keeps the request body identical to the
+    /// pre-F25 shape — no `reasoning_effort` field, no streaming
+    /// `extra` probes.
+    #[test]
+    fn test_build_request_thinking_effort_none_omits_field() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+        let (_, body) = adapter
+            .build_request(
+                "gpt-4o-mini",
+                &messages,
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "thinking_effort:None must not emit reasoning_effort on the wire"
+        );
+    }
+
+    /// `thinking_effort: Low` emits `reasoning_effort: "low"`.
+    #[test]
+    fn test_build_request_thinking_effort_low_emits_low() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+        let options = ChatOptions {
+            thinking_effort: ThinkingEffort::Low,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-4o-mini", &messages, None, &options, false)
+            .unwrap();
+        assert_eq!(body["reasoning_effort"], "low");
+    }
+
+    /// `XHigh` and `Max` map to OpenAI's full vocabulary.
+    #[test]
+    fn test_build_request_thinking_effort_xhigh_and_max() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+
+        for (effort, expected) in [
+            (ThinkingEffort::Medium, "medium"),
+            (ThinkingEffort::High, "high"),
+            (ThinkingEffort::XHigh, "xhigh"),
+            (ThinkingEffort::Max, "max"),
+        ] {
+            let options = ChatOptions {
+                thinking_effort: effort,
+                ..Default::default()
+            };
+            let (_, body) = adapter
+                .build_request("gpt-4o-mini", &messages, None, &options, false)
+                .unwrap();
+            assert_eq!(body["reasoning_effort"], expected);
+        }
+    }
+
+    /// `Adaptive` has no Chat Completions counterpart — the wire
+    /// field is suppressed so callers that mistakenly target
+    /// Chat Completions with adaptive don't surprise the API.
+    #[test]
+    fn test_build_request_thinking_effort_adaptive_omits_field() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+        let options = ChatOptions {
+            thinking_effort: ThinkingEffort::Adaptive,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-4o-mini", &messages, None, &options, false)
+            .unwrap();
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "Adaptive should not emit a Chat Completions reasoning_effort string"
+        );
+    }
+
+    /// Streaming delta carries `reasoning_content` (Moonshot/Kimi
+    /// shape) → emit `ThinkingDelta`.
+    #[test]
+    fn test_parse_sse_thinking_delta_reasoning_content() {
+        let adapter = OpenAiAdapter::new();
+        let data = r#"{"choices":[{"delta":{"content":null},"reasoning_content":"step 1"}]}"#;
+        let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
+        match event {
+            Some(crate::providers::StreamEvent::ThinkingDelta { delta, .. }) => {
+                assert_eq!(delta, "step 1");
+            }
+            other => panic!("Expected ThinkingDelta, got {other:?}"),
+        }
+    }
+
+    /// Streaming delta carries `reasoning_details[*].text` (OpenAI
+    /// o-series shape) → fold into `ThinkingDelta`.
+    #[test]
+    fn test_parse_sse_thinking_delta_reasoning_details_array() {
+        let adapter = OpenAiAdapter::new();
+        let data = r#"{
+            "choices":[{
+                "delta":{"content":null},
+                "reasoning_details":[
+                    {"type":"reasoning.text","text":"plan "},
+                    {"type":"reasoning.text","text":"ready"}
+                ]
+            }]
+        }"#;
+        let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
+        match event {
+            Some(crate::providers::StreamEvent::ThinkingDelta { delta, .. }) => {
+                assert_eq!(delta, "plan ready");
+            }
+            other => panic!("Expected ThinkingDelta, got {other:?}"),
+        }
+    }
+
+    /// Streaming delta carries bare `reasoning` (string) → probe and
+    /// emit as `ThinkingDelta`.
+    #[test]
+    fn test_parse_sse_thinking_delta_bare_reasoning_string() {
+        let adapter = OpenAiAdapter::new();
+        let data = r#"{"choices":[{"delta":{"content":null},"reasoning":"thinking..."}]}"#;
+        let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
+        match event {
+            Some(crate::providers::StreamEvent::ThinkingDelta { delta, .. }) => {
+                assert_eq!(delta, "thinking...");
+            }
+            other => panic!("Expected ThinkingDelta, got {other:?}"),
+        }
+    }
+
+    /// When a delta has both text content and a reasoning field, the
+    /// reasoning wins (probed first) — the engine loop processes
+    /// ThinkingDelta before TextDelta so the user sees reasoning
+    /// before the answer.
+    #[test]
+    fn test_parse_sse_thinking_takes_precedence_over_text() {
+        let adapter = OpenAiAdapter::new();
+        let data = r#"{
+            "choices":[{
+                "delta":{"content":"answer"},
+                "reasoning_content":"reasoning first"
+            }]
+        }"#;
+        let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
+        match event {
+            Some(crate::providers::StreamEvent::ThinkingDelta { delta, .. }) => {
+                assert_eq!(delta, "reasoning first");
+            }
+            other => panic!("Expected ThinkingDelta, got {other:?}"),
+        }
+    }
+
+    /// Blocking `parse_response` surfaces `reasoning_content` as a
+    /// `ContentBlock::Thinking`.
+    #[test]
+    fn test_parse_response_surfaces_reasoning_content() {
+        let adapter = OpenAiAdapter::new();
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": "Hello!",
+                    "role": "assistant",
+                    "reasoning_content": "I should greet."
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        });
+        let parsed = adapter.parse_response("gpt-4o-mini", response).unwrap();
+        // Two blocks: reasoning first, then visible text.
+        assert_eq!(parsed.content.len(), 2);
+        match &parsed.content[0] {
+            ContentBlock::Thinking { text, signature } => {
+                assert_eq!(text, "I should greet.");
+                assert!(signature.is_none());
+            }
+            other => panic!("expected Thinking, got {other:?}"),
+        }
+        assert!(matches!(&parsed.content[1], ContentBlock::Text { text } if text == "Hello!"));
+    }
+
+    /// Blocking `parse_response` flattens `reasoning_details[*].text`.
+    #[test]
+    fn test_parse_response_surfaces_reasoning_details() {
+        let adapter = OpenAiAdapter::new();
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": "ok",
+                    "role": "assistant",
+                    "reasoning_details": [
+                        {"type":"reasoning.text","text":"step "},
+                        {"type":"reasoning.text","text":"by step"}
+                    ]
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        });
+        let parsed = adapter.parse_response("gpt-4o-mini", response).unwrap();
+        assert_eq!(parsed.content.len(), 2);
+        match &parsed.content[0] {
+            ContentBlock::Thinking { text, .. } => assert_eq!(text, "step by step"),
+            other => panic!("expected Thinking, got {other:?}"),
+        }
+    }
+
+    /// No reasoning field at all → no Thinking block emitted.
+    #[test]
+    fn test_parse_response_no_reasoning_field_no_thinking_block() {
+        let adapter = OpenAiAdapter::new();
+        let response = json!({
+            "choices": [{
+                "message": {"content": "ok", "role": "assistant"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        });
+        let parsed = adapter.parse_response("gpt-4o-mini", response).unwrap();
+        assert_eq!(parsed.content.len(), 1);
+        assert!(matches!(&parsed.content[0], ContentBlock::Text { .. }));
+    }
+
+    /// `ThinkingEffort` mapping helpers are the source of truth for
+    /// the wire vocabulary — pin them so a future enum reorder
+    /// surfaces as a test failure rather than a wire-shape drift.
+    #[test]
+    fn test_thinking_effort_as_chat_completions_str() {
+        assert_eq!(ThinkingEffort::None.as_chat_completions_str(), None);
+        assert_eq!(ThinkingEffort::Low.as_chat_completions_str(), Some("low"));
+        assert_eq!(
+            ThinkingEffort::Medium.as_chat_completions_str(),
+            Some("medium")
+        );
+        assert_eq!(ThinkingEffort::High.as_chat_completions_str(), Some("high"));
+        assert_eq!(
+            ThinkingEffort::XHigh.as_chat_completions_str(),
+            Some("xhigh")
+        );
+        assert_eq!(ThinkingEffort::Max.as_chat_completions_str(), Some("max"));
+        assert_eq!(ThinkingEffort::Adaptive.as_chat_completions_str(), None);
+        assert!(!ThinkingEffort::None.is_enabled());
+        assert!(ThinkingEffort::Low.is_enabled());
+        assert!(ThinkingEffort::Adaptive.is_enabled());
+    }
+
+    /// Anthropic budget-token mapping pins the per-effort integer so
+    /// the Anthropic adapter's emit logic stays grounded.
+    #[test]
+    fn test_thinking_effort_anthropic_budget_mapping() {
+        assert_eq!(ThinkingEffort::Low.to_anthropic_budget_tokens(), 1024);
+        assert_eq!(ThinkingEffort::Medium.to_anthropic_budget_tokens(), 4096);
+        assert_eq!(ThinkingEffort::High.to_anthropic_budget_tokens(), 32_000);
+        assert_eq!(ThinkingEffort::XHigh.to_anthropic_budget_tokens(), 64_000);
+        assert_eq!(ThinkingEffort::Max.to_anthropic_budget_tokens(), 128_000);
+        // Adaptive has no integer — caller drops the field.
+        assert_eq!(ThinkingEffort::Adaptive.to_anthropic_budget_tokens(), 0);
     }
 }

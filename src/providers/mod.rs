@@ -46,7 +46,7 @@ pub use cache_retention::CacheRetention;
 // Provider interface types (canonical source: `providers::traits`)
 pub use traits::{
     BlockType, ChatOptions, ChatResponse, ContentBlockId, ContentDelta, StopReason, StreamEvent,
-    ToolDefinition,
+    ThinkingEffort, ToolDefinition,
 };
 
 // Types still defined in traits.rs for historical reasons; imported via traits::*

@@ -343,7 +343,11 @@ impl Provider {
                 let (path, body) = provider
                     .adapter
                     .build_request(_model, &messages, None, &options, false)?;
-                let response: serde_json::Value = provider.client.post_json(&path, &body).await?;
+                let per_request_headers = provider.adapter.extra_request_headers(_model, &options);
+                let response: serde_json::Value = provider
+                    .client
+                    .post_json(&path, &body, &per_request_headers)
+                    .await?;
                 provider.adapter.parse_response(_model, response)
             }
         })
@@ -376,7 +380,11 @@ impl Provider {
                     options,
                     false,
                 )?;
-                let response: serde_json::Value = provider.client.post_json(&path, &body).await?;
+                let per_request_headers = provider.adapter.extra_request_headers(model_id, options);
+                let response: serde_json::Value = provider
+                    .client
+                    .post_json(&path, &body, &per_request_headers)
+                    .await?;
                 provider.adapter.parse_response(model_id, response)
             }
         })
@@ -407,7 +415,11 @@ impl Provider {
                     options,
                     true,
                 )?;
-                let stream = provider.client.post_stream(&path, &body).await?;
+                let per_request_headers = provider.adapter.extra_request_headers(model_id, options);
+                let stream = provider
+                    .client
+                    .post_stream(&path, &body, &per_request_headers)
+                    .await?;
 
                 // Parse SSE and convert to StreamEvent using a channel-based approach
                 let adapter = provider.adapter.clone();
@@ -510,6 +522,9 @@ impl Provider {
                     &options,
                     true,
                 )?;
+                let per_request_headers = provider
+                    .adapter
+                    .extra_request_headers(&model_id_owned, &options);
 
                 // Emit running event
                 let _ = event_tx
@@ -520,7 +535,10 @@ impl Provider {
                     })
                     .await;
 
-                let stream = provider.client.post_stream(&path, &body).await?;
+                let stream = provider
+                    .client
+                    .post_stream(&path, &body, &per_request_headers)
+                    .await?;
                 let mut accumulated_text = String::new();
                 let mut sequence = 0usize;
 
