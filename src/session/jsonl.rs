@@ -1,8 +1,17 @@
 //! Peko Session JSONL Format with Atomic Writes
 //!
 //! Implements durable JSONL sessions per `DATA_MODEL.md` §5:
-//! - Atomic writes: events written to `.tmp` then renamed
-//! - Automatic cleanup of partial `.tmp` files on load
+//! - O(1) appends: each event is opened with `O_APPEND`, written in
+//!   a single `write_all`, then `fsync` + per-process directory sync
+//!   (mirrors the kimi-code `FileSystemAgentRecordPersistence` shape
+//!   at `packages/agent-core/src/agent/records/persistence.ts:219-248`).
+//!   Replaces the previous read-modify-rename pattern that was O(n)
+//!   per append (`audit section 7 — Atomic write is O(n) per append`).
+//! - Crash tolerance: a torn last line is filtered out by `load_events` /
+//!   `load_normalized` (matches pi-mono's `parseSessionEntryLine`
+//!   skip-unparseable approach). No `.tmp` files exist any more —
+//!   `cleanup_temp_files` is kept as a no-op for backward compat and
+//!   drops any leftover `.tmp` from a pre-F30 install.
 //! - Support for Peko event format (13 event types)
 
 use crate::common::types::message::LlmMessage;
@@ -107,8 +116,8 @@ impl SessionStorage {
         let json = serde_json::to_string(event)?;
         let line = json + "\n";
 
-        // Atomic append
-        self.atomic_append(&path, &line).await?;
+        // F30: O_APPEND + fsync + sync_dir — O(1) per append.
+        Self::append_bytes(&path, line.as_bytes()).await?;
 
         Ok(())
     }
@@ -135,7 +144,9 @@ impl SessionStorage {
         });
 
         let json = serde_json::to_string(&event)?;
-        self.atomic_write(&path, json + "\n", false).await?;
+        // F30: single-shot create-and-write for the first line; no
+        // tmp+rename dance needed since the file does not exist yet.
+        Self::write_and_sync(&path, (json + "\n").as_bytes()).await?;
 
         // Write cwd as a separate system event if provided
         if let Some(cwd_path) = cwd {
@@ -149,7 +160,7 @@ impl SessionStorage {
                 detail: serde_json::json!({ "path": cwd_path }),
             });
             let json = serde_json::to_string(&cwd_event)?;
-            self.atomic_append(&path, &(json + "\n")).await?;
+            Self::append_bytes(&path, (json + "\n").as_bytes()).await?;
         }
 
         info!("Created session: {}", session_id);
@@ -186,8 +197,8 @@ impl SessionStorage {
         let json = serde_json::to_string(&event)?;
         let line = json + "\n";
 
-        // Atomic append
-        self.atomic_append(&path, &line).await?;
+        // F30: O_APPEND + fsync + sync_dir
+        Self::append_bytes(&path, line.as_bytes()).await?;
 
         Ok(entry_id)
     }
@@ -238,8 +249,8 @@ impl SessionStorage {
         let json = serde_json::to_string(&event)?;
         let line = json + "\n";
 
-        // Atomic append
-        self.atomic_append(&path, &line).await?;
+        // F30: O_APPEND + fsync + sync_dir
+        Self::append_bytes(&path, line.as_bytes()).await?;
 
         debug!(
             "Appended compaction #{} to session {}",
@@ -248,40 +259,101 @@ impl SessionStorage {
         Ok(entry_id)
     }
 
-    /// Write content atomically (tmp file + rename)
+    /// Open a file in `O_APPEND` mode, creating it if missing, and
+    /// return the fd ready for a single `write_all`. Mirrors
+    /// kimi-code's `open(filePath, shouldClear ? "w" : "a")` shape
+    /// (`packages/agent-core/src/agent/records/persistence.ts:219-248`).
     ///
-    /// If `append` is true, the content will be appended to the existing file.
-    /// If `append` is false, the file will be overwritten.
-    async fn atomic_write(&self, path: &Path, content: String, append: bool) -> Result<()> {
-        let temp_path = path.with_extension("tmp");
-
-        if append && path.exists() {
-            // For append, we need to copy existing content to temp first
-            let existing = fs::read_to_string(path).await?;
-            let combined = existing + &content;
-
-            // Write combined content to temp
-            let mut file = fs::File::create(&temp_path).await?;
-            file.write_all(combined.as_bytes()).await?;
-            file.flush().await?;
-            drop(file);
-        } else {
-            // For new file, just write content
-            let mut file = fs::File::create(&temp_path).await?;
-            file.write_all(content.as_bytes()).await?;
-            file.flush().await?;
-            drop(file);
+    /// `O_APPEND` is atomic on POSIX under `PIPE_BUF` (4 KiB on
+    /// Linux) — line-sized JSONL entries (~hundreds of bytes) land in
+    /// a single `write(2)` syscall, so concurrent appenders never
+    /// interleave below that threshold. The `FileLock` guards outside
+    /// this layer add a process-level serialization safety net.
+    async fn open_for_append(path: &Path) -> Result<fs::File> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
         }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await?;
+        Ok(file)
+    }
 
-        // Atomic rename
-        fs::rename(&temp_path, path).await?;
+    /// Open a file in `O_WRONLY | O_CREAT | O_TRUNC` for one-shot
+    /// create-and-write. Used by `create_session` for the first
+    /// `SessionCreated` line; subsequent events use `append_line`.
+    ///
+    /// F30: replaces the previous `tmp + rename` "new file" branch
+    /// of `atomic_write`. The single `writeFile` + `fsync` shape is
+    /// durable on its own (no rename dance needed for a file that
+    /// doesn't exist yet).
+    async fn open_for_write(path: &Path) -> Result<fs::File> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .await?;
+        Ok(file)
+    }
 
+    /// Write `bytes` to `path` in a single `write_all` + `fsync`.
+    /// `sync_dir` ensures the directory entry for `path` is durable
+    /// across crashes (mirrors kimi-code's `syncDir(directory)` call).
+    async fn write_and_sync(path: &Path, bytes: &[u8]) -> Result<()> {
+        let mut file = Self::open_for_write(path).await?;
+        file.write_all(bytes).await?;
+        file.sync_all().await?;
+        drop(file);
+        if let Some(parent) = path.parent() {
+            Self::sync_dir(parent).await?;
+        }
         Ok(())
     }
 
-    /// Append a line atomically
-    async fn atomic_append(&self, path: &Path, line: &str) -> Result<()> {
-        self.atomic_write(path, line.to_string(), true).await
+    /// Append `bytes` to `path` in a single `write_all` + `fsync`.
+    /// Caller is expected to hold `FileLock` for cross-process
+    /// safety; in-process callers serialize via `Mutex` if needed.
+    /// `sync_dir` ensures the directory entry change (file size/gid
+    /// stat fields) is durable.
+    async fn append_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+        let mut file = Self::open_for_append(path).await?;
+        file.write_all(bytes).await?;
+        file.sync_all().await?;
+        drop(file);
+        if let Some(parent) = path.parent() {
+            Self::sync_dir(parent).await?;
+        }
+        Ok(())
+    }
+
+    /// Fsync a directory. On Linux this means opening the directory
+    /// and calling `sync_all`; on macOS the equivalent is opening
+    /// `..` from a child fd (the fd-based `fsync` on a directory fd
+    /// is unreliable). On Windows `File::sync_all` on a directory
+    /// returns `ERROR_INVALID_FUNCTION`; we swallow the error to
+    /// preserve best-effort durability on Windows.
+    async fn sync_dir(dir: &Path) -> Result<()> {
+        match fs::File::open(dir).await {
+            Ok(f) => {
+                // Best-effort: some platforms return errors here.
+                if let Err(e) = f.sync_all().await {
+                    debug!(
+                        "sync_dir({:?}) best-effort sync failed (non-fatal on this platform): {}",
+                        dir, e
+                    );
+                }
+            }
+            Err(e) => {
+                debug!("sync_dir({:?}) could not open dir (non-fatal): {}", dir, e);
+            }
+        }
+        Ok(())
     }
 
     /// Load all Peko events from a session
@@ -494,13 +566,21 @@ impl SessionStorage {
         }
     }
 
-    /// Clean up partial .tmp files from a previous crash
+    /// Clean up partial `.tmp` files left over from a pre-F30 install.
+    ///
+    /// F30 switched from the `tmp + rename` write pattern to buffered
+    /// `O_APPEND + fsync`, so this method no longer creates `.tmp`
+    /// files in normal operation. It's kept as a one-shot sweep for
+    /// upgrading installs and is a no-op when no `.tmp` files exist.
+    /// Torn last lines are filtered out at read time by `load_events`
+    /// / `load_normalized` (mirrors pi-mono's `parseSessionEntryLine`
+    /// skip-unparseable approach).
     pub async fn cleanup_temp_files(&self, session_id: &str) -> Result<()> {
         let tmp_path = self.session_tmp_path(session_id);
 
         if tmp_path.exists() {
             warn!(
-                "Found partial tmp file from previous crash: {}. Removing.",
+                "Found leftover tmp file from a pre-F30 install: {}. Removing.",
                 tmp_path.display()
             );
             fs::remove_file(&tmp_path).await?;
@@ -515,7 +595,11 @@ impl SessionStorage {
             .join(format!("{}.jsonl", safe_filename_component(session_id)))
     }
 
-    /// Get session tmp file path
+    /// Get session tmp file path (pre-F30 only — F30 doesn't create one).
+    ///
+    /// Still computed for the `cleanup_temp_files` sweep; once any
+    /// pre-F30 install has been upgraded past a single startup, no
+    /// `.tmp` files will ever exist again.
     fn session_tmp_path(&self, session_id: &str) -> PathBuf {
         self.storage_dir
             .join(format!("{}.tmp", safe_filename_component(session_id)))
@@ -783,20 +867,90 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cleanup_temp_files() {
+    async fn test_cleanup_temp_files_sweeps_pre_f30_install() {
         let temp = TempDir::new().unwrap();
         let storage = SessionStorage::new(temp.path().to_path_buf());
 
-        // Create a fake tmp file
+        // Simulate a leftover `.tmp` file from a pre-F30 install.
         let tmp_path = temp.path().join("test_session.tmp");
         fs::write(&tmp_path, "partial content").await.unwrap();
-
         assert!(tmp_path.exists());
 
-        // Loading session should clean up tmp file
+        // The cleanup sweep should drop the leftover `.tmp` so it
+        // doesn't shadow the live JSONL going forward.
         storage.cleanup_temp_files("test_session").await.unwrap();
-
         assert!(!tmp_path.exists());
+
+        // Idempotent: a second call is a no-op.
+        storage.cleanup_temp_files("test_session").await.unwrap();
+        assert!(!tmp_path.exists());
+    }
+
+    /// F30 writes never leave a `.tmp` behind. Verify by writing a
+    /// handful of events through the public API and checking the
+    /// storage dir contains only the JSONL.
+    #[tokio::test]
+    async fn test_f30_writes_no_tmp() {
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+
+        storage.create_session("f30_test", None).await.unwrap();
+
+        // A single user message through `append_event`.
+        let msg = crate::session::message::SessionMessage::user(
+            "hello",
+            crate::session::message::MessageSource::User,
+        );
+        storage
+            .append_event(
+                "f30_test",
+                &crate::session::events::SessionEvent::MessageV2(msg),
+            )
+            .await
+            .unwrap();
+
+        let mut entries = tokio::fs::read_dir(temp.path()).await.unwrap();
+        let mut names: Vec<String> = vec![];
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            names.push(entry.file_name().to_string_lossy().to_string());
+        }
+        names.sort();
+
+        // Only the JSONL (no `.tmp` left over).
+        assert_eq!(names, vec!["f30_test.jsonl".to_string()]);
+    }
+
+    /// F30's torn-line tolerance: a half-written last line must be
+    /// silently filtered out by `load_events` (mirrors pi-mono's
+    /// skip-unparseable approach).
+    #[tokio::test]
+    async fn test_f30_torn_last_line_filtered() {
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+
+        storage.create_session("torn_test", None).await.unwrap();
+
+        // Append a well-formed event, then simulate a crash mid-line
+        // by writing a partial JSON blob to disk directly.
+        let path = temp.path().join("torn_test.jsonl");
+        let mut content = fs::read_to_string(&path).await.unwrap();
+        content.push_str("{\"envelope\":{\"id\":\"half\",\"ts\":\"2026-07-20T");
+        fs::write(&path, content).await.unwrap();
+
+        // `load_events` must return exactly the events that were
+        // fully written before the torn line.
+        let events = storage.load_events("torn_test").await.unwrap();
+        assert!(
+            !events.is_empty(),
+            "expected at least the SessionCreated event to survive the torn last line"
+        );
+        // No half-written event should appear in the returned list:
+        // the torn envelope id "half" must not leak through.
+        for e in &events {
+            if let crate::session::events::SessionEvent::MessageV2(m) = e {
+                assert_ne!(m.envelope.id, "half", "torn-line event leaked");
+            }
+        }
     }
 
     #[tokio::test]

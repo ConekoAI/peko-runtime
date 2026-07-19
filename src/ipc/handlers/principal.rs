@@ -2048,11 +2048,18 @@ async fn read_principal_log(
 
     // ── Stream the session JSONL ─────────────────────────────────
     let effective_limit = limit.unwrap_or(50).clamp(1, 1000);
-    // Session files live as `<session_id>.jsonl` (matches
-    // `PathResolver::agent_session_file`'s write side — see
-    // `common/paths.rs:452`). Earlier this handler joined the bare
-    // session_id without the extension and silently read zero events
-    // even though the disk file existed.
+    // Session files live at `<principal_workspace>/memory/sessions/<session_id>.jsonl`,
+    // produced by `DefaultPrincipalMemory::sessions_dir()` (canonical
+    // read+write side). The legacy `PathResolver::agent_session_file`
+    // helper resolves `<data_dir>/sessions/<agent>/personal/<session_id>.jsonl`
+    // which is **not** where session JSONLs actually land — that path
+    // is a relic of the pre-Principal migration and is no longer the
+    // real write side. Earlier this handler joined the bare session_id
+    // without the extension and silently read zero events even though
+    // the disk file existed. F30a keeps the contract on the
+    // `DefaultPrincipalMemory` path; the discrepancy with
+    // `PathResolver::agent_session_file` is the cleanup work for F30a2
+    // (see `memory/f30-session-persistence-split.md`).
     let (events, truncated) = load_principal_session_events(
         principal
             .memory

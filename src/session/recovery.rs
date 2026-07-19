@@ -109,13 +109,15 @@ impl SessionRecovery {
         for session_id in sessions {
             report.sessions_scanned += 1;
 
-            // Clean up temp files
-            if let Err(e) = storage.cleanup_temp_files(&session_id).await {
-                warn!("Failed to clean up temp files for {}: {}", session_id, e);
-            } else {
-                // Check if tmp file existed and was cleaned
-                let tmp_path = dir.join(format!("{}.tmp", safe_filename_component(&session_id)));
-                if !tmp_path.exists() {
+            // F30: tmp files are no longer created during normal
+            // operation. Probe for a pre-F30 leftover `.tmp` and only
+            // run the sweep if one is actually present, so the
+            // `temp_files_cleaned` counter stays meaningful.
+            let tmp_path = dir.join(format!("{}.tmp", safe_filename_component(&session_id)));
+            if tmp_path.exists() {
+                if let Err(e) = storage.cleanup_temp_files(&session_id).await {
+                    warn!("Failed to clean up temp files for {}: {}", session_id, e);
+                } else {
                     report.temp_files_cleaned += 1;
                 }
             }
