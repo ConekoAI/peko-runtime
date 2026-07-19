@@ -6,7 +6,7 @@ use super::{extract_text_content, role_to_string, ToolCallAccumulator};
 use crate::providers::cache_retention::CacheRetention;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
-    TokenUsage, ToolDefinition,
+    TokenUsage, ToolChoice, ToolDefinition,
 };
 use crate::providers::transport::AuthConfig;
 use anyhow::{Context, Result};
@@ -151,7 +151,21 @@ impl super::ApiAdapter for OpenAiAdapter {
 
         if let Some(tools) = tools {
             body["tools"] = json!(self.convert_tools(tools));
-            body["tool_choice"] = json!("auto");
+            body["tool_choice"] = json!(tool_choice_openai(&options.tool_choice));
+        }
+
+        // F26: `parallel_tool_calls: Some(false)` forces serialized
+        // tool calls. Default (`None`) suppresses emission — the
+        // server then defaults to parallel on supported models.
+        if let Some(parallel) = options.parallel_tool_calls {
+            body["parallel_tool_calls"] = json!(parallel);
+        }
+
+        // F26: `service_tier` only emits when the caller picked a
+        // non-default tier (OpenAI's `None` for `ServiceTier::None`
+        // means "do not emit", matching the pre-F26 wire shape).
+        if let Some(tier) = options.service_tier.as_wire_str() {
+            body["service_tier"] = json!(tier);
         }
 
         // Add stream_options to include usage in streaming responses
@@ -615,6 +629,21 @@ fn reasoning_text_from_reasoning_field(value: &Value) -> String {
     }
 }
 
+/// F26: project `ToolChoice` onto Chat Completions' wire shape.
+/// `Forced(name)` becomes `{type:"function", function:{name}}`;
+/// every other variant is a plain string.
+fn tool_choice_openai(choice: &ToolChoice) -> Value {
+    match choice {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::None => json!("none"),
+        ToolChoice::Required => json!("required"),
+        ToolChoice::Forced(name) => json!({
+            "type": "function",
+            "function": {"name": name},
+        }),
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct OpenAiDelta {
     content: Option<String>,
@@ -639,7 +668,7 @@ struct OpenAiDeltaFunction {
 mod tests {
     use super::*;
     use crate::providers::adapters::ApiAdapter;
-    use crate::providers::traits::ThinkingEffort;
+    use crate::providers::traits::{ServiceTier, ThinkingEffort};
 
     #[test]
     fn test_adapter_creation() {
@@ -1140,5 +1169,189 @@ mod tests {
         assert_eq!(ThinkingEffort::Max.to_anthropic_budget_tokens(), 128_000);
         // Adaptive has no integer — caller drops the field.
         assert_eq!(ThinkingEffort::Adaptive.to_anthropic_budget_tokens(), 0);
+    }
+
+    // ---------- F26: OpenAI-compat small knobs (Chat Completions) ----------
+
+    /// `ToolChoice::Required` emits the literal `"required"` so the
+    /// server rejects a response that does not call a tool.
+    #[test]
+    fn test_build_request_tool_choice_required_emits_string() {
+        let adapter = OpenAiAdapter::new();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = ChatOptions {
+            tool_choice: crate::providers::ToolChoice::Required,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request(
+                "gpt-4o-mini",
+                &[LlmMessage::user("hi")],
+                Some(&tools),
+                &options,
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["tool_choice"], "required");
+    }
+
+    /// `ToolChoice::None` emits `"none"` — even when tools are
+    /// registered — so the model answers without tool calls.
+    #[test]
+    fn test_build_request_tool_choice_none_emits_string() {
+        let adapter = OpenAiAdapter::new();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = ChatOptions {
+            tool_choice: crate::providers::ToolChoice::None,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request(
+                "gpt-4o-mini",
+                &[LlmMessage::user("hi")],
+                Some(&tools),
+                &options,
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["tool_choice"], "none");
+    }
+
+    /// `Forced("Read")` emits `{type:"function", function:{name:"Read"}}`.
+    #[test]
+    fn test_build_request_tool_choice_forced_emits_function_shape() {
+        let adapter = OpenAiAdapter::new();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = ChatOptions {
+            tool_choice: crate::providers::ToolChoice::Forced("Read".to_string()),
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request(
+                "gpt-4o-mini",
+                &[LlmMessage::user("hi")],
+                Some(&tools),
+                &options,
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["tool_choice"]["type"], "function");
+        assert_eq!(body["tool_choice"]["function"]["name"], "Read");
+    }
+
+    /// Default `ToolChoice::Auto` keeps the pre-F26 wire shape
+    /// (`"auto"`) for callers that don't set the field.
+    #[test]
+    fn test_build_request_default_tool_choice_emits_auto() {
+        let adapter = OpenAiAdapter::new();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let (_, body) = adapter
+            .build_request(
+                "gpt-4o-mini",
+                &[LlmMessage::user("hi")],
+                Some(&tools),
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["tool_choice"], "auto");
+        // No parallel_tool_calls when caller leaves the default.
+        assert!(body.get("parallel_tool_calls").is_none());
+        // No service_tier when caller leaves the default.
+        assert!(body.get("service_tier").is_none());
+    }
+
+    /// `parallel_tool_calls: Some(false)` forces serialized tool
+    /// calling on the Chat Completions adapter.
+    #[test]
+    fn test_build_request_parallel_tool_calls_false_emits_false() {
+        let adapter = OpenAiAdapter::new();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = ChatOptions {
+            parallel_tool_calls: Some(false),
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request(
+                "gpt-4o-mini",
+                &[LlmMessage::user("hi")],
+                Some(&tools),
+                &options,
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["parallel_tool_calls"], false);
+    }
+
+    /// `ServiceTier::Flex` / `Priority` emit the literal wire
+    /// strings; `None` (the default) suppresses emission entirely.
+    #[test]
+    fn test_build_request_service_tier_emits_when_set() {
+        let adapter = OpenAiAdapter::new();
+        for (tier, expected) in [
+            (ServiceTier::Default, "default"),
+            (ServiceTier::Auto, "auto"),
+            (ServiceTier::Flex, "flex"),
+            (ServiceTier::Priority, "priority"),
+        ] {
+            let options = ChatOptions {
+                service_tier: tier,
+                ..Default::default()
+            };
+            let (_, body) = adapter
+                .build_request(
+                    "gpt-4o-mini",
+                    &[LlmMessage::user("hi")],
+                    None,
+                    &options,
+                    false,
+                )
+                .unwrap();
+            assert_eq!(body["service_tier"], expected);
+        }
+
+        // None → field absent.
+        let (_, body) = adapter
+            .build_request(
+                "gpt-4o-mini",
+                &[LlmMessage::user("hi")],
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        assert!(body.get("service_tier").is_none());
+    }
+
+    /// `ServiceTier` `as_wire_str` pins the vocabulary so a future
+    /// enum reorder surfaces as a test failure rather than a
+    /// wire-shape drift.
+    #[test]
+    fn test_service_tier_as_wire_str() {
+        assert_eq!(ServiceTier::None.as_wire_str(), None);
+        assert_eq!(ServiceTier::Default.as_wire_str(), Some("default"));
+        assert_eq!(ServiceTier::Auto.as_wire_str(), Some("auto"));
+        assert_eq!(ServiceTier::Flex.as_wire_str(), Some("flex"));
+        assert_eq!(ServiceTier::Priority.as_wire_str(), Some("priority"));
     }
 }

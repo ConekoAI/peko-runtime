@@ -6,7 +6,7 @@ use super::{extract_text_content, ToolCallAccumulator};
 use crate::providers::cache_retention::CacheRetention;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
-    TokenUsage, ToolDefinition,
+    TokenUsage, ToolChoice, ToolDefinition,
 };
 use crate::providers::transport::AuthConfig;
 use crate::providers::DEFAULT_MAX_OUTPUT_TOKENS;
@@ -274,6 +274,29 @@ fn strip_schema_combinators(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// F26: project `ToolChoice` onto Anthropic's wire shape. Anthropic
+/// differs from OpenAI on two points:
+///
+/// * `Required` → Anthropic uses the literal `"any"` (not
+///   `"required"`).
+/// * `Forced(name)` → Anthropic's wire shape is
+///   `{type:"tool", name:name}` (no `function` wrapper). Forced-tool
+///   references a tool that must already be registered under the
+///   `tools` array.
+///
+/// `Auto`/`None` round-trip verbatim from `ToolChoice::Auto`/`None`.
+fn tool_choice_anthropic(choice: &ToolChoice) -> serde_json::Value {
+    match choice {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::None => json!("none"),
+        ToolChoice::Required => json!("any"),
+        ToolChoice::Forced(name) => json!({
+            "type": "tool",
+            "name": name,
+        }),
+    }
+}
+
 impl super::ApiAdapter for AnthropicAdapter {
     fn name(&self) -> &'static str {
         "anthropic"
@@ -330,6 +353,14 @@ impl super::ApiAdapter for AnthropicAdapter {
                 }
             }
             body["tools"] = json!(anthropic_tools);
+            // F26: project `ToolChoice` onto Anthropic's wire shape.
+            // `Required` maps to `"any"` (Anthropic's "must call a
+            // tool" sentinel); `Forced(name)` uses
+            // `{type:"tool", name:name}` — different from OpenAI's
+            // `{type:"function", function:{name}}` shape (Anthropic
+            // has no `function` wrapper). `Auto`/`None` round-trip
+            // verbatim.
+            body["tool_choice"] = json!(tool_choice_anthropic(&options.tool_choice));
         }
 
         // F23: stamp the marker on the last message's trailing cacheable block
@@ -1476,5 +1507,128 @@ mod tests {
             }
             other => panic!("expected ThinkingStart, got {other:?}"),
         }
+    }
+
+    // ---------- F26: tool_choice wiring on Anthropic ----------
+
+    /// `ToolChoice::Auto` (the default) round-trips to the literal
+    /// `"auto"`, preserving the pre-F26 wire shape for callers that
+    /// don't set the field.
+    #[test]
+    fn test_build_request_default_tool_choice_emits_auto() {
+        let adapter = AnthropicAdapter::new();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let (_, body) = adapter
+            .build_request(
+                "claude-3-sonnet",
+                &sample_messages(),
+                Some(&tools),
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["tool_choice"], "auto");
+    }
+
+    /// `ToolChoice::Required` maps to Anthropic's `"any"` (different
+    /// from OpenAI's `"required"` — Anthropic's wire vocabulary
+    /// borrows the natural-language form).
+    #[test]
+    fn test_build_request_tool_choice_required_emits_any() {
+        let adapter = AnthropicAdapter::new();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = ChatOptions {
+            tool_choice: crate::providers::ToolChoice::Required,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request(
+                "claude-3-sonnet",
+                &sample_messages(),
+                Some(&tools),
+                &options,
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["tool_choice"], "any");
+    }
+
+    /// `ToolChoice::Forced("Read")` emits Anthropic's
+    /// `{type:"tool", name:"Read"}` shape (no `function` wrapper —
+    /// Anthropic's tool_choice references tools directly).
+    #[test]
+    fn test_build_request_tool_choice_forced_emits_tool_shape() {
+        let adapter = AnthropicAdapter::new();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = ChatOptions {
+            tool_choice: crate::providers::ToolChoice::Forced("Read".to_string()),
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request(
+                "claude-3-sonnet",
+                &sample_messages(),
+                Some(&tools),
+                &options,
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["tool_choice"]["type"], "tool");
+        assert_eq!(body["tool_choice"]["name"], "Read");
+    }
+
+    /// Anthropic ignores `parallel_tool_calls`, `service_tier`, and
+    /// `safety_identifier` (those are OpenAI-only fields). The
+    /// request body must remain free of them even when callers set
+    /// every F26 knob.
+    #[test]
+    fn test_build_request_ignores_openai_only_knobs() {
+        let adapter = AnthropicAdapter::new();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = ChatOptions {
+            parallel_tool_calls: Some(false),
+            safety_identifier: Some("user-hash".to_string()),
+            tool_choice: crate::providers::ToolChoice::Required,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request(
+                "claude-3-sonnet",
+                &sample_messages(),
+                Some(&tools),
+                &options,
+                false,
+            )
+            .unwrap();
+        assert!(
+            body.get("parallel_tool_calls").is_none(),
+            "Anthropic must not emit parallel_tool_calls"
+        );
+        assert!(
+            body.get("safety_identifier").is_none(),
+            "Anthropic must not emit safety_identifier"
+        );
+        assert!(
+            body.get("service_tier").is_none(),
+            "Anthropic must not emit service_tier"
+        );
+        // tool_choice is honored.
+        assert_eq!(body["tool_choice"], "any");
     }
 }

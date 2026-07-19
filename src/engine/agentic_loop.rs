@@ -963,6 +963,18 @@ impl AgenticLoop {
                 thinking_effort: crate::providers::ThinkingEffort::None,
                 thinking_summary: None,
                 encrypted_reasoning: false,
+                // F26: every new ChatOptions knob is also at its
+                // "preserve pre-F26 wire shape" default here, so the
+                // engine loop's loopback tests stay green even with
+                // extra knobs enabled. Per-adapter emission gates on
+                // each knob's "is set" predicate (e.g.
+                // `ServiceTier::as_wire_str()` returns `None` for
+                // `ServiceTier::None`, so the body suppresses the
+                // `service_tier` field entirely).
+                tool_choice: crate::providers::ToolChoice::Auto,
+                parallel_tool_calls: None,
+                service_tier: crate::providers::ServiceTier::None,
+                safety_identifier: None,
                 ..Default::default()
             };
 
