@@ -41,6 +41,34 @@ fn classify_http_error(
     anyhow::anyhow!(msg)
 }
 
+/// Returns `true` if `e` represents an HTTP 400/413 context-window overflow.
+///
+/// The transport layer stringifies provider errors as `HTTP error <status>: <body>`
+/// (see [`classify_http_error`]). Anthropic surfaces 400 `"prompt is too long"` for
+/// over-context requests and 413 `"request too large"` for some deployments; OpenAI
+/// surfaces 400 `context_length_exceeded`. We match the well-known substrings rather
+/// than parsing structured JSON because the body format is provider-specific and
+/// unstable, and the loop's recovery (front-evict + retry) doesn't need the exact
+/// number — just the "drop oldest and try again" signal.
+///
+/// This mirrors the `is_auth_failure` pattern at `src/providers/rotating_auth.rs:117-120`:
+/// a pure bool helper over `&anyhow::Error` that reads `RetryableError::http_status`.
+/// No new error enum, no `ProviderError` variant, no breakage of existing call sites.
+pub fn is_context_window_exceeded(e: &anyhow::Error) -> bool {
+    use super::retry::RetryableError;
+    match RetryableError::http_status(e) {
+        Some(400) => {
+            let msg = e.to_string();
+            msg.contains("prompt is too long")
+                || msg.contains("context_length_exceeded")
+                || msg.contains("maximum context length")
+                || msg.contains("context window")
+        }
+        Some(413) => true, // Anthropic payload-too-large on some deployments
+        _ => false,
+    }
+}
+
 /// Parse the `Retry-After` response header (seconds form only).
 ///
 /// Returns `None` if the header is missing, malformed, not a positive
@@ -322,5 +350,53 @@ mod tests {
         };
         let client = HttpClient::new("https://api.example.com", auth, 30);
         assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_is_context_window_exceeded_detects_anthropic() {
+        let e = anyhow::anyhow!("HTTP error 400: prompt is too long");
+        assert!(is_context_window_exceeded(&e));
+    }
+
+    #[test]
+    fn test_is_context_window_exceeded_detects_openai() {
+        let e = anyhow::anyhow!("HTTP error 400: context_length_exceeded");
+        assert!(is_context_window_exceeded(&e));
+    }
+
+    #[test]
+    fn test_is_context_window_exceeded_detects_anthropic_maximum_context_length() {
+        let e = anyhow::anyhow!("HTTP error 400: maximum context length is 200000 tokens");
+        assert!(is_context_window_exceeded(&e));
+    }
+
+    #[test]
+    fn test_is_context_window_exceeded_detects_anthropic_context_window_phrase() {
+        let e = anyhow::anyhow!("HTTP error 400: request exceeds context window");
+        assert!(is_context_window_exceeded(&e));
+    }
+
+    #[test]
+    fn test_is_context_window_exceeded_detects_413() {
+        let e = anyhow::anyhow!("HTTP error 413: request body too large");
+        assert!(is_context_window_exceeded(&e));
+    }
+
+    #[test]
+    fn test_is_context_window_exceeded_returns_false_for_other_4xx() {
+        let e = anyhow::anyhow!("HTTP error 422: validation failed");
+        assert!(!is_context_window_exceeded(&e));
+    }
+
+    #[test]
+    fn test_is_context_window_exceeded_returns_false_for_500() {
+        let e = anyhow::anyhow!("HTTP error 500: internal server error");
+        assert!(!is_context_window_exceeded(&e));
+    }
+
+    #[test]
+    fn test_is_context_window_exceeded_returns_false_for_non_http_error() {
+        let e = anyhow::anyhow!("connection reset");
+        assert!(!is_context_window_exceeded(&e));
     }
 }

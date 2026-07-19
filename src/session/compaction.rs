@@ -10,6 +10,7 @@
 
 pub mod background;
 pub mod cli;
+pub mod eviction;
 pub mod summary_format;
 pub mod turn_boundaries;
 
