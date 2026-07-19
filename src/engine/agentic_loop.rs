@@ -3680,4 +3680,112 @@ mod tests {
         assert!(rendered.contains("Revoked:"));
         assert!(rendered.contains("- tool:Write"));
     }
+
+    // -----------------------------------------------------------------
+    // Goal verification: the system prompt is reconstructed every turn
+    // from a freshly read `AgentConfig::prompt`. If the principal's
+    // prompt body changes between iterations (via a reload of
+    // `principal.toml`, an editor session, the principal's own
+    // mid-session rewrite, or any path that writes back into the
+    // `Agent` the loop is driving), the next iteration's rendered
+    // prompt must reflect the change immediately — no cache, no
+    // snapshot.
+    //
+    // The render path's freshness is pinned here by calling
+    // `build_turn_context` twice on the same `AgenticLoop` and
+    // asserting that:
+    //   - `ctx.body` reflects the prompt value at call time.
+    //   - the rendered Markdown reflects the prompt value at call
+    //     time (placeholder substitution operates on the fresh body).
+    //
+    // The `build_turn_context` body is `self.agent.config.prompt.clone()` —
+    // a fresh read each call (agentic_loop.rs:1360). If anyone re-adds
+    // a cached `system_prompt: String` field that precomputes at
+    // construction, this test will fail.
+    // -----------------------------------------------------------------
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn loop_renders_fresh_prompt_body_each_iteration() {
+        crate::identity::init_test_env();
+        ensure_global_core();
+
+        let temp = tempdir_unused();
+        std::fs::create_dir_all(&temp).unwrap();
+        let (provider, _adapter) = mock_provider();
+
+        // Build the agent and the loop. We move the Arc into the loop
+        // and never hold another clone — the loop is the unique
+        // owner, which means `Arc::get_mut` on its internal `agent`
+        // field succeeds after we take a `&mut AgenticLoop`.
+        let mut cfg = test_agent_config("phase4-rebuild-v1");
+        cfg.prompt = Some("v1: You are {{agent_name}}.".to_string());
+
+        let agent = Arc::new(Agent::new_for_test(cfg, &temp).await.unwrap());
+        let mut loop_ = AgenticLoop::new(
+            Arc::clone(&agent),
+            Arc::clone(&provider),
+            agent.extension_core(),
+        )
+        .await;
+        // Drop the test-side handle so the loop is the unique owner
+        // of the `Arc<Agent>`. This is the precondition for
+        // `Arc::get_mut(&mut loop_.agent)` to succeed — pinning this
+        // guarantee is part of the test's intent: if anyone re-adds
+        // an extra Arc clone inside the loop construction or run path,
+        // the panic below will fail loudly.
+        drop(agent);
+        assert_eq!(
+            Arc::strong_count(&loop_.agent),
+            1,
+            "loop must be the unique owner of Arc<Agent>"
+        );
+
+        // Iteration 1: render with the v1 body.
+        let ctx1 = loop_.build_turn_context(1, &[]);
+        assert_eq!(ctx1.body, "v1: You are {{agent_name}}.");
+        let renderer =
+            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let rendered1 = renderer.render_for_iteration(&ctx1).await;
+        assert!(
+            rendered1.starts_with("v1: You are phase4-rebuild-v1."),
+            "iteration 1 must render the v1 body verbatim; got: {rendered1}"
+        );
+        assert!(!rendered1.contains("v2:"));
+
+        // Iteration 2: mutate `loop_.agent.config.prompt` in place.
+        // `Arc::get_mut` requires unique ownership, so the loop is
+        // the only Arc holder here.
+        Arc::get_mut(&mut loop_.agent)
+            .expect("loop is the unique Arc<Agent> owner")
+            .config
+            .prompt = Some("v2: You are {{agent_name}}.".to_string());
+
+        let ctx2 = loop_.build_turn_context(2, &[]);
+        assert_eq!(
+            ctx2.body, "v2: You are {{agent_name}}.",
+            "iteration 2 must read the fresh body — no caching"
+        );
+        let rendered2 = renderer.render_for_iteration(&ctx2).await;
+        assert!(
+            rendered2.starts_with("v2: You are phase4-rebuild-v1."),
+            "iteration 2 must render the v2 body verbatim; got: {rendered2}"
+        );
+        assert!(!rendered2.contains("v1:"));
+
+        // Iteration 3: another mutation, confirming freshness is
+        // every-turn (not a one-shot post-mutation refresh).
+        Arc::get_mut(&mut loop_.agent)
+            .expect("loop is still the unique Arc<Agent> owner")
+            .config
+            .prompt = Some("v3: You are {{agent_name}}.".to_string());
+
+        let ctx3 = loop_.build_turn_context(3, &[]);
+        let rendered3 = renderer.render_for_iteration(&ctx3).await;
+        assert!(
+            rendered3.starts_with("v3: You are phase4-rebuild-v1."),
+            "iteration 3 must render the v3 body; got: {rendered3}"
+        );
+        assert!(!rendered3.contains("v1:"));
+        assert!(!rendered3.contains("v2:"));
+    }
 }
