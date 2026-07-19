@@ -2183,4 +2183,115 @@ mod tests {
         let names = extract_agent_names_from_package(&files);
         assert_eq!(names, vec!["primary"]);
     }
+
+    // -----------------------------------------------------------------
+    // Phase 4: pin the IPC filter for the post-Phase-1 JSONL contract.
+    //
+    // Before Phase 1, `Session::add_system` wrote
+    // `MessageV2{role:"system"}` rows into the session JSONL. After
+    // Phase 1, the system prompt is rebuilt fresh by the renderer and
+    // is never persisted. But pre-Phase-1 JSONLs still exist on disk
+    // — when the desktop hits `principal_log` against one, the IPC
+    // response must NOT surface system rows (the desktop's chat
+    // bubble rendered them as assistant messages, which is the
+    // regression that motivated the filter at
+    // `session_service.rs:254-259`).
+    //
+    // This test exercises the end-to-end `load_principal_session_events`
+    // path: write a JSONL containing one of each role, run the loader,
+    // assert the system row is filtered out and the rest are returned
+    // with the right ordering.
+    // -----------------------------------------------------------------
+    #[tokio::test]
+    async fn load_principal_session_events_filters_persisted_system_prompts() {
+        use crate::session::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
+        use crate::session::message::{MessageSource, SessionMessage};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("session.jsonl");
+
+        // Hand-rolled JSONL with a pre-Phase-1 shape:
+        //   - SessionCreated marker
+        //   - A persisted system prompt (Phase 1+ no longer writes
+        //     these, but legacy files still have them).
+        //   - User + assistant messages that must survive the filter.
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(
+            serde_json::to_string(&SessionEvent::SessionCreated(SessionCreatedEvent {
+                envelope: EventEnvelope {
+                    id: "evt_seed".to_string(),
+                    ts: chrono::Utc::now(),
+                },
+                instance_id: "sess_test".to_string(),
+                image_digest: String::new(),
+                parent_session_id: None,
+                trigger: SessionTrigger::User,
+            }))
+            .expect("encode SessionCreated"),
+        );
+        lines.push(
+            serde_json::to_string(&SessionEvent::MessageV2(SessionMessage::system(
+                "You are the root agent for a Principal...",
+            )))
+            .expect("encode system"),
+        );
+        lines.push(
+            serde_json::to_string(&SessionEvent::MessageV2(SessionMessage::user(
+                "hi there",
+                MessageSource::User,
+            )))
+            .expect("encode user"),
+        );
+        lines.push(
+            serde_json::to_string(&SessionEvent::MessageV2(SessionMessage::assistant_text(
+                "hello!",
+                "anthropic",
+                "claude-sonnet-4-6",
+            )))
+            .expect("encode assistant"),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").expect("write jsonl");
+
+        let (events, truncated) =
+            load_principal_session_events(path.clone(), "sess_test", None, 100)
+                .await
+                .expect("load_principal_session_events");
+
+        assert!(!truncated, "all four events fit under the limit");
+        assert_eq!(events.len(), 3, "system row must be filtered out");
+
+        // First row is the Session marker (derived from SessionCreated).
+        assert!(
+            matches!(&events[0], HistoryEvent::Session { session_id, .. } if session_id == "sess_test"),
+            "first event should be Session marker, got {:?}",
+            events[0]
+        );
+
+        // Then user, then assistant. No system row.
+        let roles: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                HistoryEvent::Message { role, .. } => Some(role.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(roles, vec!["user", "assistant"]);
+        assert!(
+            !roles.contains(&"system"),
+            "system role must be filtered out: got {roles:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_principal_session_events_returns_empty_when_file_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("never-written.jsonl");
+
+        let (events, truncated) = load_principal_session_events(path, "sess_nope", None, 100)
+            .await
+            .expect("missing file must not error");
+
+        assert!(events.is_empty(), "missing file yields empty history");
+        assert!(!truncated);
+    }
 }
