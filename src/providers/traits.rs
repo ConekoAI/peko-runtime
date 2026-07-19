@@ -237,6 +237,73 @@ impl ThinkingEffort {
     }
 }
 
+/// Tool-choice control surfaced to callers (F26).
+///
+/// Three of the four variants round-trip straight onto the wire;
+///
+/// * `Required`     → `"required"` everywhere — Responses / Chat
+///                    Completions / Anthropic all share the same
+///                    "must call a tool" semantic.
+/// * `Forced(name)` → pick the named tool. Anthropic uses a
+///                    different wire shape
+///                    (`{type:"tool", name:"X"}`) than OpenAI
+///                    (`{type:"function", function:{name:"X"}}`);
+///                    each adapter emits its native form.
+/// * `Auto` / `None` → "let the model decide" / "no tools, even if
+///                    some are registered".
+///
+/// Anthropic's "must call any tool" wire value is `"any"` (not
+/// `"required"`); `Required` is mapped at the adapter level. The
+/// enum mirrors OpenAI's vocabulary so callers don't have to know
+/// which provider they're targeting.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ToolChoice {
+    #[default]
+    Auto,
+    /// Force NO tool call. On OpenAI this is `"none"`; on Anthropic
+    /// it is also `"none"` (Anthropic's "no tool" sentinel).
+    None,
+    /// Require a tool call (any). Anthropic wire value is `"any"`.
+    Required,
+    /// Force a specific tool. Adapter picks the right native shape.
+    Forced(String),
+}
+
+/// Service-tier control surfaced to callers (F26).
+///
+/// OpenAI Chat Completions and Responses both honor
+/// `service_tier` on the request body. Anthropic has no equivalent;
+/// the field is a no-op there. `None` means "do not emit the field"
+/// (the OpenAI default, `auto`, is the server-side default when
+/// absent). `Auto`, `Flex`, and `Priority` mirror OpenAI's
+/// documented vocabulary; `Default` forces the literal `"default"`
+/// per OpenAI's wire docs (used to opt out of `auto`-tier
+/// behaviors).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ServiceTier {
+    #[default]
+    None,
+    Default,
+    Auto,
+    Flex,
+    Priority,
+}
+
+impl ServiceTier {
+    /// Wire-string for `body["service_tier"]`. `None` (the default)
+    /// returns `None` so the adapter can suppress emission entirely.
+    #[must_use]
+    pub fn as_wire_str(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Default => Some("default"),
+            Self::Auto => Some("auto"),
+            Self::Flex => Some("flex"),
+            Self::Priority => Some("priority"),
+        }
+    }
+}
+
 /// Options for chat completion
 #[derive(Debug, Clone, Default)]
 pub struct ChatOptions {
@@ -274,6 +341,30 @@ pub struct ChatOptions {
     /// pass back into `previous_response_id` chains. Set to `false`
     /// to suppress — useful for low-log retention profiles.
     pub encrypted_reasoning: bool,
+    /// F26: tool-choice control. `Auto` (the default) preserves the
+    /// pre-F26 wire shape (`"auto"` on OpenAI, `"auto"` on
+    /// Anthropic). `Required` / `Forced` are how callers steer
+    /// structured-output flows. Anthropic's `Forced` uses
+    /// `{type:"tool", name}`; OpenAI uses
+    /// `{type:"function", function:{name}}`.
+    pub tool_choice: ToolChoice,
+    /// F26: gate parallel tool calling. `Some(false)` forces
+    /// serialized tool calls — the model emits one tool_use at a
+    /// time. Anthropic has no parallel flag (parallel is the
+    /// default there); the field is a no-op on the Anthropic
+    /// adapter. `None` (the default) keeps each adapter's natural
+    /// default: OpenAI emits no `parallel_tool_calls` key (server
+    /// defaults to true on supported models).
+    pub parallel_tool_calls: Option<bool>,
+    /// F26: OpenAI service-tier selector. `None` (the default)
+    /// suppresses emission so the server picks its standard tier.
+    /// Anthropic ignores this field.
+    pub service_tier: ServiceTier,
+    /// F26: OpenAI Responses-only. Stable end-user identifier that
+    /// OpenAI uses for abuse-detection across long-running flows.
+    /// Hash the principal id before passing it in (per OpenAI's
+    /// guidance). Other adapters ignore the field.
+    pub safety_identifier: Option<String>,
 }
 
 /// Response from chat completion

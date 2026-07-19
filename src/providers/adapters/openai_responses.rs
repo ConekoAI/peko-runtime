@@ -22,7 +22,7 @@ use super::{extract_text_content, ToolCallAccumulator};
 use crate::providers::cache_retention::CacheRetention;
 use crate::providers::traits::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
-    TokenUsage, ToolDefinition,
+    TokenUsage, ToolChoice, ToolDefinition,
 };
 use crate::providers::transport::AuthConfig;
 use anyhow::{Context, Result};
@@ -34,6 +34,13 @@ use tracing::debug;
 #[derive(Debug, Clone)]
 pub struct OpenAiResponsesAdapter {
     base_url: String,
+    /// F26: cached Azure endpoint detection. When `true`, the
+    /// adapter auto-sets `store: true` on every request because
+    /// Azure Responses requires the field (per Azure's
+    /// documentation, the wire shape of an Azure Responses request
+    /// differs from OpenAI's — see
+    /// https://learn.microsoft.com/en-us/azure/ai-services/openai/reference.
+    is_azure: bool,
     /// Accumulates tool-call arguments across streaming deltas.
     tool_call_accumulator: ToolCallAccumulator,
 }
@@ -45,16 +52,46 @@ impl OpenAiResponsesAdapter {
     pub fn new() -> Self {
         Self {
             base_url: "https://api.openai.com/v1".to_string(),
+            is_azure: false,
             tool_call_accumulator: ToolCallAccumulator::new(),
         }
     }
 
     /// Create with custom base URL (Azure Responses endpoint,
     /// OpenRouter passthrough, etc.).
+    ///
+    /// The constructor runs `is_azure_endpoint` over the URL and
+    /// caches the result so Azure Responses callers don't need to
+    /// manually switch on `store` semantics.
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
+        let url = base_url.into();
+        self.is_azure = Self::is_azure_endpoint(&url);
+        self.base_url = url;
         self
+    }
+
+    /// Return `true` when the URL points at an Azure Responses
+    /// deployment. Matches the well-known Azure suffixes plus the
+    /// standalone `cognitiveservices.azure.com` form:
+    ///
+    /// * `*.openai.azure.com`
+    /// * `*.openai.azure.us`
+    /// * `*.openai.azure.cn`
+    /// * `*.cognitiveservices.azure.com`
+    ///
+    /// Azure Responses requires `store: true` on every request (the
+    /// server-side state-vs-ephemeral contract is inverted for the
+    /// Azure deployment compared to OpenAI). We bake that into the
+    /// adapter rather than forcing every caller to know the
+    /// difference.
+    #[must_use]
+    pub fn is_azure_endpoint(url: &str) -> bool {
+        let lower = url.to_ascii_lowercase();
+        lower.contains(".openai.azure.com")
+            || lower.contains(".openai.azure.us")
+            || lower.contains(".openai.azure.cn")
+            || lower.contains("cognitiveservices.azure.com")
     }
 }
 
@@ -216,12 +253,34 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
 
         if let Some(tools) = tools {
             body["tools"] = json!(self.convert_tools(tools));
-            body["tool_choice"] = json!("auto");
-            // Parallel tool calls are the Responses API default
-            // (`true`). Most newer OpenAI models support this; we
-            // hard-code true for now and gate via options in a
-            // follow-up if a caller needs serial semantics.
-            body["parallel_tool_calls"] = json!(true);
+            body["tool_choice"] = json!(tool_choice_responses(&options.tool_choice));
+            // F26: gate parallel tool calls on the caller-supplied
+            // knob. When `None`, emit `true` (the pre-F26 wire
+            // shape, which is what every newer Responses model
+            // expects). When `Some(false)`, force serialized tool
+            // calling.
+            body["parallel_tool_calls"] = json!(options.parallel_tool_calls.unwrap_or(true));
+        }
+
+        // F26: service_tier — same wire shape as Chat Completions;
+        // suppress emission entirely when caller picks the default.
+        if let Some(tier) = options.service_tier.as_wire_str() {
+            body["service_tier"] = json!(tier);
+        }
+
+        // F26: safety_identifier — Responses-only. Suppresses
+        // emission when the caller leaves it None so we don't
+        // pollute the wire shape for callers that don't care.
+        if let Some(id) = options.safety_identifier.as_deref() {
+            body["safety_identifier"] = json!(id);
+        }
+
+        // F26: Azure Responses deployment requires `store: true`
+        // because Azure's state-keeping model is the opposite of
+        // OpenAI's. We detect the endpoint once at construction
+        // time so every request carries the field automatically.
+        if self.is_azure {
+            body["store"] = json!(true);
         }
 
         // F25: reasoning-effort knob. Maps to Responses API's
@@ -693,6 +752,23 @@ fn i64_to_u64(n: i64) -> u64 {
     }
 }
 
+/// F26: project `ToolChoice` onto Responses' wire shape. Shared
+/// with `tool_choice_openai` in the Chat Completions adapter —
+/// Responses normalizes function-calling under one `function` tool
+/// type, so the wire shape is identical to the Chat Completions
+/// `{type, function:{name}}` form.
+fn tool_choice_responses(choice: &ToolChoice) -> Value {
+    match choice {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::None => json!("none"),
+        ToolChoice::Required => json!("required"),
+        ToolChoice::Forced(name) => json!({
+            "type": "function",
+            "function": {"name": name},
+        }),
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct ResponsesUsage {
     #[serde(default)]
@@ -773,6 +849,7 @@ mod tests {
     use super::super::ApiAdapter;
     use super::*;
     use crate::common::types::message::{ContentBlock, MessageRole};
+    use crate::providers::traits::ServiceTier;
     use crate::providers::traits::{LlmMessage, ThinkingEffort};
 
     fn user_msg(text: &str) -> LlmMessage {
@@ -1393,6 +1470,215 @@ mod tests {
         assert_eq!(adapter.base_url(), "https://proxy.example/v1");
     }
 
+    // ---- F26: tool_choice / parallel / service_tier / safety_identifier / Azure -----
+
+    /// `ToolChoice::Required` emits the literal `"required"` on the
+    /// request body. Mirrors the Chat Completions adapter (the wire
+    /// shape is identical for both adapters).
+    #[test]
+    fn build_request_tool_choice_required_emits_string() {
+        let adapter = make_adapter();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = ChatOptions {
+            tool_choice: crate::providers::ToolChoice::Required,
+            ..options_default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-test", &[user_msg("hi")], Some(&tools), &options, false)
+            .unwrap();
+        assert_eq!(body["tool_choice"], "required");
+    }
+
+    /// `ToolChoice::Forced` emits the same `{type, function:{name}}`
+    /// shape that Chat Completions uses — Responses normalizes
+    /// function-calling under one tool type.
+    #[test]
+    fn build_request_tool_choice_forced_emits_function_shape() {
+        let adapter = make_adapter();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = ChatOptions {
+            tool_choice: crate::providers::ToolChoice::Forced("Read".to_string()),
+            ..options_default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-test", &[user_msg("hi")], Some(&tools), &options, false)
+            .unwrap();
+        assert_eq!(body["tool_choice"]["type"], "function");
+        assert_eq!(body["tool_choice"]["function"]["name"], "Read");
+    }
+
+    /// Default `ToolChoice::Auto` keeps the pre-F26 wire shape
+    /// (`"auto"` + `parallel_tool_calls: true`).
+    #[test]
+    fn build_request_default_tool_choice_emits_auto() {
+        let adapter = make_adapter();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let (_, body) = adapter
+            .build_request(
+                "gpt-test",
+                &[user_msg("hi")],
+                Some(&tools),
+                &options_default(),
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["parallel_tool_calls"], true);
+    }
+
+    /// `parallel_tool_calls: Some(false)` flips the Responses
+    /// `parallel_tool_calls` flag from `true` (the default) to
+    /// `false` so the server emits one tool call per turn.
+    #[test]
+    fn build_request_parallel_tool_calls_false_emits_false() {
+        let adapter = make_adapter();
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = ChatOptions {
+            parallel_tool_calls: Some(false),
+            ..options_default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-test", &[user_msg("hi")], Some(&tools), &options, false)
+            .unwrap();
+        assert_eq!(body["parallel_tool_calls"], false);
+    }
+
+    /// `ServiceTier::Flex` lands on the request body verbatim.
+    #[test]
+    fn build_request_service_tier_emits_when_set() {
+        let adapter = make_adapter();
+        let options = ChatOptions {
+            service_tier: ServiceTier::Flex,
+            ..options_default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-test", &[user_msg("hi")], None, &options, false)
+            .unwrap();
+        assert_eq!(body["service_tier"], "flex");
+
+        // None → suppress.
+        let (_, body) = adapter
+            .build_request(
+                "gpt-test",
+                &[user_msg("hi")],
+                None,
+                &options_default(),
+                false,
+            )
+            .unwrap();
+        assert!(body.get("service_tier").is_none());
+    }
+
+    /// `safety_identifier` lands on the request body when the
+    /// caller supplies it; suppressed otherwise.
+    #[test]
+    fn build_request_safety_identifier_emits_when_set() {
+        let adapter = make_adapter();
+        let options = ChatOptions {
+            safety_identifier: Some("user-hash-abc123".to_string()),
+            ..options_default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-test", &[user_msg("hi")], None, &options, false)
+            .unwrap();
+        assert_eq!(body["safety_identifier"], "user-hash-abc123");
+
+        // Default → no field.
+        let (_, body) = adapter
+            .build_request(
+                "gpt-test",
+                &[user_msg("hi")],
+                None,
+                &options_default(),
+                false,
+            )
+            .unwrap();
+        assert!(body.get("safety_identifier").is_none());
+    }
+
+    /// Azure endpoint detection recognizes the well-known Azure
+    /// suffixes (com / us / cn / cognitiveservices). Case-insensitive.
+    #[test]
+    fn is_azure_endpoint_recognizes_known_suffixes() {
+        assert!(OpenAiResponsesAdapter::is_azure_endpoint(
+            "https://my-resource.openai.azure.com"
+        ));
+        assert!(OpenAiResponsesAdapter::is_azure_endpoint(
+            "https://my-resource.openai.azure.us"
+        ));
+        assert!(OpenAiResponsesAdapter::is_azure_endpoint(
+            "https://my-resource.openai.azure.cn"
+        ));
+        assert!(OpenAiResponsesAdapter::is_azure_endpoint(
+            "https://my-resource.cognitiveservices.azure.com"
+        ));
+        // Case-insensitive
+        assert!(OpenAiResponsesAdapter::is_azure_endpoint(
+            "https://My-Resource.OpenAI.Azure.Com"
+        ));
+        // Negative cases
+        assert!(!OpenAiResponsesAdapter::is_azure_endpoint(
+            "https://api.openai.com/v1"
+        ));
+        assert!(!OpenAiResponsesAdapter::is_azure_endpoint(
+            "https://proxy.example/v1"
+        ));
+        // Belt-and-braces: substring matches without a leading dot
+        // shouldn't fire. Keeps the matcher shape honest.
+        assert!(!OpenAiResponsesAdapter::is_azure_endpoint(
+            "https://fraud-azure-openai.com"
+        ));
+    }
+
+    /// Azure Responses deployment emits `store: true` on every
+    /// request automatically, without the caller needing to set
+    /// any new field. OpenAI's Responses endpoint does NOT emit
+    /// `store` (the pre-F26 wire shape is preserved).
+    #[test]
+    fn build_request_azure_endpoint_emits_store_true() {
+        let azure_adapter =
+            OpenAiResponsesAdapter::new().with_base_url("https://my-resource.openai.azure.com");
+        let (_, body) = azure_adapter
+            .build_request(
+                "gpt-test",
+                &[user_msg("hi")],
+                None,
+                &options_default(),
+                false,
+            )
+            .unwrap();
+        assert_eq!(body["store"], true);
+
+        // OpenAI endpoint does NOT get the `store` field.
+        let openai_adapter = OpenAiResponsesAdapter::new();
+        let (_, body) = openai_adapter
+            .build_request(
+                "gpt-test",
+                &[user_msg("hi")],
+                None,
+                &options_default(),
+                false,
+            )
+            .unwrap();
+        assert!(body.get("store").is_none());
+    }
+
     // ---- helpers -------------------------------------------------------
 
     fn options_default() -> ChatOptions {
@@ -1409,6 +1695,13 @@ mod tests {
             thinking_effort: crate::providers::traits::ThinkingEffort::None,
             thinking_summary: None,
             encrypted_reasoning: false,
+            // F26: defaults that preserve the pre-F26 wire shape —
+            // `tool_choice: Auto` keeps `"auto"` literal; the rest
+            // suppress emission entirely.
+            tool_choice: crate::providers::ToolChoice::Auto,
+            parallel_tool_calls: None,
+            service_tier: ServiceTier::None,
+            safety_identifier: None,
         }
     }
 }
