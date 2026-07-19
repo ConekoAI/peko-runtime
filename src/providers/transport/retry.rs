@@ -116,7 +116,13 @@ impl RetryableError for anyhow::Error {
         // auth failures; it is intentionally NOT in `is_retryable()`
         // because the HTTP retry policy should not retry 401s — rotation
         // handles them at the provider layer.
-        for code in [401u16, 429, 500, 502, 503, 504, 408, 529] {
+        // 400 + 413 are recognized so the F22 eviction loop can detect
+        // `ContextWindowExceeded` (Anthropic 400 "prompt is too long",
+        // OpenAI 400 "context_length_exceeded", some Anthropic deployments
+        // surface 413 "request body too large"). They're also excluded from
+        // `is_retryable()` — recovery is a different mechanism (drop oldest
+        // and retry), not a network retry.
+        for code in [400u16, 401, 408, 413, 429, 500, 502, 503, 504, 529] {
             if msg.contains(&format!(" {code}"))
                 || msg.contains(&format!("HTTP error {code}"))
                 || msg.contains(&format!("status {code}"))

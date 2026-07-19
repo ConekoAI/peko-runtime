@@ -19,8 +19,8 @@ use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
 use crate::providers::{
-    ChatOptions, MessageRole, StackedMeteredProvider, StopReason, TokenUsage, ToolDefinition,
-    DEFAULT_MAX_OUTPUT_TOKENS,
+    synthetic_stream::synthesize_stream_from_blocking, ChatOptions, MessageRole,
+    StackedMeteredProvider, StopReason, TokenUsage, ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS,
 };
 use crate::quota::QuotaScope;
 use crate::session::Session;
@@ -903,43 +903,26 @@ impl AgenticLoop {
             // event; `chat_with_tools` charges once after the call.
             // Charge failures surface as `Err` stream items / call
             // errors — the existing error handling catches them.
-            let mut stream = if provider.supports_native_tools() {
-                info!(
-                    "Calling stream_with_tools with {} messages and {} tool definitions: {:?}",
-                    messages.len(),
-                    tool_defs.len(),
-                    tool_defs.iter().map(|d| &d.name).collect::<Vec<_>>()
-                );
-                for (i, def) in tool_defs.iter().enumerate() {
-                    info!(
-                        "Tool def [{}]: name={}, params={}",
-                        i, def.name, def.parameters
-                    );
+            //
+            // F22: if the provider returns `ContextWindowExceeded`, drop the
+            // oldest message(s) from the front (preserving tool-call/result pair
+            // boundaries) and retry. Bounded by `messages.len() > 1` (matches
+            // codex `compact.rs:286`); not by a retry budget — eviction doesn't
+            // consume the network-retry budget.
+            let mut stream = match self
+                .stream_with_eviction(&provider, &model_id, &messages, &tool_defs, &options)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!("Failed to start stream: {}", e);
+                    on_event(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Error,
+                        error: Some(e.to_string()),
+                    });
+                    return Err(e);
                 }
-                match provider
-                    .stream_with_tools(&model_id, &messages, &tool_defs, &options)
-                    .await
-                {
-                    Ok(s) => s,
-                    Err(e) => {
-                        debug!("Failed to start stream: {}", e);
-                        on_event(AgenticEvent::Lifecycle {
-                            run_id: run_id.clone(),
-                            phase: LifecyclePhase::Error,
-                            error: Some(e.to_string()),
-                        });
-                        return Err(e);
-                    }
-                }
-            } else {
-                warn!("Provider doesn't support streaming, synthesizing from blocking response");
-                let response = provider
-                    .chat_with_tools(&model_id, &messages, &tool_defs, &options)
-                    .await?;
-                crate::providers::synthetic_stream::synthesize_stream_from_blocking(
-                    response,
-                    provider.name(),
-                )
             };
 
             info!("Stream started, processing events...");
@@ -1453,6 +1436,85 @@ impl AgenticLoop {
             soft_cancel_pending: self.cancel.as_ref().is_some_and(|t| t.is_cancelled()),
             capability_diff,
             tool_definitions: tool_defs.to_vec(),
+        }
+    }
+
+    /// Open a provider stream with prefix-cache-aware eviction recovery.
+    ///
+    /// Calls `provider.stream_with_tools` (or `chat_with_tools` + synthesized
+    /// stream for non-native-streaming providers). If the call returns
+    /// `ContextWindowExceeded` and `messages.len() > 1`, drops the oldest
+    /// message(s) from the front — preserving tool-call/result pair boundaries
+    /// via [`crate::session::compaction::eviction::drop_oldest_respecting_pairs`]
+    /// — and retries. The loop is bounded by history size, not by a retry
+    /// budget (matches codex `compact.rs:286`).
+    ///
+    /// The provider is wrapped in `StackedMeteredProvider` (F19/F20), so each
+    /// retry re-charges quota. Charge failures from the metering wrapper still
+    /// surface as `Err` from the inner provider call and fall through to the
+    /// non-eviction branch.
+    async fn stream_with_eviction(
+        &self,
+        provider: &StackedMeteredProvider,
+        model_id: &str,
+        messages: &[LlmMessage],
+        tool_defs: &[ToolDefinition],
+        options: &ChatOptions,
+    ) -> Result<
+        std::pin::Pin<
+            Box<dyn futures::Stream<Item = Result<crate::providers::StreamEvent>> + Send>,
+        >,
+    > {
+        use crate::providers::transport::client::is_context_window_exceeded;
+        use crate::session::compaction::eviction::drop_oldest_respecting_pairs;
+
+        let native_streaming = provider.supports_native_tools();
+        let mut current: Vec<LlmMessage> = messages.to_vec();
+
+        loop {
+            let result = if native_streaming {
+                info!(
+                    "Calling stream_with_tools with {} messages and {} tool definitions",
+                    current.len(),
+                    tool_defs.len(),
+                );
+                provider
+                    .stream_with_tools(model_id, &current, tool_defs, options)
+                    .await
+            } else {
+                warn!(
+                    "Provider doesn't support streaming, synthesizing from blocking response ({} messages)",
+                    current.len()
+                );
+                match provider
+                    .chat_with_tools(model_id, &current, tool_defs, options)
+                    .await
+                {
+                    Ok(response) => Ok(synthesize_stream_from_blocking(response, provider.name())),
+                    Err(e) => Err(e),
+                }
+            };
+
+            match result {
+                Ok(stream) => return Ok(stream),
+                Err(e) if is_context_window_exceeded(&e) && current.len() > 1 => {
+                    let before = current.len();
+                    let dropped = drop_oldest_respecting_pairs(&mut current);
+                    if dropped == 0 {
+                        // Nothing left to drop (shouldn't happen given the
+                        // guard, but fail closed rather than spin).
+                        return Err(e);
+                    }
+                    warn!(
+                        "ContextWindowExceeded: dropped {} message(s) from front ({} -> {})",
+                        dropped,
+                        before,
+                        current.len()
+                    );
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
 
