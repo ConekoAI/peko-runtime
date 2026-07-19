@@ -27,6 +27,7 @@
 //! those models. Add a unit test asserting the template is findable.
 
 use crate::providers::catalog::ApiFormat;
+use crate::providers::traits::ProviderCompat;
 
 /// One model declared by a provider template.
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +61,14 @@ pub struct ProviderTemplate {
     pub default_model: &'static str,
     /// Optional extra HTTP headers.
     pub headers: &'static [(&'static str, &'static str)],
+    /// F29: per-provider adapter hints. `None` keeps the F25 / F26 /
+    /// F27 defaults (OpenAI `reasoning_effort`, Anthropic `thinking:
+    /// {type, budget_tokens}`, Responses `reasoning: {effort,
+    /// summary}`). When set, the OpenAiCompatibleAdapter projects
+    /// `ChatOptions::thinking_effort` onto the wire shape named by
+    /// `compat.thinking_format` (DeepSeek / Kimi / OpenRouter /
+    /// Together / Qwen / Zai).
+    pub compat: Option<ProviderCompat>,
 }
 
 /// Built-in provider templates. Add new templates at the end; never
@@ -95,6 +104,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         ],
         default_model: "gpt-4o-mini",
         headers: &[],
+        compat: None,
     },
     // ── Native Anthropic ──────────────────────────────────────────────
     ProviderTemplate {
@@ -125,6 +135,10 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         ],
         default_model: "claude-sonnet-4-5",
         headers: &[],
+        compat: Some(ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::Anthropic,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+        }),
     },
     // ── OpenAI-compatible providers (alphabetical) ────────────────────
     ProviderTemplate {
@@ -141,6 +155,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         }],
         default_model: "gpt-4",
         headers: &[],
+        compat: None,
     },
     ProviderTemplate {
         id: "cohere",
@@ -156,6 +171,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         }],
         default_model: "command-r-plus",
         headers: &[],
+        compat: None,
     },
     ProviderTemplate {
         id: "deepseek",
@@ -179,6 +195,17 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         ],
         default_model: "deepseek-chat",
         headers: &[],
+        // F29: DeepSeek-R1 distinguishes itself with explicit
+        // `thinking: {type: "enabled"}` rather than the OpenAI
+        // `reasoning_effort` shorthand. The Adapter projects
+        // `thinking_effort` onto both `thinking` AND
+        // `reasoning_effort` fields when compat kind is DeepSeek,
+        // so callers get the same effort string as OpenAI plus the
+        // DeepSeek-specific `type: "enabled"` marker.
+        compat: Some(ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::DeepSeek,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+        }),
     },
     ProviderTemplate {
         id: "fireworks",
@@ -194,6 +221,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         }],
         default_model: "accounts/fireworks/models/llama-v3p1-70b-instruct",
         headers: &[],
+        compat: None,
     },
     ProviderTemplate {
         id: "groq",
@@ -217,6 +245,15 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         ],
         default_model: "llama-3.3-70b-versatile",
         headers: &[],
+        // F29: Groq honours OpenAI's `reasoning_effort` namespace
+        // for o-series models routed through Groq. The compat
+        // annotation is here for clarity so the resolver binds it
+        // to `ThinkingFormat::OpenAi` instead of relying on the
+        // fallback (which is the same value).
+        compat: Some(ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::OpenAi,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+        }),
     },
     ProviderTemplate {
         id: "moonshot",
@@ -232,6 +269,18 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         }],
         default_model: "kimi-k2.5",
         headers: &[],
+        // F29: Moonshot's `https://api.moonshot.cn/v1` endpoint is a
+        // Chat-Completions-compatible surface that exposes Kimi's
+        // `reasoning_content` block via the OpenAI-extended
+        // `reasoning_effort` knob. Wire shape is identical to OpenAI
+        // so we tag compat as `OpenAi`; the `Kimi` variant is
+        // reserved for the Anthropic-compat endpoint
+        // (`https://api.kimi.com/coding`) which uses a different
+        // `extra_body.thinking` shape.
+        compat: Some(ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::OpenAi,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+        }),
     },
     ProviderTemplate {
         id: "ollama",
@@ -255,6 +304,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         ],
         default_model: "llama3.1",
         headers: &[],
+        compat: None,
     },
     ProviderTemplate {
         id: "openrouter",
@@ -278,6 +328,16 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         ],
         default_model: "openai/gpt-4o-mini",
         headers: &[],
+        // F29: OpenRouter has its own `reasoning: {effort}` shape
+        // (max = "high"). Wire emission for this variant lands in
+        // F30+ (the per-compat reasoning helper). Today's compat
+        // annotation lets the resolver bind the namespace so the
+        // follow-up PR's emit does not silently fall back to OpenAI
+        // and surprise users.
+        compat: Some(ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::OpenRouter,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+        }),
     },
     ProviderTemplate {
         id: "perplexity",
@@ -293,6 +353,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         }],
         default_model: "llama-3.1-sonar-large-128k-online",
         headers: &[],
+        compat: None,
     },
     ProviderTemplate {
         id: "together",
@@ -308,6 +369,13 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         }],
         default_model: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
         headers: &[],
+        // F29: Together's `reasoning: {enabled}` toggle. Wire
+        // emission for this variant is documented in the plan;
+        // defer concrete emit to F30+.
+        compat: Some(ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::Together,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+        }),
     },
     ProviderTemplate {
         id: "xai",
@@ -331,6 +399,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         ],
         default_model: "grok-2",
         headers: &[],
+        compat: None,
     },
     // ── Anthropic-compatible providers ───────────────────────────────
     ProviderTemplate {
@@ -347,6 +416,18 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         }],
         default_model: "kimi-for-coding",
         headers: &[],
+        // F29: Kimi Code's Anthropic-compat surface uses
+        // `extra_body.thinking = {type, effort, keep}` for
+        // reasoning — distinct from Anthropic's native
+        // `thinking: {type, budget_tokens}`. The
+        // `DeferredToolsMode::Kimi` annotation tells the engine
+        // loop's accumulator to wait for `Done { stop_reason:
+        // ToolUse }` before surfacing tool calls. Wire emission for
+        // this variant lands in F30+.
+        compat: Some(ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::Kimi,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Kimi,
+        }),
     },
     ProviderTemplate {
         id: "minimax",
@@ -362,6 +443,72 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         }],
         default_model: "MiniMax-M3",
         headers: &[],
+        compat: Some(ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::Anthropic,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+        }),
+    },
+    // F29 new templates: zai + qwen
+    ProviderTemplate {
+        id: "zai",
+        display_name: "Z.ai",
+        api_format: ApiFormat::AnthropicMessages,
+        base_url: "https://api.z.ai/api/anthropic",
+        requires_key: true,
+        models: &[
+            ModelTemplate {
+                id: "glm-4.6",
+                display_name: Some("GLM-4.6"),
+                context_length: Some(200_000),
+                max_output_tokens: None,
+            },
+            ModelTemplate {
+                id: "glm-4.5",
+                display_name: Some("GLM-4.5"),
+                context_length: Some(128_000),
+                max_output_tokens: None,
+            },
+        ],
+        default_model: "glm-4.6",
+        headers: &[],
+        // F29: Zai uses `thinking: {type, clear_thinking}` —
+        // Anthropic-compat with `clear_thinking: "20251015"`. Wire
+        // emission deferred to F30+; the compat binding is here so
+        // the resolver returns `Zai` instead of `Anthropic`.
+        compat: Some(ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::Zai,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+        }),
+    },
+    ProviderTemplate {
+        id: "qwen",
+        display_name: "Qwen (DashScope)",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        requires_key: true,
+        models: &[
+            ModelTemplate {
+                id: "qwen-plus",
+                display_name: Some("Qwen Plus"),
+                context_length: Some(128_000),
+                max_output_tokens: None,
+            },
+            ModelTemplate {
+                id: "qwen-turbo",
+                display_name: Some("Qwen Turbo"),
+                context_length: Some(128_000),
+                max_output_tokens: None,
+            },
+        ],
+        default_model: "qwen-plus",
+        headers: &[],
+        // F29: Qwen (DashScope) accepts
+        // `extra_body.enable_thinking: bool`. Toggle only — no
+        // effort levels. Wire emission deferred to F30+.
+        compat: Some(ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::Qwen,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+        }),
     },
 ];
 
@@ -426,5 +573,126 @@ mod tests {
         assert!(find_template("ANTHROPIC").is_some());
         assert!(find_template("anthropic").is_some());
         assert!(find_template("nope").is_none());
+    }
+
+    // F29: per-template compat annotation sanity-checks. Each
+    // specialty provider should land the expected ThinkingFormat +
+    // DeferredToolsMode pairing so the resolver binds to the right
+    // emit path. Generic providers (openai/azure/cohere/etc.) carry
+    // `compat: None` and fall through to the adapter's built-in
+    // defaults — verified separately in `resolver_compact_resolves_to_none`.
+    fn compat_of(id: &str) -> Option<ProviderCompat> {
+        find_template(id).and_then(|t| t.compat)
+    }
+
+    #[test]
+    fn f29_deepseek_carries_deepseek_thinking_format() {
+        let c = compat_of("deepseek").expect("deepseek template has compat");
+        assert_eq!(
+            c.thinking_format,
+            crate::providers::traits::ThinkingFormat::DeepSeek
+        );
+        assert_eq!(
+            c.deferred_tools_mode,
+            crate::providers::traits::DeferredToolsMode::Off
+        );
+    }
+
+    #[test]
+    fn f29_moonshot_carries_openai_thinking_format() {
+        // Moonshot's `https://api.moonshot.cn/v1` is a chat-completions
+        // surface — same `reasoning_effort` field as OpenAI.
+        let c = compat_of("moonshot").expect("moonshot template has compat");
+        assert_eq!(
+            c.thinking_format,
+            crate::providers::traits::ThinkingFormat::OpenAi
+        );
+    }
+
+    #[test]
+    fn f29_kimi_anthropic_compat_carries_kimi_thinking_format_and_deferred_tools() {
+        let c = compat_of("kimi").expect("kimi template has compat");
+        assert_eq!(
+            c.thinking_format,
+            crate::providers::traits::ThinkingFormat::Kimi
+        );
+        assert_eq!(
+            c.deferred_tools_mode,
+            crate::providers::traits::DeferredToolsMode::Kimi
+        );
+    }
+
+    #[test]
+    fn f29_openrouter_and_together_have_distinct_thinking_formats() {
+        let or = compat_of("openrouter").expect("openrouter compat");
+        let tg = compat_of("together").expect("together compat");
+        assert_eq!(
+            or.thinking_format,
+            crate::providers::traits::ThinkingFormat::OpenRouter
+        );
+        assert_eq!(
+            tg.thinking_format,
+            crate::providers::traits::ThinkingFormat::Together
+        );
+    }
+
+    #[test]
+    fn f29_new_zai_and_qwen_templates_exist_with_distinct_formats() {
+        let z = compat_of("zai").expect("zai template registered");
+        let q = compat_of("qwen").expect("qwen template registered");
+        assert_eq!(
+            z.thinking_format,
+            crate::providers::traits::ThinkingFormat::Zai
+        );
+        assert_eq!(
+            q.thinking_format,
+            crate::providers::traits::ThinkingFormat::Qwen
+        );
+        // Both flavours have non-Kimi deferred-tools behaviour.
+        assert_eq!(
+            z.deferred_tools_mode,
+            crate::providers::traits::DeferredToolsMode::Off
+        );
+        assert_eq!(
+            q.deferred_tools_mode,
+            crate::providers::traits::DeferredToolsMode::Off
+        );
+    }
+
+    #[test]
+    fn f29_anthropic_compat_clones_have_distinct_thinking_format_from_kimi() {
+        // Anthropic, MiniMax, and Zai all speak Anthropic messages —
+        // but each carries a distinct ThinkingFormat that influences
+        // the per-adapter emit path. Pin the distinction so a future
+        // refactor can't accidentally collapse them.
+        let anthropic = compat_of("anthropic").expect("anthropic compat");
+        let zai = compat_of("zai").expect("zai compat");
+        assert_eq!(
+            anthropic.thinking_format,
+            crate::providers::traits::ThinkingFormat::Anthropic
+        );
+        assert_ne!(anthropic.thinking_format, zai.thinking_format);
+    }
+
+    #[test]
+    fn f29_generic_providers_carry_no_compat_annotation() {
+        // openai, azure-openai, cohere, fireworks, ollama, perplexity,
+        // xai — vanilla Chat-Completions providers without specialty
+        // reasoning knobs. Their compat is `None` so the resolver
+        // returns the adapter's built-in defaults.
+        for id in [
+            "openai",
+            "azure-openai",
+            "cohere",
+            "fireworks",
+            "ollama",
+            "perplexity",
+            "xai",
+        ] {
+            assert!(
+                compat_of(id).is_none(),
+                "template '{id}' unexpectedly carries a compat annotation"
+            );
+        }
     }
 }

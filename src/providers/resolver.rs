@@ -140,6 +140,7 @@ impl LlmResolver {
             enabled: true,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            compat: None,
         };
         catalog.upsert(config).await.expect("mock upsert failed");
 
@@ -661,5 +662,103 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(choice.config.id, "anthropic-sonnet");
+    }
+
+    // F29: compat-resolution regression pins. The templates seed
+    // compat annotations on the specialty providers; `from_template`
+    // must thread them through so the resolver-bound `ModelConfig`
+    // carries the same hints. Pre-F29 callers had no `compat` field
+    // and were unaffected — these pins fix the new shape.
+
+    fn deepseek_config() -> ModelConfig {
+        ModelConfig::from_template(
+            templates::find_template("deepseek").unwrap(),
+            "deepseek-chat-v3",
+            "deepseek-chat",
+        )
+    }
+
+    fn kimi_anthropic_config() -> ModelConfig {
+        ModelConfig::from_template(
+            templates::find_template("kimi").unwrap(),
+            "kimi-coding",
+            "kimi-for-coding",
+        )
+    }
+
+    #[test]
+    fn f29_from_template_threads_deepseek_compat() {
+        let cfg = deepseek_config();
+        let compat = cfg
+            .compat
+            .expect("deepseek template compat propagated into ModelConfig");
+        assert_eq!(
+            compat.thinking_format,
+            crate::providers::traits::ThinkingFormat::DeepSeek
+        );
+        assert_eq!(
+            compat.deferred_tools_mode,
+            crate::providers::traits::DeferredToolsMode::Off
+        );
+    }
+
+    #[test]
+    fn f29_from_template_threads_kimi_compat_with_deferred_tools() {
+        let cfg = kimi_anthropic_config();
+        let compat = cfg
+            .compat
+            .expect("kimi Anthropic-compat template compat propagated");
+        assert_eq!(
+            compat.thinking_format,
+            crate::providers::traits::ThinkingFormat::Kimi
+        );
+        assert_eq!(
+            compat.deferred_tools_mode,
+            crate::providers::traits::DeferredToolsMode::Kimi
+        );
+    }
+
+    #[test]
+    fn f29_from_template_threads_none_compat_for_generic_providers() {
+        // OpenAI ships no compat annotation — the resolver returns
+        // `None` and the adapter falls back to F25's defaults.
+        let cfg = openai_config();
+        assert!(cfg.compat.is_none());
+    }
+
+    #[tokio::test]
+    async fn f29_resolved_choice_carries_compat_through_resolve() {
+        let (_d, cat) = tempdir_catalog().await;
+        cat.upsert(deepseek_config()).await.unwrap();
+        cat.upsert(kimi_anthropic_config()).await.unwrap();
+        let r = resolver(cat);
+        let ds = r
+            .resolve(ResolveRequest {
+                override_model: Some("deepseek-chat-v3"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            ds.config
+                .compat
+                .expect("deepseek compat survives resolve")
+                .thinking_format,
+            crate::providers::traits::ThinkingFormat::DeepSeek
+        );
+        let kimi = r
+            .resolve(ResolveRequest {
+                override_model: Some("kimi-coding"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            kimi.config
+                .compat
+                .expect("kimi compat survives resolve")
+                .deferred_tools_mode,
+            crate::providers::traits::DeferredToolsMode::Kimi
+        );
     }
 }

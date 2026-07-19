@@ -2536,6 +2536,7 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
                 enabled: true,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
+                compat: None,
             }
         } else {
             // Bare-invocation guard. The handler also short-circuits

@@ -194,6 +194,84 @@ pub enum ThinkingEffort {
     Adaptive,
 }
 
+/// Per-provider thinking-reasoning wire shape (F29).
+///
+/// Each variant maps `ChatOptions::thinking_effort` (F25) onto the
+/// provider-native field the adapter emits on the request body.
+/// `OpenAi`, `Anthropic`, and `OpenAiResponses` mirror the F25
+/// adapter defaults — they are listed here so a single
+/// `ProviderCompat` annotation can drive per-adapter emit even for
+/// providers that already work today.
+///
+/// The specialty variants cover providers whose `extra_body.thinking`
+/// shape is documented but unique (DeepSeek, Kimi, Qwen, Zai) plus
+/// OpenRouter / Together whose reasoning namespace differs from
+/// canonical OpenAI's. Wire shapes:
+///
+/// | Variant           | Wire field                                         |
+/// |-------------------|----------------------------------------------------|
+/// | `OpenAi`          | `body["reasoning_effort"] = "low\|medium\|high"`    |
+/// | `Anthropic`       | `thinking: {type, budget_tokens}` (budget) or     |
+/// |                   | `thinking: {type:"adaptive"}` + `output_config`    |
+/// |                   | (adaptive on Opus 4-6+ / Sonnet 5 / Fable 5+)      |
+/// | `OpenAiResponses` | `body["reasoning"] = {effort, summary}` +          |
+/// |                   | `include: ["reasoning.encrypted_content"]`         |
+/// | `Kimi`            | `extra_body.thinking = {type, effort, keep}` on    |
+/// |                   | the Anthropic-shaped wire (kimi-code `anthropic.ts:392-462`) |
+/// | `DeepSeek`        | `extra_body.thinking = {type:"enabled"}` +          |
+/// |                   | canonical `reasoning_effort`                       |
+/// | `Qwen`            | `extra_body.enable_thinking = bool` (toggle only)  |
+/// | `Zai`             | `thinking: {type, clear_thinking}` — Anthropic-    |
+/// |                   | compat; `clear_thinking: "20251015"` matches the   |
+/// |                   | Anthropic `clear_thinking_20251015` pattern (F27)  |
+/// | `OpenRouter`      | `reasoning: {effort: "low\|medium\|high"}`         |
+/// | `Together`        | `reasoning: {enabled: bool}` (no effort levels)    |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ThinkingFormat {
+    OpenAi,
+    Anthropic,
+    OpenAiResponses,
+    Kimi,
+    DeepSeek,
+    Qwen,
+    Zai,
+    OpenRouter,
+    Together,
+}
+
+/// Per-provider tool-deferral policy (F29).
+///
+/// Some OpenAI-compatible providers delay-emitting tool calls until
+/// the model's reasoning block closes (Kimi notably). The engine
+/// loop's tool-call accumulator respects this via
+/// `ProviderCompat::deferred_tools_mode`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DeferredToolsMode {
+    /// Fire tool calls as soon as the adapter surfaces them.
+    #[default]
+    Off,
+    /// Kimi-specific deferral: `tool_call_id` and `arguments` may
+    /// only land AFTER the trailing `reasoning` block closes. The
+    /// accumulator should not surface a `ContentBlock::ToolCall`
+    /// until `Done { stop_reason: ToolUse }` arrives.
+    Kimi,
+}
+
+/// Per-provider adapter hints (F29).
+///
+/// `ModelConfig::compat: Option<ProviderCompat>` carries the hints
+/// resolved from the template at catalog construction time;
+/// `ChatOptions::compat_override` lets callers override per-call.
+/// Both default to `None` so pre-F29 wire shapes (OpenAI
+/// `reasoning_effort`, Anthropic `thinking: {type, budget_tokens}`)
+/// stay unaffected — adapters fall back to their F25 built-in
+/// defaults when compat is unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCompat {
+    pub thinking_format: ThinkingFormat,
+    pub deferred_tools_mode: DeferredToolsMode,
+}
+
 impl ThinkingEffort {
     /// True when the caller asked for any reasoning field on the wire.
     /// `None` is the only "off" variant — every other value triggers
@@ -429,6 +507,17 @@ pub struct ChatOptions {
     /// `context-management-2025-06-27` beta header. Other adapters
     /// ignore the field.
     pub thinking_keep: ThinkingKeep,
+    /// F29: per-call override for the catalog-level
+    /// `ModelConfig.compat` annotation. Resolved by the engine loop
+    /// from a model id + cache, then plumbed in here per request.
+    /// `None` (the default) means "use the model's catalog compat,
+    /// falling back to the adapter's built-in F25 default". When
+    /// the field is `Some`, the adapter projects
+    /// `ChatOptions::thinking_effort` onto the wire shape named by
+    /// `compat.thinking_format` (DeepSeek / Kimi / OpenRouter /
+    /// Together / Qwen / Zai). Pre-F29 callers (compat_override =
+    /// `None`) keep the F25 default wire shape byte-for-byte.
+    pub compat_override: Option<ProviderCompat>,
 }
 
 /// Response from chat completion
