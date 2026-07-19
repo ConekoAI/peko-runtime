@@ -416,7 +416,9 @@ async fn process_compaction_request_with_config(
     // Check if compaction is actually needed.
     // The caller is responsible for passing the correct context_window to
     // should_request(). Here we just verify the message list is long enough.
-    let _estimated_tokens = Compactor::estimate_tokens(&request.messages);
+    // (F21 removed the dead `let _estimated_tokens = Compactor::estimate_tokens(...)`
+    // line that was here — the variable was computed and never read; the
+    // real trigger gating is `should_request` upstream.)
     if request.messages.len() < 4 {
         let _ = request.response_tx.send(CompactionResponse::NotNeeded);
         return Ok(());

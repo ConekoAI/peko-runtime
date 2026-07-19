@@ -156,6 +156,29 @@ pub struct LlmMessage {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Provider-reported token usage for this assistant turn. Populated on
+    /// assistant messages by the engine loop and by `SessionMessage::to_llm_message`
+    /// for replay from session storage. The compactor's
+    /// `estimate_context_tokens` walks backward to find the most recent
+    /// assistant message with `usage.is_some()` and anchors its size estimate
+    /// there, char/4-estimating only the trailing slice. Pre-F21 JSONL files
+    /// don't carry this field; `#[serde(default)]` deserialises them as `None`
+    /// so old session state keeps loading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
+}
+
+impl Default for LlmMessage {
+    fn default() -> Self {
+        Self {
+            role: MessageRole::User,
+            content: Vec::new(),
+            timestamp: Utc::now(),
+            metadata: HashMap::new(),
+            tool_call_id: None,
+            usage: None,
+        }
+    }
 }
 
 impl LlmMessage {
@@ -167,6 +190,7 @@ impl LlmMessage {
             timestamp: Utc::now(),
             metadata: HashMap::new(),
             tool_call_id: None,
+            usage: None,
         }
     }
 
@@ -205,6 +229,7 @@ impl LlmMessage {
             timestamp: Utc::now(),
             metadata: HashMap::new(),
             tool_call_id: Some(tool_call_id_str),
+            usage: None,
         }
     }
 
@@ -217,6 +242,21 @@ impl LlmMessage {
     /// Set the tool call ID
     pub fn with_tool_call_id(mut self, tool_call_id: impl Into<String>) -> Self {
         self.tool_call_id = Some(tool_call_id.into());
+        self
+    }
+
+    /// Attach provider-reported token usage to this message.
+    ///
+    /// Only assistant turns carry usage today (user / system / tool
+    /// messages always serialize with `usage: None`). Used by the
+    /// engine loop at assistant-message construction so the
+    /// compactor's `estimate_context_tokens` can anchor on real
+    /// provider-reported token counts instead of falling back to
+    /// chars/4. Accepts `Option<TokenUsage>` so callers can write
+    /// `.with_usage(iteration_usage.clone())` directly — passing
+    /// `None` is equivalent to leaving the field unset.
+    pub fn with_usage(mut self, usage: impl Into<Option<TokenUsage>>) -> Self {
+        self.usage = usage.into();
         self
     }
 }
@@ -794,6 +834,51 @@ mod tests {
         assert!(!obj.contains_key("cache_creation_input_tokens"));
         assert!(!obj.contains_key("cache_read_input_tokens"));
         assert!(!obj.contains_key("reasoning_output_tokens"));
+    }
+
+    /// F21: round-trip an `LlmMessage` with `usage` populated. The
+    /// `usage` field is what lets `estimate_context_tokens` anchor on
+    /// real provider-reported token counts — without persistence
+    /// working, session reloads would always fall back to chars/4.
+    #[test]
+    fn test_llm_message_usage_roundtrip() {
+        let usage = TokenUsage {
+            input: 1200,
+            output: 600,
+            total: 1800,
+            cache_read_input_tokens: Some(4096),
+            ..Default::default()
+        };
+        let msg = LlmMessage::assistant("hello").with_usage(usage.clone());
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["usage"]["input"], 1200);
+        assert_eq!(json["usage"]["cache_read_input_tokens"], 4096);
+        let parsed: LlmMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.usage, Some(usage));
+    }
+
+    /// F21: back-compat — JSON without `usage` deserialises to `None`
+    /// so pre-F21 session JSONL files keep loading.
+    #[test]
+    fn test_llm_message_usage_absent_is_none_on_deserialize() {
+        let legacy = serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            "timestamp": "2026-01-01T00:00:00Z",
+            "metadata": {}
+        });
+        let msg: LlmMessage = serde_json::from_value(legacy).unwrap();
+        assert_eq!(msg.usage, None);
+    }
+
+    /// F21: `skip_serializing_if = "Option::is_none"` keeps the JSONL
+    /// shape identical to pre-F21 when no usage is attached.
+    #[test]
+    fn test_llm_message_usage_serialisation_skips_when_none() {
+        let msg = LlmMessage::assistant("hi");
+        let json = serde_json::to_value(&msg).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("usage"));
     }
 
     #[test]

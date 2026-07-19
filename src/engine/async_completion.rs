@@ -88,6 +88,7 @@ pub(crate) fn build_async_completion_message(
         timestamp: Utc::now(),
         metadata: HashMap::new(),
         tool_call_id: None,
+        usage: None,
     })
 }
 

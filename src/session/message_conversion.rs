@@ -66,6 +66,7 @@ pub(crate) fn normalized_entry_to_llm_message(entry: &NormalizedEntry) -> Option
             timestamp: chrono::Utc::now(),
             metadata: std::collections::HashMap::new(),
             tool_call_id: Some(tool_call_id.clone()),
+            usage: None,
         }),
         // Session header, compaction, model change, custom — not chat messages
         _ => None,

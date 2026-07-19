@@ -218,13 +218,24 @@ pub struct ContextUsageEstimate {
 /// Find the last assistant message with usage data.
 /// Returns `(usage, index)` if found.
 ///
-/// TODO: Wire this up when LlmMessage carries usage metadata from provider responses.
-/// For now, always returns None, causing fallback to heuristic estimation.
-#[allow(dead_code)]
+/// Walks the slice backward so we get the *most recent* anchor — the
+/// `estimate_context_tokens` estimator only needs one to bound its
+/// char/4 fallback to the trailing slice since the last real report.
+/// F21 wires `LlmMessage.usage` from `RoleMetadata::Assistant::usage`
+/// (via `SessionMessage::to_llm_message`) and from the engine loop's
+/// `iteration_usage.clone()` at assistant-message construction, so
+/// every assistant turn produced by the current process contributes
+/// an anchor. Pre-F21 JSONL files have `usage: None` everywhere and
+/// fall back to the heuristic — no migration needed.
 fn find_last_assistant_usage(
-    _messages: &[LlmMessage],
+    messages: &[LlmMessage],
 ) -> Option<(crate::providers::TokenUsage, usize)> {
-    None
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, m)| m.role == MessageRole::Assistant && m.usage.is_some())
+        .map(|(i, m)| (m.usage.clone().unwrap(), i))
 }
 
 /// Result of a compaction operation
@@ -609,6 +620,7 @@ impl Compactor {
             timestamp: chrono::Utc::now(),
             metadata: std::collections::HashMap::new(),
             tool_call_id: None,
+            usage: None,
         };
 
         // Build compacted message list: Initial system prompt + New Summary + Recent conversation
@@ -688,7 +700,7 @@ mod tests {
     use crate::providers::adapters::AnyAdapter;
     use crate::providers::core::ProviderRuntimeOptions;
     use crate::providers::mock::MockAdapter;
-    use crate::providers::Provider;
+    use crate::providers::{Provider, TokenUsage};
 
     fn create_test_messages(count: usize) -> Vec<LlmMessage> {
         let mut messages = vec![];
@@ -798,10 +810,86 @@ mod tests {
         let messages = create_test_messages(5);
         let estimate = Compactor::estimate_context_tokens(&messages);
 
-        // Since find_last_assistant_usage returns None, this should fallback
+        // No usage attached on any assistant message → fallback to
+        // chars/4 across the full conversation. Mirrors pre-F21
+        // behaviour for JSONL without usage data.
         assert_eq!(estimate.usage_tokens, 0);
         assert_eq!(estimate.trailing_tokens, estimate.tokens);
         assert!(estimate.last_usage_index.is_none());
+    }
+
+    /// F21: walks backward through `messages` and returns the *last*
+    /// assistant message with `usage.is_some()`. Without the backward
+    /// walk, every assistant anchor would shift every time a new turn
+    /// arrives, and the estimator would never converge on a single
+    /// anchor between compactions.
+    #[test]
+    fn test_find_last_assistant_usage_returns_last_assistant_with_usage() {
+        let first = TokenUsage {
+            input: 100,
+            output: 50,
+            total: 150,
+            ..Default::default()
+        };
+        let second = TokenUsage {
+            input: 200,
+            output: 80,
+            total: 280,
+            ..Default::default()
+        };
+        let messages = vec![
+            LlmMessage::user("hi"),
+            LlmMessage::assistant("first").with_usage(first.clone()),
+            LlmMessage::user("next"),
+            LlmMessage::assistant("second").with_usage(second.clone()),
+        ];
+        let (usage, idx) = find_last_assistant_usage(&messages).unwrap();
+        assert_eq!(usage, second);
+        assert_eq!(idx, 3);
+    }
+
+    /// F21: skips assistants with `usage: None`. If no assistant has
+    /// usage, returns `None` so `estimate_context_tokens` falls back
+    /// to chars/4 (this is the pre-F21 behaviour for old session JSONL).
+    #[test]
+    fn test_find_last_assistant_usage_skips_assistants_without_usage() {
+        let messages = vec![
+            LlmMessage::user("hi"),
+            LlmMessage::assistant("no usage here"), // usage: None
+            LlmMessage::user("next"),
+        ];
+        assert!(find_last_assistant_usage(&messages).is_none());
+    }
+
+    /// F21: when an anchor exists, the hybrid estimator returns
+    /// `usage_tokens == usage.input + usage.output` (the exact
+    /// provider-reported count) plus a char/4 estimate for the
+    /// trailing slice after the anchor. `last_usage_index` points at
+    /// the anchor message.
+    #[test]
+    fn test_estimate_context_tokens_uses_real_anchor_when_present() {
+        let anchor_usage = TokenUsage {
+            input: 1000,
+            output: 500,
+            total: 1500,
+            ..Default::default()
+        };
+        let mut messages = vec![
+            LlmMessage::system("You are a helpful assistant."),
+            LlmMessage::user("First question"),
+            LlmMessage::assistant("First answer").with_usage(anchor_usage.clone()),
+            // Trailing slice — two more messages that didn't report
+            // usage (e.g. resumed session, or usage dropped on the
+            // floor). Char/4 estimates these.
+            LlmMessage::user("Second question"),
+            LlmMessage::assistant("Second answer — somewhat longer response"),
+        ];
+        let estimate = Compactor::estimate_context_tokens(&messages);
+        assert_eq!(estimate.usage_tokens, 1500);
+        assert!(estimate.trailing_tokens > 0);
+        // tokens = usage_tokens + trailing_tokens
+        assert_eq!(estimate.tokens, 1500 + estimate.trailing_tokens);
+        assert_eq!(estimate.last_usage_index, Some(2));
     }
 
     #[test]

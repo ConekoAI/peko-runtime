@@ -459,6 +459,7 @@ impl Session {
                     timestamp: Utc::now(),
                     metadata: std::collections::HashMap::new(),
                     tool_call_id: None,
+                    usage: None,
                 },
                 message_id: msg_id.clone(),
                 role_metadata: crate::session::message::RoleMetadata::User {

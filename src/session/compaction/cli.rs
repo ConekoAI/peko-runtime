@@ -138,6 +138,7 @@ impl SessionCompactor {
             timestamp: chrono::Utc::now(),
             metadata: std::collections::HashMap::new(),
             tool_call_id: None,
+            usage: None,
         };
 
         let mut compacted = initial_system;
