@@ -34,6 +34,14 @@ pub struct Agent {
     /// `Option` shape is preserved for unit tests that don't wire
     /// a resolver and run pure-Rust agentic-loop tests offline.
     provider: Option<Arc<crate::providers::Provider>>,
+    /// Catalog id picked by `LlmResolver::build` for this session.
+    ///
+    /// Captured from `ResolvedChoice::model_id` at construction time
+    /// so the renderer can surface the actual model in `{{runtime}}`'s
+    /// `Model:` line. `None` ⇒ the agent was constructed without a
+    /// resolver (test path) and the loop falls back to
+    /// `provider.model_id()`.
+    resolved_model_id: Option<String>,
     /// Optional resolver (v3+). When present, `init_provider` builds
     /// a one-shot `Provider` per session via the catalog + secret
     /// store, applying the agent's `preferred_*` hints.
@@ -117,6 +125,7 @@ impl Clone for Agent {
                 keypair: None, // Don't clone keypair for security
             },
             provider: self.provider.clone(),
+            resolved_model_id: self.resolved_model_id.clone(),
             llm_resolver: self.llm_resolver.clone(),
             session_manager: Arc::clone(&self.session_manager),
             subagent_executor: Arc::clone(&self.subagent_executor),
@@ -511,13 +520,17 @@ impl Agent {
         // non-principal callers. `message_override` is the per-message
         // `peko send --model <id>` override; `None` preserves the
         // principal-config chain.
-        let provider = Self::init_provider(
+        let (provider, resolved_model_id) = match Self::init_provider(
             &config,
             llm_resolver.as_ref(),
             provider_hint,
             message_override,
         )
-        .await?;
+        .await?
+        {
+            Some((p, id)) => (Some(p), Some(id)),
+            None => (None, None),
+        };
 
         // Single global ExtensionCore — every agent of the principal
         // shares it. `principal_id` is the spawning principal's
@@ -552,6 +565,7 @@ impl Agent {
             state: Arc::new(StateMachine::new()),
             identity,
             provider,
+            resolved_model_id,
             llm_resolver,
             session_manager,
             subagent_executor,
@@ -671,6 +685,40 @@ impl Agent {
         self
     }
 
+    // ---- Phase 2 inert fields ----
+    //
+    // Each setter mutates the matching `AgentConfig` field and returns
+    // `Self`. These flow into the rendered system prompt via
+    // `AgenticLoop::build_turn_context` reading the accessors below.
+
+    /// Set the agent's channel (`{{channel}}` / `{{runtime}}`).
+    #[must_use]
+    pub fn with_channel(mut self, channel: impl Into<String>) -> Self {
+        self.config.channel = Some(channel.into());
+        self
+    }
+
+    /// Set the agent's thinking level (`{{thinking_level}}`).
+    #[must_use]
+    pub fn with_thinking_level(mut self, level: impl Into<String>) -> Self {
+        self.config.thinking_level = Some(level.into());
+        self
+    }
+
+    /// Toggle the agent's sandbox flag (`{{sandbox}}`).
+    #[must_use]
+    pub fn with_sandbox_enabled(mut self, enabled: bool) -> Self {
+        self.config.sandbox_enabled = enabled;
+        self
+    }
+
+    /// Set the agent's model aliases (`{{model_aliases}}`).
+    #[must_use]
+    pub fn with_model_aliases(mut self, aliases: Vec<String>) -> Self {
+        self.config.model_aliases = aliases;
+        self
+    }
+
     /// F19: removed `with_quota_meter` and `quota_meter()` from Agent.
     /// Quota is opened via `QuotaScope::with` at the engine loop
     /// entrypoint. The agent no longer carries a meter field; the
@@ -758,11 +806,14 @@ impl Agent {
         // resolved provider instead of paying the resolver's catalog
         // lookup cost twice. Fall back to the v3 resolver path if the
         // caller didn't supply one (e.g., unit tests).
-        let provider = match inherited_provider {
-            Some(p) => Some(p),
+        let (provider, resolved_model_id) = match inherited_provider {
+            Some(p) => (Some(p), None),
             // Subagent path: no principal binding, so no provider hint;
             // the resolver falls back to the catalog default.
-            None => Self::init_provider(&config, None, None, None).await?,
+            None => match Self::init_provider(&config, None, None, None).await? {
+                Some((p, id)) => (Some(p), Some(id)),
+                None => (None, None),
+            },
         };
         let llm_resolver: Option<Arc<crate::providers::LlmResolver>> = None;
 
@@ -787,6 +838,7 @@ impl Agent {
             state: Arc::new(StateMachine::new()),
             identity,
             provider,
+            resolved_model_id,
             llm_resolver,
             session_manager,
             subagent_executor,
@@ -880,6 +932,18 @@ impl Agent {
     #[must_use]
     pub fn llm_resolver(&self) -> Option<Arc<crate::providers::LlmResolver>> {
         self.llm_resolver.clone()
+    }
+
+    /// Catalog id picked by `LlmResolver::build` for this session.
+    ///
+    /// Captured at construction time from `ResolvedChoice::model_id`.
+    /// `None` when the agent was constructed without a resolver (test
+    /// path) — callers should fall back to `provider.model_id()`.
+    /// The renderer uses this for `{{runtime}}`'s `Model:` line so
+    /// per-call overrides (`peko send --model <id>`) actually surface.
+    #[must_use]
+    pub fn resolved_model_id(&self) -> Option<&str> {
+        self.resolved_model_id.as_deref()
     }
 
     /// Get the extension core
@@ -1487,6 +1551,37 @@ impl Agent {
         self.principal_active_extensions.as_ref()
     }
 
+    // ---- Phase 2 inert field accessors ----
+    //
+    // The loop reads these via `&self.agent.channel()` etc. when
+    // building `TurnPromptContext` for the renderer. `Option<&str>`
+    // matches the `Option<String>` shape on `AgentConfig`; the loop
+    // supplies the legacy hardcoded defaults when the value is `None`.
+
+    /// Configured channel for `{{channel}}` / `{{runtime}}`.
+    #[must_use]
+    pub fn channel(&self) -> Option<&str> {
+        self.config.channel.as_deref()
+    }
+
+    /// Configured thinking level for `{{thinking_level}}`.
+    #[must_use]
+    pub fn thinking_level(&self) -> Option<&str> {
+        self.config.thinking_level.as_deref()
+    }
+
+    /// Whether the agent runs inside a sandbox (`{{sandbox}}`).
+    #[must_use]
+    pub fn sandbox_enabled(&self) -> bool {
+        self.config.sandbox_enabled
+    }
+
+    /// Configured model aliases for `{{model_aliases}}`.
+    #[must_use]
+    pub fn model_aliases(&self) -> &[String] {
+        &self.config.model_aliases
+    }
+
     // Session overlay methods
 
     /// Get the session manager
@@ -1754,7 +1849,11 @@ impl Agent {
             }
         };
 
-        let provider = Self::init_provider(&config, None, None, None).await?;
+        let (provider, resolved_model_id) =
+            match Self::init_provider(&config, None, None, None).await? {
+                Some((p, id)) => (Some(p), Some(id)),
+                None => (None, None),
+            };
 
         let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
             "agent:{}:cli:default",
@@ -1783,6 +1882,7 @@ impl Agent {
             state: Arc::new(StateMachine::new()),
             identity,
             provider,
+            resolved_model_id,
             llm_resolver: None,
             session_manager,
             subagent_executor,
@@ -1986,6 +2086,16 @@ impl Agent {
         path_abs.starts_with(&temp_abs)
     }
 
+    /// Resolve the agent's provider and the catalog id that produced it.
+    ///
+    /// Returns `None` when no resolver was supplied or resolution failed.
+    /// The returned tuple is `(provider, resolved_model_id)`:
+    /// `resolved_model_id` is `ResolvedChoice::model_id` and reflects the
+    /// precedence winner — including any per-call `message_override`.
+    /// This is what the renderer puts in `{{runtime}}`'s `Model:` line
+    /// (Phase 2 plumbing). Without capturing it here, the loop would
+    /// fall back to `provider.model_id()` which only reflects the
+    /// provider's `default_model_id` and not the resolved catalog id.
     async fn init_provider(
         config: &AgentConfig,
         resolver: Option<&Arc<crate::providers::LlmResolver>>,
@@ -1995,7 +2105,7 @@ impl Agent {
         // Model-first: per-message configured model override (e.g.
         // `peko send --model <id>`).
         message_override: Option<String>,
-    ) -> Result<Option<Arc<crate::providers::Provider>>> {
+    ) -> Result<Option<(Arc<crate::providers::Provider>, String)>> {
         // v3 path: ask the resolver to build a one-shot provider from
         // the supplied hint. No legacy fallback — the inline `[provider]`
         // block on `AgentConfig` is gone; the resolver is the only source
@@ -2011,7 +2121,7 @@ impl Agent {
         match r.build(req).await {
             Ok((provider, choice)) => {
                 info!("Agent '{}' resolved provider: {}", config.name, choice);
-                Ok(Some(provider))
+                Ok(Some((provider, choice.model_id)))
             }
             Err(e) => {
                 warn!(
@@ -2263,5 +2373,75 @@ mod tests {
         // Both must be well-formed peko DIDs.
         assert!(did_a.starts_with("did:peko:"));
         assert!(did_b.starts_with("did:peko:"));
+    }
+
+    /// Phase 2: every new `with_*` setter returns `Self` and the
+    /// matching accessor reads back the value. The renderer depends
+    /// on this round-trip — if a setter forgets to copy a value into
+    /// `self.config`, the loop would silently render with defaults.
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn agent_setters_round_trip() {
+        use crate::extensions::framework::core::ExtensionCore;
+        use tempfile::TempDir;
+
+        crate::identity::init_test_env();
+        let core = Arc::new(ExtensionCore::new());
+        crate::extensions::framework::core::init_global_core(core);
+
+        let tmp = TempDir::new().expect("tempdir");
+        let mut config = AgentConfig::default();
+        config.name = "phase2-setters".to_string();
+        let agent = Agent::new_for_test(config, tmp.path())
+            .await
+            .expect("agent");
+
+        let configured = agent
+            .clone()
+            .with_channel("cli")
+            .with_thinking_level("high")
+            .with_sandbox_enabled(true)
+            .with_model_aliases(vec!["sonnet".into(), "haiku".into()]);
+
+        assert_eq!(configured.channel(), Some("cli"));
+        assert_eq!(configured.thinking_level(), Some("high"));
+        assert!(configured.sandbox_enabled());
+        assert_eq!(
+            configured.model_aliases(),
+            &["sonnet".to_string(), "haiku".to_string()]
+        );
+
+        // The pre-set agent must still report the back-compat
+        // defaults (`None`/`false`/`[]`) — the setter chain is
+        // opt-in, never implicit.
+        assert_eq!(agent.channel(), None);
+        assert_eq!(agent.thinking_level(), None);
+        assert!(!agent.sandbox_enabled());
+        assert!(agent.model_aliases().is_empty());
+    }
+
+    /// Phase 2: `resolved_model_id()` is `None` for agents built via
+    /// `new_for_test` (no resolver) and `Some(...)` after a successful
+    /// resolver call. Pin both branches.
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn agent_resolved_model_id_default_is_none() {
+        use crate::extensions::framework::core::ExtensionCore;
+        use tempfile::TempDir;
+
+        crate::identity::init_test_env();
+        let core = Arc::new(ExtensionCore::new());
+        crate::extensions::framework::core::init_global_core(core);
+
+        let tmp = TempDir::new().expect("tempdir");
+        let mut config = AgentConfig::default();
+        config.name = "phase2-no-resolver".to_string();
+        let agent = Agent::new_for_test(config, tmp.path())
+            .await
+            .expect("agent");
+        // `new_for_test` does not wire a resolver; the agent's cached
+        // resolved id stays `None`. Callers must fall back to
+        // `provider.model_id()`.
+        assert!(agent.resolved_model_id().is_none());
     }
 }

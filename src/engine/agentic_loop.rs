@@ -11,14 +11,13 @@
 //! - Background compaction works for both streaming and blocking modes
 //! - Event semantics are uniform across all consumers
 
-use crate::agents::prompt::SystemPromptService;
+use crate::agents::prompt::context::CapabilityDiffTracker;
+use crate::agents::prompt::{PromptRenderer, TurnPromptContext};
 use crate::agents::Agent;
 use crate::common::types::message::{ContentBlock, LlmMessage};
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
-use crate::extensions::framework::types::SessionSnapshot;
-use crate::extensions::framework::{HookInput, HookPoint};
 use crate::providers::{
     ChatOptions, MessageRole, StackedMeteredProvider, StopReason, TokenUsage, ToolDefinition,
     DEFAULT_MAX_OUTPUT_TOKENS,
@@ -100,6 +99,14 @@ pub struct AgenticLoop {
     /// of `run_inner` iteration. Surfaced to the LLM as a
     /// synthetic user-role message containing all queued completions.
     async_completion_queue: Option<SharedSessionInbox>,
+    /// Per-loop capability-diff tracker. The renderer observes the
+    /// principal's grants each iteration and emits a `{{capability_diff}}`
+    /// section when the set has changed since the last observation.
+    /// Lives on the loop (per-loop mutable state), not on the renderer
+    /// (which is stateless). Wrapped in `Mutex` for interior mutability
+    /// so the public `run*` methods can stay `&self` without
+    /// forcing callers to take a mutable borrow for the entire run.
+    cap_diff_tracker: std::sync::Mutex<CapabilityDiffTracker>,
     /// Optional soft-interrupt token. When set, the loop checks
     /// `is_cancelled()` at the start of each iteration and just
     /// before delivering the final answer; if cancelled, it emits a
@@ -110,6 +117,12 @@ pub struct AgenticLoop {
     /// kill. Set by the streaming IPC handler via `with_cancel_token`
     /// so the `PrincipalSendControl` IPC can signal cancellation.
     cancel: Option<tokio_util::sync::CancellationToken>,
+    /// Catalog id picked by `LlmResolver::build` for this session,
+    /// cached at construction. Surfaces in `{{runtime}}`'s `Model:`
+    /// line so per-call overrides (`peko send --model <id>`) are
+    /// actually visible. Falls back to `provider.model_id()` when the
+    /// agent didn't have a resolved id (e.g. test fixtures).
+    resolved_model_id: String,
 }
 
 impl AgenticLoop {
@@ -124,21 +137,43 @@ impl AgenticLoop {
         provider: Arc<crate::providers::Provider>,
         extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     ) -> Self {
-        let system_prompt = SystemPromptService::build(&agent, &extension_core).await;
         let agent_principal_id = agent.principal_id().to_string();
+
+        // Phase 2: prefer the resolver's catalog id (which reflects
+        // per-call overrides) over the provider's structural
+        // `default_model_id`. Without this, `peko send --model <id>`
+        // wouldn't surface in `{{runtime}}` because `provider.model_id()`
+        // only returns the provider's baked-in default.
+        let resolved_model_id = agent
+            .resolved_model_id()
+            .unwrap_or(&provider.model_id())
+            .to_string();
+
+        // Phase 1: the system prompt is no longer precomputed at loop
+        // construction. `PromptRenderer::render_for_iteration` rebuilds
+        // it from a fresh `TurnPromptContext` every iteration, fed by
+        // the principal, session, and iteration state the loop threads
+        // in. The legacy `system_prompt` field is kept (and is a
+        // placeholder identity fallback) for back-compat with any
+        // callers that still read `AgenticLoop::system_prompt()` —
+        // they get a one-line identity, which is what they'd see if
+        // they ran an agent with no body anyway.
+        let placeholder_prompt = format!("You are {}.", agent.name());
 
         Self {
             agent,
             provider,
             max_iterations: 10,
-            system_prompt,
+            system_prompt: placeholder_prompt,
             extension_core,
             caller_id: None,
             agent_principal_id,
             async_completion_queue: None,
+            cap_diff_tracker: std::sync::Mutex::new(CapabilityDiffTracker::new()),
             cancel: None,
             quota_meter: Arc::new(crate::quota::QuotaMeter::unlimited()),
             peer_meter: None,
+            resolved_model_id,
         }
     }
 
@@ -269,17 +304,6 @@ impl AgenticLoop {
         };
         info!("Using session: {}", session_id);
 
-        // Rebuild the system prompt so any bootstrap context returned by
-        // `HookPoint::SessionStart` handlers is included at the
-        // `{{session_context}}` placeholder.
-        let session_context = session.read().await.extension_context().map(String::from);
-        let system_prompt = SystemPromptService::build_fresh_with_session_context(
-            &self.agent,
-            &self.extension_core,
-            session_context,
-        )
-        .await;
-
         // Emit start event
         on_event(AgenticEvent::Lifecycle {
             run_id: run_id.clone(),
@@ -293,7 +317,11 @@ impl AgenticLoop {
             session_id
         );
 
-        // Build messages - either from history or fresh start
+        // Phase 1: the system prompt is rebuilt fresh by
+        // `run_inner_with_meter` at the top of every iteration via
+        // `PromptRenderer`. We seed `messages` with a placeholder
+        // system message that the renderer overwrites on iteration 1;
+        // the legacy `add_system` JSONL persistence path is gone.
         let mut messages = if let Some(h) = history {
             info!("Loaded {} messages from history", h.len());
             // Check if history already has a system message at the start
@@ -303,45 +331,33 @@ impl AgenticLoop {
             if has_system {
                 h
             } else {
-                // Prepend system prompt to history
+                // Prepend a placeholder system prompt; the renderer
+                // overwrites it on iteration 1 with the freshly built
+                // body.
                 let mut msgs = vec![LlmMessage {
                     role: MessageRole::System,
                     content: vec![ContentBlock::Text {
-                        text: system_prompt.clone(),
+                        text: format!("You are {}.", self.agent.name()),
                     }],
                     timestamp: Utc::now(),
                     metadata: HashMap::new(),
                     tool_call_id: None,
                 }];
                 msgs.extend(h);
-
-                // Add system prompt to session
-                {
-                    let mut s = session.write().await;
-                    s.add_system(&system_prompt).await?;
-                }
-
                 msgs
             }
         } else {
-            // Fresh start - add system prompt
-            let msgs = vec![LlmMessage {
+            // Fresh start - placeholder system message; overwritten on
+            // iteration 1.
+            vec![LlmMessage {
                 role: MessageRole::System,
                 content: vec![ContentBlock::Text {
-                    text: system_prompt.clone(),
+                    text: format!("You are {}.", self.agent.name()),
                 }],
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
                 tool_call_id: None,
-            }];
-
-            // Add system prompt to session
-            {
-                let mut s = session.write().await;
-                s.add_system(&system_prompt).await?;
-            }
-
-            msgs
+            }]
         };
 
         // Append ephemeral LLM-only context turns (e.g. recalled prior-session
@@ -388,16 +404,6 @@ impl AgenticLoop {
         };
         info!("Using session: {}", session_id);
 
-        // Rebuild the system prompt so any bootstrap context returned by
-        // `HookPoint::SessionStart` handlers is included.
-        let session_context = session.read().await.extension_context().map(String::from);
-        let system_prompt = SystemPromptService::build_fresh_with_session_context(
-            &self.agent,
-            &self.extension_core,
-            session_context,
-        )
-        .await;
-
         // Emit start event
         on_event(AgenticEvent::Lifecycle {
             run_id: run_id.clone(),
@@ -411,7 +417,9 @@ impl AgenticLoop {
             session_id
         );
 
-        // Build messages - either from history or fresh start
+        // Phase 1: placeholder system message; overwritten by the
+        // renderer on iteration 1. The legacy `add_system` JSONL
+        // persistence path is gone.
         let messages = if let Some(h) = history {
             info!("Loaded {} messages from history", h.len());
             let has_system = h
@@ -423,38 +431,25 @@ impl AgenticLoop {
                 let mut msgs = vec![LlmMessage {
                     role: MessageRole::System,
                     content: vec![ContentBlock::Text {
-                        text: system_prompt.clone(),
+                        text: format!("You are {}.", self.agent.name()),
                     }],
                     timestamp: Utc::now(),
                     metadata: HashMap::new(),
                     tool_call_id: None,
                 }];
                 msgs.extend(h);
-
-                {
-                    let mut s = session.write().await;
-                    s.add_system(&system_prompt).await?;
-                }
-
                 msgs
             }
         } else {
-            let msgs = vec![LlmMessage {
+            vec![LlmMessage {
                 role: MessageRole::System,
                 content: vec![ContentBlock::Text {
-                    text: system_prompt.clone(),
+                    text: format!("You are {}.", self.agent.name()),
                 }],
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
                 tool_call_id: None,
-            }];
-
-            {
-                let mut s = session.write().await;
-                s.add_system(&system_prompt).await?;
-            }
-
-            msgs
+            }]
         };
 
         // No `messages.push(LlmMessage::user(...))` and no `s.add_user(...)`
@@ -495,47 +490,9 @@ impl AgenticLoop {
             .get_or_create_base(self.agent.name(), &peer)
             .await?;
 
-        // Fire the session-start hook for brand-new CLI sessions and persist
-        // the returned bootstrap context on the session.
-        {
-            let is_new_session = session.read().await.message_count == 0;
-            if is_new_session {
-                let workspace = self
-                    .agent
-                    .principal_workspace()
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        let resolver = crate::common::paths::PathResolver::new();
-                        resolver.agent_workspace(self.agent.name())
-                    });
-                let mut metadata = HashMap::<String, serde_json::Value>::new();
-                metadata.insert("event".to_string(), serde_json::json!("startup"));
-                metadata.insert(
-                    "workspace".to_string(),
-                    serde_json::json!(workspace.to_string_lossy().to_string()),
-                );
-                let snapshot = SessionSnapshot {
-                    session_id: session.read().await.id.clone(),
-                    message_count: 0,
-                    context_tokens: 0,
-                    metadata,
-                };
-                if let Some(context) = self
-                    .extension_core
-                    .invoke_hook_text_with_principal(
-                        HookPoint::SessionStart,
-                        HookInput::SessionState(snapshot),
-                        Some(&self.agent_principal_id),
-                        self.agent.principal_capabilities().map(|c| c.to_strings()),
-                        self.agent.principal_active_extensions().map(|a| a.to_vec()),
-                        Some(workspace.to_string_lossy().to_string()),
-                    )
-                    .await
-                {
-                    session.write().await.extension_context = Some(context);
-                }
-            }
-        }
+        // Phase 1: SessionStart hook fire was removed. The renderer fires
+        // `SessionContextBuild` per turn instead, so a one-shot fire
+        // here would be redundant and stale.
 
         self.run_with_resume(prompt, Vec::new(), on_event, session, None)
             .await
@@ -570,6 +527,13 @@ impl AgenticLoop {
         let meter = Arc::clone(&self.quota_meter);
         let peer_meter = self.peer_meter.clone();
         let provider_clone = Arc::clone(&self.provider);
+        // Phase 1: `run_inner_with_meter` needs `&mut self` so the
+        // per-iteration prompt rebuild can read (and advance) the
+        // `cap_diff_tracker`. The quota-scope closures capture
+        // `self` by mutable reference; the lifetime ends when the
+        // outer scope returns. Move the tracker reads into the
+        // body, where `self` is borrowed mutably via this method's
+        // receiver.
         if let Some(pm) = peer_meter {
             // Stacked path: outer principal scope, inner peer scope.
             // Body uses StackedMeteredProvider so both meters charge.
@@ -792,15 +756,17 @@ impl AgenticLoop {
             // ADR-019 Phase 2: Build tool definitions dynamically each iteration
             let tool_defs = self.build_tool_definitions().await;
 
-            // ADR-019 Phase 3: Rebuild system prompt dynamically
+            // Phase 1: Rebuild system prompt every iteration via
+            // `PromptRenderer`. The renderer is the single source of
+            // truth; `messages[0]` is unconditionally overwritten with
+            // the freshly built body. The previous conditional
+            // (`messages[0].role == System`) was fragile: any code
+            // path that inserted a non-system message at position 0
+            // silently disabled the rebuild. The new path always wins.
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
-                let session_context = session.read().await.extension_context().map(String::from);
-                let fresh_prompt = SystemPromptService::build_fresh_with_session_context(
-                    &self.agent,
-                    &self.extension_core,
-                    session_context,
-                )
-                .await;
+                let ctx = self.build_turn_context(iteration, &tool_defs);
+                let renderer = PromptRenderer::new(Arc::clone(&self.extension_core));
+                let fresh_prompt = renderer.render_for_iteration(&ctx).await;
                 messages[0] = LlmMessage::system(fresh_prompt);
             }
 
@@ -1372,10 +1338,140 @@ impl AgenticLoop {
         defs
     }
 
+    /// Build a [`TurnPromptContext`] for the current iteration.
+    ///
+    /// This is the single typed input the renderer reads. It carries the
+    /// principal, session, iteration, and control-surface state for one
+    /// iteration. Cheap to construct (mostly `Arc` clones).
+    ///
+    /// Phase 1 wires up the principal/workspace/body/resolved-model
+    /// fields. Phase 2 will populate `channel`, `thinking_level`,
+    /// `sandbox_enabled`, `model_aliases` from `AgentConfig`. Phase 3
+    /// will populate the four control surfaces
+    /// (`iteration_budget`, `quota_state`, `soft_cancel_pending`,
+    /// `capability_diff`).
+    fn build_turn_context(
+        &self,
+        iteration: usize,
+        tool_defs: &[ToolDefinition],
+    ) -> TurnPromptContext {
+        // Body lives on `AgentConfig::prompt` as `Option<String>`. Empty
+        // body is supported (renderer falls back to one-line identity).
+        let body = self.agent.config.prompt.clone().unwrap_or_default();
+
+        // Workspace: the principal's workspace is the canonical answer
+        // for any agent spawned under a principal; fall back to a
+        // per-agent default for tests / compiled-in agents that bypass
+        // the principal path.
+        let workspace = self
+            .agent
+            .principal_workspace()
+            .cloned()
+            .unwrap_or_else(|| {
+                let resolver = crate::common::paths::PathResolver::new();
+                resolver.agent_workspace(self.agent.name())
+            });
+
+        // Resolved model id: cached at loop construction in `new()`
+        // from the agent's resolved catalog id (falls back to
+        // `provider.model_id()`). Reflects per-call `message_override`.
+        let resolved_model = self.resolved_model_id.clone();
+
+        // Capability diff: lock the tracker, observe, drop the lock.
+        // The tracker's `observe` is sync and fast; the `Mutex` is a
+        // plain std one so contention is minimal. First observation
+        // returns `None` (baseline); subsequent calls return
+        // `Some(diff)` when the grant set changed.
+        let capability_diff = self
+            .agent
+            .principal_capabilities()
+            .and_then(|caps| self.cap_diff_tracker.lock().ok()?.observe(caps));
+
+        // Phase 3 wiring — four long-horizon control surfaces. The
+        // renderer always emits the corresponding `{{placeholder}}` from
+        // these fields when the template opts in (see
+        // `remove_missing=true` in `PromptRenderer::render_for_iteration`).
+        //
+        // - `iteration_budget`: drawn from the per-iteration counter
+        //   passed in by `run_inner_with_meter` plus the loop's
+        //   `max_iterations` ceiling. Always populated so a template
+        //   that opts in sees progress even on iteration 1.
+        // - `quota_state`: read directly from the loop's principal
+        //   `QuotaMeter` (not via `QuotaScope::current()` — the inner
+        //   peer meter would otherwise leak into the principal's
+        //   prompt). Both `snapshot()` and `config()` return owned
+        //   clones so the lock is released before the renderer runs.
+        // - `soft_cancel_pending`: already wired in Phase 1; the token
+        //   is set by the IPC handler when `PrincipalSendControl`
+        //   arrives. Surfaced verbatim at `{{soft_cancel}}`.
+        // - `capability_diff`: already wired in Phase 1 via the
+        //   tracker's `observe` call above.
+        let iteration_budget = Some(crate::agents::prompt::IterationBudgetState {
+            iteration,
+            max_iterations: self.max_iterations,
+        });
+
+        let quota_state = {
+            let snapshot = self.quota_meter.snapshot();
+            let config = self.quota_meter.config();
+            Some(crate::agents::prompt::QuotaStateView {
+                input_tokens: snapshot.input_tokens,
+                output_tokens: snapshot.output_tokens,
+                request_count: snapshot.request_count,
+                // QuotaMeter stores `window_end` as `DateTime<Utc>` but
+                // `QuotaStateView` takes a `SystemTime` (renderer
+                // formats ISO 8601 from epoch secs). `From` is identity
+                // on the underlying instant so the conversion is lossless.
+                window_end: chrono::DateTime::<chrono::Utc>::from(snapshot.window_end).into(),
+                input_limit: config.input_tokens,
+                output_limit: config.output_tokens,
+                request_limit: config.request_count,
+            })
+        };
+
+        TurnPromptContext {
+            principal_id: self.agent_principal_id.clone(),
+            agent_name: self.agent.name().to_string(),
+            body,
+            capabilities: self.agent.principal_capabilities().cloned(),
+            active_extensions: self.agent.principal_active_extensions().cloned(),
+            principal_memory: crate::agents::prompt::memory::load_principal_memory(&workspace),
+            workspace,
+            resolved_model,
+            // Phase 2 wiring: read from `AgentConfig`. Back-compat
+            // defaults (`"discord"`, `"medium"`) match the legacy
+            // hardcoded values so existing prompt bodies continue to
+            // render unchanged for agents that don't override these.
+            channel: self.agent.channel().unwrap_or("discord").to_string(),
+            thinking_level: self.agent.thinking_level().unwrap_or("medium").to_string(),
+            sandbox_enabled: self.agent.sandbox_enabled(),
+            model_aliases: self.agent.model_aliases().to_vec(),
+            has_gateway: true,
+            // Phase 3: control surfaces fully populated each iteration.
+            iteration_budget,
+            quota_state,
+            soft_cancel_pending: self.cancel.as_ref().is_some_and(|t| t.is_cancelled()),
+            capability_diff,
+            tool_definitions: tool_defs.to_vec(),
+        }
+    }
+
     /// Get the system prompt
     #[must_use]
     pub fn system_prompt(&self) -> &str {
         &self.system_prompt
+    }
+
+    /// Resolved catalog id cached at construction (Phase 2).
+    ///
+    /// Returns the catalog id picked by `LlmResolver::build` for this
+    /// session — including any per-call `message_override`. Falls
+    /// back to `provider.model_id()` when the agent was constructed
+    /// without a resolver (test path). Surfaced in
+    /// `{{runtime}}`'s `Model:` line.
+    #[must_use]
+    pub fn resolved_model_id(&self) -> &str {
+        &self.resolved_model_id
     }
 
     /// Run the agent with streaming support
@@ -1423,17 +1519,9 @@ impl AgenticLoop {
             run_id
         );
 
-        // Rebuild the system prompt so any bootstrap context returned by
-        // `HookPoint::SessionStart` handlers is included.
-        let session_context = session.read().await.extension_context().map(String::from);
-        let system_prompt = SystemPromptService::build_fresh_with_session_context(
-            &self.agent,
-            &self.extension_core,
-            session_context,
-        )
-        .await;
-
-        // Build messages - either from history or fresh start
+        // Phase 1: placeholder system message; overwritten by the
+        // renderer on iteration 1. The legacy `add_system` JSONL
+        // persistence path is gone.
         let mut messages = if let Some(h) = history {
             info!("Loaded {} messages from history", h.len());
             // Check if history already has a system message at the start
@@ -1443,45 +1531,28 @@ impl AgenticLoop {
             if has_system {
                 h
             } else {
-                // Prepend system prompt to history
                 let mut msgs = vec![LlmMessage {
                     role: MessageRole::System,
                     content: vec![ContentBlock::Text {
-                        text: system_prompt.clone(),
+                        text: format!("You are {}.", self.agent.name()),
                     }],
                     timestamp: Utc::now(),
                     metadata: HashMap::new(),
                     tool_call_id: None,
                 }];
                 msgs.extend(h);
-
-                // Add system prompt to session
-                {
-                    let mut s = session.write().await;
-                    s.add_system(&system_prompt).await?;
-                }
-
                 msgs
             }
         } else {
-            // Fresh start - add system prompt
-            let msgs = vec![LlmMessage {
+            vec![LlmMessage {
                 role: MessageRole::System,
                 content: vec![ContentBlock::Text {
-                    text: system_prompt.clone(),
+                    text: format!("You are {}.", self.agent.name()),
                 }],
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
                 tool_call_id: None,
-            }];
-
-            // Add system prompt to session
-            {
-                let mut s = session.write().await;
-                s.add_system(&system_prompt).await?;
-            }
-
-            msgs
+            }]
         };
 
         // Append ephemeral LLM-only context turns (e.g. recalled prior-session
@@ -1572,12 +1643,13 @@ mod tests {
     }
 
     // ===================================================================
-    // Session-start hook: bootstrap context is injected into the system
-    // prompt for brand-new sessions.
+    // Per-turn SessionContextBuild hook: bootstrap context is rendered
+    // into the system prompt for the {{session_context}} placeholder
+    // on every iteration (replaces the legacy one-shot SessionStart).
     // ===================================================================
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial(core)]
-    async fn test_session_start_hook_injects_context() {
+    async fn test_session_context_build_hook_injects_context() {
         crate::identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
@@ -1585,9 +1657,9 @@ mod tests {
         mock.queue_text("Acknowledged.");
 
         #[derive(Debug)]
-        struct StartHandler;
+        struct ContextBuildHandler;
         #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for StartHandler {
+        impl crate::extensions::framework::core::HookHandler for ContextBuildHandler {
             async fn handle(
                 &self,
                 _ctx: crate::extensions::framework::core::HookContext,
@@ -1600,7 +1672,7 @@ mod tests {
             }
 
             fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::SessionStart
+                crate::extensions::framework::core::HookPoint::SessionContextBuild
             }
 
             fn priority(&self) -> i32 {
@@ -1608,22 +1680,22 @@ mod tests {
             }
 
             fn name(&self) -> String {
-                "TestSessionStart".to_string()
+                "TestSessionContextBuild".to_string()
             }
         }
 
         let core = global_core().unwrap();
         let hook_id = core
             .register_hook(
-                crate::extensions::framework::core::HookPoint::SessionStart,
-                Arc::new(StartHandler),
-                &crate::extensions::framework::types::ExtensionId::new("test-start"),
+                crate::extensions::framework::core::HookPoint::SessionContextBuild,
+                Arc::new(ContextBuildHandler),
+                &crate::extensions::framework::types::ExtensionId::new("test-context-build"),
             )
             .await
             .unwrap()
             .id;
 
-        let agent_name = format!("session-start-agent-{}", uuid::Uuid::new_v4());
+        let agent_name = format!("session-ctx-agent-{}", uuid::Uuid::new_v4());
         let mut config = test_agent_config(&agent_name);
         config.prompt =
             Some("You are {{agent_name}}.\n\n{{session_context}}\n\n{{tools}}\n".to_string());
@@ -1631,14 +1703,6 @@ mod tests {
         let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
 
         let result = loop_.run("Start with context", |_| {}).await;
-
-        println!(
-            "DEBUG hook count for SessionStart: {}",
-            core.hook_count_for_point(
-                &crate::extensions::framework::core::HookPoint::SessionStart,
-            )
-            .await
-        );
 
         // Clean up the hook so later tests are not affected.
         let _ = global_core().unwrap().unregister_hook(&hook_id).await;
@@ -1649,8 +1713,9 @@ mod tests {
             result.err()
         );
 
-        // The first recorded request's system message should contain the
-        // session-start bootstrap context.
+        // The first recorded request's system message should contain
+        // the SessionContextBuild output (rendered into the
+        // `{{session_context}}` placeholder).
         let recorded = mock.recorded_requests();
         assert!(
             !recorded.is_empty(),
@@ -1666,7 +1731,7 @@ mod tests {
             .collect();
         assert!(
             system_text.contains("Always use the Superpowers skill pack."),
-            "expected session-start context in system prompt, got: {system_text}"
+            "expected SessionContextBuild output in system prompt, got: {system_text}"
         );
     }
 
@@ -2816,5 +2881,803 @@ mod tests {
 
         assert_eq!(principal.snapshot().request_count, 1);
         assert_eq!(peer.snapshot().request_count, 1);
+    }
+
+    // ===================================================================
+    // Phase 1: Per-turn system prompt rebuild
+    //
+    // These tests pin down the Phase 1 contract: the renderer is the
+    // single source of truth, every iteration rebuilds messages[0],
+    // JSONL sessions never carry MessageV2{role:"system"} rows from
+    // the loop, and the four hook-driven sections plus
+    // SessionContextBuild all fire concurrently with a 2s soft-fail
+    // timeout.
+    // ===================================================================
+
+    /// Phase 1 contract: a JSONL that has a stale
+    /// `MessageV2{role:"system"}` row loaded as `messages[0]` is
+    /// overwritten by the renderer on iteration 1. The LLM never
+    /// sees the stale system message.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn loop_overwrites_persisted_system_prompt_on_resume() {
+        use crate::session::events::{SessionEvent, SessionMessage};
+        use crate::session::jsonl::SessionStorage;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("Acknowledged stale system.");
+
+        let storage = SessionStorage::new(temp_dir.path().to_path_buf());
+        let session_id = "phase1-overwrite";
+        storage.create_session(session_id, None).await.unwrap();
+
+        // Seed the JSONL with a stale system message.
+        storage
+            .append_event(
+                session_id,
+                &SessionEvent::MessageV2(SessionMessage::system("STALE PERSISTED SYSTEM")),
+            )
+            .await
+            .unwrap();
+
+        // Open the session and load history — should contain the stale
+        // system message.
+        let session = Arc::new(RwLock::new(
+            Session::open_by_id("phase1-overwrite-agent", session_id, temp_dir.path(), None)
+                .await
+                .unwrap(),
+        ));
+        let history = session.read().await.load_history().await.unwrap();
+        assert!(
+            history[0].content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text } if text == "STALE PERSISTED SYSTEM")
+            ),
+            "test setup: history should contain the stale system row"
+        );
+
+        // Run with the loaded history — the renderer must overwrite
+        // messages[0].
+        let agent_name = format!("phase1-overwrite-agent-{}", uuid::Uuid::new_v4());
+        let mut config = test_agent_config(&agent_name);
+        config.prompt = Some("RENDERED-FOR-PHASE1: You are {{agent_name}}.".to_string());
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(agent, provider, extension_core).await;
+
+        let result = loop_
+            .run_with_resume("anything", Vec::new(), |_| {}, session, Some(history))
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "agentic loop should succeed: {:?}",
+            result.err()
+        );
+
+        // The LLM request must contain the freshly rendered prompt,
+        // not the stale one.
+        let recorded = mock.recorded_requests();
+        assert!(!recorded.is_empty(), "mock should have recorded a request");
+        let system_text: String = recorded[0].messages[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            system_text.contains("RENDERED-FOR-PHASE1"),
+            "renderer should have overwritten messages[0]; got: {system_text}"
+        );
+        assert!(
+            !system_text.contains("STALE PERSISTED SYSTEM"),
+            "stale persisted system leaked to LLM: {system_text}"
+        );
+    }
+
+    /// Phase 1 contract: a normal agent run must NOT persist a
+    /// `MessageV2{role:"system"}` row. The system prompt lives in
+    /// the renderer's output, not in JSONL.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn loop_does_not_persist_system_messages() {
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("done");
+
+        let agent_name = format!("phase1-no-system-row-{}", uuid::Uuid::new_v4());
+        let mut config = test_agent_config(&agent_name);
+        config.prompt = Some("You are {{agent_name}}.".to_string());
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(agent, provider, extension_core).await;
+
+        let session = test_session(&agent_name, temp_dir.path()).await;
+        let session_id = session.read().await.id.clone();
+        let result = loop_
+            .run_with_resume("hello", Vec::new(), |_| {}, session, None)
+            .await;
+        assert!(result.is_ok(), "agentic loop should succeed");
+
+        // Read history and confirm no system messages were persisted.
+        let history = loop_.extension_core.clone(); // placeholder to keep borrow alive
+
+        // Reload from disk via the session's storage so we know we're
+        // checking the actual JSONL, not the in-memory messages vec.
+        let sessions_dir = temp_dir.path().join("data").join("sessions");
+        let storage = crate::session::jsonl::SessionStorage::new(sessions_dir);
+        let events = storage.load_events(&session_id).await.unwrap();
+
+        let system_rows = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    crate::session::events::SessionEvent::MessageV2(m)
+                        if matches!(m.role(), crate::common::types::message::MessageRole::System)
+                )
+            })
+            .count();
+
+        assert_eq!(
+            system_rows, 0,
+            "JSONL must not carry MessageV2{{role:system}} rows from the loop; found {system_rows}"
+        );
+        let _ = history;
+    }
+
+    /// Phase 1 contract: hook-driven sections fire in parallel. Four
+    /// hooks each sleep 50ms; total must be < 100ms when parallel
+    /// (serial would take ~200ms+).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn loop_invokes_tools_skills_agents_mcp_hooks_in_parallel() {
+        use crate::agents::prompt::context::TurnPromptContext;
+        use crate::agents::prompt::PromptRenderer;
+        use std::time::Instant;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let core = Arc::new(crate::extensions::framework::ExtensionCore::new());
+
+        // Register four 50ms-sleep handlers (one per section).
+        #[derive(Debug)]
+        struct SleepHandler(&'static str, std::time::Duration);
+        #[async_trait::async_trait]
+        impl crate::extensions::framework::core::HookHandler for SleepHandler {
+            async fn handle(
+                &self,
+                _ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                tokio::time::sleep(self.1).await;
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Text(self.0.to_string()),
+                )
+            }
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::PromptSystemSection {
+                    section: self.0.to_string(),
+                    priority: 100,
+                }
+            }
+            fn priority(&self) -> i32 {
+                100
+            }
+            fn name(&self) -> String {
+                format!("Sleep-{}", self.0)
+            }
+        }
+
+        for section in ["tools", "skills", "agents", "mcp_context"] {
+            core.register_hook(
+                crate::extensions::framework::core::HookPoint::PromptSystemSection {
+                    section: section.to_string(),
+                    priority: 100,
+                },
+                Arc::new(SleepHandler(section, std::time::Duration::from_millis(50))),
+                &crate::extensions::framework::types::ExtensionId::new(format!("sleep-{section}")),
+            )
+            .await
+            .unwrap();
+        }
+
+        let renderer = PromptRenderer::new(core);
+        let ctx = TurnPromptContext {
+            principal_id: "test".into(),
+            agent_name: "test-agent".into(),
+            body: "{{tools}} {{skills}} {{agents}} {{mcp_context}}".into(),
+            capabilities: None,
+            active_extensions: None,
+            principal_memory: None,
+            workspace: tempdir_unused(),
+            resolved_model: "default".into(),
+            channel: "discord".into(),
+            thinking_level: "medium".into(),
+            sandbox_enabled: false,
+            model_aliases: vec![],
+            has_gateway: false,
+            iteration_budget: None,
+            quota_state: None,
+            soft_cancel_pending: false,
+            capability_diff: None,
+            tool_definitions: vec![],
+        };
+
+        let started = Instant::now();
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "parallel render took {elapsed:?} — should be ~50ms with fan-out, not ~200ms serial"
+        );
+        assert!(rendered.contains("tools"));
+        assert!(rendered.contains("skills"));
+        assert!(rendered.contains("agents"));
+        assert!(rendered.contains("mcp_context"));
+    }
+
+    /// Phase 1 contract: a stuck handler (>2s) must not stall the
+    /// renderer. The section soft-fails to empty and the placeholder
+    /// is stripped via `remove_missing=true`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn loop_per_hook_timeout_fails_open() {
+        use crate::agents::prompt::context::TurnPromptContext;
+        use crate::agents::prompt::PromptRenderer;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let core = Arc::new(crate::extensions::framework::ExtensionCore::new());
+
+        #[derive(Debug)]
+        struct StuckHandler;
+        #[async_trait::async_trait]
+        impl crate::extensions::framework::core::HookHandler for StuckHandler {
+            async fn handle(
+                &self,
+                _ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                // Sleep far longer than the renderer's 2s timeout.
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Text("never".to_string()),
+                )
+            }
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::PromptSystemSection {
+                    section: "skills".to_string(),
+                    priority: 100,
+                }
+            }
+            fn priority(&self) -> i32 {
+                100
+            }
+            fn name(&self) -> String {
+                "Stuck".to_string()
+            }
+        }
+
+        core.register_hook(
+            crate::extensions::framework::core::HookPoint::PromptSystemSection {
+                section: "skills".to_string(),
+                priority: 100,
+            },
+            Arc::new(StuckHandler),
+            &crate::extensions::framework::types::ExtensionId::new("stuck"),
+        )
+        .await
+        .unwrap();
+
+        let renderer = PromptRenderer::new(core);
+        let ctx = TurnPromptContext {
+            principal_id: "test".into(),
+            agent_name: "test-agent".into(),
+            body: "before {{skills}} after".into(),
+            capabilities: None,
+            active_extensions: None,
+            principal_memory: None,
+            workspace: tempdir_unused(),
+            resolved_model: "default".into(),
+            channel: "discord".into(),
+            thinking_level: "medium".into(),
+            sandbox_enabled: false,
+            model_aliases: vec![],
+            has_gateway: false,
+            iteration_budget: None,
+            quota_state: None,
+            soft_cancel_pending: false,
+            capability_diff: None,
+            tool_definitions: vec![],
+        };
+
+        // Must complete in ~2s (timeout) — not 5s (handler's actual
+        // sleep) and definitely not panic.
+        let started = std::time::Instant::now();
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "renderer must respect 2s per-hook timeout; took {elapsed:?}"
+        );
+        assert!(!rendered.contains("{{skills}}"));
+        assert!(!rendered.contains("never"));
+    }
+
+    fn tempdir_unused() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("peko-render-{}", uuid::Uuid::new_v4()))
+    }
+
+    // ---- Phase 2: inert fields flow through to the rendered prompt ----
+    //
+    // These tests build a `TurnPromptContext` directly (bypassing the
+    // full `AgenticLoop::run` path) so the inert-field wiring is
+    // exercised without the harness's quota/meter/serial dependencies.
+    // The renderer already reads each placeholder from `ctx`; these
+    // tests pin that wiring so Phase 2's back-compat guarantees hold.
+
+    use crate::agents::prompt::context::TurnPromptContext;
+    use crate::agents::prompt::PromptRenderer;
+
+    fn inert_ctx() -> TurnPromptContext {
+        TurnPromptContext {
+            principal_id: "test-principal".into(),
+            agent_name: "test-agent".into(),
+            body: "channel={{channel}} thinking={{thinking_level}} runtime={{runtime}} sandbox={{sandbox}} aliases={{model_aliases}}".into(),
+            capabilities: None,
+            active_extensions: None,
+            principal_memory: None,
+            workspace: tempdir_unused(),
+            resolved_model: "claude-sonnet-4-6".into(),
+            channel: "cli".into(),
+            thinking_level: "high".into(),
+            sandbox_enabled: true,
+            model_aliases: vec!["sonnet".into(), "haiku".into()],
+            has_gateway: true,
+            iteration_budget: None,
+            quota_state: None,
+            soft_cancel_pending: false,
+            capability_diff: None,
+            tool_definitions: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn loop_renders_resolved_model_id_in_runtime_section() {
+        // Pin Phase 2: `resolved_model_id` cached at loop construction
+        // flows into `{{runtime}}`'s `Model:` line. Back-compat
+        // hardcoded values render if `ctx.resolved_model` is the
+        // legacy default.
+        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let ctx = inert_ctx();
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        assert!(
+            rendered.contains("Model: claude-sonnet-4-6"),
+            "expected resolved_model_id to surface in runtime section; got: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn loop_renders_channel_and_thinking_level_from_context() {
+        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let ctx = inert_ctx();
+        let body = "channel={{channel}} thinking={{thinking_level}}";
+        let mut ctx = ctx;
+        ctx.body = body.into();
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        assert!(rendered.contains("channel=cli"), "channel: {rendered}");
+        assert!(rendered.contains("thinking=high"), "thinking: {rendered}");
+    }
+
+    #[tokio::test]
+    async fn loop_renders_sandbox_section_when_enabled() {
+        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let ctx = inert_ctx();
+        let mut ctx = ctx;
+        ctx.body = "{{sandbox}}".into();
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        assert!(
+            rendered.contains("## Sandbox") && rendered.contains("Sandbox: enabled"),
+            "expected sandbox section when sandbox_enabled=true; got: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn loop_renders_model_aliases_list_when_set() {
+        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let ctx = inert_ctx();
+        let mut ctx = ctx;
+        ctx.body = "{{model_aliases}}".into();
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        assert!(rendered.contains("## Model Aliases"));
+        assert!(rendered.contains("- sonnet"));
+        assert!(rendered.contains("- haiku"));
+    }
+
+    #[tokio::test]
+    async fn loop_omits_optional_sections_when_disabled() {
+        // Back-compat: agents that don't set the inert fields must
+        // render without those sections, matching the legacy hardcoded
+        // defaults (`"discord"`, `"medium"`, sandbox off, no aliases).
+        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let ctx = TurnPromptContext {
+            channel: "discord".into(),
+            thinking_level: "medium".into(),
+            sandbox_enabled: false,
+            model_aliases: vec![],
+            ..inert_ctx()
+        };
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        // Sandbox disabled → no Sandbox header.
+        assert!(!rendered.contains("## Sandbox"));
+        // No aliases → no Model Aliases header.
+        assert!(!rendered.contains("## Model Aliases"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn agentic_loop_caches_resolved_model_id_at_construction() {
+        // Phase 2: `AgenticLoop::resolved_model_id` must be populated
+        // at construction from `agent.resolved_model_id()` with a
+        // fallback to `provider.model_id()`. We pin the wiring using
+        // the existing `mock_provider()` helper so the test stays
+        // independent of the resolver code path.
+        crate::identity::init_test_env();
+        ensure_global_core();
+
+        let (provider, _adapter) = mock_provider();
+        let temp = tempdir_unused();
+        std::fs::create_dir_all(&temp).unwrap();
+
+        let mut config = test_agent_config("phase2-resolved");
+        config.prompt = Some("runtime: {{runtime}}".into());
+
+        let agent = Arc::new(Agent::new_for_test(config, &temp).await.unwrap());
+        let expected = provider.model_id().to_string();
+        let loop_ = AgenticLoop::new(
+            Arc::clone(&agent),
+            Arc::clone(&provider),
+            agent.extension_core(),
+        )
+        .await;
+
+        // Test path: agent has no resolved id (`new_for_test` skips
+        // the resolver). Loop must fall back to `provider.model_id()`.
+        assert_eq!(loop_.resolved_model_id(), expected);
+        // Pin that `loop_.resolved_model_id()` is what `build_turn_context`
+        // would read into `ctx.resolved_model`.
+        assert_eq!(loop_.resolved_model_id(), provider.model_id());
+    }
+
+    // ---- Phase 3: control surfaces are populated each iteration ----
+    //
+    // These tests pin the wiring from `AgenticLoop::build_turn_context`
+    // into the four control-surface fields on `TurnPromptContext`. They
+    // drive `build_turn_context` directly (not the full `run*` paths)
+    // because the per-iteration render is the surface that matters:
+    // every iteration calls `build_turn_context` and reads the four
+    // fields into the system prompt.
+
+    fn loop_test_agent(name: &str) -> AgentConfig {
+        let mut cfg = test_agent_config(name);
+        // Bodies opt in to every control-surface placeholder so each
+        // test can assert on the rendered output (or directly on the
+        // `TurnPromptContext` fields). Using the placeholders also
+        // exercises the renderer's `{{placeholder}}` substitution path
+        // so we catch regressions in `replace_placeholders`.
+        cfg.prompt = Some(
+            "iter={{iteration_budget}}\n\
+             quota={{quota_state}}\n\
+             cancel={{soft_cancel}}\n\
+             diff={{capability_diff}}\n"
+                .to_string(),
+        );
+        cfg
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn loop_renders_iteration_budget_in_prompt_at_max() {
+        // Phase 3: `build_turn_context` must populate
+        // `iteration_budget: Some(...)` from the per-iteration counter
+        // and the loop's `max_iterations` ceiling. We pin the value
+        // directly on `ctx` (Phase 1 renders it; the integration is
+        // the field population) and also verify the rendered prompt
+        // contains the rendered body.
+        crate::identity::init_test_env();
+        ensure_global_core();
+
+        let temp = tempdir_unused();
+        std::fs::create_dir_all(&temp).unwrap();
+        let (provider, _adapter) = mock_provider();
+
+        let agent = Arc::new(
+            Agent::new_for_test(loop_test_agent("phase3-iter"), &temp)
+                .await
+                .unwrap(),
+        );
+        let loop_ = AgenticLoop::new(
+            Arc::clone(&agent),
+            Arc::clone(&provider),
+            agent.extension_core(),
+        )
+        .await;
+
+        // Pin the field: `iteration=3, max=10` → Some(state { 3, 10 }).
+        let ctx = loop_.build_turn_context(3, &[]);
+        let ib = ctx
+            .iteration_budget
+            .expect("iteration_budget must be populated each iteration");
+        assert_eq!(ib.iteration, 3);
+        assert_eq!(ib.max_iterations, 10);
+
+        // Pin the render: `## Iteration budget` + `Iteration 3 of 10`
+        // shows up in the Markdown body the loop would pass to the
+        // LLM.
+        let renderer =
+            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        assert!(rendered.contains("## Iteration budget"));
+        assert!(rendered.contains("Iteration 3 of 10"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn loop_renders_quota_state_when_meter_configured() {
+        // Phase 3: a configured `QuotaMeter` flows through
+        // `build_turn_context` into `ctx.quota_state: Some(view)`. The
+        // renderer then emits the `## Quota status` section. We pin
+        // the field directly AND verify the rendered body to catch
+        // regressions in either the loop plumbing or the render path.
+        use crate::quota::{QuotaConfig, QuotaMeter};
+        crate::identity::init_test_env();
+        ensure_global_core();
+
+        let temp = tempdir_unused();
+        std::fs::create_dir_all(&temp).unwrap();
+        let (provider, _adapter) = mock_provider();
+
+        let agent = Arc::new(
+            Agent::new_for_test(loop_test_agent("phase3-quota"), &temp)
+                .await
+                .unwrap(),
+        );
+        let meter = Arc::new(QuotaMeter::new(
+            QuotaConfig {
+                input_tokens: Some(1000),
+                output_tokens: None,
+                request_count: Some(10),
+                ..Default::default()
+            },
+            None,
+            chrono::Utc::now(),
+        ));
+        let loop_ = AgenticLoop::new(
+            Arc::clone(&agent),
+            Arc::clone(&provider),
+            agent.extension_core(),
+        )
+        .await
+        .with_quota_meter(meter);
+
+        let ctx = loop_.build_turn_context(1, &[]);
+        let qs = ctx
+            .quota_state
+            .as_ref()
+            .expect("quota_state must be populated when a meter is bound");
+        assert_eq!(qs.input_limit, Some(1000));
+        assert_eq!(qs.request_limit, Some(10));
+        assert_eq!(qs.request_count, 0);
+
+        let renderer =
+            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        assert!(rendered.contains("## Quota status (current window)"));
+        assert!(rendered.contains("Requests:"));
+        assert!(rendered.contains("1000"));
+        assert!(rendered.contains("/10"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn loop_handles_soft_cancel_signal_mid_run() {
+        // Phase 3: `build_turn_context` reads `self.cancel` on every
+        // iteration. A pre-cancelled token surfaces as
+        // `ctx.soft_cancel_pending == true`, which the renderer
+        // converts into the `{{soft_cancel}}` section. This pins the
+        // signal flow from the IPC handler's `with_cancel_token` into
+        // the next-turn system prompt.
+        crate::identity::init_test_env();
+        ensure_global_core();
+
+        let temp = tempdir_unused();
+        std::fs::create_dir_all(&temp).unwrap();
+        let (provider, _adapter) = mock_provider();
+
+        let agent = Arc::new(
+            Agent::new_for_test(loop_test_agent("phase3-cancel"), &temp)
+                .await
+                .unwrap(),
+        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel(); // simulate mid-run PrincipalSendControl
+
+        let loop_ = AgenticLoop::new(
+            Arc::clone(&agent),
+            Arc::clone(&provider),
+            agent.extension_core(),
+        )
+        .await
+        .with_cancel_token(cancel);
+
+        let ctx = loop_.build_turn_context(1, &[]);
+        assert!(ctx.soft_cancel_pending);
+
+        let renderer =
+            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        assert!(rendered.contains("## Cancellation requested"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn loop_handles_capability_grant_mid_run() {
+        // Phase 3: `cap_diff_tracker.observe` returns `Some(diff)` when
+        // the grant set expands between iterations. The tracker's
+        // state lives on the loop, so mid-run grant = a new
+        // `Capabilities` snapshot the loop observes on the next call
+        // to `build_turn_context`. We exercise the tracker directly
+        // (same code path the loop uses) plus a render of the diff
+        // the loop would surface.
+        use crate::agents::prompt::context::CapabilityDiffTracker;
+        use crate::extensions::framework::types::{Capabilities, Capability};
+        crate::identity::init_test_env();
+        ensure_global_core();
+
+        let temp = tempdir_unused();
+        std::fs::create_dir_all(&temp).unwrap();
+        let (provider, _adapter) = mock_provider();
+
+        let base_caps = Arc::new(Capabilities::with_grants([Capability::new("tool:Read")]));
+        let expanded_caps = Arc::new(Capabilities::with_grants([
+            Capability::new("tool:Read"),
+            Capability::new("tool:Write"),
+        ]));
+
+        let agent = Arc::new(
+            Agent::new_for_test(loop_test_agent("phase3-cap-grant"), &temp)
+                .await
+                .unwrap()
+                .with_principal_capabilities(Some(Arc::clone(&base_caps))),
+        );
+        let loop_ = AgenticLoop::new(
+            Arc::clone(&agent),
+            Arc::clone(&provider),
+            agent.extension_core(),
+        )
+        .await;
+
+        // First observation: baseline → diff is `None` (no section).
+        let ctx1 = loop_.build_turn_context(1, &[]);
+        assert!(
+            ctx1.capability_diff.is_none(),
+            "first observation must be the baseline (no diff)"
+        );
+
+        // Drive the tracker directly with the new snapshot. The loop's
+        // tracker is private; this exercises the same `observe` impl.
+        let mut tracker = CapabilityDiffTracker::new();
+        let first = tracker.observe(&base_caps);
+        assert!(first.is_none(), "first observation is baseline");
+        let second = tracker.observe(&expanded_caps);
+        let diff = second.expect("grant must surface a diff on the 2nd observation");
+        assert_eq!(diff.granted.len(), 1);
+        assert_eq!(diff.granted[0].capability, "tool:Write");
+        assert_eq!(diff.revoked.len(), 0);
+
+        // Pin the render path: a ctx carrying this diff renders the
+        // expected Markdown section.
+        let ctx2 = TurnPromptContext {
+            principal_id: agent.principal_id().to_string(),
+            agent_name: agent.name().to_string(),
+            body: "{{capability_diff}}".into(),
+            capabilities: Some(expanded_caps),
+            active_extensions: None,
+            principal_memory: None,
+            workspace: tempdir_unused(),
+            resolved_model: "mock-model".into(),
+            channel: "discord".into(),
+            thinking_level: "medium".into(),
+            sandbox_enabled: false,
+            model_aliases: vec![],
+            has_gateway: true,
+            iteration_budget: None,
+            quota_state: None,
+            soft_cancel_pending: false,
+            capability_diff: Some(diff),
+            tool_definitions: vec![],
+        };
+        let renderer =
+            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let rendered = renderer.render_for_iteration(&ctx2).await;
+        assert!(rendered.contains("## Capability changes since last turn"));
+        assert!(rendered.contains("Granted:"));
+        assert!(rendered.contains("- tool:Write"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn loop_handles_capability_revoke_mid_run() {
+        // Phase 3: mirror of the grant test — when the grant set
+        // shrinks between iterations, the diff surfaces the revoked
+        // capability under `Revoked:`.
+        use crate::agents::prompt::context::CapabilityDiffTracker;
+        use crate::extensions::framework::types::{Capabilities, Capability};
+        crate::identity::init_test_env();
+        ensure_global_core();
+
+        let full_caps = Arc::new(Capabilities::with_grants([
+            Capability::new("tool:Read"),
+            Capability::new("tool:Write"),
+        ]));
+        let shrunk_caps = Arc::new(Capabilities::with_grants([Capability::new("tool:Read")]));
+
+        let mut tracker = CapabilityDiffTracker::new();
+        let first = tracker.observe(&full_caps);
+        assert!(first.is_none());
+        let second = tracker.observe(&shrunk_caps);
+        let diff = second.expect("revoke must surface a diff");
+        assert_eq!(diff.granted.len(), 0);
+        assert_eq!(diff.revoked.len(), 1);
+        assert_eq!(diff.revoked[0].capability, "tool:Write");
+
+        // Pin render too.
+        let temp = tempdir_unused();
+        std::fs::create_dir_all(&temp).unwrap();
+        let (provider, _adapter) = mock_provider();
+        let agent = Arc::new(
+            Agent::new_for_test(loop_test_agent("phase3-cap-revoke"), &temp)
+                .await
+                .unwrap(),
+        );
+        let loop_ = AgenticLoop::new(
+            Arc::clone(&agent),
+            Arc::clone(&provider),
+            agent.extension_core(),
+        )
+        .await;
+
+        let ctx = TurnPromptContext {
+            principal_id: agent.principal_id().to_string(),
+            agent_name: agent.name().to_string(),
+            body: "{{capability_diff}}".into(),
+            capabilities: Some(shrunk_caps),
+            active_extensions: None,
+            principal_memory: None,
+            workspace: tempdir_unused(),
+            resolved_model: "mock-model".into(),
+            channel: "discord".into(),
+            thinking_level: "medium".into(),
+            sandbox_enabled: false,
+            model_aliases: vec![],
+            has_gateway: true,
+            iteration_budget: None,
+            quota_state: None,
+            soft_cancel_pending: false,
+            capability_diff: Some(diff),
+            tool_definitions: vec![],
+        };
+        let renderer =
+            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        assert!(rendered.contains("Revoked:"));
+        assert!(rendered.contains("- tool:Write"));
     }
 }

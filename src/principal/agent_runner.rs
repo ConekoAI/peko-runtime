@@ -247,7 +247,7 @@ where
     // Open or create the root agent session.  Hold the per-principal
     // session-creation lock while touching the shared session index so
     // concurrent peers don't corrupt it.
-    let mut is_new_session = false;
+    let _is_new_session_unused_after_refactor = false;
     let session = {
         let _creation_guard = ctx.session_creation_lock.lock().await;
         let maybe_handle = {
@@ -257,7 +257,6 @@ where
         if let Some(handle) = maybe_handle {
             handle.base().clone()
         } else {
-            is_new_session = true;
             let mut mgr = session_manager.write().await;
             let options = SessionCreateOptions::new().with_session_id(&session_id);
             let handle = mgr
@@ -267,38 +266,15 @@ where
             handle.base().clone()
         }
     };
+    // SessionStart hook was removed (per-turn rebuild refactor):
+    // the bootstrap context is now produced by `SessionContextBuild`
+    // hooks fired by `PromptRenderer::render_for_iteration` on every
+    // iteration, so a one-shot fire here would be redundant and stale.
 
-    // Fire the session-start hook for brand-new sessions. The returned
-    // bootstrap context is persisted on the session and rendered into the
-    // system prompt via the `{{session_context}}` placeholder.
-    if is_new_session {
-        let mut metadata = std::collections::HashMap::<String, serde_json::Value>::new();
-        metadata.insert("event".to_string(), serde_json::json!("startup"));
-        metadata.insert(
-            "workspace".to_string(),
-            serde_json::json!(ctx.workspace_path.to_string_lossy().to_string()),
-        );
-        let snapshot = crate::extensions::framework::types::SessionSnapshot {
-            session_id: session_id.clone(),
-            message_count: 0,
-            context_tokens: 0,
-            metadata,
-        };
-        let principal_id = ctx.principal_id().to_string();
-        if let Some(context) = core
-            .invoke_hook_text_with_principal(
-                crate::extensions::framework::HookPoint::SessionStart,
-                crate::extensions::framework::HookInput::SessionState(snapshot),
-                Some(&principal_id),
-                Some(ctx.capabilities.to_strings()),
-                Some(ctx.active_extensions().to_vec()),
-                Some(ctx.workspace_path.to_string_lossy().to_string()),
-            )
-            .await
-        {
-            session.write().await.extension_context = Some(context);
-        }
-    }
+    // SessionStart hook was removed (per-turn rebuild refactor):
+    // the bootstrap context is now produced by `SessionContextBuild`
+    // hooks fired by `PromptRenderer::render_for_iteration` on every
+    // iteration, so a one-shot fire here would be redundant and stale.
 
     let history: Vec<LlmMessage> = session.read().await.load_history().await?;
 

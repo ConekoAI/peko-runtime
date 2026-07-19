@@ -77,9 +77,6 @@ pub struct Session {
     pub current_model: Option<String>,
     /// Cached metadata controller for index updates
     metadata_controller: Option<MetadataController>,
-    /// Bootstrap context returned by `HookPoint::SessionStart` handlers.
-    /// Persisted on the session so it survives prompt rebuilds.
-    pub extension_context: Option<String>,
 }
 
 impl Session {
@@ -112,7 +109,6 @@ impl Session {
             current_provider: None,
             current_model: None,
             metadata_controller: None,
-            extension_context: None,
         }
     }
 
@@ -218,7 +214,6 @@ impl Session {
             current_provider: None,
             current_model: None,
             metadata_controller: None,
-            extension_context: None,
         })
     }
 
@@ -292,33 +287,9 @@ impl Session {
         }
     }
 
-    /// Get the bootstrap context returned by `HookPoint::SessionStart` handlers.
-    #[must_use]
-    pub fn extension_context(&self) -> Option<&str> {
-        self.extension_context.as_deref()
-    }
-
     // ============================================================
     // Message Operations
     // ============================================================
-
-    /// Add a system message
-    ///
-    /// Stores the message in LLM-native format (`LlmMessageEvent` with role="system")
-    /// for consistent session storage.
-    pub async fn add_system(&mut self, content: impl Into<String>) -> Result<()> {
-        // Use native format for unified storage
-        self.add_llm_message(
-            "system",
-            vec![ContentBlock::Text {
-                text: content.into(),
-            }],
-            None,
-            None,
-            None,
-        )
-        .await
-    }
 
     /// Add a user message
     ///
@@ -1055,7 +1026,17 @@ mod tests {
                 .await
                 .unwrap();
 
-        session.add_system("You are helpful.").await.unwrap();
+        // add_system was removed; the system prompt is reconstructed every
+        // turn by the renderer. For build_context tests we synthesize a
+        // system message directly via append_event so the cache path is
+        // exercised end-to-end.
+        use crate::session::events::{SessionEvent, SessionMessage};
+        session
+            .append_event(&SessionEvent::MessageV2(SessionMessage::system(
+                "You are helpful.",
+            )))
+            .await
+            .unwrap();
         session.add_user("Hello").await.unwrap();
         session.add_assistant("Hi there", None, None).await.unwrap();
 
@@ -1081,7 +1062,15 @@ mod tests {
                 .await
                 .unwrap();
 
-        session.add_system("You are helpful.").await.unwrap();
+        // add_system was removed; synthesize the system message via
+        // append_event to exercise the compaction path end-to-end.
+        use crate::session::events::{SessionEvent, SessionMessage};
+        session
+            .append_event(&SessionEvent::MessageV2(SessionMessage::system(
+                "You are helpful.",
+            )))
+            .await
+            .unwrap();
         session.add_user("Old message 1").await.unwrap();
         session
             .add_assistant("Old reply", None, None)
@@ -1134,7 +1123,15 @@ mod tests {
                 .await
                 .unwrap();
 
-        session.add_system("You are helpful.").await.unwrap();
+        // add_system was removed; synthesize the system message via
+        // append_event for the cache test.
+        use crate::session::events::{SessionEvent, SessionMessage};
+        session
+            .append_event(&SessionEvent::MessageV2(SessionMessage::system(
+                "You are helpful.",
+            )))
+            .await
+            .unwrap();
         session.add_user("Hello").await.unwrap();
 
         // First call builds from JSONL and writes cache
@@ -1165,7 +1162,15 @@ mod tests {
                 .await
                 .unwrap();
 
-        session.add_system("You are helpful.").await.unwrap();
+        // add_system was removed; synthesize the system message via
+        // append_event for the cache test.
+        use crate::session::events::{SessionEvent, SessionMessage};
+        session
+            .append_event(&SessionEvent::MessageV2(SessionMessage::system(
+                "You are helpful.",
+            )))
+            .await
+            .unwrap();
         session.add_user("Hello").await.unwrap();
 
         // First call writes cache
@@ -1246,8 +1251,14 @@ mod tests {
                 .await
                 .unwrap();
 
-        // 1. Build up conversation history
-        session.add_system("You are helpful.").await.unwrap();
+        // 1. Build up conversation history (synthesize system via append_event)
+        use crate::session::events::{SessionEvent, SessionMessage};
+        session
+            .append_event(&SessionEvent::MessageV2(SessionMessage::system(
+                "You are helpful.",
+            )))
+            .await
+            .unwrap();
         session.add_user("Message 1").await.unwrap();
         session.add_assistant("Reply 1", None, None).await.unwrap();
         session.add_user("Message 2").await.unwrap();
