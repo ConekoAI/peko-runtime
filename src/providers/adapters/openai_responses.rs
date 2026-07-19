@@ -1921,6 +1921,10 @@ mod tests {
             betas: Vec::new(),
             beta_api: false,
             thinking_keep: crate::providers::ThinkingKeep::Off,
+            // F29: per-call override of `ModelConfig::compat`.
+            // Defaults to None so pre-F29 callers see no change in
+            // wire shape.
+            compat_override: None,
         }
     }
 }

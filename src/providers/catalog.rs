@@ -39,6 +39,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::providers::templates::ProviderTemplate;
+use crate::providers::traits::ProviderCompat;
 
 /// Top-level API format understood by the runtime.
 ///
@@ -141,6 +142,16 @@ pub struct ModelConfig {
     pub created_at: DateTime<Utc>,
     #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
+    /// F29: per-provider adapter hints resolved from the template.
+    /// `None` means "use the adapter's built-in F25 default" — the
+    /// pre-F29 behaviour. When `Some`, the adapter projects
+    /// `ChatOptions::thinking_effort` onto the wire shape named by
+    /// `compat.thinking_format` (DeepSeek / Kimi / OpenRouter /
+    /// Together / Qwen / Zai / native Anthropic / Responses / Chat
+    /// Completions). Field is skipped from JSONL when absent so
+    /// pre-F29 entries keep loading without migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<ProviderCompat>,
 }
 
 fn default_true() -> bool {
@@ -192,6 +203,7 @@ impl ModelConfig {
             enabled: true,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            compat: template.compat,
         }
     }
 }

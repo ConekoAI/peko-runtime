@@ -203,6 +203,35 @@ impl super::ApiAdapter for OpenAiAdapter {
             body["reasoning_effort"] = json!(effort);
         }
 
+        // F29: per-provider compat emit. Chat Completions speaks
+        // both `reasoning_effort` (canonical) and the provider-
+        // specific `extra_body.thinking` shape that DeepSeek's R1
+        // family expects. Only DeepSeek is wired today — other
+        // compat flavours (Qwen/Zai/OpenRouter/Together) are
+        // surfaced via `compat_override` for follow-up PRs to land
+        // the per-flavour wire rules without a flag-day refactor.
+        //
+        // Callers opt in by populating `ChatOptions::compat_override`
+        // explicitly (typically driven by the resolver binding
+        // `ModelConfig::compat` to the call). Defaults stay
+        // unaffected — `compat_override: None` produces the pre-F29
+        // wire shape byte-for-byte.
+        if options.thinking_effort.is_enabled() {
+            if let Some(compat) = options.compat_override {
+                if compat.thinking_format == crate::providers::traits::ThinkingFormat::DeepSeek {
+                    // DeepSeek-R1: `thinking: {type:"enabled"}` is the
+                    // canonical toggle. Wire effort alongside via
+                    // `reasoning_effort` so DeepSeek's router picks
+                    // the right reasoning model variant.
+                    body["thinking"] = json!({"type": "enabled"});
+                }
+                // Kimi/Zai/Qwen/OpenRouter/Together wire shapes are
+                // concrete per-spec but land in F30+ so the F29 PR
+                // stays focused on the type surface + DeepSeek wire.
+                let _ = compat.deferred_tools_mode;
+            }
+        }
+
         debug!("OpenAI request: {}", serde_json::to_string_pretty(&body)?);
 
         Ok(("/chat/completions".to_string(), body))
@@ -1047,6 +1076,104 @@ mod tests {
             body.get("reasoning_effort").is_none(),
             "Adaptive should not emit a Chat Completions reasoning_effort string"
         );
+    }
+
+    // F29: per-provider compat emit. DeepSeek-R1 expects
+    // `thinking: {type:"enabled"}` alongside the canonical
+    // `reasoning_effort`. When `compat_override` selects the
+    // DeepSeek flavour we emit both. Other compat flavours
+    // (Qwen/Zai/OpenRouter/Together) stay unwired today; their
+    // surface binds land in F30+.
+
+    fn deepseek_compat() -> crate::providers::traits::ProviderCompat {
+        crate::providers::traits::ProviderCompat {
+            thinking_format: crate::providers::traits::ThinkingFormat::DeepSeek,
+            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+        }
+    }
+
+    #[test]
+    fn test_build_request_f29_deepseek_compat_emits_thinking_block_alongside_effort() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+        let options = ChatOptions {
+            thinking_effort: ThinkingEffort::High,
+            compat_override: Some(deepseek_compat()),
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("deepseek-reasoner", &messages, None, &options, false)
+            .unwrap();
+        // Canonical OpenAI-style effort — DeepSeek's router picks the
+        // matching reasoning model variant from this string.
+        assert_eq!(body["reasoning_effort"], "high");
+        // Provider-specific toggle. DeepSeek-R1 lights up when this is
+        // `{"type":"enabled"}`.
+        assert_eq!(body["thinking"]["type"], "enabled");
+    }
+
+    #[test]
+    fn test_build_request_f29_compat_without_thinking_effort_does_not_emit_thinking() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+        let options = ChatOptions {
+            thinking_effort: ThinkingEffort::None,
+            compat_override: Some(deepseek_compat()),
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("deepseek-chat", &messages, None, &options, false)
+            .unwrap();
+        // Compat is present but the user did not opt into thinking —
+        // gate stays closed so non-reasoning calls stay byte-for-byte
+        // identical to pre-F29 Chat Completions traffic.
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "thinking_effort:None must not emit reasoning_effort"
+        );
+        assert!(
+            body.get("thinking").is_none(),
+            "compat without an enabled effort must not emit thinking"
+        );
+    }
+
+    #[test]
+    fn test_build_request_f29_compat_override_other_flavours_stay_unwired() {
+        // Kimi/Zai/Qwen/OpenRouter/Together are surfaced as enum
+        // variants today but their wire shapes land in F30+. Pin
+        // that the F29 emit path is a deliberate no-op for those
+        // flavours so the PR stays scoped.
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![LlmMessage::user("hi")];
+        let flavours = [
+            crate::providers::traits::ThinkingFormat::Kimi,
+            crate::providers::traits::ThinkingFormat::Zai,
+            crate::providers::traits::ThinkingFormat::Qwen,
+            crate::providers::traits::ThinkingFormat::OpenRouter,
+            crate::providers::traits::ThinkingFormat::Together,
+        ];
+        for flavour in flavours {
+            let compat = crate::providers::traits::ProviderCompat {
+                thinking_format: flavour,
+                deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+            };
+            let options = ChatOptions {
+                thinking_effort: ThinkingEffort::High,
+                compat_override: Some(compat),
+                ..Default::default()
+            };
+            let (_, body) = adapter
+                .build_request("model", &messages, None, &options, false)
+                .unwrap();
+            // Canonical OpenAI effort still emits; provider-specific
+            // shape (the `thinking` block) is intentionally absent for
+            // these flavours until F30+ lands their wire rules.
+            assert_eq!(body["reasoning_effort"], "high");
+            assert!(
+                body.get("thinking").is_none(),
+                "flavour {flavour:?} should not emit `thinking` block in F29"
+            );
+        }
     }
 
     /// Streaming delta carries `reasoning_content` (Moonshot/Kimi
