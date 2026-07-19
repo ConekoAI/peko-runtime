@@ -115,6 +115,7 @@ impl SessionMessage {
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
                 tool_call_id: None,
+                usage: None,
             },
             message_id: generate_message_id(),
             role_metadata: RoleMetadata::Assistant {
@@ -181,6 +182,7 @@ impl SessionMessage {
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
                 tool_call_id: Some(tool_call_id_str.clone()),
+                usage: None,
             },
             message_id: generate_message_id(),
             role_metadata: RoleMetadata::Tool {
@@ -268,6 +270,15 @@ impl SessionMessage {
         if let RoleMetadata::Tool { tool_call_id } = &self.role_metadata {
             msg.tool_call_id = Some(tool_call_id.clone());
         }
+        // F21: surface provider-reported token usage onto the in-memory
+        // copy so the compactor's `estimate_context_tokens` can anchor
+        // on real counts when replaying this message from session
+        // storage. The persisted `RoleMetadata::Assistant::usage`
+        // remains the on-disk source of truth — this method only
+        // populates the in-memory `LlmMessage.usage` field.
+        if let RoleMetadata::Assistant { usage, .. } = &self.role_metadata {
+            msg = msg.with_usage(Some(usage.clone()));
+        }
         msg
     }
 
@@ -339,6 +350,49 @@ mod tests {
         let chat = msg.to_llm_message();
         assert_eq!(chat.role, MessageRole::User);
         assert_eq!(chat.content.len(), 1);
+    }
+
+    /// F21: when an assistant message carries real provider-reported
+    /// usage, `to_llm_message` propagates it onto the resulting
+    /// `LlmMessage.usage`. Without this, replaying a session from
+    /// JSONL would always look like `usage: None` to the compactor,
+    /// forcing the chars/4 fallback even on turns that DID report
+    /// real counts.
+    #[test]
+    fn test_to_llm_message_propagates_assistant_usage() {
+        let usage = TokenUsage {
+            input: 100,
+            output: 50,
+            total: 150,
+            ..Default::default()
+        };
+        let msg = SessionMessage::assistant_with_blocks(
+            vec![ContentBlock::Text {
+                text: "answer".into(),
+            }],
+            "openai",
+            "gpt-4",
+            usage.clone(),
+        );
+        let chat = msg.to_llm_message();
+        assert_eq!(chat.role, MessageRole::Assistant);
+        assert_eq!(chat.usage, Some(usage));
+    }
+
+    /// F21: non-assistant messages always produce `LlmMessage.usage = None`.
+    /// `RoleMetadata::Tool` has no usage, `RoleMetadata::User` has none,
+    /// `RoleMetadata::System` has none. This pins that the propagation
+    /// only fires for the assistant variant.
+    #[test]
+    fn test_to_llm_message_non_assistant_has_no_usage() {
+        let user = SessionMessage::user("hi", MessageSource::User);
+        assert_eq!(user.to_llm_message().usage, None);
+
+        let system = SessionMessage::system("you are a helpful assistant");
+        assert_eq!(system.to_llm_message().usage, None);
+
+        let tool = SessionMessage::tool_result("tc1", "Read", "file contents");
+        assert_eq!(tool.to_llm_message().usage, None);
     }
 
     #[test]

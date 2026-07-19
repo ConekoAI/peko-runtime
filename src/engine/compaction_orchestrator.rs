@@ -118,7 +118,13 @@ impl CompactionOrchestrator {
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
         run_id: &str,
     ) -> Result<bool> {
-        let estimated_tokens = crate::session::compaction::Compactor::estimate_tokens(messages);
+        // F21: hybrid estimator. Anchors on the last assistant message
+        // with provider-reported usage and char/4-estimates only the
+        // trailing slice since that anchor. Falls back to chars/4 across
+        // the full conversation when no usage data is available (e.g.
+        // pre-F21 JSONL reloads with `usage: None` everywhere).
+        let estimated = crate::session::compaction::Compactor::estimate_context_tokens(messages);
+        let estimated_tokens = estimated.tokens;
 
         // Start background compaction if needed and not already running
         if self.pending_compaction.is_none()
@@ -375,7 +381,13 @@ impl CompactionOrchestrator {
             HookInput::SessionState(SessionSnapshot {
                 session_id,
                 message_count: messages.len(),
-                context_tokens: crate::session::compaction::Compactor::estimate_tokens(messages),
+                // F21: same hybrid estimator as the pre-hook check. Extension
+                // hooks see real provider-reported usage counts after the
+                // first assistant turn instead of a chars/4 heuristic.
+                context_tokens: crate::session::compaction::Compactor::estimate_context_tokens(
+                    messages,
+                )
+                .tokens,
                 metadata: HashMap::new(),
             })
         };

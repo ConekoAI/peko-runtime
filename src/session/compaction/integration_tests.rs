@@ -112,6 +112,7 @@ fn test_never_cuts_at_tool_result() {
             timestamp: chrono::Utc::now(),
             metadata: std::collections::HashMap::new(),
             tool_call_id: Some("tc1".to_string()),
+            usage: None,
         },
         LlmMessage::user("Next"),
     ];
@@ -219,9 +220,7 @@ fn test_file_op_extraction_from_tool_calls() {
                 arguments: serde_json::json!({"file_path": "output.txt", "content": "..."}),
             },
         ],
-        timestamp: chrono::Utc::now(),
-        metadata: std::collections::HashMap::new(),
-        tool_call_id: None,
+        ..Default::default()
     }];
 
     let ops = extract_file_ops_from_messages(&messages);

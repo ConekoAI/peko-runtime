@@ -226,9 +226,7 @@ mod tests {
                     text: "part2".into(),
                 },
             ],
-            timestamp: chrono::Utc::now(),
-            metadata: std::collections::HashMap::new(),
-            tool_call_id: None,
+            ..Default::default()
         }];
         assert_eq!(
             ResultRecovery::extract_last_assistant(&history),
@@ -252,9 +250,7 @@ mod tests {
             content: vec![ContentBlock::Text {
                 text: "tool output".into(),
             }],
-            timestamp: chrono::Utc::now(),
-            metadata: std::collections::HashMap::new(),
-            tool_call_id: None,
+            ..Default::default()
         }];
         assert_eq!(
             ResultRecovery::extract_tool_results(&history),
@@ -288,18 +284,14 @@ mod tests {
                 content: vec![ContentBlock::Text {
                     text: "second".into(),
                 }],
-                timestamp: chrono::Utc::now(),
-                metadata: std::collections::HashMap::new(),
-                tool_call_id: None,
+                ..Default::default()
             },
             LlmMessage {
                 role: MessageRole::Tool,
                 content: vec![ContentBlock::Text {
                     text: "first".into(),
                 }],
-                timestamp: chrono::Utc::now(),
-                metadata: std::collections::HashMap::new(),
-                tool_call_id: None,
+                ..Default::default()
             },
         ];
         assert_eq!(
@@ -315,9 +307,7 @@ mod tests {
             content: vec![ContentBlock::Text {
                 text: r#"{"content": "extracted"}"#.into(),
             }],
-            timestamp: chrono::Utc::now(),
-            metadata: std::collections::HashMap::new(),
-            tool_call_id: None,
+            ..Default::default()
         }];
         assert_eq!(
             ResultRecovery::extract_tool_results(&history),

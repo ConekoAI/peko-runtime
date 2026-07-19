@@ -212,9 +212,7 @@ mod tests {
                     arguments: serde_json::json!({"file_path": "src/lib.rs", "content": "..."}),
                 },
             ],
-            timestamp: chrono::Utc::now(),
-            metadata: std::collections::HashMap::new(),
-            tool_call_id: None,
+            ..Default::default()
         }];
 
         let ops = extract_file_ops_from_messages(&messages);
@@ -236,9 +234,7 @@ mod tests {
                 name: "Read".to_string(),
                 arguments: serde_json::json!({"file_path": "c.rs"}),
             }],
-            timestamp: chrono::Utc::now(),
-            metadata: std::collections::HashMap::new(),
-            tool_call_id: None,
+            ..Default::default()
         }];
 
         let cumulative = compute_cumulative_details(Some(&prev), &messages);

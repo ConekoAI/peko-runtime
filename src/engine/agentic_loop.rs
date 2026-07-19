@@ -25,9 +25,7 @@ use crate::providers::{
 use crate::quota::QuotaScope;
 use crate::session::Session;
 use anyhow::Result;
-use chrono::Utc;
 use futures::StreamExt;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -339,9 +337,7 @@ impl AgenticLoop {
                     content: vec![ContentBlock::Text {
                         text: format!("You are {}.", self.agent.name()),
                     }],
-                    timestamp: Utc::now(),
-                    metadata: HashMap::new(),
-                    tool_call_id: None,
+                    ..Default::default()
                 }];
                 msgs.extend(h);
                 msgs
@@ -354,9 +350,7 @@ impl AgenticLoop {
                 content: vec![ContentBlock::Text {
                     text: format!("You are {}.", self.agent.name()),
                 }],
-                timestamp: Utc::now(),
-                metadata: HashMap::new(),
-                tool_call_id: None,
+                ..Default::default()
             }]
         };
 
@@ -433,9 +427,7 @@ impl AgenticLoop {
                     content: vec![ContentBlock::Text {
                         text: format!("You are {}.", self.agent.name()),
                     }],
-                    timestamp: Utc::now(),
-                    metadata: HashMap::new(),
-                    tool_call_id: None,
+                    ..Default::default()
                 }];
                 msgs.extend(h);
                 msgs
@@ -446,9 +438,7 @@ impl AgenticLoop {
                 content: vec![ContentBlock::Text {
                     text: format!("You are {}.", self.agent.name()),
                 }],
-                timestamp: Utc::now(),
-                metadata: HashMap::new(),
-                tool_call_id: None,
+                ..Default::default()
             }]
         };
 
@@ -1096,14 +1086,22 @@ impl AgenticLoop {
                     assistant_content.push(tc.clone());
                 }
 
-                // Add to messages
-                messages.push(LlmMessage {
-                    role: MessageRole::Assistant,
-                    content: assistant_content,
-                    timestamp: chrono::Utc::now(),
-                    metadata: std::collections::HashMap::new(),
-                    tool_call_id: None,
-                });
+                // Add to messages. F21: surface provider-reported usage
+                // onto the in-memory copy so the compactor's
+                // `estimate_context_tokens` can anchor on real token
+                // counts instead of falling back to chars/4. The
+                // persisted `SessionMessage::assistant_with_blocks` call
+                // below carries the same usage via
+                // `RoleMetadata::Assistant::usage`, so the JSONL shape
+                // already matches.
+                messages.push(
+                    LlmMessage {
+                        role: MessageRole::Assistant,
+                        content: assistant_content,
+                        ..Default::default()
+                    }
+                    .with_usage(iteration_usage.clone()),
+                );
 
                 // Add to session
                 let tool_call_blocks: Vec<crate::session::events::ToolCallBlock> = tool_calls
@@ -1598,9 +1596,7 @@ impl AgenticLoop {
                     content: vec![ContentBlock::Text {
                         text: format!("You are {}.", self.agent.name()),
                     }],
-                    timestamp: Utc::now(),
-                    metadata: HashMap::new(),
-                    tool_call_id: None,
+                    ..Default::default()
                 }];
                 msgs.extend(h);
                 msgs
@@ -1611,9 +1607,7 @@ impl AgenticLoop {
                 content: vec![ContentBlock::Text {
                     text: format!("You are {}.", self.agent.name()),
                 }],
-                timestamp: Utc::now(),
-                metadata: HashMap::new(),
-                tool_call_id: None,
+                ..Default::default()
             }]
         };
 
