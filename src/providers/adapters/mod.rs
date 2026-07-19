@@ -205,6 +205,23 @@ pub trait ApiAdapter: Send + Sync {
         vec![]
     }
 
+    /// F25: get per-request headers that depend on the caller's
+    /// `ChatOptions` and the model id. Default is empty (most
+    /// adapters don't need dynamic headers). Anthropic uses this
+    /// to attach `anthropic-beta: interleaved-thinking-2025-05-08`
+    /// when budget-mode thinking is enabled (which is detected
+    /// from the model id, not from `ChatOptions` alone). Headers
+    /// returned here are merged after `extra_headers()`, so static
+    /// headers win on collision (callers can rely on `with_header`
+    /// for stable overrides).
+    fn extra_request_headers(
+        &self,
+        _model_id: &str,
+        _options: &ChatOptions,
+    ) -> Vec<(String, String)> {
+        vec![]
+    }
+
     /// Check if this provider supports native tool calling
     fn supports_native_tools(&self) -> bool {
         true
@@ -332,6 +349,20 @@ impl ApiAdapter for AnyAdapter {
             Self::Anthropic(a) => a.extra_headers(),
             Self::OpenAiCompatible(a) => a.extra_headers(),
             Self::Mock(a) => a.extra_headers(),
+        }
+    }
+
+    fn extra_request_headers(
+        &self,
+        model_id: &str,
+        options: &ChatOptions,
+    ) -> Vec<(String, String)> {
+        match self {
+            Self::OpenAi(a) => a.extra_request_headers(model_id, options),
+            Self::OpenAiResponses(a) => a.extra_request_headers(model_id, options),
+            Self::Anthropic(a) => a.extra_request_headers(model_id, options),
+            Self::OpenAiCompatible(a) => a.extra_request_headers(model_id, options),
+            Self::Mock(a) => a.extra_request_headers(model_id, options),
         }
     }
 

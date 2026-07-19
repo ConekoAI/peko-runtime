@@ -954,6 +954,15 @@ impl AgenticLoop {
                 } else {
                     None
                 },
+                // F25: caller-supplied reasoning knob. Until we
+                // expose this on the IPC surface (F26+), the engine
+                // loop's default of `None` matches the pre-F25 wire
+                // shape — every adapter gates emission on
+                // `thinking_effort.is_enabled()` so default-None
+                // callers see byte-for-byte identical requests.
+                thinking_effort: crate::providers::ThinkingEffort::None,
+                thinking_summary: None,
+                encrypted_reasoning: false,
                 ..Default::default()
             };
 

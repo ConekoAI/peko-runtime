@@ -63,6 +63,47 @@ impl Default for AnthropicAdapter {
     }
 }
 
+/// F25: detect model ids that support Anthropic's *adaptive* thinking
+/// mode (`thinking: {type: "adaptive"}` + `output_config: {effort}`).
+///
+/// Adaptive mode is opt-in on the following Claude-family model ids:
+/// - `claude-opus-4-6`, `claude-opus-4-7`, `claude-opus-4-8`, ... (4-6+)
+/// - `claude-sonnet-5`, `claude-sonnet-5-0`, ...
+/// - `claude-fable-5`, `claude-fable-5-1`, ...
+/// - `claude-mythos-5`, ...
+///
+/// Older models (Opus 4-1..4-5, Sonnet 4-5/4-7, Haiku) fall back to
+/// the legacy `budget_tokens` mode. The detection is a pure prefix
+/// check on the model id; it runs once per request (no caching) so a
+/// misfire on a future model id is harmless — it just drops to
+/// budget mode, which the server accepts on all thinking-capable
+/// Claude models.
+///
+/// Mirrors codex-rs's `is_adaptive_thinking_model` heuristic at
+/// `codex-api/src/provider.rs:341-358`.
+#[must_use]
+pub fn is_adaptive_thinking_model(model_id: &str) -> bool {
+    let prefix = model_id.split('-').take(3).collect::<Vec<_>>().join("-");
+    // `claude-opus-4-6` → `claude-opus-4`
+    // `claude-sonnet-5` → `claude-sonnet-5`
+    // `claude-fable-5` → `claude-fable-5`
+    match prefix.as_str() {
+        "claude-opus-4" => {
+            // Only Opus 4-6+ (model-ids like `claude-opus-4-6-...`).
+            // The 4th segment is the minor version; >= 6 is adaptive.
+            let minor = model_id
+                .split('-')
+                .nth(3)
+                .and_then(|s| s.split('.').next())
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            minor >= 6
+        }
+        "claude-sonnet-5" | "claude-fable-5" | "claude-mythos-5" => true,
+        _ => false,
+    }
+}
+
 impl AnthropicAdapter {
     /// Convert unified messages to Anthropic format
     ///
@@ -316,6 +357,59 @@ impl super::ApiAdapter for AnthropicAdapter {
             body["metadata"] = json!({ "user_id": key });
         }
 
+        // F25: thinking-mode emission. Two shapes:
+        //
+        // 1. Adaptive mode — Opus 4-6+, Sonnet 5, Fable 5+, Mythos 5.
+        //    Body: `thinking: {type: "adaptive"}` + `output_config: {effort}`.
+        //    Header: drop the `interleaved-thinking` beta (adaptive mode
+        //    replaces the legacy interleaving).
+        //
+        // 2. Budget mode — everything else (and the case where the caller
+        //    forced a numeric effort on a non-adaptive model).
+        //    Body: `thinking: {type: "enabled", budget_tokens: N}`.
+        //    Header: `anthropic-beta: interleaved-thinking-2025-05-08`
+        //    so thinking can be interleaved with tool calls (added
+        //    via `extra_request_headers` so `&self` stays immutable).
+        //
+        // `Adaptive` effort on a non-adaptive model → fall back to
+        // budget mode with a `High` token allowance. `None` effort
+        // → no thinking fields on the wire (default).
+        if options.thinking_effort.is_enabled() {
+            let adaptive = is_adaptive_thinking_model(model_id);
+            match (options.thinking_effort, adaptive) {
+                (effort, true) => {
+                    // Adaptive mode: the `output_config.effort` field
+                    // uses the same vocabulary as `ChatOptions`. For
+                    // budget-style callers that set an integer effort
+                    // (Low/Medium/High/XHigh/Max), pass the same string
+                    // — Anthropic maps `Low → low`, `High → high`, etc.
+                    let effort_str = match effort {
+                        crate::providers::ThinkingEffort::Low => "low",
+                        crate::providers::ThinkingEffort::Medium => "medium",
+                        crate::providers::ThinkingEffort::High => "high",
+                        crate::providers::ThinkingEffort::XHigh => "max",
+                        crate::providers::ThinkingEffort::Max => "max",
+                        crate::providers::ThinkingEffort::Adaptive => "high",
+                        crate::providers::ThinkingEffort::None => "medium",
+                    };
+                    body["thinking"] = json!({"type": "adaptive"});
+                    body["output_config"] = json!({"effort": effort_str});
+                }
+                (effort, false) => {
+                    let budget = effort.to_anthropic_budget_tokens();
+                    if budget > 0 {
+                        body["thinking"] = json!({
+                            "type": "enabled",
+                            "budget_tokens": budget,
+                        });
+                        // Interleaved thinking beta is added via
+                        // `extra_request_headers` (F25) so we don't
+                        // need to mutate `self.extra_headers` here.
+                    }
+                }
+            }
+        }
+
         debug!(
             "Anthropic request: {}",
             serde_json::to_string_pretty(&body)?
@@ -484,6 +578,20 @@ impl super::ApiAdapter for AnthropicAdapter {
                                 }));
                             }
                         }
+                        // F25: Anthropic emits a `signature_delta`
+                        // event after the final thinking chunk —
+                        // the `signature` is an opaque token the
+                        // model uses to verify the thinking block
+                        // when the caller echoes it back. Peko
+                        // doesn't currently echo thinking back, so
+                        // we drop it on the floor (the blocking
+                        // path captures signatures for any future
+                        // echo path). Acknowledging the event
+                        // keeps the SSE parser in a consistent
+                        // state.
+                        Some("signature_delta") => {
+                            // intentional no-op
+                        }
                         _ => {}
                     }
                 }
@@ -565,6 +673,25 @@ impl super::ApiAdapter for AnthropicAdapter {
 
     fn extra_headers(&self) -> Vec<(String, String)> {
         self.extra_headers.clone()
+    }
+
+    fn extra_request_headers(
+        &self,
+        model_id: &str,
+        options: &ChatOptions,
+    ) -> Vec<(String, String)> {
+        // F25: attach `interleaved-thinking-2025-05-08` whenever
+        // budget-mode thinking is enabled. Adaptive mode (Opus 4-6+,
+        // Sonnet 5, Fable 5+, Mythos 5) replaces the legacy
+        // interleaving and does not need this beta.
+        if options.thinking_effort.is_enabled() && !is_adaptive_thinking_model(model_id) {
+            vec![(
+                "anthropic-beta".to_string(),
+                "interleaved-thinking-2025-05-08".to_string(),
+            )]
+        } else {
+            vec![]
+        }
     }
 }
 
@@ -1199,5 +1326,155 @@ mod tests {
         let long = CacheControl::for_retention(CacheRetention::Long).unwrap();
         assert_eq!(long.cache_type, "ephemeral");
         assert_eq!(long.ttl, Some("1h"));
+    }
+
+    // ---------- F25: reasoning-effort wiring ----------
+
+    /// `is_adaptive_thinking_model` recognizes the adaptive-capable
+    /// model ids exactly — pins the prefix table so a future
+    /// rename surfaces as a test failure rather than a silent
+    /// budget/adaptive flip in production.
+    #[test]
+    fn test_is_adaptive_thinking_model_prefixes() {
+        // Adaptive (Opus 4-6+, Sonnet 5, Fable 5, Mythos 5)
+        assert!(is_adaptive_thinking_model("claude-opus-4-6"));
+        assert!(is_adaptive_thinking_model("claude-opus-4-7"));
+        assert!(is_adaptive_thinking_model("claude-opus-4-6-20250101"));
+        assert!(is_adaptive_thinking_model("claude-sonnet-5"));
+        assert!(is_adaptive_thinking_model("claude-sonnet-5-0"));
+        assert!(is_adaptive_thinking_model("claude-fable-5"));
+        assert!(is_adaptive_thinking_model("claude-mythos-5"));
+
+        // Budget (older Claude families)
+        assert!(!is_adaptive_thinking_model("claude-opus-4-5"));
+        assert!(!is_adaptive_thinking_model("claude-opus-4-1"));
+        assert!(!is_adaptive_thinking_model("claude-sonnet-4-5"));
+        assert!(!is_adaptive_thinking_model("claude-3-7-sonnet-20250219"));
+        assert!(!is_adaptive_thinking_model("claude-3-5-sonnet-20240620"));
+        assert!(!is_adaptive_thinking_model("claude-haiku-4-5"));
+
+        // Unknown family
+        assert!(!is_adaptive_thinking_model("gpt-5"));
+        assert!(!is_adaptive_thinking_model(""));
+    }
+
+    /// Default `ChatOptions` keeps the wire shape unchanged — no
+    /// `thinking` block, no `output_config`, no extra headers.
+    #[test]
+    fn test_build_request_thinking_effort_none_omits_thinking_block() {
+        let adapter = AnthropicAdapter::new();
+        let (_, body) = adapter
+            .build_request(
+                "claude-opus-4-5",
+                &sample_messages(),
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("output_config").is_none());
+        // No interleaved-thinking beta header.
+        assert!(adapter
+            .extra_request_headers("claude-opus-4-5", &ChatOptions::default())
+            .is_empty());
+    }
+
+    /// Budget mode on a non-adaptive model emits
+    /// `thinking: {type: "enabled", budget_tokens: N}` and the
+    /// interleaved-thinking beta header.
+    #[test]
+    fn test_build_request_budget_mode_emits_enabled_and_beta() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            thinking_effort: crate::providers::ThinkingEffort::High,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("claude-opus-4-5", &sample_messages(), None, &options, false)
+            .unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 32_000);
+        assert!(body.get("output_config").is_none());
+        let headers = adapter.extra_request_headers("claude-opus-4-5", &options);
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "anthropic-beta" && v == "interleaved-thinking-2025-05-08"),
+            "expected interleaved-thinking beta, got {headers:?}"
+        );
+    }
+
+    /// Adaptive mode on Opus 4-6+ emits
+    /// `thinking: {type: "adaptive"}` + `output_config: {effort}`
+    /// and does NOT attach the interleaved-thinking beta.
+    #[test]
+    fn test_build_request_adaptive_mode_on_opus_4_6() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            thinking_effort: crate::providers::ThinkingEffort::High,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("claude-opus-4-6", &sample_messages(), None, &options, false)
+            .unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "high");
+        let headers = adapter.extra_request_headers("claude-opus-4-6", &options);
+        assert!(
+            !headers
+                .iter()
+                .any(|(k, v)| k == "anthropic-beta" && v.contains("interleaved")),
+            "adaptive mode must not attach interleaved-thinking beta, got {headers:?}"
+        );
+    }
+
+    /// `Adaptive` effort on a non-adaptive model falls back to
+    /// budget mode with a `High` token allowance.
+    #[test]
+    fn test_build_request_adaptive_effort_on_non_adaptive_model_falls_back() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            thinking_effort: crate::providers::ThinkingEffort::Adaptive,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("claude-opus-4-5", &sample_messages(), None, &options, false)
+            .unwrap();
+        // Falls back to budget mode — `to_anthropic_budget_tokens`
+        // returns 0 for Adaptive (which the adapter suppresses), so
+        // the field is dropped.
+        assert!(body.get("thinking").is_none());
+    }
+
+    /// `signature_delta` events are accepted by the SSE parser
+    /// without surfacing as a stream event (peko doesn't currently
+    /// echo thinking back to the model).
+    #[test]
+    fn test_parse_sse_signature_delta_acknowledged() {
+        let adapter = AnthropicAdapter::new();
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc"}}"#;
+        let event = adapter.parse_sse_event("claude-opus-4-6", data).unwrap();
+        assert!(
+            event.is_none(),
+            "signature_delta should be a silent no-op, got {event:?}"
+        );
+    }
+
+    /// `ThinkingStart` already exists from F22 — pin that the
+    /// streaming path still emits it on `content_block_start`
+    /// for `thinking` blocks.
+    #[test]
+    fn test_parse_sse_thinking_start_emitted() {
+        let adapter = AnthropicAdapter::new();
+        let data =
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#;
+        let event = adapter.parse_sse_event("claude-opus-4-6", data).unwrap();
+        match event {
+            Some(crate::providers::StreamEvent::ThinkingStart { content_index }) => {
+                assert_eq!(content_index, 0);
+            }
+            other => panic!("expected ThinkingStart, got {other:?}"),
+        }
     }
 }

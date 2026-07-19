@@ -224,6 +224,34 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
             body["parallel_tool_calls"] = json!(true);
         }
 
+        // F25: reasoning-effort knob. Maps to Responses API's
+        // `reasoning: {effort, summary}` object. The string is the
+        // same vocabulary as Chat Completions for `effort`
+        // (`"low"|"medium"|"high"`, plus `"xhigh"`/`"max"` when
+        // supported). `summary: "auto"` is the only value OpenAI
+        // documents — it lets the server decide between
+        // `concise`/`detailed` based on effort.
+        if options.thinking_effort.is_enabled() {
+            let effort = options
+                .thinking_effort
+                .as_chat_completions_str()
+                .unwrap_or("medium"); // Adaptive → fall back to medium
+            let mut reasoning = json!({"effort": effort});
+            if options.thinking_summary == Some(true) {
+                reasoning["summary"] = json!("auto");
+            }
+            body["reasoning"] = reasoning;
+            if options.encrypted_reasoning {
+                // The Responses API uses an `include` array to opt
+                // into specific output surfaces.
+                // `reasoning.encrypted_content` returns the encrypted
+                // reasoning payload alongside the summary so callers
+                // can pass it back into `previous_response_id` chains
+                // without leaking plaintext.
+                body["include"] = json!(["reasoning.encrypted_content"]);
+            }
+        }
+
         // F23: prompt-cache wiring. Same shape as Chat Completions:
         // `prompt_cache_key` (≤64 UTF-32 chars) and
         // `prompt_cache_retention` ("24h") only when Long. The
@@ -286,10 +314,24 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
                     });
                     stop_reason = StopReason::ToolUse;
                 }
-                ResponsesOutputItem::Reasoning { .. } => {
-                    // Reasoning items are not surfaced as visible
-                    // content; if a caller wants reasoning text it
-                    // comes through the streaming SSE delta path.
+                ResponsesOutputItem::Reasoning { summary } => {
+                    // F25: surface Reasoning items as Thinking
+                    // blocks on the blocking path. Each entry in
+                    // `summary` is a typed `summary_text` part;
+                    // flatten the text fields in order so the
+                    // engine loop's reasoning-before-text ordering
+                    // is preserved.
+                    let text = summary
+                        .iter()
+                        .filter_map(|entry| entry.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("");
+                    if !text.is_empty() {
+                        content.push(ContentBlock::Thinking {
+                            text,
+                            signature: None,
+                        });
+                    }
                 }
                 ResponsesOutputItem::Unknown => {
                     // Unknown variant from `#[serde(other)]` — skip.
@@ -363,6 +405,42 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
                     if !delta.is_empty() {
                         return Ok(Some(StreamEvent::TextDelta {
                             content_index: 0,
+                            delta,
+                        }));
+                    }
+                }
+                Ok(None)
+            }
+            "response.reasoning_text.delta" => {
+                // F25: streaming raw reasoning text. The
+                // `response.reasoning_text.delta` event carries a
+                // `delta` string with the model's internal
+                // reasoning — surface it as ThinkingDelta so the
+                // engine loop can render the trace alongside the
+                // answer. `output_index` carries the position of
+                // the reasoning item in `output`, useful when
+                // multiple reasoning blocks interleave with text.
+                if let Some(delta) = chunk.delta {
+                    if !delta.is_empty() {
+                        return Ok(Some(StreamEvent::ThinkingDelta {
+                            content_index: chunk.output_index.map(|i| i as usize).unwrap_or(0),
+                            delta,
+                        }));
+                    }
+                }
+                Ok(None)
+            }
+            "response.reasoning_summary_text.delta" => {
+                // F25: streaming summary-of-reasoning text. When the
+                // request includes `reasoning: {summary: "auto"}`,
+                // OpenAI emits a parallel summary stream —
+                // surface as ThinkingDelta on a separate content
+                // index so the caller can render trace + summary
+                // side-by-side.
+                if let Some(delta) = chunk.delta {
+                    if !delta.is_empty() {
+                        return Ok(Some(StreamEvent::ThinkingDelta {
+                            content_index: chunk.output_index.map(|i| i as usize).unwrap_or(0),
                             delta,
                         }));
                     }
@@ -695,7 +773,7 @@ mod tests {
     use super::super::ApiAdapter;
     use super::*;
     use crate::common::types::message::{ContentBlock, MessageRole};
-    use crate::providers::traits::LlmMessage;
+    use crate::providers::traits::{LlmMessage, ThinkingEffort};
 
     fn user_msg(text: &str) -> LlmMessage {
         LlmMessage {
@@ -927,6 +1005,95 @@ mod tests {
         assert_eq!(tools_json[0]["name"], "Read");
     }
 
+    // ---------- F25: reasoning-effort wiring ----------
+
+    /// Default options produce no `reasoning` / `include` fields on
+    /// the wire — the pre-F25 shape is preserved when callers don't
+    /// opt in.
+    #[test]
+    fn build_request_thinking_effort_none_omits_reasoning_fields() {
+        let adapter = make_adapter();
+        let messages = vec![user_msg("hi")];
+        let (_, body) = adapter
+            .build_request("gpt-test", &messages, None, &options_default(), false)
+            .unwrap();
+        assert!(body.get("reasoning").is_none());
+        assert!(body.get("include").is_none());
+    }
+
+    /// `thinking_effort: High` emits `reasoning: {effort: "high"}`
+    /// and the encrypted-reasoning include list.
+    #[test]
+    fn build_request_thinking_effort_high_emits_reasoning_block() {
+        let adapter = make_adapter();
+        let messages = vec![user_msg("hi")];
+        let options = ChatOptions {
+            thinking_effort: ThinkingEffort::High,
+            encrypted_reasoning: true,
+            ..options_default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-test", &messages, None, &options, false)
+            .unwrap();
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    }
+
+    /// `thinking_summary: Some(true)` adds `reasoning.summary = "auto"`.
+    #[test]
+    fn build_request_thinking_summary_true_emits_auto() {
+        let adapter = make_adapter();
+        let messages = vec![user_msg("hi")];
+        let options = ChatOptions {
+            thinking_effort: ThinkingEffort::Medium,
+            thinking_summary: Some(true),
+            encrypted_reasoning: true,
+            ..options_default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-test", &messages, None, &options, false)
+            .unwrap();
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        assert_eq!(body["reasoning"]["summary"], "auto");
+    }
+
+    /// `encrypted_reasoning: false` suppresses the include list —
+    /// callers that don't want reasoning payloads persisted can
+    /// opt out cleanly.
+    #[test]
+    fn build_request_encrypted_reasoning_false_omits_include() {
+        let adapter = make_adapter();
+        let messages = vec![user_msg("hi")];
+        let options = ChatOptions {
+            thinking_effort: ThinkingEffort::Low,
+            encrypted_reasoning: false,
+            ..options_default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-test", &messages, None, &options, false)
+            .unwrap();
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert!(body.get("include").is_none());
+    }
+
+    /// `Adaptive` falls back to `medium` on the wire — Responses
+    /// doesn't have a native adaptive knob, so callers that want
+    /// the closest thing to Opus-4-6+ adaptive thinking should use
+    /// the Anthropic adapter instead.
+    #[test]
+    fn build_request_thinking_effort_adaptive_falls_back_to_medium() {
+        let adapter = make_adapter();
+        let messages = vec![user_msg("hi")];
+        let options = ChatOptions {
+            thinking_effort: ThinkingEffort::Adaptive,
+            ..options_default()
+        };
+        let (_, body) = adapter
+            .build_request("gpt-test", &messages, None, &options, false)
+            .unwrap();
+        assert_eq!(body["reasoning"]["effort"], "medium");
+    }
+
     // ---- parse_response ------------------------------------------------
 
     #[test]
@@ -1118,6 +1285,83 @@ mod tests {
         assert!(ev.is_none());
     }
 
+    // ---- F25 reasoning SSE / response ----------------------------------
+
+    /// `response.reasoning_text.delta` surfaces as `ThinkingDelta`
+    /// with the raw reasoning chunk.
+    #[test]
+    fn parse_sse_event_reasoning_text_delta() {
+        let adapter = make_adapter();
+        let data =
+            r#"{"type":"response.reasoning_text.delta","output_index":0,"delta":"thinking step"}"#;
+        let ev = adapter.parse_sse_event("gpt-test", data).unwrap().unwrap();
+        match ev {
+            StreamEvent::ThinkingDelta {
+                content_index,
+                delta,
+            } => {
+                assert_eq!(content_index, 0);
+                assert_eq!(delta, "thinking step");
+            }
+            other => panic!("expected ThinkingDelta, got {other:?}"),
+        }
+    }
+
+    /// `response.reasoning_summary_text.delta` is the summary
+    /// stream emitted when the request includes
+    /// `reasoning.summary = "auto"`. Same `ThinkingDelta` shape.
+    #[test]
+    fn parse_sse_event_reasoning_summary_text_delta() {
+        let adapter = make_adapter();
+        let data = r#"{"type":"response.reasoning_summary_text.delta","output_index":1,"delta":"Concise answer plan"}"#;
+        let ev = adapter.parse_sse_event("gpt-test", data).unwrap().unwrap();
+        match ev {
+            StreamEvent::ThinkingDelta {
+                content_index,
+                delta,
+            } => {
+                assert_eq!(content_index, 1);
+                assert_eq!(delta, "Concise answer plan");
+            }
+            other => panic!("expected ThinkingDelta, got {other:?}"),
+        }
+    }
+
+    /// Blocking `parse_response` surfaces Reasoning items as
+    /// `ContentBlock::Thinking` blocks, ordering them before any
+    /// Message text in the same response.
+    #[test]
+    fn parse_response_surfaces_reasoning_summary() {
+        let adapter = make_adapter();
+        let body = json!({
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [
+                        {"type": "summary_text", "text": "step one "},
+                        {"type": "summary_text", "text": "step two"}
+                    ]
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "answer"}]
+                }
+            ],
+            "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}
+        });
+        let parsed = adapter.parse_response("gpt-test", body).unwrap();
+        assert_eq!(parsed.content.len(), 2);
+        match &parsed.content[0] {
+            ContentBlock::Thinking { text, signature } => {
+                assert_eq!(text, "step one step two");
+                assert!(signature.is_none());
+            }
+            other => panic!("expected Thinking first, got {other:?}"),
+        }
+        assert!(matches!(&parsed.content[1], ContentBlock::Text { text } if text == "answer"));
+    }
+
     // ---- Capability flags ---------------------------------------------
 
     #[test]
@@ -1159,6 +1403,12 @@ mod tests {
             headers: Default::default(),
             cache_retention: CacheRetention::None,
             prompt_cache_key: None,
+            // F25: default to no reasoning on the wire so existing
+            // tests that don't set these fields keep producing the
+            // pre-F25 request shape.
+            thinking_effort: crate::providers::traits::ThinkingEffort::None,
+            thinking_summary: None,
+            encrypted_reasoning: false,
         }
     }
 }
