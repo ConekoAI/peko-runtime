@@ -35,8 +35,16 @@ pub enum Placeholder {
     McpContext,
     /// Principal long-term memory from MEMORY.md - {{memory}}
     Memory,
-    /// Extension bootstrap context from SessionStart hooks - {{session_context}}
+    /// Extension bootstrap context from per-turn SessionContextBuild hooks - {{session_context}}
     SessionContext,
+    /// Iteration budget state - {{iteration_budget}}
+    IterationBudget,
+    /// Quota state snapshot - {{quota_state}}
+    QuotaState,
+    /// Soft-cancel pending flag - {{soft_cancel}}
+    SoftCancel,
+    /// Capability-diff since last render - {{capability_diff}}
+    CapabilityDiff,
 }
 
 impl Placeholder {
@@ -58,6 +66,10 @@ impl Placeholder {
             Self::McpContext => "{{mcp_context}}",
             Self::Memory => "{{memory}}",
             Self::SessionContext => "{{session_context}}",
+            Self::IterationBudget => "{{iteration_budget}}",
+            Self::QuotaState => "{{quota_state}}",
+            Self::SoftCancel => "{{soft_cancel}}",
+            Self::CapabilityDiff => "{{capability_diff}}",
         }
     }
 }
@@ -96,6 +108,13 @@ mod tests {
         assert_eq!(Placeholder::Runtime.marker(), "{{runtime}}");
         assert_eq!(Placeholder::Memory.marker(), "{{memory}}");
         assert_eq!(Placeholder::SessionContext.marker(), "{{session_context}}");
+        assert_eq!(
+            Placeholder::IterationBudget.marker(),
+            "{{iteration_budget}}"
+        );
+        assert_eq!(Placeholder::QuotaState.marker(), "{{quota_state}}");
+        assert_eq!(Placeholder::SoftCancel.marker(), "{{soft_cancel}}");
+        assert_eq!(Placeholder::CapabilityDiff.marker(), "{{capability_diff}}");
     }
 
     #[test]

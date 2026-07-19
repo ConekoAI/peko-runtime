@@ -237,8 +237,15 @@ mod tests {
             .await
             .unwrap();
 
-        // Add system + 6 messages (enough to compact)
-        session.add_system("You are helpful.").await.unwrap();
+        // Synthesize a system message via append_event (add_system was
+        // removed in the per-turn rebuild refactor).
+        use crate::session::events::{SessionEvent, SessionMessage};
+        session
+            .append_event(&SessionEvent::MessageV2(SessionMessage::system(
+                "You are helpful.",
+            )))
+            .await
+            .unwrap();
         session.add_user("Message 1").await.unwrap();
         session.add_assistant("Reply 1", None, None).await.unwrap();
         session.add_user("Message 2").await.unwrap();

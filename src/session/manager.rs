@@ -2103,6 +2103,13 @@ async fn build_session_context(
 ///
 /// This is used for shared-context spawns where the child should start with
 /// the parent's conversation history.
+///
+/// **System messages are intentionally NOT copied.** The system prompt is
+/// reconstructed fresh on every iteration by
+/// [`crate::agents::prompt::PromptRenderer`]; the child loop will overwrite
+/// `messages[0]` with a freshly rendered prompt built from the child's
+/// own principal + iteration state. Persisting the parent's rendered
+/// prompt into the child JSONL would be both redundant and stale.
 async fn copy_session_context(
     parent: &Arc<RwLock<Session>>,
     child: &Arc<RwLock<Session>>,
@@ -2120,9 +2127,13 @@ async fn copy_session_context(
         return Ok(());
     }
 
+    let copyable_count = parent_history
+        .iter()
+        .filter(|m| !matches!(m.role, MessageRole::System))
+        .count();
     tracing::info!(
-        "Copying {} messages from parent to child session",
-        parent_history.len()
+        "Copying {copyable_count} non-system messages from parent to child session ({} system messages skipped — child loop renders its own)",
+        parent_history.len() - copyable_count,
     );
 
     // Copy each message to child's session
@@ -2131,21 +2142,11 @@ async fn copy_session_context(
     for msg in parent_history {
         match msg.role {
             MessageRole::System => {
-                // Extract text from content blocks
-                let text: String = msg
-                    .content
-                    .iter()
-                    .filter_map(|c| {
-                        if let ContentBlock::Text { text } = c {
-                            Some(text.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if !text.is_empty() {
-                    child_guard.add_system(&text).await?;
-                }
+                // Skipped: the renderer rebuilds the system prompt fresh
+                // every iteration. Persisting the parent's rendered
+                // prompt into the child JSONL would be both redundant
+                // (the child loop overwrites messages[0]) and stale
+                // (different principal state, different iteration count).
             }
             MessageRole::User => {
                 // Extract text from content blocks

@@ -72,6 +72,35 @@ pub struct AgentConfig {
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub enable_async_tools: bool,
+
+    /// Channel that triggered this agent's LLM calls (CLI, Discord, etc.).
+    ///
+    /// Surfaces in the rendered system prompt at `{{channel}}` and in the
+    /// `{{runtime}}` section's `Channel:` line. `None` means the agent
+    /// does not override the runtime default (`"discord"` for legacy
+    /// compat — see `AgenticLoop::build_turn_context`).
+    #[serde(default)]
+    pub channel: Option<String>,
+
+    /// Thinking level for the model (e.g. `"medium"`, `"high"`).
+    ///
+    /// Surfaces at `{{thinking_level}}`. `None` falls back to the
+    /// runtime default (`"medium"`).
+    #[serde(default)]
+    pub thinking_level: Option<String>,
+
+    /// Whether this agent runs inside an isolated sandbox.
+    ///
+    /// Gates the `{{sandbox}}` section in the rendered system prompt.
+    /// Defaults to `false` (no sandbox section rendered).
+    #[serde(default)]
+    pub sandbox_enabled: bool,
+
+    /// Configured model aliases (e.g. `["sonnet", "haiku"]`) for the
+    /// `{{model_aliases}}` section. Empty list means the section is
+    /// omitted from the prompt.
+    #[serde(default)]
+    pub model_aliases: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -111,6 +140,14 @@ impl Default for AgentConfig {
             agent_did: None,
             enable_task_tools: true,
             enable_async_tools: true,
+            // Phase 2 inert fields. The renderer reads these from
+            // `AgentConfig` via `Agent` accessors; `None`/`false`/`[]`
+            // here preserves the legacy hardcoded runtime defaults
+            // (`"discord"`, `"medium"`, sandbox off, no aliases).
+            channel: None,
+            thinking_level: None,
+            sandbox_enabled: false,
+            model_aliases: Vec::new(),
         }
     }
 }
@@ -189,5 +226,57 @@ mod tests {
         let parsed: super::AgentConfig = toml::from_str(&toml).expect("parse modern");
         assert_eq!(parsed.agent_did.as_deref(), Some("did:peko:local:deadbeef"));
         assert_eq!(parsed.name, "modern-agent");
+    }
+
+    /// Phase 2: `AgentConfig::default()` returns the back-compat inert
+    /// field defaults so existing agents render unchanged.
+    #[test]
+    fn agent_config_default_inert_fields() {
+        let config = super::AgentConfig::default();
+        assert!(config.channel.is_none());
+        assert!(config.thinking_level.is_none());
+        assert!(!config.sandbox_enabled);
+        assert!(config.model_aliases.is_empty());
+    }
+
+    /// Phase 2: `#[serde(default)]` on each inert field means an
+    /// older `AgentConfig` TOML without these keys still parses
+    /// cleanly. The renderer falls back to its legacy hardcoded
+    /// defaults via `Agent::channel().unwrap_or("discord")` etc.
+    #[test]
+    fn agent_config_legacy_toml_omits_inert_fields() {
+        let legacy = r#"
+            name = "legacy"
+            prompt = "you are {{agent_name}}"
+            enable_task_tools = true
+            enable_async_tools = true
+        "#;
+        let parsed: super::AgentConfig =
+            toml::from_str(legacy).expect("parse legacy TOML without inert fields");
+        assert_eq!(parsed.name, "legacy");
+        assert!(parsed.channel.is_none());
+        assert!(parsed.thinking_level.is_none());
+        assert!(!parsed.sandbox_enabled);
+        assert!(parsed.model_aliases.is_empty());
+    }
+
+    /// Phase 2: a fully populated inert-field config round-trips
+    /// through TOML so per-agent overrides from disk survive a
+    /// restart.
+    #[test]
+    fn agent_config_inert_fields_round_trip() {
+        let mut config = super::AgentConfig::default();
+        config.name = "configured".to_string();
+        config.channel = Some("cli".to_string());
+        config.thinking_level = Some("high".to_string());
+        config.sandbox_enabled = true;
+        config.model_aliases = vec!["sonnet".to_string(), "haiku".to_string()];
+
+        let toml = toml::to_string_pretty(&config).expect("serialize");
+        let parsed: super::AgentConfig = toml::from_str(&toml).expect("parse");
+        assert_eq!(parsed.channel.as_deref(), Some("cli"));
+        assert_eq!(parsed.thinking_level.as_deref(), Some("high"));
+        assert!(parsed.sandbox_enabled);
+        assert_eq!(parsed.model_aliases, vec!["sonnet", "haiku"]);
     }
 }
