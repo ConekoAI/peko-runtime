@@ -42,7 +42,7 @@ use crate::providers::templates::ProviderTemplate;
 
 /// Top-level API format understood by the runtime.
 ///
-/// The runtime ships adapters for these two formats. Custom models
+/// The runtime ships adapters for these formats. Custom models
 /// declared via `peko model add --custom --api-format <FMT>` must use
 /// one of these values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +54,13 @@ pub enum ApiFormat {
     /// Anthropic Messages API. Compatible with Anthropic, Kimi Code,
     /// MiniMax, …
     AnthropicMessages,
+    /// OpenAI Responses API (`POST /v1/responses`). Successor surface
+    /// to Chat Completions; preferred by gpt-4.1, gpt-5, and o-series
+    /// reasoning models. Carries `instructions` + `input` items
+    /// instead of `messages[]` and exposes a distinct SSE event
+    /// family. Compatible with OpenAI direct and the Azure
+    /// Responses endpoint.
+    OpenAiResponses,
 }
 
 impl ApiFormat {
@@ -63,11 +70,13 @@ impl ApiFormat {
         match self {
             ApiFormat::OpenaiCompletions => "openai_completions",
             ApiFormat::AnthropicMessages => "anthropic_messages",
+            ApiFormat::OpenAiResponses => "openai_responses",
         }
     }
 
-    /// Parse from wire id. Accepts both the canonical enum forms and the
-    /// short "openai"/"anthropic" ids emitted by the desktop UI.
+    /// Parse from wire id. Accepts both the canonical enum forms and
+    /// the short "openai"/"anthropic"/"responses" ids emitted by the
+    /// desktop UI.
     #[must_use]
     pub fn from_wire(s: &str) -> Option<Self> {
         match s {
@@ -75,6 +84,7 @@ impl ApiFormat {
             "anthropic_messages" | "anthropic-messages" | "anthropic" => {
                 Some(Self::AnthropicMessages)
             }
+            "openai_responses" | "openai-responses" | "responses" => Some(Self::OpenAiResponses),
             _ => None,
         }
     }
@@ -384,7 +394,11 @@ mod tests {
 
     #[test]
     fn api_format_wire_roundtrip() {
-        for fmt in [ApiFormat::OpenaiCompletions, ApiFormat::AnthropicMessages] {
+        for fmt in [
+            ApiFormat::OpenaiCompletions,
+            ApiFormat::AnthropicMessages,
+            ApiFormat::OpenAiResponses,
+        ] {
             let s = fmt.as_str();
             let back = ApiFormat::from_wire(s).unwrap();
             assert_eq!(fmt, back);
@@ -401,6 +415,14 @@ mod tests {
         assert_eq!(
             ApiFormat::from_wire("anthropic"),
             Some(ApiFormat::AnthropicMessages)
+        );
+        assert_eq!(
+            ApiFormat::from_wire("responses"),
+            Some(ApiFormat::OpenAiResponses)
+        );
+        assert_eq!(
+            ApiFormat::from_wire("openai_responses"),
+            Some(ApiFormat::OpenAiResponses)
         );
     }
 
