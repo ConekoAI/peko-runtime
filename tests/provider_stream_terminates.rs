@@ -108,15 +108,13 @@ async fn stream_terminates_on_done_even_if_connection_stays_open() {
         timeout_seconds: 30,
         max_retries: 0,
         retry_delay_ms: 0,
-        extra_headers: Vec::new(),
+        ..Default::default()
     };
     let provider = Provider::new(adapter, "test-key", options).expect("provider");
 
     let options = ChatOptions {
         temperature: Some(0.0),
-        max_tokens: None,
-        api_key: None,
-        headers: std::collections::HashMap::new(),
+        ..Default::default()
     };
     let messages = vec![LlmMessage::user("hi")];
 
@@ -220,15 +218,13 @@ async fn stream_terminates_on_message_stop_even_if_connection_stays_open() {
         timeout_seconds: 30,
         max_retries: 0,
         retry_delay_ms: 0,
-        extra_headers: Vec::new(),
+        ..Default::default()
     };
     let provider = Provider::new(adapter, "test-key", options).expect("provider");
 
     let options = ChatOptions {
         temperature: Some(0.0),
-        max_tokens: None,
-        api_key: None,
-        headers: std::collections::HashMap::new(),
+        ..Default::default()
     };
     let messages = vec![LlmMessage::user("hi")];
 

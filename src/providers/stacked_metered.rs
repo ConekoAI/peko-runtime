@@ -119,6 +119,12 @@ impl StackedMeteredProvider {
         self.inner.supports_native_tools()
     }
 
+    /// Whether the inner provider supports prompt-cache markers.
+    #[must_use]
+    pub fn supports_prompt_cache_control(&self) -> bool {
+        self.inner.supports_prompt_cache_control()
+    }
+
     /// How many meters are stacked on this wrapper. Empty means
     /// passthrough (no quota will be charged).
     #[must_use]

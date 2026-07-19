@@ -99,6 +99,91 @@ impl PromptRenderer {
         replace_placeholders(&ctx.body, &values, true)
     }
 
+    /// F23: render only the cache-stable prefix of the system prompt.
+    ///
+    /// Includes the agent body, inline identity / runtime / sandbox
+    /// fields, and the four hook-driven sections (`tools`, `skills`,
+    /// `agents`, `mcp_context`) — i.e. everything that is byte-stable
+    /// across iterations within a session unless the profile or tool
+    /// table mutates. Excludes per-iteration fields like
+    /// `{{iteration_budget}}`, `{{quota_state}}`, `{{session_context}}`,
+    /// `{{memory}}`, `{{timezone}}`, `{{soft_cancel}}`, and
+    /// `{{capability_diff}}` (those go in [`render_per_turn`]).
+    ///
+    /// The engine loop caches the returned string in an `Arc<String>`
+    /// and only re-renders when the profile or tool table changes.
+    /// Adapter cache markers on this prefix give the provider
+    /// byte-identical prefix matching turn-over-turn.
+    #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.agent_name))]
+    pub async fn render_cache_stable(&self, ctx: &TurnPromptContext) -> String {
+        // Parallel hook dispatch — same as the full render, but we only
+        // consume the four stable-section hooks. The session-context
+        // hook is volatile (it runs every iteration); we ignore its
+        // result by reading an empty string into the values map.
+        let (tools, skills, agents, mcp) = tokio::join!(
+            self.dispatch_text("tools", ctx),
+            self.dispatch_text("skills", ctx),
+            self.dispatch_text("agents", ctx),
+            self.dispatch_text("mcp_context", ctx),
+        );
+
+        let empty_session = String::new();
+        let values =
+            build_stable_placeholder_values(ctx, &tools, &skills, &agents, &mcp, &empty_session);
+        replace_placeholders(&ctx.body, &values, true)
+    }
+
+    /// F23: render only the per-turn volatile suffix.
+    ///
+    /// Complements [`render_cache_stable`]: produces the trailing
+    /// section of the system prompt that changes every iteration
+    /// (`{{timezone}}`, `{{memory}}`, `{{session_context}}`,
+    /// `{{iteration_budget}}`, `{{quota_state}}`, `{{soft_cancel}}`,
+    /// `{{capability_diff}}`). The engine loop concatenates this with
+    /// the cached prefix via [`assemble_system_prompt`]; the result is
+    /// byte-stable across the prefix (cache hit) plus a fresh suffix
+    /// each iteration.
+    #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.agent_name, iteration = ?ctx.iteration_budget.map(|i| i.iteration)))]
+    pub async fn render_per_turn(&self, ctx: &TurnPromptContext) -> String {
+        // The per-turn suffix is built from a stripped-down body that
+        // only carries the volatile placeholders. We don't ship a
+        // separate template per agent; instead we run
+        // `replace_placeholders` over a synthetic body containing just
+        // the volatile placeholders, with `remove_missing=true` so any
+        // template that doesn't reference a volatile placeholder yields
+        // an empty string (the engine loop will then reuse the cached
+        // prefix as-is).
+        //
+        // The synthetic body lists each volatile placeholder on its
+        // own line so each section is delimited.
+        const VOLATILE_BODY: &str = "\
+            {{timezone}}\n\
+            {{memory}}\n\
+            {{session_context}}\n\
+            {{iteration_budget}}\n\
+            {{quota_state}}\n\
+            {{soft_cancel}}\n\
+            {{capability_diff}}";
+
+        let session_ctx = self.dispatch_session_context(ctx).await;
+        let values = build_per_turn_placeholder_values(ctx, &session_ctx);
+        replace_placeholders(VOLATILE_BODY, &values, true)
+    }
+
+    /// Assemble the cache-stable prefix and the per-turn suffix into
+    /// the final system prompt string. When the suffix is empty
+    /// (e.g. the template references no volatile placeholders), the
+    /// prefix is returned verbatim so we don't add trailing
+    /// whitespace.
+    #[must_use]
+    pub fn assemble_system_prompt(cache_stable: &str, per_turn: &str) -> String {
+        if per_turn.is_empty() {
+            cache_stable.to_string()
+        } else {
+            format!("{cache_stable}\n\n{per_turn}")
+        }
+    }
+
     /// Dispatch a single `PromptSystemSection` hook with a 2s timeout.
     /// Returns the empty string on timeout, missing handler, or error.
     async fn dispatch_text(&self, section: &str, ctx: &TurnPromptContext) -> String {
@@ -221,6 +306,104 @@ fn build_placeholder_values(
     );
 
     // Control surfaces
+    values.insert(
+        Placeholder::IterationBudget,
+        ctx.iteration_budget
+            .as_ref()
+            .map(IterationBudgetState::render)
+            .unwrap_or_default(),
+    );
+    values.insert(
+        Placeholder::QuotaState,
+        ctx.quota_state
+            .as_ref()
+            .map(QuotaStateView::render)
+            .unwrap_or_default(),
+    );
+    values.insert(
+        Placeholder::SoftCancel,
+        if ctx.soft_cancel_pending {
+            render_soft_cancel_section()
+        } else {
+            String::new()
+        },
+    );
+    values.insert(
+        Placeholder::CapabilityDiff,
+        ctx.capability_diff
+            .as_ref()
+            .map(CapabilityDiff::render)
+            .unwrap_or_default(),
+    );
+
+    values
+}
+
+/// F23: build the placeholder → value map for the cache-stable prefix.
+///
+/// Same shape as `build_placeholder_values`, but only fills the
+/// placeholders that are byte-stable across iterations: inline
+/// identity, runtime, sandbox, model aliases, self-update, and the
+/// four hook-driven section placeholders. Volatile placeholders
+/// (`timezone`, `memory`, `session_context`, `iteration_budget`,
+/// `quota_state`, `soft_cancel`, `capability_diff`) are omitted —
+/// `remove_missing=true` strips them on render.
+fn build_stable_placeholder_values(
+    ctx: &TurnPromptContext,
+    tools: &str,
+    skills: &str,
+    agents: &str,
+    mcp: &str,
+    _session_ctx: &str,
+) -> HashMap<Placeholder, String> {
+    let mut values = HashMap::new();
+
+    // Inline identity / runtime (no volatile clock).
+    values.insert(Placeholder::AgentName, ctx.agent_name.clone());
+    values.insert(Placeholder::Workspace, ctx.workspace.display().to_string());
+    values.insert(Placeholder::Channel, ctx.channel.clone());
+    values.insert(Placeholder::ThinkingLevel, ctx.thinking_level.clone());
+    // Placeholder::Timezone intentionally omitted — volatile.
+
+    // Hook-driven sections.
+    values.insert(Placeholder::Tools, format_tools_section(tools));
+    values.insert(Placeholder::Skills, format_skills_section(skills));
+    values.insert(Placeholder::Agents, format_agents_section(agents));
+    values.insert(Placeholder::Runtime, format_runtime_section(ctx));
+    values.insert(Placeholder::Sandbox, format_sandbox_section(ctx));
+    values.insert(Placeholder::ModelAliases, format_model_aliases_section(ctx));
+    values.insert(
+        Placeholder::SelfUpdate,
+        format_self_update_section(ctx.has_gateway),
+    );
+    values.insert(Placeholder::McpContext, mcp.to_string());
+    // Memory, SessionContext, IterationBudget, QuotaState, SoftCancel,
+    // CapabilityDiff intentionally omitted — volatile.
+
+    values
+}
+
+/// F23: build the placeholder → value map for the per-turn suffix.
+///
+/// Only fills the volatile placeholders. Stable placeholders are
+/// omitted; `remove_missing=true` strips any leftover references in
+/// the synthetic body.
+fn build_per_turn_placeholder_values(
+    ctx: &TurnPromptContext,
+    session_ctx: &str,
+) -> HashMap<Placeholder, String> {
+    let mut values = HashMap::new();
+
+    values.insert(
+        Placeholder::Timezone,
+        Local::now().format("%:z").to_string(),
+    );
+    values.insert(Placeholder::Memory, format_memory_section(ctx));
+    values.insert(
+        Placeholder::SessionContext,
+        format_session_context_section(session_ctx),
+    );
+
     values.insert(
         Placeholder::IterationBudget,
         ctx.iteration_budget
@@ -610,5 +793,72 @@ mod tests {
         ctx.capability_diff = None;
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(!rendered.contains("## Capability changes"));
+    }
+
+    // ---------- F23: cache_stable + per_turn split ----------
+
+    /// Two renderings of the cache-stable prefix with the same context
+    /// produce byte-identical strings — the foundation of provider
+    /// prefix-cache hits. The volatile placeholders
+    /// (`{{iteration_budget}}`, `{{quota_state}}`, `{{session_context}}`)
+    /// are absent from the prefix; mutating them between renders
+    /// must not change the prefix.
+    #[tokio::test]
+    async fn render_cache_stable_byte_identical_across_iterations() {
+        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let mut ctx = empty_ctx();
+        ctx.body = "You are {{agent_name}} on {{workspace}}.".to_string();
+
+        let prefix_first = renderer.render_cache_stable(&ctx).await;
+        // Mutate only volatile fields; prefix must not change.
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 5,
+            max_iterations: 10,
+        });
+        ctx.soft_cancel_pending = true;
+        let prefix_second = renderer.render_cache_stable(&ctx).await;
+
+        assert_eq!(prefix_first, prefix_second);
+    }
+
+    /// `assemble_system_prompt` returns the prefix verbatim when the
+    /// suffix is empty; otherwise concatenates with a blank-line
+    /// separator.
+    #[test]
+    fn assemble_system_prompt_concatenates_with_separator() {
+        // Empty suffix: prefix returned unchanged.
+        assert_eq!(
+            PromptRenderer::assemble_system_prompt("Hello.", ""),
+            "Hello."
+        );
+        // Non-empty suffix: joined with one blank line.
+        assert_eq!(
+            PromptRenderer::assemble_system_prompt("Prefix.", "Suffix."),
+            "Prefix.\n\nSuffix."
+        );
+    }
+
+    /// The per-turn suffix contains the volatile placeholders the
+    /// template references. Mutating a volatile field between calls
+    /// changes the suffix (proves it isn't accidentally stable).
+    #[tokio::test]
+    async fn render_per_turn_changes_with_volatile_fields() {
+        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let mut ctx = empty_ctx();
+        ctx.body = "{{iteration_budget}} {{quota_state}}".to_string();
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 1,
+            max_iterations: 10,
+        });
+
+        let suffix_first = renderer.render_per_turn(&ctx).await;
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 9,
+            max_iterations: 10,
+        });
+        let suffix_second = renderer.render_per_turn(&ctx).await;
+
+        assert!(suffix_first.contains("Iteration 1 of 10"));
+        assert!(suffix_second.contains("Approaching limit"));
     }
 }

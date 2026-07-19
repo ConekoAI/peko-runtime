@@ -981,7 +981,7 @@ minimax = { "M3" = 4000 }
                     timeout_seconds: 300,
                     max_retries: 3,
                     retry_delay_ms: 1000,
-                    extra_headers: Vec::new(),
+                    ..Default::default()
                 },
             )
             .expect("mock provider should construct"),
@@ -1037,7 +1037,7 @@ minimax = { "M3" = 4000 }
                     timeout_seconds: 300,
                     max_retries: 3,
                     retry_delay_ms: 1000,
-                    extra_headers: Vec::new(),
+                    ..Default::default()
                 },
             )
             .expect("mock provider should construct"),

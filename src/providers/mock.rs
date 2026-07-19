@@ -433,6 +433,11 @@ impl ApiAdapter for MockAdapter {
     fn supports_native_tools(&self) -> bool {
         true
     }
+
+    fn supports_prompt_cache_control(&self) -> bool {
+        // Mock returns a canned body, so cache markers are noise.
+        false
+    }
 }
 
 #[cfg(test)]
