@@ -1702,6 +1702,11 @@ mod tests {
             parallel_tool_calls: None,
             service_tier: ServiceTier::None,
             safety_identifier: None,
+            // F27: Anthropic-only knobs default to "no emission" so
+            // the Responses adapter stays free of these fields.
+            betas: Vec::new(),
+            beta_api: false,
+            thinking_keep: crate::providers::ThinkingKeep::Off,
         }
     }
 }

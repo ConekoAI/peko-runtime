@@ -388,6 +388,31 @@ impl super::ApiAdapter for AnthropicAdapter {
             body["metadata"] = json!({ "user_id": key });
         }
 
+        // F27: `context_management` block when `thinking_keep != Off`.
+        // Anthropic's `clear_thinking_20251015` edit type strips
+        // thinking blocks from previous turns to avoid prompt
+        // pollution; `keep` selects how many turns of thinking to
+        // retain. The `context-management-2025-06-27` beta is
+        // auto-attached via `extra_request_headers`.
+        if let Some(keep) = options.thinking_keep.as_wire_str() {
+            body["context_management"] = json!({
+                "edits": [
+                    {
+                        "type": "clear_thinking_20251015",
+                        "keep": keep,
+                    }
+                ]
+            });
+        }
+
+        // F27: `beta_api: true` sends the betas list as a body field
+        // in addition to the `anthropic-beta` header. The official
+        // SDK uses this body shape for some beta surfaces. Default
+        // (`false`) preserves the pre-F27 wire shape.
+        if options.beta_api && !options.betas.is_empty() {
+            body["betas"] = json!(options.betas);
+        }
+
         // F25: thinking-mode emission. Two shapes:
         //
         // 1. Adaptive mode — Opus 4-6+, Sonnet 5, Fable 5+, Mythos 5.
@@ -715,14 +740,34 @@ impl super::ApiAdapter for AnthropicAdapter {
         // budget-mode thinking is enabled. Adaptive mode (Opus 4-6+,
         // Sonnet 5, Fable 5+, Mythos 5) replaces the legacy
         // interleaving and does not need this beta.
+        //
+        // F27: also fold in the caller-supplied `options.betas`
+        // list and any beta auto-injected by `thinking_keep`
+        // (`context-management-2025-06-27`). Multiple betas are
+        // joined with `,` per Anthropic's documented header shape.
+        let mut betas: Vec<String> = Vec::new();
         if options.thinking_effort.is_enabled() && !is_adaptive_thinking_model(model_id) {
-            vec![(
-                "anthropic-beta".to_string(),
-                "interleaved-thinking-2025-05-08".to_string(),
-            )]
-        } else {
-            vec![]
+            betas.push("interleaved-thinking-2025-05-08".to_string());
         }
+        // F27: `thinking_keep != Off` opts the caller into the
+        // context-management beta automatically. Without this beta,
+        // Anthropic rejects `context_management: {...}` as an
+        // unknown field.
+        if options.thinking_keep != crate::providers::ThinkingKeep::Off {
+            betas.push("context-management-2025-06-27".to_string());
+        }
+        // F27: caller-supplied betas (sorted last so the
+        // caller can override the auto-injected ones if needed).
+        for b in &options.betas {
+            if !betas.contains(b) {
+                betas.push(b.clone());
+            }
+        }
+
+        if betas.is_empty() {
+            return vec![];
+        }
+        vec![("anthropic-beta".to_string(), betas.join(","))]
     }
 }
 
@@ -1630,5 +1675,178 @@ mod tests {
         );
         // tool_choice is honored.
         assert_eq!(body["tool_choice"], "any");
+    }
+
+    // ---------- F27: betas + beta_api + thinking_keep ----------
+
+    /// Default `ChatOptions` (empty `betas`, `beta_api: false`,
+    /// `thinking_keep: Off`) preserves the pre-F27 wire shape —
+    /// no `anthropic-beta` header, no `betas` body field, no
+    /// `context_management` block.
+    #[test]
+    fn test_f27_defaults_omit_all_betas_fields() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions::default();
+        let (_, body) = adapter
+            .build_request("claude-3-sonnet", &sample_messages(), None, &options, false)
+            .unwrap();
+        assert!(body.get("betas").is_none());
+        assert!(body.get("context_management").is_none());
+        assert!(adapter
+            .extra_request_headers("claude-3-sonnet", &options)
+            .is_empty());
+    }
+
+    /// Caller-supplied `betas` list lands on the `anthropic-beta`
+    /// header joined with `,` (Anthropic's documented wire shape).
+    /// When `beta_api: false` (default), the body stays free of
+    /// `betas`.
+    #[test]
+    fn test_f27_caller_betas_land_on_header_only() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            betas: vec!["prompt-caching-2024-07-31".to_string()],
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("claude-3-sonnet", &sample_messages(), None, &options, false)
+            .unwrap();
+        assert!(body.get("betas").is_none());
+        let headers = adapter.extra_request_headers("claude-3-sonnet", &options);
+        let beta = headers
+            .iter()
+            .find(|(k, _)| k == "anthropic-beta")
+            .expect("anthropic-beta header present");
+        assert_eq!(beta.1, "prompt-caching-2024-07-31");
+    }
+
+    /// `beta_api: true` ALSO emits the betas list as a body field.
+    /// The header remains (no duplication rule between header and
+    /// body for Anthropic — both shapes are valid for the official
+    /// SDK).
+    #[test]
+    fn test_f27_beta_api_emits_body_field() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            betas: vec!["prompt-caching-2024-07-31".to_string()],
+            beta_api: true,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("claude-3-sonnet", &sample_messages(), None, &options, false)
+            .unwrap();
+        let body_betas = body["betas"].as_array().expect("betas is an array");
+        assert_eq!(body_betas.len(), 1);
+        assert_eq!(body_betas[0], "prompt-caching-2024-07-31");
+        // Header also present.
+        let headers = adapter.extra_request_headers("claude-3-sonnet", &options);
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "anthropic-beta" && v == "prompt-caching-2024-07-31"),
+            "header should still carry the beta, got {headers:?}"
+        );
+    }
+
+    /// `beta_api: true` with an empty `betas` list does NOT emit the
+    /// body field (no point shipping `betas: []` — that would
+    /// actually clear all server-side betas, which isn't what the
+    /// caller asked for).
+    #[test]
+    fn test_f27_beta_api_with_empty_betas_emits_nothing() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            beta_api: true,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("claude-3-sonnet", &sample_messages(), None, &options, false)
+            .unwrap();
+        assert!(body.get("betas").is_none());
+    }
+
+    /// `thinking_keep: Turn` emits `context_management.edits` with
+    /// `keep: "turn"` and auto-attaches the
+    /// `context-management-2025-06-27` beta header.
+    #[test]
+    fn test_f27_thinking_keep_turn_emits_context_management() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            thinking_keep: crate::providers::ThinkingKeep::Turn,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("claude-3-sonnet", &sample_messages(), None, &options, false)
+            .unwrap();
+        let cm = body["context_management"]
+            .as_object()
+            .expect("context_management");
+        let edits = cm["edits"].as_array().expect("edits array");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0]["type"], "clear_thinking_20251015");
+        assert_eq!(edits[0]["keep"], "turn");
+        let headers = adapter.extra_request_headers("claude-3-sonnet", &options);
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "anthropic-beta" && v.contains("context-management-2025-06-27")),
+            "expected context-management beta, got {headers:?}"
+        );
+    }
+
+    /// `thinking_keep: All` emits `keep: "all"` on the body. The
+    /// beta header is auto-attached the same way.
+    #[test]
+    fn test_f27_thinking_keep_all_emits_all_keep() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            thinking_keep: crate::providers::ThinkingKeep::All,
+            ..Default::default()
+        };
+        let (_, body) = adapter
+            .build_request("claude-3-sonnet", &sample_messages(), None, &options, false)
+            .unwrap();
+        assert_eq!(body["context_management"]["edits"][0]["keep"], "all");
+    }
+
+    /// F25 + F27 compose: budget-mode thinking on a non-adaptive
+    /// model emits both `interleaved-thinking` AND any auto-injected
+    /// betas from `thinking_keep` on a single comma-joined header.
+    #[test]
+    fn test_f27_combined_betas_join_with_comma() {
+        let adapter = AnthropicAdapter::new();
+        let options = ChatOptions {
+            thinking_effort: crate::providers::ThinkingEffort::High,
+            thinking_keep: crate::providers::ThinkingKeep::Turn,
+            betas: vec!["prompt-caching-2024-07-31".to_string()],
+            ..Default::default()
+        };
+        let headers = adapter.extra_request_headers("claude-opus-4-5", &options);
+        let beta = headers
+            .iter()
+            .find(|(k, _)| k == "anthropic-beta")
+            .expect("anthropic-beta header present");
+        // All three betas present, joined with comma.
+        let parts: Vec<&str> = beta.1.split(',').collect();
+        assert!(parts.contains(&"interleaved-thinking-2025-05-08"));
+        assert!(parts.contains(&"context-management-2025-06-27"));
+        assert!(parts.contains(&"prompt-caching-2024-07-31"));
+        assert_eq!(parts.len(), 3, "expected 3 distinct betas, got {parts:?}");
+    }
+
+    /// `ThinkingKeep::as_wire_str` pins the vocabulary so a future
+    /// enum reorder surfaces as a test failure rather than a
+    /// wire-shape drift.
+    #[test]
+    fn test_thinking_keep_as_wire_str() {
+        assert_eq!(crate::providers::ThinkingKeep::Off.as_wire_str(), None);
+        assert_eq!(
+            crate::providers::ThinkingKeep::Turn.as_wire_str(),
+            Some("turn")
+        );
+        assert_eq!(
+            crate::providers::ThinkingKeep::All.as_wire_str(),
+            Some("all")
+        );
     }
 }
