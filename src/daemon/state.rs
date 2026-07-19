@@ -2370,6 +2370,7 @@ fn model_summary_from_config(
         api_type: match entry.api_format {
             crate::providers::catalog::ApiFormat::OpenaiCompletions => "openai".to_string(),
             crate::providers::catalog::ApiFormat::AnthropicMessages => "anthropic".to_string(),
+            crate::providers::catalog::ApiFormat::OpenAiResponses => "responses".to_string(),
         },
         base_url: entry.base_url.clone(),
         model_id: entry.model_id.clone(),
@@ -2430,6 +2431,7 @@ impl crate::ipc::handlers::provider_templates::ModelTemplatesHost for AppState {
                 api_type: match t.api_format {
                     ApiFormat::OpenaiCompletions => "openai",
                     ApiFormat::AnthropicMessages => "anthropic",
+                    ApiFormat::OpenAiResponses => "responses",
                 }
                 .to_string(),
                 base_url: t.base_url.to_string(),

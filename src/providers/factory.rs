@@ -13,7 +13,9 @@
 use anyhow::Result;
 use std::sync::Arc;
 
-use crate::providers::adapters::{AnthropicAdapter, AnyAdapter, OpenAiAdapter};
+use crate::providers::adapters::{
+    AnthropicAdapter, AnyAdapter, OpenAiAdapter, OpenAiResponsesAdapter,
+};
 use crate::providers::catalog::ModelConfig;
 use crate::providers::core::{Provider, ProviderRuntimeOptions};
 
@@ -44,6 +46,14 @@ pub fn create_provider_for_model(config: &ModelConfig, api_key: &str) -> Result<
                 AnthropicAdapter::new().with_base_url(&config.base_url)
             };
             AnyAdapter::Anthropic(a)
+        }
+        crate::providers::catalog::ApiFormat::OpenAiResponses => {
+            let a = if config.base_url.is_empty() {
+                OpenAiResponsesAdapter::new()
+            } else {
+                OpenAiResponsesAdapter::new().with_base_url(&config.base_url)
+            };
+            AnyAdapter::OpenAiResponses(a)
         }
     };
 

@@ -162,7 +162,9 @@ impl Validator {
         };
 
         let outcome = match config.api_format {
-            ApiFormat::OpenaiCompletions => ping_openai_compat(&client).await,
+            ApiFormat::OpenaiCompletions | ApiFormat::OpenAiResponses => {
+                ping_openai_compat(&client).await
+            }
             ApiFormat::AnthropicMessages => {
                 ping_anthropic_messages(&client, &config.model_id).await
             }
@@ -202,6 +204,17 @@ fn build_adapter(config: &ModelConfig) -> AnyAdapter {
                 AnthropicAdapter::new().with_base_url(&config.base_url)
             };
             AnyAdapter::Anthropic(adapter)
+        }
+        ApiFormat::OpenAiResponses => {
+            // Same as Chat Completions: `GET /models` is the canonical
+            // readiness ping for any OpenAI-compatible surface.
+            let adapter = if config.base_url.is_empty() {
+                crate::providers::adapters::OpenAiResponsesAdapter::new()
+            } else {
+                crate::providers::adapters::OpenAiResponsesAdapter::new()
+                    .with_base_url(&config.base_url)
+            };
+            AnyAdapter::OpenAiResponses(adapter)
         }
     }
 }

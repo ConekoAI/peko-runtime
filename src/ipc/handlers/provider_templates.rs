@@ -79,6 +79,7 @@ fn template_to_info(t: &ProviderTemplate) -> ModelPresetInfo {
         api_type: match t.api_format {
             ApiFormat::OpenaiCompletions => "openai",
             ApiFormat::AnthropicMessages => "anthropic",
+            ApiFormat::OpenAiResponses => "responses",
         }
         .to_string(),
         base_url: t.base_url.to_string(),

@@ -18,10 +18,12 @@ use std::sync::{Arc, Mutex};
 pub mod anthropic;
 pub mod compat;
 pub mod openai;
+pub mod openai_responses;
 
 pub use anthropic::AnthropicAdapter;
 pub use compat::OpenAiCompatibleAdapter;
 pub use openai::OpenAiAdapter;
+pub use openai_responses::OpenAiResponsesAdapter;
 
 /// Accumulates partial tool call data during streaming across multiple SSE events.
 ///
@@ -247,6 +249,7 @@ fn extract_text_content(blocks: &[ContentBlock]) -> String {
 #[derive(Debug, Clone)]
 pub enum AnyAdapter {
     OpenAi(OpenAiAdapter),
+    OpenAiResponses(OpenAiResponsesAdapter),
     Anthropic(AnthropicAdapter),
     OpenAiCompatible(OpenAiCompatibleAdapter),
     Mock(MockAdapter),
@@ -256,6 +259,7 @@ impl ApiAdapter for AnyAdapter {
     fn name(&self) -> &str {
         match self {
             Self::OpenAi(a) => a.name(),
+            Self::OpenAiResponses(a) => a.name(),
             Self::Anthropic(a) => a.name(),
             Self::OpenAiCompatible(a) => a.name(),
             Self::Mock(a) => a.name(),
@@ -265,6 +269,7 @@ impl ApiAdapter for AnyAdapter {
     fn base_url(&self) -> &str {
         match self {
             Self::OpenAi(a) => a.base_url(),
+            Self::OpenAiResponses(a) => a.base_url(),
             Self::Anthropic(a) => a.base_url(),
             Self::OpenAiCompatible(a) => a.base_url(),
             Self::Mock(a) => a.base_url(),
@@ -281,6 +286,7 @@ impl ApiAdapter for AnyAdapter {
     ) -> Result<(String, Value)> {
         match self {
             Self::OpenAi(a) => a.build_request(model_id, messages, tools, options, stream),
+            Self::OpenAiResponses(a) => a.build_request(model_id, messages, tools, options, stream),
             Self::Anthropic(a) => a.build_request(model_id, messages, tools, options, stream),
             Self::OpenAiCompatible(a) => {
                 a.build_request(model_id, messages, tools, options, stream)
@@ -292,6 +298,7 @@ impl ApiAdapter for AnyAdapter {
     fn parse_response(&self, model_id: &str, response: Value) -> Result<ChatResponse> {
         match self {
             Self::OpenAi(a) => a.parse_response(model_id, response),
+            Self::OpenAiResponses(a) => a.parse_response(model_id, response),
             Self::Anthropic(a) => a.parse_response(model_id, response),
             Self::OpenAiCompatible(a) => a.parse_response(model_id, response),
             Self::Mock(a) => a.parse_response(model_id, response),
@@ -301,6 +308,7 @@ impl ApiAdapter for AnyAdapter {
     fn parse_sse_event(&self, model_id: &str, data: &str) -> Result<Option<StreamEvent>> {
         match self {
             Self::OpenAi(a) => a.parse_sse_event(model_id, data),
+            Self::OpenAiResponses(a) => a.parse_sse_event(model_id, data),
             Self::Anthropic(a) => a.parse_sse_event(model_id, data),
             Self::OpenAiCompatible(a) => a.parse_sse_event(model_id, data),
             Self::Mock(a) => a.parse_sse_event(model_id, data),
@@ -310,6 +318,7 @@ impl ApiAdapter for AnyAdapter {
     fn auth_config(&self, api_key: &str) -> AuthConfig {
         match self {
             Self::OpenAi(a) => a.auth_config(api_key),
+            Self::OpenAiResponses(a) => a.auth_config(api_key),
             Self::Anthropic(a) => a.auth_config(api_key),
             Self::OpenAiCompatible(a) => a.auth_config(api_key),
             Self::Mock(a) => a.auth_config(api_key),
@@ -319,6 +328,7 @@ impl ApiAdapter for AnyAdapter {
     fn extra_headers(&self) -> Vec<(String, String)> {
         match self {
             Self::OpenAi(a) => a.extra_headers(),
+            Self::OpenAiResponses(a) => a.extra_headers(),
             Self::Anthropic(a) => a.extra_headers(),
             Self::OpenAiCompatible(a) => a.extra_headers(),
             Self::Mock(a) => a.extra_headers(),
@@ -328,6 +338,7 @@ impl ApiAdapter for AnyAdapter {
     fn supports_native_tools(&self) -> bool {
         match self {
             Self::OpenAi(a) => a.supports_native_tools(),
+            Self::OpenAiResponses(a) => a.supports_native_tools(),
             Self::Anthropic(a) => a.supports_native_tools(),
             Self::OpenAiCompatible(a) => a.supports_native_tools(),
             Self::Mock(a) => a.supports_native_tools(),
@@ -337,6 +348,7 @@ impl ApiAdapter for AnyAdapter {
     fn supports_prompt_cache_control(&self) -> bool {
         match self {
             Self::OpenAi(a) => a.supports_prompt_cache_control(),
+            Self::OpenAiResponses(a) => a.supports_prompt_cache_control(),
             Self::Anthropic(a) => a.supports_prompt_cache_control(),
             Self::OpenAiCompatible(a) => a.supports_prompt_cache_control(),
             Self::Mock(a) => a.supports_prompt_cache_control(),
