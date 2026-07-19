@@ -975,6 +975,14 @@ impl AgenticLoop {
                 parallel_tool_calls: None,
                 service_tier: crate::providers::ServiceTier::None,
                 safety_identifier: None,
+                // F27: defaults preserve the pre-F27 Anthropic wire
+                // shape — empty `betas`, `beta_api: false`, and
+                // `thinking_keep: Off` all suppress emission. Caller-
+                // supplied knobs land on `ChatOptions` via IPC once
+                // the surface is plumbed.
+                betas: Vec::new(),
+                beta_api: false,
+                thinking_keep: crate::providers::ThinkingKeep::Off,
                 ..Default::default()
             };
 

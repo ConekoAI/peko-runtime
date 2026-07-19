@@ -304,6 +304,43 @@ impl ServiceTier {
     }
 }
 
+/// F27: how aggressively Anthropic should keep thinking blocks
+/// across turns.
+///
+/// Anthropic introduced `context_management` (with
+/// `clear_thinking_20251015`) to let callers strip thinking
+/// content between turns so it doesn't pollute the next call's
+/// prompt. `Off` (the default) emits no `context_management` block
+/// — peko's pre-F27 behavior. `Turn` keeps only the last turn's
+/// thinking; `All` keeps every turn. The Anthropic wire value for
+/// `keep` is `"turn"` / `"all"`; `Off` collapses to no
+/// `context_management` body field.
+///
+/// Mirrors kimi-code's `anthropic.ts:1234-1261`
+/// `contextManagement` option.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThinkingKeep {
+    #[default]
+    Off,
+    Turn,
+    All,
+}
+
+impl ThinkingKeep {
+    /// Wire-string for the `keep` field of
+    /// `clear_thinking_20251015`. `Off` returns `None` so callers
+    /// can suppress emission of the entire `context_management`
+    /// block when the caller doesn't opt in.
+    #[must_use]
+    pub fn as_wire_str(self) -> Option<&'static str> {
+        match self {
+            Self::Off => None,
+            Self::Turn => Some("turn"),
+            Self::All => Some("all"),
+        }
+    }
+}
+
 /// Options for chat completion
 #[derive(Debug, Clone, Default)]
 pub struct ChatOptions {
@@ -365,6 +402,33 @@ pub struct ChatOptions {
     /// Hash the principal id before passing it in (per OpenAI's
     /// guidance). Other adapters ignore the field.
     pub safety_identifier: Option<String>,
+    /// F27: Anthropic beta headers to opt into for this request.
+    /// Joined with `,` and sent as the `anthropic-beta` request
+    /// header on the Anthropic adapter. Other adapters ignore the
+    /// field (OpenAI has no `betas` header). Empty (the default)
+    /// suppresses emission so the pre-F27 wire shape is preserved.
+    ///
+    /// The Anthropic adapter already injects its own internal betas
+    /// (e.g. `interleaved-thinking-2025-05-08` from F25) via the
+    /// `extra_request_headers` trait method; caller-supplied betas
+    /// here are concatenated onto that list.
+    pub betas: Vec<String>,
+    /// F27: when `true`, ALSO send the betas list as a body field
+    /// (`body["betas"] = [...]`) on Anthropic requests in addition
+    /// to the `anthropic-beta` header. Anthropic accepts both shapes
+    /// (the body form is used by the official SDK's beta API); the
+    /// header form is what every other tool emits. Most callers
+    /// should leave this `false` (default) to avoid the wire-shape
+    /// ambiguity. `false` (default) preserves the pre-F27 wire shape.
+    pub beta_api: bool,
+    /// F27: how aggressively to keep thinking blocks across turns
+    /// on the Anthropic adapter. `Off` (default) emits no
+    /// `context_management` block — pre-F27 behavior. `Turn` keeps
+    /// only the last turn's thinking; `All` keeps every turn. When
+    /// set, the Anthropic adapter also auto-adds the
+    /// `context-management-2025-06-27` beta header. Other adapters
+    /// ignore the field.
+    pub thinking_keep: ThinkingKeep,
 }
 
 /// Response from chat completion
