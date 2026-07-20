@@ -71,9 +71,10 @@ pub trait Tool: Send + Sync {
     ///
     /// * `DirectModelOnly` — schema is self-documenting; suppress the
     ///   prose entry to save prompt tokens.
-    /// * `Deferred` — too large for the prompt; the model will discover
-    ///   it via `__tool_search` once F35 lands. Pre-F35 behaves like
-    ///   `Hidden`.
+    /// * `Deferred` — too large for the prompt; the model discovers it
+    ///   via the synthetic `__tool_search` stub (F35). The stub returns
+    ///   the tool's full `ToolDefinition` so the model can call it on
+    ///   the next iteration.
     /// * `Hidden` — telemetry-only or sub-tool-of-other-tool; the
     ///   model never sees or invokes it.
     ///

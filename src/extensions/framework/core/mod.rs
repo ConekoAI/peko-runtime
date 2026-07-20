@@ -96,6 +96,7 @@ pub mod handler;
 pub mod hook_points;
 pub mod hook_registry;
 pub mod registry;
+pub mod scoring;
 pub mod tool_registration;
 pub mod tool_registry;
 

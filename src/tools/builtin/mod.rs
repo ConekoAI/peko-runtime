@@ -13,6 +13,8 @@
 //!   AsyncStatus, AsyncList)
 //! - `task_*`: Planning todo family (TaskCreate, TaskGet, TaskList, TaskUpdate)
 //! - `session`: Session introspection
+//! - `tool_search`: Synthetic `__tool_search` stub for `ToolExposure::Deferred`
+//!   tool discovery (F35).
 
 pub mod agent_catalog;
 pub mod async_common;
@@ -30,14 +32,14 @@ pub mod fs;
 pub mod messaging;
 pub mod session;
 pub mod skill;
-
-pub use agent_catalog::AgentCatalogTool;
 pub mod task_common;
 pub mod task_create;
 pub mod task_get;
 pub mod task_list;
 pub mod task_update;
+pub mod tool_search;
 
+pub use agent_catalog::AgentCatalogTool;
 pub use async_list::AsyncListTool;
 pub use async_output::AsyncOutputTool;
 pub use async_spawn::AsyncSpawnTool;
@@ -58,3 +60,4 @@ pub use task_create::TaskCreateTool;
 pub use task_get::TaskGetTool;
 pub use task_list::TaskListTool;
 pub use task_update::TaskUpdateTool;
+pub use tool_search::{ToolSearchTool, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_TOOL_NAME};

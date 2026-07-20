@@ -9,7 +9,7 @@ use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::core::hook_registry::HookRegistry;
 use crate::extensions::framework::core::tool_registry::ToolRegistry;
-use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities};
+use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, ToolExposure};
 use crate::extensions::framework::types::{
     ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata, ToolRuntimeContext,
 };
@@ -665,6 +665,71 @@ impl ExtensionCore {
             }
         }
         filtered
+    }
+
+    /// F35 — Search the principal's `ToolExposure::Deferred` tool catalog
+    /// and return up to `limit` matching `ToolDefinition`s ranked by the
+    /// simple word-overlap backend at
+    /// [`crate::extensions::framework::core::scoring`].
+    ///
+    /// This is the engine-side of the synthetic `__tool_search` stub.
+    /// Returns `ToolDefinition`s (name + description + JSON schema) so the
+    /// model can call the resolved tools by name on the next iteration.
+    ///
+    /// Filtering rules:
+    ///
+    /// 1. Only `ToolExposure::Deferred` candidates are searched. `Hidden`
+    ///    tools must remain invisible even via search — they are
+    ///    telemetry-only or sub-tool-of-other-tool and should never be
+    ///    surfaced to the model.
+    /// 2. The capability gate applies: a `Deferred` tool without the
+    ///    principal's `tool:<name>` grant is dropped from the search
+    ///    results. The caller passes the same `Capabilities` and
+    ///    `ActiveExtensionSet` it would pass to
+    ///    [`Self::list_tool_definitions_with_allowlist`].
+    /// 3. Empty query / limit = 0 returns an empty vec — those are
+    ///    validated upstream in `ToolSearchTool::execute`; this method
+    ///    defensively returns empty for them.
+    ///
+    /// Use this for the search stub. For the broader capability-gated
+    /// catalog, use [`Self::list_tool_definitions_with_allowlist`].
+    pub async fn list_deferred_tool_definitions(
+        &self,
+        principal_id: &PrincipalId,
+        query: &str,
+        limit: usize,
+    ) -> Vec<crate::providers::ToolDefinition> {
+        if query.trim().is_empty() || limit == 0 {
+            return Vec::new();
+        }
+
+        let all = self.list_tools(principal_id).await;
+        let deferred: Vec<_> = all
+            .into_iter()
+            .filter(|m| matches!(m.exposure, ToolExposure::Deferred))
+            .collect();
+
+        // Score and rank. The backend is stdlib-only; no I/O, no async.
+        let mut scored: Vec<_> = deferred
+            .iter()
+            .map(|m| {
+                let s = crate::extensions::framework::core::scoring::score(
+                    query,
+                    &m.name,
+                    &m.description,
+                );
+                (m, s)
+            })
+            .filter(|(_, s)| *s > 0)
+            .collect();
+        // Stable sort: score desc, name asc for tie-break.
+        scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name.cmp(&b.0.name)));
+
+        scored
+            .into_iter()
+            .take(limit)
+            .map(|(m, _)| m.to_tool_definition())
+            .collect()
     }
 
     /// Unregister a tool by `(name, principal_id)`.

@@ -73,6 +73,21 @@ pub struct AgentConfig {
     #[serde(default = "default_true")]
     pub enable_async_tools: bool,
 
+    /// F35 — whether the synthetic `__tool_search` stub is registered
+    /// for this agent. Defaults to `false` so a fresh runtime does not
+    /// pay the prompt-token cost of always-on deferred-tool discovery.
+    ///
+    /// When `true` and at least one `ToolExposure::Deferred` tool is
+    /// registered on the shared `ExtensionCore`, the loop appends a
+    /// `__tool_search` entry to the native tool catalog so the model
+    /// can resolve deferred tools on demand. Without at least one
+    /// deferred tool the stub is omitted from the catalog regardless
+    /// of this flag — there's nothing to discover.
+    ///
+    /// Toggle via `[agent].enable_tool_search` in the agent TOML.
+    #[serde(default)]
+    pub enable_tool_search: bool,
+
     /// Channel that triggered this agent's LLM calls (CLI, Discord, etc.).
     ///
     /// Surfaces in the rendered system prompt at `{{channel}}` and in the
@@ -140,6 +155,9 @@ impl Default for AgentConfig {
             agent_did: None,
             enable_task_tools: true,
             enable_async_tools: true,
+            // F35 — opt-in deferred-tool discovery stub. Off by default
+            // so a fresh runtime doesn't pay the prompt-token cost.
+            enable_tool_search: false,
             // Phase 2 inert fields. The renderer reads these from
             // `AgentConfig` via `Agent` accessors; `None`/`false`/`[]`
             // here preserves the legacy hardcoded runtime defaults
@@ -168,6 +186,8 @@ mod tests {
         // round-trip coverage lives on `PrincipalRoutingConfig`.
         assert!(config.enable_task_tools);
         assert!(config.enable_async_tools);
+        // F35 — opt-in deferred-tool discovery stub defaults off.
+        assert!(!config.enable_tool_search);
         // Issue #28: `agent_did` is `None` by default — back-filled on
         // first `Agent::new()` and persisted into config.toml.
         assert!(config.agent_did.is_none());
@@ -278,5 +298,27 @@ mod tests {
         assert_eq!(parsed.thinking_level.as_deref(), Some("high"));
         assert!(parsed.sandbox_enabled);
         assert_eq!(parsed.model_aliases, vec!["sonnet", "haiku"]);
+    }
+
+    /// F35 — `enable_tool_search` round-trips through TOML so per-agent
+    /// opt-in survives a restart.
+    #[test]
+    fn agent_config_enable_tool_search_round_trip() {
+        let mut config = super::AgentConfig::default();
+        config.enable_tool_search = true;
+        let toml = toml::to_string_pretty(&config).expect("serialize");
+        let parsed: super::AgentConfig = toml::from_str(&toml).expect("parse");
+        assert!(parsed.enable_tool_search);
+
+        // Default-off on a legacy config that omits the key.
+        let legacy = r#"
+            name = "legacy"
+            prompt = "you are a helper"
+        "#;
+        let parsed_legacy: super::AgentConfig = toml::from_str(legacy).expect("parse legacy TOML");
+        assert!(
+            !parsed_legacy.enable_tool_search,
+            "legacy TOML without enable_tool_search must default off"
+        );
     }
 }

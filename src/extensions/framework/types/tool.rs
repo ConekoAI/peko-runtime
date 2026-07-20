@@ -48,9 +48,12 @@ impl ToolSource {
 ///   but suppressed from the prose "Available Tools" prompt section.
 ///   Useful for tools whose schema is self-documenting (the model
 ///   doesn't need prose) or that would waste prompt tokens if duplicated.
-/// - [`ToolExposure::Deferred`] — invisible to the model until F35's
-///   `__tool_search` stub resolves it. Before F35 lands, behaves like
-///   [`ToolExposure::Hidden`] (no prompt, no catalog).
+/// - [`ToolExposure::Deferred`] — invisible to the model in the prompt
+///   section and omitted from the initial native catalog. Discoverable
+///   through the synthetic `__tool_search` stub (F35) which returns the
+///   tool's full `ToolDefinition` so the model can call it by name on
+///   the next iteration. Useful for tools that bloat the catalog when
+///   the agent doesn't need them but might ask for one.
 /// - [`ToolExposure::Hidden`] — invisible to the model in BOTH surfaces.
 ///   Still callable programmatically (e.g., from another tool's
 ///   `execute`) via the framework's internal `execute_from_hook` path,
@@ -68,8 +71,8 @@ pub enum ToolExposure {
     Direct,
     /// Suppressed from prompt section; visible in native catalog; callable.
     DirectModelOnly,
-    /// Hidden until `__tool_search` resolves it (F35). Until F35 ships,
-    /// behaves like `Hidden`.
+    /// Hidden until `__tool_search` resolves it (F35). Discovered by query;
+    /// not in the initial catalog.
     Deferred,
     /// Hidden from both surfaces; only callable programmatically.
     Hidden,
@@ -85,9 +88,9 @@ impl ToolExposure {
 
     /// True if the tool should appear in the native LLM catalog
     /// (`list_tool_definitions_with_allowlist` output).
-    /// `Direct`, `DirectModelOnly`, and (eventually) `Deferred`-via-search
-    /// all qualify. Pre-F35, `Deferred` returns `false` because no
-    /// search stub exists yet.
+    /// `Direct` and `DirectModelOnly` qualify. `Deferred` and `Hidden`
+    /// do NOT — `Deferred` is resolvable on demand via `__tool_search`
+    /// (F35) and `Hidden` must stay invisible to the model.
     #[must_use]
     pub fn visible_in_native_catalog(self) -> bool {
         matches!(self, ToolExposure::Direct | ToolExposure::DirectModelOnly)
@@ -212,8 +215,9 @@ mod tests {
 
     /// F34 — exposure variants split cleanly across the two surfaces.
     /// `DirectModelOnly` is in catalog but not prompt; `Hidden` is
-    /// neither; `Deferred` is neither (until F35 adds the search
-    /// stub).
+    /// neither; `Deferred` is neither (the `__tool_search` stub
+    /// surfaces deferred tools on demand rather than putting them in
+    /// the initial catalog).
     #[test]
     fn test_tool_exposure_visibility_matrix() {
         assert!(ToolExposure::Direct.visible_in_prompt_section());
@@ -225,7 +229,7 @@ mod tests {
         assert!(!ToolExposure::Deferred.visible_in_prompt_section());
         assert!(
             !ToolExposure::Deferred.visible_in_native_catalog(),
-            "Deferred behaves like Hidden until F35 wires __tool_search"
+            "Deferred is discovered via __tool_search (F35), not in the initial catalog"
         );
 
         assert!(!ToolExposure::Hidden.visible_in_prompt_section());

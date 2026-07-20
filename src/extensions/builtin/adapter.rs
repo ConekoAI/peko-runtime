@@ -47,6 +47,11 @@ pub struct BuiltinToolRegistrarConfig {
     pub enable_async_tools: bool,
     /// Enable planning todo tools (TaskCreate, TaskGet, TaskList, TaskUpdate)
     pub enable_task_tools: bool,
+    /// F35 — enable the synthetic `__tool_search` stub for deferred-tool
+    /// discovery. Defaults to `false` so a fresh runtime does not pay
+    /// the prompt-token cost of always-on search. Per-agent override
+    /// lives on [`AgentConfig::enable_tool_search`](crate::agents::AgentConfig::enable_tool_search).
+    pub enable_tool_search: bool,
     /// Path to cron database
     pub cron_db_path: Option<PathBuf>,
     /// Instance ID for cron persistence
@@ -66,6 +71,7 @@ impl Default for BuiltinToolRegistrarConfig {
             enable_cron: true,
             enable_async_tools: true,
             enable_task_tools: true,
+            enable_tool_search: false,
             cron_db_path: None,
             instance_id: None,
             disabled_tools: Vec::new(),
@@ -306,6 +312,23 @@ impl BuiltinToolAdapter {
     pub async fn register_async_output_tool(
         core: &ExtensionCore,
         tool: Arc<crate::tools::builtin::AsyncOutputTool>,
+        principal_id: &PrincipalId,
+    ) -> Result<()> {
+        Self::register_tool(core, tool, principal_id).await
+    }
+
+    /// F35 — register the synthetic `__tool_search` stub for per-agent
+    /// deferred-tool discovery. The tool holds a `Weak<ExtensionCore>`
+    /// so it does not extend the core's lifetime past the core itself.
+    ///
+    /// Registered under the calling agent's `principal_id` (not the
+    /// system scope) so each agent gets its own `__tool_search` instance
+    /// whose execute() runs against the agent's principal scope. If a
+    /// future change moves search to per-principal, only this wrapper
+    /// needs to move.
+    pub async fn register_tool_search_tool(
+        core: &ExtensionCore,
+        tool: Arc<crate::tools::builtin::ToolSearchTool>,
         principal_id: &PrincipalId,
     ) -> Result<()> {
         Self::register_tool(core, tool, principal_id).await
