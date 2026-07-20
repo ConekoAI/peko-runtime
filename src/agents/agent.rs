@@ -888,6 +888,28 @@ impl Agent {
             std::mem::discriminant(&shutdown_result)
         );
 
+        // F31x: fire AfterAgent (per-turn completion notification).
+        // Distinct from AgentShutdown (process-level teardown): a
+        // single agent process can run many turns, but each
+        // `run_with_resume` that ends (success, cap-hit, or
+        // soft-interrupt) gets its own AfterAgent signal. Observe-only
+        // — loop continues regardless of handler output.
+        //
+        // Note: this site is currently dead code (no production
+        // caller invokes `Agent::stop()`); wiring it into the
+        // daemon's teardown path is deferred to a follow-up PR.
+        let after_agent_payload = serde_json::json!({
+            "agent_name": self.config.name,
+            "agent_did": self.identity.did,
+        });
+        let _ = self
+            .extension_core
+            .invoke_hook(
+                crate::extensions::framework::core::HookPoint::AfterAgent,
+                crate::extensions::framework::types::HookInput::Json(after_agent_payload),
+            )
+            .await;
+
         Ok(())
     }
 

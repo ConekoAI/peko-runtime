@@ -49,7 +49,7 @@ use tracing::{debug, warn};
 /// Per-hook timeout budget. Two seconds is generous for the prompt-section
 /// hooks (they only need to format a Markdown body from in-memory state)
 /// and tight enough that a stuck handler cannot stall the agentic loop.
-const HOOK_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const HOOK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Renders the system prompt for one iteration.
 ///

@@ -7,9 +7,12 @@
 //! - Event emission (ToolEnd)
 //! - Duration tracking
 
+use crate::agents::prompt::renderer::HOOK_TIMEOUT;
 use crate::common::types::message::{ContentBlock, LlmMessage};
 use crate::engine::AgenticEvent;
-use crate::extensions::framework::ExtensionCore;
+use crate::extensions::framework::core::ExtensionCore;
+use crate::extensions::framework::types::HookInput;
+use crate::extensions::framework::HookPoint;
 use crate::session::Session;
 use anyhow::Result;
 use std::sync::Arc;
@@ -102,19 +105,46 @@ impl ToolExecutor {
             s.id.clone()
         };
 
+        // F31x: PreToolUse observe-only hook. Fire-and-forget with the
+        // shared 2s budget — handlers see the same ToolCall payload the
+        // dispatcher will use, but their return value is ignored (loop
+        // always continues to ToolExecute in v1). Soft-fails on
+        // timeout (mirrors `loop_per_hook_timeout_fails_open`).
+        let pre_input = HookInput::ToolCall {
+            tool_name: name.clone(),
+            params: arguments.clone(),
+            workspace: workspace.clone(),
+            agent_id: Some(agent_id.clone()),
+            session_id: Some(session_id.clone()),
+            caller_id: caller_id.map(str::to_string),
+            principal_id: Some(principal_id.to_string()),
+            principal_name: Some(principal_name.to_string()),
+            capabilities: capabilities.clone(),
+            active_extensions: active_extensions.clone(),
+            abort_signal: None,
+        };
+        let pre_point = HookPoint::PreToolUse {
+            tool_name: name.clone(),
+        };
+        let _ = tokio::time::timeout(
+            HOOK_TIMEOUT,
+            extension_core.invoke_hook(pre_point, pre_input),
+        )
+        .await;
+
         let (tool_result_str, tool_result_json, success) =
             match crate::engine::tool_runtime::execute_tool_via_core_with_context(
                 extension_core,
                 name,
                 arguments.clone(),
-                workspace,
-                Some(agent_id),
-                Some(session_id),
+                workspace.clone(),
+                Some(agent_id.clone()),
+                Some(session_id.clone()),
                 caller_id.map(str::to_string),
                 Some(principal_id.to_string()),
                 Some(principal_name.to_string()),
-                capabilities,
-                active_extensions,
+                capabilities.clone(),
+                active_extensions.clone(),
                 cancel,
             )
             .await
@@ -131,6 +161,32 @@ impl ToolExecutor {
                     (s.clone(), serde_json::Value::String(s), false)
                 }
             };
+
+        // F31x: PostToolUse observe-only hook. Symmetric with PreToolUse
+        // — handlers see the executed result but their return value is
+        // ignored. Loop continues with the ToolExecute-emitted result
+        // regardless.
+        let post_input = HookInput::ToolCall {
+            tool_name: name.clone(),
+            params: arguments.clone(),
+            workspace: workspace.clone(),
+            agent_id: Some(agent_id.clone()),
+            session_id: Some(session_id.clone()),
+            caller_id: caller_id.map(str::to_string),
+            principal_id: Some(principal_id.to_string()),
+            principal_name: Some(principal_name.to_string()),
+            capabilities: capabilities.clone(),
+            active_extensions: active_extensions.clone(),
+            abort_signal: None,
+        };
+        let post_point = HookPoint::PostToolUse {
+            tool_name: name.clone(),
+        };
+        let _ = tokio::time::timeout(
+            HOOK_TIMEOUT,
+            extension_core.invoke_hook(post_point, post_input),
+        )
+        .await;
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
 
