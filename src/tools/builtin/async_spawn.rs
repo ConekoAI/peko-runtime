@@ -150,8 +150,6 @@ Returns: { task_id, status, tool_name }"
         // Per-call `timeout_secs` overrides the 2h default.
         let timeout_secs = params.get("timeout_secs").and_then(|v| v.as_u64());
 
-        let task_id = format!("{}:{}", tool_name, uuid::Uuid::new_v4());
-
         // Look up the session key for *this* tool's owning agent (issue #68).
         let session_key = match self.agent_id.as_deref() {
             Some(agent_id) => core
@@ -167,67 +165,32 @@ Returns: { task_id, status, tool_name }"
             ..Default::default()
         };
 
-        // F37: route the inner tool dispatch through the canonical
-        // funnel `core.execute_tool_via_hook(...)` instead of grabbing
-        // `Arc<dyn Tool>` via `core.get_tool(...)` and calling
-        // `tool.execute(...)` directly. The funnel fires the capability
-        // gate at `registry.rs:260-277` and the
-        // `PreToolUse` / `ToolExecute` / `PostToolUse` hook chain. Pre-F37
-        // this code path skipped both.
+        // F38: route the inner tool dispatch through
+        // `executor.dispatch_tool_with_signal(...)` instead of the
+        // lower-level `executor.execute(...)` + manual
+        // `execute_tool_via_hook(...)` factory closure. The dispatch
+        // helper owns the F37 canonical-funnel closure construction
+        // internally so the funnel cannot be accidentally bypassed.
         //
-        // We can't reuse the `Arc<dyn Tool>` directly inside the factory
-        // closure (it's `'static`-bound) — the core IS, so we capture a
-        // cloned `Arc<ExtensionCore>` and the closure calls back into it.
-        // `core.execute_tool_via_hook` returns `Result<(text, json,
-        // success)>`; the factory must return `Result<Value>`, so we
-        // unwrap the triplet — on failure we surface a JSON error so
-        // the executor's `AsyncTaskRecord` records `is_error: true` via
-        // its existing error-passthrough path.
-        let core_for_closure = core.clone();
-        let principal_id_for_closure = self.principal_id.0.clone();
-        let capabilities_for_closure = (*self.capabilities).clone();
-        let tool_name_for_closure = tool_name.to_string();
-        let tool_params_for_closure = tool_params.clone();
-
-        let receipt = self
-            .executor
-            .execute(
-                task_id.clone(),
+        // F37: the `tool.execute(...)` direct call (via `core.get_tool(...)`)
+        // skipped the capability gate at `registry.rs:260-277` and the
+        // `PreToolUse`/`ToolExecute`/`PostToolUse` hook chain. Pre-F37
+        // this code path skipped both. F38 keeps the F37 routing
+        // and adds a 4th argument so callers can pass `None` (no
+        // cancel) without writing the closure themselves.
+        //
+        // Snapshot pattern (Option A) is preserved per F37: `principal_id`
+        // + `capabilities` are captured at construction and forwarded
+        // through `ToolDispatchContext::for_principal(...)`.
+        let context =
+            crate::extensions::framework::async_exec::executor::ToolDispatchContext::builder(
                 tool_name,
                 tool_params,
-                session_key,
-                config,
-                move || async move {
-                    let (_text, json, success) = core_for_closure
-                        .execute_tool_via_hook(
-                            &tool_name_for_closure,
-                            tool_params_for_closure,
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(principal_id_for_closure),
-                            None,
-                            Some(capabilities_for_closure),
-                            None,
-                        )
-                        .await?;
-                    if success {
-                        Ok(json)
-                    } else {
-                        // Gate failure / tool error — return Err so the
-                        // executor records `AsyncTaskStatus::Failed { error }`
-                        // (not `Completed` with error-data JSON). The
-                        // `tool_result_from_hook` translation has already
-                        // populated `_text` with the user-facing error.
-                        // The error string flows into the executor's task
-                        // record + propagates to the outer tool caller
-                        // via `?` below.
-                        Err(anyhow::anyhow!("{}", _text))
-                    }
-                },
+                session_key.clone(),
             )
-            .await?;
+            .for_principal(self.principal_id.0.clone(), (*self.capabilities).clone());
+
+        let receipt = self.executor.dispatch_tool(&core, context, config).await?;
 
         Ok(json!({
             "task_id": receipt.task_id,

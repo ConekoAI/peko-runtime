@@ -85,6 +85,16 @@ pub struct AsyncTaskEntry {
     pub metadata: TaskMetadata,
     /// Completion notification channel for sync waiting
     completion_tx: Option<mpsc::Sender<AsyncTaskStatus>>,
+    /// F38: abort-signal sender for spawned tasks that opted in via
+    /// `AsyncExecutor::dispatch_tool_with_signal`. When `Some`, calling
+    /// `AsyncExecutor::cancel(task_id)` will `send(true)` to flip the
+    /// inner tool's `ToolContext::is_aborted()` check. The matching
+    /// `watch::Receiver<bool>` flows through `execute_tool_via_hook`'s
+    /// `abort_signal` parameter (F38). Tool bodies that don't check
+    /// `ctx.is_aborted()` remain uncancellable even with this set —
+    /// the watch channel only short-circuits cancellations through
+    /// the built-in `ToolContext` plumbing.
+    cancel_signal: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 impl Clone for AsyncTaskEntry {
@@ -102,6 +112,9 @@ impl Clone for AsyncTaskEntry {
             formatted_result: self.formatted_result.clone(),
             metadata: self.metadata.clone(),
             completion_tx: None,
+            // F38: cancel_signal is a per-task, per-instance channel —
+            // cloning would split senders and is not safe. Drop on clone.
+            cancel_signal: None,
         }
     }
 }
@@ -129,6 +142,7 @@ impl AsyncTaskEntry {
             formatted_result: None,
             metadata: TaskMetadata::None,
             completion_tx: None,
+            cancel_signal: None,
         }
     }
 
@@ -155,6 +169,7 @@ impl AsyncTaskEntry {
             formatted_result: None,
             metadata,
             completion_tx: None,
+            cancel_signal: None,
         }
     }
 
@@ -178,6 +193,25 @@ impl AsyncTaskEntry {
     /// Set the completion notification channel
     pub fn set_completion_channel(&mut self, tx: mpsc::Sender<AsyncTaskStatus>) {
         self.completion_tx = Some(tx);
+    }
+
+    /// F38: set the abort-signal sender. The matching receiver flows
+    /// into the spawned task's `execute_tool_via_hook(..., abort_signal)` call.
+    /// Calling `AsyncExecutor::cancel(task_id)` will fire `send(true)` on
+    /// this sender to flip `ToolContext::is_aborted()` for tools that respect
+    /// it.
+    pub fn set_cancel_signal(&mut self, tx: tokio::sync::watch::Sender<bool>) {
+        self.cancel_signal = Some(tx);
+    }
+
+    /// F38: signal the inner tool to abort (no-op if no cancel_signal
+    /// was set, e.g. for tasks created via the original
+    /// `AsyncExecutor::execute(...)` API). Idempotent — repeated calls
+    /// are no-ops once `true` has been sent.
+    pub fn signal_cancel(&self) {
+        if let Some(ref tx) = self.cancel_signal {
+            let _ = tx.send(true);
+        }
     }
 
     /// Clone the status for notification

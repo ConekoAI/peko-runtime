@@ -8,6 +8,7 @@
 
 pub mod completion_queue;
 pub mod delivery;
+pub mod dispatch;
 pub mod event_bus;
 pub mod executor;
 pub mod queue;
@@ -22,6 +23,7 @@ pub use delivery::{
     build_completion_event, CallbackDelivery, ChannelDelivery, DefaultResultFormatter,
     FormatterRegistry, QueueDelivery, ResultDelivery, ResultFormatter,
 };
+pub use dispatch::ToolDispatchContext;
 pub use event_bus::{AsyncTaskCompletionEvent, AsyncTaskEventBus};
 pub use executor::AsyncExecutor;
 pub use queue::{AsyncResultQueue, AsyncResultQueueManager, SharedAsyncResultQueueManager};
