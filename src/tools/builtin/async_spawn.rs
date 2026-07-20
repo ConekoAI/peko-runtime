@@ -8,34 +8,60 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::extensions::framework::async_exec::executor::{AsyncExecutor, AsyncToolConfig};
+use crate::extensions::framework::core::ExtensionCore;
+use crate::subject::PrincipalId;
 use crate::tools::core::Tool;
 
 /// Spawn an async task invoking any registered tool.
 pub struct AsyncSpawnTool {
     executor: Arc<AsyncExecutor>,
-    extension_core: std::sync::Weak<crate::extensions::framework::core::ExtensionCore>,
+    extension_core: std::sync::Weak<ExtensionCore>,
     /// Agent identity (DID) used to look up this agent's session key on the
     /// shared `ExtensionCore` for `parent_session_key` stamping.
     agent_id: Option<String>,
+    /// F37: snapshot of the spawning principal's ID. Used by
+    /// `execute_tool_via_hook` (the canonical funnel) so the capability
+    /// gate at `registry.rs:260-277` evaluates against the spawning
+    /// principal, not the system principal. Captured at construction
+    /// time — revocation between init and spawn is NOT observed (deferred
+    /// to F37x; see audit row 7 entry).
+    principal_id: PrincipalId,
+    /// F37: snapshot of the spawning principal's capability grants.
+    /// Same lifetime as `principal_id` — captured at construction,
+    /// consumed at spawn time when the factory closure calls
+    /// `core.execute_tool_via_hook(...)`.
+    capabilities: Arc<Vec<String>>,
 }
 
 impl AsyncSpawnTool {
-    /// Construct with executor + extension core.
+    /// Construct with executor + extension core + principal identity.
     ///
     /// `agent_id` is this tool's owning agent (typically the
     /// `Agent::identity.did`). It is used to look up the *correct* session key
     /// on the shared `ExtensionCore` so concurrent agents in daemon mode do not
     /// stamp each other's `parent_session_key` (issue #68).
+    ///
+    /// F37: `principal_id` + `capabilities` are snapshotted at
+    /// construction. They flow into `core.execute_tool_via_hook(...)` when
+    /// the factory closure runs the spawned tool dispatch, ensuring the
+    /// capability gate at `registry.rs:260-277` evaluates against the
+    /// spawning principal's grants. Pre-F37, `tool.execute(...)` was
+    /// called directly via `core.get_tool(name)`, bypassing the gate
+    /// entirely.
     #[must_use]
     pub fn new(
         executor: Arc<AsyncExecutor>,
-        extension_core: std::sync::Weak<crate::extensions::framework::core::ExtensionCore>,
+        extension_core: std::sync::Weak<ExtensionCore>,
         agent_id: Option<String>,
+        principal_id: PrincipalId,
+        capabilities: Arc<Vec<String>>,
     ) -> Self {
         Self {
             executor,
             extension_core,
             agent_id,
+            principal_id,
+            capabilities,
         }
     }
 }
@@ -141,17 +167,28 @@ Returns: { task_id, status, tool_name }"
             ..Default::default()
         };
 
-        let tool = match core.get_tool(tool_name).await {
-            Some(t) => t,
-            None => {
-                return Ok(json!({
-                    "error": format!("tool '{}' not found", tool_name),
-                    "tool_name": tool_name,
-                }));
-            }
-        };
-
+        // F37: route the inner tool dispatch through the canonical
+        // funnel `core.execute_tool_via_hook(...)` instead of grabbing
+        // `Arc<dyn Tool>` via `core.get_tool(...)` and calling
+        // `tool.execute(...)` directly. The funnel fires the capability
+        // gate at `registry.rs:260-277` and the
+        // `PreToolUse` / `ToolExecute` / `PostToolUse` hook chain. Pre-F37
+        // this code path skipped both.
+        //
+        // We can't reuse the `Arc<dyn Tool>` directly inside the factory
+        // closure (it's `'static`-bound) — the core IS, so we capture a
+        // cloned `Arc<ExtensionCore>` and the closure calls back into it.
+        // `core.execute_tool_via_hook` returns `Result<(text, json,
+        // success)>`; the factory must return `Result<Value>`, so we
+        // unwrap the triplet — on failure we surface a JSON error so
+        // the executor's `AsyncTaskRecord` records `is_error: true` via
+        // its existing error-passthrough path.
+        let core_for_closure = core.clone();
+        let principal_id_for_closure = self.principal_id.0.clone();
+        let capabilities_for_closure = (*self.capabilities).clone();
+        let tool_name_for_closure = tool_name.to_string();
         let tool_params_for_closure = tool_params.clone();
+
         let receipt = self
             .executor
             .execute(
@@ -160,7 +197,35 @@ Returns: { task_id, status, tool_name }"
                 tool_params,
                 session_key,
                 config,
-                move || async move { tool.execute(tool_params_for_closure).await },
+                move || async move {
+                    let (_text, json, success) = core_for_closure
+                        .execute_tool_via_hook(
+                            &tool_name_for_closure,
+                            tool_params_for_closure,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(principal_id_for_closure),
+                            None,
+                            Some(capabilities_for_closure),
+                            None,
+                        )
+                        .await?;
+                    if success {
+                        Ok(json)
+                    } else {
+                        // Gate failure / tool error — return Err so the
+                        // executor records `AsyncTaskStatus::Failed { error }`
+                        // (not `Completed` with error-data JSON). The
+                        // `tool_result_from_hook` translation has already
+                        // populated `_text` with the user-facing error.
+                        // The error string flows into the executor's task
+                        // record + propagates to the outer tool caller
+                        // via `?` below.
+                        Err(anyhow::anyhow!("{}", _text))
+                    }
+                },
             )
             .await?;
 
@@ -196,22 +261,90 @@ mod tests {
         }
     }
 
+    /// Helper: build an AsyncSpawnTool with the post-F37 fields filled in
+    /// with sensible defaults. Tests that don't care about the
+    /// gate-bypass behavior just call this; the new gate tests pass
+    /// their own `capabilities` and `principal_id`.
+    fn make_tool(
+        executor: Arc<AsyncExecutor>,
+        core: &Arc<ExtensionCore>,
+        agent_id: Option<String>,
+    ) -> AsyncSpawnTool {
+        AsyncSpawnTool::new(
+            executor,
+            Arc::downgrade(core),
+            agent_id,
+            PrincipalId::system().clone(),
+            Arc::new(Vec::new()), // no capabilities — gate will reject any tool call
+        )
+    }
+
     #[tokio::test]
-    async fn test_async_spawn_missing_tool_returns_error() {
+    async fn test_async_spawn_gate_rejects_unknown_tool() {
         let executor = Arc::new(AsyncExecutor::new());
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
-        let tool = AsyncSpawnTool::new(executor, Arc::downgrade(&core), None);
+        let core = Arc::new(ExtensionCore::new());
+        // Hold `core` strongly so the Weak inside AsyncSpawnTool can
+        // upgrade. `make_tool` takes `&Arc<ExtensionCore>` (not by value)
+        // so the test still owns its strong reference.
+        //
+        // F37: the closure returns `Err(anyhow!(...))` on gate failure,
+        // so the executor records `AsyncTaskStatus::Failed { error }`.
+        // The outer `AsyncSpawnTool::execute` still returns Ok with
+        // the task_id — `AsyncExecutor::execute_inner` always returns
+        // Ok(receipt) and dispatches the closure in the background.
+        // To verify the gate fired, poll the registry for the
+        // task's terminal status.
+        let tool = make_tool(executor.clone(), &core, None);
 
         let result = tool
             .execute(json!({"tool": "definitely_not_a_tool", "params": {}}))
             .await
             .unwrap();
-        assert_eq!(result["error"], "tool 'definitely_not_a_tool' not found");
+        let task_id = result["task_id"]
+            .as_str()
+            .expect("task_id present")
+            .to_string();
+
+        for _ in 0..50 {
+            let entry_opt = {
+                let reg = executor.registry().read().await;
+                reg.get(&task_id).cloned()
+            };
+            if let Some(entry) = entry_opt {
+                match &entry.status {
+                    crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Failed {
+                        error,
+                    } => {
+                        assert!(
+                            error.contains("definitely_not_a_tool")
+                                && error.contains("disabled"),
+                            "expected gate to reject unknown tool, got: {error}"
+                        );
+                        return;
+                    }
+                    other => {
+                        if matches!(
+                            other,
+                            crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Pending
+                                | crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Running
+                        ) {
+                            // fall through to sleep
+                        } else {
+                            panic!(
+                                "expected Failed status from gate, got terminal status: {other:?}"
+                            );
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("spawned task {task_id} never recorded an outcome");
     }
 
     #[tokio::test]
     async fn test_async_spawn_stamps_correct_agent_session_key() {
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let core = Arc::new(ExtensionCore::new());
         core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
             .await;
 
@@ -223,10 +356,15 @@ mod tests {
             .await;
 
         let executor = Arc::new(AsyncExecutor::new());
+        // F37: with `tool:stub_tool` granted, the gate passes — the
+        // factory closure's tool call dispatches successfully and the
+        // executor records the spawned task.
         let tool_a = AsyncSpawnTool::new(
             executor.clone(),
             Arc::downgrade(&core),
             Some(agent_a.to_string()),
+            PrincipalId::system().clone(),
+            Arc::new(vec!["tool:stub_tool".to_string()]),
         );
 
         let result = tool_a
@@ -250,12 +388,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_spawn_without_agent_id_falls_back_to_unknown() {
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let core = Arc::new(ExtensionCore::new());
         core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
             .await;
 
         let executor = Arc::new(AsyncExecutor::new());
-        let tool = AsyncSpawnTool::new(executor.clone(), Arc::downgrade(&core), None);
+        // F37: grant `tool:stub_tool` so the gate passes.
+        let tool = AsyncSpawnTool::new(
+            executor.clone(),
+            Arc::downgrade(&core),
+            None,
+            PrincipalId::system().clone(),
+            Arc::new(vec!["tool:stub_tool".to_string()]),
+        );
 
         let result = tool
             .execute(json!({
@@ -270,5 +415,114 @@ mod tests {
         let reg = registry.read().await;
         let entry = reg.get(&task_id.to_string()).expect("task registered");
         assert_eq!(entry.parent_session_key, "unknown");
+    }
+
+    // F37: pin that the capability gate fires for dispatched tool calls.
+    // Pre-F37, `AsyncSpawnTool` skipped the gate entirely — this test
+    // would have passed even without the capability grant because
+    // `tool.execute(...)` was called directly via the side-table.
+    //
+    // The closure returns `Err(anyhow!(...))` on gate failure, so the
+    // executor records `AsyncTaskStatus::Failed { error }` — the outer
+    // `AsyncSpawnTool::execute` still returns Ok(receipt). We poll the
+    // registry for the terminal status.
+    #[tokio::test]
+    async fn test_async_spawn_routes_through_capability_gate() {
+        let core = Arc::new(ExtensionCore::new());
+        core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
+            .await;
+
+        let executor = Arc::new(AsyncExecutor::new());
+        // No `tool:stub_tool` grant — gate must reject.
+        let tool = AsyncSpawnTool::new(
+            executor.clone(),
+            Arc::downgrade(&core),
+            None,
+            PrincipalId::system().clone(),
+            Arc::new(Vec::new()),
+        );
+
+        let result = tool
+            .execute(json!({
+                "tool": "stub_tool",
+                "params": {"x": 1},
+            }))
+            .await
+            .unwrap();
+        let task_id = result["task_id"]
+            .as_str()
+            .expect("task_id present")
+            .to_string();
+
+        for _ in 0..50 {
+            let entry_opt = {
+                let reg = executor.registry().read().await;
+                reg.get(&task_id).cloned()
+            };
+            if let Some(entry) = entry_opt {
+                match &entry.status {
+                    crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Failed {
+                        error,
+                    } => {
+                        assert!(
+                            error.contains("stub_tool") && error.contains("disabled"),
+                            "expected gate to reject stub_tool without capability, got: {error}"
+                        );
+                        return;
+                    }
+                    other => {
+                        if matches!(
+                            other,
+                            crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Pending
+                                | crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Running
+                        ) {
+                            // fall through to sleep
+                        } else {
+                            panic!(
+                                "expected Failed status from gate, got terminal status: {other:?}"
+                            );
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("spawned task {task_id} never recorded an outcome");
+    }
+
+    // F37: pin the allow path doesn't regress — with the right
+    // capability, the gate passes and the spawned task runs.
+    #[tokio::test]
+    async fn test_async_spawn_routes_through_capability_gate_allow() {
+        let core = Arc::new(ExtensionCore::new());
+        core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
+            .await;
+
+        let executor = Arc::new(AsyncExecutor::new());
+        let tool = AsyncSpawnTool::new(
+            executor.clone(),
+            Arc::downgrade(&core),
+            None,
+            PrincipalId::system().clone(),
+            Arc::new(vec!["tool:stub_tool".to_string()]),
+        );
+
+        let result = tool
+            .execute(json!({
+                "tool": "stub_tool",
+                "params": {"x": 1},
+            }))
+            .await
+            .unwrap();
+
+        // Gate passed: we got a `task_id` (not a gate-error JSON).
+        assert!(
+            result.get("task_id").is_some(),
+            "expected task_id, got {result:?}"
+        );
+        assert!(
+            result.get("error").is_none(),
+            "expected no error, got {result:?}"
+        );
     }
 }

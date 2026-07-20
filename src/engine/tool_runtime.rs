@@ -59,6 +59,13 @@ pub async fn execute_tool_via_core(
 /// `src/tools/core/traits.rs:82, 102` meaningful in production. The
 /// bridge task is aborted on drop; callers should not need to await
 /// or otherwise manage the returned guard.
+///
+/// F37: now delegates to `ExtensionCore::execute_tool_via_hook` —
+/// the canonical funnel method. The cancel-bridging stays here (only
+/// `tool_executor.rs:186` passes a cancel today) so the `'static`
+/// factory closures in `AsyncSpawnTool` / `cron_engine` can call
+/// `execute_tool_via_hook` directly without carrying the bridge's
+/// lifetime.
 pub async fn execute_tool_via_core_with_context(
     core: &ExtensionCore,
     tool_name: &str,
@@ -73,9 +80,6 @@ pub async fn execute_tool_via_core_with_context(
     active_extensions: Option<Vec<String>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<(String, serde_json::Value, bool)> {
-    let point = HookPoint::ToolExecute {
-        tool_name: tool_name.to_string(),
-    };
     let (abort_signal, _abort_guard) = match cancel {
         Some(token) => {
             let (signal, guard) = bridge_from_cancellation_token(token);
@@ -84,6 +88,16 @@ pub async fn execute_tool_via_core_with_context(
         None => (None, AbortSignalBridgeGuard::noop()),
     };
 
+    // F37: build the ToolCall input here (with the bridged abort_signal)
+    // and route through invoke_hook directly. We can't reuse
+    // `core.execute_tool_via_hook` here because it doesn't accept an
+    // abort_signal — the spawned-task call sites (`AsyncSpawnTool`,
+    // `cron_engine`) need the no-cancel shape. This is the only caller
+    // that has a cancel token today, so duplicating the 4-line input
+    // build is cheaper than expanding the method signature.
+    let point = HookPoint::ToolExecute {
+        tool_name: tool_name.to_string(),
+    };
     let input = HookInput::ToolCall {
         tool_name: tool_name.to_string(),
         params,
@@ -97,7 +111,6 @@ pub async fn execute_tool_via_core_with_context(
         active_extensions,
         abort_signal,
     };
-
     let result = core.invoke_hook(point, input).await;
     Ok(tool_result_from_hook(result, tool_name))
 }

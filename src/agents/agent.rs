@@ -1393,10 +1393,23 @@ impl Agent {
         //    past the core itself.
         if self.config.enable_async_tools {
             let core_weak = Arc::downgrade(&extension_core);
+            // F37: snapshot the spawning principal's capability grants.
+            // The factory closure passed to `AsyncExecutor::execute(...)`
+            // calls `core.execute_tool_via_hook(...)`, which fires the
+            // capability gate at `registry.rs:260-277` against these
+            // snapshotted grants. Pre-F37, the gate was bypassed entirely.
+            let snapshot_capabilities: Arc<Vec<String>> = Arc::new(
+                self.principal_capabilities
+                    .as_ref()
+                    .map(|caps| caps.grants.iter().map(|c| c.0.clone()).collect())
+                    .unwrap_or_default(),
+            );
             let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
                 async_executor.clone(),
                 core_weak.clone(),
                 Some(self.identity.did.clone()),
+                self.principal_id.clone(),
+                snapshot_capabilities,
             ));
             let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::with_executor(
                 async_executor,
