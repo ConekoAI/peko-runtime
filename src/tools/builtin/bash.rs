@@ -480,6 +480,15 @@ The blocking form of this tool (default) is bounded only by the
         })
     }
 
+    /// F33: shell tool — opt out of parallel dispatch. Concurrent
+    /// `Bash` calls share cwd, env, and child-process state; `cat x |
+    /// tee x` style commands race on file handles; two `cd` commands
+    /// step on each other. Serializing keeps each command's view of
+    /// the world coherent.
+    fn parallelizable(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         self.execute_with_maybe_context(params, None).await
     }

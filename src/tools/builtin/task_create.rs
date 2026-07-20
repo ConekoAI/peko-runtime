@@ -61,6 +61,15 @@ Returns the created todo including its taskId."
         })
     }
 
+    /// F33: task-list mutation — opt out of parallel dispatch. Two
+    /// concurrent `TaskCreate` calls in the same batch can race on
+    /// task-id assignment if the list is in-memory; mixed
+    /// `TaskCreate + TaskUpdate` on the same id races on the list
+    /// mutation.
+    fn parallelizable(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         // Production callers always go through `execute_with_context` via
         // `ExtensionCore::invoke_hook`; this branch exists only to satisfy

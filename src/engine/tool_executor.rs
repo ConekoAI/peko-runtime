@@ -9,6 +9,7 @@
 
 use crate::agents::prompt::renderer::HOOK_TIMEOUT;
 use crate::common::types::message::{ContentBlock, LlmMessage};
+use crate::engine::parallel_gate::ParallelGate;
 use crate::engine::AgenticEvent;
 use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::types::HookInput;
@@ -30,11 +31,40 @@ pub struct ToolExecutionResult {
 
 /// Executes tool calls within the agentic loop.
 ///
-/// This struct encapsulates the tool execution logic so the loop body
-/// only iterates over tool calls and appends results.
-pub struct ToolExecutor;
+/// Owns the [`ParallelGate`] that serializes non-parallelizable tool
+/// dispatches against every other running tool (F33, audit section 3
+/// row 3). The loop instantiates one executor per agent and shares it
+/// across the try_join_all fan-out so all parallel calls share the
+/// same gate.
+#[derive(Clone)]
+pub struct ToolExecutor {
+    parallel_gate: ParallelGate,
+}
 
 impl ToolExecutor {
+    /// Create a new `ToolExecutor` with a fresh [`ParallelGate`].
+    /// Use this in tests and for one-shot invocations.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            parallel_gate: ParallelGate::new(),
+        }
+    }
+
+    /// Create a new `ToolExecutor` that shares the supplied
+    /// [`ParallelGate`]. Used by `AgenticLoop` to ensure every fan-out
+    /// in the same loop iteration shares the same gate.
+    #[must_use]
+    pub fn with_gate(parallel_gate: ParallelGate) -> Self {
+        Self { parallel_gate }
+    }
+
+    /// Borrow the underlying gate (used by tests; production code
+    /// shouldn't need this).
+    #[must_use]
+    pub fn parallel_gate(&self) -> &ParallelGate {
+        &self.parallel_gate
+    }
     /// Execute a single tool call.
     ///
     /// # Arguments
@@ -96,6 +126,26 @@ impl ToolExecutor {
         info!("Executing tool: {} (id: {})", name, id);
 
         let start_time = std::time::Instant::now();
+
+        // F33: parallel-execution gate admission. Parallelizable tools
+        // take a read-lock (concurrent dispatch OK); non-parallelizable
+        // tools (Write, Edit, Bash, cron Create/Delete, task Create/Update)
+        // take a write-lock and serialize against every other running
+        // tool. The guard is held for the entire dispatch lifecycle —
+        // PreToolUse, ToolExecute, PostToolUse, session record — so the
+        // tool's atomicity window matches its `parallelizable()` claim.
+        //
+        // Lookup is via the registry side-table populated by
+        // `BuiltinToolAdapter::register_tool` (and the universal
+        // adapter). If the tool isn't registered, we default to
+        // `parallelizable = true` — the dispatch will fail anyway, and
+        // admitting without serializing is the right "no-op" fallback.
+        let parallel = extension_core
+            .get_tool(name)
+            .await
+            .map(|t| t.parallelizable())
+            .unwrap_or(true);
+        let _gate_guard = self.parallel_gate.admit(parallel).await;
 
         let workspace = agent_workspace.map(|p| p.to_string_lossy().to_string());
         let agent_id = agent_name.to_string();

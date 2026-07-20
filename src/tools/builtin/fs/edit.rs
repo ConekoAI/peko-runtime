@@ -237,6 +237,13 @@ Replace all occurrences:
         })
     }
 
+    /// F33: filesystem-mutating tool — opt out of parallel dispatch.
+    /// Concurrent `Edit` calls on the same path would race on
+    /// read-modify-write; mixed `Read + Edit` can observe torn state.
+    fn parallelizable(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let args: EditArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
