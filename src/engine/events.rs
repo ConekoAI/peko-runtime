@@ -33,6 +33,13 @@ pub enum LifecyclePhase {
     /// call) before exiting. The reason (if any) is carried on the
     /// `Lifecycle` event's `error` field.
     Interrupted,
+    /// F31a: run hit `max_iterations` before the task completed.
+    /// Carries the configured ceiling so callers can distinguish
+    /// a 10-iteration cap-hit from a 100-iteration cap-hit (e.g.
+    /// for UX prompts that ask "extend by N more rounds?").
+    /// `AgenticResult.success` will be `false` on this path; the
+    /// `error` field carries the configured ceiling as a string.
+    MaxIterations { iterations: usize },
 }
 
 impl fmt::Display for LifecyclePhase {
@@ -44,6 +51,9 @@ impl fmt::Display for LifecyclePhase {
             LifecyclePhase::Error => write!(f, "error"),
             LifecyclePhase::Aborted => write!(f, "aborted"),
             LifecyclePhase::Interrupted => write!(f, "interrupted"),
+            LifecyclePhase::MaxIterations { iterations } => {
+                write!(f, "max_iterations({iterations})")
+            }
         }
     }
 }
