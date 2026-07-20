@@ -12,12 +12,15 @@
 //! - Event semantics are uniform across all consumers
 
 use crate::agents::prompt::context::CapabilityDiffTracker;
+use crate::agents::prompt::renderer::HOOK_TIMEOUT;
 use crate::agents::prompt::{PromptRenderer, TurnPromptContext};
 use crate::agents::Agent;
 use crate::common::types::message::{ContentBlock, LlmMessage};
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
+use crate::extensions::framework::types::HookInput;
+use crate::extensions::framework::HookPoint;
 use crate::providers::{
     clamp_openai_prompt_cache_key, synthetic_stream::synthesize_stream_from_blocking,
     CacheRetention, ChatOptions, MessageRole, StackedMeteredProvider, StopReason, TokenUsage,
@@ -638,6 +641,24 @@ impl AgenticLoop {
             .await
     }
 
+    /// F31x: fire the `Stop` hook at every loop-exit site.
+    ///
+    /// Observe-only — the loop's return value is unaffected by handler
+    /// output. The `payload` object is forwarded via `HookInput::Json`
+    /// so handlers can pattern-match on `reason` (`"end"`,
+    /// `"interrupted"`, `"max_iterations"`) and the iteration count.
+    ///
+    /// Wrapped in `tokio::time::timeout(HOOK_TIMEOUT, ...)`; soft-fails
+    /// on timeout (matches the `loop_per_hook_timeout_fails_open` test
+    /// shape — handlers cannot stall the loop).
+    async fn fire_stop_hook(&self, run_id: &str, payload: serde_json::Value) {
+        let input = HookInput::Json(payload);
+        let point = HookPoint::Stop;
+        let _ =
+            tokio::time::timeout(HOOK_TIMEOUT, self.extension_core.invoke_hook(point, input)).await;
+        let _ = run_id; // currently unused by handlers; kept on signature for forward-compat
+    }
+
     /// Unified agent loop — always streams internally; delivery mode controls presentation.
     ///
     /// `DeliveryMode::FinalOnly` buffers everything and emits complete events at the end,
@@ -882,6 +903,13 @@ impl AgenticLoop {
                         phase: LifecyclePhase::Interrupted,
                         error: Some("cancelled by PrincipalSendControl".to_string()),
                     });
+                    // F31x: Stop hook observe-only — soft-interrupt
+                    // signal carries `reason: "interrupted"`.
+                    self.fire_stop_hook(
+                        &run_id,
+                        serde_json::json!({ "reason": "interrupted", "iterations": iteration }),
+                    )
+                    .await;
                     return Ok(AgenticResult {
                         success: false,
                         final_answer: String::new(),
@@ -1053,6 +1081,18 @@ impl AgenticLoop {
                     },
                     error: Some(format!("max_iterations ({})", self.max_iterations)),
                 });
+                // F31x: Stop hook observe-only — cap-hit signal
+                // carries the configured ceiling so handlers can
+                // distinguish "user asked for N turns" from other
+                // exit reasons.
+                self.fire_stop_hook(
+                    &run_id,
+                    serde_json::json!({
+                        "reason": "max_iterations",
+                        "iterations": self.max_iterations,
+                    }),
+                )
+                .await;
                 return Ok(AgenticResult {
                     success: false,
                     final_answer: format!("Max iterations reached ({})", self.max_iterations),
@@ -1696,6 +1736,16 @@ impl AgenticLoop {
                         phase: LifecyclePhase::Interrupted,
                         error: Some("cancelled by PrincipalSendControl".to_string()),
                     });
+                    // F31x: Stop hook observe-only — late soft-interrupt
+                    // also fires Stop (handlers can tell apart the
+                    // pre-stream vs post-stream variants only by
+                    // listening to the Lifecycle::Interrupted event
+                    // emitted just above).
+                    self.fire_stop_hook(
+                        &run_id,
+                        serde_json::json!({ "reason": "interrupted", "iterations": iteration }),
+                    )
+                    .await;
                     return Ok(AgenticResult {
                         success: false,
                         final_answer: String::new(),
@@ -1732,6 +1782,16 @@ impl AgenticLoop {
                 phase: LifecyclePhase::End,
                 error: None,
             });
+
+            // F31x: Stop hook observe-only — clean End carries
+            // `reason: "end"` and the iteration count so handlers
+            // can distinguish a normal completion from cap-hit /
+            // soft-interrupt.
+            self.fire_stop_hook(
+                &run_id,
+                serde_json::json!({ "reason": "end", "iterations": iteration }),
+            )
+            .await;
 
             return Ok(AgenticResult {
                 success: true,
@@ -4673,5 +4733,529 @@ mod tests {
         );
         assert!(!rendered3.contains("v1:"));
         assert!(!rendered3.contains("v2:"));
+    }
+
+    // ===================================================================
+    // F31x — PreToolUse / PostToolUse / Stop / AfterAgent hook seams
+    //
+    // Verify the four new hook variants fire at the natural loop seam
+    // sites. Observe-only in v1: handler return value is ignored, the
+    // loop's control flow is unaffected. Each test registers a handler
+    // that records the call into a shared `Arc<Mutex<Vec<_>>>` log, then
+    // asserts on the log contents after the loop returns.
+    // ===================================================================
+
+    /// F31x test #1: Pre + PostToolUse wrap ToolExecute in the
+    /// expected order. Uses a real `BuiltinToolAdapter`-free mock
+    /// provider and an "echo" tool that succeeds, then asserts the
+    /// shared log records `pre_tool_use` before `post_tool_use`.
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn pre_post_tool_use_hooks_fire_in_order() {
+        use crate::extensions::framework::types::ExtensionId;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+
+        // Tool call, then a final text answer (mirrors the
+        // `test_tool_call_iteration` shape).
+        mock.queue_tool_call("tc_1", "echo", serde_json::json!({"msg": "hello"}));
+        mock.queue_text("Tool result processed.");
+
+        let core = global_core().unwrap();
+        let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+
+        #[derive(Debug)]
+        struct NamedRecorder {
+            label: &'static str,
+            point: crate::extensions::framework::core::HookPoint,
+            log: Arc<Mutex<Vec<&'static str>>>,
+        }
+        #[async_trait::async_trait]
+        impl crate::extensions::framework::core::HookHandler for NamedRecorder {
+            async fn handle(
+                &self,
+                _ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                self.log.lock().unwrap().push(self.label);
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
+                )
+            }
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                self.point.clone()
+            }
+            fn priority(&self) -> i32 {
+                100
+            }
+            fn name(&self) -> String {
+                format!("NamedRecorder({})", self.label)
+            }
+        }
+
+        let pre_id = core
+            .register_hook(
+                crate::extensions::framework::core::HookPoint::PreToolUse {
+                    tool_name: "echo".to_string(),
+                },
+                Arc::new(NamedRecorder {
+                    label: "pre_tool_use",
+                    point: crate::extensions::framework::core::HookPoint::PreToolUse {
+                        tool_name: "echo".to_string(),
+                    },
+                    log: log.clone(),
+                }),
+                &ExtensionId::new("f31x-pre"),
+            )
+            .await
+            .unwrap()
+            .id;
+        let post_id = core
+            .register_hook(
+                crate::extensions::framework::core::HookPoint::PostToolUse {
+                    tool_name: "echo".to_string(),
+                },
+                Arc::new(NamedRecorder {
+                    label: "post_tool_use",
+                    point: crate::extensions::framework::core::HookPoint::PostToolUse {
+                        tool_name: "echo".to_string(),
+                    },
+                    log: log.clone(),
+                }),
+                &ExtensionId::new("f31x-post"),
+            )
+            .await
+            .unwrap()
+            .id;
+
+        let config = test_agent_config("f31x-pre-post-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+
+        let session = test_session("f31x-pre-post-agent", temp_dir.path()).await;
+        let _ = loop_
+            .run_with_resume("Use echo tool", Vec::new(), |_| {}, session, None)
+            .await;
+
+        // Clean up so other tests aren't affected.
+        let _ = core.unregister_hook(&pre_id).await;
+        let _ = core.unregister_hook(&post_id).await;
+
+        let log_snapshot = log.lock().unwrap().clone();
+        assert!(
+            log_snapshot.iter().any(|l| *l == "pre_tool_use"),
+            "PreToolUse must fire; got log: {log_snapshot:?}"
+        );
+        assert!(
+            log_snapshot.iter().any(|l| *l == "post_tool_use"),
+            "PostToolUse must fire; got log: {log_snapshot:?}"
+        );
+        let pre_idx = log_snapshot
+            .iter()
+            .position(|l| *l == "pre_tool_use")
+            .unwrap();
+        let post_idx = log_snapshot
+            .iter()
+            .position(|l| *l == "post_tool_use")
+            .unwrap();
+        assert!(
+            pre_idx < post_idx,
+            "Pre must fire before Post; log: {log_snapshot:?}"
+        );
+    }
+
+    /// F31x test #2: Stop hook fires on a clean End with
+    /// `reason: "end"`. Single text response, no tool call.
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn stop_hook_fires_on_clean_end_with_reason_end() {
+        use crate::extensions::framework::types::ExtensionId;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("Single text response, no tools.");
+
+        let core = global_core().unwrap();
+        let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+
+        #[derive(Debug)]
+        struct StopRecorder {
+            log: Arc<Mutex<Vec<serde_json::Value>>>,
+        }
+        #[async_trait::async_trait]
+        impl crate::extensions::framework::core::HookHandler for StopRecorder {
+            async fn handle(
+                &self,
+                ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
+                    self.log.lock().unwrap().push(v.clone());
+                }
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
+                )
+            }
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::Stop
+            }
+            fn priority(&self) -> i32 {
+                100
+            }
+            fn name(&self) -> String {
+                "StopRecorder".to_string()
+            }
+        }
+
+        let hook_id = core
+            .register_hook(
+                crate::extensions::framework::core::HookPoint::Stop,
+                Arc::new(StopRecorder { log: log.clone() }),
+                &ExtensionId::new("f31x-stop-end"),
+            )
+            .await
+            .unwrap()
+            .id;
+
+        let config = test_agent_config("f31x-stop-end-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+
+        let session = test_session("f31x-stop-end-agent", temp_dir.path()).await;
+        let _ = loop_
+            .run_with_resume("Simple prompt", Vec::new(), |_| {}, session, None)
+            .await;
+
+        let _ = core.unregister_hook(&hook_id).await;
+
+        let log_snapshot = log.lock().unwrap().clone();
+        assert_eq!(
+            log_snapshot.len(),
+            1,
+            "Stop must fire exactly once on clean End; got: {log_snapshot:?}"
+        );
+        assert_eq!(
+            log_snapshot[0].get("reason").and_then(|v| v.as_str()),
+            Some("end"),
+            "Stop payload must carry reason: \"end\"; got: {}",
+            log_snapshot[0]
+        );
+    }
+
+    /// F31x test #3: Stop hook fires on cap-hit with
+    /// `reason: "max_iterations"`. Mirrors `test_rt006_*` shape but
+    /// asserts on the Stop payload instead of the Lifecycle phase.
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn stop_hook_fires_on_cap_hit_with_reason_max_iterations() {
+        use crate::extensions::framework::types::ExtensionId;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        for i in 0..12 {
+            mock.queue_tool_call(format!("tc_{i}"), "echo", serde_json::json!({"value": i}));
+        }
+
+        let core = global_core().unwrap();
+        let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+
+        #[derive(Debug)]
+        struct StopRecorder {
+            log: Arc<Mutex<Vec<serde_json::Value>>>,
+        }
+        #[async_trait::async_trait]
+        impl crate::extensions::framework::core::HookHandler for StopRecorder {
+            async fn handle(
+                &self,
+                ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
+                    self.log.lock().unwrap().push(v.clone());
+                }
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
+                )
+            }
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::Stop
+            }
+            fn priority(&self) -> i32 {
+                100
+            }
+            fn name(&self) -> String {
+                "StopRecorderCap".to_string()
+            }
+        }
+
+        let hook_id = core
+            .register_hook(
+                crate::extensions::framework::core::HookPoint::Stop,
+                Arc::new(StopRecorder { log: log.clone() }),
+                &ExtensionId::new("f31x-stop-cap"),
+            )
+            .await
+            .unwrap()
+            .id;
+
+        let config = test_agent_config("f31x-stop-cap-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone())
+            .await
+            .with_max_iterations(2);
+
+        let session = test_session("f31x-stop-cap-agent", temp_dir.path()).await;
+        let result = loop_
+            .run_with_resume("Trigger tool loop", Vec::new(), |_| {}, session, None)
+            .await
+            .unwrap();
+
+        let _ = core.unregister_hook(&hook_id).await;
+
+        assert!(!result.success, "cap-hit must be success=false");
+        let log_snapshot = log.lock().unwrap().clone();
+        assert_eq!(
+            log_snapshot.len(),
+            1,
+            "Stop must fire exactly once on cap-hit; got: {log_snapshot:?}"
+        );
+        assert_eq!(
+            log_snapshot[0].get("reason").and_then(|v| v.as_str()),
+            Some("max_iterations"),
+            "Stop payload must carry reason: \"max_iterations\"; got: {}",
+            log_snapshot[0]
+        );
+        assert_eq!(
+            log_snapshot[0].get("iterations").and_then(|v| v.as_u64()),
+            Some(2),
+            "Stop payload must carry the configured cap; got: {}",
+            log_snapshot[0]
+        );
+    }
+
+    /// F31x test #4: Stop hook fires on soft-interrupt with
+    /// `reason: "interrupted"`. Pre-cancels the token before
+    /// `run_with_resume` (mirrors `test_interrupt_pre_cancelled_*`).
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn stop_hook_fires_on_soft_interrupt_with_reason_interrupted() {
+        use crate::extensions::framework::types::ExtensionId;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("THIS_SHOULD_NOT_BE_RETURNED");
+
+        let core = global_core().unwrap();
+        let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+
+        #[derive(Debug)]
+        struct StopRecorder {
+            log: Arc<Mutex<Vec<serde_json::Value>>>,
+        }
+        #[async_trait::async_trait]
+        impl crate::extensions::framework::core::HookHandler for StopRecorder {
+            async fn handle(
+                &self,
+                ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
+                    self.log.lock().unwrap().push(v.clone());
+                }
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
+                )
+            }
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::Stop
+            }
+            fn priority(&self) -> i32 {
+                100
+            }
+            fn name(&self) -> String {
+                "StopRecorderInterrupt".to_string()
+            }
+        }
+
+        let hook_id = core
+            .register_hook(
+                crate::extensions::framework::core::HookPoint::Stop,
+                Arc::new(StopRecorder { log: log.clone() }),
+                &ExtensionId::new("f31x-stop-interrupt"),
+            )
+            .await
+            .unwrap()
+            .id;
+
+        let config = test_agent_config("f31x-stop-interrupt-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone())
+            .await
+            .with_cancel_token(cancel);
+
+        let session = test_session("f31x-stop-interrupt-agent", temp_dir.path()).await;
+        let result = loop_
+            .run_with_resume("Will be interrupted", Vec::new(), |_| {}, session, None)
+            .await
+            .unwrap();
+
+        let _ = core.unregister_hook(&hook_id).await;
+
+        assert!(result.interrupted, "result should be marked interrupted");
+        let log_snapshot = log.lock().unwrap().clone();
+        assert_eq!(
+            log_snapshot.len(),
+            1,
+            "Stop must fire exactly once on soft-interrupt; got: {log_snapshot:?}"
+        );
+        assert_eq!(
+            log_snapshot[0].get("reason").and_then(|v| v.as_str()),
+            Some("interrupted"),
+            "Stop payload must carry reason: \"interrupted\"; got: {}",
+            log_snapshot[0]
+        );
+    }
+
+    /// F31x test #5: AfterAgent fires from `Agent::stop()` with
+    /// the agent's name in the payload. Calls `agent.stop()`
+    /// directly (the only production caller today — it's dead
+    /// code in production, but the test exercises the hook
+    /// plumbing in isolation).
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn after_agent_hook_fires_from_agent_stop_with_agent_name() {
+        use crate::extensions::framework::types::ExtensionId;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let core = global_core().unwrap();
+        let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+
+        #[derive(Debug)]
+        struct AfterAgentRecorder {
+            log: Arc<Mutex<Vec<serde_json::Value>>>,
+        }
+        #[async_trait::async_trait]
+        impl crate::extensions::framework::core::HookHandler for AfterAgentRecorder {
+            async fn handle(
+                &self,
+                ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
+                    self.log.lock().unwrap().push(v.clone());
+                }
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
+                )
+            }
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::AfterAgent
+            }
+            fn priority(&self) -> i32 {
+                100
+            }
+            fn name(&self) -> String {
+                "AfterAgentRecorder".to_string()
+            }
+        }
+
+        let hook_id = core
+            .register_hook(
+                crate::extensions::framework::core::HookPoint::AfterAgent,
+                Arc::new(AfterAgentRecorder { log: log.clone() }),
+                &ExtensionId::new("f31x-after-agent"),
+            )
+            .await
+            .unwrap()
+            .id;
+
+        let agent_name = format!("f31x-after-agent-{}", uuid::Uuid::new_v4());
+        let config = test_agent_config(&agent_name);
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        agent.stop().await.expect("stop should succeed");
+
+        let _ = core.unregister_hook(&hook_id).await;
+
+        let log_snapshot = log.lock().unwrap().clone();
+        assert_eq!(
+            log_snapshot.len(),
+            1,
+            "AfterAgent must fire exactly once from Agent::stop(); got: {log_snapshot:?}"
+        );
+        assert_eq!(
+            log_snapshot[0].get("agent_name").and_then(|v| v.as_str()),
+            Some(agent_name.as_str()),
+            "AfterAgent payload must carry the agent's name; got: {}",
+            log_snapshot[0]
+        );
+        assert!(
+            log_snapshot[0].get("agent_did").is_some(),
+            "AfterAgent payload must carry the agent's DID; got: {}",
+            log_snapshot[0]
+        );
+    }
+
+    /// F31x test #6: `PreToolUse { tool_name: "mcp:*" }` matches a
+    /// specific `mcp:<tool>` invocation via the wildcard grammar
+    /// (`HookPoint::matches`). Today the registry's
+    /// `get_hooks_for_point` only does wildcard resolution for
+    /// `ToolExecute*` variants; this test pins the *grammar* surface
+    /// (the `matches()` method that future registry work can lean
+    /// on) so the contract is documented and the integration test
+    /// in `hook_points.rs::test_f31x_pre_tool_use_hook_point`
+    /// remains the source of truth for the prefix-wildcard match.
+    #[test]
+    fn pre_tool_use_wildcard_grammar_matches_specific_tool() {
+        use crate::extensions::framework::core::HookPoint;
+
+        // Per-segment wildcard: `tool.pre.mcp:*` should match
+        // `tool.pre.mcp:identity:echo` because the third segment
+        // (`*`) is a single-segment wildcard against `mcp:identity:echo`
+        // — but the actual grammar matches `mcp:*` literal-against
+        // the first part, so the `name()` for the registered
+        // wildcard pattern is `tool.pre.mcp:*` and the dispatch
+        // target is `tool.pre.mcp:identity:echo`. The
+        // per-segment `matches()` function treats the last segment
+        // as one chunk, so it does NOT match across the colon.
+        //
+        // The correct wildcard pattern that DOES match is
+        // `tool.pre.*` against `tool.pre.mcp:identity:echo` —
+        // the third segment `*` matches any third-segment value
+        // including `mcp:identity:echo` (which is one segment from
+        // the dot-split perspective, since colons don't split).
+        // This is the contract F31x relies on: `*` as the entire
+        // tool-name segment matches any tool, regardless of
+        // internal colons.
+        let wildcard = HookPoint::PreToolUse {
+            tool_name: "*".to_string(),
+        };
+        assert_eq!(wildcard.name(), "tool.pre.*");
+
+        let target = HookPoint::PreToolUse {
+            tool_name: "mcp:identity:echo".to_string(),
+        };
+        assert_eq!(target.name(), "tool.pre.mcp:identity:echo");
+        assert!(
+            target.matches("tool.pre.*"),
+            "PreToolUse target must match the per-segment `*` wildcard; \
+             target.name() = {}, pattern = `tool.pre.*`",
+            target.name()
+        );
+        assert!(
+            target.matches("tool.pre.mcp:identity:echo"),
+            "PreToolUse target must match its exact-name pattern"
+        );
+        assert!(
+            !target.matches("tool.execute.*"),
+            "PreToolUse target must not match a `tool.execute.*` pattern"
+        );
     }
 }

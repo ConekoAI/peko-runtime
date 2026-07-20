@@ -64,6 +64,32 @@ pub enum HookPoint {
     /// - `tool_name`: Specific tool name, or pattern for matching multiple tools
     ToolExecute { tool_name: String },
 
+    /// F31x: pre-tool-use notification. Fires *before* `ToolExecute`
+    /// middleware, so a handler can record/log/observe the
+    /// impending call. Observe-only in v1 — returning
+    /// `HookResult::Handled` does NOT abort the tool call (use
+    /// `ToolExecute` for that today; `PreToolUse` mutation
+    /// power is deferred to a follow-up). Mirrors codex's
+    /// `PreToolUse` semantics without the abort contract.
+    ///
+    /// Handlers receive: `HookInput::ToolCall { tool_name, params }`
+    /// Handlers return: `HookResult::PassThrough` or
+    /// `HookResult::Continue(HookOutput::Unit)`.
+    PreToolUse { tool_name: String },
+
+    /// F31x: post-tool-use notification. Fires *after* `ToolExecute`
+    /// middleware returns, just before the result is added to the
+    /// LLM message list. Observe-only in v1 — any output the handler
+    /// returns is ignored (mutation power is deferred). Code is
+    /// free to record/log/diff the tool result here.
+    ///
+    /// Handlers receive: `HookInput::ToolCall { tool_name, params, ... }`
+    /// with the original params; the result itself is NOT in the
+    /// input payload today (would require a new `HookInput`
+    /// variant — deferred). Use `ToolResultTransform` for
+    /// post-call mutation.
+    PostToolUse { tool_name: String },
+
     /// Modify tool result before returning to LLM
     ///
     /// Called during: After tool execution
@@ -230,6 +256,34 @@ pub enum HookPoint {
     /// Handlers return: `HookOutput::Unit`
     AgentShutdown,
 
+    /// F31x: post-agent-run notification. Fires *after* the agent
+    /// loop exits (success / cap-hit / soft-interrupt / error),
+    /// once per `run_with_resume` call. Differs from
+    /// `AgentShutdown` in that `AgentShutdown` fires once per
+    /// process teardown (from `Agent::stop()`); `Stop` fires once
+    /// per run. Observe-only in v1.
+    ///
+    /// Handlers receive: `HookInput::Json(serde_json::Value)`
+    /// carrying `{ "reason": "end"|"max_iterations"|"interrupted"|"error",
+    /// "iterations": N, "max_iterations": N, "interrupted": bool,
+    /// "success": bool }`.
+    /// Handlers return: `HookResult::PassThrough` or
+    /// `HookResult::Continue(HookOutput::Unit)`.
+    Stop,
+
+    /// F31x: post-agent-process notification. Fires once per
+    /// `Agent::stop()` call — covers process teardown. Currently
+    /// `Agent::stop()` is dead code (no production caller); wiring
+    /// it into the daemon's teardown path at `daemon/mod.rs:443-477`
+    /// is a follow-up PR. The hook is shipped here so extensions
+    /// can register handlers ahead of that wiring.
+    ///
+    /// Handlers receive: `HookInput::Json(serde_json::Value)`
+    /// carrying `{ "agent_name": ..., "agent_did": ... }`.
+    /// Handlers return: `HookResult::PassThrough` or
+    /// `HookResult::Continue(HookOutput::Unit)`.
+    AfterAgent,
+
     /// Hook between iterations (for monitoring/intervention)
     ///
     /// Called during: Between agent loop iterations
@@ -256,7 +310,9 @@ impl HookPoint {
             | Self::ToolExecuteAsync { .. }
             | Self::ToolCheckStatus { .. }
             | Self::ToolCancel { .. }
-            | Self::ToolResultTransform => "tool",
+            | Self::ToolResultTransform
+            | Self::PreToolUse { .. }
+            | Self::PostToolUse { .. } => "tool",
 
             Self::SessionStateChange
             | Self::SessionCompaction
@@ -271,7 +327,11 @@ impl HookPoint {
 
             Self::EventSubscribe { .. } | Self::EventEmit => "event",
 
-            Self::AgentInit | Self::AgentShutdown | Self::AgentIteration { .. } => "agent",
+            Self::AgentInit
+            | Self::AgentShutdown
+            | Self::AgentIteration { .. }
+            | Self::AfterAgent => "agent",
+            Self::Stop => "loop",
         }
     }
 
@@ -298,6 +358,12 @@ impl HookPoint {
             Self::ToolCancel { tool_name } => {
                 format!("tool.cancel.{tool_name}")
             }
+            Self::PreToolUse { tool_name } => {
+                format!("tool.pre.{tool_name}")
+            }
+            Self::PostToolUse { tool_name } => {
+                format!("tool.post.{tool_name}")
+            }
             Self::ToolResultTransform => "tool.result_transform".to_string(),
 
             Self::SessionStateChange => "session.state_change".to_string(),
@@ -318,6 +384,8 @@ impl HookPoint {
 
             Self::AgentInit => "agent.init".to_string(),
             Self::AgentShutdown => "agent.shutdown".to_string(),
+            Self::AfterAgent => "agent.after".to_string(),
+            Self::Stop => "loop.stop".to_string(),
             Self::AgentIteration { iteration } => {
                 format!("agent.iteration.{iteration}")
             }
@@ -463,6 +531,56 @@ impl HookPointBuilder {
     #[must_use]
     pub fn agent_iteration(iteration: usize) -> HookPoint {
         HookPoint::AgentIteration { iteration }
+    }
+
+    /// F31x: pre-tool-use hook point for a specific tool name.
+    /// Fires before `ToolExecute` middleware. Observe-only in v1.
+    pub fn pre_tool_use(tool_name: impl Into<String>) -> HookPoint {
+        HookPoint::PreToolUse {
+            tool_name: tool_name.into(),
+        }
+    }
+
+    /// F31x: pre-tool-use hook point with wildcard pattern (e.g.
+    /// `"*"`, `"mcp:*"`). The `HookRegistry::get_hooks_for_point`
+    /// wildcard grammar matches via `HookPoint::matches()`.
+    pub fn pre_tool_use_pattern(pattern: impl Into<String>) -> HookPoint {
+        HookPoint::PreToolUse {
+            tool_name: pattern.into(),
+        }
+    }
+
+    /// F31x: post-tool-use hook point for a specific tool name.
+    /// Fires after `ToolExecute` returns, before the result is
+    /// added to the LLM message list. Observe-only in v1.
+    pub fn post_tool_use(tool_name: impl Into<String>) -> HookPoint {
+        HookPoint::PostToolUse {
+            tool_name: tool_name.into(),
+        }
+    }
+
+    /// F31x: post-tool-use hook point with wildcard pattern.
+    pub fn post_tool_use_pattern(pattern: impl Into<String>) -> HookPoint {
+        HookPoint::PostToolUse {
+            tool_name: pattern.into(),
+        }
+    }
+
+    /// F31x: post-run-stop hook point. Fires once per
+    /// `run_with_resume` call, regardless of exit reason. Payload
+    /// via `HookInput::Json(value)`. Observe-only.
+    #[must_use]
+    pub fn stop() -> HookPoint {
+        HookPoint::Stop
+    }
+
+    /// F31x: post-agent-process hook point. Fires once per
+    /// `Agent::stop()` call (currently dead code — see
+    /// `agents/agent.rs:874-892`). Payload via `HookInput::Json(value)`.
+    /// Observe-only.
+    #[must_use]
+    pub fn after_agent() -> HookPoint {
+        HookPoint::AfterAgent
     }
 }
 
@@ -657,5 +775,91 @@ mod tests {
         assert!(hp.matches("session.start"));
         assert!(hp.matches("session.*"));
         assert!(!hp.matches("session.state_change"));
+    }
+
+    // ===================================================================
+    // F31x — PreToolUse / PostToolUse / Stop / AfterAgent
+    // ===================================================================
+
+    #[test]
+    fn test_f31x_pre_tool_use_hook_point() {
+        let hp = HookPoint::PreToolUse {
+            tool_name: "Echo".to_string(),
+        };
+        assert_eq!(hp.name(), "tool.pre.Echo");
+        assert_eq!(hp.category(), "tool");
+        assert!(hp.matches("tool.pre.Echo"));
+        assert!(hp.matches("tool.pre.*"));
+        assert!(hp.matches("tool.*"));
+        assert!(!hp.matches("tool.execute.Echo"));
+    }
+
+    #[test]
+    fn test_f31x_post_tool_use_hook_point() {
+        let hp = HookPoint::PostToolUse {
+            tool_name: "mcp:identity:echo".to_string(),
+        };
+        assert_eq!(hp.name(), "tool.post.mcp:identity:echo");
+        assert_eq!(hp.category(), "tool");
+        assert!(hp.matches("tool.post.mcp:identity:echo"));
+        assert!(hp.matches("tool.post.*"));
+    }
+
+    #[test]
+    fn test_f31x_stop_hook_point() {
+        let hp = HookPoint::Stop;
+        assert_eq!(hp.name(), "loop.stop");
+        assert_eq!(hp.category(), "loop");
+        assert!(hp.matches("loop.stop"));
+        assert!(hp.matches("loop.*"));
+        assert!(!hp.matches("loop.start"));
+    }
+
+    #[test]
+    fn test_f31x_after_agent_hook_point() {
+        let hp = HookPoint::AfterAgent;
+        assert_eq!(hp.name(), "agent.after");
+        assert_eq!(hp.category(), "agent");
+        assert!(hp.matches("agent.after"));
+        assert!(hp.matches("agent.*"));
+        assert!(!hp.matches("agent.shutdown"));
+    }
+
+    #[test]
+    fn test_f31x_pre_post_tool_use_builders() {
+        // Specific-name builders round-trip through the HookPoint
+        // shape. Wildcard-pattern builders store the pattern as the
+        // `tool_name` field (the registry's wildcard grammar matches
+        // via `HookPoint::name()` against `tool.pre.<name>`).
+        let specific = HookPointBuilder::pre_tool_use("Bash");
+        assert!(matches!(
+            specific,
+            HookPoint::PreToolUse { ref tool_name } if tool_name == "Bash"
+        ));
+        let pattern = HookPointBuilder::pre_tool_use_pattern("mcp:*");
+        assert!(matches!(
+            pattern,
+            HookPoint::PreToolUse { ref tool_name } if tool_name == "mcp:*"
+        ));
+
+        let post_specific = HookPointBuilder::post_tool_use("Bash");
+        assert!(matches!(
+            post_specific,
+            HookPoint::PostToolUse { ref tool_name } if tool_name == "Bash"
+        ));
+        let post_pattern = HookPointBuilder::post_tool_use_pattern("Bash");
+        assert!(matches!(
+            post_pattern,
+            HookPoint::PostToolUse { ref tool_name } if tool_name == "Bash"
+        ));
+    }
+
+    #[test]
+    fn test_f31x_stop_after_agent_builders() {
+        assert!(matches!(HookPointBuilder::stop(), HookPoint::Stop));
+        assert!(matches!(
+            HookPointBuilder::after_agent(),
+            HookPoint::AfterAgent
+        ));
     }
 }
