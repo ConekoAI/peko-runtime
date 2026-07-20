@@ -670,7 +670,7 @@ impl ExtensionCore {
     /// F35 — Search the principal's `ToolExposure::Deferred` tool catalog
     /// and return up to `limit` matching `ToolDefinition`s ranked by the
     /// simple word-overlap backend at
-    /// [`crate::tools::builtin::tool_search::backend`].
+    /// [`crate::extensions::framework::core::scoring`].
     ///
     /// This is the engine-side of the synthetic `__tool_search` stub.
     /// Returns `ToolDefinition`s (name + description + JSON schema) so the
@@ -713,7 +713,7 @@ impl ExtensionCore {
         let mut scored: Vec<_> = deferred
             .iter()
             .map(|m| {
-                let s = crate::tools::builtin::tool_search::backend::score(
+                let s = crate::extensions::framework::core::scoring::score(
                     query,
                     &m.name,
                     &m.description,

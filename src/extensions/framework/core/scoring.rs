@@ -1,22 +1,25 @@
 //! Simple word-overlap scoring backend for the synthetic `__tool_search` tool.
 //!
-//! Peko has <30 built-in tools today; BM25 (`codex-rs/core/src/tools/handlers/
-//! tool_search.rs:74-94`) is overkill. Word-overlap on a lowercased
-//! `name + " " + description` is sufficient for v1. If the catalog ever
-//! crosses ~50 entries, swap this for BM25 — the public surface is just
-//! [`score`].
+//! Lives in `extensions::framework::core::scoring` (not `tools::builtin`)
+//! because the framework's `ExtensionCore::list_deferred_tool_definitions`
+//! uses it directly, and module-boundary rule 3 forbids
+//! `extensions/framework/core/` from importing `tools/builtin`.
+//!
+//! Peko has <30 built-in tools today; BM25
+//! (`codex-rs/core/src/tools/handlers/tool_search.rs:74-94`) is overkill.
+//! Word-overlap on a lowercased `name + " " + description` is sufficient
+//! for v1. If the catalog ever crosses ~50 entries, swap this for BM25 —
+//! the public surface is just [`score`].
 //!
 //! ## Algorithm
 //!
 //! 1. Lowercase both query and candidate (`name + " " + description`).
 //! 2. Tokenize on whitespace + ASCII punctuation.
-//! 3. Build a `HashSet<&str>` of query tokens.
-//! 4. Score = number of query tokens that appear as a substring of the
-//!    candidate text. Substring (not equality) catches word fragments
-//!    ("log" matches "logging").
-//! 5. Tie-break: a hit in the name portion is worth 100x a hit in the
-//!    description portion (so a tool whose name is "Bash" outranks a
-//!    tool that only mentions "bash" in its prose).
+//! 3. Build a `HashSet<String>` of query tokens (deduped).
+//! 4. Score = sum across unique query tokens of: 100 for a name
+//!    substring hit, 1 for a description substring hit, 0 otherwise.
+//!    Substring (not equality) catches word fragments ("log" matches
+//!    "logging").
 //!
 //! Stdlib only — no new dependency.
 

@@ -14,7 +14,8 @@
 //!
 //! * Codex uses BM25 over hundreds of MCP tools. Peko has <30 built-ins
 //!   today; a simple word-overlap scorer in
-//!   [`tool_search::backend`](super::tool_search::backend) is sufficient.
+//!   [`extensions::framework::core::scoring`](crate::extensions::framework::core::scoring)
+//!   is sufficient.
 //! * Codex's `search_tool_enabled` lives on `TurnContext`. Peko's
 //!   `enable_tool_search` lives on [`AgentConfig`](crate::agents::AgentConfig)
 //!   (config-level, not per-turn). Add a per-turn override only when a
@@ -33,8 +34,6 @@ use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::types::ToolExposure;
 use crate::tools::core::Tool;
 use crate::tools::ToolError;
-
-pub mod backend;
 
 /// Default page size for [`ToolSearchTool::execute`] when `limit` is omitted.
 pub const TOOL_SEARCH_DEFAULT_LIMIT: u32 = 8;
