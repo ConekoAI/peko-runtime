@@ -71,6 +71,35 @@ pub enum AgenticEvent {
         error: Option<String>,
     },
 
+    /// F31b: mid-stream retry attempt. Emitted when the agentic loop
+    /// catches a retryable error (transient 5xx, timeout, network
+    /// reset) from the LLM provider's byte stream and is about to
+    /// re-issue the request with the same `messages` checkpoint
+    /// (the `original_input` save/restore shape from codex
+    /// `run_sampling_request`). `attempt` is 0-indexed (the first
+    /// retry is `attempt: 0`); `max_attempts` is the configured
+    /// ceiling. `reason` carries the upstream error message so
+    /// consumers can show "retrying (2/3): connection reset" UX
+    /// without parsing the lifecycle stream.
+    Retry {
+        /// Run identifier
+        run_id: RunId,
+        /// Iteration index (matches the loop's `iteration` counter)
+        iteration: usize,
+        /// 0-indexed retry attempt number
+        attempt: u32,
+        /// Configured retry ceiling for this iteration
+        max_attempts: u32,
+        /// Server-suggested retry delay (RFC 7231 §7.1.3 `Retry-After`),
+        /// when the upstream sent one. `None` means we're falling back
+        /// to computed exponential backoff.
+        retry_after: Option<std::time::Duration>,
+        /// Computed delay we'll sleep before re-issuing the request
+        delay: std::time::Duration,
+        /// Upstream error message (truncated at 256 chars)
+        reason: String,
+    },
+
     /// Assistant text content with clear semantics
     ///
     /// Represents a block of text from the assistant. Unlike the deprecated
@@ -251,6 +280,7 @@ impl AgenticEvent {
     pub fn run_id(&self) -> &str {
         match self {
             AgenticEvent::Lifecycle { run_id, .. } => run_id,
+            AgenticEvent::Retry { run_id, .. } => run_id,
             AgenticEvent::AssistantText { run_id, .. } => run_id,
             AgenticEvent::Thinking { run_id, .. } => run_id,
             AgenticEvent::ToolCallDelta { run_id, .. } => run_id,
