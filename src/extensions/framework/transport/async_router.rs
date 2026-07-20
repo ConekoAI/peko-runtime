@@ -26,10 +26,10 @@ use crate::extensions::framework::transport::async_transport::{
     AsyncTaskTransport, LocalAsyncTransport,
 };
 use crate::extensions::framework::types::{HookOutput, HookResult};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::time::Duration;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 /// Default tool execution timeout in seconds. When a tool call exceeds
 /// this, the work is detached to a background task and a receipt is
@@ -300,6 +300,76 @@ impl AsyncExecutionRouter {
         &self.transport
     }
 
+    /// Validate LLM-emitted tool arguments against the tool's declared
+    /// JSON Schema. F32b — closes audit section 3 row 1 (P0).
+    ///
+    /// This runs BEFORE any preprocessor (workspace injection, reserved
+    /// param defaults) so the LLM's emitted `arguments` are checked against
+    /// the schema the LLM was actually given. Preprocessor-injected fields
+    /// are not part of the LLM-facing schema and aren't validated here.
+    ///
+    /// On success, returns Ok(()). On schema violation, returns Err with a
+    /// concise message that surfaces in the standard
+    /// `(format!("Error: ..."), Value::String(s), false)` triplet via
+    /// `tool_result_from_hook`. The downstream F32a `is_error: true`
+    /// propagation carries the failure into the JSONL record and the
+    /// next-iteration LLM message.
+    ///
+    /// Non-object params (e.g. an LLM emitting an array or scalar at the
+    /// top level) are validated against the schema as-is. Schemas without
+    /// an explicit `type` field are skipped (defensive — every built-in
+    /// tool's `parameters()` returns a `{type: "object", ...}` literal).
+    fn validate_tool_args(
+        schema: &Value,
+        args: &Value,
+        tool_name: &str,
+    ) -> std::result::Result<(), String> {
+        // Skip empty / non-object schemas defensively — every built-in
+        // tool's `parameters()` returns a non-empty object schema; future
+        // tools that declare `{}` as their schema opt out of validation
+        // by design.
+        let schema_obj = match schema.as_object() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        if schema_obj.is_empty() {
+            return Ok(());
+        }
+
+        let validator = match jsonschema::validator_for(schema) {
+            Ok(v) => v,
+            Err(e) => {
+                // Schema itself is malformed — surface as a hard error
+                // so the framework doesn't silently dispatch with broken
+                // validation. This is a tool-author bug, not an LLM bug.
+                return Err(format!(
+                    "Tool '{tool_name}' has an invalid JSON Schema; refusing to dispatch: {e}"
+                ));
+            }
+        };
+
+        let mut errors = validator.iter_errors(args);
+        match errors.next() {
+            None => Ok(()),
+            Some(first) => {
+                let mut msg = format!("Invalid arguments for tool '{tool_name}': {first}");
+                // Append the rest of the error chain (cap at 5 to keep
+                // the LLM-facing string bounded). The path is included
+                // so the LLM can locate the offending field.
+                let mut count = 0;
+                for err in errors {
+                    count += 1;
+                    if count >= 5 {
+                        msg.push_str(&format!(" (and {} more)", count));
+                        break;
+                    }
+                    msg.push_str(&format!("; {err}"));
+                }
+                Err(msg)
+            }
+        }
+    }
+
     /// Execute a tool from a HookContext — eliminates adapter boilerplate.
     ///
     /// This convenience method handles the common glue code that every
@@ -357,10 +427,31 @@ impl AsyncExecutionRouter {
             return HookResult::PassThrough;
         }
 
-        // 3. Get services from context
+        // 3. F32b — validate LLM-emitted args against the tool's
+        // declared JSON Schema BEFORE any preprocessor (workspace
+        // injection, reserved-params defaults). The LLM is held to the
+        // schema it was given; preprocessor-injected fields are not
+        // validated here because they're not part of the LLM-facing
+        // surface.
+        //
+        // Failures short-circuit via the same `tool_result_from_hook`
+        // shape as any other tool failure: the (String, Value, bool)
+        // triplet produces an Error-prefixed response with
+        // `success: false`. F32a's `is_error: !success` propagation
+        // then carries the flag into both the JSONL record and the
+        // next-iteration LLM message.
+        if let Err(msg) = Self::validate_tool_args(&exec_config.full_schema, &params, tool_name) {
+            warn!(
+                tool = %tool_name,
+                "Tool arg validation failed; returning as tool failure"
+            );
+            return HookResult::Error(anyhow!(msg));
+        }
+
+        // 4. Get services from context
         let exec_service = ctx.services.tool_execution();
 
-        // 4. Build execution context
+        // 5. Build execution context
         let tool_ctx = match ctx
             .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
         {
@@ -464,6 +555,102 @@ mod tests {
     fn test_default_tool_timeout_constant() {
         // Single source of truth for the 5-min default.
         assert_eq!(DEFAULT_TOOL_TIMEOUT_SECS, 300);
+    }
+
+    // ===================== F32b: schema argument validation =====================
+
+    /// F32b: A well-formed argument block against a `required`-bearing
+    /// schema passes validation. Mirrors the Bash-tool shape: `command`
+    /// is required, everything else is optional.
+    #[test]
+    fn test_validate_tool_args_passes_when_required_field_present() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "shell command"},
+                "cwd": {"type": "string"}
+            },
+            "required": ["command"]
+        });
+        let args = json!({"command": "ls -la"});
+        assert!(
+            AsyncExecutionRouter::validate_tool_args(&schema, &args, "Bash").is_ok(),
+            "valid args must pass schema validation"
+        );
+    }
+
+    /// F32b: Missing the required `command` field fails validation.
+    /// The error message must mention the tool name and surface to the
+    /// LLM as a structured tool failure (via `tool_result_from_hook` →
+    /// F32a `is_error: true` propagation).
+    #[test]
+    fn test_validate_tool_args_fails_when_required_field_missing() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "shell command"}
+            },
+            "required": ["command"]
+        });
+        let args = json!({}); // missing required `command`
+        let result = AsyncExecutionRouter::validate_tool_args(&schema, &args, "Bash");
+        let err = result.expect_err("validation must fail when required field is missing");
+        assert!(
+            err.contains("Bash"),
+            "error must name the tool so the LLM can identify the offending call: {err}"
+        );
+        assert!(
+            err.contains("command"),
+            "error must identify the missing field: {err}"
+        );
+    }
+
+    /// F32b: Wrong-type argument (a number when the schema expects a
+    /// string) fails validation. Mirrors a real LLM error class where
+    /// the model emits `{"command": 42}` because it confused JSON-shape
+    /// markers in its prompt context.
+    #[test]
+    fn test_validate_tool_args_fails_on_type_mismatch() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"}
+            },
+            "required": ["command"]
+        });
+        let args = json!({"command": 42});
+        let result = AsyncExecutionRouter::validate_tool_args(&schema, &args, "Bash");
+        assert!(
+            result.is_err(),
+            "type mismatch (number for declared string) must fail"
+        );
+    }
+
+    /// F32b: Empty schema (defensive default) opts out of validation —
+    /// tools that declare `{}` as their schema aren't expected to ship
+    /// as a JSON Schema draft.
+    #[test]
+    fn test_validate_tool_args_skips_empty_schema() {
+        let schema = json!({});
+        // Any args — even malformed — pass against an empty schema
+        let args = json!({"anything": [1, 2, 3]});
+        assert!(
+            AsyncExecutionRouter::validate_tool_args(&schema, &args, "UnknownTool").is_ok(),
+            "empty schema must opt out of validation"
+        );
+    }
+
+    /// F32b: Non-object schema (e.g., a tool author's bug — declaring
+    /// `null` or a scalar as the schema) is treated as opt-out. We don't
+    /// want to crash a dispatch because a tool author filed a bad schema.
+    #[test]
+    fn test_validate_tool_args_skips_non_object_schema() {
+        let schema = json!(null);
+        let args = json!({"command": "ls"});
+        assert!(
+            AsyncExecutionRouter::validate_tool_args(&schema, &args, "BrokenTool").is_ok(),
+            "non-object schema must opt out of validation"
+        );
     }
 
     #[tokio::test]
