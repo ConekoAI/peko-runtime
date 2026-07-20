@@ -63,6 +63,27 @@ pub trait Tool: Send + Sync {
         true
     }
 
+    /// How this tool is exposed to the LLM (F34, audit section 3 row 4).
+    ///
+    /// Defaults to [`ToolExposure::Direct`](crate::extensions::framework::types::ToolExposure::Direct)
+    /// (visible in both the prompt "Available Tools" section AND the
+    /// native LLM catalog; callable). Override for:
+    ///
+    /// * `DirectModelOnly` — schema is self-documenting; suppress the
+    ///   prose entry to save prompt tokens.
+    /// * `Deferred` — too large for the prompt; the model will discover
+    ///   it via `__tool_search` once F35 lands. Pre-F35 behaves like
+    ///   `Hidden`.
+    /// * `Hidden` — telemetry-only or sub-tool-of-other-tool; the
+    ///   model never sees or invokes it.
+    ///
+    /// The capability gate still applies on top — a `DirectModelOnly`
+    /// tool without the principal's `tool:<name>` grant is hidden from
+    /// both surfaces regardless of this setting.
+    fn exposure(&self) -> crate::extensions::framework::types::ToolExposure {
+        crate::extensions::framework::types::ToolExposure::default()
+    }
+
     /// Execute the tool with parameters.
     ///
     /// ⚠️ **TEST-ONLY IN PRODUCTION CONTEXTS**

@@ -22,8 +22,8 @@ use crate::extensions::framework::core::context::HookContext;
 use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::types::{
-    Capabilities, Capability, ExtensionId, HookId, HookOutput, HookResult, ToolMetadata,
-    ToolRuntimeContext,
+    Capabilities, Capability, ExtensionId, HookId, HookOutput, HookResult, ToolExposure,
+    ToolMetadata, ToolRuntimeContext,
 };
 use async_trait::async_trait;
 #[cfg(test)]
@@ -91,6 +91,11 @@ impl ToolRegistration {
 pub(crate) struct AutoPromptHandler {
     tool_name: String,
     description: String,
+    /// F34 — the LLM exposure from the tool's metadata. Suppressed from
+    /// the prompt section unless `visible_in_prompt_section()` is true.
+    /// `DirectModelOnly`, `Deferred`, and `Hidden` tools skip the
+    /// prompt section entirely.
+    exposure: ToolExposure,
     priority: i32,
 }
 
@@ -101,6 +106,7 @@ impl AutoPromptHandler {
         Self {
             tool_name: metadata.name.clone(),
             description: metadata.description.clone(),
+            exposure: metadata.exposure,
             priority,
         }
     }
@@ -109,6 +115,19 @@ impl AutoPromptHandler {
 #[async_trait]
 impl HookHandler for AutoPromptHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
+        // F34 — exposure gate. Suppress from the prompt section unless
+        // the tool's exposure says it belongs here. Capability gate runs
+        // second so a `Hidden` tool is dropped without consulting the
+        // principal's grants.
+        if !self.exposure.visible_in_prompt_section() {
+            debug!(
+                tool_name = %self.tool_name,
+                exposure = ?self.exposure,
+                "Auto-prompt suppressed: exposure hides tool from prompt section"
+            );
+            return HookResult::PassThrough;
+        }
+
         // Capability gate: every registered tool fires this hook, so the
         // `Available Tools` prompt section would otherwise list tools the
         // principal does not have granted. The system prompt builder seeds

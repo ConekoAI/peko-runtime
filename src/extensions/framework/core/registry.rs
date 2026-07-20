@@ -631,6 +631,10 @@ impl ExtensionCore {
     /// This closes leak B: without filtering, the LLM sees every tool
     /// registered on the shared `ExtensionCore` even when the agent/principal
     /// is only allowed to use a subset.
+    ///
+    /// F34 — also filters by [`ToolExposure::visible_in_native_catalog`].
+    /// `Hidden` and (pre-F35) `Deferred` tools are dropped from the
+    /// native catalog even when capability/extension gates allow them.
     pub async fn list_tool_definitions_with_allowlist(
         &self,
         capabilities: &Capabilities,
@@ -640,6 +644,13 @@ impl ExtensionCore {
         let all = self.list_tools(principal_id).await;
         let mut filtered = Vec::new();
         for metadata in all {
+            // F34 — exposure gate. Runs BEFORE the capability gate so a
+            // `Hidden` tool is filtered without consulting grants (a
+            // audit-only entry might not have a `tool:<name>` grant at
+            // all, but that shouldn't matter — it's invisible).
+            if !metadata.exposure.visible_in_native_catalog() {
+                continue;
+            }
             if self
                 .tool_registry
                 .is_tool_enabled(

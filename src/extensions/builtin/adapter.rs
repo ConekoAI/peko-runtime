@@ -103,13 +103,16 @@ impl BuiltinToolAdapter {
         let tool_name = tool.name().to_string();
         let ext_id = ExtensionId::new(format!("builtin:tool:{tool_name}"));
 
-        // Create tool metadata for unified registry
+        // Create tool metadata for unified registry. F34 — surface
+        // `tool.exposure()` so a built-in can opt into
+        // DirectModelOnly / Deferred / Hidden without subclassing.
         let metadata = ToolMetadata::new(
             tool_name.clone(),
             tool.description(),
             tool.parameters(),
             ToolSource::BuiltIn,
-        );
+        )
+        .with_exposure(tool.exposure());
 
         // Side-table: keep a clone of the Arc<dyn Tool> for direct
         // invocation paths (AsyncSpawnTool calls core.get_tool). Clone
