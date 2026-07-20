@@ -169,6 +169,16 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
                         output.error = error.or_else(|| Some("interrupted".to_string()));
                         end_received = true;
                     }
+                    LifecyclePhase::MaxIterations { iterations } => {
+                        // F31a: cap-hit is terminal and a failure.
+                        // Surface the configured ceiling on output.error
+                        // so callers can present "extend by N more rounds?"
+                        // UX without inspecting the LifecyclePhase struct.
+                        output.success = false;
+                        output.error =
+                            error.or_else(|| Some(format!("max_iterations ({iterations})")));
+                        end_received = true;
+                    }
                     _ => {}
                 }
             }

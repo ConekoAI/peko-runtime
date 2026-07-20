@@ -1015,14 +1015,22 @@ impl AgenticLoop {
 
             if iteration > self.max_iterations {
                 warn!("Max iterations ({}) reached", self.max_iterations);
+                // F31a: emit a dedicated phase so IPC consumers can
+                // distinguish cap-hit from a clean End. `success: false`
+                // surfaces the failure to the caller; the configured
+                // ceiling travels on the Lifecycle event's error field
+                // and is also folded into the final_answer so the IPC
+                // `principal_log` stream-renderer can show it.
                 on_event(AgenticEvent::Lifecycle {
                     run_id: run_id.clone(),
-                    phase: LifecyclePhase::End,
-                    error: None,
+                    phase: LifecyclePhase::MaxIterations {
+                        iterations: self.max_iterations,
+                    },
+                    error: Some(format!("max_iterations ({})", self.max_iterations)),
                 });
                 return Ok(AgenticResult {
-                    success: true,
-                    final_answer: "Max iterations reached".to_string(),
+                    success: false,
+                    final_answer: format!("Max iterations reached ({})", self.max_iterations),
                     tool_calls: vec![],
                     iterations: iteration,
                     usage: total_usage,
@@ -2455,8 +2463,25 @@ mod tests {
             .with_max_iterations(5); // Use a smaller max for faster test
 
         let session = test_session("rt006-agent", temp_dir.path()).await;
+
+        // F31a: capture the Lifecycle phase stream so we can assert
+        // the dedicated `MaxIterations` variant fires (vs. the
+        // pre-F31a generic `End`).
+        use std::sync::{Arc, Mutex};
+        let phases: Arc<Mutex<Vec<LifecyclePhase>>> = Arc::new(Mutex::new(Vec::new()));
+        let phases_for_cb = phases.clone();
         let result = loop_
-            .run_with_resume("Trigger tool loop", Vec::new(), |_| {}, session, None)
+            .run_with_resume(
+                "Trigger tool loop",
+                Vec::new(),
+                move |event| {
+                    if let AgenticEvent::Lifecycle { phase, .. } = event {
+                        phases_for_cb.lock().unwrap().push(phase);
+                    }
+                },
+                session,
+                None,
+            )
             .await;
 
         assert!(result.is_ok(), "Loop should complete without panic");
@@ -2469,9 +2494,33 @@ mod tests {
             "Should exceed max_iterations threshold before stopping, got {}",
             result.iterations
         );
-        assert_eq!(
-            result.final_answer, "Max iterations reached",
-            "Should return max iterations message"
+
+        // F31a: cap-hit is now a failure surface, not a success.
+        assert!(
+            !result.success,
+            "Cap-hit should surface as success=false so callers can distinguish from a clean End"
+        );
+        assert!(
+            !result.interrupted,
+            "Cap-hit is not a soft-interrupt; interrupted must be false"
+        );
+        // final_answer is still human-readable but the contract is now
+        // "look at the Lifecycle event for the structured signal" — the
+        // string only needs to mention the cap-hit.
+        assert!(
+            result.final_answer.contains("Max iterations"),
+            "final_answer should describe cap-hit, got: {:?}",
+            result.final_answer
+        );
+
+        // The dedicated `LifecyclePhase::MaxIterations` variant must fire.
+        let phases = phases.lock().unwrap();
+        assert!(
+            phases.iter().any(|p| matches!(
+                p,
+                LifecyclePhase::MaxIterations { iterations: 5 }
+            )),
+            "expected LifecyclePhase::MaxIterations {{ iterations: 5 }} to fire; got phases: {phases:?}"
         );
     }
 
