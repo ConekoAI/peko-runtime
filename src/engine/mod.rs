@@ -7,6 +7,7 @@ pub mod agentic_loop;
 pub mod async_completion;
 pub mod chunker;
 pub mod compaction_orchestrator;
+pub mod error;
 pub mod event_processor;
 pub mod events;
 pub mod execution;
@@ -21,6 +22,7 @@ pub mod tool_stream;
 
 pub use agentic_loop::{AgenticLoop, AgenticResult, ToolCall};
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
+pub use error::AgenticError;
 pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, LifecyclePhase};
 pub use execution::{ExecutionMode, TaskId, TaskStatus, TaskSummary};

@@ -1176,7 +1176,15 @@ impl AgenticLoop {
                     phase: LifecyclePhase::Error,
                     error: Some(existing_err.to_string()),
                 });
-                return Err(anyhow::anyhow!(existing_err));
+                // F31c: lift `QuotaError` into `AgenticError::Quota`
+                // so callers can match `as_quota()` to render
+                // quota-exceeded UX (used / limit / window_end)
+                // without string-parsing. `.into()` chains
+                // `AgenticError: From<QuotaError>` →
+                // `anyhow::Error: From<AgenticError>` (the
+                // `#[from]` on the variant feeds the outer
+                // `thiserror::Error` derive).
+                return Err(crate::engine::AgenticError::from(existing_err).into());
             }
             if let Some(pm) = self.peer_meter.as_ref() {
                 pm.advance_if_needed(chrono::Utc::now());
@@ -1186,7 +1194,7 @@ impl AgenticLoop {
                         phase: LifecyclePhase::Error,
                         error: Some(existing_err.to_string()),
                     });
-                    return Err(anyhow::anyhow!(existing_err));
+                    return Err(crate::engine::AgenticError::from(existing_err).into());
                 }
             }
 
@@ -2918,6 +2926,135 @@ mod tests {
         assert!(
             has_final_error,
             "Should emit final Lifecycle::Error after exhausting budget"
+        );
+    }
+
+    // ===================================================================
+    // RT-008: F31c — when the pre-flight quota check trips, the
+    // returned `anyhow::Error` must downcast to `AgenticError::Quota`
+    // carrying the typed `QuotaError` (input/output/request variant
+    // with `used`/`limit`/`window_end`). Pre-F31c the loop did
+    // `anyhow::anyhow!(existing_err)` and erased the struct.
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_rt008_quota_preflight_trips_with_typed_error() {
+        use crate::engine::AgenticError;
+        use crate::quota::{QuotaConfig, QuotaCycle, QuotaError, QuotaMeter};
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("Unreachable");
+
+        // Tiny meter: cap = 1 input token, then prime it past the
+        // cap so the pre-flight `check()` returns Some(InputTokensExceeded).
+        // Note: `check()` is strict — `state.input_tokens > limit`.
+        // A `charge` of 1 against limit=1 leaves state at exactly
+        // the limit, which does NOT trip the predicate. We charge
+        // twice so state == 2 > limit == 1.
+        let meter = Arc::new(
+            QuotaMeter::load_or_init(
+                QuotaConfig {
+                    input_tokens: Some(1),
+                    output_tokens: None,
+                    request_count: None,
+                    cycle: QuotaCycle::Hourly,
+                },
+                None,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap(),
+        );
+        let prime = crate::common::types::message::TokenUsage {
+            input: 1,
+            output: 0,
+            total: 1,
+            ..Default::default()
+        };
+        meter.advance_if_needed(chrono::Utc::now());
+        meter.charge(&prime).await.unwrap();
+        // Second charge crosses the limit. `charge` returns
+        // `Err(QuotaError)` when the state has hit the ceiling,
+        // but we *want* it to push `state.input_tokens` to 2 first
+        // so `check()` later returns `Some(InputTokensExceeded)`.
+        // The current `charge` impl does the increment under the
+        // lock and reports the error after — so even an `Err`
+        // leaves state at 2 here. Either way, we tolerate the
+        // error and just verify `check()` trips next.
+        let _ = meter.charge(&prime).await;
+        assert!(
+            meter.check().is_some(),
+            "priming should leave the meter tripped"
+        );
+
+        let config = test_agent_config("rt008-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+            .await
+            .with_quota_meter(meter);
+
+        let session = test_session("rt008-agent", temp_dir.path()).await;
+        let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let result = loop_
+            .run_with_resume(
+                "Over-quota prompt",
+                Vec::new(),
+                move |event| {
+                    events_clone.lock().unwrap().push(event);
+                },
+                session,
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "Should fail when the pre-flight quota check trips"
+        );
+        let anyhow_err = result.unwrap_err();
+
+        // F31c: the typed `AgenticError::Quota` surface must
+        // downcast cleanly. The pre-F31c path lost the typed data;
+        // post-F31c the caller can read `used` / `limit` /
+        // `window_end` directly off the `QuotaError` payload.
+        let typed = anyhow_err.downcast_ref::<AgenticError>();
+        assert!(
+            typed.is_some(),
+            "Returned error must downcast to AgenticError — got anyhow::Error trace: {anyhow_err:?}"
+        );
+        let ae = typed.unwrap();
+        let q = ae
+            .as_quota()
+            .expect("AgenticError must carry a Quota variant when the pre-flight trips");
+        match q {
+            QuotaError::InputTokensExceeded { used, limit, .. } => {
+                assert_eq!(*used, 2, "used should reflect 2× priming charge");
+                assert_eq!(*limit, 1, "limit should match config");
+            }
+            other => panic!("Expected InputTokensExceeded, got {other:?}"),
+        }
+
+        // Also confirm a Lifecycle::Error event fired (caller-visible
+        // signal that the run aborted).
+        let emitted = events.lock().unwrap();
+        let has_error_event = emitted.iter().any(|e| {
+            matches!(
+                e,
+                AgenticEvent::Lifecycle {
+                    phase: LifecyclePhase::Error,
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_error_event,
+            "Should emit Lifecycle::Error on quota pre-flight trip"
         );
     }
 
