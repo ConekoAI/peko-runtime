@@ -100,6 +100,9 @@ pub mod scoring;
 pub mod tool_registration;
 pub mod tool_registry;
 
+#[cfg(all(test, feature = "test-utils"))]
+pub mod test_sync;
+
 #[cfg(test)]
 mod integration_tests {
     use super::*;
