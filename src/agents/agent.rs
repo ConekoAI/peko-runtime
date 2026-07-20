@@ -1466,6 +1466,31 @@ impl Agent {
             );
         }
 
+        // F35 — register the synthetic `__tool_search` stub if the agent
+        // opted in via `enable_tool_search`. Registered per-agent so the
+        // tool's Weak<ExtensionCore> points at the shared core without
+        // extending its lifetime.
+        if self.config.enable_tool_search {
+            let search_tool = Arc::new(crate::tools::builtin::ToolSearchTool::new(Arc::downgrade(
+                &extension_core,
+            )));
+            if let Err(e) =
+                crate::extensions::builtin::BuiltinToolAdapter::register_tool_search_tool(
+                    &extension_core,
+                    search_tool,
+                    &self.principal_id,
+                )
+                .await
+            {
+                warn!("Failed to register per-agent ToolSearchTool: {e}");
+            }
+        } else {
+            tracing::debug!(
+                "Tool search disabled by config for agent '{}'",
+                self.config.name
+            );
+        }
+
         // 5. Push the session key onto the core so AsyncSpawn can stamp
         //    parent_session_key on every spawned task. The session key is
         //    keyed by this agent's DID on the shared core so concurrent

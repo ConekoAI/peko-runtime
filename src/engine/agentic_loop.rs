@@ -19,7 +19,7 @@ use crate::common::types::message::{ContentBlock, LlmMessage};
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
-use crate::extensions::framework::types::HookInput;
+use crate::extensions::framework::types::{HookInput, ToolExposure};
 use crate::extensions::framework::HookPoint;
 use crate::providers::{
     clamp_openai_prompt_cache_key, synthetic_stream::synthesize_stream_from_blocking,
@@ -1844,6 +1844,12 @@ impl AgenticLoop {
     /// allowing tool changes to take effect without session restart. The
     /// list is filtered by the agent's extension whitelist so the LLM only
     /// sees tools the agent is actually allowed to invoke.
+    ///
+    /// F35 — when the agent's [`AgentConfig::enable_tool_search`] is true
+    /// AND there is at least one `ToolExposure::Deferred` tool visible to
+    /// the principal, appends a synthetic `__tool_search` `ToolDefinition`
+    /// so the model can resolve deferred tools on demand. Mirrors codex
+    /// `tools/spec_plan.rs:928-949 append_tool_search_executor`.
     async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
         // The agent carries the principal's capability grant snapshot.
         // If none is present, treat it as an empty grant set (fail-closed).
@@ -1854,10 +1860,32 @@ impl AgenticLoop {
             .unwrap_or_default();
         let active = self.agent.principal_active_extensions();
         let principal_id = crate::subject::PrincipalId(self.agent_principal_id.clone());
-        let defs = self
+        let mut defs = self
             .extension_core
             .list_tool_definitions_with_allowlist(&capabilities, active, &principal_id)
             .await;
+
+        // F35 — append the synthetic `__tool_search` stub only when both
+        // gates pass: (a) the agent opted in via
+        // `AgentConfig::enable_tool_search`, and (b) at least one
+        // `Deferred` tool is registered for this principal. The second
+        // gate avoids bloating the catalog when there's nothing to
+        // discover — `Deferred` tools aren't visible in
+        // `list_tool_definitions_with_allowlist` (F34) so we walk the
+        // unfiltered `list_tools` to count them.
+        if self.agent.config.enable_tool_search {
+            let all = self.extension_core.list_tools(&principal_id).await;
+            let has_deferred = all
+                .iter()
+                .any(|m| matches!(m.exposure, ToolExposure::Deferred));
+            if has_deferred {
+                defs.push(ToolDefinition {
+                    name: crate::tools::builtin::TOOL_SEARCH_TOOL_NAME.to_string(),
+                    description: crate::tools::builtin::ToolSearchTool::synthetic_description(),
+                    parameters: crate::tools::builtin::ToolSearchTool::synthetic_parameters(),
+                });
+            }
+        }
 
         info!(
             "Dynamically built {} tool definitions from ExtensionCore: {:?}",
@@ -5474,5 +5502,196 @@ mod tests {
             "AfterAgent payload must carry the same `reason` field that Stop saw; got: {}",
             log_snapshot[0]
         );
+    }
+
+    // ===================================================================
+    // F35 — `build_tool_definitions` appends synthetic `__tool_search`
+    // when `AgentConfig.enable_tool_search` is true AND at least one
+    // `ToolExposure::Deferred` tool is visible to the principal.
+    // Mirrors codex's `append_tool_search_executor` at
+    // `codex-rs/core/src/tools/spec_plan.rs:928-949`.
+    // ===================================================================
+
+    /// Register a no-op `HookHandler` for `ToolExecute` so `register_tool`
+    /// has something to attach to. The handler is never invoked — these
+    /// tests only exercise the catalog-enumeration path.
+    #[derive(Debug)]
+    struct F35NoopHandler;
+
+    #[async_trait::async_trait]
+    impl crate::extensions::framework::core::HookHandler for F35NoopHandler {
+        async fn handle(
+            &self,
+            _ctx: crate::extensions::framework::core::HookContext,
+        ) -> crate::extensions::framework::types::HookResult {
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Unit,
+            )
+        }
+
+        fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+            crate::extensions::framework::core::HookPoint::ToolExecute {
+                tool_name: String::new(),
+            }
+        }
+
+        fn priority(&self) -> i32 {
+            0
+        }
+
+        fn name(&self) -> String {
+            "F35Noop".to_string()
+        }
+    }
+
+    /// Register a tool on the global core with a unique name and the
+    /// requested exposure. Returns the unique name so the caller can
+    /// unregister it on teardown.
+    async fn f35_register_tool(
+        core: &Arc<ExtensionCore>,
+        exposure: crate::extensions::framework::types::ToolExposure,
+        name_prefix: &str,
+    ) -> String {
+        use crate::extensions::framework::types::{ExtensionId, ToolMetadata, ToolSource};
+
+        let name = format!("{name_prefix}-{}", uuid::Uuid::new_v4());
+        let meta = ToolMetadata::new(
+            name.clone(),
+            format!("test {name_prefix}"),
+            serde_json::json!({"type": "object", "properties": {}}),
+            ToolSource::BuiltIn,
+        )
+        .with_exposure(exposure);
+
+        core.register_tool(
+            meta,
+            Arc::new(F35NoopHandler),
+            &ExtensionId::new(format!("test:f35:{name_prefix}")),
+            &crate::subject::PrincipalId::system(),
+        )
+        .await
+        .expect("register f35 test tool");
+
+        name
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn build_tool_definitions_appends_search_stub_when_flag_and_deferred_present() {
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, _mock) = mock_provider();
+
+        let core = global_core().unwrap();
+        // Register a Deferred tool under the system principal so it shows
+        // up in `list_tools(principal_id)` for any agent.
+        let tool_name = f35_register_tool(&core, ToolExposure::Deferred, "f35-deferred").await;
+
+        let agent_name = format!("f35-stub-on-{}", uuid::Uuid::new_v4());
+        let mut config = test_agent_config(&agent_name);
+        config.enable_tool_search = true;
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+
+        let defs = loop_.build_tool_definitions().await;
+
+        // The stub is appended last. Its description matches the
+        // synthetic-description formatter.
+        let stub = defs
+            .iter()
+            .find(|d| d.name == crate::tools::builtin::TOOL_SEARCH_TOOL_NAME);
+        assert!(
+            stub.is_some(),
+            "expected `__tool_search` in tool definitions; got {:?}",
+            defs.iter().map(|d| &d.name).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            stub.unwrap().description,
+            crate::tools::builtin::ToolSearchTool::synthetic_description()
+        );
+
+        // The Deferred tool itself MUST NOT appear in the catalog
+        // (`visible_in_native_catalog()` returns false for Deferred per
+        // F34). The stub is the only thing added.
+        assert!(
+            !defs.iter().any(|d| d.name == tool_name),
+            "Deferred tool {tool_name} must remain hidden from the native catalog"
+        );
+
+        // Teardown: remove the system-registered tool so subsequent
+        // tests see a clean core.
+        let _ = core
+            .unregister_tool(&tool_name, &crate::subject::PrincipalId::system())
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn build_tool_definitions_omits_stub_when_flag_off() {
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, _mock) = mock_provider();
+
+        let core = global_core().unwrap();
+        // Deferred tool registered, but the agent's flag is OFF.
+        let tool_name = f35_register_tool(&core, ToolExposure::Deferred, "f35-deferred").await;
+
+        let agent_name = format!("f35-stub-off-{}", uuid::Uuid::new_v4());
+        let mut config = test_agent_config(&agent_name);
+        config.enable_tool_search = false; // explicit even though it's the default
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+
+        let defs = loop_.build_tool_definitions().await;
+
+        assert!(
+            !defs
+                .iter()
+                .any(|d| d.name == crate::tools::builtin::TOOL_SEARCH_TOOL_NAME),
+            "stub must NOT be appended when enable_tool_search=false; got {:?}",
+            defs.iter().map(|d| &d.name).collect::<Vec<_>>()
+        );
+
+        // Teardown.
+        let _ = core
+            .unregister_tool(&tool_name, &crate::subject::PrincipalId::system())
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn build_tool_definitions_omits_stub_when_no_deferred_tools() {
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, _mock) = mock_provider();
+
+        let core = global_core().unwrap();
+        // Register only a Direct tool. With zero Deferred tools visible,
+        // the stub must be omitted even when the flag is on.
+        let tool_name = f35_register_tool(&core, ToolExposure::Direct, "f35-direct").await;
+
+        let agent_name = format!("f35-no-deferred-{}", uuid::Uuid::new_v4());
+        let mut config = test_agent_config(&agent_name);
+        config.enable_tool_search = true;
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+
+        let defs = loop_.build_tool_definitions().await;
+
+        assert!(
+            !defs
+                .iter()
+                .any(|d| d.name == crate::tools::builtin::TOOL_SEARCH_TOOL_NAME),
+            "stub must NOT be appended when no Deferred tools are visible; got {:?}",
+            defs.iter().map(|d| &d.name).collect::<Vec<_>>()
+        );
+
+        // Teardown.
+        let _ = core
+            .unregister_tool(&tool_name, &crate::subject::PrincipalId::system())
+            .await;
     }
 }
