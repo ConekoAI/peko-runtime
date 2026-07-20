@@ -389,6 +389,33 @@ impl HookRegistry {
             }
         }
 
+        // F31x.1: wildcard resolution for `PreToolUse` / `PostToolUse`
+        // (mirrors the `ToolExecute*` pattern above). Lets handlers
+        // register `tool.pre.*` or `tool.post.mcp:*` once for a whole
+        // namespace.
+        if let HookPoint::PreToolUse { tool_name } | HookPoint::PostToolUse { tool_name } = point {
+            for (registered_name, ids) in by_point.iter() {
+                if let Some(prefix) = registered_name.strip_prefix("tool.pre.") {
+                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len() - 1]) {
+                        return ids
+                            .iter()
+                            .filter_map(|id| hooks.get(id).cloned())
+                            .filter(|h| h.enabled)
+                            .collect();
+                    }
+                }
+                if let Some(prefix) = registered_name.strip_prefix("tool.post.") {
+                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len() - 1]) {
+                        return ids
+                            .iter()
+                            .filter_map(|id| hooks.get(id).cloned())
+                            .filter(|h| h.enabled)
+                            .collect();
+                    }
+                }
+            }
+        }
+
         Vec::new()
     }
 
