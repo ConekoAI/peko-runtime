@@ -94,6 +94,16 @@ pub struct AgenticLoop {
     /// (innermost-first); principal only sees a charge if peer
     /// accepted.
     peer_meter: Option<Arc<crate::quota::QuotaMeter>>,
+    /// F31b: per-iteration streaming retry budget. Mirrors codex
+    /// `run_sampling_request`'s `stream_max_retries` (turn.rs:1123-1218).
+    /// On a retryable mid-stream error (transient 5xx, timeout,
+    /// connection reset — see `RetryableError::is_retryable` in
+    /// `providers/transport/retry.rs`), the loop sleeps the
+    /// computed-or-server-suggested delay and re-issues the request
+    /// with the same `messages` checkpoint (the `original_input`
+    /// save/restore shape). Default 3 (matches codex); set to 0
+    /// via `with_stream_max_retries(0)` to disable.
+    stream_max_retries: u32,
     /// Per-session queue of completed async tasks, drained at the start
     /// of `run_inner` iteration. Surfaced to the LLM as a
     /// synthetic user-role message containing all queued completions.
@@ -181,6 +191,9 @@ impl AgenticLoop {
             cancel: None,
             quota_meter: Arc::new(crate::quota::QuotaMeter::unlimited()),
             peer_meter: None,
+            // F31b: default to 3 streaming retries per iteration,
+            // matching the HTTP-layer `RetryPolicy::default()`.
+            stream_max_retries: 3,
             resolved_model_id,
             // F23: cache-stable prefix starts un-rendered. The first
             // iteration of `run_inner_with_meter` triggers
@@ -239,6 +252,18 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_max_iterations(mut self, max: usize) -> Self {
         self.max_iterations = max;
+        self
+    }
+
+    /// F31b: set the per-iteration streaming-retry budget.
+    ///
+    /// `0` disables mid-stream retry (preserves the pre-F31b behavior
+    /// of `return Err(e)` on the first transient failure). The
+    /// default of 3 matches `RetryPolicy::default()` and codex
+    /// `run_sampling_request`'s `stream_max_retries`.
+    #[must_use]
+    pub fn with_stream_max_retries(mut self, max: u32) -> Self {
+        self.stream_max_retries = max;
         self
     }
 
@@ -1180,19 +1205,71 @@ impl AgenticLoop {
             // boundaries) and retry. Bounded by `messages.len() > 1` (matches
             // codex `compact.rs:286`); not by a retry budget — eviction doesn't
             // consume the network-retry budget.
-            let mut stream = match self
-                .stream_with_eviction(&provider, &model_id, &messages, &tool_defs, &options)
-                .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    debug!("Failed to start stream: {}", e);
-                    on_event(AgenticEvent::Lifecycle {
-                        run_id: run_id.clone(),
-                        phase: LifecyclePhase::Error,
-                        error: Some(e.to_string()),
-                    });
-                    return Err(e);
+            //
+            // F31b: transient mid-stream errors (5xx, network reset,
+            // timeout) ALSO retry — but against a separate budget
+            // (`stream_max_retries`, codex `run_sampling_request` shape)
+            // and with the same `messages` / `options` snapshot. Both
+            // the initial `stream_with_eviction` call (which can fail
+            // before any event is emitted) and a mid-stream `Err` from
+            // the byte stream fall through the same retry path below.
+            let mut stream_attempt: u32 = 0;
+            let mut stream = 'stream_retry: loop {
+                match self
+                    .stream_with_eviction(&provider, &model_id, &messages, &tool_defs, &options)
+                    .await
+                {
+                    Ok(s) => break 'stream_retry s,
+                    Err(e) => {
+                        // F31b: retry the start-stream call when the
+                        // error is transient. `stream_with_eviction`
+                        // already handles `ContextWindowExceeded` by
+                        // dropping the oldest message and re-issuing;
+                        // any other retryable error reaches this branch
+                        // and is re-attempted against the same `messages`
+                        // snapshot.
+                        if stream_attempt < self.stream_max_retries
+                            && crate::providers::transport::retry::RetryableError::is_retryable(&e)
+                        {
+                            let retry_after =
+                                crate::providers::transport::retry::RetryableError::retry_after(&e);
+                            let max_delay = std::time::Duration::from_secs(30);
+                            let delay =
+                                retry_after.map(|d| d.min(max_delay)).unwrap_or_else(|| {
+                                    std::time::Duration::from_millis(
+                                        1000u64.saturating_mul(2u64.pow(stream_attempt)),
+                                    )
+                                    .min(max_delay)
+                                });
+                            let reason_truncated: String =
+                                e.to_string().chars().take(256).collect();
+                            on_event(AgenticEvent::Retry {
+                                run_id: run_id.clone(),
+                                iteration,
+                                attempt: stream_attempt,
+                                max_attempts: self.stream_max_retries,
+                                retry_after,
+                                delay,
+                                reason: reason_truncated,
+                            });
+                            info!(
+                                "Stream-start retry {}/{} after {:?} (reason: {})",
+                                stream_attempt + 1,
+                                self.stream_max_retries,
+                                delay,
+                                e
+                            );
+                            tokio::time::sleep(delay).await;
+                            stream_attempt += 1;
+                            continue 'stream_retry;
+                        }
+                        on_event(AgenticEvent::Lifecycle {
+                            run_id: run_id.clone(),
+                            phase: LifecyclePhase::Error,
+                            error: Some(e.to_string()),
+                        });
+                        return Err(e);
+                    }
                 }
             };
 
@@ -1209,7 +1286,19 @@ impl AgenticLoop {
             let mut stop_reason = StopReason::Stop;
             let mut stream_event_count = 0;
 
-            loop {
+            // F31b: per-iteration streaming retry budget. Mirrors codex
+            // `run_sampling_request`'s `stream_max_retries` shape — on a
+            // retryable mid-stream error (transient 5xx, timeout, network
+            // reset), sleep the computed-or-server-suggested delay and
+            // re-issue the request with the same `messages` / `options`
+            // checkpoint (the `original_input` save/restore pattern).
+            // The `stream_with_eviction` wrapper above handles
+            // `ContextWindowExceeded` separately (F22); this layer
+            // handles transient transport failures only. The `Err(e)`
+            // arm of the inner `stream.next()` loop shares the same
+            // budget counter as the start-stream retry above — both are
+            // scoped to this iteration.
+            'inner_stream: loop {
                 match stream.next().await {
                     Some(result) => {
                         stream_event_count += 1;
@@ -1306,6 +1395,83 @@ impl AgenticLoop {
                                 }
                             }
                             Err(e) => {
+                                // F31b: mid-stream retry budget. The
+                                // `RetryableError::is_retryable()` impl
+                                // covers HTTP 429/500/502/503/504/529,
+                                // network timeouts, connection resets,
+                                // and refused connections. `400`/`413`
+                                // are explicitly NOT retryable here —
+                                // those surface as `ContextWindowExceeded`
+                                // through `stream_with_eviction` (F22),
+                                // not at this layer.
+                                if stream_attempt < self.stream_max_retries
+                                    && crate::providers::transport::retry::RetryableError::is_retryable(
+                                        &e,
+                                    )
+                                {
+                                    let retry_after =
+                                        crate::providers::transport::retry::RetryableError::retry_after(
+                                            &e,
+                                        );
+                                    let max_delay = std::time::Duration::from_secs(30);
+                                    let delay = retry_after
+                                        .map(|d| d.min(max_delay))
+                                        .unwrap_or_else(|| {
+                                            std::time::Duration::from_millis(
+                                                1000u64
+                                                    .saturating_mul(2u64.pow(stream_attempt)),
+                                            )
+                                            .min(max_delay)
+                                        });
+                                    let reason_truncated: String = e.to_string().chars().take(256).collect();
+                                    on_event(AgenticEvent::Retry {
+                                        run_id: run_id.clone(),
+                                        iteration,
+                                        attempt: stream_attempt,
+                                        max_attempts: self.stream_max_retries,
+                                        retry_after,
+                                        delay,
+                                        reason: reason_truncated,
+                                    });
+                                    info!(
+                                        "Mid-stream retry {}/{} after {:?} (reason: {})",
+                                        stream_attempt + 1,
+                                        self.stream_max_retries,
+                                        delay,
+                                        e
+                                    );
+                                    tokio::time::sleep(delay).await;
+                                    stream_attempt += 1;
+                                    // Re-issue the stream with the same
+                                    // `messages` / `options` checkpoint.
+                                    // `stream_with_eviction` handles
+                                    // `ContextWindowExceeded` for the
+                                    // new attempt; transient 5xx simply
+                                    // round-trips again.
+                                    match self
+                                        .stream_with_eviction(
+                                            &provider,
+                                            &model_id,
+                                            &messages,
+                                            &tool_defs,
+                                            &options,
+                                        )
+                                        .await
+                                    {
+                                        Ok(new_stream) => {
+                                            stream = new_stream;
+                                            continue 'inner_stream;
+                                        }
+                                        Err(reissue_err) => {
+                                            on_event(AgenticEvent::Lifecycle {
+                                                run_id: run_id.clone(),
+                                                phase: LifecyclePhase::Error,
+                                                error: Some(reissue_err.to_string()),
+                                            });
+                                            return Err(reissue_err);
+                                        }
+                                    }
+                                }
                                 on_event(AgenticEvent::Lifecycle {
                                     run_id: run_id.clone(),
                                     phase: LifecyclePhase::Error,
@@ -2547,6 +2713,211 @@ mod tests {
         assert_eq!(
             loop_.max_iterations, 10,
             "Default max_iterations should be 10"
+        );
+    }
+
+    // ===================================================================
+    // RT-007: F31b — retryable mid-stream errors must consume the
+    // streaming retry budget and re-issue with the same `messages`
+    // checkpoint (codex `run_sampling_request`'s `stream_max_retries`
+    // shape). Two transient failures followed by a success should
+    // produce an `Ok` result with exactly two `Retry` events.
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_rt007_streaming_retry_budget() {
+        use std::time::Duration;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+
+        // Two retryable transient errors (the substrings "connection
+        // refused" and "connection reset" match `RetryableError::is_retryable()`
+        // for `anyhow::Error` — see `providers/transport/retry.rs:101-103`),
+        // followed by a successful text answer. `queue_error` pushes to
+        // both the chat and stream queues, so `stream_with_eviction`
+        // sees the Error first two times, then the text.
+        mock.queue_error("connection refused");
+        mock.queue_error("connection reset by peer");
+        mock.queue_text("Recovered after retry");
+
+        let config = test_agent_config("rt007-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        // Default retry budget is 3 — two failures + one success fits.
+        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+            .await
+            .with_stream_max_retries(3);
+
+        let session = test_session("rt007-agent", temp_dir.path()).await;
+        let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let result = loop_
+            .run_with_resume(
+                "Trigger transient",
+                Vec::new(),
+                move |event| {
+                    events_clone.lock().unwrap().push(event);
+                },
+                session,
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "Should recover via retry budget: {:?}",
+            result.err()
+        );
+        let result = result.unwrap();
+        assert!(result.success, "Final result should be success");
+        assert_eq!(result.final_answer, "Recovered after retry");
+
+        // Verify exactly two `Retry` events fired (one per transient
+        // error), each carrying the configured ceiling.
+        let emitted = events.lock().unwrap();
+        let retries: Vec<&AgenticEvent> = emitted
+            .iter()
+            .filter(|e| matches!(e, AgenticEvent::Retry { .. }))
+            .collect();
+        assert_eq!(
+            retries.len(),
+            2,
+            "Expected exactly two Retry events (one per transient error), got {}",
+            retries.len()
+        );
+        // First retry is 0-indexed; both carry `max_attempts: 3` and
+        // happen during the first agent iteration (the loop's
+        // `iteration` counter starts at 1 — see `iteration += 1` at
+        // `agentic_loop.rs:821` — so retries during a single model's
+        // stream belong to the same `iteration` value).
+        let iterations: std::collections::HashSet<usize> = retries
+            .iter()
+            .filter_map(|e| {
+                if let AgenticEvent::Retry { iteration, .. } = e {
+                    Some(*iteration)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            iterations.len(),
+            1,
+            "All retries should share the same agent iteration, got {:?}",
+            iterations
+        );
+        for (i, retry) in retries.iter().enumerate() {
+            if let AgenticEvent::Retry {
+                attempt,
+                max_attempts,
+                delay,
+                retry_after,
+                ..
+            } = retry
+            {
+                assert_eq!(*attempt as usize, i, "Retry attempt should be 0-indexed");
+                assert_eq!(*max_attempts, 3, "Retry max_attempts should match builder");
+                assert!(
+                    *delay <= Duration::from_secs(30),
+                    "Delay should be capped at 30s, got {delay:?}"
+                );
+                assert!(retry_after.is_none(), "Mock has no Retry-After header");
+            } else {
+                panic!("Expected Retry event");
+            }
+        }
+    }
+
+    // ===================================================================
+    // RT-007b: F31b — once the retry budget is exhausted, the loop must
+    // surface the original error verbatim (no swallowing, no rewrap)
+    // and emit one final `Lifecycle::Error` event so callers can
+    // distinguish "exhausted" from "permanent".
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_rt007b_streaming_retry_exhausted() {
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+
+        // Four transient errors with the configured budget of 3. The
+        // fourth attempt should surface as `Lifecycle::Error` and
+        // return the error (NOT silently fall through to the empty-
+        // queue "Mock adapter response queue empty" message).
+        mock.queue_error("connection refused: attempt 1");
+        mock.queue_error("connection refused: attempt 2");
+        mock.queue_error("connection refused: attempt 3");
+        mock.queue_error("connection refused: attempt 4");
+
+        let config = test_agent_config("rt007b-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+            .await
+            .with_stream_max_retries(3);
+
+        let session = test_session("rt007b-agent", temp_dir.path()).await;
+        let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let result = loop_
+            .run_with_resume(
+                "Trigger exhausted retries",
+                Vec::new(),
+                move |event| {
+                    events_clone.lock().unwrap().push(event);
+                },
+                session,
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "Should fail when retry budget is exhausted"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        // The fourth attempt's stream factory returned
+        // `anyhow!("connection refused: attempt 4")` via
+        // `stream_with_eviction`'s match arm at agentic_loop.rs:1405 —
+        // preserved verbatim, not re-wrapped.
+        assert!(
+            err_msg.contains("connection refused: attempt 4"),
+            "Final error should preserve attempt 4's message, got: {err_msg}"
+        );
+
+        // Verify exactly three `Retry` events fired (budget exhausted
+        // before the 4th attempt could even start).
+        let emitted = events.lock().unwrap();
+        let retries: Vec<&AgenticEvent> = emitted
+            .iter()
+            .filter(|e| matches!(e, AgenticEvent::Retry { .. }))
+            .collect();
+        assert_eq!(
+            retries.len(),
+            3,
+            "Expected exactly three Retry events (budget = 3), got {}",
+            retries.len()
+        );
+        // And the final `Lifecycle::Error` event must have fired.
+        let has_final_error = emitted.iter().any(|e| {
+            matches!(
+                e,
+                AgenticEvent::Lifecycle {
+                    phase: LifecyclePhase::Error,
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_final_error,
+            "Should emit final Lifecycle::Error after exhausting budget"
         );
     }
 
