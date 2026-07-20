@@ -787,7 +787,7 @@ mod tests {
             LlmMessage::assistant("Assistant 1"),
             LlmMessage::user("User 2"),
             LlmMessage::assistant("I'll use a tool"),
-            LlmMessage::tool_result("tc1", "Read", "file content"),
+            LlmMessage::tool_result("tc1", "Read", "file content", false),
         ];
 
         let (_to_compact, to_keep, _is_split) = compactor.select_messages(&messages);

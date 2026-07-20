@@ -190,10 +190,18 @@ impl ToolExecutor {
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
 
+        // F32a: propagate `success` into the persisted JSONL record and the
+        // next-iteration LLM message so resumed sessions and the in-flight
+        // context distinguish a failed dispatch from a successful zero-data
+        // return. (Pre-F32a both sites hardcoded `is_error: false` even on
+        // a failed tool execution — see audit doc section 3 row 2.)
+        let is_error = !success;
+
         // Add to session
         {
             let mut s = session.write().await;
-            s.add_tool_result(id, name, &tool_result_str).await?;
+            s.add_tool_result(id, name, &tool_result_str, is_error)
+                .await?;
         }
 
         on_event(AgenticEvent::ToolEnd {
@@ -204,8 +212,9 @@ impl ToolExecutor {
             duration_ms,
         });
 
-        let message = LlmMessage::tool_result(id.clone(), name.clone(), tool_result_str.clone())
-            .with_tool_call_id(id.clone());
+        let message =
+            LlmMessage::tool_result(id.clone(), name.clone(), tool_result_str.clone(), is_error)
+                .with_tool_call_id(id.clone());
 
         Ok(ToolExecutionResult { message, success })
     }

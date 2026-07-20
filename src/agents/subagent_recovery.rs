@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_extract_tool_results_with_tool_result_block() {
-        let history = vec![LlmMessage::tool_result("id", "Read", "file content")];
+        let history = vec![LlmMessage::tool_result("id", "Read", "file content", false)];
         assert_eq!(
             ResultRecovery::extract_tool_results(&history),
             Some("file content".to_string())

@@ -183,7 +183,7 @@ mod tests {
     }
 
     fn make_tool_result(tool_call_id: &str, text: &str) -> LlmMessage {
-        LlmMessage::tool_result(tool_call_id, "test_tool", text)
+        LlmMessage::tool_result(tool_call_id, "test_tool", text, false)
     }
 
     #[test]

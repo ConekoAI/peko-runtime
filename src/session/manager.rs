@@ -292,14 +292,20 @@ impl SessionHandle {
     }
 
     /// Add a tool result to the session
+    ///
+    /// `is_error` propagates to the persisted `ContentBlock::ToolResult`
+    /// (F32a) — false for a successful dispatch, true when the tool itself
+    /// failed. Callers that don't care about the flag can pass `false`.
     pub async fn add_tool_result(
         &self,
         tool_call_id: impl Into<String>,
         tool_name: impl Into<String>,
         result: impl Into<String>,
+        is_error: bool,
     ) -> Result<()> {
         let mut base = self.base.write().await;
-        base.add_tool_result(tool_call_id, tool_name, result).await
+        base.add_tool_result(tool_call_id, tool_name, result, is_error)
+            .await
     }
 
     /// Load conversation history
