@@ -131,13 +131,19 @@ pub struct SubagentExecutor {
     /// Optional observability hub for audit/metrics. When set, subagent
     /// spawns are recorded in the audit log under the parent principal.
     observability: Option<Arc<Observability>>,
-    // F19: removed `quota_meter` field, `with_quota_meter`, and
-    // `quota_meter()`. Quota is opened at the engine loop entrypoint
-    // via `QuotaScope::with` and auto-charges through
-    // `MeteredProvider`. The executor no longer threads the meter
-    // through to descendant subagents — the spawned `tokio::task`
-    // re-opens its own scope inside (because task-locals don't
-    // propagate across spawn).
+    /// F39: snapshot of the spawning principal's `QuotaMeter`. The
+    /// spawned `tokio::task` does NOT inherit the parent's
+    /// `QuotaScope::with` task-local (F19 design assumption was wrong
+    /// on this point — task-locals don't cross `tokio::spawn`), so
+    /// the subagent re-opens its own `QuotaScope::with(this_meter, ...)`
+    /// inside the spawned closure. `None` means
+    /// `QuotaMeter::unlimited()` fallback so subagents of principals
+    /// with no quota config still run (no behavior change vs F19).
+    quota_meter: Option<Arc<crate::quota::meter::QuotaMeter>>,
+    /// F39: snapshot of the spawning principal's peer-attribution
+    /// `QuotaMeter`. Stacked inside `QuotaScope::with(parent_meter, ...)`
+    /// so both meters charge when nested. `None` skips peer attribution.
+    peer_meter: Option<Arc<crate::quota::meter::QuotaMeter>>,
 }
 
 impl SubagentExecutor {
@@ -176,13 +182,42 @@ impl SubagentExecutor {
             principal_capabilities: None,
             active_extensions: None,
             observability: None,
+            quota_meter: None,
+            peer_meter: None,
         }
     }
 
-    /// F19: removed `with_quota_meter` and `quota_meter()`. Quota
-    /// is opened at the engine loop entrypoint via
-    /// `QuotaScope::with`; the executor no longer threads the meter
-    /// through to descendant subagents.
+    /// F39: set the spawning principal's `QuotaMeter`. The subagent
+    /// re-opens this meter via `QuotaScope::with` inside the spawned
+    /// task (task-locals don't cross `tokio::spawn` — F19's design
+    /// assumption on this point was incorrect).
+    #[must_use]
+    pub fn with_quota_meter(mut self, meter: Option<Arc<crate::quota::meter::QuotaMeter>>) -> Self {
+        self.quota_meter = meter;
+        self
+    }
+
+    /// F39: get the spawning principal's `QuotaMeter`, if set.
+    #[must_use]
+    pub fn quota_meter(&self) -> Option<&Arc<crate::quota::meter::QuotaMeter>> {
+        self.quota_meter.as_ref()
+    }
+
+    /// F39: set the spawning principal's peer-attribution
+    /// `QuotaMeter`. Stacked inside the subagent's `QuotaScope::with`
+    /// along with the principal meter.
+    #[must_use]
+    pub fn with_peer_meter(mut self, meter: Option<Arc<crate::quota::meter::QuotaMeter>>) -> Self {
+        self.peer_meter = meter;
+        self
+    }
+
+    /// F39: get the spawning principal's peer-attribution
+    /// `QuotaMeter`, if set.
+    #[must_use]
+    pub fn peer_meter(&self) -> Option<&Arc<crate::quota::meter::QuotaMeter>> {
+        self.peer_meter.as_ref()
+    }
 
     /// Get the spawning principal's runtime id.
     #[must_use]
@@ -273,6 +308,8 @@ impl SubagentExecutor {
             principal_capabilities: None,
             active_extensions: None,
             observability: None,
+            quota_meter: None,
+            peer_meter: None,
         }
     }
 
@@ -302,6 +339,8 @@ impl SubagentExecutor {
             principal_capabilities: None,
             active_extensions: None,
             observability: None,
+            quota_meter: None,
+            peer_meter: None,
         }
     }
 
@@ -462,6 +501,11 @@ impl SubagentExecutor {
         let principal_capabilities_clone = self.principal_capabilities.clone();
         let active_extensions_clone = self.active_extensions.clone();
         let observability_clone = self.observability.clone();
+        // F39: clone the parent's quota meters so the spawned task
+        // can re-open `QuotaScope::with(...)` inside (task-locals don't
+        // cross `tokio::spawn`).
+        let parent_quota_meter_clone = self.quota_meter.clone();
+        let parent_peer_meter_clone = self.peer_meter.clone();
         // Derive a child token inside the closure so the sub-agent
         // observes the parent's cancel via `child_cancel` without
         // extending the parent's lifetime past the closure's
@@ -528,6 +572,8 @@ impl SubagentExecutor {
                         active_extensions_clone,
                         observability_clone,
                         child_cancel_for_closure.clone(),
+                        parent_quota_meter_clone,
+                        parent_peer_meter_clone,
                     );
                     let result = if timeout > 0 {
                         match tokio::time::timeout(
@@ -923,6 +969,19 @@ async fn execute_subagent_task(
     active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     observability: Option<Arc<Observability>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
+    // F39: snapshot of the spawning principal's `QuotaMeter`. The
+    // spawned `tokio::task` does NOT inherit the parent's
+    // `QuotaScope::with` task-local, so we re-open the scope here
+    // before calling `subagent.execute_with_session(...)` so the
+    // subagent's `MeteredProvider::from_current_scope` charges the
+    // parent principal. `None` falls open to
+    // `QuotaMeter::unlimited()` (matches F19/F20 behavior).
+    parent_quota_meter: Option<Arc<crate::quota::meter::QuotaMeter>>,
+    // F39: snapshot of the spawning principal's peer-attribution
+    // `QuotaMeter`. Stacked inside the subagent's `QuotaScope::with`
+    // along with `parent_quota_meter` so both meters charge when
+    // nested. `None` skips peer attribution.
+    parent_peer_meter: Option<Arc<crate::quota::meter::QuotaMeter>>,
 ) -> Result<String> {
     info!(
         "Executing subagent task: agent={} session={}",
@@ -1046,20 +1105,37 @@ async fn execute_subagent_task(
     // Clone child_session for potential recovery after execution
     let child_session_for_recovery = child_session.clone();
 
-    // F19: subagent runs inside the parent's `QuotaScope::with` (the
-    // engine loop opened it on the parent run). The spawned `tokio::task`
-    // does NOT inherit the parent's task-local, so the parent's scope
-    // doesn't auto-apply here. We pass `None` (unlimited) for now; a
-    // follow-up wires the subagent's quota meter through `Agent::new`
-    // so the executor can pass it explicitly. Until then, subagent LLM
-    // usage is not charged against the parent's meter.
+    // F39: subagent runs inside `QuotaScope::with(parent_quota_meter, ...)`
+    // so the spawned `tokio::task`'s `MeteredProvider::from_current_scope`
+    // charges against the parent principal's meter instead of falling
+    // open to `unlimited()`. F19 removed this plumbing because the
+    // original F19 design assumed the parent's `QuotaScope::with`
+    // task-local would auto-propagate across `tokio::spawn` — it does
+    // not (see `src/quota/scope.rs::scope_does_not_propagate_across_spawn`).
     //
-    // F20: peer_meter is `None` for subagents — subagents inherit the
-    // parent's peer attribution via the parent's `QuotaScope`, but
-    // since that scope doesn't cross `tokio::spawn`, this code path
-    // is single-meter for now (matches the F19 limitation above).
-    let result = subagent
-        .execute_with_session(
+    // Fallback to `unlimited()` when no parent meter is set — matches
+    // the pre-F39 behavior for principals with no quota config.
+    //
+    // F20 peer_meter is stacked inside the same scope via the nested
+    // `QuotaScope::with(parent_peer_meter, ...)` (innermost). When the
+    // subagent constructs `MeteredProvider::from_current_scope`, both
+    // meters see the LLM call.
+    //
+    // F39: each `QuotaScope::with` layer is `Box::pin`-ed to avoid
+    // compounding async stack frames — without this, the nested
+    // wrap combined with `execute_with_session`'s large future stack
+    // overflows the default 2MB tokio thread stack
+    // (`subagent_inherits_parent_cancel` test fails with stack
+    // overflow at default stack; passes with `RUST_MIN_STACK=8MB`).
+    // The Box::pin is the clippy "large_futures" fix the compiler
+    // suggests at `commands/agents` and elsewhere.
+    let parent_quota_meter = parent_quota_meter
+        .unwrap_or_else(|| Arc::new(crate::quota::meter::QuotaMeter::unlimited()));
+    let parent_peer_meter =
+        parent_peer_meter.unwrap_or_else(|| Arc::new(crate::quota::meter::QuotaMeter::unlimited()));
+    let inner_fut = Box::pin(crate::quota::scope::QuotaScope::with(
+        parent_peer_meter,
+        subagent.execute_with_session(
             &combined_prompt,
             Vec::new(), // subagents carry no recalled context
             child_session,
@@ -1068,10 +1144,11 @@ async fn execute_subagent_task(
             |_event| {
                 // Non-streaming: ignore events
             },
-            None, // quota_meter: see F19 comment above
-            None, // peer_meter: F20 subagent limitation
-        )
-        .await;
+            None, // explicit_meter override: None = use the task-local meter
+            None, // explicit_peer_meter override: None = use the task-local peer meter
+        ),
+    ));
+    let result = crate::quota::scope::QuotaScope::with(parent_quota_meter, inner_fut).await;
 
     match result {
         Ok(agentic_result) => {
@@ -1115,7 +1192,254 @@ async fn execute_subagent_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::types::message::LlmMessage;
+    use crate::providers::resolver::ResolveRequest;
+    use crate::providers::traits::ChatOptions;
+    use crate::providers::{MockAdapter, StackedMeteredProvider};
+    use crate::quota::scope::QuotaScope;
+    use crate::quota::{QuotaConfig, QuotaCycle, QuotaMeter};
     use crate::session::manager::SessionManager;
+    use chrono::Utc;
+
+    /// F39 test fixture: build a `MockAdapter`-backed `Provider` and
+    /// a single quota meter (request_count cap = 10 so a successful
+    /// charge is observable without tripping).
+    async fn make_provider_and_meter(
+        quota_request_count: u64,
+    ) -> (Arc<crate::providers::Provider>, Arc<QuotaMeter>) {
+        let adapter = MockAdapter::new();
+        // Two responses so the limit-trip test can run two calls.
+        adapter.queue_text("first");
+        adapter.queue_text("second");
+        let tmp = tempfile::tempdir().unwrap();
+        let catalog = tmp.path().join("models.toml");
+        let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
+        let (provider, _choice) = resolver
+            .build(ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let meter = Arc::new(
+            QuotaMeter::load_or_init(
+                QuotaConfig {
+                    request_count: Some(quota_request_count),
+                    cycle: QuotaCycle::Hourly,
+                    ..Default::default()
+                },
+                None,
+                Utc::now(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        (provider, meter)
+    }
+
+    /// F39: a subagent LLM call wrapped in the F39 `QuotaScope::with`
+    /// charges the spawning principal's `QuotaMeter`.
+    ///
+    /// Pins the F39 wiring contract: `execute_subagent_task` opens
+    /// `QuotaScope::with(parent_meter, ...)` before calling
+    /// `subagent.execute_with_session(...)`, and the subagent's
+    /// `StackedMeteredProvider::from_current_scope` then charges
+    /// that meter on every LLM call. Without the F39 wrap, the
+    /// subagent's `MeteredProvider::from_current_scope` would see
+    /// no active scope and fall open to `unlimited()` (F19 pre-fix
+    /// behavior) — the request_count would stay at 0.
+    #[tokio::test]
+    async fn subagent_quota_charges_parent_meter() {
+        let (provider, meter) = make_provider_and_meter(10).await;
+        let before = meter.snapshot();
+        assert_eq!(before.request_count, 0);
+
+        // Mirror the F39 wrap: open `QuotaScope::with(parent_meter, ...)`
+        // then construct a `StackedMeteredProvider::from_current_scope` —
+        // same shape as `engine/agentic_loop.rs:753-755`.
+        QuotaScope::with(meter.clone(), async {
+            let stacked = StackedMeteredProvider::from_current_scope(provider);
+            let _ = stacked
+                .chat_with_tools(
+                    "default",
+                    &[LlmMessage::user("hi")],
+                    &[],
+                    &ChatOptions::default(),
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+
+        let after = meter.snapshot();
+        assert_eq!(
+            after.request_count,
+            before.request_count + 1,
+            "subagent LLM call should charge the parent meter exactly once (F39 wiring)"
+        );
+    }
+
+    /// F39: the F39 wrap observes the principal's `request_count`
+    /// ceiling — a second subagent LLM call beyond the cap fails
+    /// with a quota error and the request counter stays above the
+    /// ceiling.
+    ///
+    /// The `QuotaMeter::charge` does NOT roll back the state when
+    /// the limit trips (it returns `Err(QuotaError)` with the
+    /// mutated state — see `quota/meter.rs:204-222`), so after the
+    /// second call `request_count` is 2 and `check()` returns
+    /// `Some(RequestCountExceeded)`.
+    #[tokio::test]
+    async fn subagent_quota_limit_trips_on_second_call() {
+        let (provider, meter) = make_provider_and_meter(1).await;
+
+        QuotaScope::with(meter.clone(), async {
+            let stacked = StackedMeteredProvider::from_current_scope(provider);
+            // First call: meter goes 0 → 1, exactly at the ceiling, OK.
+            let first = stacked
+                .chat_with_tools(
+                    "default",
+                    &[LlmMessage::user("hi")],
+                    &[],
+                    &ChatOptions::default(),
+                )
+                .await;
+            assert!(
+                first.is_ok(),
+                "first call should succeed when meter is at the ceiling: {:?}",
+                first.err()
+            );
+            assert_eq!(meter.snapshot().request_count, 1);
+            assert!(
+                meter.check().is_none(),
+                "request_count=1 == limit=1 is still within the ceiling"
+            );
+
+            // Second call: meter would go 1 → 2, exceeds the limit,
+            // `charge` returns `Err(RequestCountExceeded)` and
+            // surfaces as an `anyhow::Error` from `chat_with_tools`.
+            let second = stacked
+                .chat_with_tools(
+                    "default",
+                    &[LlmMessage::user("hi again")],
+                    &[],
+                    &ChatOptions::default(),
+                )
+                .await;
+            assert!(
+                second.is_err(),
+                "second call should fail with quota error: {:?}",
+                second.as_ref().map(|c| &c.usage)
+            );
+            let err = second.err().unwrap();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("request count quota exceeded"),
+                "error should be a quota exceeded error, got: {msg}"
+            );
+        })
+        .await;
+
+        // Outside the scope: state still reflects the trip.
+        let final_snapshot = meter.snapshot();
+        assert_eq!(final_snapshot.request_count, 2);
+        assert!(
+            matches!(
+                meter.check(),
+                Some(crate::quota::error::QuotaError::RequestCountExceeded { .. })
+            ),
+            "meter should report the request_count limit tripped"
+        );
+    }
+
+    /// F39 stacking: when both a principal meter and a peer meter
+    /// are open, the subagent's `StackedMeteredProvider` charges
+    /// BOTH on every LLM call (F20 stacking preserved through F39).
+    ///
+    /// Mirrors the production wrap at
+    /// `subagent_executor.rs:1142-1157`: outer
+    /// `QuotaScope::with(parent_meter, ...)` + inner
+    /// `QuotaScope::with(parent_peer_meter, ...)`. The
+    /// `StackedMeteredProvider::from_current_scope` call walks
+    /// the full task-local stack via `QuotaScope::collect_stack()`
+    /// and charges every meter.
+    #[tokio::test]
+    async fn subagent_quota_stacks_principal_and_peer() {
+        let adapter = MockAdapter::new();
+        adapter.queue_text("hi");
+        let tmp = tempfile::tempdir().unwrap();
+        let catalog = tmp.path().join("models.toml");
+        let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
+        let (provider, _choice) = resolver
+            .build(ResolveRequest {
+                override_model: Some("mock"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let principal = Arc::new(
+            QuotaMeter::load_or_init(
+                QuotaConfig {
+                    request_count: Some(10),
+                    cycle: QuotaCycle::Hourly,
+                    ..Default::default()
+                },
+                None,
+                Utc::now(),
+            )
+            .await
+            .unwrap(),
+        );
+        let peer = Arc::new(
+            QuotaMeter::load_or_init(
+                QuotaConfig {
+                    request_count: Some(10),
+                    cycle: QuotaCycle::Hourly,
+                    ..Default::default()
+                },
+                None,
+                Utc::now(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        // Outer principal scope, inner peer scope — same nesting as
+        // `subagent_executor.rs:1142-1157`. The inner scope is
+        // `Box::pin`-ed in production but for this focused test
+        // there is no large future underneath, so no pin needed.
+        QuotaScope::with(principal.clone(), async {
+            QuotaScope::with(peer.clone(), async {
+                let stacked = StackedMeteredProvider::from_current_scope(provider);
+                let _ = stacked
+                    .chat_with_tools(
+                        "default",
+                        &[LlmMessage::user("hi")],
+                        &[],
+                        &ChatOptions::default(),
+                    )
+                    .await
+                    .unwrap();
+            })
+            .await;
+        })
+        .await;
+
+        // Both meters should see exactly one charge.
+        assert_eq!(
+            principal.snapshot().request_count,
+            1,
+            "principal meter should be charged through the F39 wrap (outer scope)"
+        );
+        assert_eq!(
+            peer.snapshot().request_count,
+            1,
+            "peer meter should be charged through the F39 wrap (inner scope, F20 stacking)"
+        );
+    }
 
     #[tokio::test]
     async fn test_executor_creation() {
