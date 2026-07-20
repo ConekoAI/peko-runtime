@@ -1204,7 +1204,10 @@ mod dispatch_tool_tests {
             let reg = executor.registry().read().await;
             reg.get(&receipt.task_id).cloned()
         };
-        assert!(entry.is_some(), "receipt's task_id is missing from registry");
+        assert!(
+            entry.is_some(),
+            "receipt's task_id is missing from registry"
+        );
     }
 
     /// F38: `dispatch_tool_with_signal` attaches a watch channel to
