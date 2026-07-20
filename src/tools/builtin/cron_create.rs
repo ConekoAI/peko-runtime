@@ -197,6 +197,14 @@ impl Tool for CronCreateTool {
         })
     }
 
+    /// F33: cron DB write — opt out of parallel dispatch. Concurrent
+    /// `CronCreate` with the same job name races on the uniqueness
+    /// check; interleaving with `CronDelete` by id can land in a
+    /// half-applied state.
+    fn parallelizable(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
         Err(anyhow::anyhow!(
             "CronCreate requires a Principal context; use execute_with_context"

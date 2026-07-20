@@ -866,8 +866,11 @@ impl AgenticLoop {
             s.set_model_context_limit(context_window);
         }
 
-        // Initialize tool executor
-        let tool_executor = crate::engine::tool_executor::ToolExecutor;
+        // Initialize tool executor with a fresh per-loop gate. The
+        // gate is cloned into each `execute(...)` future via the
+        // executor's `Arc` interior, so all parallel calls in a single
+        // fan-out share it (F33 — audit section 3 row 3).
+        let tool_executor = crate::engine::tool_executor::ToolExecutor::new();
 
         loop {
             iteration += 1;

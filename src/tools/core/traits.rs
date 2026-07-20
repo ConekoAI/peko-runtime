@@ -39,6 +39,30 @@ pub trait Tool: Send + Sync {
         })
     }
 
+    /// Whether multiple instances of this tool can run concurrently
+    /// within a single LLM-response batch.
+    ///
+    /// Defaults to `true` (the common case for idempotent reads and
+    /// pure-compute tools). Tools that mutate shared state should
+    /// override to `false`:
+    ///
+    /// * Filesystem writes (`Write`, `Edit`) — two concurrent writes
+    ///   clobber each other; `Read` racing with `Write` can observe a
+    ///   half-written file.
+    /// * Shell (`Bash`) — cwd, env, and child processes can collide.
+    /// * DB/queue ops that aren't atomic (cron Create/Delete, task
+    ///   Create/Update).
+    ///
+    /// At dispatch time the [`ToolExecutor`](crate::engine::tool_executor::ToolExecutor)
+    /// takes a read-lock on the agent's [`ParallelGate`](crate::engine::parallel_gate::ParallelGate)
+    /// when this returns `true` (concurrent dispatches OK) and a
+    /// write-lock when `false` (exclusive against every other running
+    /// tool, parallelizable or not). Mirrors codex's
+    /// `codex-rs/core/src/tools/parallel.rs` shape.
+    fn parallelizable(&self) -> bool {
+        true
+    }
+
     /// Execute the tool with parameters.
     ///
     /// ⚠️ **TEST-ONLY IN PRODUCTION CONTEXTS**

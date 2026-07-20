@@ -11,6 +11,7 @@ pub mod error;
 pub mod event_processor;
 pub mod events;
 pub mod execution;
+pub mod parallel_gate;
 pub mod tool_executor;
 pub mod tool_runtime;
 // Note: SimpleSession merged into Session in src/session/unified.rs

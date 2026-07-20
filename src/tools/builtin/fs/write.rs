@@ -243,6 +243,13 @@ Write binary data:
         })
     }
 
+    /// F33: filesystem-mutating tool — opt out of parallel dispatch.
+    /// Two concurrent `Write` calls could clobber each other; a `Read`
+    /// racing with `Write` can observe a half-written file.
+    fn parallelizable(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let args: WriteArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
