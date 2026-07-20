@@ -388,16 +388,6 @@ impl CronEngine {
             }
         };
 
-        let tool = match core.get_tool(tool_name).await {
-            Some(t) => t,
-            None => {
-                return Ok((
-                    "failed".to_string(),
-                    Some(format!("tool '{tool_name}' not found")),
-                ));
-            }
-        };
-
         // The executor's inbox key needs to be the principal's root
         // session key so completion events and steer messages reach the
         // principal's owner session — same shape as `peko send`. The
@@ -421,6 +411,26 @@ impl CronEngine {
             let config = principal.config.read().await;
             config.owner.clone()
         };
+        // F37: snapshot the principal's capability grants AND name at
+        // fire time. The factory closure calls
+        // `core.execute_tool_via_hook(...)`, which fires the capability
+        // gate at `registry.rs:260-277` against these snapshotted
+        // grants. Pre-F37, `tool.execute(...)` was called directly via
+        // `core.get_tool(name)`, bypassing the gate. The cron engine
+        // is the highest-trust caller — a scheduled job is the
+        // principal's explicit authorization — so snapshot-at-fire is
+        // correct (no revocation concerns between fire and tool
+        // dispatch).
+        let (snapshot_capabilities, snapshot_principal_id) = {
+            let config = principal.config.read().await;
+            let caps: Vec<String> = config
+                .capabilities
+                .grants
+                .iter()
+                .map(|c| c.0.clone())
+                .collect();
+            (caps, config.name.clone())
+        };
         let principal_root_session_key = format!("root:{owner}");
 
         let wake = wake_on_completion.unwrap_or(false);
@@ -436,17 +446,46 @@ impl CronEngine {
 
         let task_id = format!("cron:{}:{}", job.id, uuid::Uuid::new_v4());
         let tool_params_for_closure = tool_params.clone();
-        let tool_name_owned = tool_name.clone();
+        let tool_name_for_closure = tool_name.clone();
         let executor = self.async_executor.clone();
+        let core_for_closure = core.clone();
+        let capabilities_for_closure = snapshot_capabilities;
+        let principal_id_for_closure = snapshot_principal_id;
 
         let receipt = executor
             .execute(
                 task_id.clone(),
-                tool_name_owned,
+                tool_name.clone(),
                 tool_params.clone(),
                 principal_root_session_key,
                 config,
-                move || async move { tool.execute(tool_params_for_closure).await },
+                move || async move {
+                    let (text, json, success) = core_for_closure
+                        .execute_tool_via_hook(
+                            &tool_name_for_closure,
+                            tool_params_for_closure,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(principal_id_for_closure),
+                            None,
+                            Some(capabilities_for_closure),
+                            None,
+                        )
+                        .await?;
+                    if success {
+                        Ok(json)
+                    } else {
+                        // Gate failure / tool error — return Err so the
+                        // executor records `AsyncTaskStatus::Failed { error }`.
+                        // The `tool_result_from_hook` translation has
+                        // already populated `text` with the user-facing
+                        // error. The error flows back to the cron engine
+                        // via `?` above, which records the run as failed.
+                        Err(anyhow::anyhow!("{}", text))
+                    }
+                },
             )
             .await?;
 

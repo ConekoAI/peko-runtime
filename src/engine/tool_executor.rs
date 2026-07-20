@@ -135,16 +135,13 @@ impl ToolExecutor {
         // PreToolUse, ToolExecute, PostToolUse, session record — so the
         // tool's atomicity window matches its `parallelizable()` claim.
         //
-        // Lookup is via the registry side-table populated by
-        // `BuiltinToolAdapter::register_tool` (and the universal
-        // adapter). If the tool isn't registered, we default to
-        // `parallelizable = true` — the dispatch will fail anyway, and
-        // admitting without serializing is the right "no-op" fallback.
-        let parallel = extension_core
-            .get_tool(name)
-            .await
-            .map(|t| t.parallelizable())
-            .unwrap_or(true);
+        // F37: use the public `is_parallelizable` probe instead of
+        // reaching into the side-table. The side-table handle is now
+        // `pub(crate)` — see `registry.rs::get_tool_handle`. Returns
+        // `true` if the tool isn't registered — the dispatch will fail
+        // anyway, and admitting without serializing is the right "no-op"
+        // fallback.
+        let parallel = extension_core.is_parallelizable(name).await;
         let _gate_guard = self.parallel_gate.admit(parallel).await;
 
         let workspace = agent_workspace.map(|p| p.to_string_lossy().to_string());

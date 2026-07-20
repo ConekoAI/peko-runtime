@@ -9,10 +9,11 @@ use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::core::hook_registry::HookRegistry;
 use crate::extensions::framework::core::tool_registry::ToolRegistry;
-use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, ToolExposure};
 use crate::extensions::framework::types::{
-    ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata, ToolRuntimeContext,
+    tool_result_from_hook, ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata,
+    ToolRuntimeContext,
 };
+use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, ToolExposure};
 use crate::subject::PrincipalId;
 use crate::tools::core::Tool;
 use anyhow::Result;
@@ -206,6 +207,68 @@ impl ExtensionCore {
     /// Check if hooks are globally enabled
     pub async fn is_globally_enabled(&self) -> bool {
         self.hook_registry.is_globally_enabled().await
+    }
+
+    /// Funnel for `AsyncSpawnTool` and `cron_engine` so their dispatched
+    /// tool calls go through the capability gate at `:260-277` and the
+    /// `PreToolUse` / `ToolExecute` / `PostToolUse` hook chain. F37.
+    ///
+    /// Built on top of `invoke_hook(HookPoint::ToolExecute { ... })` —
+    /// the same chokepoint `engine::execute_tool_via_core_with_context`
+    /// already routes through. Mirrors the free function at
+    /// `engine/tool_runtime.rs:62-103`, but as a method so callers can
+    /// avoid constructing `HookInput::ToolCall` themselves.
+    ///
+    /// **No `cancel` parameter** — the factory closure passed to
+    /// `AsyncExecutor::execute(...)` is `'static`, and the
+    /// `CancellationToken` -> `AbortSignal` bridge requires owning a
+    /// `JoinHandle` that must be dropped alongside the tool call. For
+    /// dispatched tool calls, the `abort_signal` field on
+    /// `HookInput::ToolCall` is `None`. Cancellation comes from
+    /// `AsyncExecutor`'s task cancellation, not from a per-call token.
+    /// This is a known limitation addressed in F37x.
+    ///
+    /// **Why a method, not a free function** — the 2 bypass sites
+    /// (`AsyncSpawnTool` at `tools/builtin/async_spawn.rs:144, 163` and
+    /// `cron_engine` at `daemon/cron_engine/mod.rs:391, 449`) were
+    /// calling `core.get_tool(name).await.execute(...)` directly because
+    /// their factory closures (`Fn() -> Future`) don't have access to a
+    /// `&ExtensionCore` parameter. This method gives them one — call
+    /// `core.execute_tool_via_hook(...)` from inside the closure, and
+    /// the gate fires.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_tool_via_hook(
+        &self,
+        tool_name: &str,
+        params: serde_json::Value,
+        workspace: Option<String>,
+        agent_id: Option<String>,
+        session_id: Option<String>,
+        caller_id: Option<String>,
+        principal_id: Option<String>,
+        principal_name: Option<String>,
+        capabilities: Option<Vec<String>>,
+        active_extensions: Option<Vec<String>>,
+    ) -> Result<(String, serde_json::Value, bool)> {
+        let point = HookPoint::ToolExecute {
+            tool_name: tool_name.to_string(),
+        };
+        let input = HookInput::ToolCall {
+            tool_name: tool_name.to_string(),
+            params,
+            workspace,
+            agent_id,
+            session_id,
+            caller_id,
+            principal_id,
+            principal_name,
+            capabilities,
+            active_extensions,
+            // No abort_signal for dispatched calls — see method docs.
+            abort_signal: None,
+        };
+        let result = self.invoke_hook(point, input).await;
+        Ok(tool_result_from_hook(result, tool_name))
     }
 
     /// Get all hooks for a specific extension
@@ -798,10 +861,36 @@ impl ExtensionCore {
     /// `tool_instances` is keyed by name only (instances are shared across
     /// principals for built-ins); the principal scope lives in the registry
     /// index.
+    ///
+    /// F37: narrowed from `pub` to `pub(crate)` so the gate-bypass
+    /// surface at `extensions/builtin/adapter.rs:126` cannot be reached
+    /// from production code that wants to call `.execute(...)`
+    /// directly. The only legitimate read-only consumer is the F33
+    /// parallelizable probe — use [`Self::is_parallelizable`] instead,
+    /// which is `pub` and gives the same answer without exposing the
+    /// handle.
     #[allow(dead_code)]
-    pub async fn get_tool(&self, name: &str) -> Option<Arc<dyn crate::tools::core::Tool>> {
+    pub(crate) async fn get_tool_handle(
+        &self,
+        name: &str,
+    ) -> Option<Arc<dyn crate::tools::core::Tool>> {
         let instances = self.tool_instances.read().await;
         instances.get(name).cloned()
+    }
+
+    /// Read-only probe: is the registered tool parallelizable?
+    ///
+    /// F37: public replacement for the `get_tool(...).map(|t|
+    /// t.parallelizable())` probe at
+    /// `engine/tool_executor.rs:144`. Returns `true` if the tool
+    /// isn't registered — the dispatch will fail anyway, and admitting
+    /// without serializing is the right "no-op" fallback (matches the
+    /// pre-F37 behavior at `tool_executor.rs:147`).
+    pub async fn is_parallelizable(&self, name: &str) -> bool {
+        self.get_tool_handle(name)
+            .await
+            .map(|t| t.parallelizable())
+            .unwrap_or(true)
     }
 
     /// Insert a tool instance into the side-table. Called by
