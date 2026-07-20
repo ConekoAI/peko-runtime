@@ -444,50 +444,27 @@ impl CronEngine {
             ..Default::default()
         };
 
-        let task_id = format!("cron:{}:{}", job.id, uuid::Uuid::new_v4());
-        let tool_params_for_closure = tool_params.clone();
-        let tool_name_for_closure = tool_name.clone();
         let executor = self.async_executor.clone();
-        let core_for_closure = core.clone();
-        let capabilities_for_closure = snapshot_capabilities;
-        let principal_id_for_closure = snapshot_principal_id;
 
-        let receipt = executor
-            .execute(
-                task_id.clone(),
+        // F38: route through `executor.dispatch_tool(...)` so the F37
+        // canonical-funnel closure construction lives inside the
+        // executor. The cron engine doesn't currently have a
+        // `CancellationToken` to bridge into
+        // `dispatch_tool_with_signal` — the registry-level cancel still
+        // works (status flips to `Cancelled`) but the inner tool body
+        // doesn't observe `is_aborted()`. Future work: wire a job-level
+        // CancellationToken into `run_spawn_tool_job` and switch to
+        // `dispatch_tool_with_signal`. The funnel is mandatory now,
+        // which is the F38 invariant we care about.
+        let context =
+            crate::extensions::framework::async_exec::executor::ToolDispatchContext::builder(
                 tool_name.clone(),
                 tool_params.clone(),
-                principal_root_session_key,
-                config,
-                move || async move {
-                    let (text, json, success) = core_for_closure
-                        .execute_tool_via_hook(
-                            &tool_name_for_closure,
-                            tool_params_for_closure,
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(principal_id_for_closure),
-                            None,
-                            Some(capabilities_for_closure),
-                            None,
-                        )
-                        .await?;
-                    if success {
-                        Ok(json)
-                    } else {
-                        // Gate failure / tool error — return Err so the
-                        // executor records `AsyncTaskStatus::Failed { error }`.
-                        // The `tool_result_from_hook` translation has
-                        // already populated `text` with the user-facing
-                        // error. The error flows back to the cron engine
-                        // via `?` above, which records the run as failed.
-                        Err(anyhow::anyhow!("{}", text))
-                    }
-                },
+                principal_root_session_key.clone(),
             )
-            .await?;
+            .for_principal(snapshot_principal_id, snapshot_capabilities);
+
+        let receipt = executor.dispatch_tool(&core, context, config).await?;
 
         // The fire itself completed synchronously (the tool runs in the
         // background). Return immediately so the cron engine records

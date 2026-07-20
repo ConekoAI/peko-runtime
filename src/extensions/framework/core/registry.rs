@@ -209,24 +209,23 @@ impl ExtensionCore {
         self.hook_registry.is_globally_enabled().await
     }
 
-    /// Funnel for `AsyncSpawnTool` and `cron_engine` so their dispatched
-    /// tool calls go through the capability gate at `:260-277` and the
-    /// `PreToolUse` / `ToolExecute` / `PostToolUse` hook chain. F37.
+    /// Funnel for `AsyncExecutor::dispatch_tool*` so dispatched tool
+    /// calls go through the capability gate at `:260-277` and the
+    /// `PreToolUse` / `ToolExecute` / `PostToolUse` hook chain. F37
+    /// added this method; F38 added `abort_signal` as the 11th parameter.
     ///
     /// Built on top of `invoke_hook(HookPoint::ToolExecute { ... })` —
     /// the same chokepoint `engine::execute_tool_via_core_with_context`
-    /// already routes through. Mirrors the free function at
-    /// `engine/tool_runtime.rs:62-103`, but as a method so callers can
-    /// avoid constructing `HookInput::ToolCall` themselves.
+    /// already routes through.
     ///
-    /// **No `cancel` parameter** — the factory closure passed to
-    /// `AsyncExecutor::execute(...)` is `'static`, and the
-    /// `CancellationToken` -> `AbortSignal` bridge requires owning a
-    /// `JoinHandle` that must be dropped alongside the tool call. For
-    /// dispatched tool calls, the `abort_signal` field on
-    /// `HookInput::ToolCall` is `None`. Cancellation comes from
-    /// `AsyncExecutor`'s task cancellation, not from a per-call token.
-    /// This is a known limitation addressed in F37x.
+    /// **F38 abort_signal**: callers (specifically
+    /// `AsyncExecutor::dispatch_tool_with_signal`) build a
+    /// `tokio::sync::watch::channel(false)` before spawning; the
+    /// receiver is passed here so the `BuiltinExecuteHandler` plumbs
+    /// it into `ToolContext::abort_signal`. `AsyncExecutor::cancel(task_id)`
+    /// then `send(true)`s on the stored sender to flip
+    /// `ToolContext::is_aborted()` for tools that check it. Pass
+    /// `None` for non-spawned or non-cancellable dispatches.
     ///
     /// **Why a method, not a free function** — the 2 bypass sites
     /// (`AsyncSpawnTool` at `tools/builtin/async_spawn.rs:144, 163` and
@@ -249,6 +248,7 @@ impl ExtensionCore {
         principal_name: Option<String>,
         capabilities: Option<Vec<String>>,
         active_extensions: Option<Vec<String>>,
+        abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<(String, serde_json::Value, bool)> {
         let point = HookPoint::ToolExecute {
             tool_name: tool_name.to_string(),
@@ -264,8 +264,7 @@ impl ExtensionCore {
             principal_name,
             capabilities,
             active_extensions,
-            // No abort_signal for dispatched calls — see method docs.
-            abort_signal: None,
+            abort_signal,
         };
         let result = self.invoke_hook(point, input).await;
         Ok(tool_result_from_hook(result, tool_name))

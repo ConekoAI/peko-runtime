@@ -6,8 +6,6 @@
 use crate::common::paths::PathResolver;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
-use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
-use crate::extensions::framework::HookPoint;
 use crate::tools::{
     bridge_from_cancellation_token, AbortSignalBridgeGuard, BashTool, CronCreateTool,
     CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool, Tool, WriteTool,
@@ -89,30 +87,25 @@ pub async fn execute_tool_via_core_with_context(
     };
 
     // F37: build the ToolCall input here (with the bridged abort_signal)
-    // and route through invoke_hook directly. We can't reuse
-    // `core.execute_tool_via_hook` here because it doesn't accept an
-    // abort_signal — the spawned-task call sites (`AsyncSpawnTool`,
-    // `cron_engine`) need the no-cancel shape. This is the only caller
-    // that has a cancel token today, so duplicating the 4-line input
-    // build is cheaper than expanding the method signature.
-    let point = HookPoint::ToolExecute {
-        tool_name: tool_name.to_string(),
-    };
-    let input = HookInput::ToolCall {
-        tool_name: tool_name.to_string(),
-        params,
-        workspace,
-        agent_id,
-        session_id,
-        caller_id,
-        principal_id,
-        principal_name,
-        capabilities,
-        active_extensions,
-        abort_signal,
-    };
-    let result = core.invoke_hook(point, input).await;
-    Ok(tool_result_from_hook(result, tool_name))
+    // and route through invoke_hook directly. F38: now uses the canonical
+    // `execute_tool_via_hook` funnel method — the 11th `abort_signal`
+    // parameter is accepted there.
+    let (text, json, success) = core
+        .execute_tool_via_hook(
+            tool_name,
+            params,
+            workspace,
+            agent_id,
+            session_id,
+            caller_id,
+            principal_id,
+            principal_name,
+            capabilities,
+            active_extensions,
+            abort_signal,
+        )
+        .await?;
+    Ok((text, json, success))
 }
 
 /// Standalone tool execution environment
