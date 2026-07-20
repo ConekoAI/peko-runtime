@@ -121,6 +121,13 @@ toml_edit = "0.25.12"
 # JWT validation
 jsonwebtoken = "9"
 
+# JSON-Schema validator for tool argument validation (F32b).
+# `default-features = false` skips `resolve-http` + `tls-aws-lc-rs`
+# (deps on reqwest + rustls) — neither is needed for in-process
+# evaluation of the static schemas tools declare via
+# `Tool::parameters() -> Value`.
+jsonschema = { version = "0.48", default-features = false }
+
 [features]
 # `test-utils` is intentionally NOT in `default`: it exposes resolver/hub-directory
 # test hooks that must not ship in the production binary. Tests that need

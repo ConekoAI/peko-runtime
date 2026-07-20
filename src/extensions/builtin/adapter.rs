@@ -1118,4 +1118,195 @@ mod tests {
             "staged buffer after cleanup: {final_staged:?} — on_interrupt should have drained everything staged at cancel time"
         );
     }
+
+    /// F32b — integration pin: validation short-circuits the dispatch path
+    /// inside `BuiltinExecuteHandler::handle`. A tool whose declared
+    /// `parameters()` schema requires `command` must NOT have `execute`
+    /// invoked when the LLM omits that field; the framework must surface
+    /// a `HookResult::Error` carrying the validation message instead.
+    #[tokio::test]
+    async fn dispatch_short_circuits_when_args_violate_declared_schema() {
+        use crate::extensions::framework::core::{HookContext, HookPoint};
+        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct RequiredFieldTool {
+            call_count: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl Tool for RequiredFieldTool {
+            fn name(&self) -> &str {
+                "RequiredField"
+            }
+
+            fn description(&self) -> String {
+                "tool that requires a `command` field".to_string()
+            }
+
+            fn parameters(&self) -> serde_json::Value {
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string" }
+                    },
+                    "required": ["command"]
+                })
+            }
+
+            async fn execute(
+                &self,
+                _params: serde_json::Value,
+            ) -> anyhow::Result<serde_json::Value> {
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"executed": true}))
+            }
+        }
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let tool: Arc<dyn Tool> = Arc::new(RequiredFieldTool {
+            call_count: call_count.clone(),
+        });
+
+        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        BuiltinToolAdapter::register_tool_system(&core, tool.clone())
+            .await
+            .unwrap();
+
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        // LLM emits args that violate the schema — `command` is missing.
+        let input = HookInput::ToolCall {
+            tool_name: "RequiredField".to_string(),
+            params: json!({}),
+            workspace: None,
+            agent_id: None,
+            session_id: None,
+            caller_id: None,
+            principal_id: None,
+            principal_name: None,
+            capabilities: Some(vec!["tool:RequiredField".to_string()]),
+            active_extensions: None,
+            abort_signal: Some(rx),
+        };
+        let point = HookPoint::ToolExecute {
+            tool_name: "RequiredField".to_string(),
+        };
+        let mut ctx = HookContext::new(point, input, core.services());
+        let runtime_ctx = ToolRuntimeContext::default();
+        ctx.set_state("tool_context", runtime_ctx);
+
+        let handler = BuiltinExecuteHandler::new(tool);
+        let result = handler.handle(ctx).await;
+
+        // Validation must short-circuit before the tool is invoked.
+        match result {
+            HookResult::Error(err) => {
+                let msg = format!("{err:#}");
+                assert!(
+                    msg.contains("RequiredField") && msg.contains("command"),
+                    "expected validation error naming the tool and the missing field, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected HookResult::Error from validation, got {:?}",
+                other
+            ),
+        }
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            0,
+            "execute must not be called when args violate the schema"
+        );
+    }
+
+    /// F32b — counterpart pin: a tool whose args DO satisfy its declared
+    /// schema must still execute normally. Proves the validator doesn't
+    /// accidentally reject legitimate calls.
+    #[tokio::test]
+    async fn dispatch_passes_when_args_satisfy_declared_schema() {
+        use crate::extensions::framework::core::{HookContext, HookPoint};
+        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct RequiredFieldTool {
+            call_count: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl Tool for RequiredFieldTool {
+            fn name(&self) -> &str {
+                "RequiredFieldPass"
+            }
+
+            fn description(&self) -> String {
+                "tool that requires a `command` field".to_string()
+            }
+
+            fn parameters(&self) -> serde_json::Value {
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string" }
+                    },
+                    "required": ["command"]
+                })
+            }
+
+            async fn execute(
+                &self,
+                params: serde_json::Value,
+            ) -> anyhow::Result<serde_json::Value> {
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({ "ran_with": params }))
+            }
+        }
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let tool: Arc<dyn Tool> = Arc::new(RequiredFieldTool {
+            call_count: call_count.clone(),
+        });
+
+        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        BuiltinToolAdapter::register_tool_system(&core, tool.clone())
+            .await
+            .unwrap();
+
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let input = HookInput::ToolCall {
+            tool_name: "RequiredFieldPass".to_string(),
+            params: json!({ "command": "ls -la" }),
+            workspace: None,
+            agent_id: None,
+            session_id: None,
+            caller_id: None,
+            principal_id: None,
+            principal_name: None,
+            capabilities: Some(vec!["tool:RequiredFieldPass".to_string()]),
+            active_extensions: None,
+            abort_signal: Some(rx),
+        };
+        let point = HookPoint::ToolExecute {
+            tool_name: "RequiredFieldPass".to_string(),
+        };
+        let mut ctx = HookContext::new(point, input, core.services());
+        let runtime_ctx = ToolRuntimeContext::default();
+        ctx.set_state("tool_context", runtime_ctx);
+
+        let handler = BuiltinExecuteHandler::new(tool);
+        let result = handler.handle(ctx).await;
+
+        // The handler returns whatever `execute_from_hook` returned; for a
+        // successful tool that is a JSON-shaped `Continue(Json(...))`.
+        match result {
+            HookResult::Continue(HookOutput::Json(v)) => {
+                assert_eq!(v["ran_with"]["command"], "ls -la");
+            }
+            other => panic!("expected HookResult::Continue(Json(_)), got {:?}", other),
+        }
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "execute must be called exactly once when args satisfy the schema"
+        );
+    }
 }
