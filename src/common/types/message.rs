@@ -210,10 +210,16 @@ impl LlmMessage {
     }
 
     /// Create a tool result message
+    ///
+    /// `is_error` propagates to the `ContentBlock::ToolResult.is_error` field
+    /// (F32a) — false for a successful dispatch, true when the tool itself
+    /// failed. Models that distinguish failed tool calls (e.g. Anthropic's
+    /// `is_error` field on `tool_result` blocks) see the correct shape.
     pub fn tool_result(
         tool_call_id: impl Into<String>,
         name: impl Into<String>,
         result: impl Into<String>,
+        is_error: bool,
     ) -> Self {
         let tool_call_id_str = tool_call_id.into();
         Self {
@@ -224,7 +230,7 @@ impl LlmMessage {
                 content: vec![ContentBlock::Text {
                     text: result.into(),
                 }],
-                is_error: false,
+                is_error,
             }],
             timestamp: Utc::now(),
             metadata: HashMap::new(),
@@ -328,8 +334,14 @@ impl AgentMessage {
         tool_call_id: impl Into<String>,
         name: impl Into<String>,
         result: impl Into<String>,
+        is_error: bool,
     ) -> Self {
-        Self::Llm(LlmMessage::tool_result(tool_call_id, name, result))
+        Self::Llm(LlmMessage::tool_result(
+            tool_call_id,
+            name,
+            result,
+            is_error,
+        ))
     }
 
     /// Create a notification message
@@ -951,5 +963,59 @@ mod tests {
         assert_eq!(json[0]["role"], "system");
         assert_eq!(json[1]["role"], "user");
         assert_eq!(json[2]["role"], "assistant");
+    }
+
+    // ===================== F32a: is_error propagation tests =====================
+
+    /// Pin the wire shape: a successful tool call preserves `is_error: false`
+    /// into the `ContentBlock::ToolResult` block.
+    #[test]
+    fn test_llm_message_tool_result_success_carries_is_error_false() {
+        let msg = LlmMessage::tool_result("tc1", "Read", "file body", false);
+        match &msg.content[0] {
+            ContentBlock::ToolResult { is_error, .. } => {
+                assert!(!*is_error, "success path must set is_error=false");
+            }
+            _ => panic!("expected ToolResult block"),
+        }
+    }
+
+    /// Pin the wire shape: a failed tool execution (e.g. tool impl returned
+    /// `Err(anyhow!(...))`, or the dispatch gate refused) must propagate
+    /// `is_error: true` to the `ContentBlock::ToolResult` block. Pre-F32a
+    /// the constructor hardcoded `false` regardless of dispatch outcome.
+    #[test]
+    fn test_llm_message_tool_result_failure_carries_is_error_true() {
+        let msg = LlmMessage::tool_result("tc1", "Read", "Error: not found", true);
+        match &msg.content[0] {
+            ContentBlock::ToolResult { is_error, .. } => {
+                assert!(*is_error, "failure path must set is_error=true");
+            }
+            _ => panic!("expected ToolResult block"),
+        }
+    }
+
+    /// `AgentMessage::tool_result` (the `Self::Llm(...)` wrapper) must
+    /// forward the flag through to the inner `LlmMessage`.
+    #[test]
+    fn test_agent_message_tool_result_forwards_is_error() {
+        let ok = AgentMessage::tool_result("tc1", "Read", "body", false);
+        let err = AgentMessage::tool_result("tc2", "Read", "Error", true);
+
+        let AgentMessage::Llm(ok_inner) = ok else {
+            panic!("expected Llm variant")
+        };
+        let AgentMessage::Llm(err_inner) = err else {
+            panic!("expected Llm variant")
+        };
+
+        match &ok_inner.content[0] {
+            ContentBlock::ToolResult { is_error, .. } => assert!(!*is_error),
+            _ => panic!("expected ToolResult block"),
+        }
+        match &err_inner.content[0] {
+            ContentBlock::ToolResult { is_error, .. } => assert!(*is_error),
+            _ => panic!("expected ToolResult block"),
+        }
     }
 }

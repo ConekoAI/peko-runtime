@@ -150,7 +150,7 @@ mod tests {
         let mut msgs = vec![
             assistant_with_tool_call("tc1", "Read"),
             user_msg("between"),
-            LlmMessage::tool_result("tc1", "Read", "file contents"),
+            LlmMessage::tool_result("tc1", "Read", "file contents", false),
         ];
         let removed = drop_oldest_respecting_pairs(&mut msgs);
         assert_eq!(removed, 2, "should drop both call and result");
@@ -164,7 +164,7 @@ mod tests {
         // scan searches the whole remaining list (not just position 1)
         // to mirror codex's `remove_corresponding_for` behavior.
         let mut msgs = vec![
-            LlmMessage::tool_result("tc1", "Read", "file contents"),
+            LlmMessage::tool_result("tc1", "Read", "file contents", false),
             assistant_with_tool_call("tc1", "Read"),
             user_msg("next"),
         ];
@@ -181,7 +181,7 @@ mod tests {
         let mut msgs = vec![
             assistant_with_tool_call("tc_old", "Read"),
             user_msg("between"),
-            LlmMessage::tool_result("tc_new", "Read", "different result"),
+            LlmMessage::tool_result("tc_new", "Read", "different result", false),
         ];
         let removed = drop_oldest_respecting_pairs(&mut msgs);
         assert_eq!(removed, 1, "no pair match — only drop the oldest");

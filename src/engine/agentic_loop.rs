@@ -5215,21 +5215,29 @@ mod tests {
         let _ = core.unregister_hook(&hook_id).await;
 
         let log_snapshot = log.lock().unwrap().clone();
+        // The global `ExtensionCore` is shared across tests; other tests
+        // may have fired AfterAgent for their own agents. Filter to
+        // events tagged with this test's agent_name before counting.
+        let own_events: Vec<_> = log_snapshot
+            .iter()
+            .filter(|v| v.get("agent_name").and_then(|n| n.as_str()) == Some(agent_name.as_str()))
+            .cloned()
+            .collect();
         assert_eq!(
-            log_snapshot.len(),
+            own_events.len(),
             1,
-            "AfterAgent must fire exactly once from Agent::stop(); got: {log_snapshot:?}"
+            "AfterAgent must fire exactly once from Agent::stop() for {agent_name}; got: {own_events:?}"
         );
         assert_eq!(
-            log_snapshot[0].get("agent_name").and_then(|v| v.as_str()),
+            own_events[0].get("agent_name").and_then(|v| v.as_str()),
             Some(agent_name.as_str()),
             "AfterAgent payload must carry the agent's name; got: {}",
-            log_snapshot[0]
+            own_events[0]
         );
         assert!(
-            log_snapshot[0].get("agent_did").is_some(),
+            own_events[0].get("agent_did").is_some(),
             "AfterAgent payload must carry the agent's DID; got: {}",
-            log_snapshot[0]
+            own_events[0]
         );
     }
 

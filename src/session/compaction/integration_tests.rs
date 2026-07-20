@@ -146,7 +146,7 @@ fn test_never_cuts_at_tool_result() {
 fn test_classify_message_kinds() {
     let user = LlmMessage::user("Hello");
     let assistant = LlmMessage::assistant("Hi");
-    let tool = LlmMessage::tool_result("tc1", "test_tool", "result");
+    let tool = LlmMessage::tool_result("tc1", "test_tool", "result", false);
 
     assert_eq!(classify_message(&user), MessageKind::User);
     assert_eq!(classify_message(&assistant), MessageKind::Assistant);
@@ -158,7 +158,7 @@ fn test_find_cut_points_excludes_tool_results() {
     let messages = vec![
         LlmMessage::user("A"),
         LlmMessage::assistant("B"),
-        LlmMessage::tool_result("tc1", "test_tool", "C"),
+        LlmMessage::tool_result("tc1", "test_tool", "C", false),
         LlmMessage::user("D"),
     ];
 
@@ -280,5 +280,5 @@ fn make_msg(role: MessageRole, text: &str) -> LlmMessage {
 
 #[allow(dead_code)]
 fn make_tool_result(tool_call_id: &str, text: &str) -> LlmMessage {
-    LlmMessage::tool_result(tool_call_id, "test_tool", text)
+    LlmMessage::tool_result(tool_call_id, "test_tool", text, false)
 }

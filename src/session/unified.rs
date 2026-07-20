@@ -359,14 +359,22 @@ impl Session {
     ///
     /// Stores the tool result in LLM-native format (`LlmMessageEvent` with role="tool")
     /// for consistent session storage and accurate resumption.
+    ///
+    /// `is_error` flags whether the tool execution itself failed (vs. a
+    /// successful tool call returning a zero-data or error-shaped payload).
+    /// The flag is persisted into the `ContentBlock::ToolResult.is_error`
+    /// field so resumed sessions and recovery paths can distinguish a
+    /// failed dispatch from a successful zero-data return.
+    /// F32a closed the prior hardcoded-false bug at this site.
     pub async fn add_tool_result(
         &mut self,
         tool_call_id: impl Into<String>,
         tool_name: impl Into<String>,
         result: impl Into<String>,
+        is_error: bool,
     ) -> Result<()> {
         // Use native format for unified storage
-        self.add_tool_result_native(tool_call_id, tool_name, result, false)
+        self.add_tool_result_native(tool_call_id, tool_name, result, is_error)
             .await
     }
 
@@ -502,10 +510,14 @@ impl Session {
                     .collect::<String>(),
             ),
             "tool" => {
-                // For tool messages, extract tool_call_id, tool_name, and content from content blocks
+                // For tool messages, extract tool_call_id, tool_name, content, and is_error
                 let mut tool_call_id = String::new();
                 let mut tool_name = String::new();
                 let mut content_parts = Vec::new();
+                // F32a: default to success; last-writer-wins if multiple
+                // `ToolResult` blocks appear in the same message (uncommon
+                // but the type allows it).
+                let mut is_error = false;
 
                 for block in &final_content_blocks {
                     match block {
@@ -513,10 +525,12 @@ impl Session {
                             tool_call_id: id,
                             name,
                             content,
+                            is_error: err,
                             ..
                         } => {
                             tool_call_id = id.clone();
                             tool_name = name.clone();
+                            is_error = *err;
                             // Extract text from nested content
                             for c in content {
                                 if let ContentBlock::Text { text } = c {
@@ -532,7 +546,7 @@ impl Session {
                 }
 
                 let content_text = content_parts.join("");
-                SessionMessage::tool_result(tool_call_id, tool_name, content_text)
+                SessionMessage::tool_result(tool_call_id, tool_name, content_text, is_error)
             }
             _ => {
                 // Default to user message for unknown roles
@@ -944,7 +958,7 @@ mod tests {
 
         // Add tool result
         session
-            .add_tool_result("tool_abc", "Read", "Hello World")
+            .add_tool_result("tool_abc", "Read", "Hello World", false)
             .await
             .unwrap();
 
@@ -1005,6 +1019,69 @@ mod tests {
                 }]
             );
         }
+    }
+
+    /// F32a: `is_error: true` round-trips through the JSONL persistence
+    /// layer. Pre-F32a both this test and `tool_executor.rs:196` (the
+    /// production call site) hardcoded `is_error: false`, so a failed
+    /// tool execution persisted and re-loaded as a success-shaped record.
+    /// The persisted `ContentBlock::ToolResult` must now reflect the
+    /// original dispatch outcome on rehydration.
+    #[tokio::test]
+    async fn test_add_tool_result_persists_is_error_flag() {
+        use crate::common::types::message::ContentBlock;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = crate::auth::Subject::User("default".to_string());
+        let session_id = "test-session-f32a";
+
+        storage.create_session(session_id, None).await.unwrap();
+
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        // Failure path
+        session
+            .add_tool_result("tc_fail", "Read", "Error: file not found", true)
+            .await
+            .unwrap();
+
+        // Success path (separate session — both flags need to round-trip
+        // independently, and `unified.rs` writes the session back on close).
+        let session_id_ok = "test-session-f32a-ok";
+        storage.create_session(session_id_ok, None).await.unwrap();
+        let mut ok_session =
+            Session::open_by_id("test-agent", session_id_ok, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+        ok_session
+            .add_tool_result("tc_ok", "Read", "file body", false)
+            .await
+            .unwrap();
+
+        // Reload from disk and assert the flag persisted.
+        let failing_history = session.load_history().await.unwrap();
+        let ok_history = ok_session.load_history().await.unwrap();
+
+        assert!(
+            matches!(
+                failing_history[0].content[0],
+                ContentBlock::ToolResult { ref is_error, .. } if *is_error
+            ),
+            "failed tool result must persist `is_error: true` (F32a regression)"
+        );
+
+        assert!(
+            matches!(
+                ok_history[0].content[0],
+                ContentBlock::ToolResult { ref is_error, .. } if !*is_error
+            ),
+            "successful tool result must persist `is_error: false`"
+        );
     }
 
     // ============================================================

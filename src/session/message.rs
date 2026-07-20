@@ -160,10 +160,17 @@ impl SessionMessage {
     }
 
     /// Create a tool result message
+    ///
+    /// `is_error` propagates into the `ContentBlock::ToolResult.is_error`
+    /// field on the inner `LlmMessage` (F32a). All `SessionMessage` tool
+    /// results re-emit through `add_llm_message` and ultimately land in
+    /// the same persistence path as `Session::add_tool_result`, so the
+    /// flag has to be plumbed at construction time, not backfilled.
     pub fn tool_result(
         tool_call_id: impl Into<String>,
         tool_name: impl Into<String>,
         content: impl Into<String>,
+        is_error: bool,
     ) -> Self {
         let tool_call_id_str = tool_call_id.into();
         let tool_name_str = tool_name.into();
@@ -177,7 +184,7 @@ impl SessionMessage {
                     content: vec![ContentBlock::Text {
                         text: content.into(),
                     }],
-                    is_error: false,
+                    is_error,
                 }],
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
@@ -338,7 +345,7 @@ mod tests {
 
     #[test]
     fn test_session_message_tool_result() {
-        let msg = SessionMessage::tool_result("call_123", "test_tool", "Result data");
+        let msg = SessionMessage::tool_result("call_123", "test_tool", "Result data", false);
         assert_eq!(msg.role(), MessageRole::Tool);
         assert_eq!(msg.tool_call_id(), Some("call_123"));
         assert_eq!(msg.text_content(), "Result data");
@@ -391,7 +398,7 @@ mod tests {
         let system = SessionMessage::system("you are a helpful assistant");
         assert_eq!(system.to_llm_message().usage, None);
 
-        let tool = SessionMessage::tool_result("tc1", "Read", "file contents");
+        let tool = SessionMessage::tool_result("tc1", "Read", "file contents", false);
         assert_eq!(tool.to_llm_message().usage, None);
     }
 
@@ -464,7 +471,7 @@ mod tests {
         assert_eq!(role_count, 1, "System should have exactly one 'role' field");
 
         // Test tool message
-        let msg = SessionMessage::tool_result("call_123", "test_tool", "Result");
+        let msg = SessionMessage::tool_result("call_123", "test_tool", "Result", false);
         let event = SessionEvent::MessageV2(msg);
         let json = serde_json::to_string(&event).unwrap();
         let role_count = json.matches("\"role\":").count();
