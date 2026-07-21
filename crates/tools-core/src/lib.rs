@@ -23,11 +23,13 @@
 //!   the LLM (prompt section, native catalog, deferred via
 //!   `__tool_search`, hidden).
 
+pub mod constants;
 pub mod context_source;
 pub mod exec;
 pub mod interrupt;
 pub mod traits;
 
+pub use constants::HOOK_TIMEOUT;
 pub use context_source::{ContextResolver, ContextSource};
 pub use exec::{
     bridge_from_cancellation_token, bridge_to_cancellation_token, AbortSignal,

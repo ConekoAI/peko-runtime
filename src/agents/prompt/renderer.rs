@@ -43,13 +43,18 @@ use crate::extensions::framework::{ExtensionCore, HookInput, HookPoint};
 use chrono::Local;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{debug, warn};
 
 /// Per-hook timeout budget. Two seconds is generous for the prompt-section
 /// hooks (they only need to format a Markdown body from in-memory state)
 /// and tight enough that a stuck handler cannot stall the agentic loop.
-pub(crate) const HOOK_TIMEOUT: Duration = Duration::from_secs(2);
+///
+/// Phase 9b.2 lifted this constant to `peko-tools-core` (see
+/// `peko_tools_core::HOOK_TIMEOUT`) so the engine crate can use the
+/// same timeout value without taking a root-only dep on
+/// `agents::prompt`. The local re-export keeps the body of this file
+/// unchanged.
+pub(crate) use peko_tools_core::HOOK_TIMEOUT;
 
 /// Renders the system prompt for one iteration.
 ///

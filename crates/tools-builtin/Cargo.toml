@@ -1,0 +1,32 @@
+[package]
+name = "peko-tools-builtin"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai"]
+description = "Built-in tool implementations (filesystem, async control, cron, session, messaging, skill, task) — Phase 10a ships the filesystem subset (Read, Write, Edit, Glob, Grep)."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+# Phase 10a: filesystem tools only depend on the tool API contract.
+peko-tools-core = { path = "../tools-core" }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tokio = { version = "1.35", features = ["fs", "io-util", "rt", "macros"] }
+# Glob pattern matching for GlobTool.
+glob = "0.3"
+# Regular expression engine for GrepTool.
+regex = "1.10"
+# base64 encoding for image reads/writes.
+base64 = "0.22"
+# File mtime formatting for Read/Write metadata.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Home directory lookup for tilde expansion in `paths::expand_tilde`.
+dirs = "5.0"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio = { version = "1.35", features = ["fs", "rt", "macros", "rt-multi-thread"] }

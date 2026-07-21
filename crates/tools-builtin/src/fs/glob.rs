@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
 
-use crate::tools::core::Tool;
+use peko_tools_core::Tool;
 
 /// Glob tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,7 +62,7 @@ impl GlobTool {
     /// paths to absolute using workspace.
     fn resolve_directory(&self, path: Option<&str>) -> PathBuf {
         if let Some(dir) = path {
-            let path = crate::common::paths::expand_tilde(dir);
+            let path = crate::paths::expand_tilde(dir);
             if path.is_absolute() {
                 path
             } else if let Some(ref workspace) = self.workspace_dir {

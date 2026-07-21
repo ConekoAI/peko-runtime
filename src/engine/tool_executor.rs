@@ -7,7 +7,6 @@
 //! - Event emission (ToolEnd)
 //! - Duration tracking
 
-use crate::agents::prompt::renderer::HOOK_TIMEOUT;
 use crate::common::types::message::{ContentBlock, LlmMessage};
 use crate::engine::parallel_gate::ParallelGate;
 use crate::engine::AgenticEvent;
@@ -16,6 +15,7 @@ use crate::extensions::framework::types::HookInput;
 use crate::extensions::framework::HookPoint;
 use crate::session::Session;
 use anyhow::Result;
+use peko_tools_core::HOOK_TIMEOUT;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
