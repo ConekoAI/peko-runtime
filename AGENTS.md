@@ -68,7 +68,15 @@ Key style notes from `clippy.toml`:
 
 ## Architecture Overview
 
-```
+Peko is a Cargo workspace during the incremental crate-boundary migration. The
+root `peko` package remains the compatibility facade and CLI while extracted
+contracts are added under `crates/`. The first extracted member is
+`peko-events`, which owns the neutral agentic event contract shared by the
+engine and legacy provider streaming path.
+
+```text
+crates/
+└── events/                 # Neutral agentic event contract (peko-events)
 src/
 ├── agents/                 # Agent management (stateless manager, config, lifecycle, prompts)
 ├── auth/                   # Authentication and authorization (principal, ownership, JWT, API keys)

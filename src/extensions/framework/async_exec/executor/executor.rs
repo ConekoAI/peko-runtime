@@ -865,17 +865,28 @@ mod completion_queue_fan_out_tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let inbox = registry.get_or_create("session_1").await;
-        let items = inbox.drain_all().await;
-        assert_eq!(items.len(), 1);
-        match &items[0] {
-            InboxItem::Completion(e) => {
-                assert!(matches!(e.status, AsyncTaskStatus::Failed { .. }));
+        // Poll up to 2s instead of a fixed 100ms sleep: the failure path
+        // goes through `delivery.deliver` before the inbox push, which can
+        // blow past 100ms on a loaded CI runner. The success-path sibling
+        // (`test_completion_event_pushed_on_success`) is tighter and
+        // historically passes the 100ms budget, so it keeps the original
+        // sleep to avoid masking regressions that would slow the hot path.
+        for _ in 0..200 {
+            let inbox = registry.get_or_create("session_1").await;
+            if !inbox.is_empty().await {
+                let items = inbox.drain_all().await;
+                assert_eq!(items.len(), 1);
+                match &items[0] {
+                    InboxItem::Completion(e) => {
+                        assert!(matches!(e.status, AsyncTaskStatus::Failed { .. }));
+                    }
+                    other => panic!("expected InboxItem::Completion, got {other:?}"),
+                }
+                return;
             }
-            other => panic!("expected InboxItem::Completion, got {other:?}"),
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        panic!("timed out waiting for completion event in session_1 inbox");
     }
 
     #[tokio::test]
@@ -959,32 +970,38 @@ mod completion_queue_fan_out_tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Poll up to 2s for the steer message to land (CI flake fix; see
+        // `test_completion_event_pushed_on_failure` above for the rationale).
+        for _ in 0..200 {
+            let root_inbox = registry.get_or_create(&principal_root).await;
+            if !root_inbox.is_empty().await {
+                let root_items = root_inbox.drain_all().await;
+                assert_eq!(
+                    root_items.len(),
+                    1,
+                    "expected exactly one steer message in principal root inbox"
+                );
+                match &root_items[0] {
+                    InboxItem::Steering(s) => {
+                        assert!(s.content.contains("daily-summary"));
+                        assert!(s.content.contains("TaskOutput"));
+                        assert!(s.content.contains(&task_id));
+                    }
+                    other => panic!("expected InboxItem::Steering, got {other:?}"),
+                }
 
-        // Steer message landed in principal_root's inbox.
-        let root_inbox = registry.get_or_create(&principal_root).await;
-        let root_items = root_inbox.drain_all().await;
-        assert_eq!(
-            root_items.len(),
-            1,
-            "expected exactly one steer message in principal root inbox"
-        );
-        match &root_items[0] {
-            InboxItem::Steering(s) => {
-                assert!(s.content.contains("daily-summary"));
-                assert!(s.content.contains("TaskOutput"));
-                assert!(s.content.contains(&task_id));
+                // Completion event did NOT land in the executor's parent inbox.
+                let worker_inbox = registry.get_or_create("session_worker_1").await;
+                let worker_items = worker_inbox.drain_all().await;
+                assert!(
+                    worker_items.is_empty(),
+                    "worker inbox should be untouched when wake_on_completion=true, got {worker_items:?}"
+                );
+                return;
             }
-            other => panic!("expected InboxItem::Steering, got {other:?}"),
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-
-        // Completion event did NOT land in the executor's parent inbox.
-        let worker_inbox = registry.get_or_create("session_worker_1").await;
-        let worker_items = worker_inbox.drain_all().await;
-        assert!(
-            worker_items.is_empty(),
-            "worker inbox should be untouched when wake_on_completion=true, got {worker_items:?}"
-        );
+        panic!("timed out waiting for steer message in {principal_root} inbox");
     }
 
     /// Cron-spawned runs with `wake_on_completion=false` keep the

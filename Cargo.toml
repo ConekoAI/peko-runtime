@@ -1,3 +1,7 @@
+[workspace]
+resolver = "2"
+members = [".", "crates/events"]
+
 [package]
 name = "peko"
 version = "0.1.0"
@@ -8,6 +12,9 @@ license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
 [dependencies]
+# Workspace member providing the neutral agentic event contract. The root
+# re-exports it through `engine::events` for compatibility.
+peko-events = { path = "crates/events" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).
