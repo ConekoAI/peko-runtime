@@ -25,6 +25,11 @@ pub mod synthetic_stream;
 pub mod templates;
 pub mod transport;
 pub mod validator;
+// Submodule shim preserved for backwards compatibility — the
+// `traits` module itself now lives in the `peko-provider-api`
+// workspace crate; `src/providers/traits.rs` is a one-line
+// `pub use peko_provider_api::traits::*;` shim.
+pub mod traits;
 
 // Re-export commonly used types
 pub use adapters::{
@@ -40,17 +45,14 @@ pub use resolver::{KeyProbeReport, LlmResolver, ResolveRequest, ResolveSource, R
 pub use stacked_metered::StackedMeteredProvider;
 pub use templates::{find_template, iter_templates, ModelTemplate, ProviderTemplate};
 pub use transport::{AuthConfig, HttpClient, SseParser};
-// Domain types (canonical source: `common::types::message`)
-pub use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
+// Domain types (canonical source: `peko-message`, re-exported through the new crate)
 pub use cache_retention::CacheRetention;
-// Provider interface types (canonical source: `providers::traits`)
-pub use traits::{
+pub use peko_provider_api::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
+// Provider interface types (canonical source: `peko-provider-api::traits`)
+pub use peko_provider_api::{
     BlockType, ChatOptions, ChatResponse, ContentBlockId, ContentDelta, ServiceTier, StopReason,
     StreamEvent, ThinkingEffort, ThinkingKeep, ToolChoice, ToolDefinition,
 };
-
-// Types still defined in traits.rs for historical reasons; imported via traits::*
-pub mod traits;
 
 /// Fallback for `ChatOptions::max_tokens` when neither the caller nor
 /// the catalog supplies a value.
