@@ -1,0 +1,27 @@
+[package]
+name = "peko-quota"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Per-principal token quota meter (F18) — owns QuotaMeter, QuotaScope, QuotaState, QuotaConfig, QuotaError"
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+# Workspace member owning the canonical TokenUsage contract.
+peko-message = { path = "../message" }
+# Time / calendar arithmetic for cycle boundaries.
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# tokio for `task_local!` (QuotaScope), async file persistence
+# (QuotaState), and `time::sleep` in tests. `rt` enables the
+# single-threaded runtime required by the Scope tests.
+tokio = { version = "1.35", features = ["rt", "macros", "fs", "io-util", "time"] }
+# Error derive + logging used in QuotaMeter / QuotaScope.
+thiserror = "1.0"
+tracing = "0.1"
+
+[dev-dependencies]
+toml = "0.8"
+tempfile = "3.10"

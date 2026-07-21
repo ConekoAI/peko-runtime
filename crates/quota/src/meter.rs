@@ -40,7 +40,7 @@ use std::sync::Mutex;
 use super::config::{QuotaConfig, QuotaCycle};
 use super::error::QuotaError;
 use super::state::QuotaState;
-use crate::common::types::message::TokenUsage;
+use peko_message::TokenUsage;
 
 /// In-process quota meter. Cheap to clone — the work happens under
 /// the inner `Mutex<QuotaState>`, not on the `Arc` itself.

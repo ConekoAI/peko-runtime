@@ -1,36 +1,20 @@
-//! Per-principal token quota (F18).
+//! Compatibility re-exports for the `peko-quota` workspace crate.
 //!
-//! Each Principal can opt into a token quota with three independent
-//! limits — `input_tokens`, `output_tokens`, `request_count` — reset
-//! on a calendar-aligned UTC cycle (Hourly / Daily / Weekly /
-//! Monthly). When any limit trips, the next LLM call is rejected
-//! with [`error::QuotaError`] and the run aborts mid-flight.
-//!
-//! ## Module map
-//!
-//! - [`config::QuotaConfig`] — TOML-deserializable limit block.
-//! - [`config::QuotaCycle`] — calendar cycle enum + `next_boundary` math.
-//! - [`state::QuotaState`] — runtime counters, persisted to JSON.
-//! - [`meter::QuotaMeter`] — the runtime check / charge / reset engine.
-//! - [`error::QuotaError`] — typed error variants for the three limits.
-//!
-//! ## F17 hook points
-//!
-//! [`meter::QuotaMeter::charge`] takes a
-//! [`crate::common::types::message::TokenUsage`] and folds cache +
-//! reasoning into the canonical `input` / `output` buckets via
-//! [`crate::common::types::message::TokenUsage::accumulate`]. Callers
-//! should never re-implement that folding inline — `accumulate` is
-//! the single source of truth for "what counts toward quota".
+//! The full quota domain (F18–F20) — `QuotaConfig`, `QuotaCycle`,
+//! `QuotaState`, `QuotaMeter`, `QuotaScope`, `QuotaError` — lives in
+//! the `peko-quota` crate as one coherent unit. Internal consumers
+//! keep the historical `peko::quota::*` import paths through these
+//! shim modules.
 
-pub mod config;
-pub mod error;
-pub mod meter;
-pub mod scope;
-pub mod state;
+// Re-export each submodule so existing `peko::quota::config::*`,
+// `peko::quota::meter::*`, etc. paths keep resolving. The actual
+// implementations live in the `peko_quota` crate.
+pub use peko_quota::config;
+pub use peko_quota::error;
+pub use peko_quota::meter;
+pub use peko_quota::scope;
+pub use peko_quota::state;
 
-pub use config::{QuotaConfig, QuotaCycle};
-pub use error::QuotaError;
-pub use meter::QuotaMeter;
-pub use scope::QuotaScope;
-pub use state::QuotaState;
+// Re-export the top-level types so `peko::quota::QuotaMeter` and the
+// fully-qualified submodule paths both resolve.
+pub use peko_quota::{QuotaConfig, QuotaCycle, QuotaError, QuotaMeter, QuotaScope, QuotaState};

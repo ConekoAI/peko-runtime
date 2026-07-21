@@ -2172,6 +2172,7 @@ dependencies = [
  "once_cell",
  "peko-events",
  "peko-message",
+ "peko-quota",
  "peko-subject",
  "rand",
  "regex",
@@ -2226,6 +2227,21 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "peko-quota"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "peko-message",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

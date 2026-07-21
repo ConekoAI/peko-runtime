@@ -22,6 +22,8 @@
 //! functional and belongs in a value type's impl block. Tests pin
 //! the boundary behaviour for known timestamps.
 
+use std::str::FromStr;
+
 use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -78,6 +80,32 @@ impl std::fmt::Display for QuotaCycle {
             Self::Monthly => "monthly",
         };
         f.write_str(s)
+    }
+}
+
+/// Parse a `QuotaCycle` from a CLI/config string. Accepts the
+/// canonical lowercase forms (`hourly` / `daily` / `weekly` /
+/// `monthly`) matching the `serde(rename_all = "lowercase")` wire
+/// format. This impl lives here in `peko-quota` (not in the CLI
+/// crate) because of Rust's orphan rule (E0117): `QuotaCycle` is
+/// owned by `peko-quota`, so the trait impl must live alongside
+/// the type. The CLI's `parse_cycle` adapter just delegates to it.
+impl FromStr for QuotaCycle {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "hourly" => Ok(Self::Hourly),
+            "daily" => Ok(Self::Daily),
+            "weekly" => Ok(Self::Weekly),
+            "monthly" => Ok(Self::Monthly),
+            other => Err(Box::leak(
+                format!(
+                    "invalid quota cycle '{other}': expected hourly, daily, weekly, or monthly"
+                )
+                .into_boxed_str(),
+            )),
+        }
     }
 }
 
