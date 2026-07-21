@@ -138,7 +138,11 @@ async fn test_parameter_injection() {
         .with_session_id("sess_123")
         .with_agent_id("agent_456");
 
-    let resolved = manifest.reserved_parameters.resolve(Some(&tool_ctx));
+    let resolved = crate::extensions::framework::services::reserved_params::resolve_reserved_params(
+        &manifest.reserved_parameters,
+        Some(&tool_ctx),
+        None,
+    );
     assert_eq!(resolved.get("session_id"), Some(&json!("sess_123")));
     assert_eq!(resolved.get("agent_id"), Some(&json!("agent_456")));
 }

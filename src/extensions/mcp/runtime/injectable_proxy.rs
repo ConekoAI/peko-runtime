@@ -153,9 +153,12 @@ impl InjectableMcpToolProxy {
 
         // Inject each reserved parameter
         for name in self.reserved_params.names() {
-            let value = self
-                .reserved_params
-                .resolve_with_vault(ctx, vault)
+            let value =
+                crate::extensions::framework::services::reserved_params::resolve_reserved_params(
+                    &self.reserved_params,
+                    ctx,
+                    vault,
+                )
                 .get(name)
                 .cloned()
                 .unwrap_or(Value::Null);
@@ -320,7 +323,12 @@ mod tests {
             .with_runtime("peer_id", "peer_id")
             .with_static("static_val", "hardcoded");
 
-        let resolved = config.resolve(Some(&ctx));
+        let resolved =
+            crate::extensions::framework::services::reserved_params::resolve_reserved_params(
+                &config,
+                Some(&ctx),
+                None,
+            );
 
         assert_eq!(resolved.get("agent_id"), Some(&json!("agent_456")));
         assert_eq!(resolved.get("session_id"), Some(&json!("sess_123")));
@@ -334,7 +342,10 @@ mod tests {
             .with_runtime("agent_id", "agent_id")
             .with_static("static_val", "hardcoded");
 
-        let resolved = config.resolve(None);
+        let resolved =
+            crate::extensions::framework::services::reserved_params::resolve_reserved_params(
+                &config, None, None,
+            );
 
         // Without context, runtime params resolve to null
         assert_eq!(resolved.get("agent_id"), Some(&json!(null)));

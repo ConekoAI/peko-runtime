@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/events", "crates/message", "crates/provider-api", "crates/quota", "crates/subject", "crates/tools-core"]
+members = [".", "crates/events", "crates/extension-api", "crates/message", "crates/provider-api", "crates/quota", "crates/subject", "crates/tools-core"]
 
 [package]
 name = "peko"
@@ -52,6 +52,19 @@ peko-tools-core = { path = "crates/tools-core" }
 # re-exports through `crate::providers::{traits, cache_retention}`
 # for backwards compatibility.
 peko-provider-api = { path = "crates/provider-api" }
+# Workspace member providing the extension framework API contracts
+# (Phase 7) — owns ExtensionId, HookId, HookInput/Output/Result,
+# ExtensionManifest, Capability, Capabilities, ActiveExtensionSet,
+# ToolMetadata, ToolSource, ToolRuntimeContext, AsyncReceipt,
+# AsyncTaskStatus, MessageEnvelope, SessionSnapshot, PromptBuildState,
+# ToolRegistryAccess, and the data parts of ReservedParamsConfig /
+# ParamSource. The concrete framework host (registry, async executor,
+# transport, store, manager, scaffold) stays in the root package —
+# Phase 8 will move that into `peko-extension-host`. Depends on
+# peko-message, peko-tools-core, peko-provider-api; the root
+# re-exports through `crate::extensions::framework::types::*` for
+# backwards compatibility.
+peko-extension-api = { path = "crates/extension-api" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).
