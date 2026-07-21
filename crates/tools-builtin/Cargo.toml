@@ -14,7 +14,7 @@ async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
-tokio = { version = "1.35", features = ["fs", "io-util", "rt", "macros"] }
+tokio = { version = "1.35", features = ["fs", "io-util", "rt", "macros", "sync", "time"] }
 # Glob pattern matching for GlobTool.
 glob = "0.3"
 # Regular expression engine for GrepTool.
@@ -25,8 +25,11 @@ base64 = "0.22"
 cron = "0.12"
 # Timezone resolution in `cron::calculate_next_run` for `ScheduleKind::Cron`.
 chrono-tz = "0.10"
-# File mtime formatting for Read/Write metadata + cron job DTOs.
-# `serde` feature is needed to (de)serialize `DateTime<Utc>` in `CronJob`.
+# File mtime formatting for Read/Write metadata + cron job DTOs +
+# Phase 10c async_control::TaskView/AsyncToolConfig (`created_at`,
+# `completed_at`) and `WaitResult` (a `peko_tools_core::exec::ToolResult`).
+# `serde` feature is needed to (de)serialize `DateTime<Utc>` in `CronJob`
+# and `TaskView`.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 # Home directory lookup for tilde expansion in `paths::expand_tilde`.
 dirs = "5.0"

@@ -1,50 +1,42 @@
 //! Shared helpers for the Async* family of tools.
 //!
-//! These helpers encapsulate registry lookup, list filtering, cancellation,
-//! response building, and tail-lines truncation so each standalone tool
-//! (`AsyncSpawn`, `AsyncOutput`, `AsyncStop`, `AsyncStatus`, `AsyncList`)
-//! stays small and focused.
+//! These helpers encapsulate response building and tail-lines
+//! truncation so each standalone tool (`AsyncSpawn`, `AsyncOutput`,
+//! `AsyncStop`, `AsyncStatus`, `AsyncList`) stays small and focused.
+//!
+//! `AsyncTaskHelper` was previously imported from the framework host
+//! (`AsyncTaskRegistry`). The framework host now adapts any
+//! `AsyncRuntime` to a simple `runtime()` projection, so the helper
+//! here just wraps a shared `Arc<dyn AsyncRuntime>` and exposes the
+//! same shape. Legacy registry-bound helpers moved out — the helper
+//! is purely runtime-facing now.
 
 use serde_json::json;
 
-use crate::extensions::framework::async_exec::executor::{
-    cancel_task_across_all_registries, find_task_across_all_registries,
-    list_all_tasks_across_all_registries, CancelResult, SharedAsyncTaskRegistry, TaskView,
-};
+use crate::async_control::{CancelResult, SharedAsyncRuntime, TaskView};
 
-/// Helper for registry-backed async task operations.
+/// Helper for async task operations that speak to an `AsyncRuntime` port.
+///
+/// Where the pre-Phase-10c helper held an `Option<SharedAsyncTaskRegistry>`
+/// to support both registry-bound and cross-registry-global modes, the
+/// helper now just holds an `AsyncRuntime` — `list_tasks`, `lookup_task`,
+/// and `cancel_task` are 1:1 with the trait. The "global" vs "with
+/// registry" constructor distinction collapses to "always per-runtime".
 #[derive(Clone)]
 pub struct AsyncTaskHelper {
-    registry: Option<SharedAsyncTaskRegistry>,
+    runtime: SharedAsyncRuntime,
 }
 
 impl AsyncTaskHelper {
-    /// Create a helper bound to a specific registry.
+    /// Create a helper bound to a specific async runtime.
     #[must_use]
-    pub fn with_registry(registry: SharedAsyncTaskRegistry) -> Self {
-        Self {
-            registry: Some(registry),
-        }
-    }
-
-    /// Create a helper that searches across all agent registries.
-    #[must_use]
-    pub fn global() -> Self {
-        Self { registry: None }
+    pub fn new(runtime: SharedAsyncRuntime) -> Self {
+        Self { runtime }
     }
 
     /// Look up a task by ID.
     pub async fn lookup_task(&self, task_id: &str) -> Option<TaskView> {
-        match &self.registry {
-            Some(registry) => {
-                let reg = registry.read().await;
-                reg.get(&task_id.to_string()).map(TaskView::from_entry)
-            }
-            None => {
-                let entry = find_task_across_all_registries(task_id).await?;
-                Some(TaskView::from_entry(&entry))
-            }
-        }
+        self.runtime.lookup(task_id).await
     }
 
     /// List tasks with optional status/tool filters.
@@ -53,33 +45,22 @@ impl AsyncTaskHelper {
         status_filter: Option<&str>,
         tool_filter: Option<&str>,
     ) -> Vec<TaskView> {
-        let entries = match &self.registry {
-            Some(registry) => {
-                let reg = registry.read().await;
-                reg.list_tasks(None)
-            }
-            None => list_all_tasks_across_all_registries().await,
-        };
-
-        entries
-            .into_iter()
-            .map(|e| TaskView::from_entry(&e))
-            .filter(|t| {
-                status_filter.map_or(true, |f| t.status.as_str() == f)
-                    && tool_filter.map_or(true, |f| t.tool_name == f)
-            })
-            .collect()
+        self.runtime.list(status_filter, tool_filter).await
     }
 
     /// Cancel a task by ID.
     pub async fn cancel_task(&self, task_id: &str) -> CancelResult {
-        match &self.registry {
-            Some(registry) => {
-                let mut reg = registry.write().await;
-                reg.cancel(&task_id.to_string())
-            }
-            None => cancel_task_across_all_registries(task_id).await,
-        }
+        self.runtime.cancel(task_id).await
+    }
+
+    /// Borrow the underlying runtime handle.
+    ///
+    /// `AsyncOutput` calls this for blocking reads. Most callers don't
+    /// need to escape the helper — prefer `lookup_task` / `list_tasks` /
+    /// `cancel_task` when applicable.
+    #[must_use]
+    pub fn runtime_handle(&self) -> &SharedAsyncRuntime {
+        &self.runtime
     }
 }
 
@@ -89,7 +70,7 @@ pub fn build_status_response(task: &TaskView) -> serde_json::Value {
     let mut base = json!({
         "task_id": task.task_id,
         "tool_name": task.tool_name,
-        "status": task.status.as_str(),
+        "status": task.status,
         "is_terminal": task.is_terminal(),
         "parent_session_key": task.parent_session_key,
         "metadata_type": task.metadata_type,
@@ -121,7 +102,7 @@ pub fn build_list_response(tasks: Vec<TaskView>) -> serde_json::Value {
             json!({
                 "task_id": t.task_id,
                 "tool_name": t.tool_name,
-                "status": t.status.as_str(),
+                "status": t.status,
                 "is_terminal": t.is_terminal(),
                 "metadata_type": t.metadata_type,
                 "created_at": t.created_at.to_rfc3339(),
@@ -182,7 +163,7 @@ pub fn build_cancel_response(result: CancelResult, task_id: &str) -> serde_json:
 pub fn build_output_response(task: &TaskView, tail_lines: u64) -> serde_json::Value {
     let mut base = json!({
         "task_id": task.task_id,
-        "status": task.status.as_str(),
+        "status": task.status,
         "is_terminal": task.is_terminal(),
     });
     if let Some(ref result) = task.result {

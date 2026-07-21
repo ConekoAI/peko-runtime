@@ -1383,10 +1383,6 @@ impl Agent {
             crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
                 .with_inbox_registry(async_inbox_registry.clone()),
         );
-        // Snapshot the registry so the per-agent AsyncStatus/AsyncList/
-        // AsyncStop tools can be bound to it after `async_executor` is moved
-        // into AsyncOutputTool below.
-        let async_registry = async_executor.clone_registry();
 
         // 3. Per-call AsyncSpawn and AsyncOutput tools bound to executor +
         //    core. Uses Weak so the tools do not extend the core's lifetime
@@ -1394,25 +1390,39 @@ impl Agent {
         if self.config.enable_async_tools {
             let core_weak = Arc::downgrade(&extension_core);
             // F37: snapshot the spawning principal's capability grants.
-            // The factory closure passed to `AsyncExecutor::execute(...)`
-            // calls `core.execute_tool_via_hook(...)`, which fires the
-            // capability gate at `registry.rs:260-277` against these
-            // snapshotted grants. Pre-F37, the gate was bypassed entirely.
+            // `AsyncExecutorRuntime::spawn` builds the F37 canonical
+            // funnel closure (`execute_tool_via_hook` with
+            // `ToolDispatchContext::for_principal(...)`) and dispatches
+            // it via `AsyncExecutor::dispatch_tool`. The capability gate
+            // at `registry.rs:260-277` evaluates against these snapshotted
+            // grants. Pre-F37, the gate was bypassed entirely.
             let snapshot_capabilities: Arc<Vec<String>> = Arc::new(
                 self.principal_capabilities
                     .as_ref()
                     .map(|caps| caps.grants.iter().map(|c| c.0.clone()).collect())
                     .unwrap_or_default(),
             );
+            // Phase 10c: `AsyncExecutorRuntime` is the framework-host
+            // adapter that implements `peko_tools_builtin::async_control::AsyncRuntime`.
+            // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ExtensionCore>` +
+            // principal_id + capabilities snapshot, so each Async* tool
+            // can take just an `Arc<dyn AsyncRuntime>` rather than
+            // reaching into the framework itself.
+            let runtime = Arc::new(
+                crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime::new(
+                    async_executor,
+                    core_weak,
+                    Some(self.identity.did.clone()),
+                    self.principal_id.clone(),
+                    snapshot_capabilities,
+                ),
+            );
+            let runtime_handle = runtime.as_shared();
             let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
-                async_executor.clone(),
-                core_weak.clone(),
-                Some(self.identity.did.clone()),
-                self.principal_id.clone(),
-                snapshot_capabilities,
+                runtime_handle.clone(),
             ));
-            let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::with_executor(
-                async_executor,
+            let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::new(
+                runtime_handle.clone(),
             ));
 
             // 4. Re-register the per-agent async tools (overwrites any prior
@@ -1445,20 +1455,20 @@ impl Agent {
             for (tool_name, tool) in [
                 (
                     "AsyncStatus",
-                    Arc::new(crate::tools::builtin::AsyncStatusTool::with_registry(
-                        async_registry.clone(),
+                    Arc::new(crate::tools::builtin::AsyncStatusTool::new(
+                        runtime_handle.clone(),
                     )) as Arc<dyn Tool>,
                 ),
                 (
                     "AsyncList",
-                    Arc::new(crate::tools::builtin::AsyncListTool::with_registry(
-                        async_registry.clone(),
+                    Arc::new(crate::tools::builtin::AsyncListTool::new(
+                        runtime_handle.clone(),
                     )),
                 ),
                 (
                     "AsyncStop",
-                    Arc::new(crate::tools::builtin::AsyncStopTool::with_registry(
-                        async_registry.clone(),
+                    Arc::new(crate::tools::builtin::AsyncStopTool::new(
+                        runtime_handle.clone(),
                     )),
                 ),
             ] {
