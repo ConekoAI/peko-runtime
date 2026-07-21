@@ -551,6 +551,28 @@ impl PathResolver {
     }
 }
 
+// =============================================================================
+// `PathResolver` impl — narrow cross-boundary view used by the extension
+// framework's `ExtensionStore::load_all_with` (host) and any other host
+// crate that needs the data-directory layout. The trait ships in the
+// `peko-extension-host` crate (Phase 8 commit 2); root's concrete
+// `PathResolver` impls it via single-method delegation.
+// =============================================================================
+
+impl peko_extension_host::paths::PathResolver for PathResolver {
+    fn skills_dir(&self) -> PathBuf {
+        PathResolver::skills_dir(self)
+    }
+
+    fn agents_dir(&self) -> PathBuf {
+        PathResolver::agents_dir(self)
+    }
+
+    fn commands_dir(&self) -> PathBuf {
+        PathResolver::commands_dir(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

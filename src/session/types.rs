@@ -149,42 +149,15 @@ impl fmt::Display for OverlayType {
     }
 }
 
-/// Cleanup policy for spawn overlays
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum SpawnCleanupPolicy {
-    /// Keep the spawn session after completion
-    #[default]
-    Keep,
-    /// Delete the spawn session after completion
-    Delete,
-}
-
-impl SpawnCleanupPolicy {
-    /// Get the policy as a string
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            SpawnCleanupPolicy::Keep => "keep",
-            SpawnCleanupPolicy::Delete => "delete",
-        }
-    }
-
-    /// Parse from string
-    #[must_use]
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "keep" => Some(SpawnCleanupPolicy::Keep),
-            "delete" => Some(SpawnCleanupPolicy::Delete),
-            _ => None,
-        }
-    }
-
-    /// Check if this policy means persist
-    #[must_use]
-    pub const fn should_persist(&self) -> bool {
-        matches!(self, SpawnCleanupPolicy::Keep)
-    }
-}
+/// Cleanup policy for spawn overlays.
+///
+/// Relocated to `peko_extension_host::subagent::SpawnCleanupPolicy`
+/// in Phase 8 commit 2. The enum moved to the host crate because
+/// it lives inside `SubagentMetadata`, which is part of the
+/// framework's async-execution payload. Root keeps this one-line
+/// re-export so existing `crate::session::types::SpawnCleanupPolicy`
+/// paths continue to compile.
+pub use peko_extension_host::subagent::SpawnCleanupPolicy;
 
 #[cfg(test)]
 mod tests {

@@ -2262,6 +2262,25 @@ impl Vault {
     }
 }
 
+// =============================================================================
+// `VaultAccess` impl — narrow cross-boundary view of `Vault` used by the
+// extension framework's `services::reserved_params` module. The
+// `peko-extension-host` crate owns the trait (host is a leaf, root is
+// the facade); root's concrete `Vault` impls it via single delegation.
+// The method shape mirrors `Vault::get_material_for` exactly so the
+// impl is a one-liner.
+// =============================================================================
+
+impl peko_extension_host::vault::VaultAccess for Vault {
+    fn get_material_for(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> anyhow::Result<Option<secrecy::SecretString>> {
+        Vault::get_material_for(self, namespace, name)
+    }
+}
+
 /// Owned registry token entry.
 #[derive(Debug, Clone)]
 pub struct RegistryToken {
