@@ -2171,6 +2171,7 @@ dependencies = [
  "libc",
  "once_cell",
  "peko-events",
+ "peko-message",
  "rand",
  "regex",
  "reqwest",
@@ -2212,6 +2213,18 @@ name = "peko-events"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "peko-message"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

@@ -70,13 +70,19 @@ Key style notes from `clippy.toml`:
 
 Peko is a Cargo workspace during the incremental crate-boundary migration. The
 root `peko` package remains the compatibility facade and CLI while extracted
-contracts are added under `crates/`. The first extracted member is
-`peko-events`, which owns the neutral agentic event contract shared by the
-engine and legacy provider streaming path.
+contracts are added under `crates/`. Extracted members so far:
+
+- `peko-events` — neutral agentic event contract (`AgenticEvent`, `LifecyclePhase`,
+  `ToolId`/`ToolCallId`/`RunId`) shared by the engine and legacy provider streaming.
+- `peko-message` — neutral message contract (`ContentBlock`, `LlmMessage`,
+  `MessageRole`, `TokenUsage`, `AgentMessage`, `MessageConverter`, `MessageContext`,
+  `SteeringProvider`, `ContextTransformer`) shared by providers, sessions, quota,
+  extensions, and the agentic loop.
 
 ```text
 crates/
-└── events/                 # Neutral agentic event contract (peko-events)
+├── events/                 # Neutral agentic event contract (peko-events)
+└── message/                # Neutral message contract (peko-message)
 src/
 ├── agents/                 # Agent management (stateless manager, config, lifecycle, prompts)
 ├── auth/                   # Authentication and authorization (principal, ownership, JWT, API keys)
