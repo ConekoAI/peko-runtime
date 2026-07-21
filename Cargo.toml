@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/events", "crates/message"]
+members = [".", "crates/events", "crates/message", "crates/subject"]
 
 [package]
 name = "peko"
@@ -21,6 +21,13 @@ peko-events = { path = "crates/events" }
 # `peko::common::types::message::...` and `peko::providers::...` paths
 # keep working unchanged.
 peko-message = { path = "crates/message" }
+# Workspace member providing the canonical actor type (`Subject`,
+# `SubjectKind`, `PrincipalId`, `PrincipalDID`, `SubjectParseError`,
+# `subject_from_string_with_default_user`). Pure value/type layer
+# with no inbound edge from principal, agents, engine, daemon,
+# providers, or extensions. The root re-exports it through
+# `crate::subject` and `crate::auth` for backwards compatibility.
+peko-subject = { path = "crates/subject" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).
