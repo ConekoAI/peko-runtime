@@ -1,96 +1,23 @@
-//! AsyncStatus tool — query the status of a background task.
+//! `AsyncStatusTool` — re-export shim.
 //!
-//! Part of the Async* family that replaces the single `task` tool.
-//! Searches across all agent async registries by default.
+//! Phase 10c moved the implementation into
+//! `peko_tools_builtin::async_control::status`. Tests live in this
+//! shim because the test fixture is framework-internal.
 
-use async_trait::async_trait;
-use serde_json::json;
-
-use crate::tools::builtin::async_common::{build_status_response, AsyncTaskHelper};
-use crate::tools::core::Tool;
-
-/// Query the status of an async task.
-pub struct AsyncStatusTool {
-    helper: AsyncTaskHelper,
-}
-
-impl AsyncStatusTool {
-    /// Create a tool that searches across all registries.
-    #[must_use]
-    pub fn global() -> Self {
-        Self {
-            helper: AsyncTaskHelper::global(),
-        }
-    }
-
-    /// Create a tool bound to a specific registry.
-    #[must_use]
-    pub fn with_registry(
-        registry: crate::extensions::framework::async_exec::executor::SharedAsyncTaskRegistry,
-    ) -> Self {
-        Self {
-            helper: AsyncTaskHelper::with_registry(registry),
-        }
-    }
-}
-
-#[async_trait]
-impl Tool for AsyncStatusTool {
-    fn name(&self) -> &'static str {
-        "AsyncStatus"
-    }
-
-    fn description(&self) -> String {
-        r"Check the status of a background async task.
-
-Works for ALL async tasks: Bash, Agent, Read, etc.
-
-Parameters:
-- task_id: string (required) — the task ID from the async receipt
-
-Returns: { task_id, tool_name, status, is_terminal, parent_session_key, metadata_type, created_at, label, completed_at?, result?, duration_seconds? }"
-            .to_string()
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "The task ID from the async receipt (e.g., 'Bash:abc-123')"
-                }
-            },
-            "required": ["task_id"]
-        })
-    }
-
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let task_id = params
-            .get("task_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("AsyncStatus requires 'task_id'"))?;
-
-        match self.helper.lookup_task(task_id).await {
-            Some(task) => Ok(build_status_response(&task)),
-            None => Ok(json!({
-                "error": "Task not found",
-                "task_id": task_id
-            })),
-        }
-    }
-}
+pub use peko_tools_builtin::async_control::AsyncStatusTool;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::async_exec::executor::{AsyncTaskEntry, AsyncToolConfig};
+    use crate::tools::core::Tool;
     use serde_json::json;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn test_async_status_not_found() {
-        let tool = AsyncStatusTool::global();
+        let runtime =
+            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        let tool = AsyncStatusTool::new(runtime.as_shared());
         let result = tool
             .execute(json!({"task_id": "nonexistent:task"}))
             .await
@@ -100,23 +27,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_async_status_with_registry() {
-        let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
-        ));
-        {
-            let mut reg = registry.write().await;
-            let entry = AsyncTaskEntry::new(
-                "Bash:test-123".to_string(),
-                "Bash".to_string(),
-                json!({"command": "echo hello"}),
-                "session_1".to_string(),
-                AsyncToolConfig::default(),
-            );
-            reg.register(entry);
-        }
+    async fn test_async_status_with_runtime() {
+        let runtime =
+            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        runtime.insert(
+            crate::extensions::framework::async_exec::executor::TestTaskEntry {
+                task_id: "Bash:test-123".to_string(),
+                tool_name: "Bash".to_string(),
+                status: "pending".to_string(),
+                parent_session_key: "session_1".to_string(),
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+                result: None,
+                label: None,
+                metadata_type: "none".to_string(),
+            },
+        );
 
-        let tool = AsyncStatusTool::with_registry(registry);
+        let tool = AsyncStatusTool::new(runtime.as_shared());
         let result = tool
             .execute(json!({"task_id": "Bash:test-123"}))
             .await

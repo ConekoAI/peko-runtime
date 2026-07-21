@@ -1,114 +1,37 @@
-//! AsyncStop tool — cancel a background task.
+//! `AsyncStopTool` — re-export shim.
 //!
-//! Part of the Async* family that replaces the single `task` tool.
-//! Searches across all agent async registries by default.
+//! Phase 10c moved the implementation into
+//! `peko_tools_builtin::async_control::stop`. Tests live in this shim
+//! because the test fixture is framework-internal.
 
-use async_trait::async_trait;
-use serde_json::json;
-
-use crate::tools::builtin::async_common::{build_cancel_response, AsyncTaskHelper};
-use crate::tools::core::Tool;
-
-/// Cancel an async task.
-pub struct AsyncStopTool {
-    helper: AsyncTaskHelper,
-}
-
-impl AsyncStopTool {
-    /// Create a tool that cancels across all registries.
-    #[must_use]
-    pub fn global() -> Self {
-        Self {
-            helper: AsyncTaskHelper::global(),
-        }
-    }
-
-    /// Create a tool bound to a specific registry.
-    #[must_use]
-    pub fn with_registry(
-        registry: crate::extensions::framework::async_exec::executor::SharedAsyncTaskRegistry,
-    ) -> Self {
-        Self {
-            helper: AsyncTaskHelper::with_registry(registry),
-        }
-    }
-}
-
-#[async_trait]
-impl Tool for AsyncStopTool {
-    fn name(&self) -> &'static str {
-        "AsyncStop"
-    }
-
-    fn description(&self) -> String {
-        r"Cancel a running or pending background async task.
-
-Works for ALL async tasks: Bash, Agent, Read, etc.
-
-Parameters:
-- task_id: string (required) — the task ID from the async receipt
-
-Returns: { success, task_id, previous_status?, already_terminal, message }
-
-If the task is already in a terminal state (completed / failed /
-cancelled / timed_out), the response has `success: true,
-already_terminal: true` so the model can treat it as a no-op rather
-than an error."
-            .to_string()
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "The task ID from the async receipt (e.g., 'Bash:abc-123')"
-                }
-            },
-            "required": ["task_id"]
-        })
-    }
-
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let task_id = params
-            .get("task_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("AsyncStop requires 'task_id'"))?;
-
-        let result = self.helper.cancel_task(task_id).await;
-        Ok(build_cancel_response(result, task_id))
-    }
-}
+pub use peko_tools_builtin::async_control::AsyncStopTool;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::async_exec::executor::{
-        AsyncTaskEntry, AsyncTaskStatus, AsyncToolConfig,
-    };
-    use crate::tools::ToolResult;
+    use crate::tools::core::Tool;
     use serde_json::json;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn test_async_stop_success() {
-        let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
-        ));
-        {
-            let mut reg = registry.write().await;
-            let entry = AsyncTaskEntry::new(
-                "Bash:cancel-me".to_string(),
-                "Bash".to_string(),
-                json!({}),
-                "session_1".to_string(),
-                AsyncToolConfig::default(),
-            );
-            reg.register(entry);
-        }
+        let runtime =
+            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        runtime.insert(
+            crate::extensions::framework::async_exec::executor::TestTaskEntry {
+                task_id: "Bash:cancel-me".to_string(),
+                tool_name: "Bash".to_string(),
+                status: "pending".to_string(),
+                parent_session_key: "session_1".to_string(),
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+                result: None,
+                label: None,
+                metadata_type: "none".to_string(),
+            },
+        );
 
-        let tool = AsyncStopTool::with_registry(registry);
+        let tool = AsyncStopTool::new(runtime.as_shared());
         let result = tool
             .execute(json!({"task_id": "Bash:cancel-me"}))
             .await
@@ -121,25 +44,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_stop_already_terminal() {
-        let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
-        ));
-        {
-            let mut reg = registry.write().await;
-            let mut entry = AsyncTaskEntry::new(
-                "Bash:done".to_string(),
-                "Bash".to_string(),
-                json!({}),
-                "session_1".to_string(),
-                AsyncToolConfig::default(),
-            );
-            entry.status = AsyncTaskStatus::Completed {
-                result: ToolResult::success(json!({})),
-            };
-            reg.register(entry);
-        }
+        let runtime =
+            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        runtime.insert(
+            crate::extensions::framework::async_exec::executor::TestTaskEntry {
+                task_id: "Bash:done".to_string(),
+                tool_name: "Bash".to_string(),
+                status: "completed".to_string(),
+                parent_session_key: "session_1".to_string(),
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+                result: None,
+                label: None,
+                metadata_type: "none".to_string(),
+            },
+        );
 
-        let tool = AsyncStopTool::with_registry(registry);
+        let tool = AsyncStopTool::new(runtime.as_shared());
         let result = tool.execute(json!({"task_id": "Bash:done"})).await.unwrap();
 
         // Already-terminal is a *successful* no-op, not an error —
@@ -155,7 +76,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_stop_not_found() {
-        let tool = AsyncStopTool::global();
+        let runtime =
+            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        let tool = AsyncStopTool::new(runtime.as_shared());
         let result = tool
             .execute(json!({"task_id": "Bash:missing"}))
             .await

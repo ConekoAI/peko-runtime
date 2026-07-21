@@ -6,6 +6,7 @@
 //! This module consolidates the previously fragmented async tool
 //! infrastructure (see Issue 006) into a single, tool-agnostic framework.
 
+pub mod async_runtime_impl;
 pub mod completion_queue;
 pub mod delivery;
 pub mod dispatch;
@@ -16,6 +17,9 @@ pub mod registry;
 pub mod task_file;
 pub mod types;
 
+pub use async_runtime_impl::AsyncExecutorRuntime;
+#[cfg(test)]
+pub use async_runtime_impl::{TestAsyncRuntime, TestTaskEntry};
 pub use completion_queue::{
     CompletionEvent, InboxItem, SessionInbox, SharedSessionInbox, SteeringMessage,
 };

@@ -17,7 +17,6 @@
 //!   tool discovery (F35).
 
 pub mod agent_catalog;
-pub mod async_common;
 pub mod async_list;
 pub mod async_output;
 pub mod async_spawn;
