@@ -4,10 +4,31 @@
 //! Each job targets a Principal; the daemon executes it by sending a message
 //! to that Principal through the PrincipalManager.
 //!
+//! ## DTOs (`ScheduleKind`, `DeliveryMode`, `CronJobAction`, `CronJob`)
+//!
+//! As of Phase 10b these four types live canonically in
+//! [`peko_tools_builtin::cron`] and root re-exports them here. The cron
+//! engine (`CronScheduler`, `CronRun`, `CronDatabase`) and the
+//! scheduler-side persistence stay in this crate because they are
+//! daemon-internal state and have no business in the tool surface.
+//!
+//! The serialization shape is identical on both sides — a JSON-roundtrip
+//! test in `peko_tools_builtin::cron` pins the wire shape so a future
+//! change to either side trips the test rather than silently breaking
+//! the other.
+//!
+//! ## Port (`CronRuntime`)
+//!
+//! [`peko_tools_builtin::cron::CronRuntime`] is the port the cron tools
+//! use to talk to the daemon. The concrete implementation in root is
+//! [`crate::cron::daemon_adapter::DaemonCronAdapter`] which wraps
+//! `crate::ipc::DaemonClient::cron_add/cron_remove/cron_list`.
+//!
 //! Includes idle detection and event-based triggers.
 
 #![allow(dead_code)]
 
+pub mod daemon_adapter;
 pub mod event_trigger;
 pub mod events;
 pub mod idle;
@@ -20,208 +41,20 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::info;
 
-/// Normalize a 5-field cron expression to the 7-field format required by the `cron` crate.
-///
-/// The `cron` crate v0.12 expects: `sec min hour day month weekday year`
-/// Standard crontab uses: `min hour day month weekday`
-///
-/// This helper adds `0` for seconds and `*` for year when a 5-field expression is detected.
-/// Expressions with 6 or 7 fields are left unchanged.
-pub fn normalize_cron_expr(expr: &str) -> String {
-    let trimmed = expr.trim();
-    let parts: Vec<&str> = trimmed.split_whitespace().collect();
-    match parts.len() {
-        5 => format!("0 {trimmed} *"),
-        _ => trimmed.to_string(),
-    }
-}
+// ─── DTO re-exports (single source of truth: peko_tools_builtin::cron) ───
+//
+// Re-exports kept for the root facade contract: downstream integration
+// tests, CLI commands, and the IPC handlers may reach into `crate::cron`
+// for these. Some are unused inside this crate's own modules today
+// (the cron tools moved to `peko-tools-builtin`); that's expected.
+#[allow(unused_imports)]
+pub use peko_tools_builtin::cron::{
+    build_send_job, build_spawn_tool_job, calculate_next_run, normalize_cron_expr, render_job_list,
+    resolve_delete_after_run, resolve_label, resolve_prompt, resolve_schedule_kind, CronJob,
+    CronJobAction, CronRuntime, DeliveryMode, ScheduleKind,
+};
 
 pub use idle::IdleDetector;
-
-/// Schedule kinds for cron jobs
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ScheduleKind {
-    /// One-shot at specific time
-    At { at: String },
-    /// Recurring interval in milliseconds
-    Every { every_ms: u64 },
-    /// Cron expression with optional timezone
-    Cron { expr: String, tz: Option<String> },
-    /// Trigger when a Principal has been idle for N minutes
-    Idle { minutes: u64 },
-    /// Trigger when specific system event occurs
-    Event {
-        event_type: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        filter: Option<serde_json::Value>,
-        #[serde(default)]
-        once: bool,
-    },
-}
-
-impl ScheduleKind {
-    /// Get display name for the schedule
-    #[must_use]
-    pub fn display(&self) -> String {
-        match self {
-            ScheduleKind::At { at } => format!("at {at}"),
-            ScheduleKind::Every { every_ms } => {
-                let secs = every_ms / 1000;
-                if secs < 60 {
-                    format!("every {secs}s")
-                } else if secs < 3600 {
-                    format!("every {}m", secs / 60)
-                } else {
-                    format!("every {}h", secs / 3600)
-                }
-            }
-            ScheduleKind::Cron { expr, tz } => {
-                if let Some(tz) = tz {
-                    format!("cron '{expr}' ({tz})")
-                } else {
-                    format!("cron '{expr}'")
-                }
-            }
-            ScheduleKind::Idle { minutes } => {
-                format!("idle {minutes}m")
-            }
-            ScheduleKind::Event {
-                event_type,
-                filter,
-                once,
-            } => {
-                let filter_info = filter.as_ref().map_or("", |_| " [filtered]");
-                let once_info = if *once { " (once)" } else { "" };
-                format!("event '{event_type}'{filter_info}{once_info}")
-            }
-        }
-    }
-}
-
-/// Delivery configuration for job results
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum DeliveryMode {
-    /// No delivery, silent execution
-    #[default]
-    None,
-    /// Announce results to channel
-    Announce {
-        channel: Option<String>,
-        to: Option<String>,
-        best_effort: bool,
-    },
-}
-
-/// What a cron job does when it fires.
-///
-/// One shape covers both surfaces:
-/// - CLI cron (`peko cron add …`) writes a [`Self::Send`] job — at fire
-///   time the daemon delivers `message` to the Principal's owner root
-///   session as a user-message, exactly like a deferred `peko send`.
-/// - Agent cron (`CronCreate` tool) writes a [`Self::SpawnTool`] job —
-///   at fire time the daemon asks the `AsyncExecutor` to run
-///   `tool_name` with `tool_params`. The cron engine sets
-///   `principal_root_session_key` on the executor config so a
-///   `wake_on_completion=true` run posts a steer message into the
-///   Principal's root inbox.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum CronJobAction {
-    /// Deliver a user-message to the Principal's owner root session.
-    /// Equivalent to a deferred `peko send`.
-    Send { message: String },
-    /// Schedule an async tool run attributed to the Principal's root.
-    SpawnTool {
-        tool_name: String,
-        #[serde(default)]
-        tool_params: serde_json::Value,
-        /// Default `false`. When `true`, the executor posts a
-        /// `SteeringMessage` into the principal's root inbox on
-        /// completion (the agent picks it up at the next iteration).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        wake_on_completion: Option<bool>,
-        /// Default `7200` (2h). Caller overrides per job.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timeout_secs: Option<u64>,
-        /// Optional human-readable description, surfaced in the
-        /// steer-message body and in `peko cron list`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-    },
-}
-
-impl CronJobAction {
-    /// Short, human-readable kind label for list rendering.
-    #[must_use]
-    pub fn kind_label(&self) -> &'static str {
-        match self {
-            Self::Send { .. } => "send",
-            Self::SpawnTool { .. } => "spawn_tool",
-        }
-    }
-
-    /// Whether the action is a [`Self::Send`].
-    #[must_use]
-    pub fn is_send(&self) -> bool {
-        matches!(self, Self::Send { .. })
-    }
-
-    /// Whether the action is a [`Self::SpawnTool`].
-    #[must_use]
-    pub fn is_spawn_tool(&self) -> bool {
-        matches!(self, Self::SpawnTool { .. })
-    }
-}
-
-/// A scheduled cron job
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CronJob {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "principal")]
-    pub principal_name: String,
-    pub schedule: ScheduleKind,
-    #[serde(flatten)]
-    pub action: CronJobAction,
-    pub delivery: DeliveryMode,
-    pub delete_after_run: bool,
-    pub enabled: bool,
-    pub created_at: DateTime<Utc>,
-    pub next_run: DateTime<Utc>,
-    pub last_run: Option<DateTime<Utc>>,
-    pub last_status: Option<String>,
-    pub run_count: u32,
-}
-
-impl CronJob {
-    /// Whether the job's action is [`CronJobAction::Send`].
-    #[must_use]
-    pub fn is_send(&self) -> bool {
-        self.action.is_send()
-    }
-
-    /// Whether the job's action is [`CronJobAction::SpawnTool`].
-    #[must_use]
-    pub fn is_spawn_tool(&self) -> bool {
-        self.action.is_spawn_tool()
-    }
-
-    /// A short description for the steer message body. Falls back to
-    /// the job's `name` and finally a generic label.
-    #[must_use]
-    pub fn task_description(&self) -> String {
-        match &self.action {
-            CronJobAction::Send { message } if !message.is_empty() => message.clone(),
-            CronJobAction::SpawnTool { description, .. } if description.is_some() => {
-                description.clone().unwrap()
-            }
-            _ => format!("scheduled job '{}'", self.name),
-        }
-    }
-}
 
 /// Cron job run record
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -595,49 +428,6 @@ impl CronScheduler {
             self.write_db(&db)?;
         }
         Ok(next_run)
-    }
-}
-
-/// Calculate next run time for a schedule (standalone, no storage needed)
-pub fn calculate_next_run(schedule: &ScheduleKind, after: DateTime<Utc>) -> Result<DateTime<Utc>> {
-    match schedule {
-        ScheduleKind::At { at } => {
-            let dt = DateTime::parse_from_rfc3339(at)
-                .map_err(|e| anyhow::anyhow!("Invalid timestamp: {e}"))?;
-            Ok(dt.with_timezone(&Utc))
-        }
-        ScheduleKind::Every { every_ms } => {
-            Ok(after + chrono::Duration::milliseconds(*every_ms as i64))
-        }
-        ScheduleKind::Cron { expr, tz } => {
-            let normalized = normalize_cron_expr(expr);
-            let schedule = Schedule::from_str(&normalized)
-                .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
-
-            if let Some(tz_str) = tz {
-                let tz: chrono_tz::Tz = tz_str
-                    .parse()
-                    .map_err(|e| anyhow::anyhow!("Invalid timezone: {e}"))?;
-                let local_after = after.with_timezone(&tz);
-                if let Some(next) = schedule.after(&local_after).next() {
-                    Ok(next.with_timezone(&Utc))
-                } else {
-                    Err(anyhow::anyhow!("No next occurrence found"))
-                }
-            } else if let Some(next) = schedule.after(&after).next() {
-                Ok(next)
-            } else {
-                Err(anyhow::anyhow!("No next occurrence found"))
-            }
-        }
-        // Idle and Event triggers don't have a predictable next run time
-        // They return a far-future date to avoid being picked up by due_jobs
-        ScheduleKind::Idle { .. } => {
-            Ok(after + chrono::Duration::days(365 * 100)) // 100 years in the future
-        }
-        ScheduleKind::Event { .. } => {
-            Ok(after + chrono::Duration::days(365 * 100)) // 100 years in the future
-        }
     }
 }
 

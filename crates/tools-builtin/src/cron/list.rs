@@ -1,0 +1,119 @@
+//! `CronList` tool — list scheduled jobs
+//!
+//! Lists `CronJob`s through the [`CronRuntime`] port set by the daemon
+//! at startup. Results are filtered to the current Principal from the
+//! tool execution context.
+
+use crate::cron::{global_runtime, render_job_list};
+use async_trait::async_trait;
+use peko_tools_core::exec::ToolContext;
+use peko_tools_core::traits::Tool;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+/// `CronList` tool — list scheduled jobs
+pub struct CronListTool;
+
+impl CronListTool {
+    /// Create a new `CronList` tool
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for CronListTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// `CronList` tool arguments
+///
+/// Accepts an empty object; optional filters are peko extensions.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CronListArgs {
+    /// Filter by job status (peko extension)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_filter: Option<String>,
+    /// Filter by sub-command / schedule kind (peko extension)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind_filter: Option<String>,
+}
+
+#[async_trait]
+impl Tool for CronListTool {
+    fn name(&self) -> &'static str {
+        "CronList"
+    }
+
+    fn description(&self) -> String {
+        "List scheduled jobs stored by the daemon.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "status_filter": {
+                    "type": "string",
+                    "description": "Optional filter by status (peko extension)"
+                },
+                "kind_filter": {
+                    "type": "string",
+                    "description": "Optional filter by schedule kind: at, every, cron, idle, event (peko extension)"
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        Err(anyhow::anyhow!(
+            "CronList requires a Principal context; use execute_with_context"
+        ))
+    }
+
+    async fn execute_with_context(
+        &self,
+        params: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> anyhow::Result<serde_json::Value> {
+        let principal_name = ctx
+            .principal_name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CronList requires a Principal context"))?
+            .clone();
+
+        let runtime = global_runtime().ok_or_else(|| {
+            anyhow::anyhow!("CronList requires the daemon's cron runtime; not initialized")
+        })?;
+
+        let _args: CronListArgs = serde_json::from_value(params)
+            .map_err(|e| anyhow::anyhow!("Invalid CronList arguments: {e}"))?;
+
+        let jobs = runtime.list_jobs().await?;
+        let filtered: Vec<_> = jobs
+            .into_iter()
+            .filter(|j| j.principal_name == principal_name)
+            .collect();
+        Ok(render_job_list(filtered))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cron_list_tool_name() {
+        let tool = CronListTool::new();
+        assert_eq!(tool.name(), "CronList");
+    }
+
+    #[test]
+    fn test_cron_list_tool_parameters() {
+        let tool = CronListTool::new();
+        let params = tool.parameters();
+        assert!(params.get("properties").is_some());
+        assert!(params.get("required").is_none());
+    }
+}

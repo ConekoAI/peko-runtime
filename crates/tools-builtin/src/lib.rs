@@ -17,7 +17,9 @@
 //! Built-in tools implement [`peko_tools_core::Tool`]; the engine wires
 //! them through `ExtensionCore::execute_tool_via_hook` (the F37 funnel).
 
+pub mod cron;
 pub mod fs;
 pub mod paths;
 
+pub use cron::{CronCreateTool, CronDeleteTool, CronListTool, CronRuntime};
 pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
