@@ -4,7 +4,7 @@
 //! agentic events and convert them to presentation-agnostic actions.
 //! Channels can then execute these actions in a platform-specific way.
 
-use crate::engine::AgenticEvent;
+use crate::AgenticEvent;
 
 /// Actions that can be executed by any channel
 ///
@@ -158,7 +158,7 @@ impl EventProcessor {
                 // Tool finished, next assistant text starts fresh
             }
             AgenticEvent::Lifecycle { phase, .. } => {
-                use crate::engine::LifecyclePhase;
+                use crate::LifecyclePhase;
                 match phase {
                     LifecyclePhase::End => {
                         if self.state.has_started_turn {

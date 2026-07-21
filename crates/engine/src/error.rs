@@ -7,7 +7,7 @@
 //! `AgenticError` enum that the loop uses for the two typed paths
 //! that previously got downcast to `anyhow::anyhow!(existing_err)`:
 //!
-//! - **Quota errors** — `QuotaError` from `crate::quota::error`,
+//! - **Quota errors** — `QuotaError` from `peko_quota::error`,
 //!   which already carries `used` / `limit` / `window_end` for
 //!   user-facing "what did I exceed?" UX. `#[from]` lets `?`
 //!   propagate without an explicit wrapper.
@@ -21,10 +21,11 @@
 //! typed-error integration is deferred to a future PR (see audit
 //! row 5 residual).
 
-use crate::quota::error::QuotaError;
+use peko_quota::error::QuotaError;
 
-/// Typed errors that can be returned from [`crate::engine::AgenticLoop`]
-/// via `Result<_, anyhow::Error>`. Loosely modeled on codex
+/// Typed errors that can be returned from the agentic loop at the
+/// `crate::engine::AgenticLoop` reference path (the root shim re-exports
+/// the loop until Phase 9b). Loosely modeled on codex
 /// `protocol/src/error.rs:67` (`TurnAborted` and friends) but
 /// scoped to the two cases where peko's loop currently has *fully
 /// typed* data on hand. Variants are added as sub-system types
@@ -112,10 +113,10 @@ impl AgenticError {
 /// F31a → F31c lift: let callers turn a `LifecyclePhase::MaxIterations`
 /// straight into `AgenticError::MaxIterationsReached` so the typed
 /// error and the lifecycle event can flow from the same source.
-impl From<crate::engine::events::LifecyclePhase> for AgenticError {
-    fn from(phase: crate::engine::events::LifecyclePhase) -> Self {
+impl From<crate::LifecyclePhase> for AgenticError {
+    fn from(phase: crate::LifecyclePhase) -> Self {
         match phase {
-            crate::engine::events::LifecyclePhase::MaxIterations { iterations } => {
+            crate::LifecyclePhase::MaxIterations { iterations } => {
                 AgenticError::MaxIterationsReached { iterations }
             }
             // Other phases don't represent typed errors. Map them to
@@ -147,7 +148,7 @@ impl From<crate::engine::events::LifecyclePhase> for AgenticError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::events::LifecyclePhase;
+    use crate::LifecyclePhase;
     use chrono::{TimeZone, Utc};
 
     #[test]

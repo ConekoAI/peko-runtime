@@ -1,0 +1,37 @@
+[package]
+name = "peko-engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Peko agentic engine (Phase 9a) — owns the pure-dependency loops moved out of src/engine/: chunker, event_processor, state, stream_buffer, stream_orchestrator, tool_stream, parallel_gate, the AgenticError taxonomy, and the public events re-export. The remaining root-coupled files (agentic_loop, compaction_orchestrator, tool_executor, tool_runtime, async_completion, stream_types) stay in src/engine/ until Phase 9b lifts the agent/session/tools couplings. Depends only on peko-message + peko-provider-api + peko-tools-core + peko-quota + peko-events — no concrete providers, no daemon, no CLI, no built-in tool impls, no concrete session impls."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+# Crate hierarchy: peko-engine sits between the extension host (which it
+# coordinates with via LifecyclePhase / AgenticEvent) and the provider
+# API (it consumes StreamEvent / StopReason). peko-message is the
+# shared content-type crate; peko-tools-core provides the Tool trait
+# used by parallel_gate tests; peko-quota provides QuotaError used by
+# error.rs; peko-events is the neutral AgenticEvent / LifecyclePhase
+# definitions.
+peko-message = { path = "../message" }
+peko-provider-api = { path = "../provider-api" }
+peko-tools-core = { path = "../tools-core" }
+peko-quota = { path = "../quota" }
+peko-events = { path = "../events" }
+
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+# `chrono` is used by error.rs tests (window_end timestamp comparisons).
+chrono = { version = "0.4", features = ["serde"] }
+# `uuid` is used by execution.rs::TaskId::new().
+uuid = { version = "1.7", features = ["v4"] }
+tracing = "0.1"
+tokio = { version = "1.35", features = ["rt", "macros", "sync", "time", "rt-multi-thread"] }
+
+[dev-dependencies]
+tokio = { version = "1.35", features = ["full"] }

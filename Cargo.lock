@@ -2192,6 +2192,7 @@ dependencies = [
  "keyring",
  "libc",
  "once_cell",
+ "peko-engine",
  "peko-events",
  "peko-extension-api",
  "peko-extension-host",
@@ -2234,6 +2235,26 @@ dependencies = [
  "webpki-roots 0.26.11",
  "which",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "peko-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "peko-events",
+ "peko-message",
+ "peko-provider-api",
+ "peko-quota",
+ "peko-tools-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
