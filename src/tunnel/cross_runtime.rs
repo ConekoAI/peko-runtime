@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 
 use ed25519_dalek::SigningKey;
 
+use crate::chat_log::ChatLogStore;
 use crate::principal::PrincipalManager;
 use crate::tunnel::direct::DirectConnectionManager;
 use crate::tunnel::hub_directory::AgentDirectory;
@@ -79,6 +80,14 @@ pub struct CrossRuntimeA2aCtx {
     /// same-runtime shortcut in `principal_send`.
     pub principal_manager: Arc<PrincipalManager>,
 
+    /// Runtime-owned chat-log store. Used by `principal_send` to
+    /// record the caller's principal-to-principal view: a request
+    /// line on outbound accept, and a response line after a
+    /// successfully decoded reply. The target manager records its
+    /// own view through `PrincipalManager::receive` with
+    /// `ChannelKind::A2a`, so each side keeps its own shard.
+    pub chat_log_store: Arc<ChatLogStore>,
+
     /// How long to wait for the matching `AgentToAgentResponse`
     /// before surfacing a `Timeout` error to the calling agent.
     /// Production default is 60s (configurable via daemon config
@@ -97,6 +106,7 @@ impl std::fmt::Debug for CrossRuntimeA2aCtx {
             .field("direct_manager", &"<DirectConnectionManager>")
             .field("known_runtimes", &"<KnownRuntimes>")
             .field("principal_manager", &"<PrincipalManager>")
+            .field("chat_log_store", &self.chat_log_store)
             .field("response_timeout", &self.response_timeout)
             .finish()
     }

@@ -14,6 +14,7 @@
 //!   drops any leftover `.tmp` from a pre-F30 install.
 //! - Support for Peko event format (13 event types)
 
+use crate::common::persistence::append_bytes_durable;
 use crate::common::types::message::LlmMessage;
 use crate::session::events::SessionEvent;
 use crate::session::lock::FileLock;
@@ -265,22 +266,6 @@ impl SessionStorage {
     /// (`packages/agent-core/src/agent/records/persistence.ts:219-248`).
     ///
     /// `O_APPEND` is atomic on POSIX under `PIPE_BUF` (4 KiB on
-    /// Linux) — line-sized JSONL entries (~hundreds of bytes) land in
-    /// a single `write(2)` syscall, so concurrent appenders never
-    /// interleave below that threshold. The `FileLock` guards outside
-    /// this layer add a process-level serialization safety net.
-    async fn open_for_append(path: &Path) -> Result<fs::File> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .await?;
-        Ok(file)
-    }
-
     /// Open a file in `O_WRONLY | O_CREAT | O_TRUNC` for one-shot
     /// create-and-write. Used by `create_session` for the first
     /// `SessionCreated` line; subsequent events use `append_line`.
@@ -319,17 +304,13 @@ impl SessionStorage {
     /// Append `bytes` to `path` in a single `write_all` + `fsync`.
     /// Caller is expected to hold `FileLock` for cross-process
     /// safety; in-process callers serialize via `Mutex` if needed.
-    /// `sync_dir` ensures the directory entry change (file size/gid
-    /// stat fields) is durable.
+    /// Delegates to `common::persistence::append_bytes_durable`, which
+    /// owns the `O_APPEND` + `fsync` + directory-sync semantics shared
+    /// with the chat-log shard writes.
     async fn append_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-        let mut file = Self::open_for_append(path).await?;
-        file.write_all(bytes).await?;
-        file.sync_all().await?;
-        drop(file);
-        if let Some(parent) = path.parent() {
-            Self::sync_dir(parent).await?;
-        }
-        Ok(())
+        append_bytes_durable(path, bytes)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     /// Fsync a directory. On Linux this means opening the directory

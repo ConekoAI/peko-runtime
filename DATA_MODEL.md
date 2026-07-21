@@ -22,6 +22,7 @@ This document defines every on-disk and in-memory data format used by the Peko r
    - [5.4 Session Index File](#54-session-index-file)
    - [5.5 Context Cache (Derived)](#55-context-cache-derived)
    - [5.6 Compaction](#56-compaction)
+   5½. [Chat Log — Consumer-Visible Conversation History](#5½-chat-log--consumer-visible-conversation-history)
 6. [Agent Package Format (.agent) (RETIRED)](#6-agent-package-format-agent-retired)
 7. [Team Package Format (.team) (RETIRED)](#7-team-package-format-team-retired)
 8. [Extension Package Format (.ext)](#8-extension-package-format-ext)
@@ -1036,6 +1037,164 @@ File operations are tracked across compactions by scanning tool calls in the mes
 
 ---
 
+## 5½. Chat Log — Consumer-Visible Conversation History
+
+The chat log is the runtime-owned, append-only, **consumer-visible**
+record of the text messages an external participant actually
+exchanged with a Principal. It is **distinct from the session
+JSONL** (§5): the session JSONL is mutable principal-owned working
+memory optimized for the agent loop, while the chat log is the
+only record surfaced by `peko log`, the desktop's `principal_log`
+IPC, and any future chat-history surface.
+
+The two stores are intentionally separate so internal execution
+detail (prompts, tool calls, thinking blocks, compactions, model
+changes, branches) cannot leak into the user-visible chat surface
+and so internal session evolution cannot disturb the consumer
+contract.
+
+### 5½.1 File Conventions
+
+**Root:** `<data-dir>/chat_logs/` (resolved via
+`PathResolver::chat_logs_dir()`).
+
+**Shard layout:** one JSONL file per `(principal, peer)` pair:
+
+```
+<root>/<blake3(principal_did)>/<blake3(peer_subject)>.jsonl
+```
+
+Both directory and file names are full BLAKE3 hashes so the layout
+is self-validating (any mismatch between the hashed path and the
+shard's header record is treated as corruption) and so the layout
+is safe under arbitrary `Subject` and DID strings.
+
+**Per-shard header:** the first line of every shard is a
+self-describing record so the file can be validated without
+consulting any external index:
+
+```json
+{"kind":"thread","schema_version":1,"principal":"did:peko:principal:…","peer":{"kind":"user","id":"alice"}}
+```
+
+The header pins the `(principal, peer)` pair the shard claims to
+represent. A shard with a header that doesn't match its hashed
+path fails `ChatLogStore::read_page` with
+`ChatLogError::ThreadMismatch`.
+
+### 5½.2 Record Envelope
+
+Two record kinds appear on a shard; both are JSON objects on a
+single line:
+
+```jsonc
+// thread header — first line of every shard
+{"kind":"thread","schema_version":1,"principal":"…","peer":{…}}
+
+// one consumer-visible message
+{
+  "kind":"message",
+  "schemaVersion":1,
+  "id":"chat_<uuid-simple>",
+  "sender":<Subject>,
+  "timestamp":"2026-07-20T12:34:56.789Z",
+  "text":"…",
+  "correlationId":null|"<id>"
+}
+```
+
+Fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `schemaVersion` | u8 | Currently `1`. Bumping it forces a migration. |
+| `id` | string | `chat_` prefix + UUID simple-hex. Stable per shard. Used for paging dedupe on the desktop. |
+| `sender` | `Subject` | `{kind:user,id:…}`, `{kind:principal,id:<did>}`, or `{kind:public}`. Determines direction. |
+| `timestamp` | RFC 3339 | UTC. |
+| `text` | string | Plain text. The runtime never persists markdown, tool output, or thinking blocks here. |
+| `correlationId` | string? | Pairs request/response lines for principal-to-principal exchanges. |
+
+### 5½.3 Append Semantics
+
+Appends follow the same durability contract as the session JSONL
+(§5.1) so torn final lines and racing appenders behave the same
+way:
+
+- `O_APPEND` open so concurrent writers never interleave bytes
+  inside a single line.
+- `write_all` then `sync_data` per record, then `sync_dir` on the
+  parent directory so the directory entry is durable.
+- A `FileLock` keyed on the shard path is acquired before each
+  append and held until `sync_data` completes; the lock has a 10 s
+  acquire timeout and PID-based stale detection.
+- A process-local `tokio::sync::Mutex<()>` per shard serializes
+  in-process appenders before they reach the cross-process lock.
+- Torn final lines are detected on read (line does not end in
+  `\n` after `serde_json::from_slice::<ChatLogRecord>` returns
+  `Err`) and silently dropped — same shape as session JSONL.
+
+### 5½.4 Sender Constraints
+
+`ChatLogStore::append_message` rejects senders that aren't one of
+the two participants of the thread (`Subject::Principal(key.principal)`
+or `key.peer`) with `ChatLogError::InvalidSender`. The constraint
+is in place so a runtime bug can't sneak an unrelated Subject
+into a peer's thread and break the privacy contract — every
+line in a shard is provably between the two parties the shard
+is named after.
+
+### 5½.5 Paging and Cursors
+
+Reads start at EOF and walk backward in bounded 64 KiB chunks,
+collecting `limit + 1` messages so the caller can detect
+`has_more`. The page is then reversed so the caller sees
+oldest-to-newest within each page.
+
+Cursors are **opaque, versioned, thread-bound** base64-url strings
+carrying the thread fingerprint (BLAKE3 of `<principal>\0<peer>`)
+and the byte offset before the oldest returned line:
+
+```
+<version><fingerprint-hash-hex><base64-url(offset, 8 bytes BE)>
+```
+
+A cursor issued for thread A is rejected (`ChatLogError::Cursor`) if
+reused against thread B, and a cursor pointing past EOF or
+mid-line is rejected (`ChatLogError::InvalidOffset`). Cursors
+remain valid across subsequent appends because appends only grow
+the file monotonically — older byte offsets stay valid.
+
+### 5½.6 Lifetime
+
+Chat-log shards share the lifetime of the principal they belong
+to. `PrincipalManager::remove` resolves the principal's stable DID
+before evicting in-memory state, then calls
+`ChatLogStore::remove_principal` which deletes the principal's
+shard directory. Cleanup failures surface as
+`PrincipalManagerError::Io` rather than silently retaining
+removed data.
+
+There is no retention, no tombstones, no legacy fallback, and no
+migration path from session JSONL to chat log. The split is a
+clean pre-launch cutover.
+
+### 5½.7 Channel Filter
+
+Only peer-chat channels are logged: `Cli`, `Http`, `Hub`, `A2a`
+(covering both `A2a` and `P2p`), and `Webhook`. Automation
+inputs (`Cron`, `FileWatch`) are deliberately excluded because
+they're not conversations — they don't have a peer, and surfacing
+their outputs as chat messages would mislead the consumer.
+
+For principal-to-principal exchanges, **both sides record their
+own view** (the recipient via `PrincipalManager::receive` with
+`ChannelKind::A2a`; the caller via `PrincipalSendTool` in
+`tunnel::principal_send_tool.rs`). The two views are independent
+shards keyed on each principal's DID; deleting one principal
+removes only its own view.
+
+---
+
 ## 6. Agent Package Format (.agent) (RETIRED)
 
 > **RETIRED.** The `.agent` package format was superseded by the `.principal` package (ADR-041); agents are now thin Markdown prompts bundled inside a Principal, not standalone portable packages. The schema below is preserved only as historical reference.
@@ -1670,6 +1829,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.1.0 | 2026-07-20 | Chat-session separation: added §5½ Chat Log (runtime-owned, append-only, consumer-visible conversation history) distinct from §5 Session JSONL (mutable principal-owned working memory). Sharded by `(principal_did, peer)` with BLAKE3-hashed paths, opaque thread-bound cursors, sender-participant validation, durable append under `FileLock`. Deletion tied to `PrincipalManager::remove`. |
 | 0.1.0 | 2026-04-26 | Initial draft. ADR-022: Session compaction — added `compaction` and `model_change` system events (§5.3), context cache file format (§5.5), compaction semantics including dual-threshold triggers, turn boundaries, split-turn handling, and structured summary format (§5.6) |
 | 0.1.0 | 2026-05-08 | Packaging restructure (Phases 1–7): `src/image/` merged into `src/portable/`. Clean manifest — `AgentManifest` stripped of `capabilities`, `tools`, `mcp`, `tool_sources`, `memory`. Added `layers` section with content-addressable digests. Added `.agent` build from directory (`AgentBuilder`). Added registry push/pull with mock server. Added team checksum validation and `team.toml` preservation. Added `.ext` export for extensions. `agent.toml` is the single source of truth for agent behaviour. |
 | 0.1.0 | 2026-05-11 | Issue 023: Team registry push/pull now decomposes teams into content-addressable layers (`TeamConfig` + per-agent `Config`/`Identity`/`Skills`/etc.) instead of a single opaque blob. Added `TeamAgentIndex` and `AgentLayerRef` types. Added `TeamLayerBuilder` and `TeamLayerReconstructor`. Cross-team agent deduplication works automatically via existing `RegistryClient::check_existing_layers()`. Pull reconstructs agents directly from layers without temporary `.team` files. Documented in §7.4. |

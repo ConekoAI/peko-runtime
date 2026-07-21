@@ -51,7 +51,9 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::auth::Subject;
+use crate::chat_log::{ChatLogMessage, ChatThreadKey};
 use crate::principal::{ChannelContext, ChannelKind};
+use crate::subject::PrincipalDID;
 use crate::tools::core::Tool;
 use crate::tunnel::a2a_audit;
 use crate::tunnel::a2a_signature::{sign_request, SignedFields};
@@ -169,6 +171,23 @@ impl PrincipalSendTool {
             kind: ChannelKind::A2a,
             streaming: false,
         };
+        let correlation = uuid::Uuid::new_v4().to_string();
+        let key = ChatThreadKey::new(
+            PrincipalDID(self.caller_principal_did.clone()),
+            Subject::Principal(PrincipalDID(target_did.to_string())),
+        );
+        // Caller view: append the outbound request before dispatch.
+        // Failure here matches the consumer-visible contract — a
+        // chat-log persistence fault must not silently deny the
+        // principal exchange.
+        let request_msg = ChatLogMessage::new(
+            caller.clone(),
+            message.to_string(),
+            Some(correlation.clone()),
+        );
+        if let Err(error) = ctx.chat_log_store.append_message(&key, &request_msg).await {
+            return Ok(self.error_value(&format!("caller chat-log append failed: {error}")));
+        }
         match ctx
             .principal_manager
             .receive(
@@ -181,18 +200,74 @@ impl PrincipalSendTool {
             .await
         {
             Ok(response) => {
+                let response_text = response.content;
                 let result = PrincipalSendResult {
                     success: true,
-                    response: response.content,
+                    response: response_text.clone(),
                     session_id: session_id.unwrap_or_default(),
                     iterations: None,
                     tool_calls: None,
                     duration_ms: None,
                     error: None,
                 };
+                // Caller view: append the response with the same
+                // correlation id so the two lines pair up. Best-effort:
+                // the response has already been produced; a transient
+                // persistence fault surfaces as a tracing warn and the
+                // caller still sees the response. The target's own
+                // view is recorded separately through its
+                // `PrincipalManager::receive` path.
+                let response_msg = ChatLogMessage::new(
+                    Subject::Principal(PrincipalDID(target_did.to_string())),
+                    response_text,
+                    Some(correlation),
+                );
+                if let Err(error) = ctx.chat_log_store.append_message(&key, &response_msg).await {
+                    let caller_did = self.caller_principal_did.as_str();
+                    tracing::warn!(
+                        caller_did = %caller_did,
+                        target_did = %target_did,
+                        %error,
+                        "principal_send: caller-view response append failed (continuing)"
+                    );
+                }
                 Ok(serde_json::to_value(result)?)
             }
             Err(err) => Ok(self.error_value(&format!("local principal_send failed: {err}"))),
+        }
+    }
+
+    /// Append a single chat-log line to the caller view. Used for
+    /// cross-runtime sends: the request is recorded after the
+    /// transport accepts the signed envelope; the response is
+    /// recorded after a successfully decoded `PrincipalSendResult`.
+    /// Transport failures, denied delivery, hub error envelopes, and
+    /// decode errors do NOT produce chat lines.
+    async fn record_caller_view(
+        &self,
+        target_did: &str,
+        sender: Subject,
+        text: &str,
+        correlation_id: Option<String>,
+    ) {
+        let key = ChatThreadKey::new(
+            PrincipalDID(self.caller_principal_did.clone()),
+            Subject::Principal(PrincipalDID(target_did.to_string())),
+        );
+        let message = ChatLogMessage::new(sender, text.to_string(), correlation_id);
+        if let Err(error) = self
+            .cross_runtime
+            .chat_log_store
+            .append_message(&key, &message)
+            .await
+        {
+            let caller_did = self.caller_principal_did.as_str();
+            tracing::warn!(
+                caller_did = %caller_did,
+                target_did = %target_did,
+                %error,
+                "principal_send: caller-view append failed (continuing)"
+            );
         }
     }
 }
@@ -350,6 +425,7 @@ Send a message to another Principal's root agent and receive its response. This 
         }
 
         let request_id = uuid::Uuid::new_v4().to_string();
+        let correlation_id = request_id.clone();
 
         // Choose transport from the callee's preference and advertised
         // endpoint. The local known-runtimes registry contributes trust
@@ -440,6 +516,21 @@ Send a message to another Principal's root agent and receive its response. This 
             )));
         }
 
+        // Caller view: append the outbound request immediately after
+        // the transport accepted the envelope. If the response
+        // never arrives (timeout, hub rejection, decode error),
+        // the request still stands on the caller's shard — that
+        // matches the consumer-visible truth (the message left the
+        // caller's runtime). A persistence fault here is logged but
+        // does not poison the in-flight call.
+        self.record_caller_view(
+            target_principal_did,
+            Subject::Principal(PrincipalDID(self.caller_principal_did.clone())),
+            &args.message,
+            Some(correlation_id.clone()),
+        )
+        .await;
+
         // Slice D: emit the outbound audit event now that the request
         // is on the wire. The local session_id correlation is
         // best-effort and may be empty on a fresh cross-principal
@@ -500,6 +591,20 @@ Send a message to another Principal's root agent and receive its response. This 
                     &result.response,
                 );
                 a2a_audit::emit_a2a_received(&received_event);
+                // Caller view: append the response with the same
+                // correlation id the request used. The decoded text
+                // is what the caller actually sees — only persist
+                // success results here; hub error envelopes and
+                // decode failures are intentionally NOT recorded as
+                // a chat line because no consumer-visible reply
+                // arrived.
+                self.record_caller_view(
+                    target_principal_did,
+                    Subject::Principal(PrincipalDID(target_principal_did.to_string())),
+                    &result.response,
+                    Some(correlation_id),
+                )
+                .await;
                 Ok(serde_json::to_value(result)?)
             }
             Err(decode_err) => Ok(self.error_value(&format!(
@@ -512,6 +617,7 @@ Send a message to another Principal's root agent and receive its response. This 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat_log::ChatLogStore;
     use crate::tunnel::a2a_pending::PendingA2aResponses;
     use crate::tunnel::a2a_signature::{verify_request, SignedFields};
     use crate::tunnel::client::TunnelHandle;
@@ -537,6 +643,10 @@ mod tests {
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
         ));
+        let chat_log_store = Arc::new(ChatLogStore::new(std::env::temp_dir().join(format!(
+            "peko-principal-send-chatlog-{}",
+            uuid::Uuid::new_v4()
+        ))));
         Arc::new(CrossRuntimeA2aCtx {
             directory: Arc::new(FakeAgentDirectory::new()),
             pending: pending.clone(),
@@ -551,6 +661,7 @@ mod tests {
             )),
             known_runtimes: Arc::new(RwLock::new(KnownRuntimes::new())),
             principal_manager,
+            chat_log_store,
             response_timeout: Duration::from_millis(50),
         })
     }
@@ -667,7 +778,7 @@ mod tests {
         signing_key: Arc<SigningKey>,
         caller_runtime_id: String,
         outbound_tx: tokio::sync::mpsc::Sender<TunnelMessage>,
-    ) -> Arc<CrossRuntimeA2aCtx> {
+    ) -> (Arc<CrossRuntimeA2aCtx>, Arc<ChatLogStore>) {
         use crate::principal::{
             DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalManager,
         };
@@ -682,7 +793,11 @@ mod tests {
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
         ));
-        Arc::new(CrossRuntimeA2aCtx {
+        let chat_log_store = Arc::new(ChatLogStore::new(std::env::temp_dir().join(format!(
+            "peko-principal-send-roundtrip-chatlog-{}",
+            uuid::Uuid::new_v4()
+        ))));
+        let ctx = Arc::new(CrossRuntimeA2aCtx {
             directory: directory as Arc<dyn crate::tunnel::hub_directory::AgentDirectory>,
             pending: pending.clone(),
             signing_key,
@@ -696,8 +811,10 @@ mod tests {
             )),
             known_runtimes: Arc::new(RwLock::new(KnownRuntimes::new())),
             principal_manager,
+            chat_log_store: chat_log_store.clone(),
             response_timeout: Duration::from_secs(5),
-        })
+        });
+        (ctx, chat_log_store)
     }
 
     /// In-memory hub forwarder. Reads from the caller's outbound
@@ -799,7 +916,7 @@ mod tests {
         let caller_vk = signing_key.verifying_key();
         let caller_runtime_id = crate::tunnel::verifying_key_to_did_key(&caller_vk);
 
-        let ctx = make_round_trip_ctx(
+        let (ctx, _chat_log_store) = make_round_trip_ctx(
             directory,
             pending,
             signing_key.clone(),
@@ -1074,6 +1191,300 @@ mod tests {
         // pin is tautological but documents the derivation
         // contract for future readers.
         assert_eq!(caller_vk.to_bytes(), kp.verifying_key().to_bytes());
+
+        drop(tool);
+        let _ = hub_task.await;
+    }
+
+    // ── caller-view (chat-log) tests ─────────────────────────
+    //
+    // The caller-side chat-log shard is keyed by
+    // (caller_principal_did, target_principal_did). For every
+    // successful principal_send, the caller's shard contains
+    // exactly one request line (sender = caller) and exactly one
+    // response line (sender = target), correlated by the same id.
+    // Transport failures, denied delivery, hub errors, and decode
+    // errors must NOT produce a phantom reply line.
+
+    fn caller_key(caller_did: &str, target_did: &str) -> ChatThreadKey {
+        ChatThreadKey::new(
+            PrincipalDID(caller_did.to_string()),
+            crate::auth::Subject::Principal(PrincipalDID(target_did.to_string())),
+        )
+    }
+
+    async fn read_caller_view(
+        store: &Arc<ChatLogStore>,
+        key: &ChatThreadKey,
+    ) -> Vec<ChatLogMessage> {
+        store
+            .read_page(key, None, 100, None)
+            .await
+            .unwrap()
+            .messages
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_caller_view_appends_request_and_response_on_round_trip() {
+        use crate::auth::Subject;
+        use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let caller_pending = Arc::new(PendingA2aResponses::new());
+
+        directory.register_did(
+            "did:peko:principal:target-keyhash",
+            AgentResolution {
+                runtime_id: "did:key:zTargetRuntime".to_string(),
+                instance_id: "inst-target-e2e".to_string(),
+                agent_did: "did:peko:principal:target-keyhash".to_string(),
+                owner_principal: Subject::Public,
+                exposure: ResolvedExposure::Public,
+                transport_preference: crate::tunnel::known_runtimes::TransportPreference::Auto,
+                direct_endpoint: None,
+            },
+        );
+
+        let (caller_outbound_tx, caller_outbound_rx) = tokio::sync::mpsc::channel::<TunnelMessage>(
+            crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE,
+        );
+
+        let hub_pending = caller_pending.clone();
+        let hub_task = tokio::spawn(async move {
+            run_principal_send_hub(
+                caller_outbound_rx,
+                hub_pending,
+                "did:peko:principal:target-keyhash",
+                "looks good",
+            )
+            .await;
+        });
+
+        let caller_did = "did:peko:principal:caller-keyhash".to_string();
+        let target_did = "did:peko:principal:target-keyhash".to_string();
+        let (ctx, store) = {
+            // Reuse the existing builder but we need its tuple
+            // form, so we replicate the wiring here with a fresh
+            // signing key.
+            let kp = crate::identity::keys::KeyPair::generate();
+            let signing_key = Arc::new(kp.signing_key);
+            let caller_runtime_id =
+                crate::tunnel::verifying_key_to_did_key(&signing_key.verifying_key());
+            make_round_trip_ctx(
+                directory.clone(),
+                caller_pending.clone(),
+                signing_key,
+                caller_runtime_id,
+                caller_outbound_tx,
+            )
+        };
+        let tool = PrincipalSendTool::new(caller_did.clone(), ctx);
+
+        let args = PrincipalSendArgs {
+            target_principal: target_did.clone(),
+            message: "review this PR".to_string(),
+            session_id: None,
+        };
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
+        let result: PrincipalSendResult = serde_json::from_value(value).unwrap();
+        assert!(
+            result.success,
+            "round-trip should succeed: {:?}",
+            result.error
+        );
+
+        let key = caller_key(&caller_did, &target_did);
+        let view = read_caller_view(&store, &key).await;
+        assert_eq!(
+            view.len(),
+            2,
+            "caller view should hold one request + one response; got: {:?}",
+            view.iter()
+                .map(|m| (&m.sender, &m.text))
+                .collect::<Vec<_>>()
+        );
+        assert!(matches!(view[0].sender, Subject::Principal(ref d) if d.0 == caller_did));
+        assert_eq!(view[0].text, "review this PR");
+        assert!(matches!(view[1].sender, Subject::Principal(ref d) if d.0 == target_did));
+        assert!(
+            view[1]
+                .text
+                .contains("echo from did:peko:principal:target-keyhash"),
+            "response text should match hub echo: {}",
+            view[1].text
+        );
+        // Correlation ids must match between request and response
+        // so a future paging consumer can pair them.
+        let req_corr = view[0].correlation_id.clone();
+        let res_corr = view[1].correlation_id.clone();
+        assert!(
+            req_corr.is_some(),
+            "request line should carry correlation id"
+        );
+        assert_eq!(
+            res_corr, req_corr,
+            "request and response should share the same correlation id"
+        );
+
+        drop(tool);
+        let _ = hub_task.await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_caller_view_records_only_request_when_response_decodes_fail() {
+        use crate::auth::Subject;
+        use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let caller_pending = Arc::new(PendingA2aResponses::new());
+
+        directory.register_did(
+            "did:peko:principal:target-keyhash",
+            AgentResolution {
+                runtime_id: "did:key:zTargetRuntime".to_string(),
+                instance_id: "inst-target-e2e".to_string(),
+                agent_did: "did:peko:principal:target-keyhash".to_string(),
+                owner_principal: Subject::Public,
+                exposure: ResolvedExposure::Public,
+                transport_preference: crate::tunnel::known_runtimes::TransportPreference::Auto,
+                direct_endpoint: None,
+            },
+        );
+
+        let (caller_outbound_tx, mut caller_outbound_rx) =
+            tokio::sync::mpsc::channel::<TunnelMessage>(
+                crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE,
+            );
+
+        // Hub returns a valid envelope, but the bytes inside will
+        // fail to decode as PrincipalSendResult — so the caller
+        // must surface an error and NOT persist a phantom reply.
+        let hub_pending = caller_pending.clone();
+        let hub_task = tokio::spawn(async move {
+            while let Some(msg) = caller_outbound_rx.recv().await {
+                if let TunnelMessage::AgentToAgentRequest { request_id, .. } = msg {
+                    let _ = hub_pending.complete(&request_id, b"<<not valid json>>".to_vec());
+                }
+            }
+        });
+
+        let caller_did = "did:peko:principal:caller-keyhash".to_string();
+        let target_did = "did:peko:principal:target-keyhash".to_string();
+        let (ctx, store) = {
+            let kp = crate::identity::keys::KeyPair::generate();
+            let signing_key = Arc::new(kp.signing_key);
+            let caller_runtime_id =
+                crate::tunnel::verifying_key_to_did_key(&signing_key.verifying_key());
+            make_round_trip_ctx(
+                directory.clone(),
+                caller_pending.clone(),
+                signing_key,
+                caller_runtime_id,
+                caller_outbound_tx,
+            )
+        };
+        let tool = PrincipalSendTool::new(caller_did.clone(), ctx);
+
+        let args = PrincipalSendArgs {
+            target_principal: target_did.clone(),
+            message: "review this PR".to_string(),
+            session_id: None,
+        };
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
+        let result: PrincipalSendResult = serde_json::from_value(value).unwrap();
+        assert!(!result.success, "decode failure must surface as error");
+
+        let key = caller_key(&caller_did, &target_did);
+        let view = read_caller_view(&store, &key).await;
+        assert_eq!(
+            view.len(),
+            1,
+            "caller view must contain only the request when the response could not be decoded"
+        );
+        assert_eq!(view[0].text, "review this PR");
+
+        drop(tool);
+        let _ = hub_task.await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_caller_view_records_only_request_on_hub_error() {
+        use crate::auth::Subject;
+        use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let caller_pending = Arc::new(PendingA2aResponses::new());
+
+        directory.register_did(
+            "did:peko:principal:registered-but-hub-rejects",
+            AgentResolution {
+                runtime_id: "did:key:zTargetRuntime".to_string(),
+                instance_id: "inst-target-e2e".to_string(),
+                agent_did: "did:peko:principal:registered-but-hub-rejects".to_string(),
+                owner_principal: Subject::Public,
+                exposure: ResolvedExposure::Public,
+                transport_preference: crate::tunnel::known_runtimes::TransportPreference::Auto,
+                direct_endpoint: None,
+            },
+        );
+
+        let (caller_outbound_tx, caller_outbound_rx) = tokio::sync::mpsc::channel::<TunnelMessage>(
+            crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE,
+        );
+        let hub_pending = caller_pending.clone();
+        let hub_task = tokio::spawn(async move {
+            run_principal_send_hub(
+                caller_outbound_rx,
+                hub_pending,
+                "did:peko:principal:NONEXISTENT", // hub rejects
+                "never reached",
+            )
+            .await;
+        });
+
+        let caller_did = "did:peko:principal:caller-keyhash".to_string();
+        let target_did = "did:peko:principal:registered-but-hub-rejects".to_string();
+        let (ctx, store) = {
+            let kp = crate::identity::keys::KeyPair::generate();
+            let signing_key = Arc::new(kp.signing_key);
+            let caller_runtime_id =
+                crate::tunnel::verifying_key_to_did_key(&signing_key.verifying_key());
+            make_round_trip_ctx(
+                directory.clone(),
+                caller_pending.clone(),
+                signing_key,
+                caller_runtime_id,
+                caller_outbound_tx,
+            )
+        };
+        let tool = PrincipalSendTool::new(caller_did.clone(), ctx);
+
+        let args = PrincipalSendArgs {
+            target_principal: target_did.clone(),
+            message: "hi".to_string(),
+            session_id: None,
+        };
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
+        let result: PrincipalSendResult = serde_json::from_value(value).unwrap();
+        assert!(!result.success, "hub rejection must surface as error");
+
+        let key = caller_key(&caller_did, &target_did);
+        let view = read_caller_view(&store, &key).await;
+        assert_eq!(
+            view.len(),
+            1,
+            "hub rejection must NOT add a phantom response line"
+        );
+        assert_eq!(view[0].text, "hi");
 
         drop(tool);
         let _ = hub_task.await;

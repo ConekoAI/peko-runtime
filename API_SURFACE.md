@@ -465,6 +465,134 @@ The actor identity attached to a session (peer, caller). Replaces the pre-ADR-03
 
 ---
 
+## Module: `chat_log` (Runtime-Owned Consumer-Visible History)
+
+**Status:** ACTIVE  
+**ADRs:** ADR-042 (no external `session` concept in CLI/IPC surface)
+
+The chat log is the runtime-owned, append-only, consumer-visible
+record of the text messages an external participant actually
+exchanged with a Principal. It is **separate from the session
+JSONL** (see §`principal` and the data-model section §5½). The
+chat log is the only store the `principal_log` IPC, the desktop's
+chat page, and the `peko log` CLI read from. Internal execution
+detail (tool calls, thinking, compactions, model changes) never
+crosses into chat-log storage.
+
+### Public Types
+
+#### `chat_log::ChatLogStore` (ACTIVE)
+
+```rust
+pub struct ChatLogStore { ... }
+
+impl ChatLogStore {
+    pub fn new(root: PathBuf) -> Self;
+    pub async fn append_message(
+        &self,
+        key: &ChatThreadKey,
+        message: &ChatLogMessage,
+    ) -> Result<(), ChatLogError>;
+    pub async fn read_page(
+        &self,
+        key: &ChatThreadKey,
+        cursor: Option<&str>,
+        limit: usize,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<ChatLogPage, ChatLogError>;
+    pub async fn remove_principal(&self, principal: &PrincipalDID)
+        -> Result<(), ChatLogError>;
+}
+```
+
+The runtime-owned chat-log store. Root path is resolved from
+`PathResolver::chat_logs_dir()` (`<data-dir>/chat_logs`) and
+shared via `AppState::chat_log_store` and
+`CrossRuntimeA2aCtx::chat_log_store`. The store is the only
+abstraction over chat-log shards — there is no in-memory
+representation, no global index, and no migration path from
+session JSONL to chat log.
+
+#### `chat_log::ChatThreadKey` (ACTIVE)
+
+```rust
+pub struct ChatThreadKey {
+    pub principal: PrincipalDID,
+    pub peer: Subject,
+}
+```
+
+Identifies one chat thread. `principal` is the **stable DID**
+(`PrincipalDID`), never the restart-local `PrincipalId`, so the
+same thread survives `peko` restarts and principal migrations.
+`peer` is the `Subject` that completes the pair (`User`,
+`Principal`, or `Public`).
+
+#### `chat_log::ChatLogMessage` (ACTIVE)
+
+```rust
+pub struct ChatLogMessage {
+    pub schema_version: u8,
+    pub id: String,
+    pub sender: Subject,
+    pub timestamp: DateTime<Utc>,
+    pub text: String,
+    pub correlation_id: Option<String>,
+}
+```
+
+One immutable consumer-visible message. `correlation_id` pairs
+request/response lines for principal-to-principal exchanges;
+otherwise it's `None`.
+
+#### `chat_log::ChatLogPage` (ACTIVE)
+
+```rust
+pub struct ChatLogPage {
+    pub messages: Vec<ChatLogMessage>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+```
+
+A bounded page of messages, ordered **oldest-to-newest**. Cursors
+are opaque, thread-bound, and remain stable across subsequent
+appends.
+
+#### `chat_log::ChatLogError` (ACTIVE)
+
+```rust
+pub enum ChatLogError {
+    Io(std::io::Error),
+    Serialization(serde_json::Error),
+    Lock(String),
+    Cursor(CursorError),
+    ThreadMismatch,
+    InvalidSender,
+    UnsupportedVersion(u8),
+    InvalidOffset { offset: u64, file_len: u64 },
+}
+```
+
+The full error surface for chat-log operations. `ThreadMismatch`
+fires when a shard's header doesn't match the hashed path the
+caller requested; `InvalidSender` fires when an append carries a
+sender that isn't one of the two participants of the thread.
+
+### IPC: `RequestPacket::PrincipalLog` / `ResponsePacket::PrincipalLog`
+
+`RequestPacket::PrincipalLog` carries `name`, `peer`,
+`limit`, `since_secs`, and `cursor` (the new field). The
+response is `name`, `peer`, `messages`, `next_cursor`, and
+`has_more`. The legacy `events: Vec<HistoryEvent>` and
+`truncated: bool` fields were removed: a chat thread is not a
+session, and session-internal `kind` rows no longer leak into
+the user-visible surface. `Pe ko log` walks pages via
+`--cursor` until exhaustion (or a 25-page hard cap) so a
+runaway caller can't pin the daemon forever.
+
+---
+
 ## Module: `agents`
 
 ### Public Types

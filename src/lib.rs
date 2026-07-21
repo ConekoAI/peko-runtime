@@ -184,6 +184,16 @@ pub mod principal;
 pub mod quota;
 
 // ============================================================================
+// Append-only runtime surfaces
+// ============================================================================
+
+/// Runtime-owned, append-only chat-log storage (one shard per
+/// `(principal_did, peer)` pair). Distinct from session JSONL — chat
+/// logs record consumer-visible messages only and are external to
+/// the principal's mutable working memory. See ADR-042.
+pub mod chat_log;
+
+// ============================================================================
 // Infrastructure
 // ============================================================================
 

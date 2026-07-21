@@ -90,6 +90,12 @@ pub(crate) struct AppState {
     /// Principal manager (AI Principal container lifecycle)
     principal_manager: Arc<PrincipalManager>,
 
+    /// Runtime-owned, append-only chat-log store. Each principal
+    /// boundary message that passes authorization is persisted here
+    /// alongside its authoritative response. Distinct from the
+    /// principal-owned session JSONL (mutable working memory).
+    chat_log_store: Arc<crate::chat_log::ChatLogStore>,
+
     /// F20: peer quota registry. `Some` after daemon startup loads
     /// `<runtime>/peers/` and materializes each peer's meter. The
     /// quota handler reads this to resolve `is_peer=true` requests;
@@ -703,6 +709,15 @@ impl AppState {
             Arc::clone(&extension_store),
             Arc::clone(&extension_services),
         ));
+        // Runtime-owned, append-only chat-log store. Constructed
+        // before the PrincipalManager so the manager builder captures
+        // the same `Arc` and can record boundary messages from
+        // `receive` / `receive_streaming`. The store is independent of
+        // any principal's session JSONL — deleting a principal deletes
+        // only that principal's chat-log shards.
+        let chat_log_store = Arc::new(crate::chat_log::ChatLogStore::new(
+            path_resolver.chat_logs_dir(),
+        ));
         let principal_manager = {
             let root = path_resolver.principals_root_dir();
             let _ = std::fs::create_dir_all(&root);
@@ -717,7 +732,8 @@ impl AppState {
             .with_resolver(resolver.clone())
             .with_slash_dispatcher(slash_dispatcher)
             .with_extension_store(Arc::clone(&extension_store))
-            .with_observability(Arc::clone(&observability));
+            .with_observability(Arc::clone(&observability))
+            .with_chat_log_store(Arc::clone(&chat_log_store));
 
             if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {
@@ -824,6 +840,7 @@ impl AppState {
             resolver,
             vault: Arc::clone(&vault),
             principal_manager,
+            chat_log_store,
             peer_registry,
             lifecycle,
             session_service,
@@ -1065,6 +1082,14 @@ impl AppState {
     #[must_use]
     pub fn principal_manager(&self) -> &Arc<PrincipalManager> {
         &self.principal_manager
+    }
+
+    /// Runtime-owned chat-log store. Always present after daemon
+    /// startup (the daemon builds it before `principal_manager` so
+    /// the manager builder captures the same `Arc`).
+    #[must_use]
+    pub fn chat_log_store(&self) -> &Arc<crate::chat_log::ChatLogStore> {
+        &self.chat_log_store
     }
 
     /// F20: get the peer quota registry. `None` when the daemon
@@ -1503,6 +1528,7 @@ impl AppState {
             direct_manager: self.direct_manager.clone(),
             known_runtimes: self.known_runtimes.clone(),
             principal_manager: self.principal_manager().clone(),
+            chat_log_store: self.chat_log_store.clone(),
             response_timeout: Duration::from_mins(1),
         });
         // The framework stores the ctx as `Arc<dyn Any + Send + Sync>`
@@ -2902,6 +2928,10 @@ impl crate::ipc::handlers::credential::BindingHost for AppState {
 impl crate::ipc::handlers::principal::PrincipalHost for AppState {
     fn principal_manager(&self) -> &Arc<PrincipalManager> {
         AppState::principal_manager(self)
+    }
+
+    fn chat_log_store(&self) -> &Arc<crate::chat_log::ChatLogStore> {
+        AppState::chat_log_store(self)
     }
 
     fn streaming_runs(
