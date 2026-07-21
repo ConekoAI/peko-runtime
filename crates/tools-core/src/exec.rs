@@ -783,9 +783,9 @@ pub trait ToolWithContext: Send + Sync {
 }
 
 // Blanket impl that was deliberately omitted from extensions/framework
-// (the cycle prevented it). Now that Tool lives in tools::core alongside
-// ToolWithContext, the impl is sound.
-impl<T: crate::tools::core::Tool> ToolWithContext for T {}
+// (the cycle prevented it). Now that `Tool` lives in `peko-tools-core`
+// alongside `ToolWithContext`, the impl is sound.
+impl<T: crate::Tool> ToolWithContext for T {}
 
 /// Result of a tool execution
 ///
@@ -848,11 +848,13 @@ impl ToolResult {
     }
 }
 
-impl From<ToolResult> for crate::extensions::framework::types::hook_io::HookOutput {
-    fn from(result: ToolResult) -> Self {
-        Self::Json(result.to_json())
-    }
-}
+// The `impl From<ToolResult> for HookOutput` (and `tool_result_from_hook`
+// shim) used to live here. It has been migrated to
+// `extensions::framework::types::hook_io` because the orphan rule
+// requires trait impls that touch a foreign type to be in the crate
+// owning at least one of {trait, type}; `ToolResult` now lives in
+// `peko-tools-core` while `HookOutput` lives in the extensions
+// crate, so the impl is in the extensions crate next to `HookOutput`.
 
 #[cfg(test)]
 mod tests {

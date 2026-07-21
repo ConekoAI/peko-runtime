@@ -9,8 +9,12 @@ pub use self::capabilities::{ActiveExtensionSet, Capabilities, Capability};
 pub use self::hook_io::{tool_result_from_hook, HookInput, HookOutput, HookResult};
 pub use self::manifest::{ExtensionDependency, ExtensionManifest};
 pub use self::session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};
-pub use self::tool::{ToolExposure, ToolMetadata, ToolSource};
+pub use self::tool::{ToolMetadata, ToolSource};
+// `ToolExposure` moved to `peko-tools-core` in Phase 5. Re-export
+// from here so existing `crate::extensions::framework::types::ToolExposure`
+// paths keep resolving unchanged.
 pub use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
+pub use peko_tools_core::ToolExposure;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

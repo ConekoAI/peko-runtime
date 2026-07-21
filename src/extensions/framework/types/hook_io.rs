@@ -268,6 +268,23 @@ pub enum HookInput {
     Json(serde_json::Value),
 }
 
+/// Wrap a `ToolResult` as a `HookOutput::Json` payload.
+///
+/// This impl was lifted out of `tools::core::exec` when `ToolResult`
+/// moved into the new `peko-tools-core` workspace member (Phase 5).
+/// The orphan rule requires trait impls that touch a foreign type
+/// to live in the crate that owns at least one of the types
+/// involved; `ToolResult` is foreign to this module, so the impl
+/// now lives here in the `extensions::framework::types::hook_io`
+/// module — the home of `HookOutput`. Callers that need to convert
+/// a `ToolResult` into a `HookOutput` go through this `From`
+/// conversion.
+impl From<crate::tools::core::ToolResult> for HookOutput {
+    fn from(result: crate::tools::core::ToolResult) -> Self {
+        Self::Json(result.to_json())
+    }
+}
+
 /// Convert a `HookResult` from tool execution into a structured triplet.
 ///
 /// Returns `(display_string, json_value, success)` where:

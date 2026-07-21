@@ -2174,6 +2174,7 @@ dependencies = [
  "peko-message",
  "peko-quota",
  "peko-subject",
+ "peko-tools-core",
  "rand",
  "regex",
  "reqwest",
@@ -2251,6 +2252,19 @@ dependencies = [
  "serde",
  "toml",
  "uuid",
+]
+
+[[package]]
+name = "peko-tools-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

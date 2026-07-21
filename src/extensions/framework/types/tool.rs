@@ -1,6 +1,7 @@
 //! Tool-related types
 
 use crate::extensions::framework::types::HookId;
+use crate::tools::core::ToolExposure;
 use serde::{Deserialize, Serialize};
 
 /// Source of a tool (for metadata tracking)
@@ -32,70 +33,14 @@ impl ToolSource {
     }
 }
 
-/// How a tool is exposed to the LLM (F34, audit section 3 row 4).
+/// `ToolExposure` migrated to `peko-tools-core` in Phase 5.
 ///
-/// Pre-F34 peko had a binary on/off: a tool was either visible-and-callable
-/// or gated by capability. F34 adds a 4-axis model so a tool author can
-/// express intent without forcing the LLM (or the prompt section) into a
-/// single binary choice.
-///
-/// Variants:
-/// - [`ToolExposure::Direct`] — visible in both the prompt "Available
-///   Tools" section AND the native LLM catalog. Callable by the model.
-///   This is the default for every existing tool.
-/// - [`ToolExposure::DirectModelOnly`] — visible in the native LLM
-///   catalog (so the model can still see name + JSON Schema and call it)
-///   but suppressed from the prose "Available Tools" prompt section.
-///   Useful for tools whose schema is self-documenting (the model
-///   doesn't need prose) or that would waste prompt tokens if duplicated.
-/// - [`ToolExposure::Deferred`] — invisible to the model in the prompt
-///   section and omitted from the initial native catalog. Discoverable
-///   through the synthetic `__tool_search` stub (F35) which returns the
-///   tool's full `ToolDefinition` so the model can call it by name on
-///   the next iteration. Useful for tools that bloat the catalog when
-///   the agent doesn't need them but might ask for one.
-/// - [`ToolExposure::Hidden`] — invisible to the model in BOTH surfaces.
-///   Still callable programmatically (e.g., from another tool's
-///   `execute`) via the framework's internal `execute_from_hook` path,
-///   but the model never sees or invokes it directly. Useful for
-///   telemetry-only, audit-only, or sub-tool-of-other-tool entries.
-///
-/// The capability gate still applies on top of exposure — a
-/// `DirectModelOnly` tool without the principal's `tool:<name>` grant
-/// is still hidden from both surfaces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolExposure {
-    /// Visible in prompt section AND native catalog; callable. Default.
-    #[default]
-    Direct,
-    /// Suppressed from prompt section; visible in native catalog; callable.
-    DirectModelOnly,
-    /// Hidden until `__tool_search` resolves it (F35). Discovered by query;
-    /// not in the initial catalog.
-    Deferred,
-    /// Hidden from both surfaces; only callable programmatically.
-    Hidden,
-}
-
-impl ToolExposure {
-    /// True if the tool should appear in the prose "Available Tools"
-    /// prompt section. `Direct` only.
-    #[must_use]
-    pub fn visible_in_prompt_section(self) -> bool {
-        matches!(self, ToolExposure::Direct)
-    }
-
-    /// True if the tool should appear in the native LLM catalog
-    /// (`list_tool_definitions_with_allowlist` output).
-    /// `Direct` and `DirectModelOnly` qualify. `Deferred` and `Hidden`
-    /// do NOT — `Deferred` is resolvable on demand via `__tool_search`
-    /// (F35) and `Hidden` must stay invisible to the model.
-    #[must_use]
-    pub fn visible_in_native_catalog(self) -> bool {
-        matches!(self, ToolExposure::Direct | ToolExposure::DirectModelOnly)
-    }
-}
+/// The enum and its `visible_in_prompt_section` /
+/// `visible_in_native_catalog` predicates now live in
+/// `peko_tools_core::ToolExposure`. This file keeps `ToolSource` and
+/// `ToolMetadata`; `ToolMetadata::exposure` is typed against
+/// `crate::tools::core::ToolExposure` (the historical facade) so
+/// existing call sites stay unchanged.
 
 /// Metadata for a registered tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,9 +54,10 @@ pub struct ToolMetadata {
     /// Source of the tool
     pub source: ToolSource,
     /// How this tool is exposed to the LLM (F34).
-    /// Defaults to [`ToolExposure::Direct`] (visible + callable).
+    /// Defaults to [`ToolExposure::Direct`](crate::tools::core::ToolExposure::Direct)
+    /// (visible + callable).
     #[serde(default)]
-    pub exposure: ToolExposure,
+    pub exposure: crate::tools::core::ToolExposure,
     /// Reserved parameters configuration
     pub reserved_params:
         crate::extensions::framework::services::reserved_params::ReservedParamsConfig,
