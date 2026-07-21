@@ -4,6 +4,75 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Chat-session separation (PRs forthcoming)
+
+The runtime now keeps two distinct stores of conversation data,
+matching the data-model split:
+
+- **Session JSONL** (`<principal>/sessions/<id>.jsonl`) is the
+  principal-owned, mutable, internal working memory used by the
+  agent loop. Its schema is free to evolve with the runtime.
+- **Chat log** (`<data-dir>/chat_logs/<blake3(principal_did)>/<blake3(peer)>.jsonl`)
+  is the runtime-owned, append-only, consumer-visible record of
+  what was actually exchanged. It powers `peko log`, the
+  `principal_log` IPC, and the desktop's chat page.
+
+#### Added
+
+- `src/chat_log/` — runtime-owned chat-log domain: `ChatLogStore`,
+  `ChatThreadKey`, `ChatLogMessage`, `ChatLogPage`, opaque
+  thread-bound cursors, sender-participant validation.
+- `src/common/persistence/` — extracted `FileLock` and
+  `append_bytes_durable` for shared use by session and chat-log
+  stores (compat re-export shim at `src/session/lock.rs`).
+- `PathResolver::chat_logs_dir()` — `{data_dir}/chat_logs`,
+  auto-created in `ensure_dirs`.
+- Principal-boundary recording (`PrincipalManager::receive` /
+  `receive_streaming`) — appends the external input before dispatch
+  and the authoritative final response before returning. Persistence
+  failures on the input side reject dispatch; persistence failures
+  on the response side are best-effort.
+- Caller-side `principal_send` recording
+  (`tunnel::principal_send_tool.rs`) — appends request and response
+  lines for both the local same-runtime shortcut and the
+  cross-runtime path; transport failures, hub rejections, and
+  decode failures do not create phantom reply lines.
+- `PrincipalManager::remove` — removes the principal's chat-log
+  shard directory as part of the principal-lifecycle invariant.
+- Channel filter: peer-chat channels (`Cli`, `Http`, `Hub`, `A2a`
+  covering `A2a` and `P2p`, `Webhook`) are recorded;
+  automation (`Cron`, `FileWatch`) is deliberately excluded.
+
+#### Changed
+
+- `RequestPacket::PrincipalLog` and `ResponsePacket::PrincipalLog`
+  IPC shape. The legacy `events: Vec<HistoryEvent>` array,
+  `session_id`, and `truncated` fields were removed. The new
+  response carries `messages: Vec<ChatLogMessage>`, `next_cursor`,
+  and `has_more`. The `RequestPacket::PrincipalLog` request gains
+  `cursor: Option<String>`.
+- `peko log` CLI accepts `--cursor` and walks pages until exhaustion
+  (or a 25-page hard cap). JSON output reflects the new envelope.
+- `peko-runtime/src/commands/log.rs` and
+  `src/ipc/handlers/principal.rs` consume the new wire shape
+  directly; `load_principal_session_events` and the session→history
+  projection path are removed from the principal-log read surface.
+- Desktop (sibling repo): `src/types/index.ts` exposes
+  `ChatLogMessage` / `ChatLogPage`; `src/lib/api.ts` and
+  `src/hooks/usePrincipals.ts` thread `cursor`; `src/pages/Chat.tsx`
+  maps persisted chat lines directly onto chat bubbles (no
+  session-event projection); `src/pages/PrincipalLog.tsx` adds
+  "Load older" paging that walks pages via `nextCursor` and
+  dedupes by message id.
+
+#### Notes
+
+- Pre-launch clean cutover: there is **no** migration path from
+  session JSONL to chat log, **no** legacy fallback, and **no**
+  retention. Removing a principal deletes that principal's own
+  chat-log shards only; counterpart views held by other
+  principals remain because they are owned by the other principal.
+
 ### Claude Code core tool parity (in progress)
 
 A multi-phase program to align peko's built-in tool names and schemas with
