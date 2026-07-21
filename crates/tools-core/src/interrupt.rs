@@ -93,8 +93,12 @@ impl ToolInterruptNotice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::Tool;
-    use crate::tools::ToolContext;
+    // `Tool` and `ToolContext` are re-exported at the crate root via
+    // `lib.rs`. Tests inside the crate use `crate::Tool` /
+    // `crate::ToolContext` rather than the historical
+    // `crate::tools::Tool` facade (which lives one layer up in the
+    // root `peko` package).
+    use crate::{Tool, ToolContext};
     use serde_json::json;
 
     struct SoftTool {

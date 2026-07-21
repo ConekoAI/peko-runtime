@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/events", "crates/message", "crates/subject", "crates/quota"]
+members = [".", "crates/events", "crates/message", "crates/subject", "crates/quota", "crates/tools-core"]
 
 [package]
 name = "peko"
@@ -33,6 +33,14 @@ peko-subject = { path = "crates/subject" }
 # coherent domain. Depends on peko-message for TokenUsage; the root
 # re-exports it through `crate::quota` for backwards compatibility.
 peko-quota = { path = "crates/quota" }
+# Workspace member providing the tool execution API (Tool trait,
+# ToolContext, AbortSignal, ToolResult, ToolError, ToolInterruptNotice,
+# ContextSource, ToolExposure — F34). The extension framework, the
+# built-in tools, and the agentic loop all import from this crate;
+# it depends on nothing except serde/anyhow/tokio. The root
+# re-exports it through `crate::tools::core` for backwards
+# compatibility.
+peko-tools-core = { path = "crates/tools-core" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).
