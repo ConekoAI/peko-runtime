@@ -3,7 +3,6 @@
 //! This module provides a single provider implementation that works with
 //! any `ApiAdapter`. All provider-specific logic is delegated to the adapter.
 
-use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::providers::adapters::{AnyAdapter, ApiAdapter};
 use crate::providers::cache_retention::CacheRetention;
 use crate::providers::openai_prompt_cache::clamp_openai_prompt_cache_key;
@@ -12,6 +11,7 @@ use crate::providers::traits::{
 };
 use crate::providers::transport::HttpClient;
 use futures::StreamExt;
+use peko_events::{AgenticEvent, LifecyclePhase};
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;

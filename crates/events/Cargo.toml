@@ -1,0 +1,11 @@
+[package]
+name = "peko-events"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Neutral event contract shared by Peko runtime components"
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+serde_json = "1.0"

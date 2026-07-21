@@ -242,13 +242,14 @@ pub mod tunnel;
 // Public API
 // ============================================================================
 //
-// `peko` is a single-crate package (lib + bin). The lib's public surface is
-// driven by external integration tests under `tests/` and `tests/scenarios/`
-// plus the binary at `src/main.rs` (which imports via `peko::...` because the
-// bin is a separate crate root — a `crate::*` swap is not viable for the
-// same reason). The remaining three dead re-exports that used to live here
-// (`Agent`, `AgenticEvent`, `LifecyclePhase`) had zero consumers anywhere in
-// the crate, in `tests/`, or in `src/main.rs`, and have been removed.
+// `peko` is the root compatibility package (lib + bin) inside the Cargo
+// workspace. The lib's public surface is driven by external integration tests
+// under `tests/` and `tests/scenarios/` plus the binary at `src/main.rs` (which
+// imports via `peko::...` because the bin is a separate crate root — a
+// `crate::*` swap is not viable for the same reason). The remaining three dead
+// re-exports that used to live here (`Agent`, `AgenticEvent`, `LifecyclePhase`)
+// had zero consumers anywhere in the crate, in `tests/`, or in `src/main.rs`,
+// and have been removed.
 //
 // `VERSION` is consumed internally by `commands::update`, `ipc::handlers::system`,
 // and the registry packaging manifests. It is crate-internal — there is no

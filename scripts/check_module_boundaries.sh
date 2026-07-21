@@ -414,6 +414,29 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
+# Rule 11: src/providers/ must not import engine implementation types. Provider
+#          implementations depend on the neutral event/API crates; the agentic
+#          engine consumes provider output, never the reverse.
+# -----------------------------------------------------------------------------
+echo "Rule 11: src/providers/ must NOT import from src/engine/"
+echo ""
+
+VIOLATIONS_11=$(grep -rE "crate::engine::" src/providers/ --include="*.rs" 2>/dev/null || true)
+
+if [ -n "$VIOLATIONS_11" ]; then
+    echo "  ❌ FAIL: src/providers/ imports from src/engine/"
+    echo ""
+    echo "$VIOLATIONS_11" | while read -r line; do
+        echo "     $line"
+    done
+    echo ""
+    EXIT_CODE=1
+else
+    echo "  ✓ PASS: No provider -> engine imports"
+fi
+echo ""
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 echo "=========================================="
@@ -440,6 +463,7 @@ else
     echo "  - src/principal/ must not depend on tunnel/ (edge converts via From)"
     echo "  - src/tunnel/ must not depend on daemon/ in production code (use the TunnelHost port)"
     echo "  - src/ipc/handlers/ modules must not import each other (each domain is independent)"
+    echo "  - src/providers/ must not depend on engine implementation types (use neutral provider/event contracts)"
 fi
 
 exit $EXIT_CODE
