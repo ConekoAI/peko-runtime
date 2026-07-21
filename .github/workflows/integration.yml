@@ -99,7 +99,10 @@ jobs:
               - 'src/common/process/**'
               - 'src/extensions/skill/adapter.rs'
               - 'src/ipc/pipe_security.rs'
-              - 'src/tools/builtin/fs/grep.rs'
+              # Phase 10a moved fs/grep.rs into crates/tools-builtin;
+              # the new path is platform-neutral (uses the `regex`
+              # crate, no libc/cfg gates) so the old `src/...` entry
+              # would always be stale going forward.
               - 'src/tools/builtin/skill/preprocess.rs'
               - 'tests/common/cli.rs'
 
