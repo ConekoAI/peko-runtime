@@ -1,140 +1,27 @@
 //! Core types for the async executor framework
+//!
+//! Phase 7 split this module in two:
+//!
+//! - `AsyncTaskStatus` and `AsyncTaskId` are **framework contracts**
+//!   (they tag the `HookOutput::TaskStatus` variant) and now live in
+//!   the `peko-extension-api` workspace crate. The shim re-exports
+//!   them from there so existing
+//!   `peko::extensions::framework::async_exec::executor::AsyncTaskStatus`
+//!   paths keep resolving unchanged.
+//! - `AsyncTaskResult`, `AsyncTaskReceipt`, `AsyncResultDeliveryMode`,
+//!   `AsyncToolConfig`, `WaitResult`, `DeliveryTarget`, and
+//!   `SessionMessageType` are **executor-internal** types that depend
+//!   on `peko-tools-core::ToolResult` and other host-only deps. They
+//!   stay in the framework host; Phase 8 may move the entire executor
+//!   to `peko-extension-host`.
 
 use crate::tools::core::ToolResult;
 use serde::{Deserialize, Serialize};
 
-/// Unique identifier for an async task
-pub type AsyncTaskId = String;
-
-/// Status of an async task
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AsyncTaskStatus {
-    Pending,
-    Running,
-    Completed { result: ToolResult },
-    Failed { error: String },
-    Cancelled,
-    TimedOut { error: String },
-}
-
-impl Serialize for AsyncTaskStatus {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            Self::Pending => serializer.serialize_str("pending"),
-            Self::Running => serializer.serialize_str("running"),
-            Self::Completed { result } => {
-                use serde::ser::SerializeMap;
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("status", "completed")?;
-                map.serialize_entry("result", result)?;
-                map.end()
-            }
-            Self::Failed { error } => {
-                use serde::ser::SerializeMap;
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("status", "failed")?;
-                map.serialize_entry("error", error)?;
-                map.end()
-            }
-            Self::Cancelled => serializer.serialize_str("cancelled"),
-            Self::TimedOut { error } => {
-                use serde::ser::SerializeMap;
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("status", "timed_out")?;
-                map.serialize_entry("error", error)?;
-                map.end()
-            }
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for AsyncTaskStatus {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::String(s) => match s.as_str() {
-                "pending" => Ok(Self::Pending),
-                "running" => Ok(Self::Running),
-                "cancelled" => Ok(Self::Cancelled),
-                _ => Err(serde::de::Error::custom(format!("unknown status: {s}"))),
-            },
-            serde_json::Value::Object(mut map) => {
-                let status = map
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| serde::de::Error::custom("missing status field"))?;
-                match status {
-                    "completed" => {
-                        let result = map
-                            .remove("result")
-                            .ok_or_else(|| serde::de::Error::custom("missing result field"))?;
-                        let result: ToolResult = serde_json::from_value(result)
-                            .map_err(|e| serde::de::Error::custom(e.to_string()))?;
-                        Ok(Self::Completed { result })
-                    }
-                    "failed" => {
-                        let error = map
-                            .remove("error")
-                            .and_then(|v| v.as_str().map(String::from))
-                            .ok_or_else(|| serde::de::Error::custom("missing error field"))?;
-                        Ok(Self::Failed { error })
-                    }
-                    "timed_out" => {
-                        let error = map
-                            .remove("error")
-                            .and_then(|v| v.as_str().map(String::from))
-                            .ok_or_else(|| serde::de::Error::custom("missing error field"))?;
-                        Ok(Self::TimedOut { error })
-                    }
-                    _ => Err(serde::de::Error::custom(format!(
-                        "unknown status: {status}"
-                    ))),
-                }
-            }
-            _ => Err(serde::de::Error::custom("expected string or object")),
-        }
-    }
-}
-
-impl std::fmt::Display for AsyncTaskStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-impl AsyncTaskStatus {
-    #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            AsyncTaskStatus::Completed { .. }
-                | AsyncTaskStatus::Failed { .. }
-                | AsyncTaskStatus::Cancelled
-                | AsyncTaskStatus::TimedOut { .. }
-        )
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            AsyncTaskStatus::Pending => "pending",
-            AsyncTaskStatus::Running => "running",
-            AsyncTaskStatus::Completed { .. } => "completed",
-            AsyncTaskStatus::Failed { .. } => "failed",
-            AsyncTaskStatus::Cancelled => "cancelled",
-            AsyncTaskStatus::TimedOut { .. } => "timed_out",
-        }
-    }
-}
-
-/// Opaque async result — tool-specific structure lives inside the Value.
-pub type AsyncTaskResult = serde_json::Value;
+// Re-export the framework-contract types that moved to peko-extension-api
+// in Phase 7. The contract types live next to the `HookOutput::TaskStatus`
+// variant; the executor imports them from there.
+pub use peko_extension_api::async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
 
 /// Receipt returned to agent when spawning an async task
 #[derive(Debug, Clone, Serialize, Deserialize)]

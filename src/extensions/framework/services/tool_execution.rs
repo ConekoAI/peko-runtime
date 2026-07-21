@@ -298,7 +298,7 @@ impl ToolExecutionService {
         }
 
         if let Some(obj) = params.as_object_mut() {
-            let resolved = reserved.resolve(ctx);
+            let resolved = super::reserved_params::resolve_reserved_params(reserved, ctx, None);
             for (name, value) in resolved {
                 tracing::trace!("Injecting reserved param '{}' = {:?}", name, value);
                 obj.insert(name, value);

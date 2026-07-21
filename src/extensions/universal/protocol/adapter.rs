@@ -81,7 +81,12 @@ impl UniversalToolAdapter {
                 .with_peer_id(context.peer_id.as_deref().unwrap_or(""))
                 .with_workspace(&context.workspace);
 
-            let resolved = self.manifest.reserved_parameters.resolve(Some(&tool_ctx));
+            let resolved =
+                crate::extensions::framework::services::reserved_params::resolve_reserved_params(
+                    &self.manifest.reserved_parameters,
+                    Some(&tool_ctx),
+                    None,
+                );
 
             // Merge resolved params into user params
             if let Some(obj) = merged.as_object_mut() {

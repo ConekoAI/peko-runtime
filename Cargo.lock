@@ -2171,6 +2171,7 @@ dependencies = [
  "libc",
  "once_cell",
  "peko-events",
+ "peko-extension-api",
  "peko-message",
  "peko-provider-api",
  "peko-quota",
@@ -2217,6 +2218,20 @@ name = "peko-events"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "peko-extension-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "peko-message",
+ "peko-provider-api",
+ "peko-tools-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

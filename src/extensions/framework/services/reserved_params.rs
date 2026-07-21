@@ -1,272 +1,101 @@
-//! Unified Reserved Parameter Configuration
+//! Reserved-parameter resolution helpers
 //!
-//! This module provides a single, unified type for reserved parameter configuration
-//! across all extension types (Universal Tools, MCP, and future extensions).
+//! Phase 7 split this module into two parts:
 //!
-//! # Design Principles
+//! - The **data types** (`ReservedParamsConfig`, `ParamSource`,
+//!   `ReservedParamsService`, `ConfigFormat`) live in the
+//!   `peko-extension-api` crate as pure data with serde + builders +
+//!   the format enum. The framework host re-exports them from there
+//!   through this module's public surface so
+//!   `peko::extensions::framework::services::reserved_params::*` paths
+//!   keep working unchanged.
+//! - The **resolution helpers** (`resolve_reserved_params`,
+//!   `resolve_param_source_with_vault`) need a `ToolContext` and a
+//!   `Vault`, both of which are root-only types. They live in this
+//!   file as free functions so the API crate can stay independent of
+//!   the engine and tool-execution crates.
 //!
-//! 1. **Single source of truth**: One `ReservedParamsConfig` type for the entire system
-//! 2. **Source-agnostic**: Same config format works for runtime, env, and static sources
-//! 3. **Resolution context**: Uses shared `ContextResolver` for consistent field resolution
+//! # Backward-compat method shape
 //!
-//! # Example Configuration
-//!
-//! ```toml
-//! [reserved_parameters]
-//! agent_id = { source = "runtime", field = "agent_id" }
-//! api_key = { source = "env", var = "API_KEY" }
-//! version = { source = "static", value = "1.0.0" }
-//! secret = { source = "vault", namespace = "mcp:my-server", name = "default" }
-//! ```
+//! Pre-Phase-7 callers used `config.resolve(ctx)` and
+//! `source.resolve_with_vault(ctx, vault)`. Those were inherent
+//! methods on the data types; the orphan rule forbids adding an
+//! inherent `impl` in this crate for a type that lives in
+//! `peko-extension-api`. The free functions below replace the methods
+//! at the 5 call sites (`extensions/universal/protocol/adapter.rs`,
+//! `extensions/mcp/runtime/injectable_proxy.rs`, and the historical
+//! internal sites in this file).
 
-use serde::{Deserialize, Serialize};
+use peko_tools_core::ToolContext;
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// Unified reserved parameter configuration
+// Re-export the data types at this path so existing call sites that
+// say `crate::extensions::framework::services::reserved_params::ReservedParamsConfig`
+// keep resolving.
+pub use peko_extension_api::reserved_params::{
+    ConfigFormat, ParamSource, ReservedParamsConfig, ReservedParamsService,
+};
+
+/// Resolve every entry in `config.params` against `ctx` + optional `vault`.
 ///
-/// This is the single source of truth for reserved parameter configuration
-/// across all extension types (Universal Tools, MCP, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-pub struct ReservedParamsConfig {
-    /// Map of parameter name to its source configuration
-    #[serde(flatten)]
-    pub params: HashMap<String, ParamSource>,
-}
-
-/// Source of a reserved parameter value
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case", tag = "source")]
-pub enum ParamSource {
-    /// Injected from runtime context (`session_id`, `agent_id`, etc.)
-    Runtime { field: String },
-    /// Read from environment variable
-    Env { var: String },
-    /// Static hardcoded value
-    Static { value: Value },
-    /// Read from the encrypted vault (RP3C).
-    ///
-    /// The value is resolved at execution time via
-    /// `vault.get_material_for(namespace, name)`. A missing credential
-    /// is treated as `Value::Null` at runtime; the MCP manager refuses
-    /// to start a server whose vault-backed reserved param is absent.
-    Vault { namespace: String, name: String },
-}
-
-impl ReservedParamsConfig {
-    /// Create an empty configuration
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Add a runtime parameter
-    pub fn with_runtime(mut self, name: impl Into<String>, field: impl Into<String>) -> Self {
-        self.params.insert(
-            name.into(),
-            ParamSource::Runtime {
-                field: field.into(),
-            },
+/// Phase 7 host-side helper. The data type lives in
+/// `peko-extension-api`; this function needs `ToolContext` +
+/// `crate::common::vault::Vault`, both of which are root-only types.
+#[must_use]
+pub fn resolve_reserved_params(
+    config: &ReservedParamsConfig,
+    ctx: Option<&ToolContext>,
+    vault: Option<&crate::common::vault::Vault>,
+) -> HashMap<String, Value> {
+    let mut result = HashMap::new();
+    for (name, source) in &config.params {
+        result.insert(
+            name.clone(),
+            resolve_param_source_with_vault(source, ctx, vault),
         );
-        self
     }
-
-    /// Add an environment variable parameter
-    pub fn with_env(mut self, name: impl Into<String>, var: impl Into<String>) -> Self {
-        self.params
-            .insert(name.into(), ParamSource::Env { var: var.into() });
-        self
-    }
-
-    /// Add a static parameter
-    pub fn with_static(mut self, name: impl Into<String>, value: impl Into<Value>) -> Self {
-        self.params.insert(
-            name.into(),
-            ParamSource::Static {
-                value: value.into(),
-            },
-        );
-        self
-    }
-
-    /// Add a vault-backed parameter (RP3C).
-    pub fn with_vault(
-        mut self,
-        name: impl Into<String>,
-        namespace: impl Into<String>,
-        param_name: impl Into<String>,
-    ) -> Self {
-        self.params.insert(
-            name.into(),
-            ParamSource::Vault {
-                namespace: namespace.into(),
-                name: param_name.into(),
-            },
-        );
-        self
-    }
-
-    /// Check if configuration is empty
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.params.is_empty()
-    }
-
-    /// Get number of configured parameters
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.params.len()
-    }
-
-    /// Get parameter names
-    pub fn names(&self) -> impl Iterator<Item = &String> {
-        self.params.keys()
-    }
-
-    /// Check if a parameter is configured
-    #[must_use]
-    pub fn contains(&self, name: &str) -> bool {
-        self.params.contains_key(name)
-    }
-
-    /// Get a specific parameter source
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<&ParamSource> {
-        self.params.get(name)
-    }
-
-    /// Resolve all parameters to their values
-    ///
-    /// # Arguments
-    /// * `ctx` - Optional tool context for runtime resolution
-    ///
-    /// # Returns
-    /// Map of parameter names to resolved values
-    #[must_use]
-    pub fn resolve(&self, ctx: Option<&crate::tools::core::ToolContext>) -> HashMap<String, Value> {
-        let mut result = HashMap::new();
-        for (name, source) in &self.params {
-            result.insert(name.clone(), source.resolve(ctx));
-        }
-        result
-    }
-
-    /// Resolve all parameters, reading `Vault` sources from the provided vault.
-    ///
-    /// Non-vault sources behave exactly like [`Self::resolve`].
-    #[must_use]
-    pub fn resolve_with_vault(
-        &self,
-        ctx: Option<&crate::tools::core::ToolContext>,
-        vault: Option<&crate::common::vault::Vault>,
-    ) -> HashMap<String, Value> {
-        let mut result = HashMap::new();
-        for (name, source) in &self.params {
-            result.insert(name.clone(), source.resolve_with_vault(ctx, vault));
-        }
-        result
-    }
-
-    /// Convert to JSON object with resolved values
-    #[must_use]
-    pub fn resolve_to_object(&self, ctx: Option<&crate::tools::core::ToolContext>) -> Value {
-        let resolved = self.resolve(ctx);
-        Value::Object(
-            resolved
-                .into_iter()
-                .collect::<serde_json::Map<String, Value>>(),
-        )
-    }
+    result
 }
 
-impl ParamSource {
-    /// Resolve this parameter source to a value
-    ///
-    /// # Arguments
-    /// * `ctx` - Optional tool context for runtime field resolution
-    ///
-    /// # Returns
-    /// The resolved value, or `Value::Null` if not available
-    pub fn resolve(&self, ctx: Option<&crate::tools::core::ToolContext>) -> Value {
-        self.resolve_with_vault(ctx, None)
-    }
-
-    /// Resolve this parameter source, reading `Vault` sources from the provided vault.
-    ///
-    /// Non-vault sources behave exactly like [`Self::resolve`].
-    pub fn resolve_with_vault(
-        &self,
-        ctx: Option<&crate::tools::core::ToolContext>,
-        vault: Option<&crate::common::vault::Vault>,
-    ) -> Value {
-        use crate::tools::core::context_source::ContextResolver;
-        use crate::tools::core::ToolContextAdapter;
-        use secrecy::ExposeSecret;
-
-        match self {
-            Self::Runtime { field } => ctx.map_or(Value::Null, |c| {
-                let adapter = ToolContextAdapter::new(c);
-                ContextResolver::resolve_field(&adapter, field)
-            }),
-            Self::Env { var } => std::env::var(var).map_or(Value::Null, Value::String),
-            Self::Static { value } => value.clone(),
-            Self::Vault { namespace, name } => vault
-                .and_then(|v| v.get_material_for(namespace, name).ok().flatten())
-                .map(|s| Value::String(s.expose_secret().to_string()))
-                .unwrap_or(Value::Null),
-        }
-    }
-
-    /// Get the source type as a string
-    #[must_use]
-    pub fn source_type(&self) -> &'static str {
-        match self {
-            Self::Runtime { .. } => "runtime",
-            Self::Env { .. } => "env",
-            Self::Static { .. } => "static",
-            Self::Vault { .. } => "vault",
-        }
-    }
-}
-
-/// Reserved parameters service
+/// Resolve a single `ParamSource` against `ctx` + optional `vault`.
 ///
-/// Provides centralized reserved parameter configuration management
-/// and resolution services for the Extension system.
-#[derive(Debug, Default)]
-pub struct ReservedParamsService;
+/// Phase 7 host-side helper. Mirrors the pre-Phase-7
+/// `ParamSource::resolve_with_vault`.
+pub fn resolve_param_source_with_vault(
+    source: &ParamSource,
+    ctx: Option<&ToolContext>,
+    vault: Option<&crate::common::vault::Vault>,
+) -> Value {
+    use peko_tools_core::context_source::ContextResolver;
+    use peko_tools_core::ToolContextAdapter;
+    use secrecy::ExposeSecret;
 
-impl ReservedParamsService {
-    /// Create a new reserved parameters service
-    #[must_use]
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Parse configuration from TOML/JSON string
-    pub fn parse_config(
-        &self,
-        data: &str,
-        format: ConfigFormat,
-    ) -> anyhow::Result<ReservedParamsConfig> {
-        match format {
-            ConfigFormat::Json => {
-                let config: ReservedParamsConfig = serde_json::from_str(data)?;
-                Ok(config)
-            }
-            ConfigFormat::Toml => {
-                let config: ReservedParamsConfig = toml::from_str(data)?;
-                Ok(config)
-            }
-        }
+    match source {
+        ParamSource::Runtime { field } => ctx.map_or(Value::Null, |c| {
+            let adapter = ToolContextAdapter::new(c);
+            ContextResolver::resolve_field(&adapter, field)
+        }),
+        ParamSource::Env { var } => std::env::var(var).map_or(Value::Null, Value::String),
+        ParamSource::Static { value } => value.clone(),
+        ParamSource::Vault { namespace, name } => vault
+            .and_then(|v| v.get_material_for(namespace, name).ok().flatten())
+            .map(|s| Value::String(s.expose_secret().to_string()))
+            .unwrap_or(Value::Null),
     }
 }
 
-/// Configuration file format
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigFormat {
-    Json,
-    Toml,
+/// Parse a `ReservedParamsConfig` from a TOML/JSON string.
+///
+/// Host-only because it pulls in `toml` from the host's dependency
+/// set. The `ReservedParamsService` data type lives in
+/// `peko-extension-api`, but the parse helpers stay in the host so
+/// the API crate doesn't have to depend on `toml`.
+pub fn parse_config(data: &str, format: ConfigFormat) -> anyhow::Result<ReservedParamsConfig> {
+    match format {
+        ConfigFormat::Json => Ok(serde_json::from_str(data)?),
+        ConfigFormat::Toml => Ok(toml::from_str(data)?),
+    }
 }
 
 #[cfg(test)]
@@ -295,94 +124,9 @@ mod tests {
         let env_source = ParamSource::Env {
             var: "TEST_RESERVED_PARAM".to_string(),
         };
-        assert_eq!(env_source.resolve(None), json!("test_value"));
+        let value = resolve_param_source_with_vault(&env_source, None, None);
+        assert_eq!(value, json!("test_value"));
 
-        let static_source = ParamSource::Static {
-            value: json!("hardcoded"),
-        };
-        assert_eq!(static_source.resolve(None), json!("hardcoded"));
-
-        // Clean up
         std::env::remove_var("TEST_RESERVED_PARAM");
-    }
-
-    /// RP3C: vault-backed parameters resolve via `vault.get_material_for`.
-    #[test]
-    fn test_vault_param_source_resolution() {
-        use crate::common::vault::{Credential, CredentialKind, Vault};
-        use secrecy::SecretString;
-        use std::sync::Arc;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = Arc::new(Vault::for_test(tmp.path(), "test-passphrase"));
-        vault
-            .set_credential(&Credential::now(
-                "mcp:analytics",
-                "default",
-                CredentialKind::ApiKey,
-                SecretString::new("analytics-key".into()),
-            ))
-            .unwrap();
-
-        let vault_source = ParamSource::Vault {
-            namespace: "mcp:analytics".to_string(),
-            name: "default".to_string(),
-        };
-        assert_eq!(
-            vault_source.resolve_with_vault(None, Some(&vault)),
-            json!("analytics-key")
-        );
-
-        // Without a vault the value is Null.
-        assert_eq!(vault_source.resolve(None), json!(null));
-    }
-
-    #[test]
-    fn test_json_serialization() {
-        let config = ReservedParamsConfig::new()
-            .with_runtime("agent_id", "agent_id")
-            .with_static("version", "1.0.0");
-
-        let json = serde_json::to_string(&config).unwrap();
-        assert!(json.contains("agent_id"));
-        assert!(json.contains("runtime"));
-        assert!(json.contains("version"));
-
-        let deserialized: ReservedParamsConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(config, deserialized);
-    }
-
-    #[test]
-    fn test_toml_serialization() {
-        let config = ReservedParamsConfig::new().with_env("api_key", "API_KEY");
-
-        let toml_str = toml::to_string(&config).unwrap();
-        assert!(toml_str.contains("api_key"));
-        assert!(toml_str.contains("env"));
-        assert!(toml_str.contains("API_KEY"));
-    }
-
-    #[test]
-    fn test_empty_config() {
-        let config = ReservedParamsConfig::new();
-        assert!(config.is_empty());
-        assert_eq!(config.len(), 0);
-        assert_eq!(config.resolve(None).len(), 0);
-    }
-
-    #[test]
-    fn test_service_parse_config() {
-        let service = ReservedParamsService::new();
-
-        let json_config = r#"{"agent_id":{"source":"runtime","field":"agent_id"}}"#;
-        let config = service
-            .parse_config(json_config, ConfigFormat::Json)
-            .unwrap();
-
-        assert!(config.contains("agent_id"));
-        assert!(matches!(
-            config.get("agent_id").unwrap(),
-            ParamSource::Runtime { field } if field == "agent_id"
-        ));
     }
 }

@@ -239,15 +239,17 @@ impl CompactionOrchestrator {
         );
 
         let hook_input = HookInput::CompactionPreparation {
-            messages_to_summarize,
-            turn_prefix_messages,
+            messages_to_summarize: serde_json::to_value(&messages_to_summarize)
+                .unwrap_or(serde_json::Value::Null),
+            turn_prefix_messages: serde_json::to_value(&turn_prefix_messages)
+                .unwrap_or(serde_json::Value::Null),
             is_split_turn,
             previous_summary: prev_summary.clone(),
-            file_ops,
+            file_ops: serde_json::to_value(&file_ops).unwrap_or(serde_json::Value::Null),
             estimated_tokens,
             threshold_tokens,
             model_context_limit: self.context_window,
-            settings: self.config.clone(),
+            settings: serde_json::to_value(&self.config).unwrap_or(serde_json::Value::Null),
         };
 
         let hook_result = extension_core
@@ -374,8 +376,12 @@ impl CompactionOrchestrator {
                 tokens_before: result.entry.tokens_before,
                 tokens_after: result.entry.tokens_after,
                 compaction_number: result.entry.compaction_number,
-                details: result.entry.details.clone(),
-                messages_after: messages.clone(),
+                details: result
+                    .entry
+                    .details
+                    .as_ref()
+                    .and_then(|d| serde_json::to_value(d).ok()),
+                messages_after: serde_json::to_value(&*messages).unwrap_or(serde_json::Value::Null),
             }
         } else {
             HookInput::SessionState(SessionSnapshot {
