@@ -131,6 +131,7 @@ impl PeerAddr {
 ///
 /// Returns `Err` only if `setsockopt` itself fails (e.g. invalid fd),
 /// not when the kernel clamps the request.
+#[cfg(unix)]
 fn bump_send_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
     let fd = socket.as_raw_fd();
     let buf_len = IPC_SEND_BUFFER_BYTES as libc::c_int;
@@ -853,10 +854,15 @@ mod buffer_tests {
     //! these tests assert both that the helper succeeds and that a
     //! large round-tripped payload actually fits.
 
+    #[cfg(unix)]
     use super::bump_recv_buffer;
+    #[cfg(unix)]
     use super::bump_send_buffer;
+    #[cfg(unix)]
     use crate::ipc::packet::{RequestPacket, ResponsePacket};
+    #[cfg(unix)]
     use std::os::fd::AsRawFd;
+    #[cfg(unix)]
     use tokio::net::UnixDatagram;
 
     #[cfg(unix)]
