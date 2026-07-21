@@ -78,11 +78,16 @@ contracts are added under `crates/`. Extracted members so far:
   `MessageRole`, `TokenUsage`, `AgentMessage`, `MessageConverter`, `MessageContext`,
   `SteeringProvider`, `ContextTransformer`) shared by providers, sessions, quota,
   extensions, and the agentic loop.
+- `peko-subject` — canonical actor type and identifier newtypes (ADR-041):
+  `Subject`, `SubjectKind`, `PrincipalId`, `PrincipalDID`, `SubjectParseError`,
+  `subject_from_string_with_default_user`. Pure value/type layer with no inbound
+  edge from principal, agents, engine, daemon, providers, or extensions.
 
 ```text
 crates/
 ├── events/                 # Neutral agentic event contract (peko-events)
-└── message/                # Neutral message contract (peko-message)
+├── message/                # Neutral message contract (peko-message)
+└── subject/                # Canonical actor type (peko-subject, ADR-041)
 src/
 ├── agents/                 # Agent management (stateless manager, config, lifecycle, prompts)
 ├── auth/                   # Authentication and authorization (principal, ownership, JWT, API keys)

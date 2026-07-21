@@ -2172,6 +2172,7 @@ dependencies = [
  "once_cell",
  "peko-events",
  "peko-message",
+ "peko-subject",
  "rand",
  "regex",
  "reqwest",
@@ -2225,6 +2226,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "peko-subject"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
+ "uuid",
 ]
 
 [[package]]

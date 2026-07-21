@@ -1,0 +1,15 @@
+[package]
+name = "peko-subject"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Canonical actor type and identifier newtypes (ADR-041) — pure value layer"
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+uuid = { version = "1.7", features = ["v4"] }
+
+[dev-dependencies]
+toml = "0.8"
