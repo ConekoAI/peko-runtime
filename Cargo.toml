@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/events", "crates/extension-api", "crates/message", "crates/provider-api", "crates/quota", "crates/subject", "crates/tools-core"]
+members = [".", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/provider-api", "crates/quota", "crates/subject", "crates/tools-core"]
 
 [package]
 name = "peko"
@@ -65,6 +65,15 @@ peko-provider-api = { path = "crates/provider-api" }
 # re-exports through `crate::extensions::framework::types::*` for
 # backwards compatibility.
 peko-extension-api = { path = "crates/extension-api" }
+# Workspace member providing the extension framework host
+# implementation (Phase 8) — owns ExtensionCore, hook dispatch,
+# capability gate, async executor, transport, manager/store, scaffold,
+# skill catalog, integration, framework services, and the
+# SimpleRegistry/SharedRegistry utilities. Depends only on
+# peko-extension-api + peko-message + peko-tools-core + peko-provider-api
+# + peko-subject. The root re-exports through
+# `crate::extensions::framework::*` for backwards compatibility.
+peko-extension-host = { path = "crates/extension-host" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).
