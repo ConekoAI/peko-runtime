@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use tokio::fs;
 
-use crate::tools::core::Tool;
+use peko_tools_core::Tool;
 
 /// Grep tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,7 +121,7 @@ impl GrepTool {
     /// Resolve a path - expands `~`, then converts relative paths to
     /// absolute using workspace.
     fn resolve_path(&self, path: &str) -> PathBuf {
-        let path_buf = crate::common::paths::expand_tilde(path);
+        let path_buf = crate::paths::expand_tilde(path);
         if path_buf.is_absolute() {
             path_buf
         } else if let Some(ref workspace) = self.workspace_dir {

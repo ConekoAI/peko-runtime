@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/provider-api", "crates/quota", "crates/subject", "crates/tools-core"]
+members = [".", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/provider-api", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
 [package]
 name = "peko"
@@ -49,6 +49,11 @@ peko-quota = { path = "crates/quota" }
 # re-exports it through `crate::tools::core` for backwards
 # compatibility.
 peko-tools-core = { path = "crates/tools-core" }
+# Workspace member providing concrete built-in tool implementations
+# (Phase 10a ships filesystem tools; future Phase 10b+ commits will
+# move the async/cron/session/skill/task/messaging tools). Depends on
+# `peko-tools-core` for the `Tool` trait and external tokio/glob/regex.
+peko-tools-builtin = { path = "crates/tools-builtin" }
 # Workspace member providing the provider contract types
 # (ChatOptions, ChatResponse, StreamEvent, ContentDelta, StopReason,
 # BlockType, ToolDefinition, ContentBlockId, ThinkingEffort,

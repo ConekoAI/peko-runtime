@@ -2200,6 +2200,7 @@ dependencies = [
  "peko-provider-api",
  "peko-quota",
  "peko-subject",
+ "peko-tools-builtin",
  "peko-tools-core",
  "rand",
  "regex",
@@ -2346,6 +2347,25 @@ dependencies = [
  "serde",
  "toml",
  "uuid",
+]
+
+[[package]]
+name = "peko-tools-builtin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "dirs",
+ "glob",
+ "peko-tools-core",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

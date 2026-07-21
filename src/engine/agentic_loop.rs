@@ -12,11 +12,11 @@
 //! - Event semantics are uniform across all consumers
 
 use crate::agents::prompt::context::CapabilityDiffTracker;
-use crate::agents::prompt::renderer::HOOK_TIMEOUT;
 use crate::agents::prompt::{PromptRenderer, TurnPromptContext};
 use crate::agents::Agent;
 use crate::common::types::message::{ContentBlock, LlmMessage};
 use crate::engine::{AgenticEvent, LifecyclePhase};
+use peko_tools_core::HOOK_TIMEOUT;
 use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
 use crate::extensions::framework::types::{HookInput, ToolExposure};
