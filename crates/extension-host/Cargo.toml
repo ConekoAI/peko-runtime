@@ -1,0 +1,35 @@
+[package]
+name = "peko-extension-host"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Extension framework host (Phase 8) — owns the SimpleRegistry/SharedRegistry utilities, the SessionInbox/InboxSinkProvider/InboxSinkRegistry cross-boundary traits and concrete types, and the DaemonTransport/DaemonResponse transport projection. Phase 8 commit 1 ships these trait contracts; commit 2 will additionally move the framework host implementation (ExtensionCore, hook dispatch, capability gate, async executor, transport, manager/store, scaffold, skill catalog, integration, framework services) once the remaining root couplings (LlmResolver / PrincipalMessageService / VaultAccess / PathResolver / SpawnCleanupPolicy) are lifted into service traits. Depends only on peko-extension-api + peko-message + peko-tools-core + peko-provider-api + peko-subject."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+peko-extension-api = { path = "../extension-api" }
+peko-message = { path = "../message" }
+peko-tools-core = { path = "../tools-core" }
+peko-provider-api = { path = "../provider-api" }
+peko-subject = { path = "../subject" }
+
+async-trait = "0.1"
+async-stream = "0.3"
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+# dirs is used by the inlined `default_async_tasks_dir()` helper that
+# mirrors `src/common/paths.rs::default_data_dir()`. The two MUST stay
+# in sync; see the comment on `default_async_tasks_dir`.
+dirs = "5.0"
+tokio = { version = "1.35", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.7", features = ["v4", "serde"] }
+jsonschema = { version = "0.48", default-features = false }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.35", features = ["full"] }

@@ -9,7 +9,13 @@ pub mod json_utils;
 pub mod paths;
 pub mod persistence;
 pub mod process;
-pub mod registry;
+// `registry` was moved to `peko-extension-host` in Phase 8. The
+// shim keeps `crate::common::registry::*` paths working until
+// Phase 10 deletes it (the only non-framework consumer is
+// `tools/builtin/session.rs`, which moves to `peko-tools-builtin`).
+pub mod registry {
+    pub use peko_extension_host::registry::*;
+}
 pub mod secret_store;
 pub mod services;
 pub mod time;
