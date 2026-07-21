@@ -346,6 +346,27 @@ impl Daemon {
             }
         });
 
+        // Phase 10b: install the cron runtime port so the
+        // `Cron{Create,Delete,List}Tool`s (which live in
+        // `peko-tools-builtin` and cannot import daemon state directly)
+        // can dispatch through the F37 capability-gated funnel. The
+        // adapter wraps a fresh `DaemonClient` connected back to the
+        // IPC server we just spawned above. Idempotent — repeated calls
+        // with the same adapter are a no-op.
+        match crate::cron::daemon_adapter::DaemonCronAdapter::connect().await {
+            Ok(adapter) => {
+                let adapter = std::sync::Arc::new(adapter);
+                adapter.install_as_global();
+                info!("🕓 Cron runtime port installed (DaemonCronAdapter)");
+            }
+            Err(e) => warn!(
+                "Failed to install cron runtime port: {e}. \
+                 CronCreate/CronDelete/CronList tools will fail until the \
+                 IPC server is reachable; the daemon cron engine itself \
+                 still runs."
+            ),
+        }
+
         // Create polling intervals
         let mut poll_tick = interval(self.config.poll_interval);
         let mut maintenance_tick = interval(self.config.maintenance_interval);

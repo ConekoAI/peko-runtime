@@ -21,10 +21,17 @@ glob = "0.3"
 regex = "1.10"
 # base64 encoding for image reads/writes.
 base64 = "0.22"
-# File mtime formatting for Read/Write metadata.
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Schedule validation in `cron::resolve_schedule_kind`.
+cron = "0.12"
+# Timezone resolution in `cron::calculate_next_run` for `ScheduleKind::Cron`.
+chrono-tz = "0.10"
+# File mtime formatting for Read/Write metadata + cron job DTOs.
+# `serde` feature is needed to (de)serialize `DateTime<Utc>` in `CronJob`.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 # Home directory lookup for tilde expansion in `paths::expand_tilde`.
 dirs = "5.0"
+# UUID generation for cron job IDs in `cron::resolve_label`.
+uuid = { version = "1.10", features = ["v4"] }
 tracing = "0.1"
 
 [dev-dependencies]
