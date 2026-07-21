@@ -353,9 +353,14 @@ impl ToolFactory {
         // Session introspection tool (unified)
         if config.enable_session_tools {
             registry.register("session", true, || {
-                Arc::new(SessionTool::new(Box::new(crate::tools::SessionCache::new(
-                    "main",
-                ))))
+                // Phase 10d: `SessionTool` now lives in peko_tools_builtin and
+                // takes a `SharedSessionRuntime` (Arc<dyn SessionRuntime>).
+                // The legacy placeholder `SessionCache` is provided by
+                // peko_tools_builtin and exposed here for back-compat.
+                let cache = std::sync::Arc::new(crate::tools::SessionCache::new("main"));
+                Arc::new(SessionTool::new(
+                    cache.as_shared() as peko_tools_builtin::session::SharedSessionRuntime
+                ))
             });
         }
 
