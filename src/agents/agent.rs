@@ -152,7 +152,6 @@ impl Agent {
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
     /// Extension tools (Universal and MCP) are registered via `ExtensionStore` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
-        use crate::tools::builtin::session::SessionIntrospector;
         use crate::tools::{AgentTool, SessionTool, Tool};
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
@@ -175,12 +174,18 @@ impl Agent {
         // Agent-specific tools (not part of ToolRuntime::register_builtins)
         let mut tools: Vec<Arc<dyn Tool>> = vec![];
 
-        // Add session introspection tool backed by the real session manager
-        let session_registry = SessionIntrospector::new(
+        // Add session introspection tool backed by the real session manager.
+        // Phase 10d: `SessionTool` lives in peko_tools_builtin and speaks to a
+        // `SessionRuntime` port trait; the production adapter is
+        // `SessionManagerRuntime` (alias for the legacy `SessionIntrospector`).
+        let session_runtime = crate::session::session_runtime_impl::SessionManagerRuntime::new(
             self.session_manager.clone(),
             self.current_session_id.clone(),
         );
-        tools.push(Arc::new(SessionTool::new(Box::new(session_registry))));
+        tools.push(Arc::new(SessionTool::new(
+            std::sync::Arc::new(session_runtime)
+                as peko_tools_builtin::session::SharedSessionRuntime,
+        )));
 
         // Add Agent tool with executor and session provider. When this agent
         // runs as a Principal root agent, scope the tool to the principal
@@ -195,19 +200,19 @@ impl Agent {
         )));
 
         // Add planning todo (Task*) tools backed by the agent's session storage.
+        // Phase 10d: the tools now speak to a `TodoRuntime` port trait; the
+        // adapter is constructed here so the built-in crate stays free of
+        // root-only deps.
         if self.config.enable_task_tools {
             if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
                 let todo_storage = Arc::new(crate::session::todos::TodoStorage::new(sessions_dir));
-                tools.push(Arc::new(crate::tools::TaskCreateTool::new(
-                    todo_storage.clone(),
-                )));
-                tools.push(Arc::new(crate::tools::TaskGetTool::new(
-                    todo_storage.clone(),
-                )));
-                tools.push(Arc::new(crate::tools::TaskListTool::new(
-                    todo_storage.clone(),
-                )));
-                tools.push(Arc::new(crate::tools::TaskUpdateTool::new(todo_storage)));
+                let runtime = std::sync::Arc::new(
+                    crate::session::todo_runtime_impl::TodoStorageRuntime::new(todo_storage),
+                );
+                tools.push(Arc::new(crate::tools::TaskCreateTool::new(runtime.clone())));
+                tools.push(Arc::new(crate::tools::TaskGetTool::new(runtime.clone())));
+                tools.push(Arc::new(crate::tools::TaskListTool::new(runtime.clone())));
+                tools.push(Arc::new(crate::tools::TaskUpdateTool::new(runtime)));
             } else {
                 tracing::warn!(
                     "Session storage directory not available for agent '{}'; Task* tools will not be registered",

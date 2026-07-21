@@ -250,8 +250,12 @@ impl BuiltinToolAdapter {
 
         // Session introspection tool (unified)
         if config.enable_session_tools && !disabled_set.contains("session") {
-            let registry = crate::tools::SessionCache::new("main");
-            let tool = Arc::new(SessionTool::new(Box::new(registry)));
+            // Phase 10d: SessionTool takes Arc<dyn SessionRuntime>; the
+            // SessionCache placeholder is provided by peko_tools_builtin.
+            let registry = std::sync::Arc::new(crate::tools::SessionCache::new("main"));
+            let tool = Arc::new(SessionTool::new(
+                registry.as_shared() as peko_tools_builtin::session::SharedSessionRuntime
+            ));
             Self::register_tool_system(core, tool).await?;
         }
 

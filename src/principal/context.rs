@@ -322,9 +322,14 @@ async fn install_principal_tool_bag(
     // Per-principal enablement and workspace state are resolved at handle
     // time from the `ToolContext` carried with each invocation. Scoped to
     // this principal_id so concurrent principals each see their own Skill.
-    if let Err(e) =
-        BuiltinToolAdapter::register_tool(core.as_ref(), Arc::new(SkillTool::new()), principal_id)
-            .await
+    if let Err(e) = BuiltinToolAdapter::register_tool(
+        core.as_ref(),
+        Arc::new(SkillTool::new(std::sync::Arc::new(
+            crate::extensions::skill::skill_runtime_impl::SkillCatalogRuntime::new(),
+        ))),
+        principal_id,
+    )
+    .await
     {
         tracing::warn!("SkillTool registration failed during core build: {e}");
     }

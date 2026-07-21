@@ -103,7 +103,12 @@ jobs:
               # the new path is platform-neutral (uses the `regex`
               # crate, no libc/cfg gates) so the old `src/...` entry
               # would always be stale going forward.
-              - 'src/tools/builtin/skill/preprocess.rs'
+              # Phase 10d moved skill/preprocess.rs into peko-tools-builtin
+              # as crates/tools-builtin/src/skill/body.rs (which uses
+              # tokio::process::Command — Unix-only); src/.../preprocess.rs
+              # is now a 5-line re-export shim with no platform-specific
+              # code, so the old entry would always be stale going forward.
+              - 'crates/tools-builtin/src/skill/body.rs'
               - 'tests/common/cli.rs'
 
   # ── Tier 0b: Lint — Issue-015 boundary rules, every PR ───────────────

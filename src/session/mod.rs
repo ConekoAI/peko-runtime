@@ -48,6 +48,13 @@ pub mod unified;
 // Context compaction (absorbed from src/compaction/ in issue #31b)
 pub mod compaction;
 
+// Phase 10d runtime-service port adapters — wrap root-owned state
+// (`TodoStorage`, `SessionManager`) so the built-in tools lifted into
+// `peko_tools_builtin::{tasks,session}` can speak to a `TodoRuntime`
+// / `SessionRuntime` port trait instead of importing root internals.
+pub mod session_runtime_impl;
+pub mod todo_runtime_impl;
+
 // Re-export Session (replaces both BaseSession and SimpleSession)
 pub use context::SessionContext;
 pub use events::{
