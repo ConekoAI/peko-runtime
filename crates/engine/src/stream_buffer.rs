@@ -3,7 +3,7 @@
 //! Similar to `OpenClaw`'s `DraftStreamLoop` but generalized
 //! for `AgenticEvents` instead of text strings.
 
-use crate::engine::AgenticEvent;
+use crate::AgenticEvent;
 use std::time::{Duration, Instant};
 
 /// Coalescing configuration

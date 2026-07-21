@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/provider-api", "crates/quota", "crates/subject", "crates/tools-core"]
+members = [".", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/provider-api", "crates/quota", "crates/subject", "crates/tools-core"]
 
 [package]
 name = "peko"
@@ -12,6 +12,14 @@ license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
 [dependencies]
+# Workspace member providing the agentic engine. Phase 9a extracted
+# the pure-dependency files (chunker, event_processor, state,
+# stream_buffer, stream_orchestrator, tool_stream, parallel_gate,
+# error, events re-export). The remaining root-coupled files
+# (agentic_loop, compaction_orchestrator, tool_executor, tool_runtime,
+# async_completion, stream_types) stay in src/engine/ until Phase 9b
+# lifts the agent / session / tools couplings.
+peko-engine = { path = "crates/engine" }
 # Workspace member providing the neutral agentic event contract. The root
 # re-exports it through `engine::events` for compatibility.
 peko-events = { path = "crates/events" }

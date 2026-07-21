@@ -5,10 +5,10 @@
 //! - Orchestration Layer (this module): Transforms `StreamEvents` into `AgenticEvents`
 //! - Channel Layer: Renders `AgenticEvents` to platform-specific output
 
-use crate::engine::{
+use crate::{
     AgenticEvent, BlockChunker, ChunkerConfig, CoalesceConfig, LifecyclePhase, StreamBuffer,
 };
-use crate::providers::StreamEvent;
+use peko_provider_api::StreamEvent;
 
 /// Delivery mode for streaming
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -350,9 +350,9 @@ impl StreamOrchestrator {
     fn handle_tool_end(
         &mut self,
         _index: usize,
-        tool_call: crate::common::types::message::ContentBlock,
+        tool_call: peko_message::ContentBlock,
     ) -> Vec<AgenticEvent> {
-        if let crate::common::types::message::ContentBlock::ToolCall {
+        if let peko_message::ContentBlock::ToolCall {
             id,
             name,
             arguments,
@@ -370,7 +370,7 @@ impl StreamOrchestrator {
     }
 
     /// Handle stream completion
-    fn handle_done(&mut self, _stop_reason: crate::providers::StopReason) -> Vec<AgenticEvent> {
+    fn handle_done(&mut self, _stop_reason: peko_provider_api::StopReason) -> Vec<AgenticEvent> {
         // Finalize will be called separately to emit the end event
         vec![]
     }

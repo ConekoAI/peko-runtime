@@ -222,7 +222,7 @@ mod tests {
     /// `tool_supports_parallel` default.
     #[tokio::test]
     async fn parallel_gate_admits_default_parallelizable_tool_with_read_lock() {
-        use crate::tools::Tool;
+        use peko_tools_core::Tool;
         struct DefaultTool;
         #[async_trait::async_trait]
         impl Tool for DefaultTool {
@@ -256,7 +256,7 @@ mod tests {
     /// held, no second admission succeeds within the test budget.
     #[tokio::test]
     async fn parallel_gate_admits_non_parallelizable_tool_with_write_lock() {
-        use crate::tools::Tool;
+        use peko_tools_core::Tool;
         struct MutatingTool;
         #[async_trait::async_trait]
         impl Tool for MutatingTool {
