@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/events", "crates/message", "crates/subject"]
+members = [".", "crates/events", "crates/message", "crates/subject", "crates/quota"]
 
 [package]
 name = "peko"
@@ -28,6 +28,11 @@ peko-message = { path = "crates/message" }
 # providers, or extensions. The root re-exports it through
 # `crate::subject` and `crate::auth` for backwards compatibility.
 peko-subject = { path = "crates/subject" }
+# Workspace member providing per-principal token quota (F18). Owns
+# QuotaMeter, QuotaScope, QuotaState, QuotaConfig, QuotaError as one
+# coherent domain. Depends on peko-message for TokenUsage; the root
+# re-exports it through `crate::quota` for backwards compatibility.
+peko-quota = { path = "crates/quota" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).

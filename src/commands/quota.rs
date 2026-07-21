@@ -79,30 +79,12 @@ pub enum QuotaCommands {
     },
 }
 
-/// Parse a `QuotaCycle` from a CLI string. Accepts the canonical
-/// lowercase forms (`hourly` / `daily` / `weekly` / `monthly`)
-/// matching the `serde(rename_all = "lowercase")` wire format.
+/// Parse a `QuotaCycle` from a CLI string. Delegates to the
+/// canonical `FromStr` impl that lives in `peko-quota` next to the
+/// type itself (the orphan rule forbids defining it here, because
+/// `QuotaCycle` now belongs to the `peko-quota` crate).
 fn parse_cycle(s: &str) -> Result<QuotaCycle, String> {
     QuotaCycle::from_str(s).map_err(|e: &'static str| e.to_string())
-}
-
-impl FromStr for QuotaCycle {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "hourly" => Ok(Self::Hourly),
-            "daily" => Ok(Self::Daily),
-            "weekly" => Ok(Self::Weekly),
-            "monthly" => Ok(Self::Monthly),
-            other => Err(Box::leak(
-                format!(
-                    "invalid quota cycle '{other}': expected hourly, daily, weekly, or monthly"
-                )
-                .into_boxed_str(),
-            )),
-        }
-    }
 }
 
 async fn connect_daemon() -> Result<DaemonClient> {

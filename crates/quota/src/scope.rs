@@ -140,7 +140,7 @@ impl QuotaScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::quota::QuotaConfig;
+    use crate::QuotaConfig;
     use chrono::Utc;
 
     #[tokio::test]
@@ -242,7 +242,7 @@ mod tests {
         QuotaScope::with(meter, async {
             // Spawn from inside the scope.
             let observed = Arc::clone(&observed_in_spawn);
-            let _handle = tokio::spawn(async move {
+            tokio::spawn(async move {
                 *observed.lock().unwrap() = QuotaScope::current().is_some();
             })
             .await
