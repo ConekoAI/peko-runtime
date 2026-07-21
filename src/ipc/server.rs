@@ -325,6 +325,7 @@ impl IpcServer {
         // send buffer so handler responses that exceed the platform
         // default (8 KiB on Linux for UDP, 9 KiB on macOS) still fit
         // atomically. `provider_list` is the worst offender today.
+        #[cfg(unix)]
         if let Err(e) = bump_send_buffer(&socket) {
             warn!(
                 "Failed to set UDP SO_SNDBUF to {} bytes ({}); responses larger \
@@ -1016,6 +1017,7 @@ mod buffer_tests {
     /// Silences the unused-import lint when running only the bump
     /// test (the `RequestPacket` is wired in for a future integration
     /// test that drives a real handler through the server loop).
+    #[cfg(unix)]
     #[allow(dead_code)]
     fn _ensure_request_packet_in_scope() -> RequestPacket {
         RequestPacket::Ping { request_id: 1 }
