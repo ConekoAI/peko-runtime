@@ -1,0 +1,18 @@
+[package]
+name = "peko-message"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Neutral message contract (ContentBlock, LlmMessage, MessageRole, TokenUsage, …) shared by Peko runtime components"
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+anyhow = "1.0"
+
+[dev-dependencies]
+tokio = { version = "1.35", features = ["macros", "rt"] }
