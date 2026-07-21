@@ -32,18 +32,13 @@
 use peko_message::TokenUsage;
 use peko_subject::Subject;
 
-/// Tool call information in response
-#[derive(Debug, Clone)]
-pub struct ToolCallInfo {
-    /// Tool call ID
-    pub id: String,
-    /// Tool name
-    pub name: String,
-    /// Tool parameters
-    pub parameters: serde_json::Value,
-    /// Tool result (if available)
-    pub result: Option<String>,
-}
+// `ToolCallInfo` lives in `peko_message` (Phase 9b.1 lift) so that
+// `peko_engine` can hold `Vec<ToolCallInfo>` on `ChannelOutput`
+// without taking a host-crate dep just for a 4-field DTO.
+// Re-exported here so every existing
+// `peko_extension_host::principal_message::ToolCallInfo` call site
+// keeps compiling unchanged.
+pub use peko_message::ToolCallInfo;
 
 /// Message request for high-level (principal-level) message execution
 ///

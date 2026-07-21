@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+mod tool_call_info;
+
+/// Lightweight tool call DTO with optional result (Phase 9b.1 lift).
+///
+/// Re-exported for callers that already use the
+/// `peko_extension_host::principal_message::ToolCallInfo` path.
+pub use tool_call_info::ToolCallInfo;
+
 /// Unique identifier for messages
 pub type MessageId = String;
 

@@ -37,6 +37,7 @@ pub mod parallel_gate;
 pub mod state;
 pub mod stream_buffer;
 pub mod stream_orchestrator;
+pub mod stream_types;
 pub mod tool_stream;
 
 // Convenience re-exports at the crate root. Mirrors the surface that
@@ -50,6 +51,7 @@ pub use execution::{ExecutionMode, TaskId, TaskStatus, TaskSummary};
 pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};
 pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrator};
+pub use stream_types::{ChannelOutput, EventStream, StreamingConfig, default_process_stream};
 pub use tool_stream::{
     parse_tool_calls_from_text, StreamingToolCall, ToolCallParseError, ToolCallStreamParser,
 };

@@ -5,7 +5,11 @@
 //! `src/channels/` as part of ADR-017 — channels are now external gateway
 //! extensions, but the core stream types remain part of the engine.
 
+use crate::chunker::BreakPreference;
+use crate::AgenticEvent;
 use anyhow::Result;
+use peko_message::ToolCallInfo;
+use peko_provider_api::TokenUsage;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot;
 
@@ -20,7 +24,7 @@ use tokio::sync::oneshot;
 #[derive(Debug)]
 pub struct EventStream {
     /// Receiver for agentic events
-    pub receiver: Receiver<crate::engine::AgenticEvent>,
+    pub receiver: Receiver<AgenticEvent>,
     /// Completion signal - resolves when all session writes are complete
     ///
     /// This eliminates the race condition where the consumer receives the End
@@ -41,9 +45,9 @@ pub struct ChannelOutput {
     /// Final text response
     pub final_text: String,
     /// Tool calls made during execution
-    pub tool_calls: Vec<crate::agents::stateless_service::ToolCallInfo>,
+    pub tool_calls: Vec<ToolCallInfo>,
     /// Token usage statistics
-    pub usage: crate::providers::TokenUsage,
+    pub usage: TokenUsage,
     /// Session ID
     pub session_id: String,
     /// Whether this was a new session
@@ -60,7 +64,7 @@ impl ChannelOutput {
         Self {
             final_text: String::new(),
             tool_calls: Vec::new(),
-            usage: crate::providers::TokenUsage::default(),
+            usage: TokenUsage::default(),
             session_id: session_id.into(),
             is_new_session: false,
             success: true,
@@ -82,7 +86,7 @@ pub struct StreamingConfig {
     /// Maximum characters per block
     pub max_chars: usize,
     /// Break preference: paragraph, sentence, whitespace, hard
-    pub break_preference: crate::engine::chunker::BreakPreference,
+    pub break_preference: BreakPreference,
     /// Show tool execution in real-time
     pub show_tools: bool,
     /// Show thinking/typing indicators
@@ -101,7 +105,7 @@ impl Default for StreamingConfig {
             enabled: false,
             min_chars: 100,
             max_chars: 2000,
-            break_preference: crate::engine::chunker::BreakPreference::Sentence,
+            break_preference: BreakPreference::Sentence,
             show_tools: true,
             show_status: true,
             coalesce: false,
@@ -119,7 +123,7 @@ impl Default for StreamingConfig {
 /// This implementation awaits the completion signal to ensure session
 /// persistence completes before returning, eliminating race conditions.
 pub async fn default_process_stream(event_stream: EventStream) -> Result<ChannelOutput> {
-    use crate::engine::{AgenticEvent, LifecyclePhase};
+    use crate::LifecyclePhase;
 
     let mut output = ChannelOutput::new(&event_stream.session_id);
     output.is_new_session = event_stream.is_new_session;
