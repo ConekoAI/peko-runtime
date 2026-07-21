@@ -17,11 +17,7 @@
 //!   - [`transport::DaemonTransport`] / [`transport::DaemonResponse`] —
 //!     the host IPC transport depends only on this trait; root's
 //!     `ipc::DaemonClient` implements it and is the production
-//!     adapter. (The full transport trait surface —
-//!     `AsyncTaskTransport` — stays in root because the concrete
-//!     `create_transport` factory depends on
-//!     `crate::ipc::ConnectionManager`. Phase 8 commit 2 will move
-//!     it once the factory's root-coupling is lifted.)
+//!     adapter.
 //!
 //!   Phase 8 commit 1 also moves [`registry::SimpleRegistry`] /
 //!   [`registry::SharedRegistry`] out of `src/common/registry.rs`
@@ -29,20 +25,22 @@
 //!   backwards compatibility until Phase 10 deletes it.
 //!
 //! - **Commit 2:** Define the remaining service traits
-//!   (`LlmResolver`, `PrincipalMessageService`, `VaultAccess`,
-//!   `PathResolver`) and move `SpawnCleanupPolicy` so the
-//!   framework's other root couplings (which the Phase 8 audit
-//!   surfaced) can be lifted. Then bulk-move the framework host
-//!   files (registry, async executor, transport, manager, scaffold,
-//!   services, integration, adapters, protocols, store, skill
-//!   catalog) into this crate, replacing each with a 1-line root
-//!   shim re-export.
+//!   (`PrincipalMessageService`, `VaultAccess`,
+//!   `PathResolver`) and move `SpawnCleanupPolicy` so the framework's
+//!   other root couplings (which the Phase 8 audit surfaced) can
+//!   later be lifted. The bulk move of the framework implementation
+//!   files is deferred to a follow-up PR — Phase 8 commit 2 ships
+//!   only the trait contracts and root impls so the audit's P0
+//!   coupling risks stay bounded.
 
 pub mod inbox;
 pub mod paths;
+pub mod principal_message;
 pub mod registry;
+pub mod subagent;
 pub mod transport;
 pub mod types;
+pub mod vault;
 
 // Re-export peko-extension-api surface for callers that want
 // `peko_extension_host::api::*`.
@@ -53,6 +51,11 @@ pub use inbox::{
     CompletionEvent, InboxItem, InboxSinkProvider, InboxSinkRegistry, SessionInbox,
     SessionInboxSink, SteeringMessage,
 };
-pub use paths::default_async_tasks_dir;
+pub use paths::{default_async_tasks_dir, default_data_dir, PathResolver};
+pub use principal_message::{
+    PrincipalMessageRequest, PrincipalMessageResponse, PrincipalMessageService, ToolCallInfo,
+};
 pub use registry::{SharedRegistry, SimpleRegistry};
+pub use subagent::SpawnCleanupPolicy;
 pub use transport::{DaemonResponse, DaemonResponseStream, DaemonTransport};
+pub use vault::VaultAccess;

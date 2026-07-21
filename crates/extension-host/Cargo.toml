@@ -3,9 +3,15 @@ name = "peko-extension-host"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
-description = "Extension framework host (Phase 8) — owns the SimpleRegistry/SharedRegistry utilities, the SessionInbox/InboxSinkProvider/InboxSinkRegistry cross-boundary traits and concrete types, and the DaemonTransport/DaemonResponse transport projection. Phase 8 commit 1 ships these trait contracts; commit 2 will additionally move the framework host implementation (ExtensionCore, hook dispatch, capability gate, async executor, transport, manager/store, scaffold, skill catalog, integration, framework services) once the remaining root couplings (LlmResolver / PrincipalMessageService / VaultAccess / PathResolver / SpawnCleanupPolicy) are lifted into service traits. Depends only on peko-extension-api + peko-message + peko-tools-core + peko-provider-api + peko-subject."
+description = "Extension framework host (Phase 8) — owns the SimpleRegistry/SharedRegistry utilities, the SessionInbox/InboxSinkProvider/InboxSinkRegistry cross-boundary traits and concrete types, and the DaemonTransport/DaemonResponse transport projection. Phase 8 commit 1 ships these trait contracts; commit 2 additionally defines the PrincipalMessageService / VaultAccess / PathResolver service traits and relocates SpawnCleanupPolicy so the framework's remaining root couplings (which the Phase 8 audit surfaced) can later be lifted. The bulk move of the framework implementation files is deferred to a follow-up PR — commit 2 ships only the trait contracts and root impls so the audit's P0 coupling risks stay bounded. Depends only on peko-extension-api + peko-message + peko-tools-core + peko-provider-api + peko-subject."
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
+
+[features]
+# The `test-utils` feature gates the `TestSyncHandler` block_until_tool
+# primitive. Mirrors the root crate's `test-utils` feature so callers
+# that rely on inline lib tests in the host crate keep compiling.
+test-utils = []
 
 [dependencies]
 peko-extension-api = { path = "../extension-api" }
@@ -28,8 +34,10 @@ tokio = { version = "1.35", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.7", features = ["v4", "serde"] }
-jsonschema = { version = "0.48", default-features = false }
 tracing = "0.1"
+# `secrecy` is needed by the `VaultAccess` trait (returns `SecretString`).
+# Mirrors the root crate's `secrecy = "0.10"` dep.
+secrecy = { version = "0.10", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["full"] }
