@@ -85,6 +85,13 @@ pub struct PrincipalManager {
     /// the principal's meter. `None` for tests / contexts that don't
     /// have a daemon-managed `PeerRegistry`.
     peer_registry: Option<Arc<crate::principal::peer::PeerRegistry>>,
+    /// Runtime-owned, append-only chat-log store. When present, every
+    /// accepted peer chat-channel message is recorded alongside its
+    /// authoritative response. Pure peer-chat channels
+    /// (Cli/Http/Hub/A2a/P2p/Webhook) are persisted; automation
+    /// channels (Cron/FileWatch) are excluded. `None` for tests /
+    /// non-daemon contexts that don't need consumer-visible history.
+    chat_log_store: Option<Arc<crate::chat_log::ChatLogStore>>,
 }
 
 impl PrincipalManager {
@@ -121,6 +128,7 @@ impl PrincipalManager {
             extension_store: None,
             observability: None,
             peer_registry: None,
+            chat_log_store: None,
         }
     }
 
@@ -198,6 +206,26 @@ impl PrincipalManager {
     #[must_use]
     pub fn peer_registry(&self) -> Option<&Arc<crate::principal::peer::PeerRegistry>> {
         self.peer_registry.as_ref()
+    }
+
+    /// Attach the runtime-owned chat-log store. When attached, peer
+    /// chat-channel messages accepted by `receive`/`receive_streaming`
+    /// are persisted to the chat log alongside their authoritative
+    /// response. `None` (the default) disables recording and is the
+    /// right choice for tests / non-daemon contexts.
+    #[must_use]
+    pub fn with_chat_log_store(
+        mut self,
+        chat_log_store: Arc<crate::chat_log::ChatLogStore>,
+    ) -> Self {
+        self.chat_log_store = Some(chat_log_store);
+        self
+    }
+
+    /// Optional reference to the attached chat-log store.
+    #[must_use]
+    pub fn chat_log_store(&self) -> Option<&Arc<crate::chat_log::ChatLogStore>> {
+        self.chat_log_store.as_ref()
     }
 
     /// Create a new Principal from config, generate a real identity, and load
@@ -398,6 +426,13 @@ impl PrincipalManager {
             .ok_or_else(|| PrincipalManagerError::NotFound(name.to_string()))?;
 
         let workspace_path = principal.workspace_path.clone();
+        // Snapshot the principal's stable DID before we drop the
+        // in-memory entries — `chat_log_store.remove_principal`
+        // deletes the principal's shard directory keyed by that
+        // DID. The caller-view shards (e.g. principal-A's view of
+        // a conversation with principal-B) are NOT touched here:
+        // they live under the caller's DID, not this principal's.
+        let principal_did = principal.did().await;
 
         // Remove from in-memory indexes first.
         {
@@ -420,6 +455,26 @@ impl PrincipalManager {
         if data_dir.exists() {
             if let Err(e) = tokio::fs::remove_dir_all(&data_dir).await {
                 tracing::warn!("failed to remove principal data dir {data_dir:?}: {e}");
+            }
+        }
+
+        // Delete this principal's chat-log shards. Only the
+        // principal's own views go; counterpart views held on
+        // other principals' shards remain because they are owned
+        // by the other principal. Cleanup failures are surfaced —
+        // silent retention of a removed principal's logs would
+        // leak history the principal was promised to lose.
+        if let Some(store) = self.chat_log_store.as_ref() {
+            if let Err(error) = store.remove_principal(&principal_did).await {
+                tracing::warn!(
+                    principal_did = %principal_did.0,
+                    %error,
+                    "failed to remove chat-log shards for principal"
+                );
+                return Err(PrincipalManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("chat-log cleanup failed: {error}"),
+                )));
             }
         }
 
@@ -697,33 +752,49 @@ impl PrincipalManager {
         let (slash_response, message) = self
             .preprocess_slash(&principal, message, false, OutputFormat::Human)
             .await?;
-        if let Some(content) = slash_response {
-            return Ok(PrincipalResponse::text(content));
+        if let Some(content) = slash_response.as_ref() {
+            // Slash responses are part of what the consumer sees —
+            // record them as the principal's reply to the (unlogged)
+            // slash input.
+            self.record_response(&principal, &peer, content).await;
+            return Ok(PrincipalResponse::text(content.clone()));
         }
 
-        let ctx = self
-            .build_router_context(&principal, peer, message, channel, override_model)
+        // Record the raw input *before* dispatching. Recording failure
+        // rejects dispatch so the consumer cannot believe they sent
+        // something that did not enter the principal's chat-log shard.
+        self.record_input(&principal, &peer, &message, &channel)
             .await?;
 
+        let ctx = self
+            .build_router_context(&principal, peer.clone(), message, channel, override_model)
+            .await?;
+
+        let response_peer = ctx.peer.clone();
         // Serial queue per peer: only one root-agent run may be active for a
         // given peer/session at a time.  If a message arrives while the
         // root agent is already running, queue it as a steering message in the
         // same session inbox; the active run will drain it on its next
         // iteration.
-        let session_id = super::routers::root::root_session_id(&ctx.peer);
+        let session_id = super::routers::root::root_session_id(&response_peer);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
                 let decision = principal.router.route(ctx).await?;
                 match decision {
-                    RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
+                    RouteDecision::Respond { response } => {
+                        self.record_response(&principal, &response_peer, &response)
+                            .await;
+                        Ok(PrincipalResponse::text(response))
+                    }
                 }
             }
             None => {
                 let inbox = self.inbox_registry.get_or_create(&session_id).await;
                 inbox.push(SteeringMessage::new(ctx.message.clone()));
-                Ok(PrincipalResponse::queued(format!(
-                    "Queued for root agent session {session_id}."
-                )))
+                let queued = format!("Queued for root agent session {session_id}.");
+                self.record_response(&principal, &response_peer, &queued)
+                    .await;
+                Ok(PrincipalResponse::queued(queued))
             }
         }
     }
@@ -759,19 +830,24 @@ impl PrincipalManager {
         let (slash_response, message) = self
             .preprocess_slash(&principal, message, false, OutputFormat::Human)
             .await?;
-        if let Some(content) = slash_response {
-            return Ok(PrincipalResponse::text(content));
+        if let Some(content) = slash_response.as_ref() {
+            self.record_response(&principal, &peer, content).await;
+            return Ok(PrincipalResponse::text(content.clone()));
         }
 
-        let ctx = self
-            .build_router_context(&principal, peer, message, channel, override_model)
+        self.record_input(&principal, &peer, &message, &channel)
             .await?;
 
+        let ctx = self
+            .build_router_context(&principal, peer.clone(), message, channel, override_model)
+            .await?;
+
+        let response_peer = ctx.peer.clone();
         // Same serial-queue discipline as `receive`: only one root-agent
         // run may be active per peer/session. A message arriving while a
         // run is active is queued as a steering message (no streaming
         // events for the queued case).
-        let session_id = super::routers::root::root_session_id(&ctx.peer);
+        let session_id = super::routers::root::root_session_id(&response_peer);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
                 let decision = principal
@@ -779,16 +855,95 @@ impl PrincipalManager {
                     .route_streaming(ctx, on_event, None)
                     .await?;
                 match decision {
-                    RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
+                    RouteDecision::Respond { response } => {
+                        self.record_response(&principal, &response_peer, &response)
+                            .await;
+                        Ok(PrincipalResponse::text(response))
+                    }
                 }
             }
             None => {
                 let inbox = self.inbox_registry.get_or_create(&session_id).await;
                 inbox.push(SteeringMessage::new(ctx.message.clone()));
-                Ok(PrincipalResponse::queued(format!(
-                    "Queued for root agent session {session_id}."
-                )))
+                let queued = format!("Queued for root agent session {session_id}.");
+                self.record_response(&principal, &response_peer, &queued)
+                    .await;
+                Ok(PrincipalResponse::queued(queued))
             }
+        }
+    }
+}
+
+/// Pure peer-chat channels. Messages arriving on these channels are
+/// persisted to the runtime-owned chat log as consumer-visible
+/// conversation. Automation channels (Cron/FileWatch) are excluded
+/// because they represent scheduled triggers and file-system events,
+/// not user/principal conversation.
+fn is_peer_chat_channel(kind: &crate::principal::router::ChannelKind) -> bool {
+    use crate::principal::router::ChannelKind;
+    matches!(
+        kind,
+        ChannelKind::Cli
+            | ChannelKind::Http
+            | ChannelKind::Hub
+            | ChannelKind::A2a
+            | ChannelKind::P2p
+            | ChannelKind::Webhook
+    )
+}
+
+impl PrincipalManager {
+    /// Persist a peer chat-channel input to the chat-log shard for
+    /// `(principal_did, peer)`. Skipped silently for non-chat channels
+    /// and when no chat-log store is attached (tests / non-daemon).
+    ///
+    /// Persistence failure surfaces to the caller as
+    /// [`PrincipalManagerError::Internal`] so dispatch is rejected —
+    /// the consumer must not be allowed to believe they sent something
+    /// the principal never recorded.
+    async fn record_input(
+        &self,
+        principal: &Arc<Principal>,
+        peer: &Subject,
+        message: &str,
+        channel: &ChannelContext,
+    ) -> Result<(), PrincipalManagerError> {
+        let Some(store) = self.chat_log_store.as_ref() else {
+            return Ok(());
+        };
+        if !is_peer_chat_channel(&channel.kind) {
+            return Ok(());
+        }
+        let key = crate::chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
+        let entry = crate::chat_log::ChatLogMessage::new(peer.clone(), message.to_string(), None);
+        store
+            .append_message(&key, &entry)
+            .await
+            .map_err(|e| PrincipalManagerError::Config(format!("chat-log append: {e}")))
+    }
+
+    /// Persist the principal's authoritative response (or queued
+    /// acknowledgement) to the chat-log shard. Best-effort: a failed
+    /// write logs a warning but does not reject the response — the
+    /// caller has already invested in producing the answer.
+    async fn record_response(&self, principal: &Arc<Principal>, peer: &Subject, response: &str) {
+        let Some(store) = self.chat_log_store.as_ref() else {
+            return;
+        };
+        let key = crate::chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
+        let entry = crate::chat_log::ChatLogMessage::new(
+            crate::subject::Subject::Principal(principal.did().await),
+            response.to_string(),
+            None,
+        );
+        if let Err(e) = store.append_message(&key, &entry).await {
+            let did_str = principal.did().await.0;
+            tracing::warn!(
+                principal_did = %did_str,
+                peer = %peer,
+                error = %e,
+                "chat-log append (response) failed; response was returned to caller but not persisted"
+            );
         }
     }
 }

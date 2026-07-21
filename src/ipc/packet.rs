@@ -663,10 +663,16 @@ pub enum RequestPacket {
         name: String,
         /// None means "the principal's owner" (default view).
         peer: Option<crate::auth::Subject>,
-        /// Cap on number of events returned (default 50, max 1000).
+        /// Cap on number of messages returned (default 50, max 1000).
         limit: Option<usize>,
-        /// Only events newer than `now() - since_secs` are returned.
+        /// Only messages newer than `now() - since_secs` are returned.
         since_secs: Option<u64>,
+        /// Opaque pagination cursor from a previous `PrincipalLog`
+        /// response's `next_cursor`. `None` reads the latest page.
+        /// Malformed cursors and cursors bound to another thread are
+        /// rejected with `bad_cursor`.
+        #[serde(default)]
+        cursor: Option<String>,
     },
 
     #[serde(rename = "principal_export")]
@@ -1463,21 +1469,22 @@ pub enum ResponsePacket {
     #[serde(rename = "principal_sent_done")]
     PrincipalSentDone { request_id: u64, content: String },
 
-    /// Response to a `PrincipalLog` request. Carries the resolved
-    /// peer (substituted with the principal's owner if the request
-    /// omitted one), the session id whose events are returned (if a
-    /// session exists), the events themselves (oldest-first, capped
-    /// by `limit`), and a `truncated` flag indicating the file had
-    /// more entries than the cap. Errors emit `Error { code, message }`
-    /// with `code` in `"not_found" | "forbidden" | "internal_error"`.
+    /// Response to a `PrincipalLog` request. Returns one bounded page of
+    /// the runtime-owned chat log for `(principal_did, peer)` —
+    /// `messages` ordered oldest-to-newest, `next_cursor` opaque
+    /// for paging older pages, and `has_more` true when more pages
+    /// exist. Pre-launch clean cutover: no `session_id`, no
+    /// `HistoryEvent`s, no session-internal vocabulary. Errors emit
+    /// `Error { code, message }` with `code` in
+    /// `"not_found" | "forbidden" | "bad_cursor" | "internal_error"`.
     #[serde(rename = "principal_log")]
     PrincipalLog {
         request_id: u64,
         name: String,
         peer: crate::auth::Subject,
-        session_id: Option<String>,
-        events: Vec<crate::common::services::session_service::HistoryEvent>,
-        truncated: bool,
+        messages: Vec<crate::chat_log::ChatLogMessage>,
+        next_cursor: Option<String>,
+        has_more: bool,
     },
 
     #[serde(rename = "principal_exported")]
@@ -4880,13 +4887,15 @@ mod tests {
     #[test]
     fn test_principal_log_request_roundtrip() {
         // `peko log` IPC shape. The wire tag must match the CLI spelling
-        // and round-trip must preserve `peer`, `limit`, `since_secs`.
+        // and round-trip must preserve `peer`, `limit`, `since_secs`,
+        // and `cursor` (defaulted when omitted).
         let req = RequestPacket::PrincipalLog {
             request_id: 5200,
             name: "helper".to_string(),
             peer: Some(crate::auth::Subject::User("alice".to_string())),
             limit: Some(100),
             since_secs: Some(86_400),
+            cursor: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -4897,12 +4906,14 @@ mod tests {
                 peer,
                 limit,
                 since_secs,
+                cursor,
             } => {
                 assert_eq!(request_id, 5200);
                 assert_eq!(name, "helper");
                 assert_eq!(peer, Some(crate::auth::Subject::User("alice".to_string())));
                 assert_eq!(limit, Some(100));
                 assert_eq!(since_secs, Some(86_400));
+                assert_eq!(cursor, None);
             }
             _ => panic!("Wrong variant"),
         }
@@ -4915,20 +4926,20 @@ mod tests {
 
     #[test]
     fn test_principal_log_response_roundtrip() {
-        // Response shape: resolved peer, session_id, events array, truncated.
+        // Response shape: resolved peer, messages array, next_cursor,
+        // has_more. Pre-launch clean cutover from session_id/events/
+        // truncated.
         let resp = ResponsePacket::PrincipalLog {
             request_id: 6200,
             name: "helper".to_string(),
             peer: crate::auth::Subject::User("alice".to_string()),
-            session_id: Some("sess-abc".to_string()),
-            events: vec![
-                crate::common::services::session_service::HistoryEvent::Message {
-                    role: "user".to_string(),
-                    content: "hi".to_string(),
-                    timestamp: "2026-07-04T12:00:00Z".to_string(),
-                },
-            ],
-            truncated: false,
+            messages: vec![crate::chat_log::ChatLogMessage::new(
+                crate::auth::Subject::User("alice".to_string()),
+                "hi",
+                None,
+            )],
+            next_cursor: Some("opaque-cursor".to_string()),
+            has_more: true,
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
@@ -4937,16 +4948,17 @@ mod tests {
                 request_id,
                 name,
                 peer,
-                session_id,
-                events,
-                truncated,
+                messages,
+                next_cursor,
+                has_more,
             } => {
                 assert_eq!(request_id, 6200);
                 assert_eq!(name, "helper");
                 assert_eq!(peer, crate::auth::Subject::User("alice".to_string()));
-                assert_eq!(session_id.as_deref(), Some("sess-abc"));
-                assert_eq!(events.len(), 1);
-                assert!(!truncated);
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].text, "hi");
+                assert_eq!(next_cursor.as_deref(), Some("opaque-cursor"));
+                assert!(has_more);
             }
             _ => panic!("Wrong variant"),
         }

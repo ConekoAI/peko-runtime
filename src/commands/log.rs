@@ -1,4 +1,4 @@
-//! `peko log` — Inspect Principal activity
+//! `peko log` — Inspect Principal chat history
 //!
 //! Reads a peer's conversation thread with a Principal. The default view
 //! is the **owner-root view**: the conversation running on the
@@ -10,11 +10,15 @@
 //! - A non-owner peer can only read their own thread (matched by an
 //!   exact `Subject`).
 //! - There is no `peko session` command and there will never be one.
-//!   This is the only user-facing way to inspect a principal's working
-//!   state without running a turn.
+//!   This is the only user-facing way to inspect a principal's
+//!   consumer-visible conversation without running a turn.
+//!
+//! Internally the read path is the runtime-owned
+//! `ChatLogStore` (sharded by `(principal_did, peer)`), distinct
+//! from the principal's mutable session JSONL working memory.
 
+use crate::chat_log::ChatLogMessage;
 use crate::commands::GlobalPaths;
-use crate::common::services::session_service::HistoryEvent;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{Context, Result};
 use clap::Args;
@@ -27,7 +31,7 @@ use std::str::FromStr;
 ///   peko log my-principal --limit 100
 ///   peko log my-principal --since 24h
 ///   peko log my-principal --peer user:alice
-///   peko log my-principal --json | jq '.[].role'
+///   peko log my-principal --json | jq '.[].sender'
 #[derive(Args)]
 #[command(disable_version_flag = true)]
 pub struct LogCommand {
@@ -40,27 +44,41 @@ pub struct LogCommand {
     #[arg(long, value_name = "SUBJECT")]
     pub peer: Option<String>,
 
-    /// Cap on number of events returned (default 50, max 1000).
+    /// Cap on number of messages returned in this page (default 50,
+    /// max 1000). Combined with `--cursor` for paging older
+    /// messages.
     #[arg(long, value_name = "N")]
     pub limit: Option<usize>,
 
-    /// Only entries newer than the duration. Accepts `<N>h`, `<N>d`,
+    /// Only messages newer than the duration. Accepts `<N>h`, `<N>d`,
     /// `<N>m`, `<N>s` (e.g., `24h`, `7d`, `30m`, `3600s`).
     #[arg(long, value_name = "DURATION")]
     pub since: Option<String>,
 
-    /// Emit the raw `HistoryEvent` array as JSON.
+    /// Opaque pagination cursor returned by a prior `peko log`
+    /// call's `next_cursor` field. Pairs with `--limit` to walk
+    /// older messages without overlap or gaps.
+    #[arg(long, value_name = "CURSOR")]
+    pub cursor: Option<String>,
+
+    /// Emit the raw chat-message array (with `next_cursor` /
+    /// `has_more`) as JSON.
     #[arg(long)]
     pub json: bool,
 }
 
-/// Handle the `peko log` command.
+/// Handle the `peko log` command. Walks chat-log pages via
+/// `--cursor` until the caller has the slice they want. Recursion is
+/// bounded to a small number of pages so a runaway caller can't pin
+/// the daemon forever; in practice most callers use a single
+/// page with a generous `--limit`.
 pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Result<()> {
     let LogCommand {
         principal,
         peer,
         limit,
         since,
+        cursor,
         json: cmd_json,
     } = cmd;
 
@@ -80,59 +98,78 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
         .await
         .context("Daemon is not running. Start it with: peko daemon start")?;
 
-    match client
-        .principal_log(principal.clone(), peer_subject, limit, since_secs)
-        .await?
-    {
-        ResponsePacket::PrincipalLog {
-            events,
-            session_id,
-            peer: resolved_peer,
-            truncated,
-            ..
-        } => {
-            if use_json {
-                #[derive(serde::Serialize)]
-                #[serde(rename_all = "camelCase")]
-                struct Out<'a> {
-                    principal: &'a str,
-                    peer: &'a str,
-                    session_id: &'a Option<String>,
-                    truncated: bool,
-                    events: &'a [HistoryEvent],
-                }
-                let json = serde_json::to_string_pretty(&Out {
-                    principal: &principal,
-                    peer: &resolved_peer.to_string(),
-                    session_id: &session_id,
-                    truncated,
-                    events: &events,
-                })?;
-                println!("{json}");
-            } else if events.is_empty() {
-                println!(
-                    "📭 No events for peer '{resolved_peer}' on principal '{principal}' (session: {}).",
-                    session_id.as_deref().unwrap_or("<none>")
-                );
-            } else {
-                println!(
-                    "📜 Principal '{principal}' — peer '{resolved_peer}' (session: {}):",
-                    session_id.as_deref().unwrap_or("<none>")
-                );
-                for ev in &events {
-                    render_history_event(ev);
-                }
-                if truncated {
-                    println!(
-                        "… (more events truncated by --limit; pass a larger --limit to see them)"
-                    );
+    let mut cursor = cursor.filter(|c| !c.is_empty());
+    let mut accumulated: Vec<ChatLogMessage> = Vec::new();
+    let mut resolved_peer: Option<crate::auth::Subject> = None;
+    const MAX_PAGES: usize = 25;
+    for _ in 0..MAX_PAGES {
+        match client
+            .principal_log(
+                principal.clone(),
+                peer_subject.clone(),
+                limit,
+                since_secs,
+                cursor.clone(),
+            )
+            .await?
+        {
+            ResponsePacket::PrincipalLog {
+                name: _,
+                peer: page_peer,
+                messages,
+                next_cursor,
+                has_more,
+                ..
+            } => {
+                resolved_peer = Some(page_peer);
+                accumulated.extend(messages);
+                cursor = next_cursor;
+                if cursor.is_none() || !has_more {
+                    break;
                 }
             }
-            Ok(())
+            ResponsePacket::Error { message, .. } => {
+                return Err(anyhow::anyhow!("peko log failed: {message}"));
+            }
+            other => return Err(crate::ipc::unexpected_response(&other)),
         }
-        ResponsePacket::Error { message, .. } => Err(anyhow::anyhow!("peko log failed: {message}")),
-        other => Err(crate::ipc::unexpected_response(&other)),
     }
+
+    let resolved_peer =
+        resolved_peer.ok_or_else(|| anyhow::anyhow!("peko log: no pages received from daemon"))?;
+
+    if use_json {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Out<'a> {
+            principal: &'a str,
+            peer: &'a str,
+            next_cursor: &'a Option<String>,
+            has_more: bool,
+            messages: &'a [ChatLogMessage],
+        }
+        let json = serde_json::to_string_pretty(&Out {
+            principal: &principal,
+            peer: &resolved_peer.to_string(),
+            next_cursor: &cursor,
+            has_more: cursor.is_some(),
+            messages: &accumulated,
+        })?;
+        println!("{json}");
+    } else if accumulated.is_empty() {
+        println!("📭 No messages for peer '{resolved_peer}' on principal '{principal}'.");
+    } else {
+        println!("📜 Principal '{principal}' — peer '{resolved_peer}':");
+        for msg in &accumulated {
+            render_chat_message(msg);
+        }
+        if let Some(next) = cursor.as_ref() {
+            println!(
+                "… (more pages available; re-run with --cursor {next:?} to read older messages)"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Parse a `--peer` value into a `Subject`. Accepts the wire format
@@ -167,106 +204,19 @@ fn parse_duration_secs(input: &str) -> Result<u64> {
     Ok(n.saturating_mul(multiplier))
 }
 
-/// Render one `HistoryEvent` to stdout in the default human view.
-fn render_history_event(ev: &HistoryEvent) {
-    match ev {
-        HistoryEvent::Session {
-            session_id: _,
-            started_at,
-        } => {
-            println!("── session started ({}) ──", timestamp_short(started_at));
-        }
-        HistoryEvent::Message {
-            role,
-            content,
-            timestamp,
-        } => {
-            println!(
-                "[{}] {}: {}",
-                timestamp_short(timestamp),
-                capitalize(role),
-                truncate(content, 240)
-            );
-        }
-        HistoryEvent::ToolCall {
-            tool_name,
-            args,
-            tool_call_id,
-            timestamp,
-        } => {
-            let arg_preview = args
-                .as_object()
-                .map(|m| {
-                    let mut parts: Vec<String> = m
-                        .iter()
-                        .take(2)
-                        .map(|(k, v)| {
-                            let v = if v.is_string() {
-                                format!("\"{}\"", v.as_str().unwrap_or(""))
-                            } else {
-                                v.to_string()
-                            };
-                            format!("{k}={v}")
-                        })
-                        .collect();
-                    if m.len() > 2 {
-                        parts.push("…".into());
-                    }
-                    format!("{{{}}}", parts.join(", "))
-                })
-                .unwrap_or_else(|| truncate(args.to_string().as_str(), 80));
-            println!(
-                "[{}] ⤳ tool_call {tool_name} {arg_preview}  ({tool_call_id})",
-                timestamp_short(timestamp)
-            );
-        }
-        HistoryEvent::ToolResult {
-            tool_call_id,
-            output,
-            error,
-            timestamp: _,
-        } => {
-            let (status, body) = match (output.as_deref(), error.as_deref()) {
-                (_, Some(err)) => ("error", err),
-                (Some(out), _) => ("ok", out),
-                (None, None) => ("empty", ""),
-            };
-            println!(
-                "       ⤶ tool_result {status}  ({tool_call_id}) {}",
-                truncate(body, 200)
-            );
-        }
-        HistoryEvent::Thinking {
-            content,
-            timestamp: _,
-        } => {
-            println!("💭 {}", truncate(content, 200));
-        }
-        HistoryEvent::ModelChange {
-            provider,
-            model_id,
-            timestamp: _,
-        } => {
-            println!("── model: {provider}/{model_id} ──");
-        }
-        HistoryEvent::Compaction {
-            summary,
-            timestamp: _,
-        } => {
-            println!("── compacted: {} ──", truncate(summary, 200));
-        }
-        HistoryEvent::Custom {
-            custom_type,
-            timestamp: _,
-        } => {
-            println!("• <{custom_type}>");
-        }
-    }
+/// Render one chat-log message to stdout in the default human view.
+fn render_chat_message(message: &ChatLogMessage) {
+    println!(
+        "[{}] {}: {}",
+        timestamp_short(&message.timestamp.to_rfc3339()),
+        message.sender,
+        truncate(&message.text, 240)
+    );
 }
 
 /// Strip seconds / sub-seconds from an RFC3339 timestamp for display.
 fn timestamp_short(ts: &str) -> String {
-    if let Some(_idx) = ts.find('T') {
+    if ts.find('T').is_some() {
         if let Some(plus) = ts[10..].find(['+', 'Z', '-']) {
             return format!("{} {}", &ts[..10], &ts[10..10 + plus]);
         }
@@ -288,26 +238,6 @@ fn truncate(s: &str, max: usize) -> String {
         out.push('…');
         out
     }
-}
-
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    let Some(first) = chars.next() else {
-        return String::new();
-    };
-    let mut out = String::with_capacity(s.len());
-    out.extend(first.to_uppercase());
-    out.extend(chars);
-    out
-}
-
-/// RFC3339 timestamp for "now". Reserved for callers that need a
-/// "rendered at" stamp independent of any event timestamp. Not used
-/// by `render_history_event` directly — events carry their own
-/// `timestamp` field (see `session_service.rs::HistoryEvent`).
-#[allow(dead_code)]
-fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339()
 }
 
 #[cfg(test)]
@@ -336,11 +266,5 @@ mod tests {
         assert_eq!(truncate("hello world", 5), "hello…");
         // Non-ASCII should not split mid-codepoint.
         assert_eq!(truncate("héllo wörld", 4), "hél…");
-    }
-
-    #[test]
-    fn test_capitalize() {
-        assert_eq!(capitalize("user"), "User");
-        assert_eq!(capitalize(""), "");
     }
 }

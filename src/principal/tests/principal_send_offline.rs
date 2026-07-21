@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::auth::Subject;
+use crate::chat_log::ChatLogStore;
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::core::init_global_core;
 use crate::principal::config::{Exposure, TransportPreference};
@@ -176,6 +177,10 @@ async fn same_runtime_principal_send_short_circuits_offline() {
         )),
         known_runtimes: Arc::new(RwLock::new(KnownRuntimes::new())),
         principal_manager,
+        chat_log_store: Arc::new(ChatLogStore::new(std::env::temp_dir().join(format!(
+            "peko-principal-send-offline-chatlog-{}",
+            uuid::Uuid::new_v4()
+        )))),
         response_timeout: Duration::from_secs(5),
     });
 

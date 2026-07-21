@@ -297,6 +297,7 @@ impl DaemonClient {
         peer: Option<crate::auth::Subject>,
         limit: Option<usize>,
         since_secs: Option<u64>,
+        cursor: Option<String>,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalLog {
@@ -305,6 +306,7 @@ impl DaemonClient {
             peer,
             limit,
             since_secs,
+            cursor,
         };
         let mut stream = self.send_request(packet).await?;
         match stream.next().await {

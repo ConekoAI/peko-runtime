@@ -41,9 +41,8 @@ use crate::auth::ownership::{
     check_permission, principal_resource, Permission, PermissionGrant, Resource,
 };
 use crate::auth::Subject;
+use crate::chat_log::{ChatLogPage, ChatThreadKey};
 use crate::common::paths::PathResolver;
-use crate::common::services::session_event_to_history;
-use crate::common::services::session_service::HistoryEvent;
 use crate::daemon::state::StreamingRunHandle;
 use crate::engine::AgenticEvent;
 use crate::extensions::framework::async_exec::executor::SteeringMessage;
@@ -58,7 +57,6 @@ use crate::principal::router::{ChannelContext, ChannelKind};
 use crate::principal::routers::root::root_session_id;
 use crate::principal::{Principal, RouteDecision, RouterError};
 use crate::registry::packaging::TrustStore;
-use crate::session::events::SessionEvent;
 use crate::tunnel::TunnelDispatcher;
 
 // ─── Principal log / preview types (privately owned by this handler) ──
@@ -86,16 +84,21 @@ pub struct PrincipalImportPreview {
 enum PrincipalLogError {
     NotFound(String),
     Forbidden(String),
+    /// Cursor was malformed, bound to another thread, or issued by an
+    /// older chat-log schema. Distinct from `Internal` so the CLI can
+    /// recover by dropping the cursor and retrying the read.
+    BadCursor(String),
     Internal(String),
 }
 
 /// Successful read shape consumed by the `PrincipalLog` response.
+/// Maps to `ResponsePacket::PrincipalLog`'s paged chat-message shape.
 struct PrincipalLogResponse {
     name: String,
     peer: Subject,
-    session_id: Option<String>,
-    events: Vec<HistoryEvent>,
-    truncated: bool,
+    messages: Vec<crate::chat_log::ChatLogMessage>,
+    next_cursor: Option<String>,
+    has_more: bool,
 }
 
 /// RAII guard that removes a `PrincipalSendStream` run from the
@@ -154,6 +157,13 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// `PrincipalGrantPermission` / `PrincipalRevokePermission` /
     /// `PrincipalSetStatus` / `PrincipalSetExposure`.
     fn principal_manager(&self) -> &Arc<PrincipalManager>;
+
+    /// Runtime-owned chat-log store. Powers `PrincipalLog` reads —
+    /// the IPC handler resolves `(principal_did, peer)` and reads one
+    /// page from this store. The manager's `receive` paths also use
+    /// the same `Arc` for boundary recording (see
+    /// `PrincipalManager::with_chat_log_store`).
+    fn chat_log_store(&self) -> &Arc<crate::chat_log::ChatLogStore>;
 
     /// Soft-interrupt cancel-token registry for in-flight root-agent
     /// runs. The handler inserts on start, removes on drop
@@ -361,33 +371,45 @@ impl RequestHandler for PrincipalHandler {
                 peer,
                 limit,
                 since_secs,
+                cursor,
             } => {
                 let caller_subject = caller.subject();
-                let response =
-                    match read_principal_log(host, &name, peer, limit, since_secs, caller_subject)
-                        .await
-                    {
-                        Ok(resp) => ResponsePacket::PrincipalLog {
-                            request_id,
-                            name: resp.name,
-                            peer: resp.peer,
-                            session_id: resp.session_id,
-                            events: resp.events,
-                            truncated: resp.truncated,
-                        },
-                        Err(PrincipalLogError::NotFound(msg)) => ResponsePacket::Error {
-                            request_id,
-                            message: format!("[not_found] {msg}"),
-                        },
-                        Err(PrincipalLogError::Forbidden(msg)) => ResponsePacket::Error {
-                            request_id,
-                            message: format!("[forbidden] {msg}"),
-                        },
-                        Err(PrincipalLogError::Internal(msg)) => ResponsePacket::Error {
-                            request_id,
-                            message: format!("[internal_error] {msg}"),
-                        },
-                    };
+                let response = match read_principal_log(
+                    host,
+                    &name,
+                    peer,
+                    limit,
+                    since_secs,
+                    cursor,
+                    caller_subject,
+                )
+                .await
+                {
+                    Ok(resp) => ResponsePacket::PrincipalLog {
+                        request_id,
+                        name: resp.name,
+                        peer: resp.peer,
+                        messages: resp.messages,
+                        next_cursor: resp.next_cursor,
+                        has_more: resp.has_more,
+                    },
+                    Err(PrincipalLogError::NotFound(msg)) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("[not_found] {msg}"),
+                    },
+                    Err(PrincipalLogError::Forbidden(msg)) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("[forbidden] {msg}"),
+                    },
+                    Err(PrincipalLogError::BadCursor(msg)) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("[bad_cursor] {msg}"),
+                    },
+                    Err(PrincipalLogError::Internal(msg)) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("[internal_error] {msg}"),
+                    },
+                };
                 send_response(sink, response).await?;
             }
 
@@ -1974,6 +1996,7 @@ async fn read_principal_log(
     peer: Option<Subject>,
     limit: Option<usize>,
     since_secs: Option<u64>,
+    cursor: Option<String>,
     caller: Subject,
 ) -> Result<PrincipalLogResponse, PrincipalLogError> {
     // ── Resolve the principal ─────────────────────────────────────
@@ -2023,144 +2046,38 @@ async fn read_principal_log(
         ));
     }
 
-    // ── Resolve session id ────────────────────────────────────────
-    let artifact = principal
-        .memory
-        .find_latest_session_for_peer(&target_peer)
-        .await
-        .map_err(|e| {
-            PrincipalLogError::Internal(format!(
-                "failed to look up session for '{target_peer}': {e}"
-            ))
-        })?;
-
-    let Some(artifact) = artifact else {
-        return Ok(PrincipalLogResponse {
-            name: name.to_string(),
-            peer: target_peer,
-            session_id: None,
-            events: Vec::new(),
-            truncated: false,
-        });
-    };
-    let session_id = artifact.session_id.clone();
-    drop(artifact);
-
-    // ── Stream the session JSONL ─────────────────────────────────
+    // ── Read one chat-log page ───────────────────────────────────
+    // The chat-log store is runtime-owned and external to the
+    // principal's session JSONL. `chat_log_store().read_page` is the
+    // single source of truth for the `peko log` view — session
+    // internals (tool calls, thinking, compactions, provider roles)
+    // never appear in this surface, pre-launch.
     let effective_limit = limit.unwrap_or(50).clamp(1, 1000);
-    // Session files live at `<principal_workspace>/memory/sessions/<session_id>.jsonl`,
-    // produced by `DefaultPrincipalMemory::sessions_dir()` (canonical
-    // read+write side). The legacy `PathResolver::agent_session_file`
-    // helper resolves `<data_dir>/sessions/<agent>/personal/<session_id>.jsonl`
-    // which is **not** where session JSONLs actually land — that path
-    // is a relic of the pre-Principal migration and is no longer the
-    // real write side. Earlier this handler joined the bare session_id
-    // without the extension and silently read zero events even though
-    // the disk file existed. F30a keeps the contract on the
-    // `DefaultPrincipalMemory` path; the discrepancy with
-    // `PathResolver::agent_session_file` is the cleanup work for F30a2
-    // (see `memory/f30-session-persistence-split.md`).
-    let (events, truncated) = load_principal_session_events(
-        principal
-            .memory
-            .sessions_dir()
-            .join(format!("{session_id}.jsonl")),
-        &session_id,
-        since_secs,
-        effective_limit,
-    )
-    .await
-    .map_err(|e| PrincipalLogError::Internal(format!("read failed: {e}")))?;
+    let cutoff = since_secs.map(|s| Utc::now() - chrono::Duration::seconds(s as i64));
+    let principal_did = principal.did().await;
+    let key = ChatThreadKey::new(principal_did, target_peer.clone());
+    let ChatLogPage {
+        messages,
+        next_cursor,
+        has_more,
+    } = host
+        .chat_log_store()
+        .read_page(&key, cursor.as_deref(), effective_limit, cutoff)
+        .await
+        .map_err(|e| match e {
+            crate::chat_log::ChatLogError::Cursor(_) => {
+                PrincipalLogError::BadCursor(format!("{e}"))
+            }
+            other => PrincipalLogError::Internal(format!("read failed: {other}")),
+        })?;
 
     Ok(PrincipalLogResponse {
         name: name.to_string(),
         peer: target_peer,
-        session_id: Some(session_id),
-        events,
-        truncated,
+        messages,
+        next_cursor,
+        has_more,
     })
-}
-
-/// Read a principal-owned JSONL session file and convert each event
-/// into `HistoryEvent`. Applies `since_secs` (skips events whose
-/// `envelope.ts` is older than `now() - since_secs`) and `limit` (caps
-/// the number of returned events, oldest-first). Reports truncation
-/// via the second tuple field when the file held more events than the
-/// limit allows for.
-///
-/// `session_id` is forwarded to the canonical converter so the
-/// emitted `Session` marker carries it (the desktop renders the
-/// `{kind:"session", sessionId, startedAt}` row without joining the
-/// response envelope). `session_started_at` is derived from the first
-/// `SessionCreated` event in the file; for sessions created before
-/// that event was written we fall back to the file's first event
-/// timestamp, and finally to an empty string.
-///
-/// Missing files (`session.jsonl` not yet created) yield `(vec![], false)`.
-async fn load_principal_session_events(
-    path: std::path::PathBuf,
-    session_id: &str,
-    since_secs: Option<u64>,
-    limit: usize,
-) -> anyhow::Result<(Vec<HistoryEvent>, bool)> {
-    if !path.exists() {
-        return Ok((Vec::new(), false));
-    }
-
-    let cutoff = since_secs.map(|s| Utc::now() - chrono::Duration::seconds(s as i64));
-    let raw = tokio::fs::read_to_string(&path).await?;
-
-    // First pass: derive session_started_at from the first
-    // SessionCreated event, falling back to the file's first event
-    // timestamp. This way the Session marker carries a meaningful
-    // wall-clock value even for sessions whose on-disk JSONL was
-    // written before SessionCreated was a thing.
-    let mut session_started_at: Option<String> = None;
-    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
-        let event: SessionEvent = match serde_json::from_str(line) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let ts_str = event.envelope().ts.to_rfc3339();
-        match &event {
-            SessionEvent::SessionCreated(_) => {
-                session_started_at = Some(ts_str);
-                break;
-            }
-            _ => {
-                if session_started_at.is_none() {
-                    session_started_at = Some(ts_str);
-                }
-            }
-        }
-    }
-    let session_started_at = session_started_at.unwrap_or_default();
-
-    // Second pass: convert each event with the resolved
-    // session_started_at. Two-pass keeps the converter pure and avoids
-    // mutating session_started_at mid-iteration.
-    let mut ordered: Vec<(chrono::DateTime<Utc>, HistoryEvent)> = Vec::new();
-
-    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
-        let event: SessionEvent = match serde_json::from_str(line) {
-            Ok(e) => e,
-            Err(_) => continue, // skip malformed lines; JSONL append-only durability wins
-        };
-        let ts = event.envelope().ts;
-        if let Some(cutoff_ts) = cutoff {
-            if ts < cutoff_ts {
-                continue;
-            }
-        }
-        if let Some(hist) = session_event_to_history(&event, session_id, &session_started_at) {
-            ordered.push((ts, hist));
-        }
-    }
-
-    let truncated = ordered.len() > limit;
-    ordered.truncate(limit);
-    let events: Vec<HistoryEvent> = ordered.into_iter().map(|(_, h)| h).collect();
-    Ok((events, truncated))
 }
 #[cfg(test)]
 mod tests {
@@ -2189,116 +2106,5 @@ mod tests {
 
         let names = extract_agent_names_from_package(&files);
         assert_eq!(names, vec!["primary"]);
-    }
-
-    // -----------------------------------------------------------------
-    // Phase 4: pin the IPC filter for the post-Phase-1 JSONL contract.
-    //
-    // Before Phase 1, `Session::add_system` wrote
-    // `MessageV2{role:"system"}` rows into the session JSONL. After
-    // Phase 1, the system prompt is rebuilt fresh by the renderer and
-    // is never persisted. But pre-Phase-1 JSONLs still exist on disk
-    // — when the desktop hits `principal_log` against one, the IPC
-    // response must NOT surface system rows (the desktop's chat
-    // bubble rendered them as assistant messages, which is the
-    // regression that motivated the filter at
-    // `session_service.rs:254-259`).
-    //
-    // This test exercises the end-to-end `load_principal_session_events`
-    // path: write a JSONL containing one of each role, run the loader,
-    // assert the system row is filtered out and the rest are returned
-    // with the right ordering.
-    // -----------------------------------------------------------------
-    #[tokio::test]
-    async fn load_principal_session_events_filters_persisted_system_prompts() {
-        use crate::session::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
-        use crate::session::message::{MessageSource, SessionMessage};
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("session.jsonl");
-
-        // Hand-rolled JSONL with a pre-Phase-1 shape:
-        //   - SessionCreated marker
-        //   - A persisted system prompt (Phase 1+ no longer writes
-        //     these, but legacy files still have them).
-        //   - User + assistant messages that must survive the filter.
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(
-            serde_json::to_string(&SessionEvent::SessionCreated(SessionCreatedEvent {
-                envelope: EventEnvelope {
-                    id: "evt_seed".to_string(),
-                    ts: chrono::Utc::now(),
-                },
-                instance_id: "sess_test".to_string(),
-                image_digest: String::new(),
-                parent_session_id: None,
-                trigger: SessionTrigger::User,
-            }))
-            .expect("encode SessionCreated"),
-        );
-        lines.push(
-            serde_json::to_string(&SessionEvent::MessageV2(SessionMessage::system(
-                "You are the root agent for a Principal...",
-            )))
-            .expect("encode system"),
-        );
-        lines.push(
-            serde_json::to_string(&SessionEvent::MessageV2(SessionMessage::user(
-                "hi there",
-                MessageSource::User,
-            )))
-            .expect("encode user"),
-        );
-        lines.push(
-            serde_json::to_string(&SessionEvent::MessageV2(SessionMessage::assistant_text(
-                "hello!",
-                "anthropic",
-                "claude-sonnet-4-6",
-            )))
-            .expect("encode assistant"),
-        );
-        std::fs::write(&path, lines.join("\n") + "\n").expect("write jsonl");
-
-        let (events, truncated) =
-            load_principal_session_events(path.clone(), "sess_test", None, 100)
-                .await
-                .expect("load_principal_session_events");
-
-        assert!(!truncated, "all four events fit under the limit");
-        assert_eq!(events.len(), 3, "system row must be filtered out");
-
-        // First row is the Session marker (derived from SessionCreated).
-        assert!(
-            matches!(&events[0], HistoryEvent::Session { session_id, .. } if session_id == "sess_test"),
-            "first event should be Session marker, got {:?}",
-            events[0]
-        );
-
-        // Then user, then assistant. No system row.
-        let roles: Vec<&str> = events
-            .iter()
-            .filter_map(|e| match e {
-                HistoryEvent::Message { role, .. } => Some(role.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(roles, vec!["user", "assistant"]);
-        assert!(
-            !roles.contains(&"system"),
-            "system role must be filtered out: got {roles:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn load_principal_session_events_returns_empty_when_file_missing() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("never-written.jsonl");
-
-        let (events, truncated) = load_principal_session_events(path, "sess_nope", None, 100)
-            .await
-            .expect("missing file must not error");
-
-        assert!(events.is_empty(), "missing file yields empty history");
-        assert!(!truncated);
     }
 }
