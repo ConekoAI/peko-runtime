@@ -2172,6 +2172,7 @@ dependencies = [
  "once_cell",
  "peko-events",
  "peko-message",
+ "peko-provider-api",
  "peko-quota",
  "peko-subject",
  "peko-tools-core",
@@ -2225,6 +2226,16 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "peko-provider-api"
+version = "0.1.0"
+dependencies = [
+ "peko-message",
  "serde",
  "serde_json",
  "tokio",

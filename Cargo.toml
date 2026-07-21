@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/events", "crates/message", "crates/subject", "crates/quota", "crates/tools-core"]
+members = [".", "crates/events", "crates/message", "crates/provider-api", "crates/quota", "crates/subject", "crates/tools-core"]
 
 [package]
 name = "peko"
@@ -41,6 +41,17 @@ peko-quota = { path = "crates/quota" }
 # re-exports it through `crate::tools::core` for backwards
 # compatibility.
 peko-tools-core = { path = "crates/tools-core" }
+# Workspace member providing the provider contract types
+# (ChatOptions, ChatResponse, StreamEvent, ContentDelta, StopReason,
+# BlockType, ToolDefinition, ContentBlockId, ThinkingEffort,
+# ThinkingFormat, ThinkingKeep, ToolChoice, ServiceTier,
+# ProviderCompat, DeferredToolsMode, CacheRetention). The
+# concrete `Provider` impl, HTTP transport, adapters, and resolver
+# stay in the root `peko` package for now — a future phase will
+# extract `peko-providers`. Depends on peko-message only; the root
+# re-exports through `crate::providers::{traits, cache_retention}`
+# for backwards compatibility.
+peko-provider-api = { path = "crates/provider-api" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).
