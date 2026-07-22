@@ -74,16 +74,16 @@ pub struct AgenticLoop {
     max_iterations: usize,
     system_prompt: String,
     /// Extension core for skill loading, tool registration, and hook
-    /// firing. Phase 9b.N.5b.3 still stores the concrete root type
-    /// because [`crate::agents::prompt::PromptRenderer`] (a root-side
-    /// helper the loop invokes each iteration) calls
-    /// [`ExtensionCore::invoke_hook_text_with_principal`] directly,
-    /// which is a 7-arg method that constructs `HookPoint` /
-    /// `HookInput` internally. Lifting PromptRenderer + this method
-    /// is the next phase; until then the loop holds the concrete
-    /// `Arc<ExtensionCore>` and routes trait-port calls through
-    /// `&*self.extension_core` for deref coercion to `&dyn ToolFunnel`.
-    extension_core: Arc<crate::extensions::framework::ExtensionCore>,
+    /// firing. Phase 9b.N.5b.4 switched the field from the concrete
+    /// root `Arc<crate::extensions::framework::ExtensionCore>` to
+    /// `Arc<dyn ToolFunnel>` — the trait port the renderer, tool
+    /// executor, and compaction orchestrator all use. The renderer
+    /// (now in `peko_engine::prompt::renderer`) calls
+    /// `ToolFunnel::invoke_prompt_section_hook` /
+    /// `invoke_session_context_build_hook` instead of constructing
+    /// `HookPoint` / `HookInput` directly, so the loop never needs
+    /// the concrete root type.
+    extension_core: Arc<dyn ToolFunnel>,
     /// Resolved caller identity (pekohub sub, API key id, or `None` for
     /// local CLI invocations). Propagated to `HookInput::ToolCall::caller_id`
     /// on every tool invocation so downstream permission checks and audit
@@ -174,11 +174,16 @@ impl AgenticLoop {
     /// * `agent` - The agent configuration (trait-object view of root's
     ///   `Agent`; see `peko_engine::AgentView`).
     /// * `provider` - The LLM provider to use
-    /// * `extension_core` - The `ExtensionCore` for skill loading, tool registration, + hook firing
+    /// * `extension_core` - The trait-object view of the extension host
+    ///   (`peko_extension_host::ToolFunnel`). Phase 9b.N.5b.4 switched
+    ///   the constructor param to `Arc<dyn ToolFunnel>` — the concrete
+    ///   `ExtensionCore` still implements `ToolFunnel` via the
+    ///   `src/engine/extension_core_funnel_compat.rs` impl, so
+    ///   `Arc::new(core) as Arc<dyn ToolFunnel>` works at call sites.
     pub async fn new(
         agent: Arc<dyn AgentView>,
         provider: Arc<crate::providers::Provider>,
-        extension_core: Arc<crate::extensions::framework::ExtensionCore>,
+        extension_core: Arc<dyn ToolFunnel>,
     ) -> Self {
         let agent_principal_id = agent.principal_id().to_string();
 
@@ -2042,7 +2047,7 @@ impl AgenticLoop {
             body,
             capabilities: self.agent.principal_capabilities().cloned(),
             active_extensions: self.agent.principal_active_extensions().cloned(),
-            principal_memory: crate::agents::prompt::memory::load_principal_memory(&workspace),
+            principal_memory: crate::agents::prompt::load_principal_memory(&workspace),
             workspace,
             resolved_model,
             // Phase 2 wiring: read from `AgentConfig`. Back-compat

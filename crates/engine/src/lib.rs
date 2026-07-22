@@ -37,6 +37,7 @@
 //! | [`error`]           | F31c `AgenticError` taxonomy. |
 //! | [`funnel`]          | Phase 9b.N.2 — F37 canonical `execute_tool_via_core*` chokepoint. |
 //! | [`parallel_gate`]   | F33 single-runtime RwLock gate for tool dispatch. |
+//! | [`prompt`]          | Phase 9b.N.5b.4 — `PromptRenderer` + `TurnPromptContext` + placeholder/memory helpers lifted from `src/agents/prompt/`. |
 //! | [`session_view`]    | Phase 9b.N.3 — narrow `add_tool_result(...)` trait port for tool dispatch. |
 //! | [`state`]           | `AgentState` / `StateMachine` — atomic Idle/Busy tracker. |
 //! | [`stream_buffer`]   | Coalescing buffer between orchestrator and channel. |
@@ -62,6 +63,7 @@ pub mod execution;
 pub mod funnel;
 pub mod iteration_state;
 pub mod parallel_gate;
+pub mod prompt;
 pub mod session_view;
 pub mod state;
 pub mod stream_buffer;
@@ -90,6 +92,16 @@ pub use execution::{ExecutionMode, TaskId, TaskStatus, TaskSummary};
 pub use funnel::{execute_tool_via_core, execute_tool_via_core_with_context};
 pub use iteration_state::{
     CapabilityChange, CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker,
+};
+pub use prompt::renderer::PromptRenderer;
+pub use prompt::{
+    builder::{PromptMode, SystemPromptBuilder},
+    context::{IterationBudgetState, QuotaStateView, TurnPromptContext},
+    memory::{
+        directory_from_tool_params, discover_shared_context, load_principal_memory,
+        PRINCIPAL_MEMORY_FILE, SHARED_CONTEXT_FILE,
+    },
+    placeholder::{replace_placeholders, Placeholder},
 };
 pub use session_view::{SessionCore, SessionView};
 pub use state::{AgentState, StateMachine};

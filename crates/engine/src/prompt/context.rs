@@ -17,12 +17,12 @@
 //! - [`TurnPromptContext::capability_diff`] — emitted at `{{capability_diff}}`
 //!
 //! Each is opt-in: a template that omits the placeholder simply drops the
-//! section, because [`replace_placeholders`](crate::agents::prompt::placeholder::replace_placeholders)
+//! section, because [`replace_placeholders`](super::placeholder::replace_placeholders)
 //! with `remove_missing=true` strips unknown tokens.
 //!
 //! ## Capability diff tracking
 //!
-//! [`CapabilityDiffTracker`] lives on the [`AgenticLoop`](crate::engine::AgenticLoop)
+//! [`CapabilityDiffTracker`] lives on the [`AgenticLoop`](crate::AgenticLoop)
 //! and observes the principal's capability snapshot each iteration. The
 //! first render reports all grants as `granted` (baseline); subsequent
 //! renders return `None` when nothing changed and a diff when it did.
@@ -35,20 +35,20 @@
 //! `CapabilityChange`, `CapabilityChangeKind`, `CapabilityDiff`, and
 //! `CapabilityDiffTracker` are owned by [`peko_engine::iteration_state`]
 //! (Phase 9b.N.5a) but re-exported here so existing renderer / test
-//! paths that import `crate::agents::prompt::context::Capability*`
-//! continue to compile unchanged. Once the loop itself lifts into
-//! `peko-engine` (Phase 9b.N.5b), the renderer reads these types from
-//! the engine crate directly and the re-exports become vestigial.
+//! paths that import `crate::prompt::context::Capability*` continue
+//! to compile unchanged. The loop itself still lives in root at
+//! `src/engine/agentic_loop.rs` (Phase 9b.N.5b.4 has not lifted it);
+//! once that happens the re-exports become vestigial.
 
-use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities};
-use crate::providers::ToolDefinition;
+use peko_extension_api::{ActiveExtensionSet, Capabilities};
+use peko_provider_api::ToolDefinition;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-// Capability diff types live in `peko_engine::iteration_state` (Phase 9b.N.5a).
+// Capability diff types live in `crate::iteration_state` (Phase 9b.N.5a).
 // Re-export here so renderer + tests keep their existing import paths.
-pub use peko_engine::{
+pub use crate::iteration_state::{
     CapabilityChange, CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker,
 };
 
@@ -169,7 +169,7 @@ impl QuotaStateView {
 
 /// The single typed input the renderer reads each iteration.
 ///
-/// Built by [`AgenticLoop::run_inner`](crate::engine::AgenticLoop::run_inner)
+/// Built by [`AgenticLoop::run_inner`](crate::AgenticLoop)
 /// at the top of every iteration and consumed exactly once by
 /// [`PromptRenderer::render_for_iteration`](super::renderer::PromptRenderer::render_for_iteration).
 ///

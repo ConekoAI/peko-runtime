@@ -237,4 +237,55 @@ impl ToolFunnel for ExtensionCore {
             .iter()
             .any(|m| matches!(m.exposure, ToolExposure::Deferred))
     }
+
+    async fn invoke_prompt_section_hook(
+        &self,
+        section: &str,
+        priority: i32,
+        principal_id: Option<&str>,
+        capabilities: Option<Vec<String>>,
+        active_extensions: Option<Vec<String>>,
+        workspace: Option<String>,
+    ) -> Option<String> {
+        // Phase 9b.N.5b.4: lifted `PromptRenderer::dispatch_text`'s
+        // hook firing into the trait. Builds `HookPoint::PromptSystemSection`
+        // + `HookInput::Unit` internally and delegates to
+        // `ExtensionCore::invoke_hook_text_with_principal` (the
+        // canonical 7-arg principal-context-aware method).
+        self.invoke_hook_text_with_principal(
+            HookPoint::PromptSystemSection {
+                section: section.to_string(),
+                priority,
+            },
+            HookInput::Unit,
+            principal_id,
+            capabilities,
+            active_extensions,
+            workspace,
+        )
+        .await
+    }
+
+    async fn invoke_session_context_build_hook(
+        &self,
+        snapshot: SessionSnapshot,
+        principal_id: Option<&str>,
+        capabilities: Option<Vec<String>>,
+        active_extensions: Option<Vec<String>>,
+        workspace: Option<String>,
+    ) -> Option<String> {
+        // Phase 9b.N.5b.4: lifted `PromptRenderer::dispatch_session_context`'s
+        // hook firing into the trait. Builds `HookPoint::SessionContextBuild`
+        // + `HookInput::SessionState(snapshot)` internally and
+        // delegates to `ExtensionCore::invoke_hook_text_with_principal`.
+        self.invoke_hook_text_with_principal(
+            HookPoint::SessionContextBuild,
+            HookInput::SessionState(snapshot),
+            principal_id,
+            capabilities,
+            active_extensions,
+            workspace,
+        )
+        .await
+    }
 }

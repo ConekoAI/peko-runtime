@@ -274,4 +274,58 @@ pub trait ToolFunnel: Send + Sync + 'static {
     /// `Vec<ToolMetadata>` so the trait stays free of
     /// `ToolMetadata`-related root-only deps.
     async fn has_deferred_tools_for(&self, principal_id: &peko_subject::PrincipalId) -> bool;
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 9b.N.5b.4 — PromptRenderer hook firing
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Fire `HookPoint::PromptSystemSection { section, priority }` with
+    /// `HookInput::Unit` and the principal/extension context the
+    /// renderer needs. Returns the first non-empty text output, or
+    /// `None` if no handler produced text (timeout / no handler /
+    /// handler returned empty).
+    ///
+    /// The lifted `PromptRenderer::dispatch_text` (Phase 9b.N.5b.4,
+    /// `peko_engine::prompt::renderer`) calls this for each of the
+    /// four hook-driven sections (`tools`, `skills`, `agents`,
+    /// `mcp_context`). The impl hides `HookPoint::PromptSystemSection`
+    /// construction + `HookInput::Unit` so the trait stays free of
+    /// root-only `HookPoint` / `HookInput` types.
+    ///
+    /// `priority` is the section priority the renderer wants (today
+    /// always 100 — the system-prompt section hooks ignore priority
+    /// and only one handler per section is registered, but keeping
+    /// it explicit lets future order-sensitive hooks honor priority).
+    #[allow(clippy::too_many_arguments)]
+    async fn invoke_prompt_section_hook(
+        &self,
+        section: &str,
+        priority: i32,
+        principal_id: Option<&str>,
+        capabilities: Option<Vec<String>>,
+        active_extensions: Option<Vec<String>>,
+        workspace: Option<String>,
+    ) -> Option<String>;
+
+    /// Fire `HookPoint::SessionContextBuild` with
+    /// `HookInput::SessionState(snapshot)`. The lifted
+    /// `PromptRenderer::dispatch_session_context`
+    /// (`peko_engine::prompt::renderer`) calls this once per turn to
+    /// resolve the `{{session_context}}` placeholder. Returns the
+    /// first non-empty text output, or `None` on timeout / no handler
+    /// / empty result.
+    ///
+    /// `snapshot` is the principal's session snapshot the renderer
+    /// builds per-iteration (today: empty `session_id` /
+    /// `message_count=0` / `context_tokens=0` / empty metadata —
+    /// the loop owns the real session id).
+    #[allow(clippy::too_many_arguments)]
+    async fn invoke_session_context_build_hook(
+        &self,
+        snapshot: SessionSnapshot,
+        principal_id: Option<&str>,
+        capabilities: Option<Vec<String>>,
+        active_extensions: Option<Vec<String>>,
+        workspace: Option<String>,
+    ) -> Option<String>;
 }
