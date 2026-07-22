@@ -238,4 +238,40 @@ pub trait ToolFunnel: Send + Sync + 'static {
     /// `agentic_loop.rs:683-684` for the pre-lift call site. Observe-
     /// only in v1.
     async fn invoke_after_agent_hook(&self, merged: serde_json::Value);
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 9b.N.5b.3 — agentic_loop site methods
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Set the per-agent session key (issue #68 — concurrent agents
+    /// use distinct session keys on the shared `ExtensionCore`).
+    ///
+    /// The lifted `AgenticLoop::run_inner` calls this once at start
+    /// with `(self.agent.identity_did(), Some(session_id))`. Passing
+    /// `None` clears the entry.
+    async fn set_session_key(&self, agent_id: &str, key: Option<String>);
+
+    /// List tool definitions filtered through the capability
+    /// allowlist + active-extension set, used by the lifted
+    /// `AgenticLoop::build_tool_definitions` (F34).
+    ///
+    /// `None` for `active_extensions` means "no extensions active";
+    /// `None` for `capabilities` (empty) is fail-closed (treats the
+    /// agent as having zero grants).
+    async fn list_tool_definitions_with_allowlist(
+        &self,
+        capabilities: &peko_extension_api::Capabilities,
+        active_extensions: Option<&peko_extension_api::ActiveExtensionSet>,
+        principal_id: &peko_subject::PrincipalId,
+    ) -> Vec<peko_provider_api::ToolDefinition>;
+
+    /// Quick `Deferred`-exposure probe: does the principal see any
+    /// tool with `ToolExposure::Deferred`?
+    ///
+    /// The lifted `AgenticLoop::build_tool_definitions` uses this to
+    /// gate the synthetic F35 `__tool_search` stub (deferred to F35.x).
+    /// Exposed as a `bool` probe instead of returning the full
+    /// `Vec<ToolMetadata>` so the trait stays free of
+    /// `ToolMetadata`-related root-only deps.
+    async fn has_deferred_tools_for(&self, principal_id: &peko_subject::PrincipalId) -> bool;
 }

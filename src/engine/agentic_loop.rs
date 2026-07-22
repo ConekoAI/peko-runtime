@@ -17,8 +17,7 @@ use crate::common::types::message::{ContentBlock, LlmMessage};
 use crate::engine::async_inbox_compat::AsyncInboxAdapter;
 use crate::engine::iteration_state::CapabilityDiffTracker;
 use crate::engine::{AgentView, AgenticEvent, AsyncInboxItem, AsyncInboxLike, LifecyclePhase};
-use crate::extensions::framework::types::{HookInput, ToolExposure};
-use crate::extensions::framework::HookPoint;
+use crate::extensions::framework::types::ToolExposure;
 use crate::providers::{
     clamp_openai_prompt_cache_key, synthetic_stream::synthesize_stream_from_blocking,
     CacheRetention, ChatOptions, MessageRole, StackedMeteredProvider, StopReason, TokenUsage,
@@ -28,6 +27,7 @@ use crate::quota::QuotaScope;
 use crate::session::Session;
 use anyhow::Result;
 use futures::StreamExt;
+use peko_extension_host::ToolFunnel;
 use peko_tools_core::HOOK_TIMEOUT;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -73,7 +73,16 @@ pub struct AgenticLoop {
     provider: Arc<crate::providers::Provider>,
     max_iterations: usize,
     system_prompt: String,
-    /// Extension core for skill loading and tool registration.
+    /// Extension core for skill loading, tool registration, and hook
+    /// firing. Phase 9b.N.5b.3 still stores the concrete root type
+    /// because [`crate::agents::prompt::PromptRenderer`] (a root-side
+    /// helper the loop invokes each iteration) calls
+    /// [`ExtensionCore::invoke_hook_text_with_principal`] directly,
+    /// which is a 7-arg method that constructs `HookPoint` /
+    /// `HookInput` internally. Lifting PromptRenderer + this method
+    /// is the next phase; until then the loop holds the concrete
+    /// `Arc<ExtensionCore>` and routes trait-port calls through
+    /// `&*self.extension_core` for deref coercion to `&dyn ToolFunnel`.
     extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     /// Resolved caller identity (pekohub sub, API key id, or `None` for
     /// local CLI invocations). Propagated to `HookInput::ToolCall::caller_id`
@@ -165,7 +174,7 @@ impl AgenticLoop {
     /// * `agent` - The agent configuration (trait-object view of root's
     ///   `Agent`; see `peko_engine::AgentView`).
     /// * `provider` - The LLM provider to use
-    /// * `extension_core` - The `ExtensionCore` for skill loading and hook integration
+    /// * `extension_core` - The `ExtensionCore` for skill loading, tool registration, + hook firing
     pub async fn new(
         agent: Arc<dyn AgentView>,
         provider: Arc<crate::providers::Provider>,
@@ -297,8 +306,15 @@ impl AgenticLoop {
 
     /// Get the extension core
     #[must_use]
-    pub fn extension_core(&self) -> &Arc<crate::extensions::framework::ExtensionCore> {
-        &self.extension_core
+    pub fn extension_core(&self) -> &dyn ToolFunnel {
+        // Trait-object view of the concrete `Arc<ExtensionCore>` so
+        // call-sites outside this crate can hold the port without
+        // importing root's `ExtensionCore` type. Phase 9b.N.5b.3
+        // returns `&dyn ToolFunnel` rather than `&Arc<ExtensionCore>`
+        // so future dependents (after the loop lifts into
+        // `peko-engine`) only depend on the trait, not the root
+        // extension host.
+        &*self.extension_core
     }
 
     /// Run the agent with a user prompt, optionally resuming from an existing session.
@@ -682,27 +698,27 @@ impl AgenticLoop {
         }
 
         // `Stop` hook — per-turn exit signal.
-        let stop_input = HookInput::Json(merged.clone());
-        let stop_point = HookPoint::Stop;
-        let _ = tokio::time::timeout(
-            HOOK_TIMEOUT,
-            self.extension_core.invoke_hook(stop_point, stop_input),
-        )
-        .await;
+        //
+        // Phase 9b.N.5b.3 routed the firing through the
+        // `ToolFunnel::invoke_stop_hook` trait method. The trait impl
+        // lives in `src/engine/extension_core_funnel_compat.rs` and
+        // builds `HookInput::Json(merged) + HookPoint::Stop`
+        // internally, so this agentic loop no longer touches
+        // `HookPoint` or `HookInput` directly at the loop-exit seam.
+        // Soft-fails on timeout (the impl wraps `invoke_hook` in
+        // `HOOK_TIMEOUT`).
+        let funnel = &*self.extension_core;
+        funnel.invoke_stop_hook(merged.clone()).await;
 
         // F31x.1: fire `AfterAgent` alongside `Stop` so the per-turn
         // cleanup hook actually fires every run. `Agent::stop()`
         // still fires `AfterAgent` for the rare long-running-agent
         // case, but the loop-exit site is the natural seam for the
         // stateless-service flow (where agents are cold-started per
-        // request and never explicitly stopped).
-        let after_input = HookInput::Json(merged);
-        let after_point = HookPoint::AfterAgent;
-        let _ = tokio::time::timeout(
-            HOOK_TIMEOUT,
-            self.extension_core.invoke_hook(after_point, after_input),
-        )
-        .await;
+        // request and never explicitly stopped). Symmetric with the
+        // `Stop` site above — both go through `ToolFunnel` trait
+        // methods.
+        funnel.invoke_after_agent_hook(merged).await;
         let _ = run_id; // currently unused by handlers; kept on signature for forward-compat
     }
 
@@ -1907,10 +1923,10 @@ impl AgenticLoop {
         // `list_tool_definitions_with_allowlist` (F34) so we walk the
         // unfiltered `list_tools` to count them.
         if self.agent.config_enable_tool_search() {
-            let all = self.extension_core.list_tools(&principal_id).await;
-            let has_deferred = all
-                .iter()
-                .any(|m| matches!(m.exposure, ToolExposure::Deferred));
+            let has_deferred = self
+                .extension_core
+                .has_deferred_tools_for(&principal_id)
+                .await;
             if has_deferred {
                 defs.push(ToolDefinition {
                     name: crate::tools::builtin::TOOL_SEARCH_TOOL_NAME.to_string(),

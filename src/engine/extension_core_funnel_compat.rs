@@ -205,4 +205,36 @@ impl ToolFunnel for ExtensionCore {
         let point = HookPoint::AfterAgent;
         let _ = tokio::time::timeout(HOOK_TIMEOUT, self.invoke_hook(point, input)).await;
     }
+
+    async fn set_session_key(&self, agent_id: &str, key: Option<String>) {
+        ExtensionCore::set_session_key(self, agent_id, key).await
+    }
+
+    async fn list_tool_definitions_with_allowlist(
+        &self,
+        capabilities: &peko_extension_api::Capabilities,
+        active_extensions: Option<&peko_extension_api::ActiveExtensionSet>,
+        principal_id: &peko_subject::PrincipalId,
+    ) -> Vec<peko_provider_api::ToolDefinition> {
+        ExtensionCore::list_tool_definitions_with_allowlist(
+            self,
+            capabilities,
+            active_extensions,
+            principal_id,
+        )
+        .await
+    }
+
+    async fn has_deferred_tools_for(&self, principal_id: &peko_subject::PrincipalId) -> bool {
+        // F34 `ToolExposure::Deferred` probe — used by
+        // `AgenticLoop::build_tool_definitions` to gate the synthetic
+        // F35 `__tool_search` stub. We walk the unfiltered list and
+        // check exposure rather than fetching full metadata to keep
+        // the trait free of root-only `ToolMetadata` deps.
+        use crate::extensions::framework::types::ToolExposure;
+        self.list_tools(principal_id)
+            .await
+            .iter()
+            .any(|m| matches!(m.exposure, ToolExposure::Deferred))
+    }
 }
