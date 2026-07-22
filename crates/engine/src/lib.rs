@@ -82,9 +82,9 @@ pub use async_completion::build_async_completion_message;
 pub use async_inbox::{AsyncInboxItem, AsyncInboxLike};
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
 pub use compaction::{
-    CompactionConfig, CompactionEntry, CompactionQuota, CompactionRequest, CompactionResponse,
-    CompactionResponseResult, CompactionResult, CompactionState, CompactorBackend,
-    ContextUsageEstimate,
+    drop_oldest_respecting_pairs, CompactionConfig, CompactionEntry, CompactionQuota,
+    CompactionRequest, CompactionResponse, CompactionResponseResult, CompactionResult,
+    CompactionState, CompactorBackend, ContextUsageEstimate,
 };
 pub use compaction_orchestrator::CompactionOrchestrator;
 pub use error::AgenticError;
