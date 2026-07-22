@@ -1,23 +1,33 @@
 //! Tool executor for the agentic loop
 //!
-//! Encapsulates tool execution via ExtensionCore, including:
+//! Encapsulates tool execution via [`ToolFunnel`], including:
 //! - Workspace and agent context resolution
-//! - Tool execution via `runtime::execute_tool_via_core_with_context`
-//! - Session recording of tool results
+//! - Tool execution via `peko_engine::funnel::execute_tool_via_core_with_context`
+//! - Session recording of tool results (via [`SessionView`])
 //! - Event emission (ToolEnd)
 //! - Duration tracking
+//!
+//! Phase 9b.N.3 lift: previously this module lived at
+//! `src/engine/tool_executor.rs` and depended on root-only types
+//! (`ExtensionCore`, `Arc<RwLock<Session>>`). The lift introduces two
+//! trait ports so the executor no longer needs those root-only types:
+//!
+//! - [`ToolFunnel`] (peko-extension-host) — abstracts the engine-facing
+//!   surface of `ExtensionCore` (gate probe, PreToolUse/PostToolUse
+//!   hook firing, F37 funnel).
+//! - [`SessionView`] (this crate) — abstracts the single write path
+//!   the executor needs (`add_tool_result`) against the session.
+//!
+//! Root's [`crate::session::Session`] impl lives in
+//! `src/engine/session_view_compat.rs` (orphan rule).
 
-use crate::common::types::message::{ContentBlock, LlmMessage};
-use crate::engine::parallel_gate::ParallelGate;
-use crate::engine::AgenticEvent;
-use crate::extensions::framework::core::ExtensionCore;
-use crate::extensions::framework::types::HookInput;
-use crate::extensions::framework::HookPoint;
-use crate::session::Session;
+use crate::events::AgenticEvent;
+use crate::parallel_gate::ParallelGate;
+use crate::session_view::SessionView;
 use anyhow::Result;
-use peko_tools_core::HOOK_TIMEOUT;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use peko_extension_host::ToolFunnel;
+use peko_message::ContentBlock;
+use peko_message::LlmMessage;
 use tracing::{info, warn};
 
 /// Result of executing a single tool call.
@@ -69,10 +79,18 @@ impl ToolExecutor {
     ///
     /// # Arguments
     /// * `tool_call` - The `ContentBlock::ToolCall` to execute
-    /// * `extension_core` - The extension core for tool dispatch
+    /// * `tool_funnel` - The host funnel for tool dispatch (F37 +
+    ///   F31x hook firing + F33 gate probe). Implemented on root's
+    ///   `ExtensionCore` via `src/engine/extension_core_funnel_compat.rs`.
     /// * `agent_name` - The agent's name (for workspace resolution)
     /// * `agent_workspace` - The agent's configured workspace
-    /// * `session` - The session for recording results
+    /// * `session` - Session sink for recording tool results
+    ///   (via [`SessionView`]).
+    /// * `session_id` - The session id, supplied by the caller (the
+    ///   agentic loop already holds it for `HookInput::ToolCall`
+    ///   stamping). Pre-Phase 9b.N.3 the executor fetched this
+    ///   internally via `session.read().await`; the trait port keeps
+    ///   the read out of `peko-engine`.
     /// * `run_id` - The current run ID (for events)
     /// * `caller_id` - The resolved caller identity (pekohub sub, API key id,
     ///   or `None` for local CLI invocations) — propagated to the tool via
@@ -97,10 +115,11 @@ impl ToolExecutor {
     pub async fn execute(
         &self,
         tool_call: &ContentBlock,
-        extension_core: &Arc<ExtensionCore>,
+        tool_funnel: &dyn ToolFunnel,
         agent_name: &str,
         agent_workspace: Option<&std::path::PathBuf>,
-        session: &Arc<RwLock<Session>>,
+        session: &dyn SessionView,
+        session_id: &str,
         run_id: &str,
         caller_id: Option<&str>,
         principal_id: &str,
@@ -135,58 +154,48 @@ impl ToolExecutor {
         // PreToolUse, ToolExecute, PostToolUse, session record — so the
         // tool's atomicity window matches its `parallelizable()` claim.
         //
-        // F37: use the public `is_parallelizable` probe instead of
-        // reaching into the side-table. The side-table handle is now
-        // `pub(crate)` — see `registry.rs::get_tool_handle`. Returns
-        // `true` if the tool isn't registered — the dispatch will fail
-        // anyway, and admitting without serializing is the right "no-op"
-        // fallback.
-        let parallel = extension_core.is_parallelizable(name).await;
+        // F37 / Phase 9b.N.3: route through `ToolFunnel::is_parallelizable`
+        // instead of reaching into the side-table. The trait method
+        // delegates to `ExtensionCore::is_parallelizable` in root; the
+        // side-table handle stays `pub(crate)`. Returns `true` if the
+        // tool isn't registered — the dispatch will fail anyway, and
+        // admitting without serializing is the right "no-op" fallback.
+        let parallel = tool_funnel.is_parallelizable(name).await;
         let _gate_guard = self.parallel_gate.admit(parallel).await;
 
         let workspace = agent_workspace.map(|p| p.to_string_lossy().to_string());
         let agent_id = agent_name.to_string();
+        let session_id_owned = session_id.to_string();
 
-        let session_id = {
-            let s = session.read().await;
-            s.id.clone()
-        };
-
-        // F31x: PreToolUse observe-only hook. Fire-and-forget with the
-        // shared 2s budget — handlers see the same ToolCall payload the
-        // dispatcher will use, but their return value is ignored (loop
-        // always continues to ToolExecute in v1). Soft-fails on
-        // timeout (mirrors `loop_per_hook_timeout_fails_open`).
-        let pre_input = HookInput::ToolCall {
-            tool_name: name.clone(),
-            params: arguments.clone(),
-            workspace: workspace.clone(),
-            agent_id: Some(agent_id.clone()),
-            session_id: Some(session_id.clone()),
-            caller_id: caller_id.map(str::to_string),
-            principal_id: Some(principal_id.to_string()),
-            principal_name: Some(principal_name.to_string()),
-            capabilities: capabilities.clone(),
-            active_extensions: active_extensions.clone(),
-            abort_signal: None,
-        };
-        let pre_point = HookPoint::PreToolUse {
-            tool_name: name.clone(),
-        };
-        let _ = tokio::time::timeout(
-            HOOK_TIMEOUT,
-            extension_core.invoke_hook(pre_point, pre_input),
-        )
-        .await;
-
-        let (tool_result_str, tool_result_json, success) =
-            match crate::engine::funnel::execute_tool_via_core_with_context(
-                &**extension_core,
+        // F31x: PreToolUse observe-only hook. The trait method hides
+        // `HookPoint` / `HookInput` construction + the 2s `HOOK_TIMEOUT`
+        // soft-fail inside the impl on `ExtensionCore` (see
+        // `src/engine/extension_core_funnel_compat.rs`). Handlers see
+        // the same ToolCall payload the dispatcher will use, but their
+        // return value is intentionally discarded (observe-only in v1).
+        tool_funnel
+            .pre_tool_use(
                 name,
                 arguments.clone(),
                 workspace.clone(),
                 Some(agent_id.clone()),
-                Some(session_id.clone()),
+                Some(session_id_owned.clone()),
+                caller_id.map(str::to_string),
+                Some(principal_id.to_string()),
+                Some(principal_name.to_string()),
+                capabilities.clone(),
+                active_extensions.clone(),
+            )
+            .await;
+
+        let (tool_result_str, tool_result_json, success) =
+            match crate::funnel::execute_tool_via_core_with_context(
+                tool_funnel,
+                name,
+                arguments.clone(),
+                workspace.clone(),
+                Some(agent_id.clone()),
+                Some(session_id_owned.clone()),
                 caller_id.map(str::to_string),
                 Some(principal_id.to_string()),
                 Some(principal_name.to_string()),
@@ -210,30 +219,22 @@ impl ToolExecutor {
             };
 
         // F31x: PostToolUse observe-only hook. Symmetric with PreToolUse
-        // — handlers see the executed result but their return value is
-        // ignored. Loop continues with the ToolExecute-emitted result
-        // regardless.
-        let post_input = HookInput::ToolCall {
-            tool_name: name.clone(),
-            params: arguments.clone(),
-            workspace: workspace.clone(),
-            agent_id: Some(agent_id.clone()),
-            session_id: Some(session_id.clone()),
-            caller_id: caller_id.map(str::to_string),
-            principal_id: Some(principal_id.to_string()),
-            principal_name: Some(principal_name.to_string()),
-            capabilities: capabilities.clone(),
-            active_extensions: active_extensions.clone(),
-            abort_signal: None,
-        };
-        let post_point = HookPoint::PostToolUse {
-            tool_name: name.clone(),
-        };
-        let _ = tokio::time::timeout(
-            HOOK_TIMEOUT,
-            extension_core.invoke_hook(post_point, post_input),
-        )
-        .await;
+        // — handlers see the executed result's context but their return
+        // value is ignored.
+        tool_funnel
+            .post_tool_use(
+                name,
+                arguments.clone(),
+                workspace.clone(),
+                Some(agent_id.clone()),
+                Some(session_id_owned.clone()),
+                caller_id.map(str::to_string),
+                Some(principal_id.to_string()),
+                Some(principal_name.to_string()),
+                capabilities.clone(),
+                active_extensions.clone(),
+            )
+            .await;
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -244,12 +245,11 @@ impl ToolExecutor {
         // a failed tool execution — see audit doc section 3 row 2.)
         let is_error = !success;
 
-        // Add to session
-        {
-            let mut s = session.write().await;
-            s.add_tool_result(id, name, &tool_result_str, is_error)
-                .await?;
-        }
+        // Persist via SessionView trait port — locks the internal
+        // RwLock inside the impl on Arc<RwLock<Session>> in root.
+        session
+            .add_tool_result(id, name, &tool_result_str, is_error)
+            .await?;
 
         on_event(AgenticEvent::ToolEnd {
             run_id: run_id.to_string(),

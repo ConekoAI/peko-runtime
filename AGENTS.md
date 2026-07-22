@@ -105,7 +105,8 @@ contracts and binaries live under `crates/`. Final workspace members:
   `stream_buffer`, `stream_orchestrator`, `tool_stream`, `parallel_gate`,
   `events` re-export, `error` (`AgenticError` taxonomy),
   `stream_types` (Phase 9b.1), `async_completion` (Phase 9b.N.1),
-  `funnel` (Phase 9b.N.2 — F37 `execute_tool_via_core*` canonical chokepoint).
+  `funnel` (Phase 9b.N.2 — F37 `execute_tool_via_core*` canonical chokepoint),
+  `tool_executor` + `session_view` (Phase 9b.N.3).
   Phase 9b.N.1 added `peko-extension-api` + `peko-extension-host` as
   direct deps for `AsyncTaskStatus` + `CompletionEvent`.
   Phase 9b.N.2 introduced the `ToolFunnel` trait port (in
@@ -113,6 +114,18 @@ contracts and binaries live under `crates/`. Final workspace members:
   rather than holding a direct borrow of root `ExtensionCore`; the
   trait is transient scaffolding and disappears when Phase 8
   bulk-moves `ExtensionCore` into `peko-extension-host`.
+  Phase 9b.N.3 widened `ToolFunnel` to expose the full engine-facing
+  surface of `ExtensionCore` (`is_parallelizable`, `pre_tool_use`,
+  `post_tool_use`, `execute_tool_via_hook`) so `tool_executor.rs`
+  could lift into `peko-engine`. The hook methods hide
+  `HookPoint`/`HookInput` construction (still root-only) inside the
+  impl in `src/engine/extension_core_funnel_compat.rs`. The
+  `SessionView` trait (in `peko-engine`) plus the `SessionCore`
+  marker use a blanket impl over `Arc<RwLock<T>>` so root's
+  `impl SessionCore for crate::session::Session` makes
+  `Arc<RwLock<Session>>` satisfy `SessionView` without a
+  local-foreign orphan collision (Arc is not a fundamental type for
+  the orphan rule).
 - `peko-quota` — per-principal token quota (F18/F19). `QuotaMeter`,
   `QuotaScope`, `QuotaState`, `QuotaConfig`, `QuotaError`.
 - `peko-tools-builtin` — concrete built-in tool implementations (filesystem,

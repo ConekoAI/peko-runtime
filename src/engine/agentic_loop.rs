@@ -1702,7 +1702,13 @@ impl AgenticLoop {
                     .map(|tc| {
                         tool_executor.execute(
                             tc,
-                            &self.extension_core,
+                            // Phase 9b.N.3: route through `&dyn
+                            // ToolFunnel`. `&self.extension_core` is
+                            // `&Arc<ExtensionCore>`; deref to
+                            // `&ExtensionCore` so it coerces to the
+                            // trait (impl lives on `ExtensionCore`,
+                            // not `Arc<ExtensionCore>`).
+                            &*self.extension_core,
                             self.agent.name(),
                             // **Track B**: per-agent `workspace`
                             // was removed from `AgentConfig`. The
@@ -1721,7 +1727,13 @@ impl AgenticLoop {
                             // builtin preprocessor rewrite file paths
                             // against `<principal_home>` instead.
                             None,
+                            // Phase 9b.N.3: pass `&dyn SessionView`
+                            // (impl on `Arc<RwLock<Session>>` lives in
+                            // `src/engine/session_view_compat.rs`).
+                            // The session_id is supplied separately
+                            // so the trait port stays single-method.
                             &session,
+                            &session_id,
                             &run_id,
                             self.caller_id.as_deref(),
                             &self.agent_principal_id,
