@@ -13,10 +13,10 @@
 
 use crate::agents::prompt::{PromptRenderer, TurnPromptContext};
 use crate::common::types::message::{ContentBlock, LlmMessage};
+#[cfg(test)]
+use crate::engine::async_inbox_compat::AsyncInboxAdapter;
 use crate::engine::iteration_state::CapabilityDiffTracker;
-use crate::engine::{AgentView, AgenticEvent, LifecyclePhase};
-use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
-use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
+use crate::engine::{AgentView, AgenticEvent, AsyncInboxItem, AsyncInboxLike, LifecyclePhase};
 use crate::extensions::framework::types::{HookInput, ToolExposure};
 use crate::extensions::framework::HookPoint;
 use crate::providers::{
@@ -115,7 +115,14 @@ pub struct AgenticLoop {
     /// Per-session queue of completed async tasks, drained at the start
     /// of `run_inner` iteration. Surfaced to the LLM as a
     /// synthetic user-role message containing all queued completions.
-    async_completion_queue: Option<SharedSessionInbox>,
+    ///
+    /// Trait-object view of root's `SharedSessionInbox` via the
+    /// [`AsyncInboxAdapter`] compat shim — Phase 9b.N.5b.2 lifted the
+    /// `InboxItem` + `SessionInbox` coupling so the engine crate
+    /// never imports `completion_queue`. Callers wrap the inbox in
+    /// `Arc::new(AsyncInboxAdapter::new(...))` before calling
+    /// [`AgenticLoop::with_async_completion_queue`].
+    async_completion_queue: Option<Arc<dyn AsyncInboxLike>>,
     /// Per-loop capability-diff tracker. The renderer observes the
     /// principal's grants each iteration and emits a `{{capability_diff}}`
     /// section when the set has changed since the last observation.
@@ -252,7 +259,7 @@ impl AgenticLoop {
     /// and synthesizes a single user-role message containing all
     /// completions since the last iteration.
     #[must_use]
-    pub fn with_async_completion_queue(mut self, queue: SharedSessionInbox) -> Self {
+    pub fn with_async_completion_queue(mut self, queue: Arc<dyn AsyncInboxLike>) -> Self {
         self.async_completion_queue = Some(queue);
         self
     }
@@ -911,8 +918,8 @@ impl AgenticLoop {
                 let mut steering = Vec::new();
                 for item in items {
                     match item {
-                        InboxItem::Completion(e) => completions.push(e),
-                        InboxItem::Steering(m) => steering.push(m),
+                        AsyncInboxItem::Completion(e) => completions.push(e),
+                        AsyncInboxItem::Steering(m) => steering.push(m),
                     }
                 }
                 if let Some(msg) = super::async_completion::build_async_completion_message(
@@ -3477,7 +3484,9 @@ mod tests {
         );
         let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core.clone())
             .await
-            .with_async_completion_queue(queue.clone());
+            .with_async_completion_queue(std::sync::Arc::new(AsyncInboxAdapter::new(
+                queue.clone(),
+            )));
 
         // Push a completion event BEFORE the loop runs. The first
         // iteration will drain it at start and inject the synthetic
@@ -3608,7 +3617,9 @@ mod tests {
         let queue: SharedSessionInbox = std::sync::Arc::new(SessionInbox::new());
         let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core.clone())
             .await
-            .with_async_completion_queue(queue.clone());
+            .with_async_completion_queue(std::sync::Arc::new(AsyncInboxAdapter::new(
+                queue.clone(),
+            )));
 
         // Pre-push a steering message AND a completion event. They
         // must arrive in insertion order, with the steering item

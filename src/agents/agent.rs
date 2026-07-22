@@ -1538,7 +1538,11 @@ impl Agent {
         let mut loop_ =
             crate::engine::agentic_loop::AgenticLoop::new(agent_arc, provider, extension_core)
                 .await
-                .with_async_completion_queue(async_completion_queue)
+                .with_async_completion_queue(std::sync::Arc::new(
+                    crate::engine::async_inbox_compat::AsyncInboxAdapter::new(
+                        async_completion_queue,
+                    ),
+                ))
                 .with_caller_id(caller_id)
                 .with_quota_meter(quota_meter)
                 .with_peer_meter(peer_meter);
