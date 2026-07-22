@@ -1,4 +1,4 @@
-//! Root engine facade (Phase 9a + 9b.1 + 9b.N.1 + 9b.N.2 + 9b.N.3 + 9b.N.4 shim).
+//! Root engine facade (Phase 9a + 9b.1 + 9b.N.1 + 9b.N.2 + 9b.N.3 + 9b.N.4 + 9b.N.5a shim).
 //!
 //! Phase 9a extracted the `src/engine/` files with zero root-only
 //! dependencies into the `peko-engine` crate (chunker, event_processor,
@@ -20,20 +20,24 @@
 //! `load_previous_compaction_summary` / `update_context_cache`) and
 //! introducing a new `CompactorBackend` trait so the orchestrator
 //! holds a `Box<dyn CompactorBackend>` instead of a concrete
-//! `BackgroundCompactor`. This module re-exports their public surface
+//! `BackgroundCompactor`. Phase 9b.N.5a introduces the trait ports
+//! `agentic_loop.rs` will consume in 9b.N.5b: `AgentView`
+//! (peko-engine) abstracts `Agent`'s engine-facing surface,
+//! `AsyncInboxLike` (peko-engine) abstracts `SharedSessionInbox`,
+//! `CapabilityDiffTracker` lifts into `peko-engine::iteration_state`,
+//! and `ToolFunnel` gains `invoke_stop_hook` /
+//! `invoke_after_agent_hook`. The actual `agentic_loop.rs` lift is
+//! Phase 9b.N.5b. This module re-exports their public surface
 //! through `crate::engine::*` so downstream callers continue to
 //! compile unchanged.
 //!
 //! The remaining root-coupled files stay in `src/engine/` until later
 //! Phase 9b commits lift each residual coupling:
 //!
-//! - [`agentic_loop`] — `Arc<Agent>`, `CapabilityDiffTracker`,
-//!   `ToolSearchTool` synthetic shims, `agents::prompt::*` types.
-//!   Plan: introduce `AgentView` trait in `peko-extension-host` and lift
-//!   the small renderer state types (`PromptRenderer`,
-//!   `TurnPromptContext`, `IterationBudgetState`, `QuotaStateView`,
-//!   `CapabilityDiffTracker`, `HOOK_TIMEOUT`,
-//!   `load_principal_memory`) into `peko-engine`.
+//! - [`agentic_loop`] — `Arc<Agent>`, `ToolSearchTool` synthetic
+//!   shims, `agents::prompt::*` types. The trait ports in 9b.N.5a
+//!   unblock the lift; 9b.N.5b does the actual `mod agentic_loop`
+//!   move into `peko-engine`.
 //! - [`tool_runtime`] — `BuiltinToolAdapter` + concrete `tools::builtin::*`
 //!   imports. Plan: move concrete tool impls and adapter into
 //!   `peko-tools-core`, keep the synthetic stubs in `peko-engine`.
@@ -41,16 +45,19 @@
 // Re-export everything from `peko-engine` for the moved files
 // (Phase 9a pure subset + Phase 9b.1 stream_types + Phase 9b.N.1
 // async_completion + Phase 9b.N.2 funnel + Phase 9b.N.3
-// tool_executor + session_view + Phase 9b.N.4 compaction).
+// tool_executor + session_view + Phase 9b.N.4 compaction + Phase
+// 9b.N.5a agent_view + async_inbox + iteration_state).
 // Modules that still live in root (agentic_loop, tool_runtime) are
 // declared by `mod` below so the shim preserves every pre-Phase 9
 // import path.
 pub use peko_engine::{
-    async_completion, build_async_completion_message, chunker, compaction, default_process_stream,
-    error, event_processor, events, execute_tool_via_core, execute_tool_via_core_with_context,
-    execution, funnel, parallel_gate, parse_tool_calls_from_text, session_view, state,
-    stream_buffer, stream_orchestrator, tool_executor, tool_stream, AgentState, AgenticError,
-    AgenticEvent, BlockChunker, BreakPreference, ChannelAction, ChannelOutput, ChunkerConfig,
+    async_completion, async_inbox, build_async_completion_message, chunker, compaction,
+    default_process_stream, error, event_processor, events, execute_tool_via_core,
+    execute_tool_via_core_with_context, execution, funnel, iteration_state, parallel_gate,
+    parse_tool_calls_from_text, session_view, state, stream_buffer, stream_orchestrator,
+    tool_executor, tool_stream, AgentState, AgentView, AgenticError, AgenticEvent, AsyncInboxItem,
+    AsyncInboxLike, BlockChunker, BreakPreference, CapabilityChange, CapabilityChangeKind,
+    CapabilityDiff, CapabilityDiffTracker, ChannelAction, ChannelOutput, ChunkerConfig,
     CoalesceConfig, CoalescingChunker, CompactionConfig, CompactionEntry, CompactionQuota,
     CompactionRequest, CompactionResponse, CompactionResponseResult, CompactionResult,
     CompactionState, CompactorBackend, ContextUsageEstimate, DeliveryMode, EventProcessor,
@@ -60,8 +67,10 @@ pub use peko_engine::{
     ToolExecutionResult, ToolExecutor,
 };
 
+pub mod agent_view_compat;
 pub mod agentic_loop;
 pub mod async_completion_compat;
+pub mod async_inbox_compat;
 pub mod compaction_backend_compat;
 pub mod extension_core_funnel_compat;
 pub mod session_view_compat;

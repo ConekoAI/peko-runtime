@@ -107,7 +107,9 @@ contracts and binaries live under `crates/`. Final workspace members:
   `stream_types` (Phase 9b.1), `async_completion` (Phase 9b.N.1),
   `funnel` (Phase 9b.N.2 — F37 `execute_tool_via_core*` canonical chokepoint),
   `tool_executor` + `session_view` (Phase 9b.N.3),
-  `compaction` + `compaction_orchestrator` (Phase 9b.N.4).
+  `compaction` + `compaction_orchestrator` (Phase 9b.N.4),
+  `agent_view` + `async_inbox` + `iteration_state` (Phase 9b.N.5a — trait ports the
+  `agentic_loop.rs` lift in 9b.N.5b will consume).
   Phase 9b.N.1 added `peko-extension-api` + `peko-extension-host` as
   direct deps for `AsyncTaskStatus` + `CompletionEvent`.
   Phase 9b.N.2 introduced the `ToolFunnel` trait port (in
@@ -146,6 +148,24 @@ contracts and binaries live under `crates/`. Final workspace members:
   serde round-trip at the boundaries. `peko-extension-api` gained
   `CompactionPreparationPayload`, `CompactionResultPayload`, and
   `HookDecision` (lifted from root's `hook_io`).
+  Phase 9b.N.5a introduced the trait ports the 9b.N.5b `agentic_loop.rs`
+  lift will consume. `AgentView` (12 methods) abstracts `Agent`'s
+  engine-facing surface so the loop never holds an `Arc<Agent>`
+  directly; `has_llm_resolver()` collapses `Agent::llm_resolver()`
+  to a bool because the loop only does `Some(_) / None` matching.
+  `AsyncInboxLike` + `AsyncInboxItem` abstracts the
+  `SharedSessionInbox` drain — the two relevant `InboxItem`
+  variants map to `peko_extension_host::CompletionEvent` and
+  `peko_extension_host::SteeringMessage` (root's
+  `completion_queue` types are field-by-field identical but
+  distinct types pending the Phase 11 protocol extraction that
+  unblocks the bulk move). `CapabilityDiffTracker` lifts into
+  `peko-engine::iteration_state` (small loop-local state).
+  `ToolFunnel` gained `invoke_stop_hook` +
+  `invoke_after_agent_hook` mirroring the pre/post tool-use
+  pair so the lifted loop never imports `HookPoint` /
+  `HookInput` directly. The actual `src/engine/agentic_loop.rs`
+  lift is Phase 9b.N.5b.
 - `peko-quota` — per-principal token quota (F18/F19). `QuotaMeter`,
   `QuotaScope`, `QuotaState`, `QuotaConfig`, `QuotaError`.
 - `peko-tools-builtin` — concrete built-in tool implementations (filesystem,
