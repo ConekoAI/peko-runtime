@@ -202,11 +202,13 @@ pub(crate) mod cron;
 
 /// Daemon mode for background execution (long-running process).
 ///
-/// Crate-internal since the F9 cleanup: the only consumers (`Daemon::run` in
-/// `src/daemon/mod.rs`, the integration test that exercises it, and the
-/// `#[cfg(test)]` mod in `src/tunnel/dispatcher.rs`) all live inside the
-/// crate. The release binary never reaches into it.
-pub(crate) mod daemon;
+/// `pub` since Phase 11b so the `peko-daemon` binary artifact
+/// (`src/bin/peko-daemon.rs`) can construct `Daemon::new`/`DaemonConfig`
+/// and call `Daemon::run`. The daemon's internals (`background_runtime`,
+/// `cron_engine`, `state`, `DaemonStatus`) stay `pub(crate)`; only the
+/// entry surface (`Daemon`, `DaemonConfig`, `LaunchMode`, plus the
+/// `pub fn`/`pub async fn` constructors on `Daemon`) is re-exported.
+pub mod daemon;
 
 /// IPC layer (UDP/Unix socket) for CLI↔daemon communication
 pub mod ipc;
