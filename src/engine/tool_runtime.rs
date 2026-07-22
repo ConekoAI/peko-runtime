@@ -1,5 +1,15 @@
 //! ToolRuntime - Standalone tool execution environment
 //!
+//! Phase 9b.N.2 trimmed this file: the F37 `execute_tool_via_core` and
+//! `execute_tool_via_core_with_context` helpers have no `BashTool`
+//! coupling, so they lifted cleanly into [`crate::engine::funnel`]
+//! (re-exported from `peko_engine::funnel`) — see PR #266. The
+//! surrounding `ToolRuntime` struct + `register_builtins` stay in root
+//! because the concrete `BashTool` registration still references
+//! `src/tools/builtin/bash.rs` (Phase 10 didn't move BashTool);
+//! lifting the whole file would require lifting BashTool into
+//! `peko-tools-builtin` first.
+//!
 //! Extracted from `Agent::init_builtins_async()` to allow the daemon
 //! (and other non-agent contexts) to resolve and execute built-in tools.
 
@@ -7,106 +17,13 @@ use crate::common::paths::PathResolver;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::tools::{
-    bridge_from_cancellation_token, AbortSignalBridgeGuard, BashTool, CronCreateTool,
-    CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool, Tool, WriteTool,
+    BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
+    Tool, WriteTool,
 };
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
-
-/// Canonical tool execution via ExtensionCore.
-///
-/// All production code should call this (or `ToolRuntime::execute_tool`) to ensure
-/// consistent behavior: workspace injection, reserved params, permission checks,
-/// abort/timeout handling, progress reporting, and metrics.
-///
-/// Returns a triplet of `(display_string, json_value, success)`.
-pub async fn execute_tool_via_core(
-    core: &ExtensionCore,
-    tool_name: &str,
-    params: serde_json::Value,
-    workspace: Option<String>,
-) -> Result<(String, serde_json::Value, bool)> {
-    execute_tool_via_core_with_context(
-        core, tool_name, params, workspace, None, None, None, None, None, None, None, None,
-    )
-    .await
-}
-
-/// Execute a tool via ExtensionCore with agent, session, caller, principal,
-/// and per-call allowlist context.
-///
-/// `agent_id` / `session_id` drive reserved parameter injection.
-/// `caller_id` drives per-user permission checks and audit logging (issue #17).
-/// `principal_id` (P2-audit) is threaded into `ToolContext` so
-/// extension-scoped tools (e.g. `Skill`) can resolve per-principal
-/// state via `ExtensionStateRegistry` at handle time.
-/// `principal_name` is the human-readable Principal name used by
-/// Principal-scoped tools (e.g. `CronCreate`) to target jobs.
-/// `capabilities` is the principal/agent capability set used by the
-/// execution gate instead of the mutable global `tool_config`.
-/// `active_extensions` is the set of extension IDs that are active for the
-/// current Principal; when present, the gate also verifies the tool's owner
-/// is active.
-/// `cancel` is the soft-interrupt `CancellationToken` (PR #128). When
-/// `Some`, this function bridges the token into a `watch::Receiver<bool>`
-/// (`AbortSignal`) via `bridge_from_cancellation_token` so `BuiltinToolAdapter`
-/// can plumb a real receiver into `ToolContext::for_hook_run_with_abort`,
-/// making the trait-default `ctx.is_aborted()` check in
-/// `src/tools/core/traits.rs:82, 102` meaningful in production. The
-/// bridge task is aborted on drop; callers should not need to await
-/// or otherwise manage the returned guard.
-///
-/// F37: now delegates to `ExtensionCore::execute_tool_via_hook` —
-/// the canonical funnel method. The cancel-bridging stays here (only
-/// `tool_executor.rs:186` passes a cancel today) so the `'static`
-/// factory closures in `AsyncSpawnTool` / `cron_engine` can call
-/// `execute_tool_via_hook` directly without carrying the bridge's
-/// lifetime.
-pub async fn execute_tool_via_core_with_context(
-    core: &ExtensionCore,
-    tool_name: &str,
-    params: serde_json::Value,
-    workspace: Option<String>,
-    agent_id: Option<String>,
-    session_id: Option<String>,
-    caller_id: Option<String>,
-    principal_id: Option<String>,
-    principal_name: Option<String>,
-    capabilities: Option<Vec<String>>,
-    active_extensions: Option<Vec<String>>,
-    cancel: Option<tokio_util::sync::CancellationToken>,
-) -> Result<(String, serde_json::Value, bool)> {
-    let (abort_signal, _abort_guard) = match cancel {
-        Some(token) => {
-            let (signal, guard) = bridge_from_cancellation_token(token);
-            (Some(signal.subscribe()), guard)
-        }
-        None => (None, AbortSignalBridgeGuard::noop()),
-    };
-
-    // F37: build the ToolCall input here (with the bridged abort_signal)
-    // and route through invoke_hook directly. F38: now uses the canonical
-    // `execute_tool_via_hook` funnel method — the 11th `abort_signal`
-    // parameter is accepted there.
-    let (text, json, success) = core
-        .execute_tool_via_hook(
-            tool_name,
-            params,
-            workspace,
-            agent_id,
-            session_id,
-            caller_id,
-            principal_id,
-            principal_name,
-            capabilities,
-            active_extensions,
-            abort_signal,
-        )
-        .await?;
-    Ok((text, json, success))
-}
 
 /// Standalone tool execution environment
 ///
@@ -303,8 +220,8 @@ impl ToolRuntime {
         capabilities: Option<Vec<String>>,
         active_extensions: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
-        let (display, json, success) = execute_tool_via_core_with_context(
-            &self.extension_core,
+        let (display, json, success) = crate::engine::funnel::execute_tool_via_core_with_context(
+            &*self.extension_core,
             tool_name,
             params,
             Some(workspace.to_string_lossy().to_string()),

@@ -38,18 +38,19 @@
 // by `mod` below so the shim preserves every pre-Phase 9 import path.
 pub use peko_engine::{
     async_completion, build_async_completion_message, chunker, default_process_stream, error,
-    event_processor, events, execution, parallel_gate, parse_tool_calls_from_text, state,
-    stream_buffer, stream_orchestrator, tool_stream, AgentState, AgenticError, AgenticEvent,
-    BlockChunker, BreakPreference, ChannelAction, ChannelOutput, ChunkerConfig, CoalesceConfig,
-    CoalescingChunker, DeliveryMode, EventProcessor, EventStream, ExecutionMode, LifecyclePhase,
-    OrchestratorConfig, ProcessorConfig, StateMachine, StreamBuffer, StreamOrchestrator,
-    StreamingConfig, StreamingToolCall, TaskId, TaskStatus, TaskSummary, ToolCallParseError,
-    ToolCallStreamParser,
+    event_processor, events, execute_tool_via_core, execute_tool_via_core_with_context, execution,
+    funnel, parallel_gate, parse_tool_calls_from_text, state, stream_buffer, stream_orchestrator,
+    tool_stream, AgentState, AgenticError, AgenticEvent, BlockChunker, BreakPreference,
+    ChannelAction, ChannelOutput, ChunkerConfig, CoalesceConfig, CoalescingChunker, DeliveryMode,
+    EventProcessor, EventStream, ExecutionMode, LifecyclePhase, OrchestratorConfig,
+    ProcessorConfig, StateMachine, StreamBuffer, StreamOrchestrator, StreamingConfig,
+    StreamingToolCall, TaskId, TaskStatus, TaskSummary, ToolCallParseError, ToolCallStreamParser,
 };
 
 pub mod agentic_loop;
 pub mod async_completion_compat;
 pub mod compaction_orchestrator;
+pub mod extension_core_funnel_compat;
 pub mod tool_executor;
 pub mod tool_runtime;
 
