@@ -38,6 +38,7 @@ pub mod paths;
 pub mod principal_message;
 pub mod registry;
 pub mod subagent;
+pub mod tool_funnel;
 pub mod transport;
 pub mod types;
 pub mod vault;
@@ -57,5 +58,6 @@ pub use principal_message::{
 };
 pub use registry::{SharedRegistry, SimpleRegistry};
 pub use subagent::SpawnCleanupPolicy;
+pub use tool_funnel::ToolFunnel;
 pub use transport::{DaemonResponse, DaemonResponseStream, DaemonTransport};
 pub use vault::VaultAccess;

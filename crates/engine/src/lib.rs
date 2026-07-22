@@ -1,11 +1,15 @@
-//! `peko-engine` — Peko agentic engine (Phase 9a + 9b.N.1).
+//! `peko-engine` — Peko agentic engine (Phase 9a + 9b.N.1 + 9b.N.2).
 //!
 //! Phase 9a moves the **`src/engine/` files that have zero root-only
 //! dependencies** into the `peko-engine` crate. Phase 9b.1 followed up
 //! with `stream_types` after lifting `ToolCallInfo` to `peko-message`.
 //! Phase 9b.N.1 then lifted `async_completion` after its two remaining
-//! imports (`AsyncTaskStatus`, `CompletionEvent`) gained workspace-crate
-//! homes in Phase 7 (peko-extension-api) and Phase 8 (peko-extension-host).
+//! imports (`AsyncTaskStatus`, `CompletionEvent`) gained
+//! workspace-crate homes in Phase 7 (peko-extension-api) and Phase 8
+//! (peko-extension-host). Phase 9b.N.2 lifted the F37
+//! `execute_tool_via_core*` funnel functions out of
+//! `src/engine/tool_runtime.rs`; `ToolRuntime` itself remains in root
+//! pending BashTool's lift into `peko-tools-builtin`.
 //!
 //! The remaining root-coupled files (`agentic_loop`,
 //! `compaction_orchestrator`, `tool_executor`, `tool_runtime`) stay in
@@ -21,6 +25,7 @@
 //! | [`chunker`]         | Block-level text chunking (`BlockChunker`, `CoalescingChunker`). |
 //! | [`event_processor`] | Channel-action state machine (`EventProcessor`, `ProcessorConfig`). |
 //! | [`execution`]       | Tool-execution primitives (`TaskId`, `ExecutionMode`, `TaskStatus`, `TaskSummary`). |
+//! | [`funnel`]          | Phase 9b.N.2 — F37 canonical `execute_tool_via_core*` chokepoint. |
 //! | [`parallel_gate`]   | F33 single-runtime RwLock gate for tool dispatch. |
 //! | [`state`]           | `AgentState` / `StateMachine` — atomic Idle/Busy tracker. |
 //! | [`stream_buffer`]   | Coalescing buffer between orchestrator and channel. |
@@ -41,6 +46,7 @@ pub mod error;
 pub mod event_processor;
 pub mod events;
 pub mod execution;
+pub mod funnel;
 pub mod parallel_gate;
 pub mod state;
 pub mod stream_buffer;
@@ -57,10 +63,11 @@ pub use error::AgenticError;
 pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, LifecyclePhase};
 pub use execution::{ExecutionMode, TaskId, TaskStatus, TaskSummary};
+pub use funnel::{execute_tool_via_core, execute_tool_via_core_with_context};
 pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};
 pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrator};
-pub use stream_types::{ChannelOutput, EventStream, StreamingConfig, default_process_stream};
+pub use stream_types::{default_process_stream, ChannelOutput, EventStream, StreamingConfig};
 pub use tool_stream::{
     parse_tool_calls_from_text, StreamingToolCall, ToolCallParseError, ToolCallStreamParser,
 };

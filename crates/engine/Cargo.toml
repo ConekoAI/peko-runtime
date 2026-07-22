@@ -3,7 +3,7 @@ name = "peko-engine"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
-description = "Peko agentic engine (Phase 9a + 9b.N.1) — owns the pure-dependency loops moved out of src/engine/: chunker, event_processor, state, stream_buffer, stream_orchestrator, tool_stream, parallel_gate, the AgenticError taxonomy, the events re-export, stream_types (Phase 9b.1), and the async_completion message synthesizer (Phase 9b.N.1). Phase 9b.N.1 introduced peko-extension-api + peko-extension-host deps for the AsyncTaskStatus + CompletionEvent types used by async_completion::build_async_completion_message. The remaining root-coupled files (agentic_loop, compaction_orchestrator, tool_executor, tool_runtime) stay in src/engine/ until later Phase 9b commits lift the agent/session/builtin-tools couplings."
+description = "Peko agentic engine (Phase 9a + 9b.N.1 + 9b.N.2) — owns the pure-dependency loops moved out of src/engine/: chunker, event_processor, state, stream_buffer, stream_orchestrator, tool_stream, parallel_gate, the AgenticError taxonomy, the events re-export, stream_types (Phase 9b.1), the async_completion message synthesizer (Phase 9b.N.1), and the F37 execute_tool_via_core* canonical funnel (Phase 9b.N.2). Phase 9b.N.1 introduced peko-extension-api + peko-extension-host deps for the AsyncTaskStatus + CompletionEvent types used by async_completion::build_async_completion_message. Phase 9b.N.2 lifted just the funnel functions out of tool_runtime.rs; the surrounding ToolRuntime struct + register_builtins stay in root until BashTool is lifted into peko-tools-builtin. The remaining root-coupled files (agentic_loop, compaction_orchestrator, tool_executor) stay in src/engine/ until later Phase 9b commits lift the agent/session/builtin-tools couplings."
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
@@ -44,6 +44,11 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.7", features = ["v4"] }
 tracing = "0.1"
 tokio = { version = "1.35", features = ["rt", "macros", "sync", "time", "rt-multi-thread"] }
+# `tokio-util` CancellationToken: needed by Phase 9b.N.2's funnel
+# (`execute_tool_via_core_with_context` accepts
+# `Option<tokio_util::sync::CancellationToken>` to match the
+# pre-existing `src/engine/tool_executor.rs:110` signature).
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["full"] }
