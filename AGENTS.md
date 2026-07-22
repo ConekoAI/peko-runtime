@@ -103,7 +103,10 @@ contracts and binaries live under `crates/`. Final workspace members:
   `peko-tools-core` + `peko-provider-api` + `peko-subject`.
 - `peko-engine` — agentic loop core. Owns `chunker`, `event_processor`, `state`,
   `stream_buffer`, `stream_orchestrator`, `tool_stream`, `parallel_gate`,
-  `events` re-export, `error` (`AgenticError` taxonomy).
+  `events` re-export, `error` (`AgenticError` taxonomy),
+  `stream_types` (Phase 9b.1), `async_completion` (Phase 9b.N.1).
+  Phase 9b.N.1 added `peko-extension-api` + `peko-extension-host` as
+  direct deps for `AsyncTaskStatus` + `CompletionEvent`.
 - `peko-quota` — per-principal token quota (F18/F19). `QuotaMeter`,
   `QuotaScope`, `QuotaState`, `QuotaConfig`, `QuotaError`.
 - `peko-tools-builtin` — concrete built-in tool implementations (filesystem,

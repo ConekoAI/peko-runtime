@@ -1,18 +1,23 @@
-//! `peko-engine` — Peko agentic engine (Phase 9a).
+//! `peko-engine` — Peko agentic engine (Phase 9a + 9b.N.1).
 //!
 //! Phase 9a moves the **`src/engine/` files that have zero root-only
-//! dependencies** into the `peko-engine` crate. The remaining root-coupled
-//! files (`agentic_loop`, `compaction_orchestrator`, `tool_executor`,
-//! `tool_runtime`, `async_completion`, `stream_types`) stay in
-//! `src/engine/` until Phase 9b lifts the agent / session / tool-coupling
-//! edges (AgentView / SessionView trait ports, `ToolCallInfo` →
-//! `peko-message`, `ToolSearchTool` synthetic shims, `BuiltinToolAdapter`
-//! → `peko-tools-core`).
+//! dependencies** into the `peko-engine` crate. Phase 9b.1 followed up
+//! with `stream_types` after lifting `ToolCallInfo` to `peko-message`.
+//! Phase 9b.N.1 then lifted `async_completion` after its two remaining
+//! imports (`AsyncTaskStatus`, `CompletionEvent`) gained workspace-crate
+//! homes in Phase 7 (peko-extension-api) and Phase 8 (peko-extension-host).
+//!
+//! The remaining root-coupled files (`agentic_loop`,
+//! `compaction_orchestrator`, `tool_executor`, `tool_runtime`) stay in
+//! `src/engine/` until later Phase 9b commits lift the agent / session
+//! / builtin-tools couplings (AgentView / SessionView trait ports,
+//! `ToolCallInfo` → `peko-message`, `ToolSearchTool` synthetic shims,
+//! `BuiltinToolAdapter` → `peko-tools-core`).
 //!
 //! What lives here:
 //!
-//! | Module              | Phase 9a responsibility |
-//! |---------------------|-------------------------|
+//! | Module              | Phase responsibility |
+//! |---------------------|-----------------------|
 //! | [`chunker`]         | Block-level text chunking (`BlockChunker`, `CoalescingChunker`). |
 //! | [`event_processor`] | Channel-action state machine (`EventProcessor`, `ProcessorConfig`). |
 //! | [`execution`]       | Tool-execution primitives (`TaskId`, `ExecutionMode`, `TaskStatus`, `TaskSummary`). |
@@ -20,14 +25,17 @@
 //! | [`state`]           | `AgentState` / `StateMachine` — atomic Idle/Busy tracker. |
 //! | [`stream_buffer`]   | Coalescing buffer between orchestrator and channel. |
 //! | [`stream_orchestrator`] | `StreamEvent` → `AgenticEvent` transformation. |
+//! | [`stream_types`]    | Phase 9b.1 — public `ChannelOutput`/`EventStream`/`StreamingConfig` (`ToolCallInfo` lifted to `peko-message`). |
 //! | [`tool_stream`]     | Streaming tool-call text parser. |
 //! | [`error`]           | F31c `AgenticError` taxonomy. |
 //! | [`events`]          | Re-export of `peko_events` (`AgenticEvent`, `LifecyclePhase`). |
+//! | [`async_completion`] | Phase 9b.N.1 — synthetic user-role `LlmMessage` builder for completed async tasks. |
 //!
-//! Phase 9a is intentionally permissive: the crate boundary is established
-//! for these pure files first, so Phase 9b follow-ups can lift each
-//! residual coupling incrementally.
+//! Phase 9a/9b slices are intentionally permissive: the crate boundary
+//! is established one file at a time so each residual coupling can be
+//! lifted incrementally with its own narrow PR.
 
+pub mod async_completion;
 pub mod chunker;
 pub mod error;
 pub mod event_processor;
@@ -43,6 +51,7 @@ pub mod tool_stream;
 // Convenience re-exports at the crate root. Mirrors the surface that
 // `src/engine/mod.rs` exposed pre-Phase 9, so the root shim's
 // `pub use peko_engine::*` preserves every downstream import path.
+pub use async_completion::build_async_completion_message;
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
 pub use error::AgenticError;
 pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
