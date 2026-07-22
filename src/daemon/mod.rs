@@ -62,9 +62,14 @@ impl std::fmt::Display for LaunchMode {
     }
 }
 
-/// Daemon configuration
+/// Daemon configuration.
+///
+/// `pub` since Phase 11b so the `peko-daemon` binary artifact
+/// (`src/bin/peko-daemon.rs`) can construct a `DaemonConfig` from CLI
+/// flags and pass it to `Daemon::new`. Field visibility stays `pub` so
+/// the binary can populate the struct by-name.
 #[derive(Debug, Clone)]
-pub(crate) struct DaemonConfig {
+pub struct DaemonConfig {
     /// Database path for cron jobs
     pub cron_db_path: PathBuf,
     /// Polling interval for checking due jobs
@@ -112,8 +117,13 @@ pub(crate) struct DaemonStatus {
     pub last_check: Option<chrono::DateTime<Utc>>,
 }
 
-/// The peko daemon
-pub(crate) struct Daemon {
+/// The peko daemon.
+///
+/// `pub` since Phase 11b so the `peko-daemon` binary artifact
+/// (`src/bin/peko-daemon.rs`) can call `Daemon::new(config)?` and
+/// `daemon.run().await`. Internal state (cron engine, status mutex,
+/// event channels) stays private to `Daemon::run`.
+pub struct Daemon {
     config: DaemonConfig,
     status: Arc<Mutex<DaemonStatus>>,
     event_rx: Option<mpsc::Receiver<SystemEvent>>,
