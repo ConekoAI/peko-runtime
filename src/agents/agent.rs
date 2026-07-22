@@ -193,11 +193,13 @@ impl Agent {
         // `<workspace>/agents/<name>/AGENT.md`. Otherwise the `Agent` tool
         // resolves from the global agent registry only.
         let workspace = self.principal_workspace.clone();
-        tools.push(Arc::new(AgentTool::with_workspace_and_session(
-            self.subagent_executor.clone(),
-            workspace,
-            Box::new(self.session_key_provider.clone()),
-        )));
+        tools.push(Arc::new(
+            crate::tools::builtin::messaging::agent_tool_with_workspace_and_session(
+                self.subagent_executor.clone(),
+                workspace,
+                Box::new(self.session_key_provider.clone()),
+            ),
+        ));
 
         // Add planning todo (Task*) tools backed by the agent's session storage.
         // Phase 10d: the tools now speak to a `TodoRuntime` port trait; the

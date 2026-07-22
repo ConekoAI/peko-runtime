@@ -358,11 +358,13 @@ where
         .with_agent_config(agent.config.clone()),
     );
 
-    let agent_tool = Arc::new(AgentTool::with_workspace_and_session(
-        subagent_executor,
-        Some(ctx.workspace_path.clone()),
-        Box::new(session_key_provider.clone()),
-    ));
+    let agent_tool = Arc::new(
+        crate::tools::builtin::messaging::agent_tool_with_workspace_and_session(
+            subagent_executor,
+            Some(ctx.workspace_path.clone()),
+            Box::new(session_key_provider.clone()),
+        ),
+    );
     crate::extensions::builtin::BuiltinToolAdapter::register_tool(
         &core,
         agent_tool,

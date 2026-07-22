@@ -15,6 +15,12 @@ peko-tools-core = { path = "../tools-core" }
 # used in `SessionRuntime::list_sessions`.
 peko-message = { path = "../message" }
 peko-subject = { path = "../subject" }
+# Phase 10e: messaging (AgentTool) needs peko-extension-api for
+# `AsyncTaskStatus` (used in `SubagentRunView.status`) and
+# peko-extension-host for `SpawnCleanupPolicy` (re-exported via the
+# `messaging` module so consumers only need one import path).
+peko-extension-api = { path = "../extension-api" }
+peko-extension-host = { path = "../extension-host" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -45,6 +51,9 @@ uuid = { version = "1.10", features = ["v4"] }
 # YAML parsing for SkillFrontmatter in `skill::frontmatter`.
 serde_yaml = "0.9"
 tracing = "0.1"
+# CancellationToken for SubagentRuntime port (AgentTool's parent cancel
+# propagation through F38).
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [dev-dependencies]
 tempfile = "3.10"

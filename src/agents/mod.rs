@@ -40,6 +40,7 @@ pub mod subagent_announce;
 pub mod subagent_error;
 pub mod subagent_executor;
 pub mod subagent_recovery;
+pub mod subagent_runtime_impl;
 pub mod subagent_types;
 
 // Re-export typed spawn error
