@@ -1,0 +1,22 @@
+[package]
+name = "peko-daemon"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Peko long-running background daemon binary (Phase 12 — extracted from root `peko` crate). Depends only on the root `peko` lib for the `Daemon`/`DaemonConfig`/`LaunchMode` entry surface; no daemon internals are reachable from this crate."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[[bin]]
+name = "peko-daemon"
+path = "src/main.rs"
+
+[dependencies]
+# Phase 12: the `peko-daemon` binary depends on the root `peko` lib
+# only for the daemon entry surface (`Daemon`, `DaemonConfig`,
+# `LaunchMode`). The lib's daemon internals (`background_runtime`,
+# `cron_engine`, `state`, `DaemonStatus`) stay `pub(crate)` — only
+# the entry surface is reachable.
+peko = { path = "../.." }
+anyhow = "1.0"
+tokio = { version = "1.35", features = ["full", "net", "macros", "rt-multi-thread"] }

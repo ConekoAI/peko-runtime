@@ -202,12 +202,16 @@ pub(crate) mod cron;
 
 /// Daemon mode for background execution (long-running process).
 ///
-/// `pub` since Phase 11b so the `peko-daemon` binary artifact
-/// (`src/bin/peko-daemon.rs`) can construct `Daemon::new`/`DaemonConfig`
-/// and call `Daemon::run`. The daemon's internals (`background_runtime`,
-/// `cron_engine`, `state`, `DaemonStatus`) stay `pub(crate)`; only the
-/// entry surface (`Daemon`, `DaemonConfig`, `LaunchMode`, plus the
-/// `pub fn`/`pub async fn` constructors on `Daemon`) is re-exported.
+/// `pub` since Phase 11b/12 because:
+/// 1. The `peko-daemon` workspace member crate (`crates/peko-daemon/`)
+///    needs `Daemon::new`/`DaemonConfig`/`Daemon::run` to construct
+///    and run a daemon.
+/// 2. `LaunchMode` is part of the public IPC wire envelope
+///    (`ipc::packet::Status::mode`); `ipc` is `pub`.
+///
+/// The daemon's internals (`background_runtime`, `cron_engine`,
+/// `state`, `DaemonStatus`) stay `pub(crate)`. Only the entry
+/// surface is widened.
 pub mod daemon;
 
 /// IPC layer (UDP/Unix socket) for CLI↔daemon communication

@@ -40,12 +40,12 @@ jobs:
           key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
       
       - name: Build release binary
-        run: cargo build --release --target x86_64-unknown-linux-gnu
-      
+        run: cargo build --release --target x86_64-unknown-linux-gnu -p peko -p peko-daemon
+
       - name: Create archive
         run: |
           mkdir -p dist
-          tar -czf dist/peko-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-gnu/release peko
+          tar -czf dist/peko-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-gnu/release peko peko-daemon
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -87,14 +87,14 @@ jobs:
           EOF
       
       - name: Build release binary
-        run: cargo build --release --target aarch64-unknown-linux-gnu
+        run: cargo build --release --target aarch64-unknown-linux-gnu -p peko -p peko-daemon
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      
+
       - name: Create archive
         run: |
           mkdir -p dist
-          tar -czf dist/peko-linux-aarch64.tar.gz -C target/aarch64-unknown-linux-gnu/release peko
+          tar -czf dist/peko-linux-aarch64.tar.gz -C target/aarch64-unknown-linux-gnu/release peko peko-daemon
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -123,12 +123,12 @@ jobs:
           key: ${{ runner.os }}-cargo-x86_64-${{ hashFiles('**/Cargo.lock') }}
       
       - name: Build release binary
-        run: cargo build --release --target x86_64-apple-darwin
-      
+        run: cargo build --release --target x86_64-apple-darwin -p peko -p peko-daemon
+
       - name: Create archive
         run: |
           mkdir -p dist
-          tar -czf dist/peko-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release peko
+          tar -czf dist/peko-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release peko peko-daemon
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -157,12 +157,12 @@ jobs:
           key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('**/Cargo.lock') }}
       
       - name: Build release binary
-        run: cargo build --release --target aarch64-apple-darwin
-      
+        run: cargo build --release --target aarch64-apple-darwin -p peko -p peko-daemon
+
       - name: Create archive
         run: |
           mkdir -p dist
-          tar -czf dist/peko-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release peko
+          tar -czf dist/peko-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release peko peko-daemon
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -223,7 +223,12 @@ jobs:
           \`\`\`
           
           ### Assets
-          
+
+          Each archive contains both binaries: `peko` (CLI) and `peko-daemon`
+          (long-running daemon). The CLI's `daemon start` path resolves
+          `peko-daemon` next to itself and prefers it over re-exec'ing
+          the CLI binary.
+
           | Platform | Architecture | Asset |
           |----------|--------------|-------|
           | Linux    | x86_64       | peko-linux-x86_64.tar.gz |

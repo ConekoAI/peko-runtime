@@ -68,9 +68,9 @@ Key style notes from `clippy.toml`:
 
 ## Architecture Overview
 
-Peko is a Cargo workspace during the incremental crate-boundary migration. The
-root `peko` package remains the compatibility facade and CLI while extracted
-contracts are added under `crates/`. Extracted members so far:
+Peko is a Cargo workspace with the strict separation the migration aimed for.
+The root `peko` package remains the compatibility facade and CLI; extracted
+contracts and binaries live under `crates/`. Final workspace members:
 
 - `peko-events` — neutral agentic event contract (`AgenticEvent`, `LifecyclePhase`,
   `ToolId`/`ToolCallId`/`RunId`) shared by the engine and legacy provider streaming.
@@ -82,12 +82,58 @@ contracts are added under `crates/`. Extracted members so far:
   `Subject`, `SubjectKind`, `PrincipalId`, `PrincipalDID`, `SubjectParseError`,
   `subject_from_string_with_default_user`. Pure value/type layer with no inbound
   edge from principal, agents, engine, daemon, providers, or extensions.
+- `peko-tools-core` — `Tool`, `ToolContext`, `AbortSignal`, `ToolResult`,
+  `ToolError`, `ToolInterruptNotice`, `ContextSource`, `ToolExposure` (F34).
+  No dependency on extension host or built-in tools.
+- `peko-provider-api` — provider contract types (`ChatOptions`, `ChatResponse`,
+  `StreamEvent`, `ContentDelta`, `StopReason`, `BlockType`, `ToolDefinition`,
+  `ContentBlockId`, `ThinkingEffort`, `ThinkingFormat`, `ThinkingKeep`,
+  `ToolChoice`, `ServiceTier`, `ProviderCompat`, `DeferredToolsMode`,
+  `CacheRetention`). Depends on `peko-message` + `peko-tools-core` only.
+- `peko-extension-api` — stable framework contracts (`ExtensionId`, `HookId`,
+  `HookInput`/`HookOutput`/`HookResult`, `ExtensionManifest`, `Capability`,
+  `Capabilities`, `ActiveExtensionSet`, `ToolMetadata`, `ToolSource`,
+  `ToolRuntimeContext`, `AsyncReceipt`, `AsyncTaskStatus`, `MessageEnvelope`,
+  `SessionSnapshot`, `PromptBuildState`, `ToolRegistryAccess`,
+  `ReservedParamsConfig`, `ParamSource`, `ConfigFormat`).
+- `peko-extension-host` — concrete framework implementation (registry, hook
+  dispatch, capability gate, async executor, transport, manager/store,
+  scaffold, skill catalog, integration, framework services, `SimpleRegistry`/
+  `SharedRegistry`). Depends only on `peko-extension-api` + `peko-message` +
+  `peko-tools-core` + `peko-provider-api` + `peko-subject`.
+- `peko-engine` — agentic loop core. Owns `chunker`, `event_processor`, `state`,
+  `stream_buffer`, `stream_orchestrator`, `tool_stream`, `parallel_gate`,
+  `events` re-export, `error` (`AgenticError` taxonomy).
+- `peko-quota` — per-principal token quota (F18/F19). `QuotaMeter`,
+  `QuotaScope`, `QuotaState`, `QuotaConfig`, `QuotaError`.
+- `peko-tools-builtin` — concrete built-in tool implementations (filesystem,
+  async control, cron, session, messaging, skill, task). Port traits live
+  beside the tools so daemon state stays out of this crate.
+- `peko-protocol` — IPC + tunnel wire-shape contracts (Phase 11a).
+  `AuthCredential`, `PrincipalSendControlMode`, `AuthHeader`,
+  `MAX_PACKET_SIZE`, `HEARTBEAT_INTERVAL_SECS`, `CLI_TIMEOUT_SECS`.
+  Depends only on `serde` + `serde_json`. Bulk `RequestPacket`/
+  `ResponsePacket`/`TunnelMessage` stay in root pending future cleanup.
+- `peko-daemon` — long-running background daemon binary (Phase 12). Depends
+  only on root `peko` lib for the daemon entry surface (`Daemon`,
+  `DaemonConfig`, `LaunchMode`, `PathResolver`). The CLI's `daemon start`
+  background-spawn path resolves this artifact next to its own executable
+  and prefers it over re-exec'ing the CLI binary (Phase 11c).
 
 ```text
 crates/
+├── engine/                 # Agentic loop core (peko-engine)
 ├── events/                 # Neutral agentic event contract (peko-events)
+├── extension-api/          # Framework API contracts (peko-extension-api)
+├── extension-host/         # Framework host impl (peko-extension-host)
 ├── message/                # Neutral message contract (peko-message)
-└── subject/                # Canonical actor type (peko-subject, ADR-041)
+├── peko-daemon/            # Long-running daemon binary (peko-daemon)
+├── provider-api/           # Provider contract types (peko-provider-api)
+├── protocol/               # IPC + tunnel wire-shape contracts (peko-protocol)
+├── quota/                  # Per-principal token quota (peko-quota)
+├── subject/                # Canonical actor type (peko-subject, ADR-041)
+├── tools-builtin/          # Concrete built-in tool implementations
+└── tools-core/             # Tool execution API (peko-tools-core, F34 ToolExposure)
 src/
 ├── agents/                 # Agent management (stateless manager, config, lifecycle, prompts)
 ├── auth/                   # Authentication and authorization (principal, ownership, JWT, API keys)
