@@ -1,7 +1,9 @@
 //! Compatibility shim: implements `peko_engine::SessionCore` for root's
 //! `Session` so the lifted `ToolExecutor` (Phase 9b.N.3,
-//! `crates/engine/src/tool_executor.rs`) can persist tool results
-//! without holding a direct borrow of root's [`crate::session::Session`].
+//! `crates/engine/src/tool_executor.rs`) and `CompactionOrchestrator`
+//! (Phase 9b.N.4, `crates/engine/src/compaction_orchestrator.rs`)
+//! can persist results without holding a direct borrow of root's
+//! [`crate::session::Session`].
 //!
 //! The impl lives here rather than in `peko-engine` because of the
 //! orphan rule: `peko_engine::SessionCore` is a foreign trait, and
@@ -33,5 +35,51 @@ impl SessionCore for Session {
         is_error: bool,
     ) -> anyhow::Result<()> {
         Session::add_tool_result(session, tool_call_id, tool_name, result, is_error).await
+    }
+
+    async fn record_compaction(
+        session: &mut Self,
+        summary: &str,
+        messages_compacted: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        compaction_number: usize,
+        details: Option<&serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        // Phase 9b.N.4 widens the `details` field from
+        // `summary_format::CompactionDetails` to `serde_json::Value`
+        // in `peko_engine::CompactionEntry`. Root's `record_compaction`
+        // still takes `Option<&CompactionDetails>` — re-deserialize
+        // the value back into the concrete type before forwarding.
+        // `null` and `None` map to `None`; deserialization failure
+        // is treated as `None` (the on-disk record still has the
+        // raw JSON via `serde_json::to_value(d)` in the compactor).
+        let concrete_details = details.and_then(|v| {
+            serde_json::from_value::<crate::session::compaction::summary_format::CompactionDetails>(
+                v.clone(),
+            )
+            .ok()
+        });
+        Session::record_compaction(
+            session,
+            summary,
+            messages_compacted,
+            tokens_before,
+            tokens_after,
+            compaction_number,
+            concrete_details.as_ref(),
+        )
+        .await
+    }
+
+    async fn load_previous_compaction_summary(session: &Self) -> anyhow::Result<Option<String>> {
+        Session::load_previous_compaction_summary(session).await
+    }
+
+    async fn update_context_cache(
+        session: &Self,
+        messages: &[peko_message::LlmMessage],
+    ) -> anyhow::Result<()> {
+        Session::update_context_cache(session, messages).await
     }
 }

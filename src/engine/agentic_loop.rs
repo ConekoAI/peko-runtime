@@ -849,13 +849,17 @@ impl AgenticLoop {
                 .unwrap_or(FALLBACK_CONTEXT_WINDOW_TOKENS),
             None => FALLBACK_CONTEXT_WINDOW_TOKENS,
         };
-        let mut compaction_orchestrator =
-            crate::engine::compaction_orchestrator::CompactionOrchestrator::new(
-                provider.inner().clone(),
-                context_window,
-                Arc::clone(&self.quota_meter),
-                self.peer_meter.clone(),
-            );
+        let mut compaction_orchestrator = peko_engine::CompactionOrchestrator::new(
+            Box::new(
+                crate::session::compaction::background::BackgroundCompactor::new(
+                    provider.inner().clone(),
+                    Arc::clone(&self.quota_meter),
+                    self.peer_meter.clone(),
+                ),
+            ),
+            crate::session::compaction::load_compaction_config(),
+            context_window,
+        );
 
         // Propagate the resolved model max into the session so the
         // `session` tool and IPC layer can surface it (used by the
@@ -1076,7 +1080,7 @@ impl AgenticLoop {
                 .check_and_compact(
                     &mut messages,
                     &session,
-                    &self.extension_core,
+                    &*self.extension_core,
                     &on_event,
                     &run_id,
                 )

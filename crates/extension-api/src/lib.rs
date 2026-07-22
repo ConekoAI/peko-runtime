@@ -45,7 +45,10 @@ pub mod types;
 pub use async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
 pub use async_types::AsyncReceipt;
 pub use capabilities::{ActiveExtensionSet, Capabilities, Capability};
-pub use hook_io::{tool_result_from_hook, HookInput, HookOutput, HookResult};
+pub use hook_io::{
+    tool_result_from_hook, CompactionPreparationPayload, CompactionResultPayload, HookDecision,
+    HookInput, HookOutput, HookResult,
+};
 pub use manifest::{ExtensionDependency, ExtensionManifest};
 pub use reserved_params::{ConfigFormat, ParamSource, ReservedParamsConfig, ReservedParamsService};
 pub use session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};

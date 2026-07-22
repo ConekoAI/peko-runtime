@@ -247,6 +247,17 @@ fn test_compactor_state_tracking() {
 
 #[test]
 fn test_compaction_entry_with_details() {
+    // Phase 9b.N.4: `CompactionEntry::details` is now
+    // `Option<serde_json::Value>` (down from
+    // `Option<summary_format::CompactionDetails>`). Serialize the
+    // concrete details into JSON so the wire shape round-trips for
+    // hooks + on-disk compaction entries.
+    let details_value = serde_json::to_value(CompactionDetails {
+        read_files: vec!["a.rs".to_string()],
+        modified_files: vec!["b.rs".to_string()],
+    })
+    .unwrap();
+
     let entry = CompactionEntry {
         timestamp: chrono::Utc::now(),
         summary: "Test summary".to_string(),
@@ -255,16 +266,17 @@ fn test_compaction_entry_with_details() {
         tokens_before: 1000,
         tokens_after: 200,
         compaction_number: 1,
-        details: Some(CompactionDetails {
-            read_files: vec!["a.rs".to_string()],
-            modified_files: vec!["b.rs".to_string()],
-        }),
+        details: Some(details_value),
     };
 
     assert_eq!(entry.messages_compacted, 10);
     assert_eq!(entry.tokens_before, 1000);
     assert_eq!(entry.tokens_after, 200);
-    let details = entry.details.unwrap();
+    // Verify the JSON value round-trips back into the concrete type
+    // so any downstream consumer that wants strongly-typed access
+    // can decode it at the boundary.
+    let details: CompactionDetails =
+        serde_json::from_value(entry.details.clone().unwrap()).unwrap();
     assert_eq!(details.read_files, vec!["a.rs"]);
     assert_eq!(details.modified_files, vec!["b.rs"]);
 }

@@ -168,7 +168,17 @@ impl SessionCompactor {
             details: None,
         };
 
-        // Record compaction in session
+        // Record compaction in session.
+        // Phase 9b.N.4: `CompactionEntry::details` is now
+        // `Option<serde_json::Value>` (down from
+        // `Option<summary_format::CompactionDetails>`). The root's
+        // `Session::record_compaction` still takes the concrete type —
+        // deserialize the JSON value back into `CompactionDetails`. The
+        // `details: None` case passes through unchanged.
+        let concrete_details = entry
+            .details
+            .as_ref()
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
         session
             .record_compaction(
                 &entry.summary,
@@ -176,7 +186,7 @@ impl SessionCompactor {
                 entry.tokens_before,
                 entry.tokens_after,
                 entry.compaction_number,
-                entry.details.as_ref(),
+                concrete_details.as_ref(),
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to record compaction: {e}"))?;

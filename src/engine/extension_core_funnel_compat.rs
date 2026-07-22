@@ -1,8 +1,8 @@
 //! Compatibility shim: implements `peko_extension_host::ToolFunnel`
 //! for the legacy root-owned `ExtensionCore` so the engine-facing
-//! surface in `peko-engine` (funnel + tool_executor) can call through
-//! the trait port without holding a direct borrow of root
-//! `ExtensionCore`.
+//! surface in `peko-engine` (funnel + tool_executor + compaction
+//! orchestrator) can call through the trait port without holding a
+//! direct borrow of root `ExtensionCore`.
 //!
 //! Phase 9b.N.2: trait-port pattern, matching the `AsyncCompletionLike`
 //! bridge introduced in Phase 9b.N.1 (PR #265). The trait is transient
@@ -20,6 +20,15 @@
 //! semantics exactly (2s `HOOK_TIMEOUT` soft-fail, observe-only
 //! `HookResult` discard) so lifted code is behaviour-equivalent.
 //!
+//! Phase 9b.N.4 added `invoke_session_compaction_pre_hook`,
+//! `invoke_session_compaction_post_hook`, and
+//! `invoke_session_state_change_hook` so the lifted
+//! `CompactionOrchestrator` can fire the three compaction /
+//! session-state hooks without touching `HookPoint` / `HookInput`
+//! directly. Returns a trimmed [`peko_extension_api::HookDecision`]
+//! (3 variants) instead of the full `HookResult` (5 variants +
+//! `HookOutput`) so the trait stays free of root-only dependencies.
+//!
 //! Module location: rooted at `src/engine/extension_core_funnel_compat.rs`
 //! so `src/engine/mod.rs` declares it via `pub mod`, mirroring the
 //! `src/engine/async_completion_compat.rs` pattern.
@@ -27,6 +36,10 @@
 use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::types::HookInput;
 use crate::extensions::framework::HookPoint;
+use peko_extension_api::hook_io::{
+    CompactionPreparationPayload, CompactionResultPayload, HookDecision,
+};
+use peko_extension_api::session::SessionSnapshot;
 use peko_extension_host::ToolFunnel;
 use peko_tools_core::HOOK_TIMEOUT;
 
@@ -135,5 +148,32 @@ impl ToolFunnel for ExtensionCore {
             abort_signal,
         )
         .await
+    }
+
+    async fn invoke_session_compaction_pre_hook(
+        &self,
+        payload: CompactionPreparationPayload,
+    ) -> HookDecision {
+        let input = payload.into_hook_input();
+        let point = HookPoint::SessionCompaction;
+        let result = self.invoke_hook(point, input).await;
+        HookDecision::from_hook_result(result)
+    }
+
+    async fn invoke_session_compaction_post_hook(
+        &self,
+        payload: CompactionResultPayload,
+    ) -> HookDecision {
+        let input = payload.into_hook_input();
+        let point = HookPoint::SessionCompactionPost;
+        let result = self.invoke_hook(point, input).await;
+        HookDecision::from_hook_result(result)
+    }
+
+    async fn invoke_session_state_change_hook(&self, snapshot: SessionSnapshot) -> HookDecision {
+        let input = HookInput::SessionState(snapshot);
+        let point = HookPoint::SessionStateChange;
+        let result = self.invoke_hook(point, input).await;
+        HookDecision::from_hook_result(result)
     }
 }

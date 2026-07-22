@@ -106,7 +106,8 @@ contracts and binaries live under `crates/`. Final workspace members:
   `events` re-export, `error` (`AgenticError` taxonomy),
   `stream_types` (Phase 9b.1), `async_completion` (Phase 9b.N.1),
   `funnel` (Phase 9b.N.2 — F37 `execute_tool_via_core*` canonical chokepoint),
-  `tool_executor` + `session_view` (Phase 9b.N.3).
+  `tool_executor` + `session_view` (Phase 9b.N.3),
+  `compaction` + `compaction_orchestrator` (Phase 9b.N.4).
   Phase 9b.N.1 added `peko-extension-api` + `peko-extension-host` as
   direct deps for `AsyncTaskStatus` + `CompletionEvent`.
   Phase 9b.N.2 introduced the `ToolFunnel` trait port (in
@@ -126,6 +127,25 @@ contracts and binaries live under `crates/`. Final workspace members:
   `Arc<RwLock<Session>>` satisfy `SessionView` without a
   local-foreign orphan collision (Arc is not a fundamental type for
   the orphan rule).
+  Phase 9b.N.4 lifted `compaction_orchestrator.rs` into `peko-engine`
+  via three trait ports. `ToolFunnel` gained three hook-firing
+  methods for the compaction + session-state hooks
+  (`invoke_session_compaction_pre_hook`,
+  `invoke_session_compaction_post_hook`,
+  `invoke_session_state_change_hook`) returning the trimmed
+  `HookDecision` (3 variants) so the trait stays free of
+  root-only `HookPoint`/`HookInput`. `SessionView` was extended
+  with `record_compaction`, `load_previous_compaction_summary`,
+  and `update_context_cache` for the orchestrator's session
+  writes. A new `CompactorBackend` trait
+  (`peko-engine::compaction::backend`) abstracts
+  `BackgroundCompactor` so the orchestrator holds
+  `Box<dyn CompactorBackend>`. `CompactionEntry::details` was
+  widened from `Option<CompactionDetails>` to
+  `Option<serde_json::Value>` for trait-port compatibility, with
+  serde round-trip at the boundaries. `peko-extension-api` gained
+  `CompactionPreparationPayload`, `CompactionResultPayload`, and
+  `HookDecision` (lifted from root's `hook_io`).
 - `peko-quota` — per-principal token quota (F18/F19). `QuotaMeter`,
   `QuotaScope`, `QuotaState`, `QuotaConfig`, `QuotaError`.
 - `peko-tools-builtin` — concrete built-in tool implementations (filesystem,
