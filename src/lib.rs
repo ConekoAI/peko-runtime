@@ -46,6 +46,33 @@
 //!     store.install("./discord-gateway").await.unwrap();
 //! }
 //! ```
+//!
+//! ## Cargo Workspace
+//!
+//! The `peko` crate is the **compatibility facade** and binary entry
+//! point. As of Phase 12, the runtime's pure-dependency contracts and
+//! implementation crates have been lifted into a 13-member Cargo
+//! workspace under `crates/` (see the workspace member list and per-crate
+//! dependency rules in [`AGENTS.md`](../AGENTS.md#architecture-overview)).
+//! The root `peko` package preserves every public path used by
+//! integration tests, the CLI binary (`src/main.rs`), and external
+//! consumers — it does **not** implement new behavior, only re-exports
+//! intentional surfaces from the workspace members.
+//!
+//! Two CI gates police the boundary:
+//!
+//! - `scripts/check_module_boundaries.sh` — path-grep for in-`src/`
+//!   boundary rules (framework-vs-implementation, principal-vs-tunnel,
+//!   etc.). Catches regressions in the legacy module structure.
+//! - `scripts/check_workspace_deps.py` — Phase 12b Cargo.toml parser
+//!   that asserts the 71-entry forbidden-edge table from the
+//!   workspace-migration plan. Catches forbidden crate-to-crate edges
+//!   (e.g. providers → engine ban, peko-protocol wire-only contract,
+//!   leaf-crate purity rules) before a PR can merge.
+//!
+//! Adding a new crate to the workspace, lifting more code into an
+//! existing crate, or wiring a new dep edge between workspace members
+//! MUST keep both checks green.
 
 #![warn(clippy::all, clippy::pedantic)]
 // Silence overwhelmingly noisy/insignificant lints globally
