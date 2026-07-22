@@ -10,7 +10,7 @@
 
 use crate::common::types::message::LlmMessage;
 use crate::quota::{QuotaMeter, QuotaScope};
-use crate::session::compaction::{CompactionConfig, CompactionResult, Compactor};
+use crate::session::compaction::{CompactionConfig, Compactor};
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Instant;
@@ -71,19 +71,26 @@ pub struct CompactionRequest {
     pub response_tx: oneshot::Sender<CompactionResponse>,
 }
 
-/// Response from background compaction
-#[derive(Debug, Clone)]
-pub enum CompactionResponse {
-    /// Compaction completed successfully
-    Completed(CompactionResult),
-    /// Compaction not needed (under threshold)
-    NotNeeded,
-    /// Compaction skipped due to quota/cooldown
-    #[allow(dead_code)]
-    Skipped(String),
-    /// Compaction failed
-    Failed(String),
-}
+/// Response from background compaction.
+///
+/// Phase 9b.N.4: type alias of
+/// `peko_engine::compaction::CompactionResponse` so the
+/// `CompactorBackend` trait port (defined in `peko-engine`) and
+/// the root-owned `BackgroundCompactor` agree on the response
+/// type. The variants match exactly:
+///
+/// - `Completed(CompactionResult)`
+/// - `NotNeeded`
+/// - `Skipped(String)`
+/// - `Failed(String)`
+///
+/// The historical import path
+/// `use crate::session::compaction::background::CompactionResponse`
+/// keeps compiling for any pre-9b.N.4 caller. The canonical path is
+/// `peko_engine::compaction::CompactionResponse` (re-exported as
+/// `crate::session::compaction::CompactionResponse` via the root
+/// `compaction.rs` shim).
+pub use peko_engine::compaction::CompactionResponse;
 
 /// Background compaction worker handle
 #[derive(Debug, Clone)]

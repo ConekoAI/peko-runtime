@@ -23,6 +23,7 @@ use crate::session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolReg
 use peko_message::{ContentBlock, LlmMessage};
 use peko_provider_api::ToolDefinition;
 use peko_tools_core::ToolResult;
+use serde_json::Value;
 
 /// Result of a hook handler invocation
 #[derive(Debug)]
@@ -366,6 +367,159 @@ pub fn tool_result_from_hook(
         HookResult::Replace(output) => {
             let s = format!("Error: Tool '{tool_name}' execution was replaced: {output:?}");
             (s.clone(), serde_json::Value::String(s), false)
+        }
+    }
+}
+
+/// Payload struct for the `HookInput::CompactionPreparation` variant.
+///
+/// Phase 9b.N.4 lifted this from
+/// `src/extensions/framework/types/hook_io.rs` into the API crate
+/// (was previously in the host re-export module) so the lifted
+/// `CompactionOrchestrator` (`peko_engine::compaction_orchestrator`)
+/// can construct a typed payload without importing the host. The
+/// variant itself (`HookInput::CompactionPreparation`) carries the
+/// fields as `serde_json::Value` blobs so the API crate stays
+/// independent of root's `session::compaction::*`.
+#[derive(Debug, Clone)]
+pub struct CompactionPreparationPayload {
+    /// Messages selected for summarization (root's turn-boundary
+    /// selection pass). Pre-9b.N.4 the orchestrator selected these
+    /// here; post-9b.N.4 we forward the full message list — root's
+    /// `BackgroundCompactor` does the selection internally.
+    pub messages_to_summarize: Vec<LlmMessage>,
+    /// Split-turn prefix messages when the cut falls mid-turn.
+    pub turn_prefix_messages: Vec<LlmMessage>,
+    /// Whether the cut falls mid-turn.
+    pub is_split_turn: bool,
+    /// Previous summary for cumulative updates (`None` for the
+    /// initial compaction).
+    pub previous_summary: Option<String>,
+    /// File ops extracted from the messages-to-summarize slice
+    /// (root-only `summary_format` accumulator). JSON-serialized so
+    /// the API crate stays free of root deps.
+    pub file_ops: Value,
+    /// F21 hybrid token estimator output.
+    pub estimated_tokens: usize,
+    /// Threshold tokens (`context_window - reserve_tokens`).
+    pub threshold_tokens: usize,
+    /// Model max context (catalog-resolved).
+    pub model_context_limit: usize,
+    /// Effective `CompactionConfig` (JSON-serialized).
+    pub settings: Value,
+}
+
+impl CompactionPreparationPayload {
+    /// Construct a `HookInput::CompactionPreparation` from typed
+    /// engine-side data. The non-trivial fields are serialized to JSON.
+    #[must_use]
+    pub fn into_hook_input(self) -> HookInput {
+        HookInput::CompactionPreparation {
+            messages_to_summarize: serde_json::to_value(&self.messages_to_summarize)
+                .unwrap_or(Value::Null),
+            turn_prefix_messages: serde_json::to_value(&self.turn_prefix_messages)
+                .unwrap_or(Value::Null),
+            is_split_turn: self.is_split_turn,
+            previous_summary: self.previous_summary,
+            file_ops: self.file_ops,
+            estimated_tokens: self.estimated_tokens,
+            threshold_tokens: self.threshold_tokens,
+            model_context_limit: self.model_context_limit,
+            settings: self.settings,
+        }
+    }
+}
+
+/// Payload struct for the `HookInput::CompactionResult` variant.
+#[derive(Debug, Clone)]
+pub struct CompactionResultPayload {
+    /// Structured summary text produced by the compactor.
+    pub summary: String,
+    /// Number of messages that were compacted.
+    pub messages_compacted: usize,
+    /// Estimated tokens before compaction.
+    pub tokens_before: usize,
+    /// Estimated tokens after compaction.
+    pub tokens_after: usize,
+    /// 1-based compaction number (1st, 2nd, etc.).
+    pub compaction_number: usize,
+    /// File-ops details (JSON; `None` when the compactor didn't
+    /// extract any).
+    pub details: Option<Value>,
+    /// Final message list after compaction (so post-hook handlers
+    /// can inspect or augment).
+    pub messages_after: Vec<LlmMessage>,
+}
+
+impl CompactionResultPayload {
+    /// Construct a `HookInput::CompactionResult` from typed
+    /// engine-side data.
+    #[must_use]
+    pub fn into_hook_input(self) -> HookInput {
+        HookInput::CompactionResult {
+            summary: self.summary,
+            messages_compacted: self.messages_compacted,
+            tokens_before: self.tokens_before,
+            tokens_after: self.tokens_after,
+            compaction_number: self.compaction_number,
+            details: self.details,
+            messages_after: serde_json::to_value(&self.messages_after).unwrap_or(Value::Null),
+        }
+    }
+}
+
+/// Hook decision — the trimmed-down `HookResult` shape the engine's
+/// compaction / session-state hooks need.
+///
+/// Phase 9b.N.4 introduces this so `ToolFunnel::invoke_session_compaction_*`
+/// can return a stable contract without exposing `HookResult` /
+/// `HookOutput` / `HookPoint` to `peko-engine` (those types are still
+/// root-only because `HookPoint` is an 865-line enum and re-exporting
+/// it would defeat the move). The impl in
+/// `src/engine/extension_core_funnel_compat.rs` maps the full
+/// `HookResult` to this trimmed enum at the trait boundary.
+///
+/// Variants:
+/// - [`ReplaceMessages`](HookDecision::ReplaceMessages) — handler returned
+///   `HookResult::Replace(HookOutput::MessageVec(...))`. The orchestrator
+///   swaps the message list in place. Other `HookOutput` shapes are not
+///   supported by the compaction / session-state hooks (the
+///   documentation on `HookPoint::SessionCompaction` /
+///   `SessionCompactionPost` / `SessionStateChange` only describes
+///   message-list replacement as a valid return).
+/// - [`Handled`](HookDecision::Handled) — handler returned
+///   `HookResult::Handled`. The orchestrator treats the hook as
+///   "consumed" — for `SessionCompaction` it means "skip the
+///   built-in compaction this iteration".
+/// - [`PassThrough`](HookDecision::PassThrough) — handler returned
+///   `HookResult::PassThrough` or `HookResult::Continue` /
+///   `HookResult::Error`. The orchestrator falls through to its
+///   default behavior (built-in compaction / cache refresh).
+#[derive(Debug, Clone)]
+pub enum HookDecision {
+    /// Replace the message list with the given vec.
+    ReplaceMessages(Vec<LlmMessage>),
+    /// Handler consumed the event; orchestrator does not run
+    /// built-in behavior for this hook firing.
+    Handled,
+    /// No-op / fallback — orchestrator runs its default behavior.
+    PassThrough,
+}
+
+impl HookDecision {
+    /// Convenience constructor — `None` / `PassThrough` collapse to
+    /// `PassThrough`. Other variants pass through as-is.
+    #[must_use]
+    pub fn from_hook_result(result: HookResult) -> Self {
+        match result {
+            HookResult::Replace(HookOutput::MessageVec(msgs)) => {
+                HookDecision::ReplaceMessages(msgs)
+            }
+            HookResult::Handled => HookDecision::Handled,
+            HookResult::PassThrough
+            | HookResult::Continue(_)
+            | HookResult::Replace(_)
+            | HookResult::Error(_) => HookDecision::PassThrough,
         }
     }
 }

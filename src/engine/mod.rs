@@ -1,4 +1,4 @@
-//! Root engine facade (Phase 9a + 9b.1 + 9b.N.1 + 9b.N.2 + 9b.N.3 shim).
+//! Root engine facade (Phase 9a + 9b.1 + 9b.N.1 + 9b.N.2 + 9b.N.3 + 9b.N.4 shim).
 //!
 //! Phase 9a extracted the `src/engine/` files with zero root-only
 //! dependencies into the `peko-engine` crate (chunker, event_processor,
@@ -13,9 +13,16 @@
 //! 9b.N.3 lifted `tool_executor.rs` after introducing two trait ports:
 //! `ToolFunnel` (peko-extension-host) abstracts `ExtensionCore`'s
 //! engine-facing surface, and `SessionView` (peko-engine) abstracts
-//! the single `add_tool_result` write path. This module re-exports
-//! their public surface through `crate::engine::*` so downstream
-//! callers continue to compile unchanged.
+//! the single `add_tool_result` write path. Phase 9b.N.4 lifts
+//! `compaction_orchestrator.rs` after extending both trait ports
+//! (`ToolFunnel` gains three hook-firing methods for the compaction /
+//! session-state hooks; `SessionView` gains `record_compaction` /
+//! `load_previous_compaction_summary` / `update_context_cache`) and
+//! introducing a new `CompactorBackend` trait so the orchestrator
+//! holds a `Box<dyn CompactorBackend>` instead of a concrete
+//! `BackgroundCompactor`. This module re-exports their public surface
+//! through `crate::engine::*` so downstream callers continue to
+//! compile unchanged.
 //!
 //! The remaining root-coupled files stay in `src/engine/` until later
 //! Phase 9b commits lift each residual coupling:
@@ -27,11 +34,6 @@
 //!   `TurnPromptContext`, `IterationBudgetState`, `QuotaStateView`,
 //!   `CapabilityDiffTracker`, `HOOK_TIMEOUT`,
 //!   `load_principal_memory`) into `peko-engine`.
-//! - [`compaction_orchestrator`] — embeds root's `BackgroundCompactor`,
-//!   holds `Arc<RwLock<Session>>`. Plan: lift
-//!   `session::compaction::*` into `peko-engine`; the `SessionView`
-//!   trait introduced in 9b.N.3 already covers the session write
-//!   path the orchestrator uses.
 //! - [`tool_runtime`] — `BuiltinToolAdapter` + concrete `tools::builtin::*`
 //!   imports. Plan: move concrete tool impls and adapter into
 //!   `peko-tools-core`, keep the synthetic stubs in `peko-engine`.
@@ -39,24 +41,28 @@
 // Re-export everything from `peko-engine` for the moved files
 // (Phase 9a pure subset + Phase 9b.1 stream_types + Phase 9b.N.1
 // async_completion + Phase 9b.N.2 funnel + Phase 9b.N.3
-// tool_executor + session_view). Modules that still live in root
-// (agentic_loop, compaction_orchestrator, tool_runtime) are declared
-// by `mod` below so the shim preserves every pre-Phase 9 import path.
+// tool_executor + session_view + Phase 9b.N.4 compaction).
+// Modules that still live in root (agentic_loop, tool_runtime) are
+// declared by `mod` below so the shim preserves every pre-Phase 9
+// import path.
 pub use peko_engine::{
-    async_completion, build_async_completion_message, chunker, default_process_stream, error,
-    event_processor, events, execute_tool_via_core, execute_tool_via_core_with_context, execution,
-    funnel, parallel_gate, parse_tool_calls_from_text, session_view, state, stream_buffer,
-    stream_orchestrator, tool_executor, tool_stream, AgentState, AgenticError, AgenticEvent,
-    BlockChunker, BreakPreference, ChannelAction, ChannelOutput, ChunkerConfig, CoalesceConfig,
-    CoalescingChunker, DeliveryMode, EventProcessor, EventStream, ExecutionMode, LifecyclePhase,
-    OrchestratorConfig, ProcessorConfig, SessionCore, SessionView, StateMachine, StreamBuffer,
-    StreamOrchestrator, StreamingConfig, StreamingToolCall, TaskId, TaskStatus, TaskSummary,
-    ToolCallParseError, ToolCallStreamParser, ToolExecutionResult, ToolExecutor,
+    async_completion, build_async_completion_message, chunker, compaction, default_process_stream,
+    error, event_processor, events, execute_tool_via_core, execute_tool_via_core_with_context,
+    execution, funnel, parallel_gate, parse_tool_calls_from_text, session_view, state,
+    stream_buffer, stream_orchestrator, tool_executor, tool_stream, AgentState, AgenticError,
+    AgenticEvent, BlockChunker, BreakPreference, ChannelAction, ChannelOutput, ChunkerConfig,
+    CoalesceConfig, CoalescingChunker, CompactionConfig, CompactionEntry, CompactionQuota,
+    CompactionRequest, CompactionResponse, CompactionResponseResult, CompactionResult,
+    CompactionState, CompactorBackend, ContextUsageEstimate, DeliveryMode, EventProcessor,
+    EventStream, ExecutionMode, LifecyclePhase, OrchestratorConfig, ProcessorConfig, SessionCore,
+    SessionView, StateMachine, StreamBuffer, StreamOrchestrator, StreamingConfig,
+    StreamingToolCall, TaskId, TaskStatus, TaskSummary, ToolCallParseError, ToolCallStreamParser,
+    ToolExecutionResult, ToolExecutor,
 };
 
 pub mod agentic_loop;
 pub mod async_completion_compat;
-pub mod compaction_orchestrator;
+pub mod compaction_backend_compat;
 pub mod extension_core_funnel_compat;
 pub mod session_view_compat;
 pub mod tool_runtime;

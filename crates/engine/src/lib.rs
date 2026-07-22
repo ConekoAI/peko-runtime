@@ -1,4 +1,4 @@
-//! `peko-engine` — Peko agentic engine (Phase 9a + 9b.N.1 + 9b.N.2 + 9b.N.3).
+//! `peko-engine` — Peko agentic engine (Phase 9a + 9b.N.1 + 9b.N.2 + 9b.N.3 + 9b.N.4).
 //!
 //! Phase 9a moves the **`src/engine/` files that have zero root-only
 //! dependencies** into the `peko-engine` crate. Phase 9b.1 followed up
@@ -13,7 +13,10 @@
 //! lifts `tool_executor.rs` after introducing the `SessionView` trait
 //! port — the executor only needs `add_tool_result(...)` against the
 //! session, which the trait exposes via an `Arc<RwLock<Session>>` impl
-//! in root (orphan rule).
+//! in root (orphan rule). Phase 9b.N.4 lifts `compaction_orchestrator.rs`
+//! after introducing the `CompactorBackend` trait port — the orchestrator
+//! only needs the dual-threshold check + oneshot submit pattern, which
+//! the trait exposes via the root-owned `BackgroundCompactor` impl.
 //!
 //! The remaining root-coupled files (`agentic_loop`,
 //! `compaction_orchestrator`, `tool_runtime`) stay in `src/engine/`
@@ -27,6 +30,7 @@
 //! |---------------------|-----------------------|
 //! | [`async_completion`] | Phase 9b.N.1 — synthetic user-role `LlmMessage` builder for completed async tasks. |
 //! | [`chunker`]         | Block-level text chunking (`BlockChunker`, `CoalescingChunker`). |
+//! | [`compaction`]      | Phase 9b.N.4 — `CompactorBackend` trait port + data types lifted from `src/session/compaction.rs`. |
 //! | [`event_processor`] | Channel-action state machine (`EventProcessor`, `ProcessorConfig`). |
 //! | [`events`]          | Re-export of `peko_events` (`AgenticEvent`, `LifecyclePhase`). |
 //! | [`execution`]       | Tool-execution primitives (`TaskId`, `ExecutionMode`, `TaskStatus`, `TaskSummary`). |
@@ -47,6 +51,8 @@
 
 pub mod async_completion;
 pub mod chunker;
+pub mod compaction;
+pub mod compaction_orchestrator;
 pub mod error;
 pub mod event_processor;
 pub mod events;
@@ -66,6 +72,12 @@ pub mod tool_stream;
 // `pub use peko_engine::*` preserves every downstream import path.
 pub use async_completion::build_async_completion_message;
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
+pub use compaction::{
+    CompactionConfig, CompactionEntry, CompactionQuota, CompactionRequest, CompactionResponse,
+    CompactionResponseResult, CompactionResult, CompactionState, CompactorBackend,
+    ContextUsageEstimate,
+};
+pub use compaction_orchestrator::CompactionOrchestrator;
 pub use error::AgenticError;
 pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, LifecyclePhase};

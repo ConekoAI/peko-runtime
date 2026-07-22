@@ -7,6 +7,34 @@
 //! 4. Uses structured format (Goal, Progress, Decisions, Next Steps)
 //!
 //! Based on pi_agent_rust compaction algorithm.
+//!
+//! # Phase 9b.N.4 data-type lift
+//!
+//! The pure-data types ([`CompactionConfig`], [`CompactionEntry`],
+//! [`CompactionState`], [`ContextUsageEstimate`], [`CompactionResult`],
+//! [`CompactionRequest`], [`CompactionResponse`], [`CompactionQuota`])
+//! moved into the `peko-engine` crate as part of the
+//! `compaction_orchestrator.rs` lift. Root re-exports them below so
+//! the historical `crate::session::compaction::CompactionConfig` /
+//! etc. import paths keep compiling unchanged. The `Compactor` (LLM
+//! summarization helper), `BackgroundCompactor` (mpsc worker),
+//! `summary_format` (file-ops accumulator), `turn_boundaries`
+//! (tool-pairing preservation), `eviction`, and `cli` modules stay in
+//! root because they all depend on root-only types
+//! (`crate::providers::Provider`, `crate::quota::QuotaScope`, etc.).
+//!
+//! The `details: Option<...>` field on [`CompactionEntry`] /
+//! [`CompactionResult`] is now `Option<serde_json::Value>` in the
+//! lifted type (down from `Option<summary_format::CompactionDetails>`
+//! in root). Callers that need strongly-typed access to details
+//! should continue importing `summary_format::CompactionDetails`
+//! directly and convert at the boundary.
+
+pub use peko_engine::compaction::{
+    CompactionConfig, CompactionEntry, CompactionQuota, CompactionRequest, CompactionResponse,
+    CompactionResponseResult, CompactionResult, CompactionState, CompactorBackend,
+    ContextUsageEstimate,
+};
 
 pub mod background;
 pub mod cli;
@@ -102,118 +130,13 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.";
 
-/// Compaction configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompactionConfig {
-    /// Enable auto-compaction
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    /// Auto-compaction trigger threshold as percent of context window (0-100)
-    #[serde(default = "default_auto_threshold_percent")]
-    pub auto_threshold_percent: u8,
-    /// Tokens to reserve for LLM response headroom
-    #[serde(default = "default_reserve_tokens")]
-    pub reserve_tokens: usize,
-    /// Minimum recent conversation to preserve during compaction
-    #[serde(default = "default_keep_recent_tokens")]
-    pub keep_recent_tokens: usize,
-    /// Maximum compactions per session (quota)
-    #[serde(default = "default_max_compactions_per_session")]
-    pub max_compactions_per_session: usize,
-    /// Cooldown between compactions in seconds
-    #[serde(default = "default_cooldown_seconds")]
-    pub cooldown_seconds: u64,
-    // Note: the previous `model_limits` field — per-provider/per-model
-    // context window overrides — has been removed. Model max context
-    // is now sourced from `ProviderCatalog::model_context_length` (see
-    // `crate::providers::catalog`). Existing `~/.peko/config.toml`
-    // files with `[compaction.model_limits]` blocks deserialize
-    // cleanly because this type does not use `deny_unknown_fields`.
-}
-
-fn default_enabled() -> bool {
-    true
-}
-
-fn default_auto_threshold_percent() -> u8 {
-    85
-}
-
-fn default_reserve_tokens() -> usize {
-    16_384
-}
-
-fn default_keep_recent_tokens() -> usize {
-    20_000
-}
-
-fn default_max_compactions_per_session() -> usize {
-    100
-}
-
-fn default_cooldown_seconds() -> u64 {
-    60
-}
-
-impl Default for CompactionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_enabled(),
-            auto_threshold_percent: default_auto_threshold_percent(),
-            reserve_tokens: default_reserve_tokens(),
-            keep_recent_tokens: default_keep_recent_tokens(),
-            max_compactions_per_session: default_max_compactions_per_session(),
-            cooldown_seconds: default_cooldown_seconds(),
-        }
-    }
-}
-
-/// A compaction entry in the conversation history
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompactionEntry {
-    /// When compaction occurred
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    /// Summary text (structured format)
-    pub summary: String,
-    /// Entry ID of first kept message (for reference)
-    pub first_kept_entry_id: String,
-    /// Number of messages that were compacted
-    pub messages_compacted: usize,
-    /// Approximate tokens before compaction
-    pub tokens_before: usize,
-    /// Approximate tokens after compaction
-    pub tokens_after: usize,
-    /// Compaction number (1st, 2nd, etc.)
-    pub compaction_number: usize,
-    /// Tracked file operations from compacted messages
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details: Option<summary_format::CompactionDetails>,
-}
-
-/// Tracks compaction state for a session
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CompactionState {
-    /// Number of compactions performed
-    pub compaction_count: usize,
-    /// Total tokens saved through compaction
-    pub total_tokens_saved: usize,
-    /// Last compaction timestamp
-    pub last_compaction_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-/// Detailed token usage estimate with breakdown.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ContextUsageEstimate {
-    /// Total estimated tokens
-    pub tokens: usize,
-    /// Tokens from the last assistant usage record
-    pub usage_tokens: usize,
-    /// Tokens estimated for trailing messages after last usage
-    pub trailing_tokens: usize,
-    /// Index of the last assistant message with usage data
-    pub last_usage_index: Option<usize>,
-}
+// Phase 9b.N.4: the data structs (`CompactionConfig`, `CompactionEntry`,
+// `CompactionState`, `ContextUsageEstimate`, `CompactionResult`) now
+// live in `peko_engine::compaction` and are re-exported above.
+// The constants below (`CHARS_PER_TOKEN`, prompts) and the `Compactor`
+// struct / impl that uses them stay here because the LLM summarization
+// depends on root-only types (`crate::providers::Provider`,
+// `crate::quota::QuotaScope`).
 
 /// Find the last assistant message with usage data.
 /// Returns `(usage, index)` if found.
@@ -238,20 +161,32 @@ fn find_last_assistant_usage(
         .map(|(i, m)| (m.usage.clone().unwrap(), i))
 }
 
-/// Result of a compaction operation
-#[derive(Debug, Clone)]
-pub struct CompactionResult {
-    /// Messages after compaction (summary + kept messages)
-    pub messages: Vec<LlmMessage>,
-    /// Compaction entry for persistence
-    pub entry: CompactionEntry,
-    /// State update
-    pub state: CompactionState,
-    /// Token usage consumed by the summarization LLM call(s).
-    /// Previously dropped on the floor; tracked here so the engine
-    /// loop can add it to `total_usage` for accurate downstream
-    /// quota / billing accounting.
-    pub usage: crate::providers::TokenUsage,
+/// Load compaction config from the global config file, or use defaults.
+///
+/// Phase 9b.N.4 keeps this loader in root (not in `peko-engine`) because
+/// it depends on the `dirs` + `toml` crates, which aren't in
+/// `peko-engine`'s dep graph. Root is the right home — it already owns
+/// the `Config` struct that calls into this loader. The lifted
+/// `CompactionOrchestrator` accepts the loaded `CompactionConfig` as a
+/// constructor argument.
+pub fn load_compaction_config() -> CompactionConfig {
+    let config_path = dirs::home_dir()
+        .map(|h| h.join(".peko").join("config.toml"))
+        .filter(|p| p.exists());
+
+    if let Some(path) = config_path {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if let Ok(root) = toml::from_str::<toml::Value>(&contents) {
+                if let Some(compaction_table) = root.get("compaction") {
+                    if let Ok(cfg) = compaction_table.clone().try_into::<CompactionConfig>() {
+                        return cfg;
+                    }
+                }
+            }
+        }
+    }
+
+    CompactionConfig::default()
 }
 
 /// Compactor for managing context window
@@ -645,7 +580,13 @@ impl Compactor {
             tokens_before,
             tokens_after,
             compaction_number: self.state.compaction_count,
-            details: Some(cumulative_details),
+            // Phase 9b.N.4: `CompactionEntry::details` is now
+            // `Option<serde_json::Value>` in `peko_engine::compaction`.
+            // Serialize the root-owned `summary_format::CompactionDetails`
+            // into a JSON value so the wire shape is preserved. Hooks
+            // see `serde_json::Value` blobs and degrade gracefully if
+            // the structure changes.
+            details: serde_json::to_value(&cumulative_details).ok(),
         };
 
         info!(
@@ -1059,5 +1000,17 @@ minimax = { "M3" = 4000 }
         assert_eq!(result.usage.cache_creation_input_tokens, None);
         assert_eq!(result.usage.cache_read_input_tokens, None);
         assert_eq!(result.usage.reasoning_output_tokens, None);
+    }
+
+    /// Phase 9b.N.4: `load_compaction_config` moved back into root
+    /// (the lifted `CompactionOrchestrator` accepts the config as a
+    /// constructor argument rather than loading it itself). Verify
+    /// the loader still produces sensible defaults when no config
+    /// file is present.
+    #[test]
+    fn test_load_compaction_config_defaults() {
+        let cfg = load_compaction_config();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.auto_threshold_percent, 85);
     }
 }

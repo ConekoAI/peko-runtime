@@ -42,7 +42,6 @@
 
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Combined marker + entry-point trait for the inner `Session`-like
 /// type stored behind the `Arc<RwLock<T>>` blanket impl.
@@ -58,8 +57,19 @@ use tokio::sync::RwLock;
 ///   resumed session can distinguish a real tool failure from a
 ///   successful zero-data return (audit section 3 row 2).
 ///
+/// `SessionCore::record_compaction`, `load_previous_compaction_summary`,
+/// and `update_context_cache` mirror root's
+/// `crate::session::Session::{record_compaction,
+/// load_previous_compaction_summary, update_context_cache}`. They
+/// were added in Phase 9b.N.4 to support the lifted
+/// `CompactionOrchestrator` (the orchestrator needs session writes
+/// for compaction bookkeeping + cache refresh). The orchestrator's
+/// pre-lift code acquired a write lock directly; the trait port
+/// keeps that pattern by encapsulating the lock inside the blanket
+/// impl below.
+///
 /// Implementations may write the record to disk and/or update an
-/// in-memory message buffer; the executor treats it as opaque
+/// in-memory message buffer; callers treat them as opaque
 /// side-effects. The blanket impl on `Arc<RwLock<T>>` (see below) keeps
 /// the lock management inside the trait — callers don't need to
 /// acquire the write lock themselves, mirroring the pre-Phase-9b.N.3
@@ -87,6 +97,44 @@ pub trait SessionCore: Send + Sync + 'static {
         result: &str,
         is_error: bool,
     ) -> Result<()>;
+
+    /// Record a compaction event — persists a `CompactionEntry` to
+    /// the session's storage backend so a resumed session can replay
+    /// the summary. Mirrors
+    /// `crate::session::Session::record_compaction`
+    /// (`src/session/unified.rs:672`).
+    ///
+    /// `details` is forwarded as `Option<&serde_json::Value>` to keep
+    /// `peko-engine` independent of the root-only
+    /// `summary_format::CompactionDetails` type (Phase 9b.N.4 lifts
+    /// the data types but not `summary_format`, which has its own
+    /// file-ops accumulator logic). The root impl serializes /
+    /// deserializes as needed.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_compaction(
+        session: &mut Self,
+        summary: &str,
+        messages_compacted: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        compaction_number: usize,
+        details: Option<&serde_json::Value>,
+    ) -> Result<()>;
+
+    /// Load the most recent compaction summary, if any.
+    /// Mirrors `crate::session::Session::load_previous_compaction_summary`
+    /// (`src/session/unified.rs:699`). Used by the orchestrator's
+    /// pre-hook to populate `HookInput::CompactionPreparation::previous_summary`.
+    async fn load_previous_compaction_summary(session: &Self) -> Result<Option<String>>;
+
+    /// Refresh the session's cached context-token estimate after a
+    /// compaction completed. Mirrors
+    /// `crate::session::Session::update_context_cache`
+    /// (`src/session/unified.rs:829`).
+    async fn update_context_cache(
+        session: &Self,
+        messages: &[peko_message::LlmMessage],
+    ) -> Result<()>;
 }
 
 /// Blanket impl: any `Arc<RwLock<T>>` for `T: SessionCore` can be used
@@ -105,6 +153,28 @@ pub trait SessionView: Send + Sync + 'static {
         result: &str,
         is_error: bool,
     ) -> Result<()>;
+
+    /// Forwarded to [`SessionCore::record_compaction`]. Acquire the
+    /// write lock, call the impl, release.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_compaction(
+        &self,
+        summary: &str,
+        messages_compacted: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        compaction_number: usize,
+        details: Option<&serde_json::Value>,
+    ) -> Result<()>;
+
+    /// Forwarded to [`SessionCore::load_previous_compaction_summary`].
+    /// Acquire the read lock (concurrent reads allowed), call the
+    /// impl, release.
+    async fn load_previous_compaction_summary(&self) -> Result<Option<String>>;
+
+    /// Forwarded to [`SessionCore::update_context_cache`]. Acquire
+    /// the read lock (the impl is `&self`), call, release.
+    async fn update_context_cache(&self, messages: &[peko_message::LlmMessage]) -> Result<()>;
 }
 
 #[async_trait::async_trait]
@@ -121,5 +191,38 @@ where
     ) -> Result<()> {
         let mut guard = self.write().await;
         T::add_tool_result(&mut *guard, tool_call_id, tool_name, result, is_error).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn record_compaction(
+        &self,
+        summary: &str,
+        messages_compacted: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        compaction_number: usize,
+        details: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        let mut guard = self.write().await;
+        T::record_compaction(
+            &mut *guard,
+            summary,
+            messages_compacted,
+            tokens_before,
+            tokens_after,
+            compaction_number,
+            details,
+        )
+        .await
+    }
+
+    async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
+        let guard = self.read().await;
+        T::load_previous_compaction_summary(&*guard).await
+    }
+
+    async fn update_context_cache(&self, messages: &[peko_message::LlmMessage]) -> Result<()> {
+        let guard = self.read().await;
+        T::update_context_cache(&*guard, messages).await
     }
 }

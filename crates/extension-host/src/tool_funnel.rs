@@ -25,15 +25,25 @@
 //! Phase 9b.N.3 widened the trait to cover the full surface the engine
 //! needs from `ExtensionCore`: `is_parallelizable(name)` (F33 gate
 //! probe), `pre_tool_use(...)` / `post_tool_use(...)` (F31x observe-only
-//! hook firing), and `execute_tool_via_hook(...)` (F37 funnel). Hiding
-//! `HookPoint` / `HookInput` construction inside the impl keeps the
-//! trait free of root-only type dependencies — `HookPoint` (865 lines
-//! in `src/extensions/framework/core/hook_points.rs`) hasn't been
+//! hook firing), and `execute_tool_via_hook(...)` (F37 funnel).
+//! Phase 9b.N.4 added three more methods for the compaction +
+//! session-state hooks the lifted `CompactionOrchestrator` fires:
+//! `invoke_session_compaction_pre_hook`,
+//! `invoke_session_compaction_post_hook`, and
+//! `invoke_session_state_change_hook`. Hiding `HookPoint` /
+//! `HookInput` construction inside the impl keeps the trait free of
+//! root-only type dependencies — `HookPoint` (865 lines in
+//! `src/extensions/framework/core/hook_points.rs`) hasn't been
 //! lifted into `peko-extension-api` yet, so re-exporting it from the
 //! trait would defeat the move. Each hook method takes the raw
-//! fields the executor already has in scope.
+//! fields the orchestrator already has in scope (or a typed payload
+//! from `peko-extension-api::hook_io`).
 
 use anyhow::Result;
+use peko_extension_api::hook_io::{
+    CompactionPreparationPayload, CompactionResultPayload, HookDecision,
+};
+use peko_extension_api::session::SessionSnapshot;
 
 /// The engine-facing surface of root's `ExtensionCore`.
 ///
@@ -140,4 +150,61 @@ pub trait ToolFunnel: Send + Sync + 'static {
         active_extensions: Option<Vec<String>>,
         abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<(String, serde_json::Value, bool)>;
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 9b.N.4 — compaction / session-state hook firing
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Fire `HookPoint::SessionCompaction` with
+    /// `HookInput::CompactionPreparation`. The lifted
+    /// `CompactionOrchestrator` calls this at the start of each
+    /// compaction iteration to let extensions replace or cancel the
+    /// built-in compaction (see `HookPoint::SessionCompaction`).
+    ///
+    /// `payload` carries the typed data the hook needs (F21 hybrid
+    /// estimate, split-turn info, file-ops, settings). The impl
+    /// serializes the typed fields into `serde_json::Value` blobs
+    /// matching the API crate's `HookInput::CompactionPreparation`
+    /// variant shape (Phase 7 lifts `HookInput` into
+    /// `peko-extension-api` but the compaction variant uses
+    /// `serde_json::Value` so the API crate stays free of
+    /// root-only deps).
+    ///
+    /// Returns a [`HookDecision`]: `ReplaceMessages` swaps the
+    /// orchestrator's `messages` vec in place, `Handled` skips the
+    /// built-in compaction this iteration, `PassThrough` falls
+    /// through to the default behavior.
+    async fn invoke_session_compaction_pre_hook(
+        &self,
+        payload: CompactionPreparationPayload,
+    ) -> HookDecision;
+
+    /// Fire `HookPoint::SessionCompactionPost` with
+    /// `HookInput::CompactionResult`. The lifted
+    /// `CompactionOrchestrator` calls this after a successful
+    /// background compaction completes, so extensions can augment,
+    /// validate, or log the compacted result (see
+    /// `HookPoint::SessionCompactionPost`).
+    ///
+    /// `payload` carries the summary + bookkeeping + the post-
+    /// compaction message list. Returns a [`HookDecision`] —
+    /// `ReplaceMessages` is the documented valid return (extensions
+    /// may modify the final message list).
+    async fn invoke_session_compaction_post_hook(
+        &self,
+        payload: CompactionResultPayload,
+    ) -> HookDecision;
+
+    /// Fire `HookPoint::SessionStateChange` with
+    /// `HookInput::SessionState(SessionSnapshot)`. The lifted
+    /// `CompactionOrchestrator` calls this as a fallback when no
+    /// `CompactionResult` is available (the loop's "session state
+    /// changed" hook firing — see
+    /// `src/engine/compaction_orchestrator.rs:387`).
+    ///
+    /// Returns a [`HookDecision`]. Compaction / session-state hooks
+    /// only honor `ReplaceMessages` and `Handled` returns — anything
+    /// else collapses to `PassThrough` via
+    /// [`HookDecision::from_hook_result`].
+    async fn invoke_session_state_change_hook(&self, snapshot: SessionSnapshot) -> HookDecision;
 }
