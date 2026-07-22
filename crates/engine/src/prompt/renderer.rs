@@ -1,23 +1,27 @@
 //! Per-turn system prompt renderer.
 //!
 //! [`PromptRenderer`] is the single source of truth for the system prompt.
-//! It is invoked by [`AgenticLoop::run_inner`](crate::engine::AgenticLoop::run_inner)
-//! at the top of every iteration, fed a [`TurnPromptContext`], and returns
-//! the freshly rendered Markdown body that becomes `messages[0]`.
+//! It is invoked by `AgenticLoop::run_inner` at the top of every iteration,
+//! fed a [`TurnPromptContext`], and returns the freshly rendered Markdown
+//! body that becomes `messages[0]`. (The loop itself still lives in root
+//! at `src/engine/agentic_loop.rs`; this module lifted in Phase 9b.N.5b.4
+//! so the renderer can hold `Arc<dyn ToolFunnel>` instead of the concrete
+//! root `ExtensionCore` type — the trait port keeps the renderer free of
+//! root-only `HookPoint` / `HookInput` types.)
 //!
 //! ## Design
 //!
 //! - **Stateless.** The renderer carries no per-iteration state. The
-//!   capability-diff tracker lives on the [`AgenticLoop`] and is observed
-//!   upstream of the renderer call.
+//!   capability-diff tracker lives on the loop and is observed upstream
+//!   of the renderer call.
 //! - **Parallel hook dispatch.** The four hook-driven sections (`tools`,
 //!   `skills`, `agents`, `mcp_context`) and the per-turn `SessionContextBuild`
-//!   hook all fire concurrently via [`tokio::try_join!`]. Each handler is
+//!   hook all fire concurrently via [`tokio::join!`]. Each handler is
 //!   wrapped in a 2-second timeout; a slow or stuck handler soft-fails to
 //!   empty so a single misbehaving extension can't stall the loop.
 //! - **`mcp_context` normalized.** This section previously used plain
-//!   `invoke_hook_text`; the rest use `_with_principal`. The renderer
-//!   closes that inconsistency.
+//!   `invoke_hook_text`; the rest use the trait-port
+//!   [`ToolFunnel::invoke_prompt_section_hook`](peko_extension_host::ToolFunnel::invoke_prompt_section_hook).
 //! - **`remove_missing=true` for placeholders.** Templates that omit
 //!   any of the four control-surface placeholders get no section.
 //!
@@ -38,9 +42,9 @@ use super::context::{
     TurnPromptContext,
 };
 use super::placeholder::{replace_placeholders, Placeholder};
-use crate::extensions::framework::types::SessionSnapshot;
-use crate::extensions::framework::{ExtensionCore, HookInput, HookPoint};
 use chrono::Local;
+use peko_extension_api::session::SessionSnapshot;
+use peko_extension_host::ToolFunnel;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -54,21 +58,29 @@ use tracing::{debug, warn};
 /// same timeout value without taking a root-only dep on
 /// `agents::prompt`. The local re-export keeps the body of this file
 /// unchanged.
+#[allow(unused_imports)]
 pub(crate) use peko_tools_core::HOOK_TIMEOUT;
 
 /// Renders the system prompt for one iteration.
 ///
 /// Constructed once per agentic loop and shared across iterations. Cheap
-/// to construct — just an `Arc` clone of the [`ExtensionCore`].
+/// to construct — just an `Arc` clone of the [`ToolFunnel`] trait object.
+///
+/// Phase 9b.N.5b.4 switched the field from `Arc<ExtensionCore>` (root-
+/// only concrete type) to `Arc<dyn ToolFunnel>` so the renderer lifts
+/// into `peko-engine` without dragging root `HookPoint` / `HookInput`
+/// types along. The trait port is the same one the tool executor and
+/// compaction orchestrator use (see `peko_extension_host::ToolFunnel`).
 #[derive(Clone)]
 pub struct PromptRenderer {
-    extension_core: Arc<ExtensionCore>,
+    extension_core: Arc<dyn ToolFunnel>,
 }
 
 impl PromptRenderer {
-    /// Create a new renderer bound to an [`ExtensionCore`].
+    /// Create a new renderer bound to an [`ExtensionCore`] via the
+    /// canonical [`ToolFunnel`] trait port.
     #[must_use]
-    pub fn new(extension_core: Arc<ExtensionCore>) -> Self {
+    pub fn new(extension_core: Arc<dyn ToolFunnel>) -> Self {
         Self { extension_core }
     }
 
@@ -192,10 +204,14 @@ impl PromptRenderer {
     /// Dispatch a single `PromptSystemSection` hook with a 2s timeout.
     /// Returns the empty string on timeout, missing handler, or error.
     async fn dispatch_text(&self, section: &str, ctx: &TurnPromptContext) -> String {
-        let hook_point = HookPoint::PromptSystemSection {
-            section: section.to_string(),
-            priority: 100,
-        };
+        // Phase 9b.N.5b.4 routes the hook firing through the trait port
+        // (`ToolFunnel::invoke_prompt_section_hook`) so the renderer
+        // never imports `HookPoint` / `HookInput` directly — those
+        // types remain root-only until Phase 8's bulk move. The trait
+        // impl (`src/engine/extension_core_funnel_compat.rs`) builds
+        // `HookPoint::PromptSystemSection { section, priority }` +
+        // `HookInput::Unit` internally and delegates to
+        // `ExtensionCore::invoke_hook_text_with_principal`.
         let principal_id = Some(ctx.principal_id.as_str());
         let capabilities = Some(ctx.capability_strings());
         let active_extensions = Some(ctx.active_extension_vec());
@@ -204,9 +220,9 @@ impl PromptRenderer {
         let core = Arc::clone(&self.extension_core);
         let result = tokio::time::timeout(
             HOOK_TIMEOUT,
-            core.invoke_hook_text_with_principal(
-                hook_point,
-                HookInput::Unit,
+            core.invoke_prompt_section_hook(
+                section,
+                100,
                 principal_id,
                 capabilities,
                 active_extensions,
@@ -246,12 +262,15 @@ impl PromptRenderer {
             metadata: HashMap::new(),
         };
 
+        // Phase 9b.N.5b.4: hook firing routes through the trait port
+        // (`ToolFunnel::invoke_session_context_build_hook`) for the
+        // same reason `dispatch_text` does — keeps the renderer free
+        // of root-only `HookPoint` / `HookInput` types.
         let core = Arc::clone(&self.extension_core);
         let result = tokio::time::timeout(
             HOOK_TIMEOUT,
-            core.invoke_hook_text_with_principal(
-                HookPoint::SessionContextBuild,
-                HookInput::SessionState(snapshot),
+            core.invoke_session_context_build_hook(
+                snapshot,
                 Some(ctx.principal_id.as_str()),
                 Some(ctx.capability_strings()),
                 Some(ctx.active_extension_vec()),
@@ -581,8 +600,131 @@ fn render_soft_cancel_section() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::core::ExtensionCore;
+    use async_trait::async_trait;
+    use peko_extension_api::session::SessionSnapshot;
+    use peko_extension_host::ToolFunnel;
+    use peko_subject::PrincipalId;
     use std::path::PathBuf;
+
+    /// No-op `ToolFunnel` impl used by the renderer's unit tests.
+    ///
+    /// Phase 9b.N.5b.4 can't import the root-owned `ExtensionCore` into
+    /// `peko-engine` (it stays root until Phase 8's bulk move). The
+    /// tests need a `ToolFunnel` that produces the same observable
+    /// behavior as `ExtensionCore::new()` — an empty registry where no
+    /// handlers are registered, so every hook call returns `None`.
+    /// That keeps the existing test assertions (placeholder stripping
+    /// with no handlers) valid.
+    #[derive(Default)]
+    struct EmptyExtensionCore;
+
+    #[async_trait]
+    impl ToolFunnel for EmptyExtensionCore {
+        async fn is_parallelizable(&self, _tool_name: &str) -> bool {
+            true
+        }
+        async fn pre_tool_use(
+            &self,
+            _tool_name: &str,
+            _params: serde_json::Value,
+            _workspace: Option<String>,
+            _agent_id: Option<String>,
+            _session_id: Option<String>,
+            _caller_id: Option<String>,
+            _principal_id: Option<String>,
+            _principal_name: Option<String>,
+            _capabilities: Option<Vec<String>>,
+            _active_extensions: Option<Vec<String>>,
+        ) {
+        }
+        async fn post_tool_use(
+            &self,
+            _tool_name: &str,
+            _params: serde_json::Value,
+            _workspace: Option<String>,
+            _agent_id: Option<String>,
+            _session_id: Option<String>,
+            _caller_id: Option<String>,
+            _principal_id: Option<String>,
+            _principal_name: Option<String>,
+            _capabilities: Option<Vec<String>>,
+            _active_extensions: Option<Vec<String>>,
+        ) {
+        }
+        async fn execute_tool_via_hook(
+            &self,
+            _tool_name: &str,
+            _params: serde_json::Value,
+            _workspace: Option<String>,
+            _agent_id: Option<String>,
+            _session_id: Option<String>,
+            _caller_id: Option<String>,
+            _principal_id: Option<String>,
+            _principal_name: Option<String>,
+            _capabilities: Option<Vec<String>>,
+            _active_extensions: Option<Vec<String>>,
+            _abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
+        ) -> anyhow::Result<(String, serde_json::Value, bool)> {
+            anyhow::bail!("EmptyExtensionCore::execute_tool_via_hook not implemented")
+        }
+        async fn invoke_session_compaction_pre_hook(
+            &self,
+            _payload: peko_extension_api::hook_io::CompactionPreparationPayload,
+        ) -> peko_extension_api::hook_io::HookDecision {
+            peko_extension_api::hook_io::HookDecision::PassThrough
+        }
+        async fn invoke_session_compaction_post_hook(
+            &self,
+            _payload: peko_extension_api::hook_io::CompactionResultPayload,
+        ) -> peko_extension_api::hook_io::HookDecision {
+            peko_extension_api::hook_io::HookDecision::PassThrough
+        }
+        async fn invoke_session_state_change_hook(
+            &self,
+            _snapshot: SessionSnapshot,
+        ) -> peko_extension_api::hook_io::HookDecision {
+            peko_extension_api::hook_io::HookDecision::PassThrough
+        }
+        async fn invoke_stop_hook(&self, _merged: serde_json::Value) {}
+        async fn invoke_after_agent_hook(&self, _merged: serde_json::Value) {}
+        async fn set_session_key(&self, _agent_id: &str, _key: Option<String>) {}
+        async fn list_tool_definitions_with_allowlist(
+            &self,
+            _capabilities: &peko_extension_api::Capabilities,
+            _active_extensions: Option<&peko_extension_api::ActiveExtensionSet>,
+            _principal_id: &PrincipalId,
+        ) -> Vec<peko_provider_api::ToolDefinition> {
+            Vec::new()
+        }
+        async fn has_deferred_tools_for(&self, _principal_id: &PrincipalId) -> bool {
+            false
+        }
+        async fn invoke_prompt_section_hook(
+            &self,
+            _section: &str,
+            _priority: i32,
+            _principal_id: Option<&str>,
+            _capabilities: Option<Vec<String>>,
+            _active_extensions: Option<Vec<String>>,
+            _workspace: Option<String>,
+        ) -> Option<String> {
+            None
+        }
+        async fn invoke_session_context_build_hook(
+            &self,
+            _snapshot: SessionSnapshot,
+            _principal_id: Option<&str>,
+            _capabilities: Option<Vec<String>>,
+            _active_extensions: Option<Vec<String>>,
+            _workspace: Option<String>,
+        ) -> Option<String> {
+            None
+        }
+    }
+
+    fn empty_funnel() -> Arc<dyn ToolFunnel> {
+        Arc::new(EmptyExtensionCore::default())
+    }
 
     fn empty_ctx() -> TurnPromptContext {
         TurnPromptContext {
@@ -609,7 +751,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_empty_body_falls_back_to_identity() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = String::new();
         let rendered = renderer.render_for_iteration(&ctx).await;
@@ -618,7 +760,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_replaces_inline_placeholders() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let ctx = empty_ctx();
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("You are test-agent"));
@@ -628,7 +770,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_drops_unknown_placeholders() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "Hi {{agent_name}}; unknown: {{nope}}".to_string();
         let rendered = renderer.render_for_iteration(&ctx).await;
@@ -637,7 +779,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_emits_session_context_when_set() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "Hi {{agent_name}}\n\n{{session_context}}\n".to_string();
         // No SessionContextBuild handler registered → empty section → no header.
@@ -647,7 +789,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_emits_soft_cancel_when_pending() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{soft_cancel}}".to_string();
         ctx.soft_cancel_pending = true;
@@ -657,7 +799,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_omits_soft_cancel_when_not_pending() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{soft_cancel}}".to_string();
         ctx.soft_cancel_pending = false;
@@ -674,7 +816,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_includes_iteration_budget_when_set() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{iteration_budget}}".to_string();
         ctx.iteration_budget = Some(IterationBudgetState {
@@ -689,7 +831,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_includes_iteration_budget_approaching_limit() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{iteration_budget}}".to_string();
         // iter 9 of 10 triggers "Approaching limit" but not "Stop and finalize"
@@ -705,7 +847,7 @@ mod tests {
     #[tokio::test]
     async fn render_emits_quota_state_with_pct_when_set() {
         use std::time::SystemTime;
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{quota_state}}".to_string();
         ctx.quota_state = Some(QuotaStateView {
@@ -731,7 +873,7 @@ mod tests {
     #[tokio::test]
     async fn render_emits_quota_state_trip_message_when_exceeded() {
         use std::time::SystemTime;
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{quota_state}}".to_string();
         ctx.quota_state = Some(QuotaStateView {
@@ -750,7 +892,7 @@ mod tests {
     #[tokio::test]
     async fn render_collapses_quota_state_when_unlimited() {
         use std::time::SystemTime;
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{quota_state}}".to_string();
         ctx.quota_state = Some(QuotaStateView {
@@ -768,7 +910,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_emits_capability_diff_section_when_changed() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{capability_diff}}".to_string();
         let diff = CapabilityDiff {
@@ -792,7 +934,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_omits_capability_diff_when_none() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{capability_diff}}".to_string();
         ctx.capability_diff = None;
@@ -810,7 +952,7 @@ mod tests {
     /// must not change the prefix.
     #[tokio::test]
     async fn render_cache_stable_byte_identical_across_iterations() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "You are {{agent_name}} on {{workspace}}.".to_string();
 
@@ -848,7 +990,7 @@ mod tests {
     /// changes the suffix (proves it isn't accidentally stable).
     #[tokio::test]
     async fn render_per_turn_changes_with_volatile_fields() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{iteration_budget}} {{quota_state}}".to_string();
         ctx.iteration_budget = Some(IterationBudgetState {

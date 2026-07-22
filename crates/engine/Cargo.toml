@@ -52,3 +52,14 @@ tokio-util = { version = "0.7", features = ["rt"] }
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["full"] }
+# Phase 9b.N.5b.4 — `tempfile` is used by `prompt::memory::tests`
+# (`discover_shared_context_*` cases); `peko-subject` powers the
+# `PrincipalId` arg in the renderer's `EmptyExtensionCore` mock.
+tempfile = "3.10"
+peko-subject = { path = "../subject" }
+
+# Phase 9b.N.5b.4 — `regex` is used by `prompt::placeholder::replace_placeholders`
+# to strip unfilled `{{...}}` placeholders when `remove_missing=true`. The
+# dependency follows `tools-builtin`'s `regex = "1.10"` pinning.
+[dependencies.regex]
+version = "1.10"

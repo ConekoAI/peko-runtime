@@ -22,7 +22,7 @@
 //! reach for it from a non-test path, you almost certainly want
 //! [`PromptRenderer`](super::renderer::PromptRenderer) instead.
 
-use crate::agents::prompt::placeholder::{replace_placeholders, Placeholder};
+use super::placeholder::{replace_placeholders, Placeholder};
 use chrono::Local;
 use std::collections::HashMap;
 use std::path::PathBuf;
