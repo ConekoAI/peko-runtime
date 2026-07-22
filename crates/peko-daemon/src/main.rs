@@ -1,17 +1,17 @@
 //! `peko-daemon` — long-running background daemon binary.
 //!
-//! Phase 11b separates the daemon entry point from the CLI into a
-//! distinct binary artifact. The CLI's `daemon start --foreground`
-//! path still works (it constructs `Daemon` directly), but the
-//! background-spawn path now resolves `peko-daemon` next to its own
-//! executable and prefers that over re-exec'ing the CLI binary.
+//! Phase 12 lifted this entry point into its own workspace member
+//! crate (`crates/peko-daemon/`). It depends only on the root `peko`
+//! lib for the daemon entry surface (`Daemon`, `DaemonConfig`,
+//! `LaunchMode`) and the `PathResolver`. The CLI's `daemon start`
+//! background-spawn path resolves this artifact next to its own
+//! executable and prefers it over re-exec'ing the CLI binary
+//! (Phase 11c).
 //!
-//! Future Phase 12 cleanup will lift this entry point into a
-//! dedicated `peko-daemon` workspace member crate (depending on
-//! `peko-runtime`), but for Phase 11b the binary lives inside the
-//! root crate so the daemon module's `pub(crate)` visibility can
-//! stay. The user-visible artifact (`peko-daemon`) is what matters
-//! for release packaging; the code path it exercises is unchanged.
+//! The CLI's foreground command (`peko daemon start --foreground`)
+//! still constructs `Daemon` directly today; Phase 12's facade
+//! cleanup turns it into a thin wrapper that re-execs `peko-daemon`
+//! once the visibility story settles.
 
 use anyhow::{Context, Result};
 use std::time::Duration;

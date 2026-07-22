@@ -2250,6 +2250,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "peko-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "peko",
+ "tokio",
+]
+
+[[package]]
 name = "peko-engine"
 version = "0.1.0"
 dependencies = [

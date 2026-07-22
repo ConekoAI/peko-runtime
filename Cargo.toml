@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/provider-api",
+members = [".", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/peko-daemon", "crates/provider-api",
     "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
 [package]
@@ -234,17 +234,6 @@ rsa = "0.9"
 [[bin]]
 name = "peko"
 path = "src/main.rs"
-
-# Phase 11b: `peko-daemon` is a separate binary artifact so system
-# service managers (systemd, launchd, Windows service) can supervise
-# the daemon without depending on the CLI artifact. The CLI's
-# background-spawn path prefers this artifact over re-exec'ing itself.
-# Future Phase 12 cleanup will lift the daemon entry into a dedicated
-# `peko-daemon` workspace member crate (currently `pub(crate)`
-# visibility requires the binary to live inside root).
-[[bin]]
-name = "peko-daemon"
-path = "src/bin/peko-daemon.rs"
 
 # Integration tests under tests/scenarios/ are nested in a subdir
 # (cargo's auto-discovery only picks up tests/*.rs directly). Each
