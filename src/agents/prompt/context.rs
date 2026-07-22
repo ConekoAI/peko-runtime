@@ -29,6 +29,16 @@
 //!
 //! Phase 1 ships the tracker stub and plumbing. Phase 3 wires the four
 //! control-surface placeholders to render real bodies from `ctx`.
+//!
+//! ## Capability diff types re-export
+//!
+//! `CapabilityChange`, `CapabilityChangeKind`, `CapabilityDiff`, and
+//! `CapabilityDiffTracker` are owned by [`peko_engine::iteration_state`]
+//! (Phase 9b.N.5a) but re-exported here so existing renderer / test
+//! paths that import `crate::agents::prompt::context::Capability*`
+//! continue to compile unchanged. Once the loop itself lifts into
+//! `peko-engine` (Phase 9b.N.5b), the renderer reads these types from
+//! the engine crate directly and the re-exports become vestigial.
 
 use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities};
 use crate::providers::ToolDefinition;
@@ -36,141 +46,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-/// A single capability change between two consecutive renders.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapabilityChange {
-    /// The capability string (e.g. `tool:Bash`).
-    pub capability: String,
-    /// Whether the change was a grant or a revoke.
-    pub kind: CapabilityChangeKind,
-}
-
-impl CapabilityChange {
-    fn granted(cap: &str) -> Self {
-        Self {
-            capability: cap.to_string(),
-            kind: CapabilityChangeKind::Granted,
-        }
-    }
-
-    fn revoked(cap: &str) -> Self {
-        Self {
-            capability: cap.to_string(),
-            kind: CapabilityChangeKind::Revoked,
-        }
-    }
-}
-
-/// Whether a capability was newly granted or newly revoked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CapabilityChangeKind {
-    Granted,
-    Revoked,
-}
-
-/// Diff between two consecutive capability snapshots.
-///
-/// Returned by [`CapabilityDiffTracker::observe`]. When the principal's
-/// grants are unchanged, this is `None`. Phase 1 reports
-/// `[granted]` only (no revokes) — Phase 3 will add the revoke path.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CapabilityDiff {
-    pub granted: Vec<CapabilityChange>,
-    pub revoked: Vec<CapabilityChange>,
-}
-
-impl CapabilityDiff {
-    /// True when no changes are recorded.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.granted.is_empty() && self.revoked.is_empty()
-    }
-
-    /// Render the diff as a Markdown section. Returns the empty string
-    /// when the diff is empty so templates that opt into
-    /// `{{capability_diff}}` get no section when there are no changes.
-    #[must_use]
-    pub fn render(&self) -> String {
-        if self.is_empty() {
-            return String::new();
-        }
-        let mut lines = vec!["## Capability changes since last turn".to_string()];
-        if !self.granted.is_empty() {
-            lines.push(String::new());
-            lines.push("Granted:".to_string());
-            for c in &self.granted {
-                lines.push(format!("- {}", c.capability));
-            }
-        }
-        if !self.revoked.is_empty() {
-            lines.push(String::new());
-            lines.push("Revoked:".to_string());
-            for c in &self.revoked {
-                lines.push(format!("- {}", c.capability));
-            }
-        }
-        lines.join("\n") + "\n"
-    }
-}
-
-/// Tracks capability diffs across iterations of one agentic loop.
-///
-/// The tracker stores the last-observed grant set as a sorted `Vec<String>`
-/// and computes a [`CapabilityDiff`] when the next snapshot differs. The
-/// first observation is always "all grants" — Phase 1 establishes the
-/// baseline so subsequent iterations can diff against it.
-#[derive(Debug, Default)]
-pub struct CapabilityDiffTracker {
-    last_snapshot: Option<Vec<String>>,
-}
-
-impl CapabilityDiffTracker {
-    /// Create a tracker with no prior observation.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Observe the current capability snapshot and return the diff
-    /// against the last observation, if any.
-    ///
-    /// - First call: returns `None` (baseline; Phase 3 may opt to surface
-    ///   "all granted" here instead).
-    /// - Subsequent calls: returns `Some(diff)` when the set changed,
-    ///   `None` otherwise.
-    pub fn observe(&mut self, current: &Capabilities) -> Option<CapabilityDiff> {
-        let mut current_sorted: Vec<String> = current.to_strings();
-        current_sorted.sort();
-
-        let diff = match &self.last_snapshot {
-            None => None,
-            Some(prev) => {
-                if prev == &current_sorted {
-                    None
-                } else {
-                    let prev_set: std::collections::HashSet<&str> =
-                        prev.iter().map(String::as_str).collect();
-                    let cur_set: std::collections::HashSet<&str> =
-                        current_sorted.iter().map(String::as_str).collect();
-                    let granted: Vec<CapabilityChange> = current_sorted
-                        .iter()
-                        .filter(|c| !prev_set.contains(c.as_str()))
-                        .map(|c| CapabilityChange::granted(c))
-                        .collect();
-                    let revoked: Vec<CapabilityChange> = prev
-                        .iter()
-                        .filter(|c| !cur_set.contains(c.as_str()))
-                        .map(|c| CapabilityChange::revoked(c))
-                        .collect();
-                    Some(CapabilityDiff { granted, revoked })
-                }
-            }
-        };
-
-        self.last_snapshot = Some(current_sorted);
-        diff
-    }
-}
+// Capability diff types live in `peko_engine::iteration_state` (Phase 9b.N.5a).
+// Re-export here so renderer + tests keep their existing import paths.
+pub use peko_engine::{
+    CapabilityChange, CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker,
+};
 
 /// Iteration-budget state for the `{{iteration_budget}}` control surface.
 #[derive(Debug, Clone, Copy)]

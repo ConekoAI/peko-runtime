@@ -30,14 +30,18 @@ pub struct CapabilityChange {
 }
 
 impl CapabilityChange {
-    fn granted(cap: &str) -> Self {
+    /// Construct a `Granted` change for `cap`.
+    #[must_use]
+    pub fn granted(cap: &str) -> Self {
         Self {
             capability: cap.to_string(),
             kind: CapabilityChangeKind::Granted,
         }
     }
 
-    fn revoked(cap: &str) -> Self {
+    /// Construct a `Revoked` change for `cap`.
+    #[must_use]
+    pub fn revoked(cap: &str) -> Self {
         Self {
             capability: cap.to_string(),
             kind: CapabilityChangeKind::Revoked,
