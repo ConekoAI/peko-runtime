@@ -2371,6 +2371,8 @@ dependencies = [
  "cron",
  "dirs",
  "glob",
+ "peko-extension-api",
+ "peko-extension-host",
  "peko-message",
  "peko-subject",
  "peko-tools-core",
@@ -2380,6 +2382,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
