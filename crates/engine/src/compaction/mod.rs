@@ -58,9 +58,11 @@
 //! the flat layout Phase 9a established.
 
 pub mod backend;
+pub mod eviction;
 pub mod types;
 
 pub use backend::CompactorBackend;
+pub use eviction::drop_oldest_respecting_pairs;
 pub use types::{
     CompactionConfig, CompactionEntry, CompactionQuota, CompactionRequest, CompactionResponse,
     CompactionResponseResult, CompactionResult, CompactionState, ContextUsageEstimate,
