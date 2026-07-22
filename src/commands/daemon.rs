@@ -9,7 +9,6 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::services::DaemonProcessService;
-use crate::daemon::{Daemon, DaemonConfig, LaunchMode};
 use clap::Subcommand;
 
 /// Daemon management subcommands
@@ -117,33 +116,29 @@ pub async fn handle_daemon(
                 return Ok(());
             }
 
-            let config = DaemonConfig {
-                cron_db_path: paths.data_dir.join("cron.json"),
-                poll_interval: std::time::Duration::from_secs(interval),
-                config_dir: paths.config_dir.clone(),
-                data_dir: paths.data_dir.clone(),
-                maintenance_interval: std::time::Duration::from_hours(1),
-                max_reconnect_attempts,
-                launch_mode: if sidecar_mode {
-                    LaunchMode::Sidecar
-                } else {
-                    LaunchMode::Headless
-                },
-            };
+            let config_dir = paths.config_dir.clone();
+            let data_dir = paths.data_dir.clone();
 
             if foreground {
                 println!("🚀 Starting daemon in foreground (interval: {interval}s)...");
-                println!("   Config dir: {}", config.config_dir.display());
-                println!("   Data dir: {}", config.data_dir.display());
+                println!("   Config dir: {}", config_dir.display());
+                println!("   Data dir: {}", data_dir.display());
 
-                let daemon = Daemon::new(config)?;
-                if let Err(e) = Box::pin(daemon.run()).await {
-                    eprintln!("Daemon error: {}", e);
-                }
+                // Phase 12 foreground switch: delegate to the service.
+                // It prefers the standalone `peko-daemon` binary
+                // (next to `current_exe()`) over re-constructing
+                // `Daemon` directly. The CLI no longer reaches into
+                // `crate::daemon` for the foreground path — daemon
+                // construction lives in `peko-daemon` (the binary) or
+                // the service's in-process fallback for installs that
+                // haven't built the binary yet.
+                service
+                    .run_foreground(interval, max_reconnect_attempts, sidecar_mode)
+                    .await?;
             } else {
                 println!("🚀 Starting daemon in background (interval: {interval}s)...");
-                println!("   Config dir: {}", config.config_dir.display());
-                println!("   Data dir: {}", config.data_dir.display());
+                println!("   Config dir: {}", config_dir.display());
+                println!("   Data dir: {}", data_dir.display());
                 if sidecar_mode {
                     println!("   Mode: sidecar (lockfile: desktop.lock)");
                 }
