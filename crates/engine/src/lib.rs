@@ -65,6 +65,7 @@ pub mod funnel;
 pub mod iteration_state;
 pub mod parallel_gate;
 pub mod prompt;
+pub mod provider_view;
 pub mod session_view;
 pub mod state;
 pub mod stream_buffer;
@@ -82,9 +83,9 @@ pub use async_completion::build_async_completion_message;
 pub use async_inbox::{AsyncInboxItem, AsyncInboxLike};
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
 pub use compaction::{
-    drop_oldest_respecting_pairs, CompactionConfig, CompactionEntry, CompactionQuota,
-    CompactionRequest, CompactionResponse, CompactionResponseResult, CompactionResult,
-    CompactionState, CompactorBackend, ContextUsageEstimate,
+    drop_oldest_respecting_pairs, BackgroundCompactorFactory, CompactionConfig, CompactionEntry,
+    CompactionQuota, CompactionRequest, CompactionResponse, CompactionResponseResult,
+    CompactionResult, CompactionState, CompactorBackend, ContextUsageEstimate,
 };
 pub use compaction_orchestrator::CompactionOrchestrator;
 pub use error::AgenticError;
@@ -105,6 +106,7 @@ pub use prompt::{
     },
     placeholder::{replace_placeholders, Placeholder},
 };
+pub use provider_view::ProviderView;
 pub use session_view::{SessionCore, SessionView};
 pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};

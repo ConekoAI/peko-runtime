@@ -59,10 +59,12 @@
 
 pub mod backend;
 pub mod eviction;
+pub mod factory;
 pub mod types;
 
 pub use backend::CompactorBackend;
 pub use eviction::drop_oldest_respecting_pairs;
+pub use factory::BackgroundCompactorFactory;
 pub use types::{
     CompactionConfig, CompactionEntry, CompactionQuota, CompactionRequest, CompactionResponse,
     CompactionResponseResult, CompactionResult, CompactionState, ContextUsageEstimate,

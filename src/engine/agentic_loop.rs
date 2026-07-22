@@ -71,6 +71,15 @@ pub struct AgenticLoop {
     /// `src/engine/agent_view_compat.rs` (orphan-rule-friendly).
     agent: Arc<dyn AgentView>,
     provider: Arc<crate::providers::Provider>,
+    /// Phase 9b.N.5b.7: factory that builds a fresh `Box<dyn CompactorBackend>`
+    /// for every `run_inner_with_meter` invocation. Replaces the line-892
+    /// direct construction of `crate::session::compaction::background::BackgroundCompactor::new(...)`.
+    /// The factory trait lives at
+    /// `peko_engine::compaction::factory`; the root impl captures the
+    /// inner `Arc<Provider>` at factory construction time. Default value
+    /// is built inside `new` from the concrete `Provider` parameter via
+    /// `BackgroundCompactorFactoryAdapter`.
+    compactor_factory: Arc<dyn peko_engine::BackgroundCompactorFactory>,
     max_iterations: usize,
     system_prompt: String,
     /// Extension core for skill loading, tool registration, and hook
@@ -208,9 +217,24 @@ impl AgenticLoop {
         // they ran an agent with no body anyway.
         let placeholder_prompt = format!("You are {}.", agent.name());
 
+        // Phase 9b.N.5b.7: build a default `BackgroundCompactorFactory`
+        // from the concrete `Provider` so existing callers (CLI, IPC,
+        // subagent executor, 5 test fixtures) keep compiling. The
+        // factory captures the inner `Arc<Provider>` and rebuilds a
+        // fresh `BackgroundCompactor` on every `factory.build(...)`
+        // call at line 892. Callers that need a custom factory can
+        // chain `.with_provider_factory(...)` after `new`.
+        let compactor_factory: Arc<dyn peko_engine::BackgroundCompactorFactory> =
+            Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    Arc::clone(&provider),
+                ),
+            );
+
         Self {
             agent,
             provider,
+            compactor_factory,
             max_iterations: 10,
             system_prompt: placeholder_prompt,
             extension_core,
@@ -231,6 +255,19 @@ impl AgenticLoop {
             // access in the messages[0] rebuild block.
             cache_stable_prompt: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Phase 9b.N.5b.7: replace the default `BackgroundCompactorFactory`
+    /// (built inside `new` from the concrete `Provider`) with a custom
+    /// implementation. Used by callers that want a different compactor
+    /// backend, or by tests that inject a mock factory.
+    #[must_use]
+    pub fn with_provider_factory(
+        mut self,
+        factory: Arc<dyn peko_engine::BackgroundCompactorFactory>,
+    ) -> Self {
+        self.compactor_factory = factory;
+        self
     }
 
     /// F19: bind a per-principal quota meter. The loop opens a
@@ -887,14 +924,17 @@ impl AgenticLoop {
         } else {
             FALLBACK_CONTEXT_WINDOW_TOKENS
         };
+        // Phase 9b.N.5b.7: route the line-892 construction through the
+        // `BackgroundCompactorFactory` port instead of naming
+        // `crate::session::compaction::background::BackgroundCompactor` directly.
+        // The default factory (built inside `new`) captures the inner
+        // `Arc<Provider>` and rebuilds a fresh `BackgroundCompactor`
+        // here with the loop's stored meters.
+        let compactor_backend = self
+            .compactor_factory
+            .build(Arc::clone(&self.quota_meter), self.peer_meter.clone());
         let mut compaction_orchestrator = peko_engine::CompactionOrchestrator::new(
-            Box::new(
-                crate::session::compaction::background::BackgroundCompactor::new(
-                    provider.inner().clone(),
-                    Arc::clone(&self.quota_meter),
-                    self.peer_meter.clone(),
-                ),
-            ),
+            compactor_backend,
             crate::session::compaction::load_compaction_config(),
             context_window,
         );
