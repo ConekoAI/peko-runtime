@@ -2265,6 +2265,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures",
  "peko-events",
  "peko-extension-api",
  "peko-extension-host",
@@ -2353,6 +2354,7 @@ dependencies = [
 name = "peko-provider-api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "peko-message",
  "serde",
  "serde_json",

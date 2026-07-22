@@ -928,8 +928,7 @@ mod tests {
     /// so this verifies the field plumbing by construction.
     #[tokio::test]
     async fn test_run_foreground_resolves_config_paths() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("PEKO_test_fg_{}", std::process::id()));
+        let temp_dir = std::env::temp_dir().join(format!("PEKO_test_fg_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 
