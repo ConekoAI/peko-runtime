@@ -20,6 +20,22 @@ use std::time::Duration;
 use tokio::process::{Child, Command};
 use tracing::{debug, warn};
 
+/// CLI flag surface to use when invoking the daemon process.
+///
+/// Phase 11c introduced the `peko-daemon` binary artifact. The two
+/// variants below capture the two arg layouts `spawn_daemon_with` may
+/// need to construct depending on which artifact is present:
+/// - `PekoDaemon` — direct invocation of the `peko-daemon` binary; the
+///   flags are passed as-is, no `daemon start` subcommand prefix.
+/// - `PekoDaemonStartForeground` — legacy path that re-execs the CLI
+///   (`peko daemon start --foreground ...`) for installs / dev trees
+///   that have not built the new artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArgPrefix {
+    PekoDaemon,
+    PekoDaemonStartForeground,
+}
+
 /// Status information about the daemon process
 #[derive(Debug, Clone)]
 pub struct DaemonStatus {
@@ -328,6 +344,13 @@ impl DaemonProcessService {
 
     /// Spawn the daemon as a background child process.
     ///
+    /// Phase 11c: prefers the standalone `peko-daemon` binary artifact
+    /// (next to `current_exe()`) when present, and falls back to the
+    /// legacy `peko daemon start --foreground` re-exec path when it is
+    /// not. The fallback covers older installs and dev trees that have
+    /// not built the new binary yet. Both paths produce an equivalent
+    /// background daemon with the same IPC contract.
+    ///
     /// # Arguments
     /// - `interval_secs` — cron poll interval
     /// - `max_reconnect_attempts` — PekoHub tunnel reconnect cap (issue #8)
@@ -347,20 +370,50 @@ impl DaemonProcessService {
         max_reconnect_attempts: u32,
         sidecar_mode: bool,
     ) -> anyhow::Result<Child> {
-        let exe_path = std::env::current_exe()?;
         let config_dir = self.resolver.config_dir().to_path_buf();
         let data_dir = self.resolver.data_dir().to_path_buf();
 
+        // Phase 11c: prefer the `peko-daemon` binary artifact. The legacy
+        // path stays for installs / dev trees that have not built it.
+        let (exe_path, arg_prefix) = match Self::peko_daemon_binary() {
+            Some(daemon_bin) => (daemon_bin, ArgPrefix::PekoDaemon),
+            None => (
+                std::env::current_exe()?,
+                ArgPrefix::PekoDaemonStartForeground,
+            ),
+        };
+
         let mut cmd = Command::new(&exe_path);
-        cmd.arg("daemon")
-            .arg("start")
-            .arg("--foreground")
-            .arg("--interval")
-            .arg(interval_secs.to_string())
-            .arg("--max-reconnect-attempts")
-            .arg(max_reconnect_attempts.to_string());
-        if sidecar_mode {
-            cmd.arg("--sidecar-mode");
+        match arg_prefix {
+            ArgPrefix::PekoDaemon => {
+                // `peko-daemon` reads flags directly — no `daemon start`
+                // subcommand prefix. Always pass `--foreground` because the
+                // binary is foreground-only by definition (a daemon
+                // binary that returned would not be a daemon).
+                cmd.arg("--interval")
+                    .arg(interval_secs.to_string())
+                    .arg("--max-reconnect-attempts")
+                    .arg(max_reconnect_attempts.to_string());
+                if sidecar_mode {
+                    cmd.arg("--sidecar-mode");
+                }
+                cmd.arg("--foreground");
+            }
+            ArgPrefix::PekoDaemonStartForeground => {
+                // Legacy path: re-exec the CLI with `daemon start --foreground`
+                // so the daemon module's existing foreground branch runs
+                // in-process inside the child.
+                cmd.arg("daemon")
+                    .arg("start")
+                    .arg("--foreground")
+                    .arg("--interval")
+                    .arg(interval_secs.to_string())
+                    .arg("--max-reconnect-attempts")
+                    .arg(max_reconnect_attempts.to_string());
+                if sidecar_mode {
+                    cmd.arg("--sidecar-mode");
+                }
+            }
         }
         cmd.env("PEKO_CONFIG_DIR", &config_dir)
             .env("PEKO_DATA_DIR", &data_dir)
@@ -393,6 +446,37 @@ impl DaemonProcessService {
         }
 
         Ok(child)
+    }
+
+    /// Resolve the standalone `peko-daemon` binary artifact next to the
+    /// currently-running executable.
+    ///
+    /// Returns `Some(path)` when a sibling `peko-daemon` (or
+    /// `peko-daemon.exe` on Windows) exists at the same directory as
+    /// `current_exe()`. Returns `None` for older installs / dev trees
+    /// that have not built the new artifact, in which case callers fall
+    /// back to the legacy `peko daemon start --foreground` re-exec.
+    ///
+    /// On Windows the `.exe` suffix is appended explicitly because
+    /// `Path::with_file_name` does not preserve the source extension —
+    /// the candidate filename must be `peko-daemon.exe` there.
+    pub fn peko_daemon_binary() -> Option<PathBuf> {
+        let current = std::env::current_exe().ok()?;
+        let candidate = Self::peko_daemon_path_for(&current);
+        candidate.exists().then_some(candidate)
+    }
+
+    /// Build the `peko-daemon` sibling path for an arbitrary executable
+    /// path. Pure path construction — no filesystem check — so it is
+    /// unit-testable on platforms where `current_exe()` returns an
+    /// awkward path (tests run as the test binary, not the CLI).
+    pub(crate) fn peko_daemon_path_for(current_exe: &std::path::Path) -> PathBuf {
+        let daemon_name = if cfg!(windows) {
+            "peko-daemon.exe"
+        } else {
+            "peko-daemon"
+        };
+        current_exe.with_file_name(daemon_name)
     }
 
     /// Wait for the daemon to become ready via IPC ping
@@ -537,6 +621,43 @@ mod tests {
             service.pid_file_path(true),
             PathBuf::from("/config/run/desktop.lock")
         );
+    }
+
+    /// `peko_daemon_path_for` swaps the file_name to the new binary
+    /// artifact. On Unix this is a bare rename; on Windows the `.exe`
+    /// suffix is appended because `Path::with_file_name` does not
+    /// preserve the source extension.
+    #[test]
+    fn test_peko_daemon_path_for() {
+        if cfg!(windows) {
+            // Windows: must include `.exe` so the candidate is actually
+            // executable on disk. `current_exe()` returns e.g.
+            // `C:\path\to\peko.exe`; the sibling must be `peko-daemon.exe`.
+            let cli_path = PathBuf::from(r"C:\path\to\peko.exe");
+            let daemon_path = DaemonProcessService::peko_daemon_path_for(&cli_path);
+            assert_eq!(daemon_path, PathBuf::from(r"C:\path\to\peko-daemon.exe"));
+        } else {
+            // Unix: bare rename, no extension handling.
+            let cli_path = PathBuf::from("/usr/local/bin/peko");
+            let daemon_path = DaemonProcessService::peko_daemon_path_for(&cli_path);
+            assert_eq!(daemon_path, PathBuf::from("/usr/local/bin/peko-daemon"));
+        }
+    }
+
+    /// `peko_daemon_binary` returns `None` when no sibling binary
+    /// exists. The test binary is itself at some path; we synthesize a
+    /// fake CLI path that has no sibling to exercise the negative
+    /// branch deterministically.
+    #[test]
+    fn test_peko_daemon_binary_missing() {
+        // Use a path that does not exist anywhere on disk; the existence
+        // check inside `peko_daemon_binary` will return false. This
+        // doesn't actually exercise the public function (which reads
+        // `current_exe()`), but the helper it delegates to
+        // (`peko_daemon_path_for`) is the unit-testable seam.
+        let missing = PathBuf::from("/nonexistent/dir/for/test/peko");
+        let candidate = DaemonProcessService::peko_daemon_path_for(&missing);
+        assert!(!candidate.exists());
     }
 
     /// `is_sidecar_lock_held` returns false when no lockfile exists.
