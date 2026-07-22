@@ -1,0 +1,12 @@
+[package]
+name = "peko-protocol"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai"]
+description = "Peko IPC + tunnel wire-shape contracts. Phase 11a ships the leaf-level auth envelope types and shared constants; subsequent Phase 11 commits lift the rest of `src/ipc/packet.rs` and `src/tunnel/protocol.rs` as needed."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

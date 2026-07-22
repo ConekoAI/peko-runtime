@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/provider-api", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
+members = [".", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/provider-api",
+    "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
 [package]
 name = "peko"
@@ -87,6 +88,13 @@ peko-extension-api = { path = "crates/extension-api" }
 # + peko-subject. The root re-exports through
 # `crate::extensions::framework::*` for backwards compatibility.
 peko-extension-host = { path = "crates/extension-host" }
+# Workspace member providing the IPC + tunnel wire-shape contracts
+# (Phase 11a) — owns the auth envelope (`AuthCredential`,
+# `PrincipalSendControlMode`, `AuthHeader`) and the shared packet/timeout
+# constants. The bulk of the wire protocol (`RequestPacket`,
+# `ResponsePacket`, `TunnelMessage`, instance payloads) stays in root
+# until the wider Phase 11 boundary lifts them.
+peko-protocol = { path = "crates/protocol" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).

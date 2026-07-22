@@ -12,60 +12,24 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Maximum packet size in bytes (conservative UDP limit)
-pub const MAX_PACKET_SIZE: usize = 60_000;
+/// Maximum packet size in bytes (conservative UDP limit).
+///
+/// Phase 11a lift: the canonical home is
+/// [`peko_protocol::ipc::MAX_PACKET_SIZE`]. This re-export keeps
+/// every `crate::ipc::packet::MAX_PACKET_SIZE` import site working
+/// unchanged while the source-of-truth lives in the new crate.
+pub use peko_protocol::ipc::MAX_PACKET_SIZE;
 
 // ============================================================================
 // Auth Credential Types (ADR-034)
 // ============================================================================
+//
+// Phase 11a lift: the canonical home is
+// `peko_protocol::ipc::{AuthCredential, PrincipalSendControlMode,
+// AuthHeader}`. Re-exports here preserve every
+// `crate::ipc::packet::AuthCredential` import path.
 
-/// Authentication credential sent with every request
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "token")]
-pub enum AuthCredential {
-    /// Local trust — no token provided.
-    /// Allowed only for Unix-socket or localhost-UDP connections.
-    #[serde(rename = "none")]
-    None,
-    /// pekohub-issued JWT (short-lived).
-    #[serde(rename = "jwt")]
-    Jwt(String),
-    /// Long-lived programmatic key.
-    #[serde(rename = "api_key")]
-    ApiKey(String),
-}
-
-/// Mode for a `PrincipalSendControl` request.
-///
-/// Tagged enum, internally discriminated on `mode`. The wire shape is:
-///
-/// ```json
-/// { "mode": "interrupt" }
-/// { "mode": "steer", "text": "..." }
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum PrincipalSendControlMode {
-    /// Set the run's cancel token. The run finishes its current step
-    /// (LLM stream chunk, in-flight tool call) and exits cleanly,
-    /// emitting a final `PrincipalSentDone` + `Lifecycle::Interrupted`.
-    Interrupt,
-    /// Inject `text` as a new user-role turn into the run's session
-    /// inbox. The agentic loop drains it at the next iteration.
-    Steer { text: String },
-}
-
-impl Default for AuthCredential {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-/// Authentication header appended to every request.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AuthHeader {
-    pub credential: AuthCredential,
-}
+pub use peko_protocol::ipc::{AuthCredential, AuthHeader, PrincipalSendControlMode};
 
 /// Authenticated request envelope (ADR-034).
 ///
@@ -80,12 +44,9 @@ pub struct AuthenticatedRequest {
     pub packet: RequestPacket,
 }
 
-/// Heartbeat interval from daemon to CLI during streams (seconds)
-pub const HEARTBEAT_INTERVAL_SECS: u64 = 2;
-
-/// CLI timeout if no packet received (seconds)
-/// Set to 60s to allow for agent initialization time before heartbeats start.
-pub const CLI_TIMEOUT_SECS: u64 = 60;
+/// Re-exports for the heartbeat + CLI-timeout packet constants.
+/// Canonical home is `peko_protocol::ipc::*`.
+pub use peko_protocol::ipc::{CLI_TIMEOUT_SECS, HEARTBEAT_INTERVAL_SECS};
 
 /// Request sent from CLI → Daemon
 #[derive(Debug, Clone, Serialize, Deserialize)]
