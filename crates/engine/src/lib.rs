@@ -49,7 +49,9 @@
 //! is established one file at a time so each residual coupling can be
 //! lifted incrementally with its own narrow PR.
 
+pub mod agent_view;
 pub mod async_completion;
+pub mod async_inbox;
 pub mod chunker;
 pub mod compaction;
 pub mod compaction_orchestrator;
@@ -58,6 +60,7 @@ pub mod event_processor;
 pub mod events;
 pub mod execution;
 pub mod funnel;
+pub mod iteration_state;
 pub mod parallel_gate;
 pub mod session_view;
 pub mod state;
@@ -70,7 +73,9 @@ pub mod tool_stream;
 // Convenience re-exports at the crate root. Mirrors the surface that
 // `src/engine/mod.rs` exposed pre-Phase 9, so the root shim's
 // `pub use peko_engine::*` preserves every downstream import path.
+pub use agent_view::AgentView;
 pub use async_completion::build_async_completion_message;
+pub use async_inbox::{AsyncInboxItem, AsyncInboxLike};
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
 pub use compaction::{
     CompactionConfig, CompactionEntry, CompactionQuota, CompactionRequest, CompactionResponse,
@@ -83,6 +88,9 @@ pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, LifecyclePhase};
 pub use execution::{ExecutionMode, TaskId, TaskStatus, TaskSummary};
 pub use funnel::{execute_tool_via_core, execute_tool_via_core_with_context};
+pub use iteration_state::{
+    CapabilityChange, CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker,
+};
 pub use session_view::{SessionCore, SessionView};
 pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};

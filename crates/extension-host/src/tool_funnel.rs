@@ -207,4 +207,35 @@ pub trait ToolFunnel: Send + Sync + 'static {
     /// else collapses to `PassThrough` via
     /// [`HookDecision::from_hook_result`].
     async fn invoke_session_state_change_hook(&self, snapshot: SessionSnapshot) -> HookDecision;
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 9b.N.5a — Stop / AfterAgent hook firing
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Fire `HookPoint::Stop` with `HookInput::Json(merged)`.
+    ///
+    /// `merged` is the merged JSON the loop wants to ship as the
+    /// "stop" event payload (typically the agent's final summary +
+    /// metadata). The loop's pre-lift code constructs
+    /// `HookInput::Json(merged.clone())` + `HookPoint::Stop` directly
+    /// at `agentic_loop.rs:669-670` — that direct construction keeps
+    /// the trait tied to root-only types.
+    ///
+    /// Phase 9b.N.5a moved the construction into the trait impl (in
+    /// `src/engine/extension_core_funnel_compat.rs` per the
+    /// 9b.N.2/9b.N.3/9b.N.4 pattern) so the lifted
+    /// `src/engine/agentic_loop.rs` (Phase 9b.N.5b) never sees
+    /// `HookPoint` / `HookInput`.
+    ///
+    /// Observe-only in v1 (return value discarded — the loop always
+    /// continues past the `Stop` point).
+    async fn invoke_stop_hook(&self, merged: serde_json::Value);
+
+    /// Fire `HookPoint::AfterAgent` with `HookInput::Json(merged)`.
+    ///
+    /// Symmetric with [`Self::invoke_stop_hook`] — runs once per agent
+    /// invocation after the loop exits. See
+    /// `agentic_loop.rs:683-684` for the pre-lift call site. Observe-
+    /// only in v1.
+    async fn invoke_after_agent_hook(&self, merged: serde_json::Value);
 }

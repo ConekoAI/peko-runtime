@@ -176,4 +176,33 @@ impl ToolFunnel for ExtensionCore {
         let result = self.invoke_hook(point, input).await;
         HookDecision::from_hook_result(result)
     }
+
+    async fn invoke_stop_hook(&self, merged: serde_json::Value) {
+        // F31x observe-only `Stop` hook firing.
+        //
+        // Phase 9b.N.5a moved the `HookInput::Json(merged.clone())` +
+        // `HookPoint::Stop` construction from
+        // `agentic_loop.rs:669-670` into this impl so the lifted
+        // `agentic_loop.rs` (Phase 9b.N.5b) never imports
+        // `HookPoint` / `HookInput` directly. The `merged` payload
+        // shape is whatever the loop produced — typically the final
+        // summary + metadata as a JSON blob — and is passed through
+        // verbatim. The hook chain's return value is discarded
+        // (observe-only in v1).
+        let input = HookInput::Json(merged);
+        let point = HookPoint::Stop;
+        let _ = tokio::time::timeout(HOOK_TIMEOUT, self.invoke_hook(point, input)).await;
+    }
+
+    async fn invoke_after_agent_hook(&self, merged: serde_json::Value) {
+        // F31x observe-only `AfterAgent` hook firing.
+        //
+        // Phase 9b.N.5a moved the `HookInput::Json(merged)` +
+        // `HookPoint::AfterAgent` construction from
+        // `agentic_loop.rs:683-684` into this impl (symmetric with
+        // `invoke_stop_hook`). Observe-only.
+        let input = HookInput::Json(merged);
+        let point = HookPoint::AfterAgent;
+        let _ = tokio::time::timeout(HOOK_TIMEOUT, self.invoke_hook(point, input)).await;
+    }
 }
