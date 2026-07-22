@@ -43,6 +43,7 @@
 //! | [`stream_buffer`]   | Coalescing buffer between orchestrator and channel. |
 //! | [`stream_orchestrator`] | `StreamEvent` → `AgenticEvent` transformation. |
 //! | [`stream_types`]    | Phase 9b.1 — public `ChannelOutput`/`EventStream`/`StreamingConfig` (`ToolCallInfo` lifted to `peko-message`). |
+//! | [`synthetic_stream`] | Phase 9b.N.5b.5 — `synthesize_stream_from_blocking` lifted from `src/providers/synthetic_stream.rs`. |
 //! | [`tool_executor`]   | Phase 9b.N.3 — `ToolExecutor` for the agentic loop. |
 //! | [`tool_stream`]     | Streaming tool-call text parser. |
 //!
@@ -69,6 +70,7 @@ pub mod state;
 pub mod stream_buffer;
 pub mod stream_orchestrator;
 pub mod stream_types;
+pub mod synthetic_stream;
 pub mod tool_executor;
 pub mod tool_stream;
 
@@ -108,6 +110,7 @@ pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};
 pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrator};
 pub use stream_types::{default_process_stream, ChannelOutput, EventStream, StreamingConfig};
+pub use synthetic_stream::synthesize_stream_from_blocking;
 pub use tool_executor::{ToolExecutionResult, ToolExecutor};
 pub use tool_stream::{
     parse_tool_calls_from_text, StreamingToolCall, ToolCallParseError, ToolCallStreamParser,

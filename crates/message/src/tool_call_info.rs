@@ -79,7 +79,10 @@ mod tests {
         // Result is `skip_serializing_if = "Option::is_none"`, so the
         // serialized payload must NOT carry a `"result"` key.
         let json = serde_json::to_string(&info).expect("serialize");
-        assert!(!json.contains("result"), "result must be skipped when None: {json}");
+        assert!(
+            !json.contains("result"),
+            "result must be skipped when None: {json}"
+        );
     }
 
     #[test]

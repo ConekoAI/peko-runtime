@@ -49,6 +49,13 @@ tokio = { version = "1.35", features = ["rt", "macros", "sync", "time", "rt-mult
 # `Option<tokio_util::sync::CancellationToken>` to match the
 # pre-existing `src/engine/tool_executor.rs:110` signature).
 tokio-util = { version = "0.7", features = ["rt"] }
+# Phase 9b.N.5b.5 — `futures::stream::iter` powers
+# `synthetic_stream::synthesize_stream_from_blocking` (lifted from
+# `src/providers/synthetic_stream.rs`). The helper takes a blocking
+# `ChatResponse` and emits a `Stream<StreamEvent>` so the loop can
+# process non-streaming providers through the same code path as
+# real SSE streams.
+futures = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["full"] }
