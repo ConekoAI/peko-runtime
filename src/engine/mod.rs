@@ -71,8 +71,10 @@ pub mod agent_view_compat;
 pub mod agentic_loop;
 pub mod async_completion_compat;
 pub mod async_inbox_compat;
+pub mod background_compactor_factory_compat;
 pub mod compaction_backend_compat;
 pub mod extension_core_funnel_compat;
+pub mod provider_view_compat;
 pub mod session_view_compat;
 pub mod tool_runtime;
 
