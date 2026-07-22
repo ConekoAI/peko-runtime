@@ -2207,6 +2207,7 @@ dependencies = [
  "peko-extension-api",
  "peko-extension-host",
  "peko-message",
+ "peko-protocol",
  "peko-provider-api",
  "peko-quota",
  "peko-subject",
@@ -2323,6 +2324,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "peko-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
