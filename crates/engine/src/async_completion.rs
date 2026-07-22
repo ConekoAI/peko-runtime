@@ -5,11 +5,58 @@
 //! user-role `LlmMessage`. This module owns that synthesis so it can be
 //! tested in isolation and so `agentic_loop.rs` stays focused on the
 //! loop itself.
+//!
+//! Phase 9b.N.1: lifted from `src/engine/async_completion.rs`. The two
+//! imports that couple this file to root — `AsyncTaskStatus` and
+//! `CompletionEvent` — are already workspace crate types
+//! (`peko_extension_api::AsyncTaskStatus` and
+//! `peko_extension_host::CompletionEvent`), and the remaining
+//! dependencies (`peko_message`, `peko_tools_core`) are already
+//! `peko-engine` deps. No trait ports or session-coupled shims needed.
 
-use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole};
-use crate::extensions::framework::async_exec::executor::{AsyncTaskStatus, CompletionEvent};
 use chrono::Utc;
+use peko_extension_api::AsyncTaskStatus;
+use peko_message::{ContentBlock, LlmMessage, MessageRole};
 use std::collections::HashMap;
+
+/// View trait over a completed async-task event used to build the
+/// synthetic user-role message at iteration start.
+///
+/// Phase 9b.N.1 introduces this trait to avoid coupling
+/// `peko-engine::async_completion` to a single concrete
+/// `CompletionEvent` struct. Two structurally-identical types exist
+/// side-by-side because the Phase 8 split moved one copy to
+/// `peko-extension-host` (`peko_extension_host::CompletionEvent`)
+/// while `crate::extensions::framework::async_exec::executor::completion_queue::CompletionEvent`
+/// remains the legacy root-owned copy. Both implement this trait so the
+/// synthesis function works against either path without forcing the
+/// agentic loop to convert. Consolidating the two structs into one is
+/// deferred to the Phase 8 follow-up bulk move.
+pub trait AsyncCompletionLike {
+    fn task_id(&self) -> &str;
+    fn tool_name(&self) -> &str;
+    fn result(&self) -> &serde_json::Value;
+    fn status(&self) -> &AsyncTaskStatus;
+    fn parent_session_key(&self) -> &str;
+}
+
+impl AsyncCompletionLike for peko_extension_host::CompletionEvent {
+    fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+    fn result(&self) -> &serde_json::Value {
+        &self.result
+    }
+    fn status(&self) -> &AsyncTaskStatus {
+        &self.status
+    }
+    fn parent_session_key(&self) -> &str {
+        &self.parent_session_key
+    }
+}
 
 /// Maximum size of a tool result to include verbatim in the synthetic
 /// completion message. Results larger than this are truncated and the
@@ -49,13 +96,20 @@ fn truncate_for_preview(text: &str) -> String {
 ///   form `synthetic:<task_id>` so the model can reference a specific
 ///   completed task in its next tool call.
 /// - Large results are truncated via [`truncate_for_preview`].
-pub(crate) fn build_async_completion_message(
-    events: &[CompletionEvent],
+///
+/// Generic over [`AsyncCompletionLike`] so the function works against
+/// `peko_extension_host::CompletionEvent` (used directly in
+/// `crates/engine` tests) and the legacy root-owned
+/// `crate::extensions::framework::async_exec::executor::completion_queue::CompletionEvent`
+/// (drained by `src/engine/agentic_loop.rs` from
+/// `SharedSessionInbox`). Both are structurally identical.
+pub fn build_async_completion_message<E: AsyncCompletionLike>(
+    events: &[E],
     session_id: &str,
 ) -> Option<LlmMessage> {
-    let for_session: Vec<&CompletionEvent> = events
+    let for_session: Vec<&E> = events
         .iter()
-        .filter(|e| e.parent_session_key == session_id)
+        .filter(|e| e.parent_session_key() == session_id)
         .collect();
     if for_session.is_empty() {
         return None;
@@ -67,16 +121,16 @@ pub(crate) fn build_async_completion_message(
     }];
     for event in for_session {
         let is_error = matches!(
-            event.status,
+            event.status(),
             AsyncTaskStatus::Failed { .. }
                 | AsyncTaskStatus::TimedOut { .. }
                 | AsyncTaskStatus::Cancelled
         );
         content.push(ContentBlock::ToolResult {
-            tool_call_id: format!("synthetic:{}", event.task_id),
-            name: event.tool_name.clone(),
+            tool_call_id: format!("synthetic:{}", event.task_id()),
+            name: event.tool_name().to_string(),
             content: vec![ContentBlock::Text {
-                text: truncate_for_preview(&event.result.to_string()),
+                text: truncate_for_preview(&event.result().to_string()),
             }],
             is_error,
         });
@@ -95,15 +149,15 @@ pub(crate) fn build_async_completion_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::core::ToolResult;
+    use peko_tools_core::ToolResult;
 
     fn make_completion_event_with_status(
         task_id: &str,
         tool_name: &str,
         session_key: &str,
         status: AsyncTaskStatus,
-    ) -> CompletionEvent {
-        CompletionEvent {
+    ) -> peko_extension_host::CompletionEvent {
+        peko_extension_host::CompletionEvent {
             task_id: task_id.to_string(),
             tool_name: tool_name.to_string(),
             result: serde_json::json!({"exit_code": 0, "stdout": "hello"}),
@@ -114,7 +168,11 @@ mod tests {
         }
     }
 
-    fn make_completion_event(task_id: &str, tool_name: &str, session_key: &str) -> CompletionEvent {
+    fn make_completion_event(
+        task_id: &str,
+        tool_name: &str,
+        session_key: &str,
+    ) -> peko_extension_host::CompletionEvent {
         make_completion_event_with_status(
             task_id,
             tool_name,
@@ -127,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_build_async_completion_message_no_events() {
-        let events: Vec<CompletionEvent> = vec![];
+        let events: Vec<peko_extension_host::CompletionEvent> = vec![];
         let msg = build_async_completion_message(&events, "session_a");
         assert!(msg.is_none(), "Zero events should return None");
     }
@@ -315,7 +373,7 @@ mod tests {
     #[test]
     fn test_build_async_completion_message_truncates_large_result() {
         let big = "x".repeat(MAX_RESULT_PREVIEW_BYTES + 500);
-        let events = vec![CompletionEvent {
+        let events = vec![peko_extension_host::CompletionEvent {
             task_id: "shell:big".to_string(),
             tool_name: "shell".to_string(),
             result: serde_json::json!({"stdout": big}),

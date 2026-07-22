@@ -3,7 +3,7 @@ name = "peko-engine"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
-description = "Peko agentic engine (Phase 9a) — owns the pure-dependency loops moved out of src/engine/: chunker, event_processor, state, stream_buffer, stream_orchestrator, tool_stream, parallel_gate, the AgenticError taxonomy, and the public events re-export. The remaining root-coupled files (agentic_loop, compaction_orchestrator, tool_executor, tool_runtime, async_completion, stream_types) stay in src/engine/ until Phase 9b lifts the agent/session/tools couplings. Depends only on peko-message + peko-provider-api + peko-tools-core + peko-quota + peko-events — no concrete providers, no daemon, no CLI, no built-in tool impls, no concrete session impls."
+description = "Peko agentic engine (Phase 9a + 9b.N.1) — owns the pure-dependency loops moved out of src/engine/: chunker, event_processor, state, stream_buffer, stream_orchestrator, tool_stream, parallel_gate, the AgenticError taxonomy, the events re-export, stream_types (Phase 9b.1), and the async_completion message synthesizer (Phase 9b.N.1). Phase 9b.N.1 introduced peko-extension-api + peko-extension-host deps for the AsyncTaskStatus + CompletionEvent types used by async_completion::build_async_completion_message. The remaining root-coupled files (agentic_loop, compaction_orchestrator, tool_executor, tool_runtime) stay in src/engine/ until later Phase 9b commits lift the agent/session/builtin-tools couplings."
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
@@ -15,11 +15,23 @@ repository = "https://github.com/ConekoAI/peko-runtime"
 # used by parallel_gate tests; peko-quota provides QuotaError used by
 # error.rs; peko-events is the neutral AgenticEvent / LifecyclePhase
 # definitions.
+#
+# Phase 9b.N.1 added peko-extension-api + peko-extension-host as
+# direct deps — async_completion uses both `AsyncTaskStatus` (API
+# crate, used by HookOutput::TaskStatus) and `CompletionEvent` (host
+# crate inbox.rs). Adding the API+host deps does NOT create a cycle:
+# `peko-extension-host` depends on `peko-extension-api`, `peko-message`,
+# `peko-tools-core`, `peko-provider-api`, and `peko-subject` — none of
+# which depend on `peko-engine`. This matches the target dependency
+# graph in the workspace migration plan (peko-engine is downstream of
+# peko-extension-host).
 peko-message = { path = "../message" }
 peko-provider-api = { path = "../provider-api" }
 peko-tools-core = { path = "../tools-core" }
 peko-quota = { path = "../quota" }
 peko-events = { path = "../events" }
+peko-extension-api = { path = "../extension-api" }
+peko-extension-host = { path = "../extension-host" }
 
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }

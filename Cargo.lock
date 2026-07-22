@@ -2266,6 +2266,8 @@ dependencies = [
  "async-trait",
  "chrono",
  "peko-events",
+ "peko-extension-api",
+ "peko-extension-host",
  "peko-message",
  "peko-provider-api",
  "peko-quota",
