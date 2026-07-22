@@ -11,11 +11,10 @@
 //! - Background compaction works for both streaming and blocking modes
 //! - Event semantics are uniform across all consumers
 
-use crate::agents::prompt::context::CapabilityDiffTracker;
 use crate::agents::prompt::{PromptRenderer, TurnPromptContext};
-use crate::agents::Agent;
 use crate::common::types::message::{ContentBlock, LlmMessage};
-use crate::engine::{AgenticEvent, LifecyclePhase};
+use crate::engine::iteration_state::CapabilityDiffTracker;
+use crate::engine::{AgentView, AgenticEvent, LifecyclePhase};
 use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
 use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
 use crate::extensions::framework::types::{HookInput, ToolExposure};
@@ -64,7 +63,13 @@ pub struct ToolCall {
 
 /// Agentic loop with native tool calling
 pub struct AgenticLoop {
-    agent: Arc<Agent>,
+    /// Phase 9b.N.5b.1: lifted from `Arc<Agent>` to `Arc<dyn
+    /// AgentView>` so the loop never holds the root-only `Agent`
+    /// type directly. `AgentView` (defined in
+    /// `peko_engine::agent_view`) exposes only the methods/fields the
+    /// loop reads. The trait impl lives at
+    /// `src/engine/agent_view_compat.rs` (orphan-rule-friendly).
+    agent: Arc<dyn AgentView>,
     provider: Arc<crate::providers::Provider>,
     max_iterations: usize,
     system_prompt: String,
@@ -150,11 +155,12 @@ impl AgenticLoop {
     /// Create a new agentic loop
     ///
     /// # Arguments
-    /// * `agent` - The agent configuration
+    /// * `agent` - The agent configuration (trait-object view of root's
+    ///   `Agent`; see `peko_engine::AgentView`).
     /// * `provider` - The LLM provider to use
     /// * `extension_core` - The `ExtensionCore` for skill loading and hook integration
     pub async fn new(
-        agent: Arc<Agent>,
+        agent: Arc<dyn AgentView>,
         provider: Arc<crate::providers::Provider>,
         extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     ) -> Self {
@@ -662,7 +668,10 @@ impl AgenticLoop {
         let mut merged = payload;
         if let serde_json::Value::Object(ref mut map) = merged {
             map.insert("agent_name".to_string(), self.agent.name().into());
-            map.insert("agent_did".to_string(), self.agent.did().to_string().into());
+            map.insert(
+                "agent_did".to_string(),
+                self.agent.identity_did().to_string().into(),
+            );
         }
 
         // `Stop` hook — per-turn exit signal.
@@ -809,7 +818,7 @@ impl AgenticLoop {
         // the shared `ExtensionCore` so concurrent agents in daemon mode
         // do not clobber each other (issue #68).
         self.extension_core
-            .set_session_key(&self.agent.identity.did, Some(session_id.clone()))
+            .set_session_key(self.agent.identity_did(), Some(session_id.clone()))
             .await;
 
         // Resolve model id once at start — threaded through every
@@ -842,12 +851,13 @@ impl AgenticLoop {
         // 128K figure the legacy `ModelContextRegistry` defaulted to.
         // The orchestrator pins the value once at run start.
         const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 128_000;
-        let context_window = match self.agent.llm_resolver() {
-            Some(_) => provider
+        let context_window = if self.agent.has_llm_resolver() {
+            provider
                 .context_window()
                 .map(|n| n as usize)
-                .unwrap_or(FALLBACK_CONTEXT_WINDOW_TOKENS),
-            None => FALLBACK_CONTEXT_WINDOW_TOKENS,
+                .unwrap_or(FALLBACK_CONTEXT_WINDOW_TOKENS)
+        } else {
+            FALLBACK_CONTEXT_WINDOW_TOKENS
         };
         let mut compaction_orchestrator = peko_engine::CompactionOrchestrator::new(
             Box::new(
@@ -1889,7 +1899,7 @@ impl AgenticLoop {
         // discover — `Deferred` tools aren't visible in
         // `list_tool_definitions_with_allowlist` (F34) so we walk the
         // unfiltered `list_tools` to count them.
-        if self.agent.config.enable_tool_search {
+        if self.agent.config_enable_tool_search() {
             let all = self.extension_core.list_tools(&principal_id).await;
             let has_deferred = all
                 .iter()
@@ -1931,7 +1941,7 @@ impl AgenticLoop {
     ) -> TurnPromptContext {
         // Body lives on `AgentConfig::prompt` as `Option<String>`. Empty
         // body is supported (renderer falls back to one-line identity).
-        let body = self.agent.config.prompt.clone().unwrap_or_default();
+        let body = self.agent.config_prompt_body().unwrap_or_default();
 
         // Workspace: the principal's workspace is the canonical answer
         // for any agent spawned under a principal; fall back to a
@@ -4366,7 +4376,7 @@ mod tests {
         let agent = Arc::new(Agent::new_for_test(config, &temp).await.unwrap());
         let expected = provider.model_id().to_string();
         let loop_ = AgenticLoop::new(
-            Arc::clone(&agent),
+            Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
         )
@@ -4428,7 +4438,7 @@ mod tests {
                 .unwrap(),
         );
         let loop_ = AgenticLoop::new(
-            Arc::clone(&agent),
+            Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
         )
@@ -4484,7 +4494,7 @@ mod tests {
             chrono::Utc::now(),
         ));
         let loop_ = AgenticLoop::new(
-            Arc::clone(&agent),
+            Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
         )
@@ -4534,7 +4544,7 @@ mod tests {
         cancel.cancel(); // simulate mid-run PrincipalSendControl
 
         let loop_ = AgenticLoop::new(
-            Arc::clone(&agent),
+            Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
         )
@@ -4582,7 +4592,7 @@ mod tests {
                 .with_principal_capabilities(Some(Arc::clone(&base_caps))),
         );
         let loop_ = AgenticLoop::new(
-            Arc::clone(&agent),
+            Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
         )
@@ -4672,7 +4682,7 @@ mod tests {
                 .unwrap(),
         );
         let loop_ = AgenticLoop::new(
-            Arc::clone(&agent),
+            Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
         )
@@ -4722,7 +4732,7 @@ mod tests {
     //   - the rendered Markdown reflects the prompt value at call
     //     time (placeholder substitution operates on the fresh body).
     //
-    // The `build_turn_context` body is `self.agent.config.prompt.clone()` —
+    // The `build_turn_context` body is `self.agent.config_prompt_body()` —
     // a fresh read each call (agentic_loop.rs:1360). If anyone re-adds
     // a cached `system_prompt: String` field that precomputes at
     // construction, this test will fail.
@@ -4746,7 +4756,7 @@ mod tests {
 
         let agent = Arc::new(Agent::new_for_test(cfg, &temp).await.unwrap());
         let mut loop_ = AgenticLoop::new(
-            Arc::clone(&agent),
+            Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
         )
@@ -4776,13 +4786,14 @@ mod tests {
         );
         assert!(!rendered1.contains("v2:"));
 
-        // Iteration 2: mutate `loop_.agent.config.prompt` in place.
+        // Iteration 2: mutate `loop_.agent`'s prompt in place.
         // `Arc::get_mut` requires unique ownership, so the loop is
-        // the only Arc holder here.
+        // the only Arc holder here. The trait exposes a test-only
+        // setter (`set_config_prompt_body_for_test`) so the loop
+        // doesn't need to reach into `AgentConfig`'s fields.
         Arc::get_mut(&mut loop_.agent)
-            .expect("loop is the unique Arc<Agent> owner")
-            .config
-            .prompt = Some("v2: You are {{agent_name}}.".to_string());
+            .expect("loop is the unique Arc<AgentView> owner")
+            .set_config_prompt_body_for_test(Some("v2: You are {{agent_name}}.".to_string()));
 
         let ctx2 = loop_.build_turn_context(2, &[]);
         assert_eq!(
@@ -4799,9 +4810,8 @@ mod tests {
         // Iteration 3: another mutation, confirming freshness is
         // every-turn (not a one-shot post-mutation refresh).
         Arc::get_mut(&mut loop_.agent)
-            .expect("loop is still the unique Arc<Agent> owner")
-            .config
-            .prompt = Some("v3: You are {{agent_name}}.".to_string());
+            .expect("loop is still the unique Arc<AgentView> owner")
+            .set_config_prompt_body_for_test(Some("v3: You are {{agent_name}}.".to_string()));
 
         let ctx3 = loop_.build_turn_context(3, &[]);
         let rendered3 = renderer.render_for_iteration(&ctx3).await;

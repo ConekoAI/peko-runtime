@@ -59,8 +59,32 @@ pub trait AgentView: Send + Sync + 'static {
     /// Resolved principal display name (None ⇒ system principal).
     fn principal_name(&self) -> Option<&str>;
 
+    /// Spawning principal's stable runtime id (used as
+    /// `agent_principal_id` cache + `{{principal_id}}` hook input).
+    /// Returns the borrowed inner string so callers can `.to_string()`
+    /// without an extra deref step.
+    fn principal_id(&self) -> &str;
+
+    /// Per-call resolved model id (`peko send --model <id>` overrides
+    /// surface here; `None` ⇒ fall back to `provider.model_id()`).
+    /// Field access at `agentic_loop.rs:175` — `self.agent.resolved_model_id()`.
+    fn resolved_model_id(&self) -> Option<&str>;
+
+    /// Principal's workspace path (`None` ⇒ use
+    /// `PathResolver::agent_workspace(agent.name())`).
+    /// Field access at `agentic_loop.rs:1948` — `self.agent.principal_workspace()`.
+    fn principal_workspace(&self) -> Option<&std::path::PathBuf>;
+
     /// Per-principal capability snapshot (None ⇒ unscope).
-    fn principal_capabilities(&self) -> Option<&peko_extension_api::Capabilities>;
+    ///
+    /// Returns `Option<&Arc<Capabilities>>` to match the `Agent`'s
+    /// internal cache shape — the loop's prompt context
+    /// (`TurnPromptContext::capabilities: Option<Arc<Capabilities>>`)
+    /// takes ownership via `.cloned()`, so exposing `&Arc<...>` keeps
+    /// the `.cloned()` call sites intact. Peeling the Arc out in the
+    /// trait would force every caller to do `.map(Arc::new)` which is
+    /// noise.
+    fn principal_capabilities(&self) -> Option<&std::sync::Arc<peko_extension_api::Capabilities>>;
 
     /// Active extension IDs for the principal (None ⇒ no extensions).
     fn principal_active_extensions(&self) -> Option<&peko_extension_api::ActiveExtensionSet>;
@@ -89,4 +113,14 @@ pub trait AgentView: Send + Sync + 'static {
     /// `self.agent.config.prompt`. Read fresh each iteration; the
     /// `loop_renders_fresh_prompt_body_each_iteration` test pins this.
     fn config_prompt_body(&self) -> Option<String>;
+
+    /// Test-only setter that mirrors `self.config.prompt = body`
+    /// in-place. Always available on the trait (not gated) because
+    /// cargo's `cfg(test)` does not propagate cleanly across the
+    /// workspace boundary — gating the trait method in `peko-engine`
+    /// hides it from root's test build (which sees the trait via the
+    /// non-test rlib). The loop only invokes this method from tests;
+    /// production code goes through `config_prompt_body()` and
+    /// builds the context fresh each iteration.
+    fn set_config_prompt_body_for_test(&mut self, body: Option<String>);
 }
