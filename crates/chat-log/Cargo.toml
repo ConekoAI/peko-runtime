@@ -1,0 +1,38 @@
+[package]
+name = "peko-chat-log"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Append-only runtime-owned chat log storage for principal-facing conversations (Phase 5 of the post-migration cleanup). Owns ChatLogStore / ChatLogMessage / ChatLogPage / ChatThreadKey / cursor codec. No runtime deps on session/agent/daemon."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+peko-subject = { path = "../subject" }
+peko-fs-persistence = { path = "../fs-persistence" }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time + error
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.7", features = ["v4"] }
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Hashing for shard paths + cursor thread fingerprint
+blake3 = "1.5"
+
+# Async + filesystem
+tokio = { version = "1.35", features = ["rt", "fs", "sync", "macros", "io-util", "time"] }
+
+# Logging
+tracing = "0.1"
+
+# Cursor codec uses URL-safe base64 (no padding) for cursor strings
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio = { version = "1.35", features = ["macros", "rt-multi-thread"] }

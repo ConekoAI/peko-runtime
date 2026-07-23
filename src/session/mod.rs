@@ -1,7 +1,6 @@
 //! Session management module
 //!
 //! Provides session storage with Peko JSONL format:
-//! - File locking for concurrent access safety
 //! - Unified session index (sessions.json + peers.json) for fast lookups
 //! - Session key derivation for multi-user isolation
 //! - Session overlays (base + channel/spawn layers)
@@ -11,7 +10,6 @@
 //!
 //! - `directory`: Explicit session directory management (no side effects)
 //! - `events`: Peko session event types (13 types per DATA_MODEL §5.3)
-//! - `lock`: File locking with timeout and stale detection
 //! - `index`: Unified session index (sessions.json + peers.json) management
 //! - `key`: Session key derivation for scoping
 //! - `jsonl`: JSONL storage format (Peko format)
@@ -20,6 +18,11 @@
 //! - `spawn`: Spawn overlay for subagent isolation
 //! - `base`: Base session (shared conversation context)
 //! - `manager`: SessionManager for overlay lifecycle
+//!
+//! File locking for cross-process safety lives in `peko_fs_persistence`
+//! (Phase 5 of the cleanup). Session modules import `FileLock` and
+//! `append_bytes_durable` from there directly, so the historical
+//! `crate::session::lock::FileLock` compat shim no longer exists.
 
 pub mod context;
 pub mod directory;
@@ -28,7 +31,6 @@ pub mod inbox_registry;
 mod index;
 pub mod jsonl;
 pub mod key;
-pub mod lock;
 pub mod lock_utils;
 pub mod maintenance;
 pub mod manager;
@@ -71,7 +73,6 @@ pub use key::{
     base_key_from_overlay, derive_base_session_key, derive_overlay_key, derive_session_key,
     parse_session_key, parse_session_key_v2, ChatType, ParsedSessionKeyV2, SessionScope,
 };
-pub use lock::FileLock;
 pub use lock_utils::{
     try_read_lock, try_read_lock_default, try_write_lock, try_write_lock_default, LockError,
     DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT,

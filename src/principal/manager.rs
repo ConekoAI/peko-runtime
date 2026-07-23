@@ -22,9 +22,9 @@ use crate::session::InboxRegistry;
 use crate::subject::PrincipalDID;
 use peko_auth::ownership::{check_permission, Permission, Resource};
 use peko_auth::Subject;
+use peko_extension_host::SteeringMessage;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
-use peko_extension_host::SteeringMessage;
 
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
@@ -91,7 +91,7 @@ pub struct PrincipalManager {
     /// (Cli/Http/Hub/A2a/P2p/Webhook) are persisted; automation
     /// channels (Cron/FileWatch) are excluded. `None` for tests /
     /// non-daemon contexts that don't need consumer-visible history.
-    chat_log_store: Option<Arc<crate::chat_log::ChatLogStore>>,
+    chat_log_store: Option<Arc<peko_chat_log::ChatLogStore>>,
 }
 
 impl PrincipalManager {
@@ -214,17 +214,14 @@ impl PrincipalManager {
     /// response. `None` (the default) disables recording and is the
     /// right choice for tests / non-daemon contexts.
     #[must_use]
-    pub fn with_chat_log_store(
-        mut self,
-        chat_log_store: Arc<crate::chat_log::ChatLogStore>,
-    ) -> Self {
+    pub fn with_chat_log_store(mut self, chat_log_store: Arc<peko_chat_log::ChatLogStore>) -> Self {
         self.chat_log_store = Some(chat_log_store);
         self
     }
 
     /// Optional reference to the attached chat-log store.
     #[must_use]
-    pub fn chat_log_store(&self) -> Option<&Arc<crate::chat_log::ChatLogStore>> {
+    pub fn chat_log_store(&self) -> Option<&Arc<peko_chat_log::ChatLogStore>> {
         self.chat_log_store.as_ref()
     }
 
@@ -914,8 +911,8 @@ impl PrincipalManager {
         if !is_peer_chat_channel(&channel.kind) {
             return Ok(());
         }
-        let key = crate::chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
-        let entry = crate::chat_log::ChatLogMessage::new(peer.clone(), message.to_string(), None);
+        let key = peko_chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
+        let entry = peko_chat_log::ChatLogMessage::new(peer.clone(), message.to_string(), None);
         store
             .append_message(&key, &entry)
             .await
@@ -930,8 +927,8 @@ impl PrincipalManager {
         let Some(store) = self.chat_log_store.as_ref() else {
             return;
         };
-        let key = crate::chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
-        let entry = crate::chat_log::ChatLogMessage::new(
+        let key = peko_chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
+        let entry = peko_chat_log::ChatLogMessage::new(
             crate::subject::Subject::Principal(principal.did().await),
             response.to_string(),
             None,

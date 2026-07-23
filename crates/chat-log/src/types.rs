@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::subject::{PrincipalDID, Subject};
+use peko_subject::{PrincipalDID, Subject};
 
 pub const CHAT_LOG_SCHEMA_VERSION: u8 = 1;
 

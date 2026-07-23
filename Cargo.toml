@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/identity", "crates/message", "crates/peko-daemon", "crates/provider-api",
+members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/fs-persistence", "crates/identity", "crates/message", "crates/peko-daemon", "crates/provider-api",
     "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
 # ---------------------------------------------------------------------------
@@ -129,6 +129,21 @@ peko-protocol = { path = "crates/protocol" }
 # defined in `peko-identity::host` so peko-identity stays a leaf crate.
 # The root re-exports are removed entirely in Phase 15.
 peko-identity = { path = "crates/identity" }
+# Workspace member providing append-only file-persistence utilities
+# (Phase 5) — owns FileLock / LockManager / append_bytes_durable and the
+# associated timeout constants. Depends on nothing except serde / tokio
+# / libc; root depends on it for `src/session/{jsonl,todos,index}.rs`
+# until Phase 7 lifts those into `peko-session`. The
+# `src/common/persistence/` + `src/session/lock.rs` shims are removed
+# in Phase 5.
+peko-fs-persistence = { path = "crates/fs-persistence" }
+# Workspace member providing append-only runtime-owned chat log
+# storage (Phase 5) — owns ChatLogStore / ChatLogMessage /
+# ChatLogPage / ChatThreadKey / cursor codec. No runtime deps on
+# session/agent/daemon. The root `src/chat_log/` directory is deleted
+# in Phase 5 (historical `peko::chat_log::*` paths are intentionally
+# broken).
+peko-chat-log = { path = "crates/chat-log" }
 # Workspace member providing authentication/authorization (Phase 4 of
 # the post-migration cleanup). Owns the canonical auth domain:
 # ApiKey/ApiKeyStore, CallerContext, JwtValidator, RateLimiter,

@@ -17,11 +17,11 @@
 //! `ChatLogStore` (sharded by `(principal_did, peer)`), distinct
 //! from the principal's mutable session JSONL working memory.
 
-use crate::chat_log::ChatLogMessage;
 use crate::commands::GlobalPaths;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{Context, Result};
 use clap::Args;
+use peko_chat_log::ChatLogMessage;
 use std::str::FromStr;
 
 /// `peko log [OPTIONS] <PRINCIPAL>`

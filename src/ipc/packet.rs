@@ -1443,7 +1443,7 @@ pub enum ResponsePacket {
         request_id: u64,
         name: String,
         peer: peko_auth::Subject,
-        messages: Vec<crate::chat_log::ChatLogMessage>,
+        messages: Vec<peko_chat_log::ChatLogMessage>,
         next_cursor: Option<String>,
         has_more: bool,
     },
@@ -4894,7 +4894,7 @@ mod tests {
             request_id: 6200,
             name: "helper".to_string(),
             peer: peko_auth::Subject::User("alice".to_string()),
-            messages: vec![crate::chat_log::ChatLogMessage::new(
+            messages: vec![peko_chat_log::ChatLogMessage::new(
                 peko_auth::Subject::User("alice".to_string()),
                 "hi",
                 None,

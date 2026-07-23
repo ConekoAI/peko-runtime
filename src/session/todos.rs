@@ -4,10 +4,10 @@
 //! alongside the main session JSONL. Writes are atomic (tmp + rename) and
 //! use the same durability strategy as `SessionStorage`.
 
-use crate::session::lock::FileLock;
 use crate::session::safe_filename_component;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use peko_fs_persistence::FileLock;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;

@@ -1,7 +1,11 @@
 //! Runtime-owned, append-only chat log storage for principal-facing
 //! conversations. Internal agent/session working memory lives in
-//! `crate::session`; this module is the immutable, externally visible
+//! `peko-session`; this crate is the immutable, externally visible
 //! record of what participants said to each other.
+//!
+//! Phase 5 of the post-migration cleanup. Replaces the root
+//! `src/chat_log/` directory; historical `peko::chat_log::*` paths
+//! are intentionally broken.
 
 mod cursor;
 mod store;

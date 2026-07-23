@@ -94,7 +94,7 @@ pub(crate) struct AppState {
     /// boundary message that passes authorization is persisted here
     /// alongside its authoritative response. Distinct from the
     /// principal-owned session JSONL (mutable working memory).
-    chat_log_store: Arc<crate::chat_log::ChatLogStore>,
+    chat_log_store: Arc<peko_chat_log::ChatLogStore>,
 
     /// F20: peer quota registry. `Some` after daemon startup loads
     /// `<runtime>/peers/` and materializes each peer's meter. The
@@ -717,7 +717,7 @@ impl AppState {
         // `receive` / `receive_streaming`. The store is independent of
         // any principal's session JSONL — deleting a principal deletes
         // only that principal's chat-log shards.
-        let chat_log_store = Arc::new(crate::chat_log::ChatLogStore::new(
+        let chat_log_store = Arc::new(peko_chat_log::ChatLogStore::new(
             path_resolver.chat_logs_dir(),
         ));
         let principal_manager = {
@@ -1090,7 +1090,7 @@ impl AppState {
     /// startup (the daemon builds it before `principal_manager` so
     /// the manager builder captures the same `Arc`).
     #[must_use]
-    pub fn chat_log_store(&self) -> &Arc<crate::chat_log::ChatLogStore> {
+    pub fn chat_log_store(&self) -> &Arc<peko_chat_log::ChatLogStore> {
         &self.chat_log_store
     }
 
@@ -2932,7 +2932,7 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
         AppState::principal_manager(self)
     }
 
-    fn chat_log_store(&self) -> &Arc<crate::chat_log::ChatLogStore> {
+    fn chat_log_store(&self) -> &Arc<peko_chat_log::ChatLogStore> {
         AppState::chat_log_store(self)
     }
 

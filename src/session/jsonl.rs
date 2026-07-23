@@ -14,13 +14,12 @@
 //!   drops any leftover `.tmp` from a pre-F30 install.
 //! - Support for Peko event format (13 event types)
 
-use crate::common::persistence::append_bytes_durable;
 use crate::common::types::message::LlmMessage;
 use crate::session::events::SessionEvent;
-use crate::session::lock::FileLock;
 use crate::session::safe_filename_component;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use peko_fs_persistence::{append_bytes_durable, FileLock};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;

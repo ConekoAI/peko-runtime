@@ -231,8 +231,7 @@ pub mod quota;
 // Append-only runtime surfaces
 // ============================================================================
 
-// [extract:phase-5] peko-chat-log
-pub mod chat_log;
+// [extract:phase-5] peko-chat-log — moved to crates/chat-log/
 
 // ============================================================================
 // Infrastructure

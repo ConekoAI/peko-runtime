@@ -16,12 +16,12 @@ use tokio::sync::RwLock;
 
 use ed25519_dalek::SigningKey;
 
-use crate::chat_log::ChatLogStore;
 use crate::principal::PrincipalManager;
 use crate::tunnel::direct::DirectConnectionManager;
 use crate::tunnel::hub_directory::AgentDirectory;
 use crate::tunnel::known_runtimes::KnownRuntimes;
 use crate::tunnel::{PendingA2aResponses, TunnelHandle};
+use peko_chat_log::ChatLogStore;
 
 /// Cross-runtime a2a dispatch context. Holds the dependencies the
 /// outbound `principal_send` path needs: the directory client to resolve

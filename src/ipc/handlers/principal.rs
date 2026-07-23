@@ -36,7 +36,6 @@ use chrono::Utc;
 use tokio::sync::RwLock;
 use tracing::warn;
 
-use crate::chat_log::{ChatLogPage, ChatThreadKey};
 use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
 use crate::engine::AgenticEvent;
@@ -57,6 +56,7 @@ use peko_auth::ownership::{
     check_permission, principal_resource, Permission, PermissionGrant, Resource,
 };
 use peko_auth::Subject;
+use peko_chat_log::{ChatLogPage, ChatThreadKey};
 
 use peko_extension_host::SteeringMessage;
 
@@ -97,7 +97,7 @@ enum PrincipalLogError {
 struct PrincipalLogResponse {
     name: String,
     peer: Subject,
-    messages: Vec<crate::chat_log::ChatLogMessage>,
+    messages: Vec<peko_chat_log::ChatLogMessage>,
     next_cursor: Option<String>,
     has_more: bool,
 }
@@ -164,7 +164,7 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// page from this store. The manager's `receive` paths also use
     /// the same `Arc` for boundary recording (see
     /// `PrincipalManager::with_chat_log_store`).
-    fn chat_log_store(&self) -> &Arc<crate::chat_log::ChatLogStore>;
+    fn chat_log_store(&self) -> &Arc<peko_chat_log::ChatLogStore>;
 
     /// Soft-interrupt cancel-token registry for in-flight root-agent
     /// runs. The handler inserts on start, removes on drop
@@ -2066,9 +2066,7 @@ async fn read_principal_log(
         .read_page(&key, cursor.as_deref(), effective_limit, cutoff)
         .await
         .map_err(|e| match e {
-            crate::chat_log::ChatLogError::Cursor(_) => {
-                PrincipalLogError::BadCursor(format!("{e}"))
-            }
+            peko_chat_log::ChatLogError::Cursor(_) => PrincipalLogError::BadCursor(format!("{e}")),
             other => PrincipalLogError::Internal(format!("read failed: {other}")),
         })?;
 

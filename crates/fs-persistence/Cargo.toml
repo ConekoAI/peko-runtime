@@ -1,0 +1,30 @@
+[package]
+name = "peko-fs-persistence"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Append-only file persistence utilities used by peko-chat-log and peko-session (Phase 5 of the post-migration cleanup). Owns FileLock / LockManager / append_bytes_durable and the associated timeout constants. Replaces root `src/common/persistence/` (no callers remain after Phase 5)."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+# Serialization (lock payload + chrono round-trip)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time + error
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+
+# Async + filesystem
+tokio = { version = "1.35", features = ["rt", "fs", "sync", "macros", "io-util", "time"] }
+
+# Logging
+tracing = "0.1"
+
+# Unix signal-0 PID liveness check (gated by #[cfg(unix)])
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio = { version = "1.35", features = ["macros", "rt-multi-thread"] }
