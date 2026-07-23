@@ -1064,7 +1064,25 @@ impl Agent {
             )
             .await?;
 
-        let result = match loop_.run(prompt, on_event).await {
+        // Phase 9b.N.5b.9d: inline `AgenticLoop::run`'s session-creation
+        // body here (root side). The loop no longer owns
+        // `SessionManager` orchestration — callers that don't have a
+        // pre-built session (local CLI one-shots) build one inline and
+        // route through `run_with_resume` directly. Mirrors the
+        // 9b.N.5b.9c convention where callers explicitly construct
+        // their `BackgroundCompactorFactory` + `CompactionConfig`.
+        let path_resolver = PathResolver::new();
+        let mut session_manager = SessionManager::new()
+            .with_path_resolver(path_resolver, self.name())
+            .await?;
+        let session = session_manager
+            .get_or_create_base(self.name(), &Subject::User("local".to_string()))
+            .await?;
+
+        let result = match loop_
+            .run_with_resume(prompt, Vec::new(), on_event, session, None)
+            .await
+        {
             Ok(result) => Ok(result),
             Err(e) => {
                 error!("Agentic loop error: {}", e);

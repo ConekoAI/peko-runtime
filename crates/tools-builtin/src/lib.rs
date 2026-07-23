@@ -29,6 +29,7 @@
 //! | [`session`] | SessionTool + SessionRuntime port + SessionCache placeholder. |
 //! | [`skill`] | Skill + SkillRuntime port + YAML frontmatter parser + dynamic context preprocessor. |
 //! | [`messaging`] | `Agent` tool + `SubagentRuntime` port + AgentConfig/SpawnError/ExecutionConfig/SubagentRunView DTOs. |
+//! | [`tool_search_metadata`] | Pure-data helpers for the `__tool_search` stub (lifted in Phase 9b.N.5b.9d). |
 
 pub mod async_control;
 pub mod cron;
@@ -38,6 +39,7 @@ pub mod paths;
 pub mod session;
 pub mod skill;
 pub mod tasks;
+pub mod tool_search_metadata;
 
 pub use async_control::{
     AsyncListTool, AsyncOutputTool, AsyncRuntime, AsyncSpawnTool, AsyncStatusTool, AsyncStopTool,
@@ -52,3 +54,11 @@ pub use messaging::{
 pub use session::{SessionCache, SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};
 pub use tasks::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool, Todo, TodoStatus};
+// Phase 9b.N.5b.9d: static helpers for the `__tool_search` stub. Lifted
+// out of `src/tools/builtin/tool_search.rs` so `peko-engine`'s
+// agentic loop can render the catalog entry without depending on
+// root-only `ExtensionCore` (which the impl uses for catalog walks
+// at execute time; the impl itself stays in root).
+pub use tool_search_metadata::{
+    synthetic_description, synthetic_parameters, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_TOOL_NAME,
+};
