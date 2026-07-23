@@ -1535,17 +1535,33 @@ impl Agent {
         // agent belongs to. The loop opens a `QuotaScope::with` at
         // run entrypoint and `MeteredProvider` auto-charges every
         // LLM call against this meter.
-        let mut loop_ =
-            crate::engine::agentic_loop::AgenticLoop::new(agent_arc, provider, extension_core)
-                .await
-                .with_async_completion_queue(std::sync::Arc::new(
-                    crate::engine::async_inbox_compat::AsyncInboxAdapter::new(
-                        async_completion_queue,
-                    ),
-                ))
-                .with_caller_id(caller_id)
-                .with_quota_meter(quota_meter)
-                .with_peer_meter(peer_meter);
+        //
+        // Phase 9b.N.5b.9c: supply the compactor factory (captures
+        // the provider view + rebuilds a fresh `BackgroundCompactor`
+        // every run) and the loaded compaction config. Root owns
+        // `load_compaction_config` because it depends on `dirs` /
+        // `toml` (not in `peko-engine`'s dep graph); the loop now
+        // treats config as opaque data.
+        let compactor_factory: Arc<dyn peko_engine::BackgroundCompactorFactory> = Arc::new(
+            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                Arc::clone(&provider) as Arc<dyn peko_engine::ProviderView>,
+            ),
+        );
+        let compaction_config = crate::session::compaction::load_compaction_config();
+        let mut loop_ = crate::engine::agentic_loop::AgenticLoop::new(
+            agent_arc,
+            provider,
+            extension_core,
+            compactor_factory,
+            compaction_config,
+        )
+        .await
+        .with_async_completion_queue(std::sync::Arc::new(
+            crate::engine::async_inbox_compat::AsyncInboxAdapter::new(async_completion_queue),
+        ))
+        .with_caller_id(caller_id)
+        .with_quota_meter(quota_meter)
+        .with_peer_meter(peer_meter);
         if let Some(token) = cancel {
             loop_ = loop_.with_cancel_token(token);
         }
