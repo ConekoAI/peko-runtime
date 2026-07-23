@@ -40,6 +40,7 @@
 //! | [`prompt`]          | Phase 9b.N.5b.4 — `PromptRenderer` + `TurnPromptContext` + placeholder/memory helpers lifted from `src/agents/prompt/`. |
 //! | [`session_view`]    | Phase 9b.N.3 — narrow `add_tool_result(...)` trait port for tool dispatch. |
 //! | [`state`]           | `AgentState` / `StateMachine` — atomic Idle/Busy tracker. |
+//! | [`stacked_metered_provider`] | Phase 9b.N.5b.8 — `StackedMeteredProvider` lifted from `src/providers/stacked_metered.rs` (refactored to wrap `Arc<dyn ProviderView>`). |
 //! | [`stream_buffer`]   | Coalescing buffer between orchestrator and channel. |
 //! | [`stream_orchestrator`] | `StreamEvent` → `AgenticEvent` transformation. |
 //! | [`stream_types`]    | Phase 9b.1 — public `ChannelOutput`/`EventStream`/`StreamingConfig` (`ToolCallInfo` lifted to `peko-message`). |
@@ -67,6 +68,7 @@ pub mod parallel_gate;
 pub mod prompt;
 pub mod provider_view;
 pub mod session_view;
+pub mod stacked_metered_provider;
 pub mod state;
 pub mod stream_buffer;
 pub mod stream_orchestrator;
@@ -108,6 +110,7 @@ pub use prompt::{
 };
 pub use provider_view::ProviderView;
 pub use session_view::{SessionCore, SessionView};
+pub use stacked_metered_provider::StackedMeteredProvider;
 pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};
 pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrator};
