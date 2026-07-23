@@ -24,9 +24,6 @@ use crate::session::InboxRegistry;
 use crate::subject::PrincipalDID;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
-
-use peko_extension_host::SteeringMessage;
-
 use peko_extension_host::SteeringMessage;
 
 /// Error type for PrincipalManager operations.
