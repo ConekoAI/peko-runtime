@@ -25,6 +25,19 @@
 //!   away without leaking the core.
 //!
 //! See the F35 audit doc section 3 row 6 for the full design.
+//!
+//! # Phase 9b.N.5b.9d: static-metadata split
+//!
+//! The two pure-data helpers (`synthetic_description`,
+//! `synthetic_parameters`) and the two constants
+//! (`TOOL_SEARCH_DEFAULT_LIMIT`, `TOOL_SEARCH_TOOL_NAME`) live in
+//! `peko_tools_builtin::tool_search_metadata` so `peko-engine`'s
+//! agentic loop can render the catalog entry without taking a
+//! dependency on root-only `ExtensionCore`. This file keeps the
+//! instance-level impl (`Tool for ToolSearchTool`, which needs
+//! `Weak<ExtensionCore>` at execute time); the static helpers are
+//! re-exported here for backward compat with callers that still
+//! import from `crate::tools::builtin::ToolSearchTool`.
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -35,14 +48,13 @@ use crate::extensions::framework::types::ToolExposure;
 use crate::tools::core::Tool;
 use crate::tools::ToolError;
 
-/// Default page size for [`ToolSearchTool::execute`] when `limit` is omitted.
-pub const TOOL_SEARCH_DEFAULT_LIMIT: u32 = 8;
-
-/// Sentinel tool name for the synthetic search stub. Registered into the
-/// native catalog by `engine::agentic_loop::build_tool_definitions` when
-/// the agent's `enable_tool_search` flag is true and at least one
-/// `Deferred` tool is visible to the principal.
-pub const TOOL_SEARCH_TOOL_NAME: &str = "__tool_search";
+// Phase 9b.N.5b.9d: the four data-only constants/functions lifted to
+// `peko_tools_builtin::tool_search_metadata`. Re-exported here for
+// backward compat with callers like `Agent::init_builtins_async` and
+// root-side tests.
+pub use peko_tools_builtin::tool_search_metadata::{
+    synthetic_description, synthetic_parameters, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_TOOL_NAME,
+};
 
 /// Synthetic tool that searches over `ToolExposure::Deferred` candidates.
 ///
@@ -73,55 +85,6 @@ impl std::fmt::Debug for ToolSearchTool {
     }
 }
 
-impl ToolSearchTool {
-    /// Static description used by `engine::agentic_loop::build_tool_definitions`
-    /// when synthesizing the catalog entry for `__tool_search`. Kept
-    /// separate from the per-instance `description()` so the engine can
-    /// render the catalog entry without holding a `ToolSearchTool`
-    /// instance (the loop runs before the tool is constructed).
-    #[must_use]
-    pub fn synthetic_description() -> String {
-        format!(
-            "# Tool discovery\n\n\
-             Searches deferred tool metadata with simple word overlap and \
-             returns matching tools for the next model call.\n\n\
-             Use when: you suspect a tool exists but it's not in your \
-             catalog (the runtime may have deferred it for prompt size). \
-             Always returns the tool name + JSON Schema so you can call \
-             it on the next iteration.\n\n\
-             Parameters:\n\
-             - query: string (required) — search query\n\
-             - limit: integer? — max results to return (default {})\n\n\
-             Returns: {{ tools: [{{ name, description, parameters }}, ...] }}",
-            TOOL_SEARCH_DEFAULT_LIMIT
-        )
-    }
-
-    /// Static parameters schema mirroring `Tool::parameters()` for the
-    /// catalog-synthesis path. Same shape — keep in sync if the live
-    /// schema evolves.
-    #[must_use]
-    pub fn synthetic_parameters() -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query for deferred tools."
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": format!(
-                        "Maximum number of tools to return. Defaults to {TOOL_SEARCH_DEFAULT_LIMIT}."
-                    )
-                }
-            },
-            "required": ["query"]
-        })
-    }
-}
-
 #[async_trait]
 impl Tool for ToolSearchTool {
     fn name(&self) -> &'static str {
@@ -129,44 +92,16 @@ impl Tool for ToolSearchTool {
     }
 
     fn description(&self) -> String {
-        // Mirrors codex `tool_search_spec.rs:49-51` — short prose intro
-        // plus the call shape. The model sees this when the stub is in
-        // the catalog; without it, the model has no idea what `__tool_search`
-        // does.
-        format!(
-            "# Tool discovery\n\n\
-             Searches deferred tool metadata with simple word overlap and \
-             returns matching tools for the next model call.\n\n\
-             Use when: you suspect a tool exists but it's not in your \
-             catalog (the runtime may have deferred it for prompt size). \
-             Always returns the tool name + JSON Schema so you can call \
-             it on the next iteration.\n\n\
-             Parameters:\n\
-             - query: string (required) — search query\n\
-             - limit: integer? — max results to return (default {})\n\n\
-             Returns: {{ tools: [{{ name, description, parameters }}, ...] }}",
-            TOOL_SEARCH_DEFAULT_LIMIT
-        )
+        // The per-instance description mirrors the static helper so the
+        // catalog entry is identical whether it's built by the loop (via
+        // `synthetic_description`) or pulled from the live Tool impl
+        // (via `description()`).
+        synthetic_description()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query for deferred tools."
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": format!(
-                        "Maximum number of tools to return. Defaults to {TOOL_SEARCH_DEFAULT_LIMIT}."
-                    )
-                }
-            },
-            "required": ["query"]
-        })
+        // Same — keep in sync via the helper.
+        synthetic_parameters()
     }
 
     /// F34 — always `Direct`. The stub itself is always visible when

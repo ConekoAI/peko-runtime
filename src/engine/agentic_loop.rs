@@ -684,43 +684,6 @@ impl AgenticLoop {
             .await
     }
 
-    /// Original run method - creates new session via `SessionManager`
-    pub async fn run(
-        &self,
-        prompt: &str,
-        on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
-    ) -> Result<AgenticResult> {
-        use crate::auth::Subject;
-        use crate::common::paths::PathResolver;
-        use crate::session::manager::SessionManager;
-
-        // Create session via SessionManager. Issue #17: use the resolved
-        // caller identity (set via `with_caller_id`) as the session's
-        // `sender_id` so the session-keying scheme
-        // `(agent, channel, sender_id)` works as designed. Local CLI
-        // invocations leave `self.caller_id` as `None`, which maps to a
-        // local-trust peer.
-        let path_resolver = PathResolver::new();
-        let mut session_manager = SessionManager::new()
-            .with_path_resolver(path_resolver, self.agent.name())
-            .await?;
-        let peer = self
-            .caller_id
-            .as_deref()
-            .map(|c| Subject::User(c.to_string()))
-            .unwrap_or_else(|| Subject::User("local".to_string()));
-        let session = session_manager
-            .get_or_create_base(self.agent.name(), &peer)
-            .await?;
-
-        // Phase 1: SessionStart hook fire was removed. The renderer fires
-        // `SessionContextBuild` per turn instead, so a one-shot fire
-        // here would be redundant and stale.
-
-        self.run_with_resume(prompt, Vec::new(), on_event, session, None)
-            .await
-    }
-
     /// F31x: fire the `Stop` hook at every loop-exit site.
     ///
     /// Observe-only — the loop's return value is unaffected by handler
@@ -2001,9 +1964,9 @@ impl AgenticLoop {
                 .await;
             if has_deferred {
                 defs.push(ToolDefinition {
-                    name: crate::tools::builtin::TOOL_SEARCH_TOOL_NAME.to_string(),
-                    description: crate::tools::builtin::ToolSearchTool::synthetic_description(),
-                    parameters: crate::tools::builtin::ToolSearchTool::synthetic_parameters(),
+                    name: peko_tools_builtin::TOOL_SEARCH_TOOL_NAME.to_string(),
+                    description: peko_tools_builtin::synthetic_description(),
+                    parameters: peko_tools_builtin::synthetic_parameters(),
                 });
             }
         }
@@ -2470,7 +2433,17 @@ mod tests {
         )
         .await;
 
-        let result = loop_.run("Start with context", |_| {}).await;
+        // Phase 9b.N.5b.9d: `AgenticLoop::run()` was removed (it owned
+        // a `SessionManager` + `PathResolver` orchestration path that
+        // pulled `crate::auth::Subject` + `crate::session::manager::*`
+        // into the loop — root-only types). Tests that didn't have a
+        // pre-built session now build one via `test_session(...)` and
+        // route through `run_with_resume` directly. Mirrors the
+        // production `Agent::execute` caller added in the same commit.
+        let session = test_session(&agent_name, temp_dir.path()).await;
+        let result = loop_
+            .run_with_resume("Start with context", Vec::new(), |_| {}, session, None)
+            .await;
 
         // Clean up the hook so later tests are not affected.
         let _ = global_core().unwrap().unregister_hook(&hook_id).await;
@@ -6047,7 +6020,7 @@ mod tests {
         // synthetic-description formatter.
         let stub = defs
             .iter()
-            .find(|d| d.name == crate::tools::builtin::TOOL_SEARCH_TOOL_NAME);
+            .find(|d| d.name == peko_tools_builtin::TOOL_SEARCH_TOOL_NAME);
         assert!(
             stub.is_some(),
             "expected `__tool_search` in tool definitions; got {:?}",
@@ -6055,7 +6028,7 @@ mod tests {
         );
         assert_eq!(
             stub.unwrap().description,
-            crate::tools::builtin::ToolSearchTool::synthetic_description()
+            peko_tools_builtin::synthetic_description()
         );
 
         // The Deferred tool itself MUST NOT appear in the catalog
@@ -6107,7 +6080,7 @@ mod tests {
         assert!(
             !defs
                 .iter()
-                .any(|d| d.name == crate::tools::builtin::TOOL_SEARCH_TOOL_NAME),
+                .any(|d| d.name == peko_tools_builtin::TOOL_SEARCH_TOOL_NAME),
             "stub must NOT be appended when enable_tool_search=false; got {:?}",
             defs.iter().map(|d| &d.name).collect::<Vec<_>>()
         );
@@ -6153,7 +6126,7 @@ mod tests {
         assert!(
             !defs
                 .iter()
-                .any(|d| d.name == crate::tools::builtin::TOOL_SEARCH_TOOL_NAME),
+                .any(|d| d.name == peko_tools_builtin::TOOL_SEARCH_TOOL_NAME),
             "stub must NOT be appended when no Deferred tools are visible; got {:?}",
             defs.iter().map(|d| &d.name).collect::<Vec<_>>()
         );
