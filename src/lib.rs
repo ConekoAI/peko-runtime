@@ -154,121 +154,126 @@
 #![allow(clippy::match_wildcard_for_single_variants)]
 
 // ============================================================================
-// Common Utilities
+// Module inventory (Phase 1 — root facade boundary)
 // ============================================================================
-
-/// Common utilities shared across CLI and API
+//
+// Every `pub mod` below carries a `[kept]` or `[extract:phase-N]` tag so
+// reviewers can validate Phase-1 scope. The rule (codified in
+// AGENTS.md §Cleanup invariant):
+//
+//   [kept]      Thin binary-composition module. Stays `pub` after cleanup.
+//               Used by the CLI binary or holds root-only wiring glue.
+//   [extract]   Domain module. Migrates to a workspace crate in Phase N
+//               and the root entry is removed or narrowed to `pub(crate)`.
+//
+// `pub use peko_*::*` re-export shims are forbidden in this tree — they
+// already exist in 4 files (`src/subject.rs`, `src/quota/mod.rs`,
+// `src/tools/core/mod.rs`, `src/common/types/message.rs`) and are
+// scheduled for deletion in Phase 15.
+//
+// Common utilities shared across CLI and API
+// [kept] — Phase 14 trims to binary-composition wiring only (sub-pub(crate)).
 pub mod common;
 
 // ============================================================================
 // Core Runtime
 // ============================================================================
 
-/// Principal runtime, root-agent lifecycle, and the workspace-of-agent-prompts
-/// model that replaced standalone multi-agent management.
+// [extract:phase-9] peko-agents
 pub mod agents;
 
-/// Execution engine and state machine
+// [extract:phase-16] thin re-export of peko-engine after *_compat.rs removed
 pub mod engine;
 
-/// Session storage (JSONL)
+// [extract:phase-7] peko-session
 pub mod session;
 
 // ============================================================================
 // External Interfaces
 // ============================================================================
 
-/// LLM provider integrations
+// [extract:phase-6] peko-providers
 pub mod providers;
 
-/// Extension Framework and Type Implementations (MCP, Gateway, Skill,
-/// Builtin, General, Universal).
-///
-/// Contains the generic extension framework (under `crate::extensions::framework`)
-/// and the extension type implementations (sibling submodules). The framework
-/// is dependency-free; type adapters depend on it.
+// [extract:phase-8] bulk-moved into peko-extension-host
 pub mod extensions;
 
 // ============================================================================
 // Data & State
 // ============================================================================
 
-/// Agent identity and key management
+// [extract:phase-3] peko-identity
 pub mod identity;
 
-/// Authentication and authorization (ADR-034)
+// [extract:phase-4] peko-auth
 pub mod auth;
 
-/// Canonical actor type (ADR-041).
+// [extract:phase-15] deletion candidate — pure shim of peko-subject
 pub mod subject;
 
-/// Principal container entity (ADR-041).
+// [extract:phase-14] peko-principal
 pub mod principal;
 
-/// Per-principal token quota (F18). Cross-cutting concern that
-/// touches principal config, the engine loop, the compactor, and
-/// the IPC layer.
+// [extract:phase-15] deletion candidate — pure shim of peko-quota
 pub mod quota;
 
 // ============================================================================
 // Append-only runtime surfaces
 // ============================================================================
 
-/// Runtime-owned, append-only chat-log storage (one shard per
-/// `(principal_did, peer)` pair). Distinct from session JSONL — chat
-/// logs record consumer-visible messages only and are external to
-/// the principal's mutable working memory. See ADR-042.
+// [extract:phase-5] peko-chat-log
 pub mod chat_log;
 
 // ============================================================================
 // Infrastructure
 // ============================================================================
 
-/// Cron job scheduling
+// [extract:phase-14] peko-cron
 pub(crate) mod cron;
 
-/// Daemon mode for background execution (long-running process).
-///
-/// `pub` since Phase 11b/12 because:
-/// 1. The `peko-daemon` workspace member crate (`crates/peko-daemon/`)
-///    needs `Daemon::new`/`DaemonConfig`/`Daemon::run` to construct
-///    and run a daemon.
-/// 2. `LaunchMode` is part of the public IPC wire envelope
-///    (`ipc::packet::Status::mode`); `ipc` is `pub`.
-///
-/// The daemon's internals (`background_runtime`, `cron_engine`,
-/// `state`, `DaemonStatus`) stay `pub(crate)`. Only the entry
-/// surface is widened.
+// [extract:phase-13] peko-daemon (impl crate)
+//
+// `pub` since Phase 11b/12 because:
+// 1. The `peko-daemon` workspace member crate (`crates/peko-daemon/`)
+//    needs `Daemon::new`/`DaemonConfig`/`Daemon::run` to construct
+//    and run a daemon.
+// 2. `LaunchMode` is part of the public IPC wire envelope
+//    (`ipc::packet::Status::mode`); `ipc` is `pub`.
+//
+// The daemon's internals (`background_runtime`, `cron_engine`,
+// `state`, `DaemonStatus`) stay `pub(crate)`. Only the entry
+// surface is widened.
 pub mod daemon;
 
-/// IPC layer (UDP/Unix socket) for CLI↔daemon communication
+// [extract:phase-12b] peko-ipc
 pub mod ipc;
 
-/// Observability (metrics, tracing, audit, performance)
+// [extract:phase-14] peko-observability
 pub(crate) mod observability;
 
 // ============================================================================
 // Tools
 // ============================================================================
 
-/// Tool implementations (filesystem, http, browser, etc.)
+// [extract:phase-10+phase-18] peko-tools-builtin; bash/tool_search/agent_catalog
+// are deferred to Phase 18, src/tools/ tree deleted in Phase 18.
 pub mod tools;
 
 // ============================================================================
 // CLI & Commands
 // ============================================================================
-/// CLI command handlers
+
+// [kept] — CLI handlers. Stays pub after cleanup.
 pub mod commands;
 
 // ============================================================================
 // Utilities
 // ============================================================================
 
-/// Remote registry client (push/pull) and local `.principal` packaging.
-/// (the standalone agent packaging surface was retired in favor of Principal packages).
+// [extract:phase-11] peko-registry
 pub mod registry;
 
-/// Runtime-Pekohub tunnel protocol (ADR-035)
+// [extract:phase-12a] peko-tunnel
 pub mod tunnel;
 
 // ============================================================================

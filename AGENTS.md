@@ -392,6 +392,25 @@ today (`src/subject.rs`, `src/quota/mod.rs`, `src/tools/core/mod.rs`,
 Phase 15. Every other historical path breaks across Phases 3–14,
 16, and 18.
 
+#### Root facade boundary rule (Phase 1)
+
+Every `pub mod` in `src/lib.rs` carries an inline `[kept]` or
+`[extract:phase-N]` tag. The rule:
+
+- **Root may declare composition modules** — `pub mod commands;`
+  (CLI handlers) and `pub(crate) mod common;` (binary-composition
+  wiring after Phase 14 trim) are the only modules that remain
+  `pub`/`pub(crate)` after the cleanup completes.
+- **Root must NOT `pub use peko_*::*` from another crate.** The 4
+  pure-shim modules that exist today (`src/subject.rs`,
+  `src/quota/mod.rs`, `src/tools/core/mod.rs`,
+  `src/common/types/message.rs`) are deletion candidates and will
+  be removed in Phase 15. No new shims may be added.
+- **Every domain `pub mod` becomes `[extract:phase-N]`.** When the
+  extraction PR lands, the root entry is removed or narrowed to
+  `pub(crate)` so the public surface of `peko` (lib) reflects only
+  the CLI binary + thin composition.
+
 ### Local quick feedback loop
 
 ```bash
