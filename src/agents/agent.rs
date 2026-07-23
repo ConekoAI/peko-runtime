@@ -1080,7 +1080,7 @@ impl Agent {
             .await?;
 
         let result = match loop_
-            .run_with_resume(prompt, Vec::new(), on_event, session, None)
+            .run_with_resume(prompt, Vec::new(), on_event, &session, None)
             .await
         {
             Ok(result) => Ok(result),
@@ -1168,7 +1168,7 @@ impl Agent {
             .await?;
 
         let result = match loop_
-            .run_with_resume(user_text, pre_user_messages, on_event, session, history)
+            .run_with_resume(user_text, pre_user_messages, on_event, &session, history)
             .await
         {
             Ok(result) => Ok(result),
@@ -1285,7 +1285,7 @@ impl Agent {
                 user_text,
                 pre_user_messages,
                 on_event,
-                session,
+                &session,
                 history,
                 streaming_config,
             )
@@ -1346,7 +1346,7 @@ impl Agent {
         let streaming_config = crate::engine::OrchestratorConfig::live();
 
         loop_
-            .run_streaming_with_resume_skip_user_add(on_event, session, history, streaming_config)
+            .run_streaming_with_resume_skip_user_add(on_event, &session, history, streaming_config)
             .await
     }
 

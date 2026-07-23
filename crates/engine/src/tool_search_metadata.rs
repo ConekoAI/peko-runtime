@@ -1,18 +1,25 @@
 //! Static metadata for the synthetic `__tool_search` stub.
 //!
-//! **Phase 9b.N.5b.9** lifted the agentic loop (`agentic_loop.rs`) into
-//! `peko-engine`, and it needs to read this metadata without taking
-//! `peko-engine → peko-tools-builtin` (forbidden by
-//! `scripts/check_workspace_deps.py`; built-ins are downstream of the
-//! engine). The canonical copy now lives at
-//! [`peko_engine::tool_search_metadata`] (kept in sync with the impl
-//! here, both 5-line string literals + a 2-line constant).
+//! Phase 9b.N.5b.9 moved the pure-data helpers
+//! (`synthetic_description`, `synthetic_parameters`,
+//! `TOOL_SEARCH_TOOL_NAME`, `TOOL_SEARCH_DEFAULT_LIMIT`) out of
+//! `peko_tools_builtin::tool_search_metadata` (lifted in 9b.N.5b.9d)
+//! and into `peko_engine` so the agentic loop can render the catalog
+//! entry without taking a `peko-engine → peko-tools-builtin` edge
+//! (forbidden by `scripts/check_workspace_deps.py`: "engine owns the
+//! loop, not the tools; built-ins are an implementation detail").
 //!
 //! The actual `ToolSearchTool` impl stays in root
 //! (`src/tools/builtin/tool_search.rs`) — it needs `Arc<ExtensionCore>`
-//! for the catalog walk inside `execute`. When the `ToolFunnel` trait
-//! gains a `list_deferred_tool_definitions` method (or a similar
+//! for the catalog walk inside `execute`, which hasn't lifted to the
+//! workspace. When the `ToolFunnel` trait gains a
+//! `list_deferred_tool_definitions` method (or a similar
 //! workspace-port), the impl can move alongside.
+//!
+//! `peko_tools_builtin::tool_search_metadata` keeps a one-line
+//! `pub use peko_engine::tool_search_metadata::*` shim so callers
+//! using `peko_tools_builtin::synthetic_description()` (the path
+//! introduced in 9b.N.5b.9d) continue to compile.
 //!
 //! Mirrors codex `codex-rs/core/src/tools/handlers/tool_search.rs`
 //! `ToolSearchHandler` static-spec shape.

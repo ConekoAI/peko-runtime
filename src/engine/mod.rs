@@ -34,10 +34,12 @@
 //! The remaining root-coupled files stay in `src/engine/` until later
 //! Phase 9b commits lift each residual coupling:
 //!
-//! - [`agentic_loop`] — `Arc<Agent>`, `ToolSearchTool` synthetic
-//!   shims, `agents::prompt::*` types. The trait ports in 9b.N.5a
-//!   unblock the lift; 9b.N.5b does the actual `mod agentic_loop`
-//!   move into `peko-engine`.
+//! - [`agentic_loop_compat`] — root-side test module for the lifted
+//!   `peko_engine::AgenticLoop` (Phase 9b.N.5b.9). The actual production
+//!   loop now lives in `peko_engine::agentic_loop`. Tests stay in root
+//!   because they need root-only fixture types (`Agent`, `ExtensionCore`,
+//!   `Subject`, `SessionManager`, etc.) that `peko-engine` cannot depend
+//!   on. Mirrors the `tool_executor_compat` precedent.
 //! - [`tool_runtime`] — `BuiltinToolAdapter` + concrete `tools::builtin::*`
 //!   imports. Plan: move concrete tool impls and adapter into
 //!   `peko-tools-core`, keep the synthetic stubs in `peko-engine`.
@@ -47,28 +49,30 @@
 // async_completion + Phase 9b.N.2 funnel + Phase 9b.N.3
 // tool_executor + session_view + Phase 9b.N.4 compaction + Phase
 // 9b.N.5a agent_view + async_inbox + iteration_state).
-// Modules that still live in root (agentic_loop, tool_runtime) are
+// Modules that still live in root (tool_runtime) are
 // declared by `mod` below so the shim preserves every pre-Phase 9
-// import path.
+// import path. The `agentic_loop` is now lifted into `peko-engine`
+// (Phase 9b.N.5b.9); only the test module stays in root via
+// `agentic_loop_compat`.
 pub use peko_engine::{
-    async_completion, async_inbox, build_async_completion_message, chunker, compaction,
-    default_process_stream, error, event_processor, events, execute_tool_via_core,
+    agentic_loop, async_completion, async_inbox, build_async_completion_message, chunker,
+    compaction, default_process_stream, error, event_processor, events, execute_tool_via_core,
     execute_tool_via_core_with_context, execution, funnel, iteration_state, parallel_gate,
     parse_tool_calls_from_text, session_view, state, stream_buffer, stream_orchestrator,
-    tool_executor, tool_stream, AgentState, AgentView, AgenticError, AgenticEvent, AsyncInboxItem,
-    AsyncInboxLike, BlockChunker, BreakPreference, CapabilityChange, CapabilityChangeKind,
-    CapabilityDiff, CapabilityDiffTracker, ChannelAction, ChannelOutput, ChunkerConfig,
-    CoalesceConfig, CoalescingChunker, CompactionConfig, CompactionEntry, CompactionQuota,
-    CompactionRequest, CompactionResponse, CompactionResponseResult, CompactionResult,
-    CompactionState, CompactorBackend, ContextUsageEstimate, DeliveryMode, EventProcessor,
-    EventStream, ExecutionMode, LifecyclePhase, OrchestratorConfig, ProcessorConfig, SessionCore,
-    SessionView, StateMachine, StreamBuffer, StreamOrchestrator, StreamingConfig,
-    StreamingToolCall, TaskId, TaskStatus, TaskSummary, ToolCallParseError, ToolCallStreamParser,
-    ToolExecutionResult, ToolExecutor,
+    tool_executor, tool_stream, AgentState, AgentView, AgenticError, AgenticEvent, AgenticLoop,
+    AgenticResult, AsyncInboxItem, AsyncInboxLike, BlockChunker, BreakPreference, CapabilityChange,
+    CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker, ChannelAction, ChannelOutput,
+    ChunkerConfig, CoalesceConfig, CoalescingChunker, CompactionConfig, CompactionEntry,
+    CompactionQuota, CompactionRequest, CompactionResponse, CompactionResponseResult,
+    CompactionResult, CompactionState, CompactorBackend, ContextUsageEstimate, DeliveryMode,
+    EventProcessor, EventStream, ExecutionMode, LifecyclePhase, OrchestratorConfig,
+    ProcessorConfig, SessionCore, SessionView, StateMachine, StreamBuffer, StreamOrchestrator,
+    StreamingConfig, StreamingToolCall, TaskId, TaskStatus, TaskSummary, ToolCall,
+    ToolCallParseError, ToolCallStreamParser, ToolExecutionResult, ToolExecutor,
 };
 
 pub mod agent_view_compat;
-pub mod agentic_loop;
+pub mod agentic_loop_compat;
 pub mod async_completion_compat;
 pub mod async_inbox_compat;
 pub mod background_compactor_factory_compat;
@@ -77,5 +81,3 @@ pub mod extension_core_funnel_compat;
 pub mod provider_view_compat;
 pub mod session_view_compat;
 pub mod tool_runtime;
-
-pub use agentic_loop::{AgenticLoop, AgenticResult, ToolCall};
