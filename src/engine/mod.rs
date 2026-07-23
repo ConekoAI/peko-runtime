@@ -73,7 +73,6 @@ pub use peko_engine::{
 
 pub mod agent_view_compat;
 pub mod agentic_loop_compat;
-pub mod async_completion_compat;
 pub mod async_inbox_compat;
 pub mod background_compactor_factory_compat;
 pub mod compaction_backend_compat;

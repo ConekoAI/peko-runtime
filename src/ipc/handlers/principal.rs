@@ -45,7 +45,6 @@ use crate::chat_log::{ChatLogPage, ChatThreadKey};
 use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
 use crate::engine::AgenticEvent;
-use crate::extensions::framework::async_exec::executor::SteeringMessage;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{PrincipalSendControlMode, RequestPacket, ResponsePacket};
@@ -58,6 +57,8 @@ use crate::principal::routers::root::root_session_id;
 use crate::principal::{Principal, RouteDecision, RouterError};
 use crate::registry::packaging::TrustStore;
 use crate::tunnel::TunnelDispatcher;
+
+use peko_extension_host::SteeringMessage;
 
 // ─── Principal log / preview types (privately owned by this handler) ──
 

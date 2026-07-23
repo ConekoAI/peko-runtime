@@ -17,7 +17,6 @@ use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::common::types::OutputFormat;
 use crate::extensions::agent::AgentAdapter;
-use crate::extensions::framework::async_exec::executor::SteeringMessage;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::identity::did::DIDScope;
 use crate::identity::storage::KeyStorage;
@@ -25,6 +24,8 @@ use crate::observability::Observability;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 use crate::subject::PrincipalDID;
+
+use peko_extension_host::SteeringMessage;
 
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
