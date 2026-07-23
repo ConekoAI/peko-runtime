@@ -52,7 +52,7 @@ pub use inbox::{
     CompletionEvent, InboxItem, InboxSinkProvider, InboxSinkRegistry, SessionInbox,
     SessionInboxSink, SteeringMessage,
 };
-pub use paths::{default_async_tasks_dir, default_data_dir, PathResolver};
+pub use paths::{default_agent_workspace, default_async_tasks_dir, default_data_dir, PathResolver};
 pub use principal_message::{
     PrincipalMessageRequest, PrincipalMessageResponse, PrincipalMessageService, ToolCallInfo,
 };

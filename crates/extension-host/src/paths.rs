@@ -41,6 +41,17 @@ pub fn default_async_tasks_dir() -> PathBuf {
     default_data_dir().join("async_tasks")
 }
 
+/// Default per-agent workspace directory.
+///
+/// Phase 9b.N.5b.9: added so `peko_engine::AgenticLoop` can fall back to
+/// a per-agent default when `AgentView::principal_workspace()` returns
+/// `None` (test paths that bypass the principal setup). Mirrors
+/// `src/common::paths::PathResolver::agent_workspace`.
+#[must_use]
+pub fn default_agent_workspace(agent_name: &str) -> PathBuf {
+    default_data_dir().join("agents").join(agent_name)
+}
+
 /// Cross-boundary view of `crate::common::paths::PathResolver`.
 ///
 /// The framework's `ExtensionStore::load_all_with(&self, &dyn

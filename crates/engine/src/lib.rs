@@ -28,6 +28,7 @@
 //!
 //! | Module              | Phase responsibility |
 //! |---------------------|-----------------------|
+//! | [`agentic_loop`]    | Phase 9b.N.5b.9 — the lifted agentic loop (`AgenticLoop`, `AgenticResult`). |
 //! | [`async_completion`] | Phase 9b.N.1 — synthetic user-role `LlmMessage` builder for completed async tasks. |
 //! | [`chunker`]         | Block-level text chunking (`BlockChunker`, `CoalescingChunker`). |
 //! | [`compaction`]      | Phase 9b.N.4 — `CompactorBackend` trait port + data types lifted from `src/session/compaction.rs`. |
@@ -53,6 +54,7 @@
 //! lifted incrementally with its own narrow PR.
 
 pub mod agent_view;
+pub mod agentic_loop;
 pub mod async_completion;
 pub mod async_inbox;
 pub mod chunker;
@@ -75,12 +77,14 @@ pub mod stream_orchestrator;
 pub mod stream_types;
 pub mod synthetic_stream;
 pub mod tool_executor;
+pub mod tool_search_metadata;
 pub mod tool_stream;
 
 // Convenience re-exports at the crate root. Mirrors the surface that
 // `src/engine/mod.rs` exposed pre-Phase 9, so the root shim's
 // `pub use peko_engine::*` preserves every downstream import path.
 pub use agent_view::AgentView;
+pub use agentic_loop::{AgenticLoop, AgenticResult, ToolCall};
 pub use async_completion::build_async_completion_message;
 pub use async_inbox::{AsyncInboxItem, AsyncInboxLike};
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
@@ -117,6 +121,9 @@ pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrat
 pub use stream_types::{default_process_stream, ChannelOutput, EventStream, StreamingConfig};
 pub use synthetic_stream::synthesize_stream_from_blocking;
 pub use tool_executor::{ToolExecutionResult, ToolExecutor};
+pub use tool_search_metadata::{
+    synthetic_description, synthetic_parameters, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_TOOL_NAME,
+};
 pub use tool_stream::{
     parse_tool_calls_from_text, StreamingToolCall, ToolCallParseError, ToolCallStreamParser,
 };

@@ -32,6 +32,11 @@ peko-quota = { path = "../quota" }
 peko-events = { path = "../events" }
 peko-extension-api = { path = "../extension-api" }
 peko-extension-host = { path = "../extension-host" }
+# Phase 9b.N.5b.9 — `PrincipalId` is used in the loop's hook-input
+# construction (`HookInput::ToolCall::principal_id`). peko-engine
+# already takes a `String` in the constructor, but the test fixtures
+# and the `load_principal_memory` helper reference the typed subject.
+peko-subject = { path = "../subject" }
 
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
@@ -60,10 +65,10 @@ futures = "0.3"
 [dev-dependencies]
 tokio = { version = "1.35", features = ["full"] }
 # Phase 9b.N.5b.4 — `tempfile` is used by `prompt::memory::tests`
-# (`discover_shared_context_*` cases); `peko-subject` powers the
-# `PrincipalId` arg in the renderer's `EmptyExtensionCore` mock.
+# (`discover_shared_context_*` cases). `peko-subject` moved to
+# `[dependencies]` in Phase 9b.N.5b.9 because `agentic_loop.rs` uses
+# the typed `PrincipalId` value.
 tempfile = "3.10"
-peko-subject = { path = "../subject" }
 
 # Phase 9b.N.5b.4 — `regex` is used by `prompt::placeholder::replace_placeholders`
 # to strip unfilled `{{...}}` placeholders when `remove_missing=true`. The

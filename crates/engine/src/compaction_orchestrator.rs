@@ -121,7 +121,7 @@ impl CompactionOrchestrator {
         run_id: &str,
     ) -> Result<bool>
     where
-        S: SessionView,
+        S: SessionView + ?Sized,
     {
         // F21: hybrid estimator. Anchors on the last assistant message
         // with provider-reported usage and char/4-estimates only the
@@ -212,7 +212,7 @@ impl CompactionOrchestrator {
         funnel: &dyn ToolFunnel,
         estimated_tokens: usize,
     ) where
-        S: SessionView,
+        S: SessionView + ?Sized,
     {
         let _ = estimated_tokens;
         let threshold_tokens = self
@@ -308,7 +308,7 @@ impl CompactionOrchestrator {
 
     async fn poll_background_compaction<S>(&mut self, messages: &mut Vec<LlmMessage>, session: &S)
     where
-        S: SessionView,
+        S: SessionView + ?Sized,
     {
         if let Some(ref mut receiver) = self.pending_compaction {
             match tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver).await {
@@ -379,7 +379,7 @@ impl CompactionOrchestrator {
         funnel: &dyn ToolFunnel,
         _run_id: &str,
     ) where
-        S: SessionView,
+        S: SessionView + ?Sized,
     {
         // The post-hook fires `HookPoint::SessionCompactionPost`. We
         // dispatch either `HookInput::CompactionResult` (when we have a
