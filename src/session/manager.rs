@@ -285,7 +285,7 @@ impl SessionHandle {
         &self,
         content: impl Into<String>,
         tool_calls: Option<Vec<crate::engine::ToolCall>>,
-        usage: Option<crate::providers::TokenUsage>,
+        usage: Option<peko_providers::TokenUsage>,
     ) -> Result<()> {
         let mut base = self.base.write().await;
         base.add_assistant(content, tool_calls, usage).await
@@ -2121,7 +2121,7 @@ async fn copy_session_context(
     child: &Arc<RwLock<Session>>,
 ) -> Result<()> {
     use crate::common::types::message::ContentBlock;
-    use crate::providers::MessageRole;
+    use peko_providers::MessageRole;
 
     // Load parent's conversation history
     let parent_history = {

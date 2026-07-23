@@ -14,7 +14,7 @@ use tracing::debug;
 // over `&anyhow::Error` lifted into `peko_provider_api` so the agentic
 // loop can use it without depending on the root-only transport layer.
 // Keep a re-export alias here so existing call sites that import via
-// `crate::providers::transport::client::is_context_window_exceeded`
+// `crate::transport::client::is_context_window_exceeded`
 // (notably `src/engine/agentic_loop.rs:2097`) keep compiling.
 pub use peko_provider_api::is_context_window_exceeded;
 

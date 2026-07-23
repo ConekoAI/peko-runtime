@@ -27,10 +27,11 @@ use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::common::secret_store::SecretStore;
-use crate::providers::catalog::{ModelCatalog, ModelConfig};
-use crate::providers::core::Provider;
-use crate::providers::factory::create_provider_for_model;
+use crate::catalog::{ModelCatalog, ModelConfig};
+use crate::core::Provider;
+use crate::factory::create_provider_for_model;
+use crate::secret_store::SecretStore;
+use peko_provider_api::credentials::{CredentialError, CredentialProvider};
 
 /// Inputs to `LlmResolver::resolve`.
 #[derive(Debug, Default, Clone)]
@@ -76,10 +77,15 @@ impl ResolveSource {
 pub struct LlmResolver {
     catalog: Arc<ModelCatalog>,
     secrets: Arc<dyn SecretStore>,
-    vault: Option<Arc<crate::common::vault::Vault>>,
+    credentials: Option<Arc<dyn CredentialProvider>>,
     bootstrap_env_keys: bool,
-    #[cfg(test)]
-    mock_adapter: Option<crate::providers::MockAdapter>,
+    /// Test-only mock adapter. Set by [`LlmResolver::mock`] so the
+    /// resolver returns a `MockAdapter`-backed `Provider` for the
+    /// `"mock"` catalog model. Always `None` in production builds
+    /// (the `#[cfg(test)]` gating happens in
+    /// [`LlmResolver::build_provider`], which short-circuits when
+    /// `mock_adapter` is `None` and instead builds the real adapter).
+    mock_adapter: Option<crate::MockAdapter>,
 }
 
 impl LlmResolver {
@@ -89,18 +95,20 @@ impl LlmResolver {
         Self {
             catalog,
             secrets,
-            vault: None,
+            credentials: None,
             bootstrap_env_keys: false,
-            #[cfg(test)]
             mock_adapter: None,
         }
     }
 
-    /// Attach a concrete vault so the resolver reads credential material
-    /// from the v2 credential API.
+    /// Attach a [`CredentialProvider`] so the resolver reads
+    /// credential material from the v2 credential API. The concrete
+    /// provider implementation lives in the root composition layer
+    /// (`VaultCredentialProvider`); `peko-providers` only sees the
+    /// trait.
     #[must_use]
-    pub fn with_vault(mut self, vault: Arc<crate::common::vault::Vault>) -> Self {
-        self.vault = Some(vault);
+    pub fn with_credential_provider(mut self, credentials: Arc<dyn CredentialProvider>) -> Self {
+        self.credentials = Some(credentials);
         self
     }
 
@@ -113,13 +121,23 @@ impl LlmResolver {
     }
 
     /// Build a mock-backed resolver for tests.
-    #[cfg(test)]
+    ///
+    /// Public (not `#[cfg(test)]`) because integration tests in the
+    /// root crate need to construct an `LlmResolver` wired to a
+    /// `MockAdapter` (e.g. `src/extensions/mcp/protocol/sampling.rs`
+    /// builds one for the sampling-createMessage handler tests).
+    /// The `#[cfg(test)]` mock helper that lived in this crate's
+    /// own test module referenced root-only `Vault` types, so it
+    /// could not be called from outside. This helper uses
+    /// [`InMemorySecretStore`](crate::secret_store::InMemorySecretStore)
+    /// and a no-op credentials trait impl so it has no root-only
+    /// deps.
     pub async fn mock(
-        adapter: crate::providers::MockAdapter,
+        adapter: crate::MockAdapter,
         catalog_path: impl AsRef<std::path::Path>,
-    ) -> (std::sync::Arc<Self>, crate::providers::MockAdapter) {
-        use crate::providers::catalog::{ApiFormat, ModelConfig};
-        use crate::providers::ModelCatalog;
+    ) -> (std::sync::Arc<Self>, crate::MockAdapter) {
+        use crate::catalog::{ApiFormat, ModelConfig};
+        use crate::ModelCatalog;
 
         let catalog = ModelCatalog::load_or_init(catalog_path)
             .await
@@ -144,16 +162,12 @@ impl LlmResolver {
         };
         catalog.upsert(config).await.expect("mock upsert failed");
 
-        let tmp = tempfile::tempdir().expect("mock tempdir");
-        let vault = Arc::new(crate::common::vault::Vault::for_test(
-            tmp.path(),
-            "mock-passphrase",
-        ));
-        let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
+        let secrets: Arc<dyn crate::secret_store::SecretStore> =
+            Arc::new(crate::secret_store::InMemorySecretStore::default());
         let resolver = std::sync::Arc::new(Self {
             catalog,
             secrets,
-            vault: Some(vault),
+            credentials: Some(Arc::new(NoopCredentialProvider)),
             bootstrap_env_keys: false,
             mock_adapter: Some(adapter.clone()),
         });
@@ -210,14 +224,16 @@ impl LlmResolver {
     /// Build a one-shot `Provider` for the given configured model.
     pub async fn build_provider(&self, config: &ModelConfig) -> Result<Arc<Provider>> {
         let provider = if config.id == "mock" {
-            #[cfg(test)]
+            // The mock adapter path is reserved for tests. Production
+            // callers asking for a "mock" model id fall through to
+            // `create_provider_for_model`, which builds the real
+            // adapter (typically a `MockAdapter` anyway when running
+            // with `MockAdapter::default` in catalog templates).
             if let Some(ref adapter) = self.mock_adapter {
                 Self::build_mock_provider(adapter.clone(), config)?
             } else {
                 create_provider_for_model(config, "mock-key")?
             }
-            #[cfg(not(test))]
-            create_provider_for_model(config, "mock-key")?
         } else {
             let api_key = self
                 .resolve_api_key(config)
@@ -229,13 +245,16 @@ impl LlmResolver {
     }
 
     /// Test-only helper: build a `Provider` backed by the shared mock adapter.
-    #[cfg(test)]
+    ///
+    /// Always available (not `#[cfg(test)]`) so external integration
+    /// tests can route through [`LlmResolver::mock`] without depending
+    /// on the crate's test module being compiled.
     fn build_mock_provider(
-        adapter: crate::providers::MockAdapter,
+        adapter: crate::MockAdapter,
         config: &ModelConfig,
     ) -> Result<Arc<Provider>> {
-        use crate::providers::adapters::AnyAdapter;
-        use crate::providers::core::ProviderRuntimeOptions;
+        use crate::adapters::AnyAdapter;
+        use crate::core::ProviderRuntimeOptions;
 
         let options = ProviderRuntimeOptions {
             default_model_id: config.model_id.clone(),
@@ -251,12 +270,19 @@ impl LlmResolver {
 
     /// Internal: look up the API key for a configured model.
     fn resolve_api_key(&self, config: &ModelConfig) -> Result<SecretString> {
-        // 1. Concrete vault via credential_id.
+        // 1. Credential provider via credential_id.
         if let Some(id) = &config.credential_id {
-            if let Some(vault) = &self.vault {
-                match vault.get_credential(id) {
-                    Some(c) => return Ok(c.material.clone()),
-                    None => {}
+            if let Some(provider) = &self.credentials {
+                match provider.get_credential(id) {
+                    Ok(Some(material)) => return Ok(material.material.clone()),
+                    Ok(None) => {}
+                    Err(CredentialError::Backend(msg)) => {
+                        if !self.bootstrap_env_keys {
+                            return Err(anyhow!(
+                                "credential backend error for credential '{id}': {msg}"
+                            ));
+                        }
+                    }
                 }
             }
             match self.secrets.get(id) {
@@ -396,11 +422,95 @@ impl std::fmt::Display for ResolvedChoice {
     }
 }
 
+/// No-op `CredentialProvider` for mock-backed test resolvers.
+///
+/// The mock provider path doesn't go through the vault — the resolver
+/// short-circuits to the in-memory `MockAdapter` for any model whose
+/// `id == "mock"`. The credential lookup is never exercised, so we
+/// only need a trait impl that returns `Ok(None)` for everything.
+struct NoopCredentialProvider;
+
+impl peko_provider_api::credentials::CredentialProvider for NoopCredentialProvider {
+    fn get_credential(
+        &self,
+        _id: &str,
+    ) -> std::result::Result<
+        Option<std::sync::Arc<peko_provider_api::credentials::CredentialMaterial>>,
+        peko_provider_api::credentials::CredentialError,
+    > {
+        Ok(None)
+    }
+
+    fn load_rotation_credentials(
+        &self,
+        _namespace: &str,
+        _name: &str,
+    ) -> std::result::Result<
+        Vec<peko_provider_api::credentials::RotationEntry>,
+        peko_provider_api::credentials::CredentialError,
+    > {
+        Ok(Vec::new())
+    }
+
+    fn record_test(&self, _credential_id: &str, _ok: bool) {}
+}
+
+/// Single-credential `CredentialProvider` for tests that need
+/// `resolve_api_key` to return a known material without depending on
+/// root's `Vault` type. Holds the material in a `SecretString` so the
+/// resolver sees it through the trait just like a vault-backed impl.
+struct StaticCredentialProvider {
+    credential_id: String,
+    material: secrecy::SecretString,
+}
+
+impl StaticCredentialProvider {
+    fn new(credential_id: String, material: secrecy::SecretString) -> Self {
+        Self {
+            credential_id,
+            material,
+        }
+    }
+}
+
+impl peko_provider_api::credentials::CredentialProvider for StaticCredentialProvider {
+    fn get_credential(
+        &self,
+        id: &str,
+    ) -> std::result::Result<
+        Option<std::sync::Arc<peko_provider_api::credentials::CredentialMaterial>>,
+        peko_provider_api::credentials::CredentialError,
+    > {
+        if id == self.credential_id {
+            Ok(Some(std::sync::Arc::new(
+                peko_provider_api::credentials::CredentialMaterial {
+                    material: self.material.clone(),
+                },
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn load_rotation_credentials(
+        &self,
+        _namespace: &str,
+        _name: &str,
+    ) -> std::result::Result<
+        Vec<peko_provider_api::credentials::RotationEntry>,
+        peko_provider_api::credentials::CredentialError,
+    > {
+        Ok(Vec::new())
+    }
+
+    fn record_test(&self, _credential_id: &str, _ok: bool) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::secret_store::InMemorySecretStore;
-    use crate::providers::templates;
+    use crate::secret_store::InMemorySecretStore;
+    use crate::templates;
     use secrecy::SecretString;
     use tempfile::tempdir;
 
@@ -435,13 +545,11 @@ mod tests {
     }
 
     fn resolver(cat: Arc<ModelCatalog>) -> LlmResolver {
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = Arc::new(crate::common::vault::Vault::for_test(
-            tmp.path(),
-            "test-passphrase",
-        ));
-        let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
-        LlmResolver::new(cat, secrets).with_vault(vault)
+        let secrets: Arc<dyn crate::secret_store::SecretStore> =
+            Arc::new(crate::secret_store::InMemorySecretStore::default());
+        let provider: Arc<dyn peko_provider_api::credentials::CredentialProvider> =
+            Arc::new(NoopCredentialProvider);
+        LlmResolver::new(cat, secrets).with_credential_provider(provider)
     }
 
     #[tokio::test]
@@ -533,24 +641,18 @@ mod tests {
     async fn resolve_api_key_reads_credential_by_id() {
         let (_d, cat) = seeded_catalog().await;
         let mut cfg = anthropic_config();
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = Arc::new(crate::common::vault::Vault::for_test(
-            tmp.path(),
-            "test-passphrase",
-        ));
-        let cred = crate::common::vault::Credential::now(
-            "llm",
-            "anthropic",
-            crate::common::vault::CredentialKind::ApiKey,
-            SecretString::new("sk-ant-v2".into()),
-        );
-        let cred_id = cred.id.clone();
-        vault.set_credential(&cred).unwrap();
+        let cred_id = "anthropic-cred-1".to_string();
         cfg.credential_id = Some(cred_id.clone());
         cat.upsert(cfg).await.unwrap();
 
-        let secrets: Arc<dyn crate::common::secret_store::SecretStore> = vault.clone();
-        let r = LlmResolver::new(cat, secrets).with_vault(vault);
+        // Use a self-contained `StaticCredentialProvider` so the
+        // providers crate's tests don't depend on root's `Vault` type.
+        let secrets: Arc<dyn crate::secret_store::SecretStore> =
+            Arc::new(crate::secret_store::InMemorySecretStore::default());
+        let provider: Arc<dyn peko_provider_api::credentials::CredentialProvider> = Arc::new(
+            StaticCredentialProvider::new(cred_id, SecretString::new("sk-ant-v2".into())),
+        );
+        let r = LlmResolver::new(cat, secrets).with_credential_provider(provider);
         let key = r
             .resolve_api_key(r.catalog.get("anthropic-sonnet").await.as_ref().unwrap())
             .unwrap();
@@ -645,7 +747,7 @@ mod tests {
         assert_eq!(choice.config.id, "openai-gpt-4o");
 
         let path = cat.path().to_path_buf();
-        let mut new_file = crate::providers::catalog::ModelCatalogFile::default();
+        let mut new_file = crate::catalog::ModelCatalogFile::default();
         new_file
             .entries
             .insert("anthropic-sonnet".to_string(), anthropic_config());
@@ -694,11 +796,11 @@ mod tests {
             .expect("deepseek template compat propagated into ModelConfig");
         assert_eq!(
             compat.thinking_format,
-            crate::providers::traits::ThinkingFormat::DeepSeek
+            peko_provider_api::ThinkingFormat::DeepSeek
         );
         assert_eq!(
             compat.deferred_tools_mode,
-            crate::providers::traits::DeferredToolsMode::Off
+            peko_provider_api::DeferredToolsMode::Off
         );
     }
 
@@ -710,11 +812,11 @@ mod tests {
             .expect("kimi Anthropic-compat template compat propagated");
         assert_eq!(
             compat.thinking_format,
-            crate::providers::traits::ThinkingFormat::Kimi
+            peko_provider_api::ThinkingFormat::Kimi
         );
         assert_eq!(
             compat.deferred_tools_mode,
-            crate::providers::traits::DeferredToolsMode::Kimi
+            peko_provider_api::DeferredToolsMode::Kimi
         );
     }
 
@@ -744,7 +846,7 @@ mod tests {
                 .compat
                 .expect("deepseek compat survives resolve")
                 .thinking_format,
-            crate::providers::traits::ThinkingFormat::DeepSeek
+            peko_provider_api::ThinkingFormat::DeepSeek
         );
         let kimi = r
             .resolve(ResolveRequest {
@@ -758,7 +860,7 @@ mod tests {
                 .compat
                 .expect("kimi compat survives resolve")
                 .deferred_tools_mode,
-            crate::providers::traits::DeferredToolsMode::Kimi
+            peko_provider_api::DeferredToolsMode::Kimi
         );
     }
 }

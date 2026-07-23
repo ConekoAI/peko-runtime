@@ -78,7 +78,7 @@ pub(crate) struct AppState {
     /// Shared LLM resolver. Re-read in place via
     /// `ModelCatalog::reload` after `peko model {add,remove}` so the
     /// long-running daemon observes CLI mutations without a restart.
-    resolver: Arc<crate::providers::LlmResolver>,
+    resolver: Arc<peko_providers::LlmResolver>,
 
     /// Shared credential vault. Re-read in place via `Vault::reload`
     /// after `peko credential {set,delete}` for the same reason as
@@ -529,13 +529,20 @@ impl AppState {
         // `PEKO_TEST_RESOLVER_BOOTSTRAP=1`; the daemon picks that up
         // via `LlmResolver::with_env_bootstrap()` below.
         let catalog_path = path_resolver.config_dir().join("models.toml");
-        let catalog = crate::providers::ModelCatalog::load_or_init(&catalog_path)
+        let catalog = peko_providers::ModelCatalog::load_or_init(&catalog_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to load model catalog: {e}"))?;
-        let secrets: Arc<dyn crate::common::secret_store::SecretStore> =
-            Arc::clone(&vault) as Arc<dyn crate::common::secret_store::SecretStore>;
-        let mut resolver_builder =
-            crate::providers::LlmResolver::new(catalog, secrets).with_vault(Arc::clone(&vault));
+        let secrets: Arc<dyn peko_providers::secret_store::SecretStore> = Arc::new(
+            crate::common::vault_secret_store::VaultSecretStore::new(Arc::clone(&vault)),
+        );
+        let credential_provider: Arc<dyn peko_provider_api::credentials::CredentialProvider> =
+            Arc::new(
+                crate::common::vault_credential_provider::VaultCredentialProvider::new(Arc::clone(
+                    &vault,
+                )),
+            );
+        let mut resolver_builder = peko_providers::LlmResolver::new(catalog, secrets)
+            .with_credential_provider(credential_provider);
         if std::env::var_os("PEKO_TEST_RESOLVER_BOOTSTRAP").is_some() {
             resolver_builder = resolver_builder.with_env_bootstrap();
         }
@@ -2384,21 +2391,21 @@ impl crate::ipc::handlers::extension::ExtensionHost for AppState {
     }
 }
 
-/// Project a catalog [`ModelConfig`](crate::providers::catalog::ModelConfig)
+/// Project a catalog [`ModelConfig`](peko_providers::catalog::ModelConfig)
 /// into the `ModelSummary` IPC wire shape. Shared by the `ModelList`
 /// snapshot and the add/update hosts so every surface emits identical
 /// rows for the same catalog entry.
 fn model_summary_from_config(
-    entry: &crate::providers::catalog::ModelConfig,
+    entry: &peko_providers::catalog::ModelConfig,
 ) -> crate::ipc::packet::ModelSummary {
     crate::ipc::packet::ModelSummary {
         id: entry.id.clone(),
         display_name: entry.display_name.clone(),
         template_id: entry.template_id.clone(),
         api_type: match entry.api_format {
-            crate::providers::catalog::ApiFormat::OpenaiCompletions => "openai".to_string(),
-            crate::providers::catalog::ApiFormat::AnthropicMessages => "anthropic".to_string(),
-            crate::providers::catalog::ApiFormat::OpenAiResponses => "responses".to_string(),
+            peko_providers::catalog::ApiFormat::OpenaiCompletions => "openai".to_string(),
+            peko_providers::catalog::ApiFormat::AnthropicMessages => "anthropic".to_string(),
+            peko_providers::catalog::ApiFormat::OpenAiResponses => "responses".to_string(),
         },
         base_url: entry.base_url.clone(),
         model_id: entry.model_id.clone(),
@@ -2451,8 +2458,8 @@ impl crate::ipc::handlers::provider_mcp::ModelMcpHost for AppState {
 /// surface).
 impl crate::ipc::handlers::provider_templates::ModelTemplatesHost for AppState {
     fn list_templates(&self) -> Vec<crate::ipc::packet::ModelPresetInfo> {
-        use crate::providers::catalog::ApiFormat;
-        crate::providers::templates::iter_templates()
+        use peko_providers::catalog::ApiFormat;
+        peko_providers::templates::iter_templates()
             .map(|t| crate::ipc::packet::ModelPresetInfo {
                 id: t.id.to_string(),
                 display_name: t.display_name.to_string(),
@@ -2496,8 +2503,8 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
         args: crate::ipc::packet::ModelAddArgs,
     ) -> anyhow::Result<crate::ipc::packet::ModelSummary> {
         use crate::common::vault::{Credential, CredentialKind};
-        use crate::providers::catalog::{ApiFormat, ModelConfig};
-        use crate::providers::templates;
+        use peko_providers::catalog::{ApiFormat, ModelConfig};
+        use peko_providers::templates;
         use secrecy::SecretString;
 
         // The wire id the API expects. Required in both modes, same
@@ -2664,7 +2671,7 @@ impl crate::ipc::handlers::provider_edit::ModelEditHost for AppState {
         &self,
         args: crate::ipc::packet::ModelUpdateArgs,
     ) -> anyhow::Result<crate::ipc::packet::ModelSummary> {
-        use crate::providers::catalog::ApiFormat;
+        use peko_providers::catalog::ApiFormat;
 
         let catalog = self.resolver.catalog();
         let mut entry = catalog
@@ -2733,7 +2740,7 @@ impl crate::ipc::handlers::provider_edit::ModelEditHost for AppState {
     async fn model_test(
         &self,
         id: &str,
-    ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
+    ) -> anyhow::Result<peko_providers::validator::CredentialTestOutcome> {
         let entry = self
             .resolver
             .catalog()
@@ -2754,7 +2761,7 @@ impl crate::ipc::handlers::provider_edit::ModelEditHost for AppState {
             None => None,
         };
 
-        let outcome = crate::providers::validator::Validator::test(&entry, api_key.as_ref()).await;
+        let outcome = peko_providers::validator::Validator::test(&entry, api_key.as_ref()).await;
 
         // Record the outcome on the credential so `credential list`
         // shows the last-tested marker.

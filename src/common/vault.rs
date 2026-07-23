@@ -1845,17 +1845,17 @@ impl Vault {
 
     fn validate_account(
         account: &str,
-    ) -> Result<(), crate::common::secret_store::SecretStoreError> {
+    ) -> Result<(), peko_providers::secret_store::SecretStoreError> {
         if account.is_empty() {
             return Err(
-                crate::common::secret_store::SecretStoreError::InvalidAccount(
+                peko_providers::secret_store::SecretStoreError::InvalidAccount(
                     "empty account name".to_string(),
                 ),
             );
         }
         if account.len() > 128 {
             return Err(
-                crate::common::secret_store::SecretStoreError::InvalidAccount(format!(
+                peko_providers::secret_store::SecretStoreError::InvalidAccount(format!(
                     "account name too long ({} > 128 chars)",
                     account.len()
                 )),
@@ -1866,7 +1866,7 @@ impl Vault {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
         {
             return Err(
-                crate::common::secret_store::SecretStoreError::InvalidAccount(format!(
+                peko_providers::secret_store::SecretStoreError::InvalidAccount(format!(
                     "account name '{account}' contains disallowed characters"
                 )),
             );
@@ -2289,44 +2289,6 @@ pub struct RegistryToken {
     pub namespace: Option<String>,
 }
 
-impl crate::common::secret_store::SecretStore for Vault {
-    fn get(
-        &self,
-        account: &str,
-    ) -> Result<Option<SecretString>, crate::common::secret_store::SecretStoreError> {
-        Self::validate_account(account)?;
-        Ok(self.get_provider_key(account))
-    }
-
-    fn set(
-        &self,
-        account: &str,
-        secret: &SecretString,
-    ) -> Result<(), crate::common::secret_store::SecretStoreError> {
-        Self::validate_account(account)?;
-        self.set_provider_key(account, secret)
-            .map_err(|e| crate::common::secret_store::SecretStoreError::Backend(e.to_string()))
-    }
-
-    fn delete(&self, account: &str) -> Result<bool, crate::common::secret_store::SecretStoreError> {
-        Self::validate_account(account)?;
-        self.delete_provider_key(account)
-            .map_err(|e| crate::common::secret_store::SecretStoreError::Backend(e.to_string()))
-    }
-
-    fn list_accounts(&self) -> Result<Vec<String>, crate::common::secret_store::SecretStoreError> {
-        Ok(self.list_providers())
-    }
-
-    fn test_format(
-        &self,
-        account: &str,
-    ) -> Result<Option<bool>, crate::common::secret_store::SecretStoreError> {
-        Self::validate_account(account)?;
-        Ok(self.test_provider_key(account))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2497,22 +2459,39 @@ mod tests {
 
     #[test]
     fn test_secret_store_trait() {
-        use crate::common::secret_store::SecretStore;
+        // The trait impl moved to `VaultSecretStore` (root composition
+        // layer adapter) in Phase 6 because the orphan rule forbids
+        // `impl ForeignTrait for ForeignType` once `SecretStore` lives
+        // in `peko-providers`. We exercise the trait surface through
+        // the adapter here.
+        use peko_providers::secret_store::SecretStore;
+        use std::sync::Arc;
 
         let dir = TempDir::new().unwrap();
-        let vault = Vault::for_test(dir.path(), "test-passphrase");
+        let vault = Arc::new(Vault::for_test(dir.path(), "test-passphrase"));
+        let store = crate::common::vault_secret_store::VaultSecretStore::new(vault.clone());
 
-        vault
-            .set("openai", &SecretString::new("sk-trait".into()))
-            .unwrap();
-        let got = vault.get("openai").unwrap().unwrap();
+        // Seed via Vault's own typed write API. The credential id is a
+        // UUID; `VaultSecretStore::get(&str)` looks up by credential
+        // id (matches the original `impl SecretStore for Vault` body).
+        let cred = Credential::now(
+            "openai",
+            "default",
+            CredentialKind::ApiKey,
+            SecretString::new("sk-trait".into()),
+        );
+        vault.set_credential(&cred).unwrap();
+        let cred_id = cred.id.clone();
+
+        let got = store.get(&cred_id).unwrap().unwrap();
         assert_eq!(got.expose_secret(), "sk-trait");
 
-        let accounts = vault.list_accounts().unwrap();
-        assert_eq!(accounts, vec!["openai"]);
+        // The SecretStore trait adapter doesn't enumerate accounts.
+        let accounts = store.list_accounts().unwrap();
+        assert!(accounts.is_empty());
 
-        assert!(vault.delete("openai").unwrap());
-        assert!(vault.get("openai").unwrap().is_none());
+        // Trait write paths are deliberately rejected.
+        assert!(store.delete(&cred_id).is_err());
     }
 
     // ------------------------------------------------------------------

@@ -25,7 +25,7 @@
 #![cfg(unix)]
 
 use futures::StreamExt;
-use peko::providers::{
+use peko_providers::{
     AnthropicAdapter, AnyAdapter, ChatOptions, LlmMessage, OpenAiAdapter, Provider,
     ProviderRuntimeOptions, StreamEvent,
 };

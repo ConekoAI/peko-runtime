@@ -15,11 +15,12 @@ pub mod process;
 pub mod registry {
     pub use peko_extension_host::registry::*;
 }
-pub mod secret_store;
 pub mod services;
 pub mod time;
 pub mod types;
 pub mod vault;
+pub mod vault_credential_provider;
+pub mod vault_secret_store;
 
 // Re-export commonly used items
 pub use identifiers::{parse_agent_name, validate_agent_name, IdentifierError, ValidationError};

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::{memory::PrincipalMemory, PrincipalConfig, PrincipalId};
-use crate::providers::LlmResolver;
+use peko_providers::LlmResolver;
 // F19: removed `use crate::quota::QuotaMeter;` — the factory no
 // longer threads the meter through to the router.
 

@@ -27,6 +27,13 @@ repository = "https://github.com/ConekoAI/peko-runtime"
 # peko-extension-host).
 peko-message = { path = "../message" }
 peko-provider-api = { path = "../provider-api" }
+# Phase 6 — `ProviderView` lives in `peko-providers` next to `Provider`,
+# and `peko-engine` keeps a back-compat `peko_engine::ProviderView`
+# re-export so the many `Arc<dyn ProviderView>` sites that pre-date
+# Phase 6 don't need to be rewritten. The dep is one-way:
+# `peko-providers` MUST NOT depend on `peko-engine` (Rule 11
+# providers→engine ban).
+peko-providers = { path = "../providers" }
 peko-tools-core = { path = "../tools-core" }
 peko-quota = { path = "../quota" }
 peko-events = { path = "../events" }

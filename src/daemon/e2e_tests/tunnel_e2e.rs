@@ -205,7 +205,7 @@ fn seed_mock_provider_catalog(
     mock_llm_url: &str,
     api_key: &str,
 ) -> anyhow::Result<()> {
-    use crate::providers::catalog::{ApiFormat, ModelCatalogFile, ModelConfig};
+    use peko_providers::catalog::{ApiFormat, ModelCatalogFile, ModelConfig};
     use std::collections::BTreeMap;
 
     let config_dir = workspace_dir.join("config");
@@ -251,7 +251,7 @@ fn seed_minimax_catalog_entry(
     workspace_dir: &std::path::Path,
     api_key: &str,
 ) -> anyhow::Result<()> {
-    use crate::providers::catalog::{ApiFormat, ModelCatalogFile, ModelConfig};
+    use peko_providers::catalog::{ApiFormat, ModelCatalogFile, ModelConfig};
     use std::collections::BTreeMap;
 
     let config_dir = workspace_dir.join("config");

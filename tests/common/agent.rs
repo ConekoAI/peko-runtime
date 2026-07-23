@@ -153,11 +153,11 @@ fn seed_model_in_catalog(
     home: &Path,
     id: &str,
     display_name: &str,
-    api_format: peko::providers::catalog::ApiFormat,
+    api_format: peko_providers::catalog::ApiFormat,
     base_url: &str,
     wire_model_id: &str,
 ) {
-    use peko::providers::catalog::{ModelCatalogFile, ModelConfig};
+    use peko_providers::catalog::{ModelCatalogFile, ModelConfig};
     use std::collections::BTreeMap;
 
     let peko_dir = home.join(".peko");
@@ -209,7 +209,7 @@ pub fn seed_mock_provider_in_catalog(home: &Path, mock_llm_url: &str) {
         home,
         "mock-llm",
         "mock-llm",
-        peko::providers::catalog::ApiFormat::OpenaiCompletions,
+        peko_providers::catalog::ApiFormat::OpenaiCompletions,
         mock_llm_url.trim_end_matches('/'),
         "default",
     );
@@ -223,7 +223,7 @@ pub fn seed_minimax_provider_in_catalog(home: &Path) {
         home,
         "minimax",
         "MiniMax",
-        peko::providers::catalog::ApiFormat::AnthropicMessages,
+        peko_providers::catalog::ApiFormat::AnthropicMessages,
         "https://api.minimaxi.com/anthropic",
         "MiniMax-M3",
     );
@@ -237,7 +237,7 @@ pub fn seed_kimi_provider_in_catalog(home: &Path) {
         home,
         "kimi",
         "Kimi (Kimi Code API)",
-        peko::providers::catalog::ApiFormat::AnthropicMessages,
+        peko_providers::catalog::ApiFormat::AnthropicMessages,
         "https://api.kimi.com/coding",
         "kimi-for-coding",
     );

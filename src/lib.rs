@@ -193,7 +193,12 @@ pub mod session;
 // ============================================================================
 
 // [extract:phase-6] peko-providers
-pub mod providers;
+// src/providers/ was deleted in Phase 6; all provider types now live
+// in the `peko-providers` workspace crate (`peko_providers::*`).
+// Root composition wires Vault-backed adapters into the trait ports
+// declared in `peko_provider_api::credentials` (see
+// `crate::common::vault_credential_provider` and
+// `crate::common::vault_secret_store`).
 
 // [extract:phase-8] bulk-moved into peko-extension-host
 pub mod extensions;

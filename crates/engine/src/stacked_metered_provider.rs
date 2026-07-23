@@ -53,7 +53,7 @@ use peko_message::{LlmMessage, TokenUsage};
 use peko_provider_api::{ChatOptions, ChatResponse, StreamEvent, ToolDefinition};
 use peko_quota::{QuotaMeter, QuotaScope};
 
-use crate::provider_view::ProviderView;
+use crate::ProviderView;
 
 /// Auto-charging wrapper that charges every meter in the active
 /// `QuotaScope` stack. Used by F20 callers (agentic loop, compactor

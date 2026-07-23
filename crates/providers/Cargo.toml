@@ -1,0 +1,68 @@
+[package]
+name = "peko-providers"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@peko.ai>"]
+description = "Concrete LLM provider implementations (Phase 6). Owns the unified Provider core, HTTP transport, per-adapter request builders (OpenAI Chat Completions / OpenAI Responses / Anthropic Messages / OpenAI-compatible), the model catalog, templates, mock adapter, metered wrapper, validator, and the LlmResolver + rotation state. Replaces root `src/providers/`."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+# Workspace member — provider contract types (ChatOptions, ChatResponse,
+# StreamEvent, ApiAdapter, ContentDelta, ThinkingEffort, ThinkingFormat,
+# ThinkingKeep, ToolChoice, ServiceTier, CacheRetention, ProviderCompat,
+# DeferredToolsMode, plus the `CredentialProvider` trait added in Phase 6).
+peko-provider-api = { path = "../provider-api" }
+
+# Workspace member — neutral message contract that flows through the
+# provider request/response pipelines (LlmMessage, ContentBlock, TokenUsage).
+peko-message = { path = "../message" }
+
+# Workspace member — quota meter the `MeteredProvider` wrapper charges
+# through the current `QuotaScope::current()`.
+peko-quota = { path = "../quota" }
+
+# Workspace member — agentic events the unified `Provider` emits
+# during a streaming call (AgenticEvent::ProviderLifecycle et al).
+peko-events = { path = "../events" }
+
+# Workspace member — used by `MessageRole::User` / `Assistant` etc.
+peko-subject = { path = "../subject" }
+
+# Wire-shape + serialization.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_with = "3.0"
+
+# Catalog on-disk format (models.toml).
+toml = "0.8"
+
+# HTTP transport.
+reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+# Async runtime + stream combinators.
+tokio = { version = "1.35", features = ["rt", "fs", "sync", "macros", "io-util", "time"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+
+# Byte buffer plumbing for SSE.
+bytes = "1.0"
+
+# Time + error.
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+thiserror = "1.0"
+secrecy = "0.10"
+
+# Logging.
+tracing = "0.1"
+
+[dev-dependencies]
+# Test fixtures: vault-backed `VaultCredentialProvider` needs `tempfile`,
+# the in-process mock adapter needs `tokio::sync::Mutex` runtime, etc.
+tempfile = "3.10"
+tokio = { version = "1.35", features = ["macros", "rt-multi-thread"] }
+# `tokio-test::block_on` for sync test fns that need to await
+# catalog/resolver internals (catalog.rs + resolver.rs test mods).
+tokio-test = "0.4"

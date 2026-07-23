@@ -68,7 +68,6 @@ pub mod funnel;
 pub mod iteration_state;
 pub mod parallel_gate;
 pub mod prompt;
-pub mod provider_view;
 pub mod session_view;
 pub mod stacked_metered_provider;
 pub mod state;
@@ -112,7 +111,12 @@ pub use prompt::{
     },
     placeholder::{replace_placeholders, Placeholder},
 };
-pub use provider_view::ProviderView;
+// Phase 6 — `ProviderView` moved to `peko-providers` (next to `Provider`).
+// The orphan rule forbids `impl ProviderView for Provider` from any
+// crate other than `peko-providers`, so the trait + impl live together
+// there. Engine keeps a thin re-export so the many `Arc<dyn ProviderView>`
+// sites that pre-date Phase 6 keep compiling.
+pub use peko_providers::ProviderView;
 pub use session_view::{SessionCore, SessionView};
 pub use stacked_metered_provider::StackedMeteredProvider;
 pub use state::{AgentState, StateMachine};

@@ -9,7 +9,7 @@
 //! counterpart to the shape check and is what `peko model test` and the
 //! desktop's Test button call.
 //!
-//! Per-format dispatch mirrors [`crate::providers::factory::create_provider_for_model`]:
+//! Per-format dispatch mirrors [`crate::factory::create_provider_for_model`]:
 //!
 //! | `config.api_format` | Method | Path | Body |
 //! |---|---|---|---|
@@ -28,9 +28,9 @@ use std::time::Instant;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
-use crate::providers::adapters::{AnthropicAdapter, AnyAdapter, ApiAdapter, OpenAiAdapter};
-use crate::providers::catalog::{ApiFormat, ModelConfig};
-use crate::providers::transport::client::{AuthConfig, HttpClient};
+use crate::adapters::{AnthropicAdapter, AnyAdapter, ApiAdapter, OpenAiAdapter};
+use crate::catalog::{ApiFormat, ModelConfig};
+use crate::transport::client::{AuthConfig, HttpClient};
 
 /// How long to wait for the ping before giving up.
 ///
@@ -182,7 +182,7 @@ impl Validator {
 /// `extra_headers`. The adapter's `base_url` is unused — the
 /// `HttpClient` we build carries the real base URL. Mirrors the
 /// construction in
-/// [`crate::providers::factory::create_provider_for_model`].
+/// [`crate::factory::create_provider_for_model`].
 fn build_adapter(config: &ModelConfig) -> AnyAdapter {
     match config.api_format {
         ApiFormat::OpenaiCompletions => {
@@ -209,10 +209,9 @@ fn build_adapter(config: &ModelConfig) -> AnyAdapter {
             // Same as Chat Completions: `GET /models` is the canonical
             // readiness ping for any OpenAI-compatible surface.
             let adapter = if config.base_url.is_empty() {
-                crate::providers::adapters::OpenAiResponsesAdapter::new()
+                crate::adapters::OpenAiResponsesAdapter::new()
             } else {
-                crate::providers::adapters::OpenAiResponsesAdapter::new()
-                    .with_base_url(&config.base_url)
+                crate::adapters::OpenAiResponsesAdapter::new().with_base_url(&config.base_url)
             };
             AnyAdapter::OpenAiResponses(adapter)
         }

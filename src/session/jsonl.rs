@@ -1011,8 +1011,8 @@ mod tests {
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].role, crate::providers::MessageRole::System);
-        assert_eq!(loaded[1].role, crate::providers::MessageRole::User);
+        assert_eq!(loaded[0].role, peko_providers::MessageRole::System);
+        assert_eq!(loaded[1].role, peko_providers::MessageRole::User);
     }
 
     #[tokio::test]

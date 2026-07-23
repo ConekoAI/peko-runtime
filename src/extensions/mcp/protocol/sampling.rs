@@ -21,11 +21,11 @@ use crate::extensions::mcp::protocol::{
         SamplingRole, Tool,
     },
 };
-use crate::providers::resolver::{LlmResolver, ResolveRequest};
-use crate::providers::traits::{ChatOptions, StopReason, ToolDefinition};
-use crate::providers::MeteredProvider;
 use crate::quota::{QuotaMeter, QuotaScope};
 use async_trait::async_trait;
+use peko_provider_api::{ChatOptions, StopReason, ToolDefinition};
+use peko_providers::resolver::{LlmResolver, ResolveRequest};
+use peko_providers::MeteredProvider;
 use std::sync::Arc;
 use tracing::debug;
 
@@ -248,7 +248,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sampling_create_message_handler() {
-        let adapter = crate::providers::MockAdapter::new();
+        let adapter = peko_providers::MockAdapter::new();
         adapter.queue_text("Hello from the host model");
         let tmp = tempfile::tempdir().unwrap();
         let catalog_path = tmp.path().join("models.toml");
@@ -314,7 +314,7 @@ mod tests {
     /// charges the right meter.
     #[tokio::test]
     async fn test_sampling_handler_charges_principal_meter() {
-        let adapter = crate::providers::MockAdapter::new();
+        let adapter = peko_providers::MockAdapter::new();
         // Queue two completions so we can run two sampling requests
         // and verify each charges the meter independently.
         adapter.queue_text("first");

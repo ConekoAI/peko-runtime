@@ -44,12 +44,12 @@ pub(crate) trait ModelEditHost: Send + Sync {
     /// Live-ping the model identified by `id` and report the
     /// structured outcome. Returns `Err` for configuration-level
     /// errors; HTTP-level failures come back as a structured
-    /// [`crate::providers::validator::CredentialTestOutcome`] with
+    /// [`peko_providers::validator::CredentialTestOutcome`] with
     /// `ok = false`.
     async fn model_test(
         &self,
         id: &str,
-    ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome>;
+    ) -> anyhow::Result<peko_providers::validator::CredentialTestOutcome>;
 }
 
 /// `provider_edit` domain request handler. Constructed with an
@@ -152,7 +152,7 @@ impl RequestHandler for ProviderEditHandler {
 
                 let outcome = match self.host.model_test(&id).await {
                     Ok(o) => o,
-                    Err(e) => crate::providers::validator::CredentialTestOutcome {
+                    Err(e) => peko_providers::validator::CredentialTestOutcome {
                         ok: false,
                         message: e.to_string(),
                         latency_ms: 0,
@@ -193,7 +193,7 @@ mod tests {
     struct StubHost {
         update_ok: Option<ModelSummary>,
         remove_ok: Option<bool>,
-        test_ok: Option<crate::providers::validator::CredentialTestOutcome>,
+        test_ok: Option<peko_providers::validator::CredentialTestOutcome>,
     }
     #[async_trait]
     impl ModelEditHost for StubHost {
@@ -214,7 +214,7 @@ mod tests {
         async fn model_test(
             &self,
             _id: &str,
-        ) -> anyhow::Result<crate::providers::validator::CredentialTestOutcome> {
+        ) -> anyhow::Result<peko_providers::validator::CredentialTestOutcome> {
             match &self.test_ok {
                 Some(o) => Ok(o.clone()),
                 None => anyhow::bail!("stub host: no test staged"),
@@ -376,7 +376,7 @@ mod tests {
         let host = StubHost {
             update_ok: None,
             remove_ok: None,
-            test_ok: Some(crate::providers::validator::CredentialTestOutcome {
+            test_ok: Some(peko_providers::validator::CredentialTestOutcome {
                 ok: false,
                 message: "HTTP 401: invalid api key".to_string(),
                 latency_ms: 187,

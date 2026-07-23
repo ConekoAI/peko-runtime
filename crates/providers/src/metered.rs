@@ -54,13 +54,13 @@ use std::sync::Arc;
 use futures::Stream;
 use futures::StreamExt;
 
-use crate::common::types::message::LlmMessage;
-use crate::common::types::message::TokenUsage;
-use crate::providers::traits::{ChatOptions, ToolDefinition};
-use crate::quota::{QuotaMeter, QuotaScope};
+use peko_message::LlmMessage;
+use peko_message::TokenUsage;
+use peko_provider_api::{ChatOptions, ToolDefinition};
+use peko_quota::{QuotaMeter, QuotaScope};
 
 use super::core::Provider;
-use super::traits::{ChatResponse, StreamEvent};
+use peko_provider_api::{ChatResponse, StreamEvent};
 
 /// Auto-charging wrapper around `Arc<Provider>`.
 ///
@@ -282,11 +282,11 @@ impl MeteredProvider {
 
 /// Concatenate text content blocks into a single string. Mirrors
 /// `Provider::chat_with_system`'s internal extraction.
-fn extract_text(blocks: &[crate::common::types::message::ContentBlock]) -> String {
+fn extract_text(blocks: &[peko_message::ContentBlock]) -> String {
     blocks
         .iter()
         .filter_map(|cb| match cb {
-            crate::common::types::message::ContentBlock::Text { text } => Some(text.as_str()),
+            peko_message::ContentBlock::Text { text } => Some(text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -296,9 +296,9 @@ fn extract_text(blocks: &[crate::common::types::message::ContentBlock]) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{MockAdapter, MockResponse};
-    use crate::quota::{QuotaConfig, QuotaCycle};
+    use crate::{MockAdapter, MockResponse};
     use chrono::Utc;
+    use peko_quota::{QuotaConfig, QuotaCycle};
 
     /// Construct a metered provider backed by a mock + an in-memory
     /// meter with the given config.
@@ -311,9 +311,9 @@ mod tests {
         adapter.queue_text("hello");
         let tmp = tempfile::tempdir().unwrap();
         let catalog = tmp.path().join("models.toml");
-        let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
+        let (resolver, _adapter) = crate::LlmResolver::mock(adapter, &catalog).await;
         let (provider, _choice) = resolver
-            .build(crate::providers::resolver::ResolveRequest {
+            .build(crate::resolver::ResolveRequest {
                 override_model: Some("mock"),
                 ..Default::default()
             })
@@ -357,9 +357,9 @@ mod tests {
         adapter.queue_text("second");
         let tmp = tempfile::tempdir().unwrap();
         let catalog = tmp.path().join("models.toml");
-        let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
+        let (resolver, _adapter) = crate::LlmResolver::mock(adapter, &catalog).await;
         let (provider, _) = resolver
-            .build(crate::providers::resolver::ResolveRequest {
+            .build(crate::resolver::ResolveRequest {
                 override_model: Some("mock"),
                 ..Default::default()
             })
@@ -404,9 +404,9 @@ mod tests {
         adapter.queue_text("hello");
         let tmp = tempfile::tempdir().unwrap();
         let catalog = tmp.path().join("models.toml");
-        let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
+        let (resolver, _adapter) = crate::LlmResolver::mock(adapter, &catalog).await;
         let (provider, _) = resolver
-            .build(crate::providers::resolver::ResolveRequest {
+            .build(crate::resolver::ResolveRequest {
                 override_model: Some("mock"),
                 ..Default::default()
             })
@@ -442,9 +442,9 @@ mod tests {
         adapter.queue_text("hello");
         let tmp = tempfile::tempdir().unwrap();
         let catalog = tmp.path().join("models.toml");
-        let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
+        let (resolver, _adapter) = crate::LlmResolver::mock(adapter, &catalog).await;
         let (provider, _) = resolver
-            .build(crate::providers::resolver::ResolveRequest {
+            .build(crate::resolver::ResolveRequest {
                 override_model: Some("mock"),
                 ..Default::default()
             })
@@ -478,9 +478,9 @@ mod tests {
         adapter.queue_text("hello");
         let tmp = tempfile::tempdir().unwrap();
         let catalog = tmp.path().join("models.toml");
-        let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
+        let (resolver, _adapter) = crate::LlmResolver::mock(adapter, &catalog).await;
         let (provider, _) = resolver
-            .build(crate::providers::resolver::ResolveRequest {
+            .build(crate::resolver::ResolveRequest {
                 override_model: Some("mock"),
                 ..Default::default()
             })
@@ -530,14 +530,14 @@ mod tests {
                 reasoning_output_tokens: 0,
             },
             StreamEvent::Done {
-                stop_reason: crate::providers::StopReason::Stop,
+                stop_reason: crate::StopReason::Stop,
             },
         ]));
         let tmp = tempfile::tempdir().unwrap();
         let catalog = tmp.path().join("models.toml");
-        let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
+        let (resolver, _adapter) = crate::LlmResolver::mock(adapter, &catalog).await;
         let (provider, _) = resolver
-            .build(crate::providers::resolver::ResolveRequest {
+            .build(crate::resolver::ResolveRequest {
                 override_model: Some("mock"),
                 ..Default::default()
             })

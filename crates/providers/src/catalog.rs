@@ -13,7 +13,7 @@
 //!   metadata, and a reference to a credential. There is no separate
 //!   provider layer.
 //! - **Templates vs. entries.** Preset templates
-//!   (`crate::providers::templates`) describe a known provider with
+//!   (`crate::templates`) describe a known provider with
 //!   curated model lists. They are static code. `ModelConfig` is the
 //!   runtime-owned instance of a configured model.
 //! - **No secrets on disk.** API keys live in the vault; the catalog
@@ -38,8 +38,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::providers::templates::ProviderTemplate;
-use crate::providers::traits::ProviderCompat;
+use crate::templates::ProviderTemplate;
+use peko_provider_api::ProviderCompat;
 
 /// Top-level API format understood by the runtime.
 ///
@@ -394,7 +394,7 @@ impl ModelCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::templates;
+    use crate::templates;
     use tempfile::tempdir;
 
     fn temp_catalog() -> (tempfile::TempDir, Arc<ModelCatalog>) {

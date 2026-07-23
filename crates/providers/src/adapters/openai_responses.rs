@@ -19,14 +19,14 @@
 //! (`"24h"` when `CacheRetention::Long`).
 
 use super::{extract_text_content, ToolCallAccumulator};
-use crate::common::types::message::ImageSource;
-use crate::providers::cache_retention::CacheRetention;
-use crate::providers::traits::{
+use crate::transport::AuthConfig;
+use anyhow::{Context, Result};
+use peko_message::ImageSource;
+use peko_provider_api::CacheRetention;
+use peko_provider_api::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolChoice, ToolDefinition,
 };
-use crate::providers::transport::AuthConfig;
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::debug;
@@ -963,9 +963,9 @@ struct ResponsesStreamResponse {
 mod tests {
     use super::super::ApiAdapter;
     use super::*;
-    use crate::common::types::message::{ContentBlock, MessageRole};
-    use crate::providers::traits::ServiceTier;
-    use crate::providers::traits::{LlmMessage, ThinkingEffort};
+    use peko_message::{ContentBlock, MessageRole};
+    use peko_provider_api::ServiceTier;
+    use peko_provider_api::{LlmMessage, ThinkingEffort};
 
     fn user_msg(text: &str) -> LlmMessage {
         LlmMessage {
@@ -1599,7 +1599,7 @@ mod tests {
             parameters: json!({"type": "object"}),
         }];
         let options = ChatOptions {
-            tool_choice: crate::providers::ToolChoice::Required,
+            tool_choice: crate::ToolChoice::Required,
             ..options_default()
         };
         let (_, body) = adapter
@@ -1620,7 +1620,7 @@ mod tests {
             parameters: json!({"type": "object"}),
         }];
         let options = ChatOptions {
-            tool_choice: crate::providers::ToolChoice::Forced("Read".to_string()),
+            tool_choice: crate::ToolChoice::Forced("Read".to_string()),
             ..options_default()
         };
         let (_, body) = adapter
@@ -1906,13 +1906,13 @@ mod tests {
             // F25: default to no reasoning on the wire so existing
             // tests that don't set these fields keep producing the
             // pre-F25 request shape.
-            thinking_effort: crate::providers::traits::ThinkingEffort::None,
+            thinking_effort: peko_provider_api::ThinkingEffort::None,
             thinking_summary: None,
             encrypted_reasoning: false,
             // F26: defaults that preserve the pre-F26 wire shape —
             // `tool_choice: Auto` keeps `"auto"` literal; the rest
             // suppress emission entirely.
-            tool_choice: crate::providers::ToolChoice::Auto,
+            tool_choice: crate::ToolChoice::Auto,
             parallel_tool_calls: None,
             service_tier: ServiceTier::None,
             safety_identifier: None,
@@ -1920,7 +1920,7 @@ mod tests {
             // the Responses adapter stays free of these fields.
             betas: Vec::new(),
             beta_api: false,
-            thinking_keep: crate::providers::ThinkingKeep::Off,
+            thinking_keep: crate::ThinkingKeep::Off,
             // F29: per-call override of `ModelConfig::compat`.
             // Defaults to None so pre-F29 callers see no change in
             // wire shape.
