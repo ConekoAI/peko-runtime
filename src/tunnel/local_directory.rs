@@ -67,10 +67,10 @@ impl AgentDirectory for LocalFirstAgentDirectory {
     }
 }
 
-fn map_instance_exposure(exposure: crate::principal::config::Exposure) -> ResolvedExposure {
+fn map_instance_exposure(exposure: peko_auth::Exposure) -> ResolvedExposure {
     match exposure {
-        crate::principal::config::Exposure::Public => ResolvedExposure::Public,
-        crate::principal::config::Exposure::Private => ResolvedExposure::Private,
-        crate::principal::config::Exposure::Unexposed => ResolvedExposure::Unexposed,
+        peko_auth::Exposure::Public => ResolvedExposure::Public,
+        peko_auth::Exposure::Private => ResolvedExposure::Private,
+        peko_auth::Exposure::Unexposed => ResolvedExposure::Unexposed,
     }
 }

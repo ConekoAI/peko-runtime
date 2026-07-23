@@ -214,7 +214,7 @@ impl Default for SessionCompactor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::Subject;
+    use peko_auth::Subject;
     use tempfile::TempDir;
 
     #[tokio::test]

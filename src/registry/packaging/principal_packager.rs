@@ -593,7 +593,7 @@ mod tests {
         PrincipalConfig {
             name: name.to_string(),
             did: Some(PrincipalDID(did.to_string())),
-            owner: crate::auth::Subject::User("local".to_string()),
+            owner: peko_auth::Subject::User("local".to_string()),
             identity: Default::default(),
             intent: Default::default(),
             governance: Default::default(),

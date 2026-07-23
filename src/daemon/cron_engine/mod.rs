@@ -4,7 +4,6 @@
 //! delivery, and audit logging. Keeps the daemon's main loop focused on
 //! lifecycle and shutdown.
 
-use crate::auth::caller::CallerContext;
 use crate::common::json_utils::json_subset;
 use crate::cron::events::SystemEvent;
 use crate::cron::{CronJob, CronJobAction, CronRun, CronScheduler, DeliveryMode, IdleDetector};
@@ -18,6 +17,7 @@ use crate::principal::router::{ChannelContext, ChannelKind};
 use crate::tools::core::ToolResult;
 use anyhow::Result;
 use chrono::Utc;
+use peko_auth::caller::CallerContext;
 use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -631,11 +631,9 @@ fn map_async_status(status: AsyncTaskStatus) -> (String, Option<String>, Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{Permission, PermissionGrant};
     use crate::common::paths::PathResolver;
     use crate::engine::tool_runtime::ToolRuntime;
     use crate::extensions::framework::core::init_global_core;
-    use crate::principal::config::Exposure;
     use crate::principal::{
         Capabilities, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
@@ -645,6 +643,8 @@ mod tests {
     use crate::providers::resolver::LlmResolver;
     use crate::subject::Subject;
     use chrono::{Duration, Utc};
+    use peko_auth::Exposure;
+    use peko_auth::{Permission, PermissionGrant};
     use std::sync::Arc;
     use tempfile::TempDir;
 

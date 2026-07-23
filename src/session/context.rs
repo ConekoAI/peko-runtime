@@ -4,7 +4,7 @@
 //! All session operations go through `SessionHandle` obtained from `SessionManager`.
 
 use super::types::ChannelType;
-use crate::auth::Subject;
+use peko_auth::Subject;
 
 /// Lightweight context for session-aware agent execution — pure DTO, no operations.
 ///

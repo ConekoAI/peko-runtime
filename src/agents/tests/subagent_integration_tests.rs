@@ -9,13 +9,13 @@
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::agents::subagent_types::SubagentStatus;
-use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::extensions::framework::async_exec::executor::{
     get_or_create_registry_for_agent, SharedAsyncTaskRegistry,
 };
 use crate::session::manager::SessionManager;
 use crate::session::types::SpawnCleanupPolicy;
+use peko_auth::Subject;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;

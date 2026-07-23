@@ -3,7 +3,6 @@
 //! Extracts `.principal` files into the local peko runtime.
 #![allow(dead_code)]
 
-use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::extensions::framework::manager::packaging::ExtensionUnpackager;
 use crate::extensions::framework::store::ExtensionStore;
@@ -14,6 +13,7 @@ use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustSto
 use crate::registry::packaging::validation::ValidationResult;
 use crate::subject::PrincipalDID;
 use anyhow::Context;
+use peko_auth::Subject;
 use peko_identity::{storage::KeyStorage, Identity, KeyPairExport};
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;

@@ -21,7 +21,7 @@ const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d
 /// queueing work without bound.
 const MAX_CONCURRENT_DISPATCHES: usize = 64;
 
-use crate::auth::Subject;
+use peko_auth::Subject;
 
 use super::a2a_audit;
 use super::host::TunnelHost;
@@ -36,7 +36,7 @@ use super::{
 };
 use crate::tunnel::principal_send_tool::{HubErrorResponse, PrincipalSendResult};
 
-use crate::auth::ownership::Permission;
+use peko_auth::ownership::Permission;
 
 /// Errors returned by [`resolve_bridge_caller`].
 #[derive(Debug, PartialEq, Eq)]
@@ -80,7 +80,7 @@ impl std::error::Error for BridgeCallerError {}
 /// [`BridgeCallerError::NoCaller`].
 pub(crate) async fn resolve_bridge_caller(
     bridge_payload: &serde_json::Value,
-    jwt_validator: Option<&crate::auth::jwt::JwtValidator>,
+    jwt_validator: Option<&peko_auth::jwt::JwtValidator>,
 ) -> Result<String, BridgeCallerError> {
     // 1. Try the signed JWT first.
     if let Some(jwt) = extract_bearer_jwt(bridge_payload) {
@@ -160,7 +160,7 @@ pub struct InstanceState {
     pub exposure: InstanceExposure,
     /// Typed allow-list (ADR-041) — `User` and `Principal` subjects
     /// who can chat with this instance at `private` exposure.
-    pub allowed_principals: Vec<crate::auth::Subject>,
+    pub allowed_principals: Vec<peko_auth::Subject>,
     /// Current instance status
     pub status: InstanceStatus,
 }
@@ -327,8 +327,8 @@ impl TunnelDispatcher {
     /// revoked.
     fn compute_allowed_principals(
         config: &crate::principal::PrincipalConfig,
-    ) -> Option<Vec<crate::auth::Subject>> {
-        use crate::auth::Subject;
+    ) -> Option<Vec<peko_auth::Subject>> {
+        use peko_auth::Subject;
         let principals: Vec<Subject> = config
             .permissions
             .iter()
@@ -1425,7 +1425,7 @@ impl TunnelDispatcher {
                 if instance_state
                     .allowed_principals
                     .iter()
-                    .any(|s| matches!(s, crate::auth::Subject::User(id) if id == user_id))
+                    .any(|s| matches!(s, peko_auth::Subject::User(id) if id == user_id))
                 {
                     Ok(())
                 } else {
@@ -1443,7 +1443,6 @@ impl TunnelDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{Permission, PermissionGrant, Subject};
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
     use crate::extensions::framework::types::Capabilities;
     use crate::principal::config::{
@@ -1451,6 +1450,7 @@ mod tests {
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
     use crate::tunnel::protocol::{InstanceExposure, InstanceType};
+    use peko_auth::{Permission, PermissionGrant, Subject};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -1508,7 +1508,7 @@ mod tests {
                     granted_by: Subject::User("user:owner".to_string()),
                 },
             ],
-            crate::principal::config::Exposure::Private,
+            peko_auth::Exposure::Private,
         );
 
         let allowed = TunnelDispatcher::compute_allowed_principals(&config).expect("always Some");
@@ -1541,7 +1541,7 @@ mod tests {
         name: &str,
         owner: Subject,
         permissions: Vec<PermissionGrant>,
-        exposure: crate::principal::config::Exposure,
+        exposure: peko_auth::Exposure,
     ) -> PrincipalConfig {
         PrincipalConfig {
             name: name.to_string(),
@@ -1573,7 +1573,7 @@ mod tests {
         name: &str,
         owner: Subject,
         permissions: Vec<PermissionGrant>,
-        exposure: crate::principal::config::Exposure,
+        exposure: peko_auth::Exposure,
     ) -> std::sync::Arc<crate::principal::Principal> {
         let workspace = app_state.config.data_dir.join("principals").join(name);
         let agents_dir = workspace.join("agents");
@@ -1665,7 +1665,7 @@ mod tests {
     /// Build a `(validator, signing_key)` pair whose `validator` accepts
     /// tokens signed by `signing_key` against the runtime DID
     /// `did:key:z6MkTestRuntime` and the issuer `pekohub`.
-    fn ed25519_validator() -> (crate::auth::jwt::JwtValidator, SigningKey) {
+    fn ed25519_validator() -> (peko_auth::jwt::JwtValidator, SigningKey) {
         use rand::Rng;
         let mut bytes = [0u8; 32];
         rand::thread_rng().fill(&mut bytes);
@@ -1673,8 +1673,8 @@ mod tests {
         let verifying_key = signing_key.verifying_key();
 
         let x = URL_SAFE_NO_PAD.encode(verifying_key.to_bytes());
-        let jwks = crate::auth::jwt::JwksResponse {
-            keys: vec![crate::auth::jwt::JwkEntry {
+        let jwks = peko_auth::jwt::JwksResponse {
+            keys: vec![peko_auth::jwt::JwkEntry {
                 kty: "OKP".to_string(),
                 kid: Some("test-key".to_string()),
                 n: None,
@@ -1684,7 +1684,7 @@ mod tests {
                 extra: std::collections::HashMap::new(),
             }],
         };
-        let validator = crate::auth::jwt::JwtValidator::with_jwks(
+        let validator = peko_auth::jwt::JwtValidator::with_jwks(
             vec!["pekohub".to_string()],
             "did:key:z6MkTestRuntime".to_string(),
             jwks,
@@ -1929,7 +1929,7 @@ mod tests {
         let payload = ExposureUpdatePayload {
             instance_id: instance_id.clone(),
             exposure: InstanceExposure::Public,
-            allowed_principals: Some(vec![crate::auth::Subject::User("user-1".to_string())]),
+            allowed_principals: Some(vec![peko_auth::Subject::User("user-1".to_string())]),
         };
 
         dispatcher.handle_exposure_update(payload).await.unwrap();
@@ -1943,7 +1943,7 @@ mod tests {
         assert_eq!(entry.exposure, InstanceExposure::Public);
         assert_eq!(
             entry.allowed_principals,
-            vec![crate::auth::Subject::User("user-1".to_string())]
+            vec![peko_auth::Subject::User("user-1".to_string())]
         );
     }
 
@@ -2053,7 +2053,7 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_principals: vec![crate::auth::Subject::User("user-123".to_string())],
+                    allowed_principals: vec![peko_auth::Subject::User("user-123".to_string())],
                     status: InstanceStatus::Online,
                 },
             );
@@ -2078,7 +2078,7 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_principals: vec![crate::auth::Subject::User("user-123".to_string())],
+                    allowed_principals: vec![peko_auth::Subject::User("user-123".to_string())],
                     status: InstanceStatus::Online,
                 },
             );
@@ -2105,7 +2105,7 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_principals: vec![crate::auth::Subject::User("user-123".to_string())],
+                    allowed_principals: vec![peko_auth::Subject::User("user-123".to_string())],
                     status: InstanceStatus::Online,
                 },
             );
@@ -2321,7 +2321,7 @@ mod tests {
             "announce-me",
             Subject::User("user:owner".to_string()),
             vec![],
-            crate::principal::config::Exposure::Public,
+            peko_auth::Exposure::Public,
         )
         .await;
         let did = principal.did().await;
@@ -2359,7 +2359,7 @@ mod tests {
             "web-bound",
             Subject::User("user:test-user".to_string()),
             vec![],
-            crate::principal::config::Exposure::Public,
+            peko_auth::Exposure::Public,
         )
         .await;
 
@@ -2420,7 +2420,7 @@ mod tests {
                 granted_at: "2026-06-27T00:00:00Z".to_string(),
                 granted_by: Subject::User("user:owner".to_string()),
             }],
-            crate::principal::config::Exposure::Public,
+            peko_auth::Exposure::Public,
         )
         .await;
         let target_principal_did = principal.did().await.0;

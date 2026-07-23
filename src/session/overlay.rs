@@ -5,9 +5,9 @@
 //! - `ChannelContext`: Interface for channel-specific data
 
 use super::types::{ChannelType, OverlayType};
-use crate::auth::Subject;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use peko_auth::Subject;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;

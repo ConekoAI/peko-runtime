@@ -1,14 +1,16 @@
 //! API key storage and verification
 
-use super::types::{ApiKeyEntry, ApiKeyScope, ApiKeysFile};
-use crate::common::paths::PathResolver;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use anyhow::Context;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::RwLock;
+
+use super::types::{ApiKeyEntry, ApiKeyScope, ApiKeysFile};
+use crate::host::RuntimePaths;
 
 /// Prefix for API keys
 const API_KEY_PREFIX: &str = "pkr_";
@@ -21,9 +23,13 @@ pub struct ApiKeyStore {
 }
 
 impl ApiKeyStore {
-    /// Load the API key store from disk, or create an empty one
-    pub fn load(resolver: &PathResolver) -> anyhow::Result<Self> {
-        let path = resolver.runtime_dir().join("api_keys.toml");
+    /// Load the API key store from disk, or create an empty one.
+    ///
+    /// Phase 4 migration: takes `&dyn RuntimePaths` instead of
+    /// `&PathResolver` so `peko-auth` doesn't depend on
+    /// `crate::common::paths`.
+    pub fn load(paths: &dyn RuntimePaths) -> anyhow::Result<Self> {
+        let path = paths.runtime_dir().join("api_keys.toml");
         let file = if path.exists() {
             let content = std::fs::read_to_string(&path)
                 .with_context(|| format!("Failed to read API keys file: {path:?}"))?;
@@ -222,10 +228,9 @@ impl ApiKeyVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     fn temp_store() -> ApiKeyStore {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("api_keys.toml");
         ApiKeyStore::with_path(path)
     }
@@ -294,8 +299,8 @@ mod tests {
     /// Critical path: full API key lifecycle — create → verify → use in CallerContext → permission check
     #[tokio::test]
     async fn test_api_key_e2e_lifecycle() {
-        use crate::auth::caller::CallerContext;
-        use crate::auth::permissions::{check_permission, Action, Resource};
+        use crate::caller::CallerContext;
+        use crate::permissions::{check_permission, Action, Resource};
 
         let store = temp_store();
 
@@ -323,7 +328,7 @@ mod tests {
         assert!(check_permission(&caller, &Resource::System, Action::Execute).is_ok());
         assert_eq!(
             check_permission(&caller, &Resource::System, Action::Admin).unwrap_err(),
-            crate::auth::permissions::AuthError::PermissionDenied
+            crate::permissions::AuthError::PermissionDenied
         );
 
         // 5. Revoke and verify denied

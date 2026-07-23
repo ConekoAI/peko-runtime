@@ -27,7 +27,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::auth::caller::CallerContext;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
 use crate::ipc::handlers::RequestHandler;
@@ -35,6 +34,7 @@ use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
+use peko_auth::caller::CallerContext;
 
 /// Narrow port the `extension` handler uses to reach daemon state.
 ///

@@ -4,11 +4,11 @@
 //! - `ChannelType`: Communication channel variants
 //! - `OverlayType`: Classification of overlay kinds
 //!
-//! Session ownership identity uses `crate::auth::Subject`
+//! Session ownership identity uses `peko_auth::Subject`
 //! (ADR-039). The former `Subject` type alias was removed in the
 //! `refactor/peer-to-principal-rename` cleanup; callers should now
 //! import `Subject` directly from `crate::auth` (re-exported via
-//! `crate::auth::Subject`).
+//! `peko_auth::Subject`).
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -162,7 +162,7 @@ pub use peko_extension_host::subagent::SpawnCleanupPolicy;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::Subject;
+    use peko_auth::Subject;
 
     #[test]
     fn test_peer_id() {

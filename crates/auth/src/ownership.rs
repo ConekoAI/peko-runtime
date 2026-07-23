@@ -3,15 +3,16 @@
 //! Provides per-resource RBAC-lite permission checks that run on the same
 //! code path for local IPC and remote access.
 //!
-//! After ADR-039, the canonical actor is `crate::auth::Subject`.
-//! The legacy `SubjectType` enum and `principal_from_wire` helper were
-//! removed in issue #30; the IPC wire format now carries a single
-//! `subject: Subject` on grant/revoke packets. `PermissionGrant` stores
-//! that `Subject` directly.
+//! After ADR-039, the canonical actor is `peko_auth::Subject` (re-exported
+//! from `peko_subject::Subject`). The legacy `SubjectType` enum and
+//! `principal_from_wire` helper were removed in issue #30; the IPC wire
+//! format now carries a single `subject: Subject` on grant/revoke
+//! packets. `PermissionGrant` stores that `Subject` directly.
 
+use peko_subject::Subject;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::Subject;
+use crate::host::{Exposure, PrincipalResourceView};
 
 /// Actions that can be performed on principals
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,13 +47,13 @@ impl Permission {
 
 // `SubjectType` and `principal_from_wire` were removed in issue #30.
 // The IPC wire format now carries a single `subject: Subject` per
-// grant/revoke packet; see `RequestPacket::resolved_subject` for the
-// (now trivial) resolver.
+// grant/revoke packet; see `peko_protocol::RequestPacket::resolved_subject`
+// for the (now trivial) resolver.
 
 /// A single permission grant on a resource.
 ///
 /// After ADR-039, the subject is a full `Subject`. The IPC wire carries
-/// the same `Subject` directly; see `ipc::packet::RequestPacket`.
+/// the same `Subject` directly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionGrant {
     /// The subject this grant applies to.
@@ -77,7 +78,7 @@ pub enum Resource {
         name: String,
         owner: Subject,
         permissions: Vec<PermissionGrant>,
-        exposure: crate::principal::config::Exposure,
+        exposure: Exposure,
     },
 }
 
@@ -162,14 +163,22 @@ pub fn check_permission(
     })
 }
 
-/// Build a `Resource::Principal` from a `PrincipalConfig` and name.
+/// Build a `Resource::Principal` from any [`PrincipalResourceView`]
+/// implementor.
+///
+/// Phase 4 migration: the function used to take `&PrincipalConfig`
+/// directly, which created a `peko-auth ↔ peko-principal` cycle when
+/// both became workspace crates. The trait port (declared in
+/// [`crate::host`]) breaks the cycle by giving `peko-auth` a narrow
+/// view over only the four fields this function needs. The principal
+/// module implements the trait in root (`src/auth_compat.rs`).
 #[must_use]
-pub fn principal_resource(name: &str, config: &crate::principal::PrincipalConfig) -> Resource {
+pub fn principal_resource(view: &dyn PrincipalResourceView) -> Resource {
     Resource::Principal {
-        name: name.to_string(),
-        owner: config.owner.clone(),
-        permissions: config.permissions.clone(),
-        exposure: config.exposure.clone(),
+        name: view.name().to_string(),
+        owner: view.owner().clone(),
+        permissions: view.permissions().to_vec(),
+        exposure: view.exposure(),
     }
 }
 
@@ -177,23 +186,50 @@ pub fn principal_resource(name: &str, config: &crate::principal::PrincipalConfig
 mod tests {
     use super::*;
 
+    /// In-memory `PrincipalResourceView` mock so the leaf crate's
+    /// tests don't need the root `PrincipalConfig` type.
+    struct MockPrincipal {
+        name: String,
+        owner: Subject,
+        permissions: Vec<PermissionGrant>,
+        exposure: Exposure,
+    }
+
+    impl PrincipalResourceView for MockPrincipal {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn owner(&self) -> &Subject {
+            &self.owner
+        }
+        fn permissions(&self) -> &[PermissionGrant] {
+            &self.permissions
+        }
+        fn exposure(&self) -> Exposure {
+            self.exposure
+        }
+    }
+
     #[test]
     fn test_principal_resource_permission_checks() {
         let owner = Subject::User("user:123".into());
-        let resource = Resource::Principal {
+        let view = MockPrincipal {
             name: "alpha".to_string(),
             owner: owner.clone(),
             permissions: vec![],
-            exposure: crate::principal::config::Exposure::Private,
+            exposure: Exposure::Private,
         };
 
-        assert!(check_permission(&resource, Permission::Chat, &owner).is_ok());
-        assert!(
-            check_permission(&resource, Permission::Chat, &Subject::User("other".into())).is_err()
-        );
+        assert!(check_permission(&principal_resource(&view), Permission::Chat, &owner).is_ok());
+        assert!(check_permission(
+            &principal_resource(&view),
+            Permission::Chat,
+            &Subject::User("other".into())
+        )
+        .is_err());
 
         let grantee = Subject::User("user:456".into());
-        let resource = Resource::Principal {
+        let view = MockPrincipal {
             name: "alpha".to_string(),
             owner: owner.clone(),
             permissions: vec![PermissionGrant {
@@ -202,10 +238,12 @@ mod tests {
                 granted_at: "2026-06-07T10:00:00Z".to_string(),
                 granted_by: owner.clone(),
             }],
-            exposure: crate::principal::config::Exposure::Private,
+            exposure: Exposure::Private,
         };
-        assert!(check_permission(&resource, Permission::Chat, &grantee).is_ok());
-        assert!(check_permission(&resource, Permission::Delete, &grantee).is_err());
+        assert!(check_permission(&principal_resource(&view), Permission::Chat, &grantee).is_ok());
+        assert!(
+            check_permission(&principal_resource(&view), Permission::Delete, &grantee).is_err()
+        );
     }
 
     // Tests for `Resource::Agent` / `Resource::Team` were removed when

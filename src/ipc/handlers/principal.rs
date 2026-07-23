@@ -36,11 +36,6 @@ use chrono::Utc;
 use tokio::sync::RwLock;
 use tracing::warn;
 
-use crate::auth::caller::CallerContext;
-use crate::auth::ownership::{
-    check_permission, principal_resource, Permission, PermissionGrant, Resource,
-};
-use crate::auth::Subject;
 use crate::chat_log::{ChatLogPage, ChatThreadKey};
 use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
@@ -57,6 +52,11 @@ use crate::principal::routers::root::root_session_id;
 use crate::principal::{Principal, RouteDecision, RouterError};
 use crate::registry::packaging::TrustStore;
 use crate::tunnel::TunnelDispatcher;
+use peko_auth::caller::CallerContext;
+use peko_auth::ownership::{
+    check_permission, principal_resource, Permission, PermissionGrant, Resource,
+};
+use peko_auth::Subject;
 
 use peko_extension_host::SteeringMessage;
 
@@ -678,7 +678,7 @@ impl RequestHandler for PrincipalHandler {
 
                 let caller_subject = caller.subject();
                 let config = principal.config.read().await;
-                let resource = principal_resource(&name, &config);
+                let resource = principal_resource(&*config);
                 if let Err(denied) =
                     check_permission(&resource, Permission::ManageSettings, &caller_subject)
                 {
@@ -758,7 +758,7 @@ impl RequestHandler for PrincipalHandler {
 
                 let caller_subject = caller.subject();
                 let config = principal.config.read().await;
-                let resource = principal_resource(&name, &config);
+                let resource = principal_resource(&*config);
                 if let Err(denied) =
                     check_permission(&resource, Permission::ManageSettings, &caller_subject)
                 {
@@ -825,7 +825,7 @@ impl RequestHandler for PrincipalHandler {
 
                 let caller_subject = caller.subject();
                 let config = principal.config.read().await;
-                let resource = principal_resource(&name, &config);
+                let resource = principal_resource(&*config);
                 if let Err(denied) =
                     check_permission(&resource, Permission::ViewSettings, &caller_subject)
                 {
@@ -911,7 +911,7 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 exposure,
             } => {
-                use crate::principal::config::Exposure;
+                use peko_auth::Exposure;
                 let exposure_enum = match exposure.as_str() {
                     "unexposed" => Exposure::Unexposed,
                     "private" => Exposure::Private,
@@ -1099,7 +1099,7 @@ impl RequestHandler for PrincipalHandler {
 
                 let caller_subject = caller.subject();
                 let config = principal.config.read().await;
-                let resource = principal_resource(&name, &config);
+                let resource = principal_resource(&*config);
                 if let Err(denied) =
                     check_permission(&resource, Permission::ManageSettings, &caller_subject)
                 {
@@ -1217,7 +1217,7 @@ impl RequestHandler for PrincipalHandler {
 
                 let caller_subject = caller.subject();
                 let config = principal.config.read().await;
-                let resource = principal_resource(&name, &config);
+                let resource = principal_resource(&*config);
                 if let Err(denied) =
                     check_permission(&resource, Permission::ManageSettings, &caller_subject)
                 {

@@ -50,7 +50,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::auth::Subject;
 use crate::chat_log::{ChatLogMessage, ChatThreadKey};
 use crate::principal::{ChannelContext, ChannelKind};
 use crate::subject::PrincipalDID;
@@ -61,6 +60,7 @@ use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::direct::routing::{select_transport, TransportChoice};
 use crate::tunnel::hub_directory::{DirectoryError, ResolvedExposure};
 use crate::tunnel::TunnelMessage;
+use peko_auth::Subject;
 
 /// Arguments for the `principal_send` tool.
 ///
@@ -934,8 +934,8 @@ mod tests {
     /// round-trip test the prior plan listed for `principal_send`.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_principal_send_full_round_trip() {
-        use crate::auth::Subject;
         use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+        use peko_auth::Subject;
 
         // ── shared state ────────────────────────────────────────
         let directory = Arc::new(FakeAgentDirectory::new());
@@ -1033,8 +1033,8 @@ mod tests {
     /// test the prior plan listed.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_principal_send_hub_synthesized_error_response() {
-        use crate::auth::Subject;
         use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+        use peko_auth::Subject;
 
         let directory = Arc::new(FakeAgentDirectory::new());
         let caller_pending = Arc::new(PendingA2aResponses::new());
@@ -1116,8 +1116,8 @@ mod tests {
     /// test the prior plan listed.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_principal_send_signature_verification() {
-        use crate::auth::Subject;
         use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+        use peko_auth::Subject;
 
         let directory = Arc::new(FakeAgentDirectory::new());
         let caller_pending = Arc::new(PendingA2aResponses::new());
@@ -1209,7 +1209,7 @@ mod tests {
     fn caller_key(caller_did: &str, target_did: &str) -> ChatThreadKey {
         ChatThreadKey::new(
             PrincipalDID(caller_did.to_string()),
-            crate::auth::Subject::Principal(PrincipalDID(target_did.to_string())),
+            peko_auth::Subject::Principal(PrincipalDID(target_did.to_string())),
         )
     }
 
@@ -1226,8 +1226,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_caller_view_appends_request_and_response_on_round_trip() {
-        use crate::auth::Subject;
         use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+        use peko_auth::Subject;
 
         let directory = Arc::new(FakeAgentDirectory::new());
         let caller_pending = Arc::new(PendingA2aResponses::new());
@@ -1335,8 +1335,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_caller_view_records_only_request_when_response_decodes_fail() {
-        use crate::auth::Subject;
         use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+        use peko_auth::Subject;
 
         let directory = Arc::new(FakeAgentDirectory::new());
         let caller_pending = Arc::new(PendingA2aResponses::new());
@@ -1415,8 +1415,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_caller_view_records_only_request_on_hub_error() {
-        use crate::auth::Subject;
         use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+        use peko_auth::Subject;
 
         let directory = Arc::new(FakeAgentDirectory::new());
         let caller_pending = Arc::new(PendingA2aResponses::new());

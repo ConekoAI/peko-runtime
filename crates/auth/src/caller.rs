@@ -1,7 +1,8 @@
 //! Caller context — resolved identity for every incoming request
 
+use peko_subject::Subject;
+
 use super::types::ApiKeyScope;
-use super::Subject;
 
 /// Resolved identity of the caller
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -3,7 +3,6 @@
 //! Provides unified session management for both CLI and HTTP API.
 //! Handles session listing, history retrieval, branching, and deletion.
 
-use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::session::events::SessionEvent;
 use crate::session::metadata_controller::MetadataController;
@@ -11,6 +10,7 @@ use crate::session::sync::SyncSessionStorage;
 use crate::session::SessionEntry;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
+use peko_auth::Subject;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
@@ -383,7 +383,7 @@ impl SessionService {
     pub async fn list_sessions_with_active(
         &self,
         agent_name: &str,
-        peer: &crate::auth::Subject,
+        peer: &peko_auth::Subject,
     ) -> Result<(Vec<SessionInfo>, Option<String>)> {
         let sessions = self.list_sessions(agent_name).await?;
 

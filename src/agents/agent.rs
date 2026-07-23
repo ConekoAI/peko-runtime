@@ -2,7 +2,6 @@
 
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
-use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::engine::state::StateMachine;
 use crate::engine::AgentState;
@@ -14,6 +13,7 @@ use crate::session::InboxRegistry;
 use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
+use peko_auth::Subject;
 use peko_identity::{did::DIDScope, storage::KeyStorage, Identity};
 use std::sync::Arc;
 use tokio::sync::RwLock as TokioRwLock;
@@ -2329,9 +2329,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
-        use crate::auth::Subject;
         use crate::extensions::framework::core::ExtensionCore;
         use crate::session::types::ChannelType;
+        use peko_auth::Subject;
 
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
@@ -2362,9 +2362,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
-        use crate::auth::Subject;
         use crate::extensions::framework::core::ExtensionCore;
         use crate::session::types::ChannelType;
+        use peko_auth::Subject;
 
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
@@ -2394,8 +2394,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_tool_session() {
-        use crate::auth::Subject;
         use crate::extensions::framework::core::ExtensionCore;
+        use peko_auth::Subject;
 
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.

@@ -86,7 +86,7 @@ impl Principal {
     }
 
     /// The exposure level for this Principal.
-    pub async fn exposure(&self) -> crate::principal::config::Exposure {
+    pub async fn exposure(&self) -> peko_auth::Exposure {
         self.config.read().await.exposure
     }
 
@@ -125,9 +125,9 @@ impl Principal {
 pub struct PrincipalSummary {
     pub name: String,
     pub did: PrincipalDID,
-    pub owner: crate::auth::Subject,
+    pub owner: peko_auth::Subject,
     pub description: Option<String>,
-    pub exposure: crate::principal::config::Exposure,
+    pub exposure: peko_auth::Exposure,
     pub status: Option<crate::principal::config::Status>,
     pub preferred_model_id: Option<String>,
     pub capabilities: Capabilities,

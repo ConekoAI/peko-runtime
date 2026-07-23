@@ -12,8 +12,6 @@ use super::{
     slash::{SlashDispatcher, SlashError},
     AgentPrompt, Principal, PrincipalId,
 };
-use crate::auth::ownership::{check_permission, Permission, Resource};
-use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::common::types::OutputFormat;
 use crate::extensions::agent::AgentAdapter;
@@ -22,9 +20,10 @@ use crate::observability::Observability;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 use crate::subject::PrincipalDID;
+use peko_auth::ownership::{check_permission, Permission, Resource};
+use peko_auth::Subject;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
-
 use peko_extension_host::SteeringMessage;
 
 /// Error type for PrincipalManager operations.
@@ -989,7 +988,7 @@ async fn discover_agent_prompts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{Permission, PermissionGrant, Subject};
+    use peko_auth::{Permission, PermissionGrant, Subject};
 
     use crate::engine::tool_runtime::ToolRuntime;
     use crate::extensions::framework::core::init_global_core;
@@ -1088,7 +1087,7 @@ mod tests {
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
             capabilities: Capabilities::starter_bundle(),
-            exposure: crate::principal::config::Exposure::Private,
+            exposure: peko_auth::Exposure::Private,
             status: None,
             permissions: vec![PermissionGrant {
                 subject: Subject::Public,
@@ -1378,16 +1377,13 @@ mod tests {
         let (_temp, manager, _adapter, id) = setup().await;
         manager
             .update_config("stressy", |config| {
-                config.exposure = crate::principal::config::Exposure::Public;
+                config.exposure = peko_auth::Exposure::Public;
             })
             .await
             .expect("update_config should succeed");
 
         let principal = manager.get(id).await.expect("principal should exist");
-        assert_eq!(
-            principal.exposure().await,
-            crate::principal::config::Exposure::Public
-        );
+        assert_eq!(principal.exposure().await, peko_auth::Exposure::Public);
 
         let toml = tokio::fs::read_to_string(principal.workspace_path.join("principal.toml"))
             .await

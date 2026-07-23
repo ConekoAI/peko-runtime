@@ -41,12 +41,12 @@ pub enum InstanceType {
 // schema must not depend on tunnel wire types). The tunnel converts them to
 // its wire enums here, at the boundary — the only place allowed to know both.
 
-impl From<crate::principal::config::Exposure> for InstanceExposure {
-    fn from(e: crate::principal::config::Exposure) -> Self {
+impl From<peko_auth::Exposure> for InstanceExposure {
+    fn from(e: peko_auth::Exposure) -> Self {
         match e {
-            crate::principal::config::Exposure::Private => Self::Private,
-            crate::principal::config::Exposure::Public => Self::Public,
-            crate::principal::config::Exposure::Unexposed => Self::Unexposed,
+            peko_auth::Exposure::Private => Self::Private,
+            peko_auth::Exposure::Public => Self::Public,
+            peko_auth::Exposure::Unexposed => Self::Unexposed,
         }
     }
 }
@@ -95,7 +95,7 @@ pub struct InstanceAnnouncePayload {
     /// is `allowedPrincipals` (camelCase) and the entries are
     /// `{kind, id}` objects.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_principals: Option<Vec<crate::auth::Subject>>,
+    pub allowed_principals: Option<Vec<peko_auth::Subject>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -140,7 +140,7 @@ pub struct ExposureUpdatePayload {
     /// `allowedUserIds: Vec<String>` field that PekoHub post-#19
     /// no longer reads.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_principals: Option<Vec<crate::auth::Subject>>,
+    pub allowed_principals: Option<Vec<peko_auth::Subject>>,
 }
 
 /// Payload for `status_update` messages.
@@ -492,7 +492,7 @@ mod tests {
                 runtime_display_name: Some("Test".to_string()),
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_principals: Some(vec![crate::auth::Subject::User("u1".to_string())]),
+                allowed_principals: Some(vec![peko_auth::Subject::User("u1".to_string())]),
                 capabilities: Some(vec!["c1".to_string()]),
                 metadata: Some(metadata),
                 transport_preference: Some(
@@ -723,7 +723,7 @@ mod tests {
             payload: ExposureUpdatePayload {
                 instance_id: "inst-1".to_string(),
                 exposure: InstanceExposure::Public,
-                allowed_principals: Some(vec![crate::auth::Subject::User("u1".to_string())]),
+                allowed_principals: Some(vec![peko_auth::Subject::User("u1".to_string())]),
             },
         };
         let bytes = msg.to_bytes().unwrap();

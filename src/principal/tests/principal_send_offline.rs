@@ -8,12 +8,11 @@
 //! Originally `tests/principal_send_offline.rs` (gated by `--features
 //! test-utils`). Moved inline as part of F9.3 so the gated surface can
 //! narrow — the test only consumes `crate::principal::*`, `crate::tunnel::*`,
-//! `crate::auth::*`, `crate::providers::*` etc., all of which stay `pub`.
+//! `peko_auth::*`, `crate::providers::*` etc., all of which stay `pub`.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::auth::Subject;
 use crate::chat_log::ChatLogStore;
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::core::init_global_core;
@@ -33,6 +32,7 @@ use crate::tunnel::local_directory::LocalFirstAgentDirectory;
 use crate::tunnel::principal_send_tool::{PrincipalSendResult, PrincipalSendTool};
 use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
+use peko_auth::Subject;
 use tokio::sync::RwLock;
 
 /// A directory client that panics if consulted. Wrapping it inside

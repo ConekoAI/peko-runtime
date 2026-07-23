@@ -6,9 +6,9 @@
 
 use super::overlay::SessionOverlay;
 use super::types::{OverlayType, SpawnCleanupPolicy};
-use crate::auth::Subject;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use peko_auth::Subject;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;

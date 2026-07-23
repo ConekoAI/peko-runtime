@@ -19,7 +19,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
@@ -28,6 +27,7 @@ use crate::ipc::server::PeerAddr;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::peer::PeerRegistry;
 use crate::quota::{QuotaConfig, QuotaState};
+use peko_auth::caller::CallerContext;
 
 /// Narrow port the `quota` handler uses to reach daemon state.
 ///

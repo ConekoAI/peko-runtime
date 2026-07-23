@@ -219,15 +219,15 @@ fn write_principal_with_perm(
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
 
-    cfg.exposure = peko::principal::config::Exposure::Private;
-    cfg.owner = peko::auth::Subject::User("local".into());
+    cfg.exposure = peko_auth::Exposure::Private;
+    cfg.owner = peko_auth::Subject::User("local".into());
 
     if let Some(uid) = permitted_user_id {
-        cfg.permissions.push(peko::auth::PermissionGrant {
-            subject: peko::auth::Subject::User(uid.to_string()),
-            permission: peko::auth::Permission::Chat,
+        cfg.permissions.push(peko_auth::PermissionGrant {
+            subject: peko_auth::Subject::User(uid.to_string()),
+            permission: peko_auth::Permission::Chat,
             granted_at: "2026-01-01T00:00:00Z".to_string(),
-            granted_by: peko::auth::Subject::User("system".into()),
+            granted_by: peko_auth::Subject::User("system".into()),
         });
     }
 

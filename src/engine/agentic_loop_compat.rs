@@ -18,12 +18,12 @@ pub use peko_engine::agentic_loop::{AgenticLoop, AgenticResult};
 mod tests {
     use crate::agents::agent_config::AgentConfig;
     use crate::agents::Agent;
-    use crate::auth::Subject;
     use crate::engine::async_inbox_compat::AsyncInboxAdapter;
     use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
     use crate::providers::{AnyAdapter, MockAdapter, Provider};
     use crate::session::manager::SessionManager;
     use crate::session::Session;
+    use peko_auth::Subject;
     use peko_engine::AgenticEvent;
     use peko_engine::{
         AgentView, AgenticLoop, LifecyclePhase, SessionView, StackedMeteredProvider,
@@ -168,7 +168,7 @@ mod tests {
 
         // Phase 9b.N.5b.9d: `AgenticLoop::run()` was removed (it owned
         // a `SessionManager` + `PathResolver` orchestration path that
-        // pulled `crate::auth::Subject` + `crate::session::manager::*`
+        // pulled `peko_auth::Subject` + `crate::session::manager::*`
         // into the loop — root-only types). Tests that didn't have a
         // pre-built session now build one via `test_session(...)` and
         // route through `run_with_resume` directly. Mirrors the

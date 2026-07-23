@@ -81,8 +81,8 @@ fn handle_api_key_command(cmd: ApiKeyCommands, paths: &GlobalPaths) -> Result<()
 
     match cmd {
         ApiKeyCommands::Create { name, scopes } => {
-            let store = crate::auth::api_key::ApiKeyStore::load(&resolver)?;
-            let parsed_scopes: Vec<crate::auth::types::ApiKeyScope> =
+            let store = peko_auth::api_key::ApiKeyStore::load(&resolver)?;
+            let parsed_scopes: Vec<peko_auth::types::ApiKeyScope> =
                 scopes.iter().filter_map(|s| s.parse().ok()).collect();
             let (full_key, key_id) = rt.block_on(store.create_key(name, parsed_scopes))?;
             println!("✓ API key created");
@@ -92,7 +92,7 @@ fn handle_api_key_command(cmd: ApiKeyCommands, paths: &GlobalPaths) -> Result<()
             Ok(())
         }
         ApiKeyCommands::List => {
-            let store = crate::auth::api_key::ApiKeyStore::load(&resolver)?;
+            let store = peko_auth::api_key::ApiKeyStore::load(&resolver)?;
             let keys = rt.block_on(store.list_keys());
             if keys.is_empty() {
                 println!("No API keys configured.");
@@ -112,7 +112,7 @@ fn handle_api_key_command(cmd: ApiKeyCommands, paths: &GlobalPaths) -> Result<()
             Ok(())
         }
         ApiKeyCommands::Revoke { key_id } => {
-            let store = crate::auth::api_key::ApiKeyStore::load(&resolver)?;
+            let store = peko_auth::api_key::ApiKeyStore::load(&resolver)?;
             if rt.block_on(store.revoke_key(&key_id))? {
                 println!("✓ API key {key_id} revoked");
                 Ok(())

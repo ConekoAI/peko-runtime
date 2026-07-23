@@ -294,7 +294,7 @@ impl DaemonClient {
     pub async fn principal_log(
         &self,
         principal: impl Into<String>,
-        peer: Option<crate::auth::Subject>,
+        peer: Option<peko_auth::Subject>,
         limit: Option<usize>,
         since_secs: Option<u64>,
         cursor: Option<String>,
@@ -734,8 +734,8 @@ impl DaemonClient {
     pub async fn principal_grant_permission(
         &self,
         name: impl Into<String>,
-        subject: crate::auth::Subject,
-        permission: crate::auth::ownership::Permission,
+        subject: peko_auth::Subject,
+        permission: peko_auth::ownership::Permission,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalGrantPermission {
@@ -751,8 +751,8 @@ impl DaemonClient {
     pub async fn principal_revoke_permission(
         &self,
         name: impl Into<String>,
-        subject: crate::auth::Subject,
-        permission: crate::auth::ownership::Permission,
+        subject: peko_auth::Subject,
+        permission: peko_auth::ownership::Permission,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalRevokePermission {

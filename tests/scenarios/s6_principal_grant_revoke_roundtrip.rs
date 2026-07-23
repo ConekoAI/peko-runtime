@@ -38,10 +38,9 @@ use common::{DaemonGuard, PekoCli};
 use serial_test::serial;
 use std::time::Duration;
 
-use peko::auth::ownership::Permission;
-use peko::auth::Subject;
 use peko::ipc::packet::{RequestPacket, ResponsePacket};
 use peko::ipc::DaemonClient;
+use peko_auth::{Permission, Subject};
 
 // ---------------------------------------------------------------------------
 // Fixture wiring

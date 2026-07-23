@@ -22,12 +22,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{ModelAddArgs, ModelSummary, RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
+use peko_auth::caller::CallerContext;
 
 /// Narrow port the `provider_add` handler uses to mutate the
 /// catalog + vault. Single async method so the handler stays a
