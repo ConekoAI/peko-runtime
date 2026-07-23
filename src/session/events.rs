@@ -329,21 +329,17 @@ pub struct SystemEvent {
     pub detail: serde_json::Value,
 }
 
-/// Tool call block for LLM-native storage
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallBlock {
-    pub id: String,
-    pub name: String,
-    pub arguments: serde_json::Value,
-}
+/// Tool call block for LLM-native storage.
+///
+/// Phase 9b.N.5b.9b lifted the original struct definitions to
+/// `peko_message::{ToolCallBlock, ThinkingBlock}` so `peko-engine`'s
+/// `SessionView::add_assistant_with_blocks` can accept them in its
+/// trait signature. The re-export below preserves every existing
+/// `crate::session::events::ToolCallBlock` import path.
+pub use peko_message::ToolCallBlock;
 
 /// Thinking block for reasoning models
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThinkingBlock {
-    pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub signature: Option<String>,
-}
+pub use peko_message::ThinkingBlock;
 
 /// Session end reason
 #[derive(Debug, Clone, Serialize, Deserialize)]

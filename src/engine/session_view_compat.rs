@@ -82,4 +82,72 @@ impl SessionCore for Session {
     ) -> anyhow::Result<()> {
         Session::update_context_cache(session, messages).await
     }
+
+    // ============================================================
+    // Phase 9b.N.5b.9b additions: agentic_loop surface
+    // ============================================================
+
+    async fn id(session: &Self) -> String {
+        session.id.clone()
+    }
+
+    async fn add_user(session: &mut Self, content: String) -> anyhow::Result<()> {
+        Session::add_user(session, content).await
+    }
+
+    async fn set_model(session: &mut Self, provider: &str, model: &str) {
+        Session::set_model(session, provider, model);
+    }
+
+    async fn record_model_change(
+        session: &mut Self,
+        provider: &str,
+        model_id: &str,
+    ) -> anyhow::Result<()> {
+        Session::record_model_change(session, provider, model_id).await
+    }
+
+    async fn set_model_context_limit(session: &mut Self, limit: usize) {
+        Session::set_model_context_limit(session, limit);
+    }
+
+    async fn add_assistant(
+        session: &mut Self,
+        content: String,
+        tool_calls: Option<Vec<peko_message::ToolCallInfo>>,
+        usage: Option<peko_message::TokenUsage>,
+    ) -> anyhow::Result<()> {
+        // Convert `peko_message::ToolCallInfo` → root's legacy `ToolCall`
+        // struct so `Session::add_assistant` keeps its current signature.
+        // The legacy struct only carries `name` + `parameters`; the
+        // `id` and `result` fields from `ToolCallInfo` are dropped.
+        // Every existing call site passes `None`, so this conversion is
+        // dead in practice — kept for forward-compatibility with future
+        // callers that surface tool-call IDs.
+        let legacy_tool_calls = tool_calls.map(|calls| {
+            calls
+                .into_iter()
+                .map(|info| crate::engine::ToolCall {
+                    name: info.name,
+                    parameters: info.parameters,
+                })
+                .collect()
+        });
+        Session::add_assistant(session, content, legacy_tool_calls, usage).await
+    }
+
+    async fn add_assistant_with_blocks(
+        session: &mut Self,
+        content_blocks: Vec<peko_message::ContentBlock>,
+        tool_calls: Option<Vec<peko_message::ToolCallBlock>>,
+        thinking: Option<peko_message::ThinkingBlock>,
+        usage: Option<peko_message::TokenUsage>,
+    ) -> anyhow::Result<()> {
+        Session::add_assistant_with_blocks(session, content_blocks, tool_calls, thinking, usage)
+            .await
+    }
+
+    async fn load_history(session: &Self) -> anyhow::Result<Vec<peko_message::LlmMessage>> {
+        Session::load_history(session).await
+    }
 }

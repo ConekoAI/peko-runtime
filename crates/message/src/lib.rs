@@ -19,6 +19,14 @@ mod tool_call_info;
 /// `peko_extension_host::principal_message::ToolCallInfo` path.
 pub use tool_call_info::ToolCallInfo;
 
+/// Session content blocks (`ToolCallBlock`, `ThinkingBlock`).
+///
+/// Lifted from `crate::session::events` in Phase 9b.N.5b.9b so
+/// `peko_engine::SessionView` can accept them in its trait signature.
+/// Pure data blocks with `serde` derives only — no behavior.
+pub mod session_blocks;
+pub use session_blocks::{ThinkingBlock, ToolCallBlock};
+
 /// Unique identifier for messages
 pub type MessageId = String;
 
