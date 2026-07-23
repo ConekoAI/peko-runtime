@@ -264,7 +264,7 @@ impl BackgroundCompactor {
     /// The context window is passed through to the compactor for threshold checks.
     #[allow(dead_code)]
     pub fn with_config_and_window(
-        provider: Arc<crate::providers::Provider>,
+        provider: Arc<peko_providers::Provider>,
         config: CompactionConfig,
         quota: CompactionQuota,
         meter: Arc<QuotaMeter>,

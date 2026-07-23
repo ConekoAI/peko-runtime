@@ -89,7 +89,7 @@ impl MockAdapter {
             content: vec![ContentBlock::Text { text: text.clone() }],
             tool_calls: vec![],
             stop_reason: StopReason::Stop,
-            usage: crate::providers::TokenUsage {
+            usage: crate::TokenUsage {
                 input: 0,
                 output: output_tokens,
                 total: output_tokens,
@@ -151,7 +151,7 @@ impl MockAdapter {
                 arguments: arguments.clone(),
             }],
             stop_reason: StopReason::ToolUse,
-            usage: crate::providers::TokenUsage {
+            usage: crate::TokenUsage {
                 input: 0,
                 output: output_tokens,
                 total: output_tokens,
@@ -304,7 +304,7 @@ impl MockAdapter {
                     },
                     tool_calls,
                     stop_reason,
-                    usage: crate::providers::TokenUsage::default(),
+                    usage: crate::TokenUsage::default(),
                     provider: "mock".to_string(),
                     model: model_id.to_string(),
                 })
@@ -414,7 +414,7 @@ impl ApiAdapter for MockAdapter {
             }],
             tool_calls: vec![],
             stop_reason: StopReason::Stop,
-            usage: crate::providers::TokenUsage::default(),
+            usage: crate::TokenUsage::default(),
             provider: "mock".to_string(),
             model: model_id.to_string(),
         })

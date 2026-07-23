@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/fs-persistence", "crates/identity", "crates/message", "crates/peko-daemon", "crates/provider-api",
+members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/fs-persistence", "crates/identity", "crates/message", "crates/peko-daemon", "crates/provider-api", "crates/providers",
     "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
 # ---------------------------------------------------------------------------
@@ -86,11 +86,22 @@ peko-tools-builtin = { path = "crates/tools-builtin" }
 # ThinkingFormat, ThinkingKeep, ToolChoice, ServiceTier,
 # ProviderCompat, DeferredToolsMode, CacheRetention). The
 # concrete `Provider` impl, HTTP transport, adapters, and resolver
-# stay in the root `peko` package for now — a future phase will
-# extract `peko-providers`. Depends on peko-message only; the root
-# re-exports through `crate::providers::{traits, cache_retention}`
-# for backwards compatibility.
+# moved into `peko-providers` in Phase 6; this crate now owns only
+# the contract types. Depends on peko-message only; the root
+# re-exports through `crate::providers::traits::*` (a transitional
+# shim) for backwards compatibility — the shim is deleted in
+# Phase 15.
 peko-provider-api = { path = "crates/provider-api" }
+# Workspace member providing the concrete LLM provider
+# implementations (Phase 6) — owns the unified Provider core,
+# HTTP transport, per-adapter request builders (OpenAI Chat
+# Completions / OpenAI Responses / Anthropic Messages /
+# OpenAI-compatible), the model catalog, templates, mock adapter,
+# metered wrapper, validator, LlmResolver, RotationState, and the
+# read-side `SecretStore` trait with `InMemorySecretStore` impl.
+# Replaces root `src/providers/`; the historical
+# `crate::providers::*` paths are intentionally broken.
+peko-providers = { path = "crates/providers" }
 # Workspace member providing the extension framework API contracts
 # (Phase 7) — owns ExtensionId, HookId, HookInput/Output/Result,
 # ExtensionManifest, Capability, Capabilities, ActiveExtensionSet,

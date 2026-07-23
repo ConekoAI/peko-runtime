@@ -5,12 +5,12 @@
 //! - Anthropic: Messages API
 //! - OpenAI-Compatible: Same as `OpenAI` with different base URL
 
-use crate::providers::mock::MockAdapter;
-use crate::providers::traits::{
+use crate::mock::MockAdapter;
+use crate::transport::AuthConfig;
+use anyhow::Result;
+use peko_provider_api::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StreamEvent, ToolDefinition,
 };
-use crate::providers::transport::AuthConfig;
-use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

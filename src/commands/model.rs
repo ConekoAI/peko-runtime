@@ -26,9 +26,9 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::vault::{Credential, CredentialKind, Vault};
-use crate::providers::catalog::{ApiFormat, ModelCatalog, ModelConfig};
-use crate::providers::templates;
 use anyhow::{Context, Result};
+use peko_providers::catalog::{ApiFormat, ModelCatalog, ModelConfig};
+use peko_providers::templates;
 
 /// Vault namespace for model API keys.
 const LLM_NAMESPACE: &str = "llm";
@@ -417,7 +417,7 @@ async fn test_cmd(id: &str, paths: &GlobalPaths) -> Result<()> {
         None => None,
     };
 
-    let outcome = crate::providers::validator::Validator::test(&config, api_key.as_ref()).await;
+    let outcome = peko_providers::validator::Validator::test(&config, api_key.as_ref()).await;
 
     // Record the outcome on the credential so `credential list` shows
     // the last-tested marker.
@@ -585,7 +585,7 @@ mod tests {
     #[serial_test::serial(vault_passphrase)]
     async fn one_shot_add_writes_catalog_and_vault() {
         use crate::common::vault::Vault;
-        use crate::providers::catalog::ModelCatalog;
+        use peko_providers::catalog::ModelCatalog;
         use secrecy::{ExposeSecret, SecretString};
 
         let paths = fresh_paths();

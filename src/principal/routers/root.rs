@@ -26,7 +26,7 @@ use crate::principal::router::{
 };
 // F19: removed `use crate::quota::QuotaMeter;` — the router no
 // longer carries a quota meter field.
-use crate::providers::LlmResolver;
+use peko_providers::LlmResolver;
 
 /// Load the compiled-in root agent prompt.
 pub fn default_root_prompt() -> AgentPrompt {

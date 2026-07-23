@@ -671,7 +671,7 @@ impl ExtensionCore {
 
     /// List all registered tools (visible to `PrincipalId::system()`) as
     /// `ToolDefinitions` (for LLM API).
-    pub async fn list_tool_definitions(&self) -> Vec<crate::providers::ToolDefinition> {
+    pub async fn list_tool_definitions(&self) -> Vec<peko_providers::ToolDefinition> {
         self.list_tool_definitions_for(PrincipalId::system()).await
     }
 
@@ -679,7 +679,7 @@ impl ExtensionCore {
     pub async fn list_tool_definitions_for(
         &self,
         principal_id: &PrincipalId,
-    ) -> Vec<crate::providers::ToolDefinition> {
+    ) -> Vec<peko_providers::ToolDefinition> {
         self.list_tools(principal_id)
             .await
             .into_iter()
@@ -702,7 +702,7 @@ impl ExtensionCore {
         capabilities: &Capabilities,
         active_extensions: Option<&ActiveExtensionSet>,
         principal_id: &PrincipalId,
-    ) -> Vec<crate::providers::ToolDefinition> {
+    ) -> Vec<peko_providers::ToolDefinition> {
         let all = self.list_tools(principal_id).await;
         let mut filtered = Vec::new();
         for metadata in all {
@@ -760,7 +760,7 @@ impl ExtensionCore {
         principal_id: &PrincipalId,
         query: &str,
         limit: usize,
-    ) -> Vec<crate::providers::ToolDefinition> {
+    ) -> Vec<peko_providers::ToolDefinition> {
         if query.trim().is_empty() || limit == 0 {
             return Vec::new();
         }

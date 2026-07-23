@@ -28,10 +28,10 @@ use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::observability::Observability;
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
-use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 use crate::subject::PrincipalId;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
+use peko_providers::LlmResolver;
 
 use super::Capabilities;
 

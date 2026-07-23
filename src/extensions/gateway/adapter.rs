@@ -560,7 +560,7 @@ impl HookHandler for GatewayToolHandler {
         let mut tool_defs = Vec::new();
 
         for tool in &self.tools {
-            let tool_def = crate::providers::ToolDefinition {
+            let tool_def = peko_providers::ToolDefinition {
                 name: tool.name.clone(),
                 description: tool.description.clone(),
                 parameters: tool.parameters.clone(),

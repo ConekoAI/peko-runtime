@@ -639,12 +639,12 @@ mod tests {
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalManager, PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
-    use crate::providers::mock::MockAdapter;
-    use crate::providers::resolver::LlmResolver;
     use crate::subject::Subject;
     use chrono::{Duration, Utc};
     use peko_auth::Exposure;
     use peko_auth::{Permission, PermissionGrant};
+    use peko_providers::mock::MockAdapter;
+    use peko_providers::resolver::LlmResolver;
     use std::sync::Arc;
     use tempfile::TempDir;
 

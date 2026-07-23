@@ -3,15 +3,15 @@
 //! Handles conversion between unified types and Anthropic Messages API format.
 
 use super::{extract_text_content, ToolCallAccumulator};
-use crate::common::types::message::ImageSource;
-use crate::providers::cache_retention::CacheRetention;
-use crate::providers::traits::{
+use crate::transport::AuthConfig;
+use crate::DEFAULT_MAX_OUTPUT_TOKENS;
+use anyhow::{Context, Result};
+use peko_message::ImageSource;
+use peko_provider_api::CacheRetention;
+use peko_provider_api::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolChoice, ToolDefinition,
 };
-use crate::providers::transport::AuthConfig;
-use crate::providers::DEFAULT_MAX_OUTPUT_TOKENS;
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -497,13 +497,13 @@ impl super::ApiAdapter for AnthropicAdapter {
                     // (Low/Medium/High/XHigh/Max), pass the same string
                     // — Anthropic maps `Low → low`, `High → high`, etc.
                     let effort_str = match effort {
-                        crate::providers::ThinkingEffort::Low => "low",
-                        crate::providers::ThinkingEffort::Medium => "medium",
-                        crate::providers::ThinkingEffort::High => "high",
-                        crate::providers::ThinkingEffort::XHigh => "max",
-                        crate::providers::ThinkingEffort::Max => "max",
-                        crate::providers::ThinkingEffort::Adaptive => "high",
-                        crate::providers::ThinkingEffort::None => "medium",
+                        crate::ThinkingEffort::Low => "low",
+                        crate::ThinkingEffort::Medium => "medium",
+                        crate::ThinkingEffort::High => "high",
+                        crate::ThinkingEffort::XHigh => "max",
+                        crate::ThinkingEffort::Max => "max",
+                        crate::ThinkingEffort::Adaptive => "high",
+                        crate::ThinkingEffort::None => "medium",
                     };
                     body["thinking"] = json!({"type": "adaptive"});
                     body["output_config"] = json!({"effort": effort_str});
@@ -810,7 +810,7 @@ impl super::ApiAdapter for AnthropicAdapter {
         // context-management beta automatically. Without this beta,
         // Anthropic rejects `context_management: {...}` as an
         // unknown field.
-        if options.thinking_keep != crate::providers::ThinkingKeep::Off {
+        if options.thinking_keep != crate::ThinkingKeep::Off {
             betas.push("context-management-2025-06-27".to_string());
         }
         // F27: caller-supplied betas (sorted last so the
@@ -1026,7 +1026,7 @@ struct AnthropicDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::adapters::ApiAdapter;
+    use crate::adapters::ApiAdapter;
 
     #[test]
     fn test_adapter_creation() {
@@ -1127,10 +1127,7 @@ mod tests {
 
         let event = adapter.parse_sse_event("claude-3-sonnet", data).unwrap();
         // Should return Start event
-        assert!(matches!(
-            event,
-            Some(crate::providers::StreamEvent::Start { .. })
-        ));
+        assert!(matches!(event, Some(crate::StreamEvent::Start { .. })));
         // The full usage block should be cached for the matching
         // `message_delta` to combine with `output_tokens`.
         let stored = adapter.pending_input_tokens.lock().unwrap().clone();
@@ -1153,7 +1150,7 @@ mod tests {
 
         let event = adapter.parse_sse_event("claude-3-sonnet", data).unwrap();
         match event {
-            Some(crate::providers::StreamEvent::Usage {
+            Some(crate::StreamEvent::Usage {
                 input,
                 output,
                 total,
@@ -1201,7 +1198,7 @@ mod tests {
             .parse_sse_event("claude-3-sonnet", delta_data)
             .unwrap();
         match event {
-            Some(crate::providers::StreamEvent::Usage {
+            Some(crate::StreamEvent::Usage {
                 input,
                 output,
                 cache_creation_input_tokens,
@@ -1226,7 +1223,7 @@ mod tests {
         }}"#;
         let event = adapter.parse_sse_event("claude-3-sonnet", delta2).unwrap();
         match event {
-            Some(crate::providers::StreamEvent::Usage {
+            Some(crate::StreamEvent::Usage {
                 cache_creation_input_tokens,
                 cache_read_input_tokens,
                 ..
@@ -1531,7 +1528,7 @@ mod tests {
     fn test_build_request_budget_mode_emits_enabled_and_beta() {
         let adapter = AnthropicAdapter::new();
         let options = ChatOptions {
-            thinking_effort: crate::providers::ThinkingEffort::High,
+            thinking_effort: crate::ThinkingEffort::High,
             ..Default::default()
         };
         let (_, body) = adapter
@@ -1556,7 +1553,7 @@ mod tests {
     fn test_build_request_adaptive_mode_on_opus_4_6() {
         let adapter = AnthropicAdapter::new();
         let options = ChatOptions {
-            thinking_effort: crate::providers::ThinkingEffort::High,
+            thinking_effort: crate::ThinkingEffort::High,
             ..Default::default()
         };
         let (_, body) = adapter
@@ -1579,7 +1576,7 @@ mod tests {
     fn test_build_request_adaptive_effort_on_non_adaptive_model_falls_back() {
         let adapter = AnthropicAdapter::new();
         let options = ChatOptions {
-            thinking_effort: crate::providers::ThinkingEffort::Adaptive,
+            thinking_effort: crate::ThinkingEffort::Adaptive,
             ..Default::default()
         };
         let (_, body) = adapter
@@ -1615,7 +1612,7 @@ mod tests {
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#;
         let event = adapter.parse_sse_event("claude-opus-4-6", data).unwrap();
         match event {
-            Some(crate::providers::StreamEvent::ThinkingStart { content_index }) => {
+            Some(crate::StreamEvent::ThinkingStart { content_index }) => {
                 assert_eq!(content_index, 0);
             }
             other => panic!("expected ThinkingStart, got {other:?}"),
@@ -1659,7 +1656,7 @@ mod tests {
             parameters: json!({"type": "object"}),
         }];
         let options = ChatOptions {
-            tool_choice: crate::providers::ToolChoice::Required,
+            tool_choice: crate::ToolChoice::Required,
             ..Default::default()
         };
         let (_, body) = adapter
@@ -1686,7 +1683,7 @@ mod tests {
             parameters: json!({"type": "object"}),
         }];
         let options = ChatOptions {
-            tool_choice: crate::providers::ToolChoice::Forced("Read".to_string()),
+            tool_choice: crate::ToolChoice::Forced("Read".to_string()),
             ..Default::default()
         };
         let (_, body) = adapter
@@ -1717,7 +1714,7 @@ mod tests {
         let options = ChatOptions {
             parallel_tool_calls: Some(false),
             safety_identifier: Some("user-hash".to_string()),
-            tool_choice: crate::providers::ToolChoice::Required,
+            tool_choice: crate::ToolChoice::Required,
             ..Default::default()
         };
         let (_, body) = adapter
@@ -1840,7 +1837,7 @@ mod tests {
     fn test_f27_thinking_keep_turn_emits_context_management() {
         let adapter = AnthropicAdapter::new();
         let options = ChatOptions {
-            thinking_keep: crate::providers::ThinkingKeep::Turn,
+            thinking_keep: crate::ThinkingKeep::Turn,
             ..Default::default()
         };
         let (_, body) = adapter
@@ -1868,7 +1865,7 @@ mod tests {
     fn test_f27_thinking_keep_all_emits_all_keep() {
         let adapter = AnthropicAdapter::new();
         let options = ChatOptions {
-            thinking_keep: crate::providers::ThinkingKeep::All,
+            thinking_keep: crate::ThinkingKeep::All,
             ..Default::default()
         };
         let (_, body) = adapter
@@ -1884,8 +1881,8 @@ mod tests {
     fn test_f27_combined_betas_join_with_comma() {
         let adapter = AnthropicAdapter::new();
         let options = ChatOptions {
-            thinking_effort: crate::providers::ThinkingEffort::High,
-            thinking_keep: crate::providers::ThinkingKeep::Turn,
+            thinking_effort: crate::ThinkingEffort::High,
+            thinking_keep: crate::ThinkingKeep::Turn,
             betas: vec!["prompt-caching-2024-07-31".to_string()],
             ..Default::default()
         };
@@ -1907,15 +1904,9 @@ mod tests {
     /// wire-shape drift.
     #[test]
     fn test_thinking_keep_as_wire_str() {
-        assert_eq!(crate::providers::ThinkingKeep::Off.as_wire_str(), None);
-        assert_eq!(
-            crate::providers::ThinkingKeep::Turn.as_wire_str(),
-            Some("turn")
-        );
-        assert_eq!(
-            crate::providers::ThinkingKeep::All.as_wire_str(),
-            Some("all")
-        );
+        assert_eq!(crate::ThinkingKeep::Off.as_wire_str(), None);
+        assert_eq!(crate::ThinkingKeep::Turn.as_wire_str(), Some("turn"));
+        assert_eq!(crate::ThinkingKeep::All.as_wire_str(), Some("all"));
     }
 
     // ---------- F28: multimodal image content (Anthropic) ----------

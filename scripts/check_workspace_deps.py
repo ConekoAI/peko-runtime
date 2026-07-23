@@ -78,6 +78,18 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "providers must depend on provider-api/contracts only — engine imports "
         "would invert the contract and reintroduce the F6/F7 abstraction slip.",
     ),
+    # Phase 6 — concrete peko-providers must not depend on peko-engine.
+    # `peko-engine` consumes `peko_providers::ProviderView` as a
+    # back-compat re-export, but the direction engine→providers is the
+    # only allowed one. Inverting it would drag the agentic loop,
+    # compaction, and tool funnel into the providers crate.
+    (
+        "peko-providers",
+        "peko-engine",
+        "concrete providers must depend on provider-api/message/quota/events/subject "
+        "only — engine imports would invert the contract and force the "
+        "agentic loop, compaction, and tool funnel to live next to the providers.",
+    ),
     # peko-engine must not depend on concrete built-in implementations
     (
         "peko-engine",

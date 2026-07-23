@@ -17,10 +17,10 @@ use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
 use crate::common::types::message::LlmMessage;
 use crate::engine::AgenticEvent;
-use crate::providers::TokenUsage;
 use crate::session::manager::SessionManager;
 use crate::session::types::ChannelType;
 use peko_auth::Subject;
+use peko_providers::TokenUsage;
 // Note: Session storage uses jsonl module directly
 use crate::common::types::message::ContentBlock;
 use anyhow::{Context, Result};
@@ -212,7 +212,7 @@ pub struct StatelessAgentService {
     /// v3 LLM resolver. Required in production (every `peko send`
     /// goes through `LlmResolver::build`); may be `None` only in
     /// offline unit tests that don't exercise the LLM path.
-    resolver: Option<Arc<crate::providers::LlmResolver>>,
+    resolver: Option<Arc<peko_providers::LlmResolver>>,
 }
 
 // Cycle 5 (refactor/clippy-cleanup-rust196): implement the
@@ -253,7 +253,7 @@ impl StatelessAgentService {
     pub async fn new_with_resolver(
         config_service: Arc<ConfigAuthorityImpl>,
         path_resolver: PathResolver,
-        resolver: Option<Arc<crate::providers::LlmResolver>>,
+        resolver: Option<Arc<peko_providers::LlmResolver>>,
     ) -> Result<Self> {
         let service = Self {
             config_service,
@@ -277,7 +277,7 @@ impl StatelessAgentService {
 
     /// The v3 `LlmResolver` if one was wired at construction time.
     #[must_use]
-    pub fn resolver(&self) -> Option<&Arc<crate::providers::LlmResolver>> {
+    pub fn resolver(&self) -> Option<&Arc<peko_providers::LlmResolver>> {
         self.resolver.as_ref()
     }
 

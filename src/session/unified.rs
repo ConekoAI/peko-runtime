@@ -19,7 +19,6 @@
 use crate::common::types::message::ContentBlock;
 use crate::common::types::message::LlmMessage;
 use crate::engine::ToolCall;
-use crate::providers::TokenUsage as ProviderTokenUsage;
 use crate::session::events::{
     generate_event_id, generate_message_id, EventEnvelope, SessionEvent, ToolCallBlock,
 };
@@ -33,6 +32,7 @@ use crate::session::NormalizedEntry;
 use anyhow::Result;
 use chrono::Utc;
 use peko_auth::Subject;
+use peko_providers::TokenUsage as ProviderTokenUsage;
 use tracing::warn;
 
 /// Session - internal implementation for conversation persistence
@@ -1120,9 +1120,9 @@ mod tests {
 
         let context = session.build_context().await.unwrap();
         assert_eq!(context.len(), 3);
-        assert_eq!(context[0].role, crate::providers::MessageRole::System);
-        assert_eq!(context[1].role, crate::providers::MessageRole::User);
-        assert_eq!(context[2].role, crate::providers::MessageRole::Assistant);
+        assert_eq!(context[0].role, peko_providers::MessageRole::System);
+        assert_eq!(context[1].role, peko_providers::MessageRole::User);
+        assert_eq!(context[2].role, peko_providers::MessageRole::Assistant);
     }
 
     #[tokio::test]
@@ -1175,14 +1175,14 @@ mod tests {
             3,
             "Expected summary + 2 messages after compaction"
         );
-        assert_eq!(context[0].role, crate::providers::MessageRole::System);
+        assert_eq!(context[0].role, peko_providers::MessageRole::System);
         let summary_text = match &context[0].content[0] {
             crate::common::types::message::ContentBlock::Text { text } => text.as_str(),
             _ => "",
         };
         assert!(summary_text.contains("Summary of old messages"));
-        assert_eq!(context[1].role, crate::providers::MessageRole::User);
-        assert_eq!(context[2].role, crate::providers::MessageRole::Assistant);
+        assert_eq!(context[1].role, peko_providers::MessageRole::User);
+        assert_eq!(context[2].role, peko_providers::MessageRole::Assistant);
     }
 
     #[tokio::test]
@@ -1369,7 +1369,7 @@ mod tests {
         );
         assert_eq!(
             context_after[0].role,
-            crate::providers::MessageRole::System,
+            peko_providers::MessageRole::System,
             "First message should be summary"
         );
         let summary_text = match &context_after[0].content[0] {

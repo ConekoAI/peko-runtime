@@ -3,11 +3,9 @@
 //! For providers that use the `OpenAI` API format but with different base URLs.
 //! This is a thin wrapper around `OpenAiAdapter` that allows custom base URLs.
 
-use crate::providers::traits::{
-    ChatOptions, ChatResponse, LlmMessage, StreamEvent, ToolDefinition,
-};
-use crate::providers::transport::AuthConfig;
+use crate::transport::AuthConfig;
 use anyhow::Result;
+use peko_provider_api::{ChatOptions, ChatResponse, LlmMessage, StreamEvent, ToolDefinition};
 use serde_json::Value;
 
 use super::openai::OpenAiAdapter;
@@ -131,7 +129,7 @@ impl super::ApiAdapter for OpenAiCompatibleAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::adapters::ApiAdapter;
+    use crate::adapters::ApiAdapter;
 
     #[test]
     fn test_groq_adapter() {

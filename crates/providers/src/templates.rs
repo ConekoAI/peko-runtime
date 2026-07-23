@@ -26,8 +26,8 @@
 //! non-empty model list, and a `default_model` that references one of
 //! those models. Add a unit test asserting the template is findable.
 
-use crate::providers::catalog::ApiFormat;
-use crate::providers::traits::ProviderCompat;
+use crate::catalog::ApiFormat;
+use peko_provider_api::ProviderCompat;
 
 /// One model declared by a provider template.
 #[derive(Debug, Clone, Copy)]
@@ -136,8 +136,8 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         default_model: "claude-sonnet-4-5",
         headers: &[],
         compat: Some(ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::Anthropic,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+            thinking_format: peko_provider_api::ThinkingFormat::Anthropic,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
         }),
     },
     // ── OpenAI-compatible providers (alphabetical) ────────────────────
@@ -203,8 +203,8 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         // so callers get the same effort string as OpenAI plus the
         // DeepSeek-specific `type: "enabled"` marker.
         compat: Some(ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::DeepSeek,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+            thinking_format: peko_provider_api::ThinkingFormat::DeepSeek,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
         }),
     },
     ProviderTemplate {
@@ -251,8 +251,8 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         // to `ThinkingFormat::OpenAi` instead of relying on the
         // fallback (which is the same value).
         compat: Some(ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::OpenAi,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+            thinking_format: peko_provider_api::ThinkingFormat::OpenAi,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
         }),
     },
     ProviderTemplate {
@@ -278,8 +278,8 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         // (`https://api.kimi.com/coding`) which uses a different
         // `extra_body.thinking` shape.
         compat: Some(ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::OpenAi,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+            thinking_format: peko_provider_api::ThinkingFormat::OpenAi,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
         }),
     },
     ProviderTemplate {
@@ -335,8 +335,8 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         // follow-up PR's emit does not silently fall back to OpenAI
         // and surprise users.
         compat: Some(ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::OpenRouter,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+            thinking_format: peko_provider_api::ThinkingFormat::OpenRouter,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
         }),
     },
     ProviderTemplate {
@@ -373,8 +373,8 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         // emission for this variant is documented in the plan;
         // defer concrete emit to F30+.
         compat: Some(ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::Together,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+            thinking_format: peko_provider_api::ThinkingFormat::Together,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
         }),
     },
     ProviderTemplate {
@@ -425,8 +425,8 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         // ToolUse }` before surfacing tool calls. Wire emission for
         // this variant lands in F30+.
         compat: Some(ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::Kimi,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Kimi,
+            thinking_format: peko_provider_api::ThinkingFormat::Kimi,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Kimi,
         }),
     },
     ProviderTemplate {
@@ -444,8 +444,8 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         default_model: "MiniMax-M3",
         headers: &[],
         compat: Some(ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::Anthropic,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+            thinking_format: peko_provider_api::ThinkingFormat::Anthropic,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
         }),
     },
     // F29 new templates: zai + qwen
@@ -476,8 +476,8 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         // emission deferred to F30+; the compat binding is here so
         // the resolver returns `Zai` instead of `Anthropic`.
         compat: Some(ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::Zai,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+            thinking_format: peko_provider_api::ThinkingFormat::Zai,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
         }),
     },
     ProviderTemplate {
@@ -506,8 +506,8 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         // `extra_body.enable_thinking: bool`. Toggle only — no
         // effort levels. Wire emission deferred to F30+.
         compat: Some(ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::Qwen,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+            thinking_format: peko_provider_api::ThinkingFormat::Qwen,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
         }),
     },
 ];
@@ -590,11 +590,11 @@ mod tests {
         let c = compat_of("deepseek").expect("deepseek template has compat");
         assert_eq!(
             c.thinking_format,
-            crate::providers::traits::ThinkingFormat::DeepSeek
+            peko_provider_api::ThinkingFormat::DeepSeek
         );
         assert_eq!(
             c.deferred_tools_mode,
-            crate::providers::traits::DeferredToolsMode::Off
+            peko_provider_api::DeferredToolsMode::Off
         );
     }
 
@@ -603,22 +603,16 @@ mod tests {
         // Moonshot's `https://api.moonshot.cn/v1` is a chat-completions
         // surface — same `reasoning_effort` field as OpenAI.
         let c = compat_of("moonshot").expect("moonshot template has compat");
-        assert_eq!(
-            c.thinking_format,
-            crate::providers::traits::ThinkingFormat::OpenAi
-        );
+        assert_eq!(c.thinking_format, peko_provider_api::ThinkingFormat::OpenAi);
     }
 
     #[test]
     fn f29_kimi_anthropic_compat_carries_kimi_thinking_format_and_deferred_tools() {
         let c = compat_of("kimi").expect("kimi template has compat");
-        assert_eq!(
-            c.thinking_format,
-            crate::providers::traits::ThinkingFormat::Kimi
-        );
+        assert_eq!(c.thinking_format, peko_provider_api::ThinkingFormat::Kimi);
         assert_eq!(
             c.deferred_tools_mode,
-            crate::providers::traits::DeferredToolsMode::Kimi
+            peko_provider_api::DeferredToolsMode::Kimi
         );
     }
 
@@ -628,11 +622,11 @@ mod tests {
         let tg = compat_of("together").expect("together compat");
         assert_eq!(
             or.thinking_format,
-            crate::providers::traits::ThinkingFormat::OpenRouter
+            peko_provider_api::ThinkingFormat::OpenRouter
         );
         assert_eq!(
             tg.thinking_format,
-            crate::providers::traits::ThinkingFormat::Together
+            peko_provider_api::ThinkingFormat::Together
         );
     }
 
@@ -640,22 +634,16 @@ mod tests {
     fn f29_new_zai_and_qwen_templates_exist_with_distinct_formats() {
         let z = compat_of("zai").expect("zai template registered");
         let q = compat_of("qwen").expect("qwen template registered");
-        assert_eq!(
-            z.thinking_format,
-            crate::providers::traits::ThinkingFormat::Zai
-        );
-        assert_eq!(
-            q.thinking_format,
-            crate::providers::traits::ThinkingFormat::Qwen
-        );
+        assert_eq!(z.thinking_format, peko_provider_api::ThinkingFormat::Zai);
+        assert_eq!(q.thinking_format, peko_provider_api::ThinkingFormat::Qwen);
         // Both flavours have non-Kimi deferred-tools behaviour.
         assert_eq!(
             z.deferred_tools_mode,
-            crate::providers::traits::DeferredToolsMode::Off
+            peko_provider_api::DeferredToolsMode::Off
         );
         assert_eq!(
             q.deferred_tools_mode,
-            crate::providers::traits::DeferredToolsMode::Off
+            peko_provider_api::DeferredToolsMode::Off
         );
     }
 
@@ -669,7 +657,7 @@ mod tests {
         let zai = compat_of("zai").expect("zai compat");
         assert_eq!(
             anthropic.thinking_format,
-            crate::providers::traits::ThinkingFormat::Anthropic
+            peko_provider_api::ThinkingFormat::Anthropic
         );
         assert_ne!(anthropic.thinking_format, zai.thinking_format);
     }

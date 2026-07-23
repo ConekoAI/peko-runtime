@@ -33,7 +33,7 @@ pub struct Agent {
     /// hints (or the runtime default) at session start. The
     /// `Option` shape is preserved for unit tests that don't wire
     /// a resolver and run pure-Rust agentic-loop tests offline.
-    provider: Option<Arc<crate::providers::Provider>>,
+    provider: Option<Arc<peko_providers::Provider>>,
     /// Catalog id picked by `LlmResolver::build` for this session.
     ///
     /// Captured from `ResolvedChoice::model_id` at construction time
@@ -45,7 +45,7 @@ pub struct Agent {
     /// Optional resolver (v3+). When present, `init_provider` builds
     /// a one-shot `Provider` per session via the catalog + secret
     /// store, applying the agent's `preferred_*` hints.
-    llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+    llm_resolver: Option<Arc<peko_providers::LlmResolver>>,
     /// Session manager for overlay lifecycle
     session_manager: Arc<TokioRwLock<SessionManager>>,
     /// Subagent executor for background task execution
@@ -421,7 +421,7 @@ impl Agent {
     /// pre-v3 fixtures still work.
     pub async fn new_with_resolver(
         config: AgentConfig,
-        resolver: Arc<crate::providers::LlmResolver>,
+        resolver: Arc<peko_providers::LlmResolver>,
     ) -> Result<Self> {
         let path_resolver = PathResolver::new();
         let session_manager = SessionManager::new()
@@ -452,7 +452,7 @@ impl Agent {
     pub async fn new_with_session_manager_and_resolver(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
-        llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+        llm_resolver: Option<Arc<peko_providers::LlmResolver>>,
     ) -> Result<Self> {
         Self::new_with_session_manager_resolver(
             config,
@@ -483,7 +483,7 @@ impl Agent {
     pub async fn new_with_session_manager_resolver(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
-        llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+        llm_resolver: Option<Arc<peko_providers::LlmResolver>>,
         // Model-first: a single configured model id pinned by the
         // Principal, or `None` for non-principal callers/tests.
         provider_hint: Option<String>,
@@ -773,7 +773,7 @@ impl Agent {
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
-        inherited_provider: Option<Arc<crate::providers::Provider>>,
+        inherited_provider: Option<Arc<peko_providers::Provider>>,
         principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
         principal_active_extensions: Option<
             crate::extensions::framework::types::ActiveExtensionSet,
@@ -822,7 +822,7 @@ impl Agent {
                 None => (None, None),
             },
         };
-        let llm_resolver: Option<Arc<crate::providers::LlmResolver>> = None;
+        let llm_resolver: Option<Arc<peko_providers::LlmResolver>> = None;
 
         let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
             "agent:{}:cli:default",
@@ -928,7 +928,7 @@ impl Agent {
 
     /// Get provider reference
     #[must_use]
-    pub fn get_provider(&self) -> Option<&crate::providers::Provider> {
+    pub fn get_provider(&self) -> Option<&peko_providers::Provider> {
         self.provider.as_deref()
     }
 
@@ -948,7 +948,7 @@ impl Agent {
 
     /// Get the provider as an `Arc`.
     #[must_use]
-    pub fn provider_arc(&self) -> Option<Arc<crate::providers::Provider>> {
+    pub fn provider_arc(&self) -> Option<Arc<peko_providers::Provider>> {
         self.provider.clone()
     }
 
@@ -959,7 +959,7 @@ impl Agent {
     /// accessor. Callers that need catalog lookups (e.g.
     /// `model_context_length` for compaction) consult this.
     #[must_use]
-    pub fn llm_resolver(&self) -> Option<Arc<crate::providers::LlmResolver>> {
+    pub fn llm_resolver(&self) -> Option<Arc<peko_providers::LlmResolver>> {
         self.llm_resolver.clone()
     }
 
@@ -1380,7 +1380,7 @@ impl Agent {
     pub async fn build_agentic_loop(
         &self,
         agent_arc: Arc<Agent>,
-        provider: Arc<crate::providers::Provider>,
+        provider: Arc<peko_providers::Provider>,
         session_key: Option<String>,
         caller_id: Option<String>,
         cancel: Option<tokio_util::sync::CancellationToken>,
@@ -2214,14 +2214,14 @@ impl Agent {
     /// provider's `default_model_id` and not the resolved catalog id.
     async fn init_provider(
         config: &AgentConfig,
-        resolver: Option<&Arc<crate::providers::LlmResolver>>,
+        resolver: Option<&Arc<peko_providers::LlmResolver>>,
         // Model-first: the principal's pinned configured model id, or
         // `None` for non-principal callers/tests.
         provider_hint: Option<String>,
         // Model-first: per-message configured model override (e.g.
         // `peko send --model <id>`).
         message_override: Option<String>,
-    ) -> Result<Option<(Arc<crate::providers::Provider>, String)>> {
+    ) -> Result<Option<(Arc<peko_providers::Provider>, String)>> {
         // v3 path: ask the resolver to build a one-shot provider from
         // the supplied hint. No legacy fallback — the inline `[provider]`
         // block on `AgentConfig` is gone; the resolver is the only source
@@ -2229,7 +2229,7 @@ impl Agent {
         let Some(r) = resolver else {
             return Ok(None);
         };
-        let req = crate::providers::resolver::ResolveRequest {
+        let req = peko_providers::resolver::ResolveRequest {
             override_model: message_override.as_deref(),
             session_model: None,
             agent_model: provider_hint.as_deref(),

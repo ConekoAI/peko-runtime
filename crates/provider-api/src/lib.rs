@@ -32,6 +32,7 @@
 
 pub mod cache_retention;
 pub mod context_window_error;
+pub mod credentials;
 pub mod prompt_cache;
 pub mod retryable_error;
 pub mod traits;
@@ -46,6 +47,7 @@ pub use peko_message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
 // (`peko_provider_api::traits::ChatOptions`) form interchangeably.
 pub use cache_retention::CacheRetention;
 pub use context_window_error::is_context_window_exceeded;
+pub use credentials::{CredentialError, CredentialMaterial, CredentialProvider, RotationEntry};
 pub use prompt_cache::clamp_openai_prompt_cache_key;
 pub use retryable_error::RetryableError;
 pub use traits::{

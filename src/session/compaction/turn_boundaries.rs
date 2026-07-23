@@ -6,7 +6,7 @@
 
 use crate::common::types::message::ContentBlock;
 use crate::common::types::message::LlmMessage;
-use crate::providers::MessageRole;
+use peko_providers::MessageRole;
 
 /// A message classification for boundary decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

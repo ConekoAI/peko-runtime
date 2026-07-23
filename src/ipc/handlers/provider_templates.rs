@@ -29,9 +29,9 @@ use crate::ipc::packet::{ModelPresetInfo, RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
-use crate::providers::catalog::ApiFormat;
-use crate::providers::templates::{self, ModelTemplate, ProviderTemplate};
 use peko_auth::caller::CallerContext;
+use peko_providers::catalog::ApiFormat;
+use peko_providers::templates::{self, ModelTemplate, ProviderTemplate};
 
 /// Narrow port the `provider_templates` handler uses to read the
 /// built-in preset list.

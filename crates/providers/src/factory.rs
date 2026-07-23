@@ -13,11 +13,9 @@
 use anyhow::Result;
 use std::sync::Arc;
 
-use crate::providers::adapters::{
-    AnthropicAdapter, AnyAdapter, OpenAiAdapter, OpenAiResponsesAdapter,
-};
-use crate::providers::catalog::ModelConfig;
-use crate::providers::core::{Provider, ProviderRuntimeOptions};
+use crate::adapters::{AnthropicAdapter, AnyAdapter, OpenAiAdapter, OpenAiResponsesAdapter};
+use crate::catalog::ModelConfig;
+use crate::core::{Provider, ProviderRuntimeOptions};
 
 /// Default HTTP request timeout for outbound LLM calls, in seconds.
 const PROVIDER_TIMEOUT_SECS: u64 = 300;
@@ -31,7 +29,7 @@ const PROVIDER_RETRY_DELAY_MS: u64 = 1000;
 /// Build an `Arc<Provider>` from a configured model + API key.
 pub fn create_provider_for_model(config: &ModelConfig, api_key: &str) -> Result<Arc<Provider>> {
     let adapter = match config.api_format {
-        crate::providers::catalog::ApiFormat::OpenaiCompletions => {
+        crate::catalog::ApiFormat::OpenaiCompletions => {
             let a = if config.base_url.is_empty() {
                 OpenAiAdapter::new()
             } else {
@@ -39,7 +37,7 @@ pub fn create_provider_for_model(config: &ModelConfig, api_key: &str) -> Result<
             };
             AnyAdapter::OpenAi(a)
         }
-        crate::providers::catalog::ApiFormat::AnthropicMessages => {
+        crate::catalog::ApiFormat::AnthropicMessages => {
             let a = if config.base_url.is_empty() {
                 AnthropicAdapter::new()
             } else {
@@ -47,7 +45,7 @@ pub fn create_provider_for_model(config: &ModelConfig, api_key: &str) -> Result<
             };
             AnyAdapter::Anthropic(a)
         }
-        crate::providers::catalog::ApiFormat::OpenAiResponses => {
+        crate::catalog::ApiFormat::OpenAiResponses => {
             let a = if config.base_url.is_empty() {
                 OpenAiResponsesAdapter::new()
             } else {
@@ -83,8 +81,8 @@ pub fn create_provider_for_model(config: &ModelConfig, api_key: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::catalog::ModelConfig;
-    use crate::providers::templates;
+    use crate::catalog::ModelConfig;
+    use crate::templates;
 
     fn anthropic_config() -> ModelConfig {
         ModelConfig::from_template(

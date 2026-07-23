@@ -17,7 +17,6 @@ use crate::common::types::OutputFormat;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::observability::Observability;
-use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 use crate::subject::PrincipalDID;
 use peko_auth::ownership::{check_permission, Permission, Resource};
@@ -25,6 +24,7 @@ use peko_auth::Subject;
 use peko_extension_host::SteeringMessage;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
+use peko_providers::LlmResolver;
 
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
@@ -997,7 +997,7 @@ mod tests {
         router::{ChannelContext, ChannelKind},
         Capabilities, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     };
-    use crate::providers::{LlmResolver, MockAdapter};
+    use peko_providers::{LlmResolver, MockAdapter};
     use std::sync::Arc;
     use tempfile::TempDir;
 

@@ -72,7 +72,7 @@ impl RetryPolicy {
 /// The companion `RetryPolicy` (with `base_delay` /
 /// `backoff_multiplier` / `max_delay`) and the `RetryExecutor` below
 /// stay in root because they're coupled to
-/// `crate::providers::transport::HttpClient`.
+/// `crate::transport::HttpClient`.
 pub use peko_provider_api::RetryableError;
 
 /// Executor for retryable operations

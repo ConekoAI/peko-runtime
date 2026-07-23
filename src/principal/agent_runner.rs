@@ -84,7 +84,7 @@ pub fn build_agent_config(
 /// the root agent; the operator will see the warning and either
 /// re-add the model or fix the principal config.
 async fn validate_principal_hint(
-    resolver: &crate::providers::LlmResolver,
+    resolver: &peko_providers::LlmResolver,
     principal_hint: Option<String>,
 ) -> Option<String> {
     let Some(ref id) = principal_hint else {

@@ -9,8 +9,6 @@
 //! - Cache validation and invalidation
 
 use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole};
-use crate::providers::catalog::{ModelCatalog, ModelConfig};
-use crate::providers::templates;
 use crate::session::compaction::{
     summary_format::{
         extract_file_ops_from_messages, format_summary_with_file_ops, CompactionDetails,
@@ -20,6 +18,8 @@ use crate::session::compaction::{
     },
     CompactionConfig, CompactionEntry, Compactor,
 };
+use peko_providers::catalog::{ModelCatalog, ModelConfig};
+use peko_providers::templates;
 
 // ============================================================================
 // Success Criterion: Built-in compactor triggers using dual-threshold

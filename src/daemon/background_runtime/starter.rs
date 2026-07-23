@@ -34,7 +34,7 @@ pub struct StarterContext {
     /// Optional encrypted vault for OAuth tokens and credentials.
     pub vault: Option<Arc<crate::common::vault::Vault>>,
     /// Optional LLM resolver for extension hooks such as MCP sampling.
-    pub resolver: Option<Arc<crate::providers::LlmResolver>>,
+    pub resolver: Option<Arc<peko_providers::LlmResolver>>,
 }
 
 impl std::fmt::Debug for StarterContext {

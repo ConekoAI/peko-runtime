@@ -79,7 +79,7 @@ pub fn extract_file_ops_from_messages(
     messages: &[crate::common::types::message::LlmMessage],
 ) -> CompactionDetails {
     use crate::common::types::message::ContentBlock;
-    use crate::providers::MessageRole;
+    use peko_providers::MessageRole;
 
     let mut read = Vec::new();
     let mut modified = Vec::new();
@@ -167,7 +167,7 @@ mod tests {
     use super::*;
     use crate::common::types::message::ContentBlock;
     use crate::common::types::message::LlmMessage;
-    use crate::providers::MessageRole;
+    use peko_providers::MessageRole;
 
     #[test]
     fn test_format_summary_with_file_ops() {

@@ -21,7 +21,7 @@
 //! `summary_format` (file-ops accumulator), `turn_boundaries`
 //! (tool-pairing preservation), `eviction`, and `cli` modules stay in
 //! root because they all depend on root-only types
-//! (`crate::providers::Provider`, `crate::quota::QuotaScope`, etc.).
+//! (`peko_providers::Provider`, `crate::quota::QuotaScope`, etc.).
 //!
 //! The `details: Option<...>` field on [`CompactionEntry`] /
 //! [`CompactionResult`] is now `Option<serde_json::Value>` in the
@@ -47,9 +47,9 @@ mod integration_tests;
 
 use crate::common::types::message::ContentBlock;
 use crate::common::types::message::LlmMessage;
-use crate::providers::MessageRole;
 use anyhow::{Context as _, Result};
 use peko_engine::ProviderView;
+use peko_providers::MessageRole;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -136,7 +136,7 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 // live in `peko_engine::compaction` and are re-exported above.
 // The constants below (`CHARS_PER_TOKEN`, prompts) and the `Compactor`
 // struct / impl that uses them stay here because the LLM summarization
-// depends on root-only types (`crate::providers::Provider`,
+// depends on root-only types (`peko_providers::Provider`,
 // `crate::quota::QuotaScope`).
 
 /// Find the last assistant message with usage data.
@@ -153,7 +153,7 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 /// fall back to the heuristic — no migration needed.
 fn find_last_assistant_usage(
     messages: &[LlmMessage],
-) -> Option<(crate::providers::TokenUsage, usize)> {
+) -> Option<(peko_providers::TokenUsage, usize)> {
     messages
         .iter()
         .enumerate()
@@ -373,7 +373,7 @@ impl Compactor {
         &self,
         messages: &[LlmMessage],
         provider: &Arc<dyn ProviderView>,
-    ) -> Result<(String, crate::providers::TokenUsage)> {
+    ) -> Result<(String, peko_providers::TokenUsage)> {
         let history = self.format_history_for_summary(messages);
 
         // Choose prompt based on whether we have a previous summary
@@ -416,16 +416,15 @@ impl Compactor {
         // AND a peer scope are active, both meters charge this
         // summarization call. With a 1-element stack the behavior is
         // identical to `MeteredProvider`.
-        let stacked =
-            crate::providers::StackedMeteredProvider::from_current_scope(provider.clone());
-        let messages = vec![crate::providers::LlmMessage::user(prompt.clone())];
+        let stacked = peko_engine::StackedMeteredProvider::from_current_scope(provider.clone());
+        let messages = vec![peko_providers::LlmMessage::user(prompt.clone())];
         let response = stacked
             .chat_with_tools(
                 &provider.model_id(),
                 &messages,
                 &[],
-                &crate::providers::ChatOptions {
-                    max_tokens: Some(crate::providers::DEFAULT_MAX_OUTPUT_TOKENS),
+                &peko_providers::ChatOptions {
+                    max_tokens: Some(peko_providers::DEFAULT_MAX_OUTPUT_TOKENS),
                     temperature: Some(0.3),
                     ..Default::default()
                 },
@@ -505,7 +504,7 @@ impl Compactor {
         // loop uses for `iteration_usage`, so downstream quota
         // accounting sees a consistent number regardless of where the
         // tokens came from.
-        let mut compaction_usage = crate::providers::TokenUsage::default();
+        let mut compaction_usage = peko_providers::TokenUsage::default();
 
         // Generate LLM summary (cumulative if previous exists)
         // For split turns, generate two summaries and merge them
@@ -654,10 +653,10 @@ impl Default for Compactor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::adapters::AnyAdapter;
-    use crate::providers::core::ProviderRuntimeOptions;
-    use crate::providers::mock::MockAdapter;
-    use crate::providers::{Provider, TokenUsage};
+    use peko_providers::adapters::AnyAdapter;
+    use peko_providers::core::ProviderRuntimeOptions;
+    use peko_providers::mock::MockAdapter;
+    use peko_providers::{Provider, TokenUsage};
 
     fn create_test_messages(count: usize) -> Vec<LlmMessage> {
         let mut messages = vec![];

@@ -20,7 +20,6 @@ mod tests {
     use crate::agents::Agent;
     use crate::engine::async_inbox_compat::AsyncInboxAdapter;
     use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
-    use crate::providers::{AnyAdapter, MockAdapter, Provider};
     use crate::session::manager::SessionManager;
     use crate::session::Session;
     use peko_auth::Subject;
@@ -30,6 +29,7 @@ mod tests {
     };
     use peko_message::{ContentBlock, LlmMessage, MessageRole};
     use peko_provider_api::StopReason;
+    use peko_providers::{AnyAdapter, MockAdapter, Provider};
     use peko_quota::QuotaScope;
     use peko_tools_core::ToolExposure;
     use std::sync::{Arc, Mutex};
@@ -43,7 +43,7 @@ mod tests {
     /// per-site coercion. Phase 9b.N.5b.9 switched the constructor
     /// parameter from `Arc<Provider>` to `Arc<dyn ProviderView>`.
     fn mock_provider() -> (Arc<dyn peko_engine::ProviderView>, MockAdapter) {
-        use crate::providers::core::ProviderRuntimeOptions;
+        use peko_providers::core::ProviderRuntimeOptions;
 
         let adapter = MockAdapter::new();
         let any = AnyAdapter::Mock(adapter.clone());
@@ -1206,8 +1206,8 @@ mod tests {
     async fn test_parallel_tool_execution_overlaps_in_time() {
         use crate::extensions::builtin::adapter::BuiltinToolAdapter;
         use crate::extensions::framework::types::{Capabilities, Capability};
-        use crate::providers::MockResponse;
         use crate::tools::Tool;
+        use peko_providers::MockResponse;
         use serde_json::json;
         use std::sync::Mutex as StdMutex;
         use std::time::{Duration, Instant};
@@ -1278,12 +1278,12 @@ mod tests {
         // so we queue raw `StreamEvent` vectors here. The loop sees a
         // single response with two calls and fans them out.
         mock.queue_stream_response(MockResponse::Stream(vec![
-            crate::providers::StreamEvent::Start {
+            peko_providers::StreamEvent::Start {
                 provider: "mock".to_string(),
                 model: "default".to_string(),
             },
-            crate::providers::StreamEvent::ToolCallStart { content_index: 0 },
-            crate::providers::StreamEvent::ToolCallEnd {
+            peko_providers::StreamEvent::ToolCallStart { content_index: 0 },
+            peko_providers::StreamEvent::ToolCallEnd {
                 content_index: 0,
                 tool_call: ContentBlock::ToolCall {
                     id: "tc_a".to_string(),
@@ -1291,8 +1291,8 @@ mod tests {
                     arguments: json!({}),
                 },
             },
-            crate::providers::StreamEvent::ToolCallStart { content_index: 1 },
-            crate::providers::StreamEvent::ToolCallEnd {
+            peko_providers::StreamEvent::ToolCallStart { content_index: 1 },
+            peko_providers::StreamEvent::ToolCallEnd {
                 content_index: 1,
                 tool_call: ContentBlock::ToolCall {
                     id: "tc_b".to_string(),
@@ -1300,7 +1300,7 @@ mod tests {
                     arguments: json!({}),
                 },
             },
-            crate::providers::StreamEvent::Usage {
+            peko_providers::StreamEvent::Usage {
                 input: 0,
                 output: 0,
                 total: 0,
@@ -1308,7 +1308,7 @@ mod tests {
                 cache_read_input_tokens: 0,
                 reasoning_output_tokens: 0,
             },
-            crate::providers::StreamEvent::Done {
+            peko_providers::StreamEvent::Done {
                 stop_reason: StopReason::ToolUse,
             },
         ]));
@@ -1775,8 +1775,8 @@ mod tests {
     // check (when present) trips before the LLM call.
     // -----------------------------------------------------------------
 
-    use crate::providers::LlmResolver;
     use crate::quota::{QuotaConfig, QuotaCycle, QuotaMeter};
+    use peko_providers::LlmResolver;
 
     /// `with_peer_meter(Some(meter))` stores the meter on the loop;
     /// `with_peer_meter(None)` clears it.
@@ -1876,7 +1876,7 @@ mod tests {
         let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog).await;
         let (provider, _choice) = resolver
-            .build(crate::providers::resolver::ResolveRequest {
+            .build(peko_providers::resolver::ResolveRequest {
                 override_model: Some("mock"),
                 ..Default::default()
             })
@@ -1891,7 +1891,7 @@ mod tests {
                         "default",
                         &[crate::common::types::message::LlmMessage::user("hi")],
                         &[],
-                        &crate::providers::ChatOptions::default(),
+                        &peko_providers::ChatOptions::default(),
                     )
                     .await
                     .unwrap();

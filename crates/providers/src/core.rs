@@ -3,15 +3,15 @@
 //! This module provides a single provider implementation that works with
 //! any `ApiAdapter`. All provider-specific logic is delegated to the adapter.
 
-use crate::providers::adapters::{AnyAdapter, ApiAdapter};
-use crate::providers::cache_retention::CacheRetention;
-use crate::providers::openai_prompt_cache::clamp_openai_prompt_cache_key;
-use crate::providers::traits::{
-    ChatOptions, ChatResponse, ContentBlock, LlmMessage, StreamEvent, ToolDefinition,
-};
-use crate::providers::transport::HttpClient;
+use crate::adapters::{AnyAdapter, ApiAdapter};
+use crate::transport::HttpClient;
 use futures::StreamExt;
 use peko_events::{AgenticEvent, LifecyclePhase};
+use peko_provider_api::clamp_openai_prompt_cache_key;
+use peko_provider_api::CacheRetention;
+use peko_provider_api::{
+    ChatOptions, ChatResponse, ContentBlock, LlmMessage, StreamEvent, ToolDefinition,
+};
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -164,7 +164,7 @@ impl Provider {
             )?;
 
             // Wire retry policy from the runtime options.
-            if let Some(retry_policy) = crate::providers::transport::RetryPolicy::from_config(
+            if let Some(retry_policy) = crate::transport::RetryPolicy::from_config(
                 options.max_retries,
                 options.retry_delay_ms,
             ) {
@@ -427,8 +427,7 @@ impl Provider {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<StreamEvent>>(100);
 
                 tokio::spawn(async move {
-                    let mut sse_stream =
-                        crate::providers::transport::sse::SseParser::parse_stream(stream);
+                    let mut sse_stream = crate::transport::sse::SseParser::parse_stream(stream);
                     while let Some(result) = sse_stream.next().await {
                         // The OpenAI-style `[DONE]` sentinel and the Anthropic-style
                         // `message_stop` event (which `parse_sse_event` maps to
@@ -457,10 +456,8 @@ impl Provider {
                             Err(e) => Some(Err(e)),
                         };
 
-                        let is_done_event = matches!(
-                            &output,
-                            Some(Ok(crate::providers::StreamEvent::Done { .. }))
-                        );
+                        let is_done_event =
+                            matches!(&output, Some(Ok(crate::StreamEvent::Done { .. })));
 
                         if let Some(event) = output {
                             if tx.send(event).await.is_err() {
@@ -543,7 +540,7 @@ impl Provider {
                 let mut sequence = 0usize;
 
                 use futures::StreamExt;
-                let mut parser = crate::providers::transport::sse::SseParser::parse_stream(stream);
+                let mut parser = crate::transport::sse::SseParser::parse_stream(stream);
 
                 while let Some(result) = parser.next().await {
                     match result {
@@ -628,8 +625,8 @@ impl Provider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::adapters::openai::OpenAiAdapter;
-    use crate::providers::mock::MockAdapter;
+    use crate::adapters::openai::OpenAiAdapter;
+    use crate::mock::MockAdapter;
 
     fn runtime_options() -> ProviderRuntimeOptions {
         ProviderRuntimeOptions {

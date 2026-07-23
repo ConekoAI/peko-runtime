@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use crate::common::types::message::ContentBlock;
 use crate::common::types::message::LlmMessage;
-use crate::providers::MessageRole;
+use peko_providers::MessageRole;
 
 /// Service for recovering meaningful output from subagent session history.
 pub struct ResultRecovery;

@@ -101,7 +101,7 @@ pub struct SubagentExecutor {
     /// Channel for announcing completed runs
     announcement_tx: Option<AnnouncementSender>,
     /// Provider for LLM execution
-    provider: Option<Arc<crate::providers::Provider>>,
+    provider: Option<Arc<peko_providers::Provider>>,
     /// Agent configuration for creating subagents
     agent_config: Option<AgentConfig>,
     /// Session manager for accessing sessions
@@ -346,7 +346,7 @@ impl SubagentExecutor {
 
     /// Set the provider for LLM execution
     #[must_use]
-    pub fn with_provider(mut self, provider: Arc<crate::providers::Provider>) -> Self {
+    pub fn with_provider(mut self, provider: Arc<peko_providers::Provider>) -> Self {
         self.provider = Some(provider);
         self
     }
@@ -959,7 +959,7 @@ async fn execute_subagent_task(
     session_key: &str,
     system_prompt: &str,
     task_message: &str,
-    provider: Option<Arc<crate::providers::Provider>>,
+    provider: Option<Arc<peko_providers::Provider>>,
     agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
     async_registry: SharedAsyncTaskRegistry,
@@ -1193,27 +1193,28 @@ async fn execute_subagent_task(
 mod tests {
     use super::*;
     use crate::common::types::message::LlmMessage;
-    use crate::providers::resolver::ResolveRequest;
-    use crate::providers::traits::ChatOptions;
-    use crate::providers::{MockAdapter, StackedMeteredProvider};
     use crate::quota::scope::QuotaScope;
     use crate::quota::{QuotaConfig, QuotaCycle, QuotaMeter};
     use crate::session::manager::SessionManager;
     use chrono::Utc;
+    use peko_engine::StackedMeteredProvider;
+    use peko_provider_api::ChatOptions;
+    use peko_providers::resolver::ResolveRequest;
+    use peko_providers::MockAdapter;
 
     /// F39 test fixture: build a `MockAdapter`-backed `Provider` and
     /// a single quota meter (request_count cap = 10 so a successful
     /// charge is observable without tripping).
     async fn make_provider_and_meter(
         quota_request_count: u64,
-    ) -> (Arc<crate::providers::Provider>, Arc<QuotaMeter>) {
+    ) -> (Arc<peko_providers::Provider>, Arc<QuotaMeter>) {
         let adapter = MockAdapter::new();
         // Two responses so the limit-trip test can run two calls.
         adapter.queue_text("first");
         adapter.queue_text("second");
         let tmp = tempfile::tempdir().unwrap();
         let catalog = tmp.path().join("models.toml");
-        let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
+        let (resolver, _adapter) = peko_providers::LlmResolver::mock(adapter, &catalog).await;
         let (provider, _choice) = resolver
             .build(ResolveRequest {
                 override_model: Some("mock"),
@@ -1371,7 +1372,7 @@ mod tests {
         adapter.queue_text("hi");
         let tmp = tempfile::tempdir().unwrap();
         let catalog = tmp.path().join("models.toml");
-        let (resolver, _adapter) = crate::providers::LlmResolver::mock(adapter, &catalog).await;
+        let (resolver, _adapter) = peko_providers::LlmResolver::mock(adapter, &catalog).await;
         let (provider, _choice) = resolver
             .build(ResolveRequest {
                 override_model: Some("mock"),

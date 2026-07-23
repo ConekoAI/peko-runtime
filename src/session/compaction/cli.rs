@@ -4,10 +4,10 @@
 //! This is NOT a generic service — it's the CLI flow that uses the `Compactor`.
 
 use crate::common::types::message::{ContentBlock, LlmMessage};
-use crate::providers::MessageRole;
 use crate::session::compaction::{CompactionEntry, Compactor};
 use crate::session::unified::Session;
 use anyhow::Result;
+use peko_providers::MessageRole;
 
 /// Result of a CLI compaction operation
 #[derive(Debug, Clone)]

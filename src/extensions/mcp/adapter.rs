@@ -79,7 +79,7 @@ fn get_global_mcp_manager() -> Arc<RwLock<crate::extensions::mcp::protocol::mana
 pub fn init_global_mcp_manager_with_shared_resources(
     runtime_manager: Arc<crate::daemon::background_runtime::BackgroundRuntimeManager>,
     client_registry: Arc<crate::extensions::mcp::runtime::McpClientRegistry>,
-    llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+    llm_resolver: Option<Arc<peko_providers::LlmResolver>>,
     vault: Option<Arc<crate::common::vault::Vault>>,
     // F19: principal manager so the MCP manager can resolve per-
     // principal quota meters for sampling attribution. Optional so

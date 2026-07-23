@@ -19,7 +19,7 @@
 //! `quota_meter` is one of the meters in the active `QuotaScope`
 //! stack at the call site. Per-peer meters are stacked alongside
 //! per-principal meters via nested `QuotaScope::with` calls; see
-//! [`StackedMeteredProvider`](crate::providers::StackedMeteredProvider)
+//! [`StackedMeteredProvider`](peko_engine::StackedMeteredProvider)
 //! for the wrapper that charges every meter in the stack.
 //!
 //! ## Storage layout

@@ -3,14 +3,14 @@
 //! Handles conversion between unified types and `OpenAI` Chat Completions API format.
 
 use super::{extract_text_content, role_to_string, ToolCallAccumulator};
-use crate::common::types::message::ImageSource;
-use crate::providers::cache_retention::CacheRetention;
-use crate::providers::traits::{
+use crate::transport::AuthConfig;
+use anyhow::{Context, Result};
+use peko_message::ImageSource;
+use peko_provider_api::CacheRetention;
+use peko_provider_api::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolChoice, ToolDefinition,
 };
-use crate::providers::transport::AuthConfig;
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::debug;
@@ -218,7 +218,7 @@ impl super::ApiAdapter for OpenAiAdapter {
         // wire shape byte-for-byte.
         if options.thinking_effort.is_enabled() {
             if let Some(compat) = options.compat_override {
-                if compat.thinking_format == crate::providers::traits::ThinkingFormat::DeepSeek {
+                if compat.thinking_format == peko_provider_api::ThinkingFormat::DeepSeek {
                     // DeepSeek-R1: `thinking: {type:"enabled"}` is the
                     // canonical toggle. Wire effort alongside via
                     // `reasoning_effort` so DeepSeek's router picks
@@ -756,8 +756,8 @@ struct OpenAiDeltaFunction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::adapters::ApiAdapter;
-    use crate::providers::traits::{ServiceTier, ThinkingEffort};
+    use crate::adapters::ApiAdapter;
+    use peko_provider_api::{ServiceTier, ThinkingEffort};
 
     #[test]
     fn test_adapter_creation() {
@@ -819,7 +819,7 @@ mod tests {
         let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
         assert!(matches!(
             event,
-            Some(crate::providers::StreamEvent::TextDelta {
+            Some(crate::StreamEvent::TextDelta {
                 content_index: 0,
                 delta: _,
             })
@@ -834,7 +834,7 @@ mod tests {
 
         let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
         match event {
-            Some(crate::providers::StreamEvent::Usage {
+            Some(crate::StreamEvent::Usage {
                 input,
                 output,
                 total,
@@ -872,7 +872,7 @@ mod tests {
         }"#;
         let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
         match event {
-            Some(crate::providers::StreamEvent::Usage {
+            Some(crate::StreamEvent::Usage {
                 input,
                 output,
                 cache_creation_input_tokens,
@@ -1085,10 +1085,10 @@ mod tests {
     // (Qwen/Zai/OpenRouter/Together) stay unwired today; their
     // surface binds land in F30+.
 
-    fn deepseek_compat() -> crate::providers::traits::ProviderCompat {
-        crate::providers::traits::ProviderCompat {
-            thinking_format: crate::providers::traits::ThinkingFormat::DeepSeek,
-            deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+    fn deepseek_compat() -> peko_provider_api::ProviderCompat {
+        peko_provider_api::ProviderCompat {
+            thinking_format: peko_provider_api::ThinkingFormat::DeepSeek,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
         }
     }
 
@@ -1146,16 +1146,16 @@ mod tests {
         let adapter = OpenAiAdapter::new();
         let messages = vec![LlmMessage::user("hi")];
         let flavours = [
-            crate::providers::traits::ThinkingFormat::Kimi,
-            crate::providers::traits::ThinkingFormat::Zai,
-            crate::providers::traits::ThinkingFormat::Qwen,
-            crate::providers::traits::ThinkingFormat::OpenRouter,
-            crate::providers::traits::ThinkingFormat::Together,
+            peko_provider_api::ThinkingFormat::Kimi,
+            peko_provider_api::ThinkingFormat::Zai,
+            peko_provider_api::ThinkingFormat::Qwen,
+            peko_provider_api::ThinkingFormat::OpenRouter,
+            peko_provider_api::ThinkingFormat::Together,
         ];
         for flavour in flavours {
-            let compat = crate::providers::traits::ProviderCompat {
+            let compat = peko_provider_api::ProviderCompat {
                 thinking_format: flavour,
-                deferred_tools_mode: crate::providers::traits::DeferredToolsMode::Off,
+                deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
             };
             let options = ChatOptions {
                 thinking_effort: ThinkingEffort::High,
@@ -1184,7 +1184,7 @@ mod tests {
         let data = r#"{"choices":[{"delta":{"content":null},"reasoning_content":"step 1"}]}"#;
         let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
         match event {
-            Some(crate::providers::StreamEvent::ThinkingDelta { delta, .. }) => {
+            Some(crate::StreamEvent::ThinkingDelta { delta, .. }) => {
                 assert_eq!(delta, "step 1");
             }
             other => panic!("Expected ThinkingDelta, got {other:?}"),
@@ -1207,7 +1207,7 @@ mod tests {
         }"#;
         let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
         match event {
-            Some(crate::providers::StreamEvent::ThinkingDelta { delta, .. }) => {
+            Some(crate::StreamEvent::ThinkingDelta { delta, .. }) => {
                 assert_eq!(delta, "plan ready");
             }
             other => panic!("Expected ThinkingDelta, got {other:?}"),
@@ -1222,7 +1222,7 @@ mod tests {
         let data = r#"{"choices":[{"delta":{"content":null},"reasoning":"thinking..."}]}"#;
         let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
         match event {
-            Some(crate::providers::StreamEvent::ThinkingDelta { delta, .. }) => {
+            Some(crate::StreamEvent::ThinkingDelta { delta, .. }) => {
                 assert_eq!(delta, "thinking...");
             }
             other => panic!("Expected ThinkingDelta, got {other:?}"),
@@ -1244,7 +1244,7 @@ mod tests {
         }"#;
         let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
         match event {
-            Some(crate::providers::StreamEvent::ThinkingDelta { delta, .. }) => {
+            Some(crate::StreamEvent::ThinkingDelta { delta, .. }) => {
                 assert_eq!(delta, "reasoning first");
             }
             other => panic!("Expected ThinkingDelta, got {other:?}"),
@@ -1371,7 +1371,7 @@ mod tests {
             parameters: json!({"type": "object"}),
         }];
         let options = ChatOptions {
-            tool_choice: crate::providers::ToolChoice::Required,
+            tool_choice: crate::ToolChoice::Required,
             ..Default::default()
         };
         let (_, body) = adapter
@@ -1397,7 +1397,7 @@ mod tests {
             parameters: json!({"type": "object"}),
         }];
         let options = ChatOptions {
-            tool_choice: crate::providers::ToolChoice::None,
+            tool_choice: crate::ToolChoice::None,
             ..Default::default()
         };
         let (_, body) = adapter
@@ -1422,7 +1422,7 @@ mod tests {
             parameters: json!({"type": "object"}),
         }];
         let options = ChatOptions {
-            tool_choice: crate::providers::ToolChoice::Forced("Read".to_string()),
+            tool_choice: crate::ToolChoice::Forced("Read".to_string()),
             ..Default::default()
         };
         let (_, body) = adapter

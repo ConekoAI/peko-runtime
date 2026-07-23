@@ -281,7 +281,7 @@ pub async fn handle_principal(
 }
 
 async fn create_principal(name: &str, model_id: &str, paths: &GlobalPaths) -> Result<()> {
-    use crate::providers::catalog::ModelCatalog;
+    use peko_providers::catalog::ModelCatalog;
 
     let manager = build_manager(paths);
 

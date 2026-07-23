@@ -8,7 +8,7 @@
 //! Originally `tests/principal_send_offline.rs` (gated by `--features
 //! test-utils`). Moved inline as part of F9.3 so the gated surface can
 //! narrow — the test only consumes `crate::principal::*`, `crate::tunnel::*`,
-//! `peko_auth::*`, `crate::providers::*` etc., all of which stay `pub`.
+//! `peko_auth::*`, `peko_providers::*` etc., all of which stay `pub`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +19,6 @@ use crate::principal::config::{Exposure, TransportPreference};
 use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };
-use crate::providers::LlmResolver;
 use crate::subject::PrincipalDID;
 use crate::tools::Tool;
 use crate::tunnel::a2a_pending::PendingA2aResponses;
@@ -33,6 +32,7 @@ use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
 use peko_auth::Subject;
 use peko_chat_log::ChatLogStore;
+use peko_providers::LlmResolver;
 use tokio::sync::RwLock;
 
 /// A directory client that panics if consulted. Wrapping it inside
@@ -113,7 +113,7 @@ async fn same_runtime_principal_send_short_circuits_offline() {
 
     let catalog_path = temp.path().join("models.toml");
     let (resolver, adapter) =
-        LlmResolver::mock(crate::providers::MockAdapter::new(), &catalog_path).await;
+        LlmResolver::mock(peko_providers::MockAdapter::new(), &catalog_path).await;
 
     let principal_manager = Arc::new(
         PrincipalManager::with_path_resolver(

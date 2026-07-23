@@ -144,7 +144,7 @@ pub struct McpManager {
     /// Owned client registry for standalone mode.
     owned_client_registry: Arc<McpClientRegistry>,
     /// Optional LLM resolver used to handle server-to-client sampling requests.
-    llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+    llm_resolver: Option<Arc<peko_providers::LlmResolver>>,
     /// F19: principal manager for per-server sampling attribution.
     /// When set, `sampling_handler_for(principal_id)` looks up the
     /// principal's quota meter and binds it to the
@@ -212,7 +212,7 @@ impl McpManager {
         config: McpConfig,
         runtime_manager: Arc<BackgroundRuntimeManager>,
         client_registry: Arc<McpClientRegistry>,
-        llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+        llm_resolver: Option<Arc<peko_providers::LlmResolver>>,
         vault: Option<Arc<Vault>>,
     ) -> Self {
         Self {
