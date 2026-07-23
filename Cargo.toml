@@ -3,6 +3,31 @@ resolver = "2"
 members = [".", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/peko-daemon", "crates/provider-api",
     "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
+# ---------------------------------------------------------------------------
+# Cargo-shear intent block (Phase 0 of the post-migration cleanup).
+#
+# When `cargo-shear` is installed, it will use this block to surface any
+# workspace-crate dep that has no remaining consumer in the crate where
+# it is declared. During the 18-phase cleanup, dead deps are expected to
+# appear as we migrate root-only domains into workspace crates; Phase 0
+# only documents the intent, it does NOT install `cargo-shear` in CI yet
+# (lint policy was explicitly deferred per the plan).
+#
+# To run locally once installed:
+#   cargo install cargo-shear --locked
+#   cargo shear --workspace
+#
+# Expected dead deps to surface over the cleanup:
+#   - peko-protocol in root       (after Phase 12 lifts tunnel/ipc)
+#   - peko-subject in root        (after Phase 15 deletes src/subject.rs)
+#   - peko-quota in root          (after Phase 15 deletes src/quota/)
+#   - peko-message in root        (after Phase 15 deletes common/types/message.rs)
+#   - peko-tools-core in root     (after Phase 15 deletes src/tools/core/)
+#   - peko-extension-host in root (after Phase 16 deletes *_compat.rs impls)
+#   - peko-engine in root         (after Phase 17 moves agentic_loop tests)
+# ---------------------------------------------------------------------------
+[workspace.metadata.cargo-shear]
+
 [package]
 name = "peko"
 version = "0.1.0"

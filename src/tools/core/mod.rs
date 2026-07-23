@@ -11,6 +11,14 @@
 //! Both the submodule form (`peko::tools::core::traits::Tool`) and
 //! the flat re-export form (`peko::tools::core::Tool`) keep
 //! resolving after extraction.
+//!
+//! ---
+//! **Cleanup ledger:** This file is a pure re-export shim and will be
+//! **deleted in Phase 15** of the post-migration cleanup plan (see
+//! `AGENTS.md` §Cleanup phases). After deletion, every internal caller
+//! will import `peko_tools_core::*` (or specific items) directly. The
+//! historical `peko::tools::core::*` import path is intentionally broken.
+//! ---
 
 // Re-export each submodule so existing
 // `peko::tools::core::traits::Tool`,

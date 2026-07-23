@@ -300,6 +300,98 @@ The workflow runs a path-aware, six-tier pipeline. Doc-only PRs (only
 | `integration` | `tests/**`, `docker/**`, `Dockerfile*`, or workflow changed; or schedule / manual | ~10-15 min | `make docker-up` + `make test-integration` |
 | `integration-llm` | `src/**` or `tests/**` changed AND `[llm]` keyword / schedule / manual | ~5 min extra | `make test-integration-llm` |
 
+### Cleanup phases (post-migration)
+
+The 13-member workspace migration is complete, but the migration
+was deliberately conservative: every historical `peko::subject`,
+`peko::quota`, `peko::tools::core`, `peko::common::types::message`
+import path is preserved through `pub use peko_foo::*` shims in
+`src/`. Seven trait-port compat impls (`agent_view_compat.rs`,
+`async_completion_compat.rs`, `async_inbox_compat.rs`,
+`background_compactor_factory_compat.rs`,
+`compaction_backend_compat.rs`, `extension_core_funnel_compat.rs`,
+`provider_view_compat.rs`, `session_view_compat.rs`) live in
+`src/engine/`. The 3,871-line `agentic_loop_compat.rs` keeps
+engine integration tests in root because they reference root-only
+fixtures (`Agent`, `ExtensionCore`, `SessionManager`, `Provider`,
+`MockAdapter`, `BuiltinToolAdapter`, `LlmResolver`).
+
+Big root-only domains remain: `src/providers/` (~12k lines),
+`src/extensions/` (~37k lines), `src/session/` (~17k lines),
+`src/daemon/` (~6k lines), `src/agents/` (~8k lines),
+`src/tunnel/` (~11k lines), `src/ipc/` (~16k lines),
+`src/principal/` (~6k lines), `src/registry/` (~7k lines),
+`src/auth/` (~2k lines), `src/identity/` (~3k lines),
+`src/chat_log/` (~700 lines). Deferred tool extractions:
+`BashTool`, `ToolSearchTool`, `AgentCatalog`, `ToolRuntime`.
+
+The cleanup goal is **codex-rs-like cleanliness**: no top-level
+facade, no compat shims, per-crate test fixtures, strict CI-enforced
+dep-graph, 26+ workspace members at the right granularity for the
+domain size.
+
+#### Phase index
+
+| Phase | Goal | Headline historical-path breakage |
+|---|---|---|
+| 0 | Cosmetic + tooling baseline (no path breakage) | none |
+| 1 | Root facade boundary + canonical path inventory | none yet |
+| 2 | Consolidate duplicate `CompletionEvent` (engine vs extension-host) | `peko::extensions::framework::async_exec::executor::completion_queue::CompletionEvent` |
+| 3 | Extract `peko-identity` | `peko::identity::*` |
+| 4 | Extract `peko-auth` | `peko::auth::*` |
+| 5 | Extract `peko-chat-log` | `peko::chat_log::*` |
+| 6 | Extract `peko-providers` | `peko::providers::*` |
+| 7 | Extract `peko-session` (incl. `InboxRegistry`) | `peko::session::*` |
+| 8 | Bulk-move extension host implementation into `peko-extension-host` | `peko::extensions::framework::*` |
+| 9 | Extract `peko-agents` | `peko::agents::*` |
+| 10 | Move remaining built-in tools (non-deferred) into `peko-tools-builtin` | `peko::tools::builtin::*` (excl. bash, tool_search, agent_catalog) |
+| 11 | Extract `peko-registry` | `peko::registry::*` |
+| 12 | Extract `peko-tunnel` + `peko-ipc` | `peko::tunnel::*`, `peko::ipc::*` |
+| 13 | Extract daemon implementation | `peko::daemon::*` |
+| 14 | Extract remaining runtime domains | `peko::observability::*`, `peko::cron::*`, `peko::principal::*` |
+| 15 | **Delete pure re-export shims** | `peko::subject::*`, `peko::quota::*`, `peko::tools::core::*`, `peko::common::types::message::*` |
+| 16 | Delete trait-port compat impls | `peko::engine::{agent,async_completion,async_inbox,background_compactor_factory,compaction_backend,extension_core_funnel,provider,session}_view_compat::*` |
+| 17 | Build `peko-engine-test-support` + move engine tests | (no root path breakage; tests relocate) |
+| 18 | Move deferred built-in tools (`BashTool`, `ToolSearchTool`, `AgentCatalog`) + `tool_runtime.rs` | `peko::tools::builtin::bash`, `peko::tools::builtin::tool_search`, `peko::tools::builtin::agent_catalog`, `peko::engine::tool_runtime` |
+
+#### Final crate layout (26 workspace members)
+
+- `crates/engine` — agentic loop core.
+- `crates/engine-test-support` — dev-deps-only fixtures for engine tests.
+- `crates/events` — neutral agentic event contract.
+- `crates/extension-api` — extension framework contracts.
+- `crates/extension-host` — extension framework implementation.
+- `crates/message` — neutral message contract.
+- `crates/providers` — concrete provider implementations.
+- `crates/provider-api` — provider contracts.
+- `crates/protocol` — IPC + tunnel wire contracts.
+- `crates/quota` — token quota.
+- `crates/subject` — canonical actor type.
+- `crates/tools-builtin` — concrete built-in tool implementations (incl. bash, tool_search, agent_catalog).
+- `crates/tools-core` — tool API.
+- `crates/agents` — agent lifecycle + subagent execution.
+- `crates/session` — session persistence + compaction.
+- `crates/auth` — authentication/authorization.
+- `crates/identity` — DID identity + key storage.
+- `crates/chat-log` — append-only chat-log storage.
+- `crates/registry` — packaging + registry client + trust store.
+- `crates/tunnel` — tunnel protocol + A2A dispatcher.
+- `crates/ipc` — IPC server + handlers.
+- `crates/observability` — instrumentation.
+- `crates/cron` — persistent cron scheduling.
+- `crates/principal` — principal orchestration.
+- `crates/peko-daemon` (binary + lib) — daemon implementation + entry point.
+- root `peko` (lib + bin) — CLI entry + thin composition only.
+
+#### Cleanup invariant
+
+**Every historical `peko::...` import path is intentionally broken.**
+No new `pub use peko_*::*` shims. The 4 pure-shim modules that exist
+today (`src/subject.rs`, `src/quota/mod.rs`, `src/tools/core/mod.rs`,
+`src/common/types/message.rs`) carry deletion banners pointing to
+Phase 15. Every other historical path breaks across Phases 3–14,
+16, and 18.
+
 ### Local quick feedback loop
 
 ```bash
