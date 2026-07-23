@@ -182,6 +182,16 @@ pub struct AgenticLoop {
     /// markers (Anthropic `cache_control`, OpenAI `prompt_cache_key`)
     /// rely on for cache hits.
     cache_stable_prompt: std::sync::Mutex<Option<(u64, Arc<String>)>>,
+    /// Phase 9b.N.5b.9c: compaction config (thresholds, model
+    /// override, retention policy). Passed in by the caller — root
+    /// loads it from `~/.peko/config.toml` via
+    /// `crate::session::compaction::load_compaction_config()` and
+    /// the loop never imports `dirs` / `toml`. `peko_engine` can't
+    /// own the loader because it doesn't depend on those crates.
+    /// Cloned into `CompactionOrchestrator::new` at the start of
+    /// every `run_inner_with_meter` invocation (line 940 in the
+    /// pre-9c version).
+    compaction_config: peko_engine::CompactionConfig,
 }
 
 impl AgenticLoop {
@@ -201,6 +211,8 @@ impl AgenticLoop {
         agent: Arc<dyn AgentView>,
         provider: Arc<dyn peko_engine::ProviderView>,
         extension_core: Arc<dyn ToolFunnel>,
+        compactor_factory: Arc<dyn peko_engine::BackgroundCompactorFactory>,
+        compaction_config: peko_engine::CompactionConfig,
     ) -> Self {
         let agent_principal_id = agent.principal_id().to_string();
 
@@ -225,20 +237,6 @@ impl AgenticLoop {
         // they ran an agent with no body anyway.
         let placeholder_prompt = format!("You are {}.", agent.name());
 
-        // Phase 9b.N.5b.7: build a default `BackgroundCompactorFactory`
-        // from the concrete `Provider` so existing callers (CLI, IPC,
-        // subagent executor, 5 test fixtures) keep compiling. The
-        // factory captures the inner `Arc<Provider>` and rebuilds a
-        // fresh `BackgroundCompactor` on every `factory.build(...)`
-        // call at line 892. Callers that need a custom factory can
-        // chain `.with_provider_factory(...)` after `new`.
-        let compactor_factory: Arc<dyn peko_engine::BackgroundCompactorFactory> =
-            Arc::new(
-                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
-                    Arc::clone(&provider),
-                ),
-            );
-
         Self {
             agent,
             provider,
@@ -262,13 +260,24 @@ impl AgenticLoop {
             // `render_cache_stable` via the `cache_stable_prompt`
             // access in the messages[0] rebuild block.
             cache_stable_prompt: std::sync::Mutex::new(None),
+            // Phase 9b.N.5b.9c: caller supplies the config. Root
+            // loads it from `~/.peko/config.toml`; tests pass
+            // `CompactionConfig::default()`.
+            compaction_config,
         }
     }
 
-    /// Phase 9b.N.5b.7: replace the default `BackgroundCompactorFactory`
-    /// (built inside `new` from the concrete `Provider`) with a custom
-    /// implementation. Used by callers that want a different compactor
-    /// backend, or by tests that inject a mock factory.
+    /// Phase 9b.N.5b.7: replace the constructor-supplied
+    /// `BackgroundCompactorFactory` with a custom implementation. Used
+    /// by callers that want a different compactor backend, or by tests
+    /// that inject a mock factory after construction.
+    ///
+    /// Phase 9b.N.5b.9c: the constructor gained a required
+    /// `compactor_factory` parameter; this builder is now the only
+    /// way to swap the factory after `new`. The
+    /// `BackgroundCompactorFactoryAdapter` (root-side
+    /// `src/engine/background_compactor_factory_compat.rs`) is the
+    /// canonical factory for production callers.
     #[must_use]
     pub fn with_provider_factory(
         mut self,
@@ -935,9 +944,15 @@ impl AgenticLoop {
         let compactor_backend = self
             .compactor_factory
             .build(Arc::clone(&self.quota_meter), self.peer_meter.clone());
+        // Phase 9b.N.5b.9c: compaction config comes from the loop's
+        // stored field (loaded by root at construction time and passed
+        // in via the new `compaction_config` parameter). The loop no
+        // longer calls `crate::session::compaction::load_compaction_config()`
+        // directly — that loader depends on `dirs` + `toml`, which
+        // aren't in `peko-engine`'s dep graph.
         let mut compaction_orchestrator = peko_engine::CompactionOrchestrator::new(
             compactor_backend,
-            crate::session::compaction::load_compaction_config(),
+            self.compaction_config.clone(),
             context_window,
         );
 
@@ -2442,7 +2457,18 @@ mod tests {
         config.prompt =
             Some("You are {{agent_name}}.\n\n{{session_context}}\n\n{{tools}}\n".to_string());
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let result = loop_.run("Start with context", |_| {}).await;
 
@@ -2495,7 +2521,18 @@ mod tests {
         let config = test_agent_config("rt001-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("rt001-agent", temp_dir.path()).await;
         let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2560,7 +2597,18 @@ mod tests {
         let config = test_agent_config("rt002-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("rt002-agent", temp_dir.path()).await;
         let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2620,7 +2668,18 @@ mod tests {
                 .unwrap(),
         );
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("rt003-agent", temp_dir.path()).await;
         let result = loop_
@@ -2651,7 +2710,18 @@ mod tests {
         let config = test_agent_config("rt004-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("rt004-agent", temp_dir.path()).await;
         let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2708,7 +2778,18 @@ mod tests {
         let config = test_agent_config("rt005-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("rt005-agent", temp_dir.path()).await;
         let session_clone = session.clone();
@@ -2759,7 +2840,18 @@ mod tests {
         let config = test_agent_config("rt005b-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("rt005b-agent", temp_dir.path()).await;
         let session_clone = session.clone();
@@ -2863,7 +2955,17 @@ mod tests {
         let config = test_agent_config("rt006-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
             .await
             .with_max_iterations(5); // Use a smaller max for faster test
 
@@ -2946,7 +3048,18 @@ mod tests {
         let config = test_agent_config("rt006-default-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         // The struct should default to 10
         assert_eq!(
@@ -2986,7 +3099,17 @@ mod tests {
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
         // Default retry budget is 3 — two failures + one success fits.
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
             .await
             .with_stream_max_retries(3);
 
@@ -3097,7 +3220,17 @@ mod tests {
         let config = test_agent_config("rt007b-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
             .await
             .with_stream_max_retries(3);
 
@@ -3224,7 +3357,17 @@ mod tests {
         let config = test_agent_config("rt008-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
             .await
             .with_quota_meter(meter);
 
@@ -3310,7 +3453,18 @@ mod tests {
         let config = test_agent_config("tool-loop-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("tool-loop-agent", temp_dir.path()).await;
         let result = loop_
@@ -3465,7 +3619,18 @@ mod tests {
                     [Capability::new("tool:ParaA"), Capability::new("tool:ParaB")],
                 )))),
         );
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("para-tools-agent", temp_dir.path()).await;
         let started = Instant::now();
@@ -3558,7 +3723,17 @@ mod tests {
         let queue: SharedSessionInbox = std::sync::Arc::new(
             crate::extensions::framework::async_exec::executor::SessionInbox::new(),
         );
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core.clone())
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
             .await
             .with_async_completion_queue(std::sync::Arc::new(AsyncInboxAdapter::new(
                 queue.clone(),
@@ -3691,7 +3866,17 @@ mod tests {
         let extension_core = global_core().unwrap();
 
         let queue: SharedSessionInbox = std::sync::Arc::new(SessionInbox::new());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core.clone())
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
             .await
             .with_async_completion_queue(std::sync::Arc::new(AsyncInboxAdapter::new(
                 queue.clone(),
@@ -3802,7 +3987,17 @@ mod tests {
         let extension_core = global_core().unwrap();
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel(); // pre-cancel
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
             .await
             .with_cancel_token(cancel);
 
@@ -4066,7 +4261,18 @@ mod tests {
         config.prompt = Some("RENDERED-FOR-PHASE1: You are {{agent_name}}.".to_string());
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent, provider, extension_core).await;
+        let loop_ = AgenticLoop::new(
+            agent,
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let result = loop_
             .run_with_resume("anything", Vec::new(), |_| {}, session, Some(history))
@@ -4117,7 +4323,18 @@ mod tests {
         config.prompt = Some("You are {{agent_name}}.".to_string());
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(agent, provider, extension_core).await;
+        let loop_ = AgenticLoop::new(
+            agent,
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session(&agent_name, temp_dir.path()).await;
         let session_id = session.id().await;
@@ -4466,6 +4683,12 @@ mod tests {
             Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
         )
         .await;
 
@@ -4528,6 +4751,12 @@ mod tests {
             Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
         )
         .await;
 
@@ -4584,6 +4813,12 @@ mod tests {
             Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
         )
         .await
         .with_quota_meter(meter);
@@ -4634,6 +4869,12 @@ mod tests {
             Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
         )
         .await
         .with_cancel_token(cancel);
@@ -4682,6 +4923,12 @@ mod tests {
             Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
         )
         .await;
 
@@ -4772,6 +5019,12 @@ mod tests {
             Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
         )
         .await;
 
@@ -4846,6 +5099,12 @@ mod tests {
             Arc::clone(&agent) as Arc<dyn AgentView>,
             Arc::clone(&provider),
             agent.extension_core(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
         )
         .await;
         // Drop the test-side handle so the loop is the unique owner
@@ -5007,7 +5266,18 @@ mod tests {
 
         let config = test_agent_config("f31x-pre-post-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("f31x-pre-post-agent", temp_dir.path()).await;
         let _ = loop_
@@ -5097,7 +5367,18 @@ mod tests {
 
         let config = test_agent_config("f31x-stop-end-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("f31x-stop-end-agent", temp_dir.path()).await;
         let _ = loop_
@@ -5179,7 +5460,17 @@ mod tests {
 
         let config = test_agent_config("f31x-stop-cap-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone())
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
             .await
             .with_max_iterations(2);
 
@@ -5271,7 +5562,17 @@ mod tests {
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone())
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
             .await
             .with_cancel_token(cancel);
 
@@ -5456,7 +5757,18 @@ mod tests {
 
         let config = test_agent_config("f31x-1-pre-wildcard-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session("f31x-1-pre-wildcard-agent", temp_dir.path()).await;
         let _ = loop_
@@ -5579,7 +5891,18 @@ mod tests {
         let agent_name = format!("f31x-1-loop-{}", uuid::Uuid::new_v4());
         let config = test_agent_config(&agent_name);
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let session = test_session(&agent_name, temp_dir.path()).await;
         let result = loop_
@@ -5705,7 +6028,18 @@ mod tests {
         let mut config = test_agent_config(&agent_name);
         config.enable_tool_search = true;
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let defs = loop_.build_tool_definitions().await;
 
@@ -5755,7 +6089,18 @@ mod tests {
         let mut config = test_agent_config(&agent_name);
         config.enable_tool_search = false; // explicit even though it's the default
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let defs = loop_.build_tool_definitions().await;
 
@@ -5790,7 +6135,18 @@ mod tests {
         let mut config = test_agent_config(&agent_name);
         config.enable_tool_search = true;
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, core.clone()).await;
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            core.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
 
         let defs = loop_.build_tool_definitions().await;
 
