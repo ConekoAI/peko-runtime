@@ -43,6 +43,7 @@ use peko_message::LlmMessage;
 use peko_provider_api::{ChatOptions, ChatResponse, StreamEvent, ToolDefinition};
 use std::pin::Pin;
 
+#[async_trait::async_trait]
 impl ProviderView for Provider {
     fn name(&self) -> &str {
         Provider::name(self)

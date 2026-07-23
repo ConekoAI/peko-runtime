@@ -395,8 +395,13 @@ impl Compactor {
             messages.len()
         );
 
-        // Use `chat_response` (returns full `ChatResponse` including
+        // Use `chat_with_tools` (returns full `ChatResponse` including
         // usage) so we can account for the summarization call's cost.
+        // Phase 9b.N.5b.8 refactored `StackedMeteredProvider` to wrap
+        // `Arc<dyn ProviderView>`; the root-only `Provider::chat_response`
+        // method is no longer on the trait. Summarization is a pure
+        // text task — pass an empty tools list and a single-message
+        // `Vec<LlmMessage>` of the prompt.
         //
         // F19: build a `MeteredProvider` from the active task-local
         // scope (the BackgroundCompactor worker opens a `QuotaScope::with`
@@ -412,8 +417,18 @@ impl Compactor {
         // identical to `MeteredProvider`.
         let stacked =
             crate::providers::StackedMeteredProvider::from_current_scope(provider.clone());
+        let messages = vec![crate::providers::LlmMessage::user(prompt.clone())];
         let response = stacked
-            .chat_response(&prompt, "default", 0.3)
+            .chat_with_tools(
+                &provider.model_id(),
+                &messages,
+                &[],
+                &crate::providers::ChatOptions {
+                    max_tokens: Some(crate::providers::DEFAULT_MAX_OUTPUT_TOKENS),
+                    temperature: Some(0.3),
+                    ..Default::default()
+                },
+            )
             .await
             .context("Failed to generate compaction summary")?;
 

@@ -64,6 +64,10 @@ pub use peko_provider_api::{
 /// directly. This constant exists so the bare `4096` literal does not
 /// drift across `ChatOptions` construction sites.
 ///
-/// See `crate::providers::catalog::ProviderCatalog::model_context_length`
-/// for the analogous context-length defaulting pattern (PR-B / F15).
-pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
+/// Canonical source: `peko_provider_api::DEFAULT_MAX_OUTPUT_TOKENS`
+/// (Phase 9b.N.5b.8 lifted it from here so the agentic loop — now
+/// in `peko-engine` — can reference it without taking a
+/// `peko-engine → root` dep edge). The re-export below preserves
+/// every existing `use crate::providers::DEFAULT_MAX_OUTPUT_TOKENS`
+/// import path.
+pub use peko_provider_api::DEFAULT_MAX_OUTPUT_TOKENS;

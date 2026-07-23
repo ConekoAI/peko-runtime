@@ -63,6 +63,14 @@ use std::pin::Pin;
 /// root-only, so the impl lives in root). The loop holds
 /// `Arc<dyn ProviderView>` after Phase 9b.N.5b.7 instead of
 /// `Arc<crate::providers::Provider>`.
+///
+/// `#[async_trait::async_trait]` is required so the trait is
+/// `dyn`-compatible (native `async fn` in traits is not yet object-safe
+/// in stable Rust; the `async_trait` macro rewrites async methods into
+/// `Pin<Box<dyn Future>>` returning forms, which ARE object-safe). The
+/// `Arc<dyn ProviderView>` field type at
+/// `crates/engine/src/stacked_metered_provider.rs:71` requires this.
+#[async_trait::async_trait]
 pub trait ProviderView: Send + Sync + 'static {
     /// Provider name (e.g. `"anthropic"`, `"openai"`). Used for hook payload
     /// attribution + `StreamEvent::Start { provider }` at line 2122.
