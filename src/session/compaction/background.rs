@@ -12,6 +12,7 @@ use crate::common::types::message::LlmMessage;
 use crate::quota::{QuotaMeter, QuotaScope};
 use crate::session::compaction::{CompactionConfig, Compactor};
 use anyhow::Result;
+use peko_engine::ProviderView;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -131,7 +132,7 @@ impl BackgroundCompactor {
     /// BOTH meters via [`StackedMeteredProvider`]. `None` falls back
     /// to plain `MeteredProvider` (F19 behavior).
     pub fn new(
-        provider: Arc<crate::providers::Provider>,
+        provider: Arc<dyn ProviderView>,
         meter: Arc<QuotaMeter>,
         peer_meter: Option<Arc<QuotaMeter>>,
     ) -> Self {
@@ -198,7 +199,7 @@ impl BackgroundCompactor {
     /// Create with custom config and quota
     #[allow(dead_code)]
     pub fn with_config(
-        provider: Arc<crate::providers::Provider>,
+        provider: Arc<dyn ProviderView>,
         config: CompactionConfig,
         quota: CompactionQuota,
         meter: Arc<QuotaMeter>,
@@ -391,7 +392,7 @@ impl BackgroundCompactor {
 /// Process a compaction request (default config)
 async fn process_compaction_request(
     request: CompactionRequest,
-    provider: Arc<crate::providers::Provider>,
+    provider: Arc<dyn ProviderView>,
     state: Arc<Mutex<WorkerState>>,
 ) -> Result<()> {
     process_compaction_request_with_config(request, provider, state, CompactionConfig::default())
@@ -401,7 +402,7 @@ async fn process_compaction_request(
 /// Process a compaction request with custom config
 async fn process_compaction_request_with_config(
     request: CompactionRequest,
-    provider: Arc<crate::providers::Provider>,
+    provider: Arc<dyn ProviderView>,
     state: Arc<Mutex<WorkerState>>,
     config: CompactionConfig,
 ) -> Result<()> {

@@ -47,29 +47,33 @@
 //! `src/engine/session_view_compat.rs` and
 //! `src/engine/extension_core_funnel_compat.rs` patterns.
 
-use crate::providers::Provider;
 use crate::session::compaction::background::BackgroundCompactor;
-use peko_engine::{BackgroundCompactorFactory, CompactorBackend};
+use peko_engine::{BackgroundCompactorFactory, CompactorBackend, ProviderView};
 use peko_quota::QuotaMeter;
 use std::sync::Arc;
 
-/// Adapter that captures the inner `Arc<Provider>` and rebuilds a
+/// Adapter that captures the inner `Arc<dyn ProviderView>` and rebuilds a
 /// `BackgroundCompactor` on every `build(...)` call.
 ///
 /// Constructed by root callers (CLI, IPC, subagent executor, tests) at the
-/// same time they hand the `Provider` to the loop. The `Provider` is held
+/// same time they hand the provider view to the loop. The view is held
 /// inside the adapter; the loop owns an `Arc<dyn BackgroundCompactorFactory>`
 /// pointing at this adapter.
+///
+/// Phase 9b.N.5b.9: switched from `Arc<Provider>` (root-only concrete
+/// type) to `Arc<dyn ProviderView>` (engine-owned trait object) so the
+/// adapter is constructible from the loop's `Arc<dyn ProviderView>`
+/// field without needing a separate concrete-Provider clone.
 pub struct BackgroundCompactorFactoryAdapter {
-    provider: Arc<Provider>,
+    provider: Arc<dyn ProviderView>,
 }
 
 impl BackgroundCompactorFactoryAdapter {
-    /// Build an adapter that captures the given provider. The provider
+    /// Build an adapter that captures the given provider view. The view
     /// is held by `Arc` and used to construct a fresh
     /// `BackgroundCompactor` on every `build(...)` call.
     #[must_use]
-    pub fn new(provider: Arc<Provider>) -> Self {
+    pub fn new(provider: Arc<dyn ProviderView>) -> Self {
         Self { provider }
     }
 }
