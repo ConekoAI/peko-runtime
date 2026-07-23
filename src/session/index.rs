@@ -10,9 +10,9 @@
 //! - No data duplication
 //! - Clean separation of concerns
 
-use crate::session::lock::FileLock;
 use crate::session::safe_filename_component;
 use anyhow::{Context, Result};
+use peko_fs_persistence::FileLock;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

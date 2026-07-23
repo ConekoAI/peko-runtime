@@ -441,6 +441,158 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-protocol",
         "built-in tools are in-process; the IPC protocol is irrelevant.",
     ),
+    # peko-fs-persistence is a leaf utility crate (Phase 5)
+    (
+        "peko-fs-persistence",
+        "peko-subject",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-message",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-tools-core",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-tools-builtin",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-extension-api",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-extension-host",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-protocol",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-engine",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-events",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-quota",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-identity",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-auth",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-provider-api",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-chat-log",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko-peko-daemon",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    (
+        "peko-fs-persistence",
+        "peko",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
+    # peko-chat-log depends only on peko-subject + peko-fs-persistence (Phase 5)
+    (
+        "peko-chat-log",
+        "peko-message",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-tools-core",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-tools-builtin",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-extension-api",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-extension-host",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-protocol",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-engine",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-events",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-quota",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-identity",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-auth",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-provider-api",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko-peko-daemon",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-chat-log",
+        "peko",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
 ]
 
 

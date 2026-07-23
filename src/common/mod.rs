@@ -7,7 +7,6 @@ pub mod config_path;
 pub mod identifiers;
 pub mod json_utils;
 pub mod paths;
-pub mod persistence;
 pub mod process;
 // `registry` was moved to `peko-extension-host` in Phase 8. The
 // shim keeps `crate::common::registry::*` paths working until

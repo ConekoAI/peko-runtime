@@ -2320,10 +2320,12 @@ dependencies = [
  "libc",
  "once_cell",
  "peko-auth",
+ "peko-chat-log",
  "peko-engine",
  "peko-events",
  "peko-extension-api",
  "peko-extension-host",
+ "peko-fs-persistence",
  "peko-identity",
  "peko-message",
  "peko-protocol",
@@ -2389,6 +2391,25 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "peko-chat-log"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "blake3",
+ "chrono",
+ "peko-fs-persistence",
+ "peko-subject",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2470,6 +2491,20 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "peko-fs-persistence"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

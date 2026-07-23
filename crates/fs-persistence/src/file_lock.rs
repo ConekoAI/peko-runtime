@@ -7,6 +7,7 @@
 //! - Cross-platform support (Unix-style advisory locks)
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -219,18 +220,21 @@ impl Drop for FileLock {
 
 /// Lock manager for coordinating access to multiple session files.
 ///
-/// Uses [`SimpleRegistry`] for tracking held locks to avoid hand-rolled
-/// `Mutex<HashMap>` patterns.
+/// Uses an internal reference-counted map of held locks to avoid
+/// double-locking the same path in the same process.
 pub struct LockManager {
-    // Track held locks to prevent double-locking in the same process
-    held: Mutex<crate::common::registry::SimpleRegistry<PathBuf, u32>>,
+    // Track held locks to prevent double-locking in the same process.
+    // The previous implementation reused `peko_extension_host::registry::SimpleRegistry`
+    // (≈35k-line dep tree); `peko-fs-persistence` is a leaf utility crate
+    // so we keep a plain `HashMap` here.
+    held: Mutex<HashMap<PathBuf, u32>>,
 }
 
 impl LockManager {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            held: Mutex::new(crate::common::registry::SimpleRegistry::new()),
+            held: Mutex::new(HashMap::new()),
         }
     }
 
@@ -245,7 +249,7 @@ impl LockManager {
         // Check if we already hold this lock
         {
             let held = self.held.lock().unwrap();
-            if held.contains(&path) {
+            if held.contains_key(&path) {
                 // Increment reference count
                 drop(held);
                 let mut held = self.held.lock().unwrap();

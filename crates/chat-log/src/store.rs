@@ -9,8 +9,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use crate::common::persistence::{append_bytes_durable, FileLock};
-use crate::subject::{PrincipalDID, Subject};
+use peko_fs_persistence::{append_bytes_durable, FileLock};
+use peko_subject::{PrincipalDID, Subject};
 
 use super::cursor::{self, CursorError};
 use super::types::{ChatLogMessage, ChatLogPage, ChatThreadKey, CHAT_LOG_SCHEMA_VERSION};

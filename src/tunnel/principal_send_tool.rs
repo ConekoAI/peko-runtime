@@ -50,7 +50,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::chat_log::{ChatLogMessage, ChatThreadKey};
 use crate::principal::{ChannelContext, ChannelKind};
 use crate::subject::PrincipalDID;
 use crate::tools::core::Tool;
@@ -61,6 +60,7 @@ use crate::tunnel::direct::routing::{select_transport, TransportChoice};
 use crate::tunnel::hub_directory::{DirectoryError, ResolvedExposure};
 use crate::tunnel::TunnelMessage;
 use peko_auth::Subject;
+use peko_chat_log::{ChatLogMessage, ChatThreadKey};
 
 /// Arguments for the `principal_send` tool.
 ///
@@ -617,13 +617,13 @@ Send a message to another Principal's root agent and receive its response. This 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat_log::ChatLogStore;
     use crate::tunnel::a2a_pending::PendingA2aResponses;
     use crate::tunnel::a2a_signature::{verify_request, SignedFields};
     use crate::tunnel::client::TunnelHandle;
     use crate::tunnel::did_key::did_key_to_verifying_key;
     use crate::tunnel::hub_directory::FakeAgentDirectory;
     use ed25519_dalek::SigningKey;
+    use peko_chat_log::ChatLogStore;
     use std::time::Duration;
     use tokio::sync::RwLock;
 
