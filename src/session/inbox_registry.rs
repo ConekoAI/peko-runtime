@@ -22,9 +22,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use peko_extension_host::SessionInbox;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
-
-use crate::extensions::framework::async_exec::executor::completion_queue::SessionInbox;
 
 /// Per-session state held by the [`InboxRegistry`]. The inbox is
 /// shared by the IPC server, the executor, and the loop. The
@@ -160,20 +159,19 @@ impl Default for InboxRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::async_exec::executor::completion_queue::{
-        CompletionEvent, InboxItem, SteeringMessage,
-    };
+    use peko_extension_api::AsyncTaskStatus;
+    use peko_extension_host::{CompletionEvent, InboxItem, SteeringMessage};
+    use peko_tools_core::ToolResult;
     use serde_json::json;
     use std::path::PathBuf;
 
     fn make_event(task_id: &str, session: &str) -> CompletionEvent {
-        use crate::extensions::framework::async_exec::executor::types::AsyncTaskStatus;
         CompletionEvent {
             task_id: task_id.to_string(),
             tool_name: "shell".to_string(),
             result: json!({"exit_code": 0}),
             status: AsyncTaskStatus::Completed {
-                result: crate::tools::core::ToolResult::success(json!({"exit_code": 0})),
+                result: ToolResult::success(json!({"exit_code": 0})),
             },
             completed_at: chrono::Utc::now(),
             output_path: PathBuf::from("/tmp/fake.ndjson"),

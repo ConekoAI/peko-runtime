@@ -17,14 +17,15 @@ use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::common::types::OutputFormat;
 use crate::extensions::agent::AgentAdapter;
-use crate::extensions::framework::async_exec::executor::SteeringMessage;
 use crate::extensions::framework::store::ExtensionStore;
-use crate::identity::did::DIDScope;
-use crate::identity::storage::KeyStorage;
 use crate::observability::Observability;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 use crate::subject::PrincipalDID;
+use peko_identity::did::DIDScope;
+use peko_identity::storage::KeyStorage;
+
+use peko_extension_host::SteeringMessage;
 
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
@@ -524,7 +525,7 @@ impl PrincipalManager {
     async fn generate_identity(
         &self,
         name: &str,
-    ) -> Result<crate::identity::Identity, PrincipalManagerError> {
+    ) -> Result<peko_identity::Identity, PrincipalManagerError> {
         let identity_dir = self.path_resolver.principal_identity_dir(name);
         tokio::fs::create_dir_all(&identity_dir).await?;
         let identity_dir = identity_dir.clone();
@@ -1007,7 +1008,7 @@ mod tests {
     async fn setup() -> (TempDir, Arc<PrincipalManager>, MockAdapter, PrincipalId) {
         let temp = TempDir::new().expect("temp dir");
         std::env::set_var("PEKO_HOME", temp.path());
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
 
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             temp.path().join("config"),

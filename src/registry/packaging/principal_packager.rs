@@ -5,11 +5,11 @@
 use crate::extensions::framework::manager::packaging::ExtensionPackager;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
-use crate::identity::Identity;
 use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
 use crate::registry::packaging::types::{compute_digest, ExtensionRef, Layer, LayerType};
 use anyhow::Context;
+use peko_identity::Identity;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -576,10 +576,10 @@ pub async fn export_principal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::did::DIDScope;
-    use crate::identity::Identity;
     use crate::principal::config::PrincipalConfig;
     use crate::subject::PrincipalDID;
+    use peko_identity::did::DIDScope;
+    use peko_identity::Identity;
 
     #[test]
     fn test_export_options_default() {

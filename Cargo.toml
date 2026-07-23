@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/message", "crates/peko-daemon", "crates/provider-api",
+members = [".", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/identity", "crates/message", "crates/peko-daemon", "crates/provider-api",
     "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
 # ---------------------------------------------------------------------------
@@ -120,6 +120,15 @@ peko-extension-host = { path = "crates/extension-host" }
 # `ResponsePacket`, `TunnelMessage`, instance payloads) stays in root
 # until the wider Phase 11 boundary lifts them.
 peko-protocol = { path = "crates/protocol" }
+# Workspace member providing the DID identity + key storage + runtime
+# identity domain (Phase 3) — owns Identity / DIDDocument / KeyPair /
+# KeyStorage / KeychainStorage / EncryptedKeyStorage /
+# RuntimeIdentity / RuntimeMetadata / DidResolver / public_key_to_did_key.
+# Depends only on peko-subject; root implements the
+# `RuntimePaths` / `IdentityVault` / `IdentityDataDir` trait ports
+# defined in `peko-identity::host` so peko-identity stays a leaf crate.
+# The root re-exports are removed entirely in Phase 15.
+peko-identity = { path = "crates/identity" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-use crate::identity::did::DIDDocument;
-use crate::identity::storage::KeyStorage;
+use crate::did::DIDDocument;
+use crate::storage::KeyStorage;
 
 /// Cache entry with expiration
 #[derive(Clone)]
@@ -197,7 +197,7 @@ pub async fn verify_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::did::DIDScope;
+    use crate::did::DIDScope;
     use tempfile::TempDir;
 
     #[tokio::test]

@@ -67,12 +67,12 @@ async fn handle_tunnel_setup(
     }
 
     // Generate new ed25519 keypair
-    let keypair = crate::identity::keys::KeyPair::generate();
+    let keypair = peko_identity::keys::KeyPair::generate();
     let public_key_bytes = keypair.public_key_bytes();
     let private_key_bytes = keypair.private_key_bytes();
 
     // Create did:key from public key
-    let runtime_did = crate::identity::runtime::public_key_to_did_key(&public_key_bytes);
+    let runtime_did = peko_identity::runtime::public_key_to_did_key(&public_key_bytes);
 
     // Determine hub URL
     let hub_url = url.unwrap_or_else(|| "wss://pekohub.org/v1/tunnel".to_string());

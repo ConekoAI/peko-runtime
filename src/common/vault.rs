@@ -1985,7 +1985,7 @@ impl Vault {
 
         #[cfg(not(test))]
         {
-            let keychain = crate::identity::keychain::KeychainStorage::with_service(
+            let keychain = peko_identity::keychain::KeychainStorage::with_service(
                 KEYCHAIN_SERVICE.to_string(),
             );
             let (file, dek, salt, unlock_method) = match method_override.as_unlock_method() {

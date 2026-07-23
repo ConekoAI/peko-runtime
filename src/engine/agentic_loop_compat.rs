@@ -103,7 +103,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial(core)]
     async fn test_session_context_build_hook_injects_context() {
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -216,9 +216,9 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt001_basic_agentic_loop() {
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale (Windows-headless
+        // `peko_identity::init_test_env` for the rationale (Windows-headless
         // keyring panics inside `Agent::new_for_test` → `KeyStorage::with_path`).
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -293,8 +293,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt002_streaming_output() {
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -357,8 +357,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt003_timeout_config_propagation() {
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -406,8 +406,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt004_graceful_error_handling() {
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -474,8 +474,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt005_session_persistence() {
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -536,8 +536,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt005_session_persistence_with_context() {
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -643,8 +643,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt006_max_iterations_enforced() {
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -744,8 +744,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt006_default_max_iterations_is_10() {
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -785,7 +785,7 @@ mod tests {
     async fn test_rt007_streaming_retry_budget() {
         use std::time::Duration;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -908,7 +908,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_rt007b_streaming_retry_exhausted() {
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1011,7 +1011,7 @@ mod tests {
         use crate::engine::AgenticError;
         use crate::quota::{QuotaConfig, QuotaCycle, QuotaError, QuotaMeter};
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1144,8 +1144,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_tool_call_iteration() {
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1212,7 +1212,7 @@ mod tests {
         use std::sync::Mutex as StdMutex;
         use std::time::{Duration, Instant};
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1413,7 +1413,7 @@ mod tests {
         };
         use chrono::Utc;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1560,7 +1560,7 @@ mod tests {
         };
         use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1678,7 +1678,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_interrupt_pre_cancelled_token_short_circuits() {
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1925,7 +1925,7 @@ mod tests {
         use crate::session::events::{SessionEvent, SessionMessage};
         use crate::session::jsonl::SessionStorage;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -2017,7 +2017,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial(core)]
     async fn loop_does_not_persist_system_messages() {
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -2085,7 +2085,7 @@ mod tests {
         use crate::agents::prompt::PromptRenderer;
         use std::time::Instant;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let core = Arc::new(crate::extensions::framework::ExtensionCore::new());
 
@@ -2175,7 +2175,7 @@ mod tests {
         use crate::agents::prompt::context::TurnPromptContext;
         use crate::agents::prompt::PromptRenderer;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let core = Arc::new(crate::extensions::framework::ExtensionCore::new());
 
@@ -2372,7 +2372,7 @@ mod tests {
         // fallback to `provider.model_id()`. We pin the wiring using
         // the existing `mock_provider()` helper so the test stays
         // independent of the resolver code path.
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
 
         let (provider, _adapter) = mock_provider();
@@ -2440,7 +2440,7 @@ mod tests {
         // directly on `ctx` (Phase 1 renders it; the integration is
         // the field population) and also verify the rendered prompt
         // contains the rendered body.
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
 
         let temp = tempdir_unused();
@@ -2492,7 +2492,7 @@ mod tests {
         // the field directly AND verify the rendered body to catch
         // regressions in either the loop plumbing or the render path.
         use crate::quota::{QuotaConfig, QuotaMeter};
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
 
         let temp = tempdir_unused();
@@ -2555,7 +2555,7 @@ mod tests {
         // converts into the `{{soft_cancel}}` section. This pins the
         // signal flow from the IPC handler's `with_cancel_token` into
         // the next-turn system prompt.
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
 
         let temp = tempdir_unused();
@@ -2605,7 +2605,7 @@ mod tests {
         // the loop would surface.
         use crate::agents::prompt::context::CapabilityDiffTracker;
         use crate::extensions::framework::types::{Capabilities, Capability};
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
 
         let temp = tempdir_unused();
@@ -2693,7 +2693,7 @@ mod tests {
         // capability under `Revoked:`.
         use crate::agents::prompt::context::CapabilityDiffTracker;
         use crate::extensions::framework::types::{Capabilities, Capability};
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
 
         let full_caps = Arc::new(Capabilities::with_grants([
@@ -2785,7 +2785,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn loop_renders_fresh_prompt_body_each_iteration() {
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
 
         let temp = tempdir_unused();
@@ -2893,7 +2893,7 @@ mod tests {
     async fn pre_post_tool_use_hooks_fire_in_order() {
         use crate::extensions::framework::types::ExtensionId;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -3023,7 +3023,7 @@ mod tests {
     async fn stop_hook_fires_on_clean_end_with_reason_end() {
         use crate::extensions::framework::types::ExtensionId;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -3114,7 +3114,7 @@ mod tests {
     async fn stop_hook_fires_on_cap_hit_with_reason_max_iterations() {
         use crate::extensions::framework::types::ExtensionId;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -3216,7 +3216,7 @@ mod tests {
     async fn stop_hook_fires_on_soft_interrupt_with_reason_interrupted() {
         use crate::extensions::framework::types::ExtensionId;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -3313,7 +3313,7 @@ mod tests {
     async fn after_agent_hook_fires_from_agent_stop_with_agent_name() {
         use crate::extensions::framework::types::ExtensionId;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let core = global_core().unwrap();
@@ -3401,7 +3401,7 @@ mod tests {
     async fn pre_tool_use_wildcard_dispatch_matches_specific_tool() {
         use crate::extensions::framework::types::ExtensionId;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -3546,7 +3546,7 @@ mod tests {
     async fn after_agent_hook_fires_from_loop_with_agent_name_and_did() {
         use crate::extensions::framework::types::ExtensionId;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -3719,7 +3719,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial(core)]
     async fn build_tool_definitions_appends_search_stub_when_flag_and_deferred_present() {
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, _mock) = mock_provider();
@@ -3781,7 +3781,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial(core)]
     async fn build_tool_definitions_omits_stub_when_flag_off() {
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, _mock) = mock_provider();
@@ -3826,7 +3826,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial(core)]
     async fn build_tool_definitions_omits_stub_when_no_deferred_tools() {
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, _mock) = mock_provider();

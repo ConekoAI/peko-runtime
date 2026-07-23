@@ -8,13 +8,13 @@ use crate::engine::state::StateMachine;
 use crate::engine::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
-use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::session::types::ChannelType;
 use crate::session::InboxRegistry;
 use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
+use peko_identity::{did::DIDScope, storage::KeyStorage, Identity};
 use std::sync::Arc;
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::{debug, error, info, warn};
@@ -1939,7 +1939,7 @@ impl Agent {
     /// do not conflict with each other or the user's real data.
     #[cfg(test)]
     pub async fn new_for_test(config: AgentConfig, temp_dir: &std::path::Path) -> Result<Self> {
-        use crate::identity::storage::KeyStorage;
+        use peko_identity::storage::KeyStorage;
 
         let path_resolver = PathResolver::with_dirs(
             temp_dir.join("config"),
@@ -2017,7 +2017,8 @@ impl Agent {
     // Private helper methods
 
     async fn load_or_create_identity(config: &AgentConfig) -> Result<Identity> {
-        let storage = KeyStorage::new()?;
+        let storage =
+            KeyStorage::new(crate::identity_compat::default_identity_data_dir().as_ref())?;
 
         // Issue #28: prefer lookup by `agent_did` (the on-disk filename is
         // the DID, not the agent name). Pre-#28 configs stored identity
@@ -2278,9 +2279,9 @@ mod tests {
         use crate::extensions::framework::core::ExtensionCore;
 
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale (Windows-headless
+        // `peko_identity::init_test_env` for the rationale (Windows-headless
         // keyring panics).
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
@@ -2305,8 +2306,8 @@ mod tests {
         use crate::extensions::framework::core::ExtensionCore;
 
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
@@ -2333,8 +2334,8 @@ mod tests {
         use crate::session::types::ChannelType;
 
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
@@ -2366,8 +2367,8 @@ mod tests {
         use crate::session::types::ChannelType;
 
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
@@ -2397,8 +2398,8 @@ mod tests {
         use crate::extensions::framework::core::ExtensionCore;
 
         // Force the encrypted-file identity fallback — see
-        // `crate::identity::init_test_env` for the rationale.
-        crate::identity::init_test_env();
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
@@ -2451,7 +2452,7 @@ mod tests {
 
         // Force the encrypted-file identity fallback (Windows-headless
         // keyring panics otherwise).
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
 
         let core = Arc::new(ExtensionCore::new());
         crate::extensions::framework::core::init_global_core(core);
@@ -2500,7 +2501,7 @@ mod tests {
         use crate::extensions::framework::core::ExtensionCore;
         use tempfile::TempDir;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         let core = Arc::new(ExtensionCore::new());
         crate::extensions::framework::core::init_global_core(core);
 
@@ -2544,7 +2545,7 @@ mod tests {
         use crate::extensions::framework::core::ExtensionCore;
         use tempfile::TempDir;
 
-        crate::identity::init_test_env();
+        peko_identity::init_test_env();
         let core = Arc::new(ExtensionCore::new());
         crate::extensions::framework::core::init_global_core(core);
 

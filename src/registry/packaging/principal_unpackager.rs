@@ -8,13 +8,13 @@ use crate::common::paths::PathResolver;
 use crate::extensions::framework::manager::packaging::ExtensionUnpackager;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
-use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
 use crate::subject::PrincipalDID;
 use anyhow::Context;
+use peko_identity::{storage::KeyStorage, Identity, KeyPairExport};
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -274,7 +274,7 @@ impl PrincipalUnpackager {
         let did_doc_bytes = files
             .get("identity/did.json")
             .ok_or_else(|| anyhow::anyhow!("Missing identity/did.json"))?;
-        let did_doc: crate::identity::DIDDocument = serde_json::from_slice(did_doc_bytes)?;
+        let did_doc: peko_identity::DIDDocument = serde_json::from_slice(did_doc_bytes)?;
 
         let identity_dir = self
             .data_dir
@@ -285,7 +285,7 @@ impl PrincipalUnpackager {
         if options.rotate_keys {
             let new_identity = Identity::new(
                 &manifest.principal.name,
-                crate::identity::did::DIDScope::Local,
+                peko_identity::did::DIDScope::Local,
             )
             .await?;
             let key_storage = KeyStorage::with_path(identity_dir)?;
@@ -580,9 +580,9 @@ pub(crate) fn verify_principal_signature(
     allow_unsigned: bool,
     name: &str,
 ) -> anyhow::Result<(SignatureStatus, String)> {
-    use crate::identity::DIDDocument;
     use base64::Engine;
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use peko_identity::DIDDocument;
 
     let manifest_str = std::str::from_utf8(manifest_bytes)
         .map_err(|e| anyhow::anyhow!("manifest is not utf-8: {e}"))?;
@@ -794,12 +794,12 @@ fn validate_package_for_principal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::did::DIDScope;
-    use crate::identity::Identity;
     use crate::principal::config::PrincipalConfig;
     use crate::registry::packaging::principal_packager::{
         PrincipalExportOptions, PrincipalPackager,
     };
+    use peko_identity::did::DIDScope;
+    use peko_identity::Identity;
 
     #[test]
     fn test_import_options_default() {

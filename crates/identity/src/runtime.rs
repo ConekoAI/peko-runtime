@@ -8,7 +8,10 @@
 //! The private signing key is stored in the encrypted vault; only public
 //! identity metadata is kept in `identity.toml`.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
@@ -20,9 +23,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 use tracing::info;
 
-use crate::common::paths::PathResolver;
-use crate::common::vault::Vault;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use crate::host::{IdentityCredential, IdentityVault, RuntimePaths};
 
 /// Prefix for did:key method
 const DID_KEY_PREFIX: &str = "did:key:";
@@ -84,8 +85,13 @@ impl RuntimeIdentity {
     ///
     /// The private key is stored in the encrypted vault; `identity.toml` only
     /// holds public metadata.
-    pub fn generate_or_load(resolver: &PathResolver, vault: &Vault) -> Result<Self> {
-        let identity_path = resolver.runtime_dir().join("identity.toml");
+    ///
+    /// The `paths` and `vault` parameters are trait ports that abstract the
+    /// root-only `PathResolver` and `Vault` types. See [`crate::host`] for
+    /// the trait definitions and the host-side impls in root
+    /// (`src/identity_compat.rs`).
+    pub fn generate_or_load(paths: &dyn RuntimePaths, vault: &dyn IdentityVault) -> Result<Self> {
+        let identity_path = paths.runtime_dir().join("identity.toml");
 
         if identity_path.exists() {
             let content = fs::read_to_string(&identity_path)
@@ -132,39 +138,34 @@ impl RuntimeIdentity {
         Ok(identity)
     }
 
-    fn try_reconstruct_from_vault(vault: &Vault) -> Result<Option<Self>> {
-        use crate::common::vault::{CredentialFilter, CredentialKind};
-        let summaries = vault.list_credentials(&CredentialFilter {
-            namespace: Some("identity".to_string()),
-            kind: Some(CredentialKind::PrivateKey),
-            include_system: true,
-        });
-        for summary in summaries {
-            if let Some(c) = vault.get_credential(&summary.id) {
-                match Self::reconstruct_from_credential(&c) {
-                    Ok(Some(identity)) => return Ok(Some(identity)),
-                    Ok(None) => continue,
-                    Err(e) => {
-                        return Err(e.context(
-                            "identity.toml is missing and the vault contains a malformed identity credential"
-                        ));
-                    }
+    /// Arc-convenience wrapper for callers holding `Arc<dyn IdentityVault>`.
+    pub fn generate_or_load_with(
+        paths: Arc<dyn RuntimePaths>,
+        vault: Arc<dyn IdentityVault>,
+    ) -> Result<Self> {
+        Self::generate_or_load(paths.as_ref(), vault.as_ref())
+    }
+
+    fn try_reconstruct_from_vault(vault: &dyn IdentityVault) -> Result<Option<Self>> {
+        for credential in vault.list_identity_credentials() {
+            match Self::reconstruct_from_credential(&credential) {
+                Ok(Some(identity)) => return Ok(Some(identity)),
+                Ok(None) => continue,
+                Err(e) => {
+                    return Err(e.context(
+                        "identity.toml is missing and the vault contains a malformed identity credential"
+                    ));
                 }
             }
         }
         Ok(None)
     }
 
-    fn reconstruct_from_credential(c: &crate::common::vault::Credential) -> Result<Option<Self>> {
-        if c.namespace != "identity" || c.kind != crate::common::vault::CredentialKind::PrivateKey {
+    fn reconstruct_from_credential(c: &IdentityCredential) -> Result<Option<Self>> {
+        if c.namespace != "identity" || c.kind != "private_key" {
             return Ok(None);
         }
-        let algorithm = c
-            .metadata
-            .get("algorithm")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if algorithm != "ed25519-raw-base64" {
+        if c.algorithm != "ed25519-raw-base64" {
             return Ok(None);
         }
         let key_bytes = BASE64
@@ -202,10 +203,15 @@ impl RuntimeIdentity {
     }
 
     /// Load the private signing key for this identity from the vault.
-    pub fn load_private_key(&self, vault: &Vault) -> Result<Option<String>> {
+    pub fn load_private_key(&self, vault: &dyn IdentityVault) -> Result<Option<String>> {
         Ok(vault
             .get_identity_private_key(&self.key_id)
             .map(|s| s.expose_secret().to_string()))
+    }
+
+    /// Arc-convenience wrapper.
+    pub fn load_private_key_with(&self, vault: Arc<dyn IdentityVault>) -> Result<Option<String>> {
+        self.load_private_key(vault.as_ref())
     }
 
     /// Get the runtime DID
@@ -266,14 +272,110 @@ pub fn did_key_to_public_key(did: &str) -> Result<[u8; 32], DidError> {
 
 /// Get the path to the identity file
 #[must_use]
-pub fn identity_file_path(resolver: &PathResolver) -> PathBuf {
-    resolver.runtime_dir().join("identity.toml")
+pub fn identity_file_path(paths: &dyn RuntimePaths) -> PathBuf {
+    paths.runtime_dir().join("identity.toml")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::{IdentityCredential, IdentityVault, RuntimePaths};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// In-memory `RuntimePaths` mock backed by a temp directory.
+    struct MockPaths {
+        dir: PathBuf,
+    }
+
+    impl MockPaths {
+        fn new(temp_root: &std::path::Path) -> Self {
+            let dir = temp_root.join("runtime");
+            fs::create_dir_all(&dir).unwrap();
+            Self { dir }
+        }
+
+        fn runtime_dir_path(&self) -> &PathBuf {
+            &self.dir
+        }
+    }
+
+    impl RuntimePaths for MockPaths {
+        fn runtime_dir(&self) -> PathBuf {
+            self.dir.clone()
+        }
+    }
+
+    /// In-memory `IdentityVault` mock. Stores `IdentityCredential` rows in
+    /// a `Mutex<HashMap>` so tests can pre-seed credentials and read them
+    /// back through the trait port.
+    struct MockIdentityVault {
+        creds: Mutex<HashMap<String, IdentityCredential>>,
+    }
+
+    impl MockIdentityVault {
+        fn new() -> Self {
+            Self {
+                creds: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn seed(&self, cred: IdentityCredential) {
+            self.creds.lock().unwrap().insert(cred.id.clone(), cred);
+        }
+    }
+
+    impl IdentityVault for MockIdentityVault {
+        fn list_identity_credentials(&self) -> Vec<IdentityCredential> {
+            self.creds
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|c| c.namespace == "identity")
+                .cloned()
+                .collect()
+        }
+
+        fn get_identity_credential(&self, id: &str) -> Option<IdentityCredential> {
+            self.creds.lock().unwrap().get(id).cloned()
+        }
+
+        fn set_identity_private_key(
+            &self,
+            key_id: &str,
+            algorithm: &str,
+            key_b64: &str,
+        ) -> Result<()> {
+            use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+            // Verify the material is valid base64 + 32 bytes (mirrors what a
+            // real vault would catch); bail with a clear error so callers
+            // see the same shape they would against a root `Vault`.
+            let bytes = BASE64
+                .decode(key_b64)
+                .map_err(|e| anyhow::anyhow!("invalid base64 private key: {e}"))?;
+            if bytes.len() != 32 {
+                anyhow::bail!("identity private key is {} bytes, expected 32", bytes.len());
+            }
+            self.seed(IdentityCredential {
+                id: key_id.to_string(),
+                namespace: "identity".to_string(),
+                kind: "private_key".to_string(),
+                algorithm: algorithm.to_string(),
+                created_at: chrono::Utc::now(),
+                material: secrecy::SecretString::new(key_b64.to_string().into()),
+            });
+            Ok(())
+        }
+
+        fn get_identity_private_key(&self, key_id: &str) -> Option<secrecy::SecretString> {
+            self.creds
+                .lock()
+                .unwrap()
+                .get(key_id)
+                .map(|c| c.material.clone())
+        }
+    }
 
     #[test]
     fn test_public_key_to_did_key_roundtrip() {
@@ -313,22 +415,18 @@ mod tests {
     #[test]
     fn test_runtime_identity_generate_or_load_stores_key_in_vault() {
         let dir = TempDir::new().unwrap();
-        let vault = Vault::for_test(dir.path(), "identity-test");
-        let resolver = PathResolver::with_dirs(
-            dir.path().to_path_buf(),
-            dir.path().join("data"),
-            dir.path().join("cache"),
-        );
+        let vault = MockIdentityVault::new();
+        let paths = MockPaths::new(dir.path());
 
-        let identity = RuntimeIdentity::generate_or_load(&resolver, &vault).unwrap();
-        let loaded = RuntimeIdentity::generate_or_load(&resolver, &vault).unwrap();
+        let identity = RuntimeIdentity::generate_or_load(&paths, &vault).unwrap();
+        let loaded = RuntimeIdentity::generate_or_load(&paths, &vault).unwrap();
         assert_eq!(loaded.runtime_did, identity.runtime_did);
 
         let private_key = loaded.load_private_key(&vault).unwrap();
         assert!(private_key.is_some());
 
         // identity.toml should not contain private key material.
-        let content = fs::read_to_string(identity_file_path(&resolver)).unwrap();
+        let content = fs::read_to_string(identity_file_path(&paths)).unwrap();
         assert!(!content.contains("encrypted_private_key"));
         assert!(!content.contains("[keys]"));
     }
@@ -339,23 +437,19 @@ mod tests {
     #[test]
     fn reconstruct_identity_from_vault_when_toml_missing() {
         let dir = TempDir::new().unwrap();
-        let vault = Vault::for_test(dir.path(), "identity-test");
-        let resolver = PathResolver::with_dirs(
-            dir.path().to_path_buf(),
-            dir.path().join("data"),
-            dir.path().join("cache"),
-        );
+        let vault = MockIdentityVault::new();
+        let paths = MockPaths::new(dir.path());
 
-        let identity = RuntimeIdentity::generate_or_load(&resolver, &vault).unwrap();
+        let identity = RuntimeIdentity::generate_or_load(&paths, &vault).unwrap();
         let original_did = identity.runtime_did.clone();
 
         // Delete the public metadata file, keep the vault.
-        fs::remove_file(identity_file_path(&resolver)).unwrap();
+        fs::remove_file(identity_file_path(&paths)).unwrap();
 
-        let reconstructed = RuntimeIdentity::generate_or_load(&resolver, &vault).unwrap();
+        let reconstructed = RuntimeIdentity::generate_or_load(&paths, &vault).unwrap();
         assert_eq!(reconstructed.runtime_did, original_did);
         assert_eq!(reconstructed.key_id, identity.key_id);
-        assert!(identity_file_path(&resolver).exists());
+        assert!(identity_file_path(&paths).exists());
 
         let private_key = reconstructed.load_private_key(&vault).unwrap();
         assert!(private_key.is_some());
@@ -364,14 +458,10 @@ mod tests {
     #[test]
     fn test_legacy_identity_file_rejected() {
         let dir = TempDir::new().unwrap();
-        let vault = Vault::for_test(dir.path(), "identity-test");
-        let resolver = PathResolver::with_dirs(
-            dir.path().to_path_buf(),
-            dir.path().join("data"),
-            dir.path().join("cache"),
-        );
+        let vault = MockIdentityVault::new();
+        let paths = MockPaths::new(dir.path());
 
-        fs::create_dir_all(resolver.runtime_dir()).unwrap();
+        fs::create_dir_all(paths.runtime_dir_path()).unwrap();
         let legacy = r#"
 runtime_did = "did:key:z6MkTest"
 key_id = "did:key:z6MkTest#keys-1"
@@ -380,8 +470,8 @@ created_at = "2024-01-01T00:00:00Z"
 [keys]
 "did:key:z6MkTest#keys-1" = { encrypted_private_key = "c2VjcmV0", algorithm = "ed25519-raw-base64" }
 "#;
-        fs::write(identity_file_path(&resolver), legacy).unwrap();
+        fs::write(identity_file_path(&paths), legacy).unwrap();
 
-        assert!(RuntimeIdentity::generate_or_load(&resolver, &vault).is_err());
+        assert!(RuntimeIdentity::generate_or_load(&paths, &vault).is_err());
     }
 }

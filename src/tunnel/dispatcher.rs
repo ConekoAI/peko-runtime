@@ -2193,8 +2193,8 @@ mod tests {
 
         // Use a known-good did:key (from a generated keypair) but
         // sign with a DIFFERENT key — signature must not verify.
-        let kp_caller = crate::identity::keys::KeyPair::generate();
-        let kp_attacker = crate::identity::keys::KeyPair::generate();
+        let kp_caller = peko_identity::keys::KeyPair::generate();
+        let kp_attacker = peko_identity::keys::KeyPair::generate();
         let caller_did = crate::tunnel::verifying_key_to_did_key(&kp_caller.verifying_key);
         let signed = crate::tunnel::SignedFields {
             request_id: "req-bad-sig",
@@ -2406,7 +2406,7 @@ mod tests {
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
         let (handle, mut rx) = mock_tunnel_handle();
 
-        let kp_caller = crate::identity::keys::KeyPair::generate();
+        let kp_caller = peko_identity::keys::KeyPair::generate();
         let caller_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp_caller.verifying_key);
         let caller_principal_did = "did:peko:agent:caller".to_string();
 

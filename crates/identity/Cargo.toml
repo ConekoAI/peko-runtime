@@ -1,0 +1,49 @@
+[package]
+name = "peko-identity"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "DID identity + key storage + runtime identity (Phase 3 of the post-migration cleanup). Owns the canonical Identity/DIDDocument/KeyPair/KeyStorage/RuntimeIdentity/RuntimeMetadata domain. Trait ports (`RuntimePaths`, `IdentityVault`, `IdentityDataDir`) abstract root-only deps so peko-identity stays a leaf crate."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+peko-subject = { path = "../subject" }
+
+# Crypto / key material
+ed25519-dalek = "2.1"
+rand = "0.8"
+base64 = "0.22"
+blake3 = "1.5"
+bs58 = "0.5"
+sha2 = "0.10"
+secrecy = { version = "0.10", features = ["serde"] }
+
+# Encrypted-file key storage fallback
+aes-gcm = "0.10"
+argon2 = "0.5"
+
+# OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+keyring = "2.3"
+uuid = "1.10"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Time + error
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Async + paths
+tokio = { version = "1.35", features = ["rt", "fs", "sync", "macros"] }
+hostname = "0.4"
+futures = "0.3"
+
+# Logging
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.10"

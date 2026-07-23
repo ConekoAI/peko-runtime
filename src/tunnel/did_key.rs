@@ -125,7 +125,7 @@ pub fn pubkey_to_base64(key: &VerifyingKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::keys::KeyPair;
+    use peko_identity::keys::KeyPair;
 
     /// Round-trip: a generated keypair encodes to a `did:key:z...`
     /// that decodes back to the same `VerifyingKey`.
