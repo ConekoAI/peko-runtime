@@ -148,7 +148,7 @@ pub(crate) struct AppState {
     inner: Arc<RwLock<AppStateInner>>,
 
     /// Runtime identity (ADR-032)
-    pub runtime_identity: crate::identity::runtime::RuntimeIdentity,
+    pub runtime_identity: peko_identity::runtime::RuntimeIdentity,
 
     /// Runtime signing key derived from the vault. Shared by the tunnel
     /// client, direct connection manager, and direct server.
@@ -174,7 +174,7 @@ pub(crate) struct AppState {
     idle_detector: Option<Arc<IdleDetector>>,
 
     /// Runtime metadata (ADR-032)
-    pub runtime_metadata: crate::identity::runtime_metadata::RuntimeMetadata,
+    pub runtime_metadata: peko_identity::runtime_metadata::RuntimeMetadata,
 
     /// Known runtimes registry (ADR-032)
     pub known_runtimes:
@@ -478,10 +478,12 @@ impl AppState {
         );
 
         // ADR-032: Initialize runtime identity, metadata, and registry
-        let runtime_identity =
-            crate::identity::runtime::RuntimeIdentity::generate_or_load(&path_resolver, &vault)?;
-        let runtime_metadata = crate::identity::runtime_metadata::RuntimeMetadata::load_or_create(
-            &path_resolver,
+        let runtime_identity = peko_identity::runtime::RuntimeIdentity::generate_or_load(
+            crate::identity_compat::runtime_paths_arc(&path_resolver).as_ref(),
+            crate::identity_compat::identity_vault_arc(vault.clone()).as_ref(),
+        )?;
+        let runtime_metadata = peko_identity::runtime_metadata::RuntimeMetadata::load_or_create(
+            crate::identity_compat::runtime_paths_arc(&path_resolver).as_ref(),
             &runtime_identity.runtime_did,
         )?;
         let mut known_runtimes =
@@ -1189,13 +1191,13 @@ impl AppState {
 
     /// Get the runtime identity (ADR-032)
     #[must_use]
-    pub fn runtime_identity(&self) -> &crate::identity::runtime::RuntimeIdentity {
+    pub fn runtime_identity(&self) -> &peko_identity::runtime::RuntimeIdentity {
         &self.runtime_identity
     }
 
     /// Get the runtime metadata (ADR-032)
     #[must_use]
-    pub fn runtime_metadata(&self) -> &crate::identity::runtime_metadata::RuntimeMetadata {
+    pub fn runtime_metadata(&self) -> &peko_identity::runtime_metadata::RuntimeMetadata {
         &self.runtime_metadata
     }
 
@@ -1780,7 +1782,7 @@ impl DirectHealth {
 
 /// Load the runtime's Ed25519 signing key from the encrypted vault.
 fn load_runtime_signing_key(
-    identity: &crate::identity::runtime::RuntimeIdentity,
+    identity: &peko_identity::runtime::RuntimeIdentity,
     vault: &crate::common::vault::Vault,
 ) -> anyhow::Result<Arc<ed25519_dalek::SigningKey>> {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -2321,11 +2323,11 @@ impl crate::ipc::handlers::quota::QuotaHost for AppState {
 /// `async_trait`. The actual `KnownRuntimes` lock awaits live in the
 /// handler.
 impl crate::ipc::handlers::runtime::RuntimeHost for AppState {
-    fn runtime_identity(&self) -> &crate::identity::runtime::RuntimeIdentity {
+    fn runtime_identity(&self) -> &peko_identity::runtime::RuntimeIdentity {
         AppState::runtime_identity(self)
     }
 
-    fn runtime_metadata(&self) -> &crate::identity::runtime_metadata::RuntimeMetadata {
+    fn runtime_metadata(&self) -> &peko_identity::runtime_metadata::RuntimeMetadata {
         AppState::runtime_metadata(self)
     }
 

@@ -16,10 +16,10 @@
 use secrecy::SecretString;
 
 use peko::common::vault::Vault;
-use peko::identity::keychain::{EncryptedKeyStorage, KeyStorageRef};
-use peko::identity::storage::KeyStorage;
-use peko::identity::{DIDScope, Identity};
 use peko::tunnel::PekoHubCredential;
+use peko_identity::keychain::{EncryptedKeyStorage, KeyStorageRef};
+use peko_identity::storage::KeyStorage;
+use peko_identity::{DIDScope, Identity};
 
 // ---------------------------------------------------------------------------
 // Tests

@@ -22,8 +22,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::auth::caller::CallerContext;
-use crate::identity::runtime::RuntimeIdentity;
-use crate::identity::runtime_metadata::RuntimeMetadata;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
     HostInfoResponse, KnownRuntimeResponse, RequestPacket, ResponsePacket, RuntimeMetadataResponse,
@@ -32,6 +30,8 @@ use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use crate::tunnel::known_runtimes::{KnownRuntimes, TrustLevel};
+use peko_identity::runtime::RuntimeIdentity;
+use peko_identity::runtime_metadata::RuntimeMetadata;
 
 /// Narrow port the `runtime` handler uses to reach daemon state.
 ///

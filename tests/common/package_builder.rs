@@ -10,12 +10,12 @@
 use anyhow::Context;
 use peko::extensions::framework::store::ExtensionStore;
 use peko::extensions::skill::SkillAdapter;
-use peko::identity::{did::DIDScope, Identity};
 use peko::principal::config::PrincipalConfig;
 use peko::registry::packaging::{
     compute_digest, PrincipalExportOptions, PrincipalManifest, PrincipalPackager,
     PrincipalRegistryDescriptor,
 };
+use peko_identity::{did::DIDScope, Identity};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};

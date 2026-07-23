@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use tracing::info;
 
-use crate::common::paths::PathResolver;
+use crate::host::RuntimePaths;
 
 /// Runtime metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,8 +73,8 @@ impl RuntimeMetadata {
     }
 
     /// Load metadata from disk, or create new with detected host info
-    pub fn load_or_create(resolver: &PathResolver, runtime_id: &str) -> Result<Self> {
-        let runtime_path = resolver.runtime_dir().join("runtime.toml");
+    pub fn load_or_create(paths: &dyn RuntimePaths, runtime_id: &str) -> Result<Self> {
+        let runtime_path = paths.runtime_dir().join("runtime.toml");
 
         if runtime_path.exists() {
             let content = fs::read_to_string(&runtime_path)
@@ -113,9 +113,9 @@ impl RuntimeMetadata {
     }
 
     /// Update the last_seen_at timestamp and save to disk
-    pub fn touch(&mut self, resolver: &PathResolver) -> Result<()> {
+    pub fn touch(&mut self, paths: &dyn RuntimePaths) -> Result<()> {
         self.last_seen_at = Utc::now();
-        let runtime_path = resolver.runtime_dir().join("runtime.toml");
+        let runtime_path = paths.runtime_dir().join("runtime.toml");
         let toml =
             toml::to_string_pretty(self).with_context(|| "Failed to serialize runtime metadata")?;
         fs::write(&runtime_path, toml)

@@ -1611,11 +1611,11 @@ async fn load_principal_identity(
     resolver: &PathResolver,
     name: &str,
     did: &str,
-) -> anyhow::Result<crate::identity::Identity> {
+) -> anyhow::Result<peko_identity::Identity> {
     let identity_dir = resolver.principal_identity_dir(name);
     let did = did.to_string();
     tokio::task::spawn_blocking(move || {
-        let storage = crate::identity::storage::KeyStorage::with_path(identity_dir)?;
+        let storage = peko_identity::storage::KeyStorage::with_path(identity_dir)?;
         storage.load(&did)
     })
     .await?

@@ -9,6 +9,8 @@
 //! files on disk (fallback). Legacy plaintext identities are auto-migrated
 //! on first load.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -18,9 +20,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
-use crate::identity::did::{DIDScope, Identity};
-use crate::identity::keychain::{EncryptedKeyStorage, KeyStorageRef, KeychainStorage};
-use crate::identity::keys::KeyPair;
+use crate::host::{identities_dir, IdentityDataDir};
+
+use crate::did::{DIDScope, Identity};
+use crate::keychain::{EncryptedKeyStorage, KeyStorageRef, KeychainStorage};
+use crate::keys::KeyPair;
 
 /// Storage format for serialized identities
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,14 +64,26 @@ pub struct KeyStorage {
 }
 
 impl KeyStorage {
-    /// Create new key storage with default path
-    pub fn new() -> Result<Self> {
-        let base_path = Self::default_storage_path()?;
+    /// Create new key storage using the platform default data directory
+    /// resolved through the supplied [`IdentityDataDir`] port.
+    ///
+    /// The trait port abstracts the root-only
+    /// `crate::common::paths::default_data_dir()` free function so
+    /// `peko-identity` stays a leaf crate. The host (root) implements
+    /// `IdentityDataDir` for whatever data-dir resolver it owns.
+    pub fn new(data_dir: &dyn IdentityDataDir) -> Result<Self> {
+        let base_path = identities_dir(&data_dir.default_data_dir());
         let env_passphrase = std::env::var("PEKO_IDENTITY_PASSPHRASE")
             .ok()
             .filter(|s| !s.is_empty())
             .map(|s| SecretString::new(s.into()));
         Self::with_path_and_passphrase(base_path, env_passphrase)
+    }
+
+    /// Create new key storage using the platform default data directory
+    /// (Arc form for daemon/host ownership).
+    pub fn new_with_arc(data_dir: Arc<dyn IdentityDataDir>) -> Result<Self> {
+        Self::new(data_dir.as_ref())
     }
 
     /// Create new key storage with custom path
@@ -116,9 +132,9 @@ impl KeyStorage {
         })
     }
 
-    /// Get the default storage path for the platform
-    fn default_storage_path() -> Result<PathBuf> {
-        Ok(crate::common::paths::default_data_dir().join("identities"))
+    /// Get the default storage path for the platform via the trait port.
+    pub fn default_storage_path(data_dir: &dyn IdentityDataDir) -> PathBuf {
+        identities_dir(&data_dir.default_data_dir())
     }
 
     /// Generate and store a new identity
@@ -252,7 +268,7 @@ impl KeyStorage {
             }
         };
 
-        let keypair_export = crate::identity::keys::KeyPairExport {
+        let keypair_export = crate::keys::KeyPairExport {
             public_key: stored.public_key,
             private_key: private_key_b64,
         };
@@ -326,7 +342,7 @@ impl KeyStorage {
         info!("Migrated legacy plaintext identity to secure storage: {did}");
 
         // 5. Reconstruct and return the Identity
-        let keypair_export = crate::identity::keys::KeyPairExport {
+        let keypair_export = crate::keys::KeyPairExport {
             public_key: legacy.public_key,
             private_key: legacy.private_key,
         };
@@ -429,7 +445,7 @@ impl KeyStorage {
     }
 
     /// Export keys for an identity (for portable packages)
-    pub fn export_keys(&self, did: &str) -> Result<crate::identity::keys::KeyPairExport> {
+    pub fn export_keys(&self, did: &str) -> Result<crate::keys::KeyPairExport> {
         let identity = self.load(did)?;
         let keypair = identity
             .keypair
@@ -467,11 +483,10 @@ impl KeyStorage {
     }
 }
 
-impl Default for KeyStorage {
-    fn default() -> Self {
-        Self::new().expect("Failed to initialize key storage")
-    }
-}
+// `Default` removed in Phase 3: `KeyStorage::new` now requires an
+// `IdentityDataDir` port. Callers that previously relied on
+// `KeyStorage::default()` should use `KeyStorage::with_path(...)` with
+// an explicit base path.
 
 #[cfg(test)]
 mod tests {

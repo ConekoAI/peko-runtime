@@ -203,7 +203,12 @@ pub mod extensions;
 // ============================================================================
 
 // [extract:phase-3] peko-identity
-pub mod identity;
+// src/identity/ was deleted in Phase 3; all identity types now live in
+// the peko-identity workspace crate (`peko_identity::*`).
+// `identity_compat` is the host-side adapter that wires root's
+// `PathResolver` + `Vault` into the peko_identity trait ports
+// (RuntimePaths / IdentityVault / IdentityDataDir).
+pub mod identity_compat;
 
 // [extract:phase-4] peko-auth
 pub mod auth;

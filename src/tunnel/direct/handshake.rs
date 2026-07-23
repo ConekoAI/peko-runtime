@@ -182,8 +182,8 @@ fn verify_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::keys::KeyPair;
     use crate::tunnel::verifying_key_to_did_key;
+    use peko_identity::keys::KeyPair;
 
     fn make_test_keypair() -> (SigningKey, String) {
         let kp = KeyPair::generate();

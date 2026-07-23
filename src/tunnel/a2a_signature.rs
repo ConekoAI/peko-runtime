@@ -154,7 +154,7 @@ pub fn verify_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::keys::KeyPair;
+    use peko_identity::keys::KeyPair;
 
     fn sample_fields() -> SignedFields<'static> {
         SignedFields {

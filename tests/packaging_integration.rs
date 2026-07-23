@@ -49,13 +49,13 @@
 use anyhow::Context;
 use peko::extensions::framework::store::ExtensionStore;
 use peko::extensions::skill::SkillAdapter;
-use peko::identity::{did::DIDScope, Identity};
 use peko::principal::config::PrincipalConfig;
 use peko::registry::packaging::{
     PrincipalExportOptions, PrincipalImportOptions, PrincipalManifest, PrincipalPackager,
     PrincipalUnpackager,
 };
 use peko::registry::{AgentRegistry, RegistryClient, RegistryConfig, RegistrySource};
+use peko_identity::{did::DIDScope, Identity};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -128,9 +128,9 @@ async fn build_principal_package_from_dir(
 
     let identity_dir = principal_dir.join("identity");
     let did_json = tokio::fs::read_to_string(identity_dir.join("did.json")).await?;
-    let did_doc: peko::identity::DIDDocument = serde_json::from_str(&did_json)?;
+    let did_doc: peko_identity::DIDDocument = serde_json::from_str(&did_json)?;
     let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await?;
-    let key_export: peko::identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
+    let key_export: peko_identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
     let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
 
     let agents_dir = principal_dir.join("agents");
@@ -331,9 +331,9 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     let config: PrincipalConfig = toml::from_str(&config_toml)?;
     let identity_dir = principal_dir.join("identity");
     let did_json = tokio::fs::read_to_string(identity_dir.join("did.json")).await?;
-    let did_doc: peko::identity::DIDDocument = serde_json::from_str(&did_json)?;
+    let did_doc: peko_identity::DIDDocument = serde_json::from_str(&did_json)?;
     let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await?;
-    let key_export: peko::identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
+    let key_export: peko_identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
     let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
     let agents_dir = principal_dir.join("agents");
 
@@ -492,9 +492,9 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
 
     let identity_dir = principal_dir.join("identity");
     let did_json = tokio::fs::read_to_string(identity_dir.join("did.json")).await?;
-    let did_doc: peko::identity::DIDDocument = serde_json::from_str(&did_json)?;
+    let did_doc: peko_identity::DIDDocument = serde_json::from_str(&did_json)?;
     let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await?;
-    let key_export: peko::identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
+    let key_export: peko_identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
     let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
 
     let agents_dir = principal_dir.join("agents");

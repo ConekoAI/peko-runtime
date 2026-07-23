@@ -911,7 +911,7 @@ mod tests {
         // Use a real KeyPair so the caller's `runtime_id` is a valid
         // `did:key` (the hub's `verify_request` derives the verifying
         // key from this).
-        let kp = crate::identity::keys::KeyPair::generate();
+        let kp = peko_identity::keys::KeyPair::generate();
         let signing_key = Arc::new(kp.signing_key);
         let caller_vk = signing_key.verifying_key();
         let caller_runtime_id = crate::tunnel::verifying_key_to_did_key(&caller_vk);
@@ -1266,7 +1266,7 @@ mod tests {
             // Reuse the existing builder but we need its tuple
             // form, so we replicate the wiring here with a fresh
             // signing key.
-            let kp = crate::identity::keys::KeyPair::generate();
+            let kp = peko_identity::keys::KeyPair::generate();
             let signing_key = Arc::new(kp.signing_key);
             let caller_runtime_id =
                 crate::tunnel::verifying_key_to_did_key(&signing_key.verifying_key());
@@ -1374,7 +1374,7 @@ mod tests {
         let caller_did = "did:peko:principal:caller-keyhash".to_string();
         let target_did = "did:peko:principal:target-keyhash".to_string();
         let (ctx, store) = {
-            let kp = crate::identity::keys::KeyPair::generate();
+            let kp = peko_identity::keys::KeyPair::generate();
             let signing_key = Arc::new(kp.signing_key);
             let caller_runtime_id =
                 crate::tunnel::verifying_key_to_did_key(&signing_key.verifying_key());
@@ -1451,7 +1451,7 @@ mod tests {
         let caller_did = "did:peko:principal:caller-keyhash".to_string();
         let target_did = "did:peko:principal:registered-but-hub-rejects".to_string();
         let (ctx, store) = {
-            let kp = crate::identity::keys::KeyPair::generate();
+            let kp = peko_identity::keys::KeyPair::generate();
             let signing_key = Arc::new(kp.signing_key);
             let caller_runtime_id =
                 crate::tunnel::verifying_key_to_did_key(&signing_key.verifying_key());

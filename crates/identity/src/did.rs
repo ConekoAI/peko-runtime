@@ -1,6 +1,6 @@
 //! DID (Decentralized Identifier) creation and validation
 
-use crate::identity::keys::KeyPair;
+use crate::keys::KeyPair;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
@@ -201,7 +201,7 @@ impl Identity {
     /// Create an identity from a DID document and keypair (for import)
     pub fn from_did_document_and_key(
         document: DIDDocument,
-        key_export: crate::identity::keys::KeyPairExport,
+        key_export: crate::keys::KeyPairExport,
     ) -> anyhow::Result<Self> {
         let keypair = KeyPair::import(&key_export)?;
         let did = document.id.clone();

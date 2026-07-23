@@ -45,13 +45,13 @@
 //! See: <https://github.com/ConekoAI/peko-runtime/issues/91>
 
 use base64::Engine;
-use peko::identity::keys::KeyPair;
-use peko::identity::{DIDDocument, Identity, VerificationMethod};
 use peko::registry::packaging::principal_manifest::PrincipalManifest;
 use peko::registry::packaging::{
     PrincipalImportOptions, PrincipalImportResult, PrincipalUnpackager, TrustPolicy, TrustStatus,
     TrustStore,
 };
+use peko_identity::keys::KeyPair;
+use peko_identity::{DIDDocument, Identity, VerificationMethod};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
