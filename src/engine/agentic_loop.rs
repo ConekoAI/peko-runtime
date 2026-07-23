@@ -27,6 +27,7 @@ use crate::quota::QuotaScope;
 use crate::session::Session;
 use anyhow::Result;
 use futures::StreamExt;
+use peko_engine::SessionView;
 use peko_extension_host::ToolFunnel;
 use peko_tools_core::HOOK_TIMEOUT;
 use std::sync::Arc;
@@ -417,10 +418,7 @@ impl AgenticLoop {
     ) -> Result<AgenticResult> {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
 
-        let session_id = {
-            let s = session.read().await;
-            s.id.clone()
-        };
+        let session_id = session.id().await;
         info!("Using session: {}", session_id);
 
         // Emit start event
@@ -484,10 +482,9 @@ impl AgenticLoop {
         messages.push(LlmMessage::user(user_text.to_string()));
 
         // Persist only the raw user text, never the composed LLM prompt.
-        {
-            let mut s = session.write().await;
-            s.add_user(user_text).await?;
-        }
+        // Phase 9b.N.5b.9b: route through `SessionView::add_user` so the
+        // write lock is acquired inside the trait impl, not here.
+        session.add_user(user_text.to_string()).await?;
 
         // Continue with the unified run logic
         self.run_inner(messages, session, on_event, run_id, streaming_config)
@@ -521,10 +518,7 @@ impl AgenticLoop {
     ) -> Result<AgenticResult> {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
 
-        let session_id = {
-            let s = session.read().await;
-            s.id.clone()
-        };
+        let session_id = session.id().await;
         info!(
             "Starting v4 rich-input streaming agentic loop for agent: {} (session: {})",
             self.agent.name(),
@@ -574,16 +568,18 @@ impl AgenticLoop {
             .collect::<Vec<_>>()
             .join("\n");
         {
-            let mut s = session.write().await;
             // `add_user` already errors on empty input; persist an
             // empty placeholder when an image-only message arrives
             // so the session JSONL still gets the user turn marker.
-            s.add_user(if persisted_text.is_empty() {
-                "[image attached]".to_string()
-            } else {
-                persisted_text
-            })
-            .await?;
+            // Phase 9b.N.5b.9b: route through `SessionView::add_user`
+            // so the write lock is acquired inside the trait impl.
+            session
+                .add_user(if persisted_text.is_empty() {
+                    "[image attached]".to_string()
+                } else {
+                    persisted_text
+                })
+                .await?;
         }
 
         // Drop the unused dummy binding; we already persisted above.
@@ -623,10 +619,7 @@ impl AgenticLoop {
     ) -> Result<AgenticResult> {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
 
-        let session_id = {
-            let s = session.read().await;
-            s.id.clone()
-        };
+        let session_id = session.id().await;
         info!("Using session: {}", session_id);
 
         // Emit start event
@@ -870,10 +863,7 @@ impl AgenticLoop {
         provider: StackedMeteredProvider,
     ) -> Result<AgenticResult> {
         // Get session_id once at start
-        let session_id = {
-            let s = session.read().await;
-            s.id.clone()
-        };
+        let session_id = session.id().await;
 
         // Push the resolved session id onto the core so `AsyncSpawn`
         // can stamp `parent_session_key` on any task issued from this
@@ -904,10 +894,15 @@ impl AgenticLoop {
             let provider_name = provider.name().to_string();
             let model_name = provider.model_id();
 
-            let mut s = session.write().await;
-            s.set_model(&provider_name, &model_name);
+            // Phase 9b.N.5b.9b: route through `SessionView::{set_model,
+            // record_model_change}` so the write lock is acquired
+            // inside the trait impl, not here.
+            session.set_model(&provider_name, &model_name).await;
             // Record model change event in session JSONL for normalization
-            if let Err(e) = s.record_model_change(&provider_name, &model_name).await {
+            if let Err(e) = session
+                .record_model_change(&provider_name, &model_name)
+                .await
+            {
                 warn!("Failed to record model change event: {}", e);
             }
             model_name
@@ -950,10 +945,9 @@ impl AgenticLoop {
         // `session` tool and IPC layer can surface it (used by the
         // CLI dry-run and external status surfaces). The orchestrator
         // pins this same value at run start.
-        {
-            let mut s = session.write().await;
-            s.set_model_context_limit(context_window);
-        }
+        // Phase 9b.N.5b.9b: route through `SessionView` so the write
+        // lock is acquired inside the trait impl.
+        session.set_model_context_limit(context_window).await;
 
         // Initialize tool executor with a fresh per-loop gate. The
         // gate is cloned into each `execute(...)` future via the
@@ -1764,14 +1758,16 @@ impl AgenticLoop {
                 };
 
                 {
-                    let mut s = session.write().await;
-                    s.add_assistant_with_blocks(
-                        content_blocks,
-                        Some(tool_call_blocks),
-                        thinking_block,
-                        Some(iteration_usage.clone()),
-                    )
-                    .await?;
+                    // Phase 9b.N.5b.9b: route through `SessionView` so
+                    // the write lock is acquired inside the trait impl.
+                    session
+                        .add_assistant_with_blocks(
+                            content_blocks,
+                            Some(tool_call_blocks),
+                            thinking_block,
+                            Some(iteration_usage.clone()),
+                        )
+                        .await?;
                 }
 
                 // Execute tools in parallel (fan-out). Independent tool
@@ -1893,11 +1889,20 @@ impl AgenticLoop {
             }
 
             // Add final answer to session
-            {
-                let mut s = session.write().await;
-                s.add_assistant(&accumulated_text, None, Some(iteration_usage.clone()))
-                    .await?;
-            }
+            // Phase 9b.N.5b.9b: route through `SessionView` so the
+            // write lock is acquired inside the trait impl. The root
+            // `Session::add_assistant` takes an `Option<Vec<ToolCall>>`
+            // second argument that every loop call site passes `None`;
+            // `SessionView::add_assistant` drops the parameter for
+            // forward-compatibility with future callers that surface
+            // `peko_message::ToolCallInfo` instead.
+            session
+                .add_assistant(
+                    accumulated_text.clone(),
+                    None,
+                    Some(iteration_usage.clone()),
+                )
+                .await?;
 
             // Note: We don't emit AssistantText here because the content has already
             // been streamed via AssistantDelta events. Emitting AssistantText would
@@ -2298,10 +2303,8 @@ impl AgenticLoop {
         messages.push(LlmMessage::user(user_text.to_string()));
 
         // Persist only the raw user text, never the composed LLM prompt.
-        {
-            let mut s = session.write().await;
-            s.add_user(user_text).await?;
-        }
+        // Phase 9b.N.5b.9b: route through `SessionView::add_user`.
+        session.add_user(user_text.to_string()).await?;
 
         // Run the streaming loop
         self.run_inner(messages, session, on_event, run_id, streaming_config)
@@ -3565,7 +3568,7 @@ mod tests {
         // iteration will drain it at start and inject the synthetic
         // user-role message.
         let session = test_session("e2e-completion-agent", temp_dir.path()).await;
-        let session_id = session.read().await.id.clone();
+        let session_id = session.id().await;
 
         queue.push(CompletionEvent {
             task_id: "shell:e2e-test".to_string(),
@@ -3699,7 +3702,7 @@ mod tests {
         // delivered as a plain user-role message and the completion
         // event folded into the synthetic user message.
         let session = test_session("e2e-steering-agent", temp_dir.path()).await;
-        let session_id = session.read().await.id.clone();
+        let session_id = session.id().await;
 
         queue.push(SteeringMessage::new("actually do X instead"));
         queue.push(
@@ -4048,7 +4051,7 @@ mod tests {
                 .await
                 .unwrap(),
         ));
-        let history = session.read().await.load_history().await.unwrap();
+        let history = session.load_history().await.unwrap();
         assert!(
             history[0].content.iter().any(
                 |b| matches!(b, ContentBlock::Text { text } if text == "STALE PERSISTED SYSTEM")
@@ -4117,7 +4120,7 @@ mod tests {
         let loop_ = AgenticLoop::new(agent, provider, extension_core).await;
 
         let session = test_session(&agent_name, temp_dir.path()).await;
-        let session_id = session.read().await.id.clone();
+        let session_id = session.id().await;
         let result = loop_
             .run_with_resume("hello", Vec::new(), |_| {}, session, None)
             .await;

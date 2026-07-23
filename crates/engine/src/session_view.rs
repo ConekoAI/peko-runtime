@@ -135,6 +135,76 @@ pub trait SessionCore: Send + Sync + 'static {
         session: &Self,
         messages: &[peko_message::LlmMessage],
     ) -> Result<()>;
+
+    // ============================================================
+    // Phase 9b.N.5b.9b additions: agentic_loop surface
+    // ============================================================
+    //
+    // These eight methods cover every session read/write the agentic
+    // loop performs today. They were previously inline `let s =
+    // session.read().await; s.X()` / `let mut s = session.write().await;
+    // s.X()` patterns at ~20 sites in `src/engine/agentic_loop.rs`. By
+    // moving them behind the trait, the loop can hold an
+    // `Arc<dyn SessionView>` instead of `Arc<RwLock<Session>>` and
+    // move into `peko-engine` (Phase 9b.N.5b.9e) without naming the
+    // root-only `Session` type.
+
+    /// Return the session id (clone).
+    async fn id(session: &Self) -> String;
+
+    /// Persist a user message with text content.
+    async fn add_user(session: &mut Self, content: String) -> Result<()>;
+
+    /// Record the model's identity for this turn (in-memory only).
+    async fn set_model(session: &mut Self, provider: &str, model: &str);
+
+    /// Append a model-change event to the session JSONL so a resumed
+    /// session can replay the model's history.
+    async fn record_model_change(session: &mut Self, provider: &str, model_id: &str) -> Result<()>;
+
+    /// Set the model's max context-window token count (used by the
+    /// orchestrator + status surfaces).
+    async fn set_model_context_limit(session: &mut Self, limit: usize);
+
+    /// Persist an assistant text message, optionally with tool calls
+    /// and token usage. Mirrors
+    /// `crate::session::Session::add_assistant`
+    /// (`src/session/unified.rs:316`).
+    ///
+    /// `tool_calls` accepts `peko_message::ToolCallInfo` (workspace
+    /// DTO) rather than the root-only `ToolCall` struct so the trait
+    /// signature doesn't require lifting `ToolCall` itself. Root's
+    /// `SessionCore` impl converts `ToolCallInfo` → legacy `ToolCall`
+    /// when forwarding to `Session::add_assistant`.
+    async fn add_assistant(
+        session: &mut Self,
+        content: String,
+        tool_calls: Option<Vec<peko_message::ToolCallInfo>>,
+        usage: Option<peko_message::TokenUsage>,
+    ) -> Result<()>;
+
+    /// Persist an assistant message with structured content blocks,
+    /// tool-call blocks, and optional thinking. Mirrors
+    /// `crate::session::Session::add_assistant_with_blocks`
+    /// (`src/session/unified.rs:584`).
+    ///
+    /// `ToolCallBlock` and `ThinkingBlock` were lifted to
+    /// `peko_message` in Phase 9b.N.5b.9b so this trait method can
+    /// name them without violating `check_workspace_deps.py`'s
+    /// `peko-engine → root` ban.
+    #[allow(clippy::too_many_arguments)]
+    async fn add_assistant_with_blocks(
+        session: &mut Self,
+        content_blocks: Vec<peko_message::ContentBlock>,
+        tool_calls: Option<Vec<peko_message::ToolCallBlock>>,
+        thinking: Option<peko_message::ThinkingBlock>,
+        usage: Option<peko_message::TokenUsage>,
+    ) -> Result<()>;
+
+    /// Load the session's message history as LLM-ready messages.
+    /// Mirrors `crate::session::Session::load_history`
+    /// (`src/session/unified.rs:633`).
+    async fn load_history(session: &Self) -> Result<Vec<peko_message::LlmMessage>>;
 }
 
 /// Blanket impl: any `Arc<RwLock<T>>` for `T: SessionCore` can be used
@@ -175,6 +245,47 @@ pub trait SessionView: Send + Sync + 'static {
     /// Forwarded to [`SessionCore::update_context_cache`]. Acquire
     /// the read lock (the impl is `&self`), call, release.
     async fn update_context_cache(&self, messages: &[peko_message::LlmMessage]) -> Result<()>;
+
+    // ============================================================
+    // Phase 9b.N.5b.9b additions: agentic_loop surface
+    // ============================================================
+
+    /// Forwarded to [`SessionCore::id`]. Read lock.
+    async fn id(&self) -> String;
+
+    /// Forwarded to [`SessionCore::add_user`]. Write lock.
+    async fn add_user(&self, content: String) -> Result<()>;
+
+    /// Forwarded to [`SessionCore::set_model`]. Write lock.
+    async fn set_model(&self, provider: &str, model: &str);
+
+    /// Forwarded to [`SessionCore::record_model_change`]. Write lock.
+    async fn record_model_change(&self, provider: &str, model_id: &str) -> Result<()>;
+
+    /// Forwarded to [`SessionCore::set_model_context_limit`]. Write lock.
+    async fn set_model_context_limit(&self, limit: usize);
+
+    /// Forwarded to [`SessionCore::add_assistant`]. Write lock.
+    async fn add_assistant(
+        &self,
+        content: String,
+        tool_calls: Option<Vec<peko_message::ToolCallInfo>>,
+        usage: Option<peko_message::TokenUsage>,
+    ) -> Result<()>;
+
+    /// Forwarded to [`SessionCore::add_assistant_with_blocks`]. Write
+    /// lock.
+    #[allow(clippy::too_many_arguments)]
+    async fn add_assistant_with_blocks(
+        &self,
+        content_blocks: Vec<peko_message::ContentBlock>,
+        tool_calls: Option<Vec<peko_message::ToolCallBlock>>,
+        thinking: Option<peko_message::ThinkingBlock>,
+        usage: Option<peko_message::TokenUsage>,
+    ) -> Result<()>;
+
+    /// Forwarded to [`SessionCore::load_history`]. Read lock.
+    async fn load_history(&self) -> Result<Vec<peko_message::LlmMessage>>;
 }
 
 #[async_trait::async_trait]
@@ -224,5 +335,57 @@ where
     async fn update_context_cache(&self, messages: &[peko_message::LlmMessage]) -> Result<()> {
         let guard = self.read().await;
         T::update_context_cache(&*guard, messages).await
+    }
+
+    async fn id(&self) -> String {
+        let guard = self.read().await;
+        T::id(&*guard).await
+    }
+
+    async fn add_user(&self, content: String) -> Result<()> {
+        let mut guard = self.write().await;
+        T::add_user(&mut *guard, content).await
+    }
+
+    async fn set_model(&self, provider: &str, model: &str) {
+        let mut guard = self.write().await;
+        T::set_model(&mut *guard, provider, model).await
+    }
+
+    async fn record_model_change(&self, provider: &str, model_id: &str) -> Result<()> {
+        let mut guard = self.write().await;
+        T::record_model_change(&mut *guard, provider, model_id).await
+    }
+
+    async fn set_model_context_limit(&self, limit: usize) {
+        let mut guard = self.write().await;
+        T::set_model_context_limit(&mut *guard, limit).await
+    }
+
+    async fn add_assistant(
+        &self,
+        content: String,
+        tool_calls: Option<Vec<peko_message::ToolCallInfo>>,
+        usage: Option<peko_message::TokenUsage>,
+    ) -> Result<()> {
+        let mut guard = self.write().await;
+        T::add_assistant(&mut *guard, content, tool_calls, usage).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn add_assistant_with_blocks(
+        &self,
+        content_blocks: Vec<peko_message::ContentBlock>,
+        tool_calls: Option<Vec<peko_message::ToolCallBlock>>,
+        thinking: Option<peko_message::ThinkingBlock>,
+        usage: Option<peko_message::TokenUsage>,
+    ) -> Result<()> {
+        let mut guard = self.write().await;
+        T::add_assistant_with_blocks(&mut *guard, content_blocks, tool_calls, thinking, usage).await
+    }
+
+    async fn load_history(&self) -> Result<Vec<peko_message::LlmMessage>> {
+        let guard = self.read().await;
+        T::load_history(&*guard).await
     }
 }
