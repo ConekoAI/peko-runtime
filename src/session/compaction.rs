@@ -49,6 +49,7 @@ use crate::common::types::message::ContentBlock;
 use crate::common::types::message::LlmMessage;
 use crate::providers::MessageRole;
 use anyhow::{Context as _, Result};
+use peko_engine::ProviderView;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -371,7 +372,7 @@ impl Compactor {
     async fn generate_summary_with_llm(
         &self,
         messages: &[LlmMessage],
-        provider: &Arc<crate::providers::Provider>,
+        provider: &Arc<dyn ProviderView>,
     ) -> Result<(String, crate::providers::TokenUsage)> {
         let history = self.format_history_for_summary(messages);
 
@@ -467,7 +468,7 @@ impl Compactor {
     pub async fn compact(
         &mut self,
         messages: &[LlmMessage],
-        provider: &Arc<crate::providers::Provider>,
+        provider: &Arc<dyn ProviderView>,
     ) -> Result<CompactionResult> {
         if messages.len() < 4 {
             return Err(anyhow::anyhow!(
@@ -927,7 +928,7 @@ minimax = { "M3" = 4000 }
         // returns a non-zero output token count.
         mock.queue_text("Summary of conversation: user and assistant discussed several topics over many turns and arrived at a conclusion that satisfied everyone involved in the discussion.");
 
-        let provider = Arc::new(
+        let provider: Arc<dyn ProviderView> = Arc::new(
             Provider::new(
                 AnyAdapter::Mock(mock.clone()),
                 "",
@@ -983,7 +984,7 @@ minimax = { "M3" = 4000 }
         let mock = MockAdapter::new();
         mock.queue_text("Summary.");
 
-        let provider = Arc::new(
+        let provider: Arc<dyn ProviderView> = Arc::new(
             Provider::new(
                 AnyAdapter::Mock(mock.clone()),
                 "",

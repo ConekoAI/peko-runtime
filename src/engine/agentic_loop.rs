@@ -70,7 +70,14 @@ pub struct AgenticLoop {
     /// loop reads. The trait impl lives at
     /// `src/engine/agent_view_compat.rs` (orphan-rule-friendly).
     agent: Arc<dyn AgentView>,
-    provider: Arc<crate::providers::Provider>,
+    /// Phase 9b.N.5b.9: switched from `Arc<crate::providers::Provider>`
+    /// to `Arc<dyn ProviderView>` so the loop holds the trait-object
+    /// surface the engine crate owns (the concrete `Provider` impl
+    /// remains root-only until a future `peko-providers` phase).
+    /// `ProviderView` impl at `src/engine/provider_view_compat.rs`
+    /// wraps the same `Provider`; callers passing the concrete root
+    /// type get an implicit `Unsize<Arc<dyn ProviderView>>` coercion.
+    provider: Arc<dyn peko_engine::ProviderView>,
     /// Phase 9b.N.5b.7: factory that builds a fresh `Box<dyn CompactorBackend>`
     /// for every `run_inner_with_meter` invocation. Replaces the line-892
     /// direct construction of `crate::session::compaction::background::BackgroundCompactor::new(...)`.
@@ -191,7 +198,7 @@ impl AgenticLoop {
     ///   `Arc::new(core) as Arc<dyn ToolFunnel>` works at call sites.
     pub async fn new(
         agent: Arc<dyn AgentView>,
-        provider: Arc<crate::providers::Provider>,
+        provider: Arc<dyn peko_engine::ProviderView>,
         extension_core: Arc<dyn ToolFunnel>,
     ) -> Self {
         let agent_principal_id = agent.principal_id().to_string();
@@ -2315,8 +2322,13 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::RwLock;
 
-    /// Build a mock provider with a fresh MockAdapter
-    fn mock_provider() -> (Arc<Provider>, MockAdapter) {
+    /// Build a mock provider with a fresh MockAdapter.
+    ///
+    /// Returns the trait-object form (`Arc<dyn ProviderView>`) so call
+    /// sites can hand it directly to `AgenticLoop::new(...)` without
+    /// per-site coercion. Phase 9b.N.5b.9 switched the constructor
+    /// parameter from `Arc<Provider>` to `Arc<dyn ProviderView>`.
+    fn mock_provider() -> (Arc<dyn peko_engine::ProviderView>, MockAdapter) {
         use crate::providers::core::ProviderRuntimeOptions;
 
         let adapter = MockAdapter::new();
