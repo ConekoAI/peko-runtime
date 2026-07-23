@@ -27,6 +27,8 @@ use peko_identity::storage::KeyStorage;
 
 use peko_extension_host::SteeringMessage;
 
+use peko_extension_host::SteeringMessage;
+
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
 pub enum PrincipalManagerError {
