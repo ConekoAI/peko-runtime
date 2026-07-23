@@ -5,7 +5,7 @@
 use peko::extensions::framework::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
 use peko::extensions::framework::store::ExtensionStore;
 use peko::extensions::framework::types::ExtensionId;
-use peko::subject::PrincipalId;
+use peko_subject::PrincipalId;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
