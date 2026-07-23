@@ -16,7 +16,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::auth::caller::CallerContext;
 use crate::common::vault::{CredentialKind, RotationStrategy};
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
@@ -25,6 +24,7 @@ use crate::ipc::packet::{
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
+use peko_auth::caller::CallerContext;
 
 /// Narrow port for the read/write credential variants.
 pub(crate) trait CredentialHost: Send + Sync {

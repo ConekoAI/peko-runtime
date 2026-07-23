@@ -10,7 +10,6 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
-use crate::auth::{subject_from_string_with_default_user, Subject};
 use crate::commands::GlobalPaths;
 use crate::common::paths::PathResolver;
 use crate::ipc::{DaemonClient, ResponsePacket};
@@ -24,6 +23,7 @@ use crate::principal::{
     router::{ChannelContext, ChannelKind},
     Capabilities, PrincipalManager,
 };
+use peko_auth::{subject_from_string_with_default_user, Subject};
 
 /// Subcommands for `peko principal`.
 #[derive(Subcommand)]
@@ -812,23 +812,23 @@ async fn pull_principal(
     }
 }
 
-fn parse_permission(value: &str) -> Result<crate::auth::Permission> {
+fn parse_permission(value: &str) -> Result<peko_auth::Permission> {
     match value.to_lowercase().as_str() {
-        "chat" => Ok(crate::auth::Permission::Chat),
+        "chat" => Ok(peko_auth::Permission::Chat),
         "view_settings" | "view-settings" | "viewsettings" => {
-            Ok(crate::auth::Permission::ViewSettings)
+            Ok(peko_auth::Permission::ViewSettings)
         }
         "manage_settings" | "manage-settings" | "managesettings" => {
-            Ok(crate::auth::Permission::ManageSettings)
+            Ok(peko_auth::Permission::ManageSettings)
         }
         "manage_extensions" | "manage-extensions" | "manageextensions" => {
-            Ok(crate::auth::Permission::ManageExtensions)
+            Ok(peko_auth::Permission::ManageExtensions)
         }
         "manage_members" | "manage-members" | "managemembers" => {
-            Ok(crate::auth::Permission::ManageMembers)
+            Ok(peko_auth::Permission::ManageMembers)
         }
-        "expose" => Ok(crate::auth::Permission::Expose),
-        "delete" => Ok(crate::auth::Permission::Delete),
+        "expose" => Ok(peko_auth::Permission::Expose),
+        "delete" => Ok(peko_auth::Permission::Delete),
         other => anyhow::bail!("Unknown permission: {other}"),
     }
 }
@@ -1026,7 +1026,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
         capabilities: starter_extensions(),
-        exposure: crate::principal::config::Exposure::Private,
+        exposure: peko_auth::Exposure::Private,
         status: None,
         permissions: Vec::new(),
         // Principals must be created with a configured model. The CLI
@@ -1079,9 +1079,9 @@ impl PrincipalMemoryFactory for CliPrincipalMemoryFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::Permission;
     use crate::commands::{Cli, Commands};
     use clap::Parser;
+    use peko_auth::Permission;
 
     #[test]
     fn parse_permission_maps_common_names() {

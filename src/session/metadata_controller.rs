@@ -368,8 +368,8 @@ impl MetadataController {
         // and clear peer routing if this session is still the active one.
         // This prevents "Session not found" errors when sending without --new flag.
         if let Some(e) = entry {
-            use crate::auth::Subject;
             use crate::session::key::derive_base_session_key;
+            use peko_auth::Subject;
 
             let peer = match e.peer_type.as_deref() {
                 Some("user") => e.peer_id.as_ref().map(|id| Subject::User(id.clone())),

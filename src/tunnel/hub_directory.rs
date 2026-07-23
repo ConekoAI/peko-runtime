@@ -38,7 +38,7 @@ use serde::Deserialize;
 use std::time::Duration;
 use thiserror::Error;
 
-use crate::auth::Subject;
+use peko_auth::Subject;
 
 /// Hit payload returned by the hub's `/v1/principals/by-did/:did` and
 /// `/v1/principals/by-handle/:owner/:principal_name` endpoints.

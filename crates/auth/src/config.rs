@@ -1,9 +1,10 @@
 //! Auth configuration loading and validation
 
-use super::types::{AuthConfigFile, RateLimitConfigFile};
-use crate::common::paths::PathResolver;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+
+use super::types::{AuthConfigFile, RateLimitConfigFile};
+use crate::host::RuntimePaths;
 
 /// Runtime auth configuration
 #[derive(Clone, Debug)]
@@ -42,11 +43,15 @@ impl Default for RateLimitConfig {
 }
 
 impl AuthConfig {
-    /// Load auth configuration from disk, or create defaults
-    pub fn load(resolver: &PathResolver) -> anyhow::Result<Self> {
-        let config_path = resolver.runtime_dir().join("auth_config.toml");
-        let api_keys_path = resolver.runtime_dir().join("api_keys.toml");
-        let pekohub_path = resolver.runtime_dir().join("pekohub.toml");
+    /// Load auth configuration from disk, or create defaults.
+    ///
+    /// Phase 4 migration: this used to take `&PathResolver` directly.
+    /// The trait port ([`RuntimePaths`]) abstracts the path resolver so
+    /// `peko-auth` doesn't need to depend on `crate::common::paths`.
+    pub fn load(paths: &dyn RuntimePaths) -> anyhow::Result<Self> {
+        let config_path = paths.runtime_dir().join("auth_config.toml");
+        let api_keys_path = paths.runtime_dir().join("api_keys.toml");
+        let pekohub_path = paths.runtime_dir().join("pekohub.toml");
 
         let file = if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
@@ -189,6 +194,28 @@ pub fn enforce_auth_for_public_bind(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::RuntimePaths;
+    use std::path::{Path, PathBuf};
+
+    /// In-memory `RuntimePaths` mock backed by a temp directory.
+    /// Mirrors the principal-side `MockPaths` pattern from `peko-identity`.
+    struct MockPaths {
+        dir: PathBuf,
+    }
+
+    impl MockPaths {
+        fn new(temp_root: &Path) -> Self {
+            let dir = temp_root.join("runtime");
+            std::fs::create_dir_all(&dir).unwrap();
+            Self { dir }
+        }
+    }
+
+    impl RuntimePaths for MockPaths {
+        fn runtime_dir(&self) -> PathBuf {
+            self.dir.clone()
+        }
+    }
 
     #[test]
     fn test_is_loopback() {
@@ -261,5 +288,15 @@ mod tests {
             pekohub_path: PathBuf::from("/tmp/pekohub.toml"),
         };
         assert!(enforce_auth_for_public_bind(&addr, &config).is_ok());
+    }
+
+    #[test]
+    fn test_load_creates_defaults_when_no_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = MockPaths::new(tmp.path());
+        let config = AuthConfig::load(&paths).unwrap();
+        assert!(config.enable_local_trust());
+        assert!(!config.enable_pekohub_jwt());
+        assert!(!config.enable_api_key());
     }
 }

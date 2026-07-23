@@ -16,12 +16,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::trace;
 
-use crate::auth::caller::CallerContext;
 use crate::daemon::state::AppState;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
+use peko_auth::caller::CallerContext;
 
 pub(crate) mod auth;
 pub(crate) mod capability;

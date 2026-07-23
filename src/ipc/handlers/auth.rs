@@ -21,15 +21,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::auth::api_key::ApiKeyStore;
-use crate::auth::caller::CallerContext;
-use crate::auth::config::AuthConfig;
-use crate::auth::types::ApiKeyScope;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{ApiKeySummary, RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
+use peko_auth::api_key::ApiKeyStore;
+use peko_auth::caller::CallerContext;
+use peko_auth::config::AuthConfig;
+use peko_auth::types::ApiKeyScope;
 
 /// Narrow port the `auth` handler uses to reach daemon state.
 ///

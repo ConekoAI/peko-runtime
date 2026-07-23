@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::auth::Subject;
+use peko_auth::Subject;
 
 /// Agent configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

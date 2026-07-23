@@ -254,8 +254,8 @@ pub fn discord_session_key(
 /// and logs a warning, so a stray non-peer subject never produces an
 /// orphan key. This is the documented behavior, not a bug.
 #[must_use]
-pub fn derive_base_session_key(agent: &str, peer: &crate::auth::Subject) -> String {
-    use crate::auth::Subject;
+pub fn derive_base_session_key(agent: &str, peer: &peko_auth::Subject) -> String {
+    use peko_auth::Subject;
     match peer {
         Subject::User(id) => {
             format!("agent:{}:peer:user:{}", agent, sanitize_key_component(id))
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_derive_base_session_key() {
-        use crate::auth::Subject;
+        use peko_auth::Subject;
 
         let user_peer = Subject::User("alice".to_string());
         let key = derive_base_session_key("testagent", &user_peer);

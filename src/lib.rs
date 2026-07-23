@@ -211,7 +211,12 @@ pub mod extensions;
 pub mod identity_compat;
 
 // [extract:phase-4] peko-auth
-pub mod auth;
+// src/auth/ was deleted in Phase 4; all auth types now live in the
+// peko-auth workspace crate (`peko_auth::*`). `auth_compat` is the
+// host-side adapter that wires root's `PathResolver` +
+// `PrincipalConfig` into the peko_auth trait ports (RuntimePaths /
+// PrincipalResourceView).
+pub mod auth_compat;
 
 // [extract:phase-15] deletion candidate — pure shim of peko-subject
 pub mod subject;

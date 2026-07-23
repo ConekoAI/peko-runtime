@@ -13,8 +13,8 @@ pub use audit::{AuditEvent, AuditLogger, AuditSeverity};
 pub use metrics::MetricsCollector;
 pub use tracer::{TraceSpan, Tracer};
 
-use crate::auth::Subject;
 use anyhow::Result;
+use peko_auth::Subject;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -204,7 +204,7 @@ mod tests {
     /// attributable to a real subject (issues #17 + #26).
     #[tokio::test]
     async fn audit_with_caller_records_caller_principal() {
-        use crate::auth::Subject;
+        use peko_auth::Subject;
         let obs = Observability::new("tunnel");
         let caller = Subject::User("user:user-42".to_string());
         obs.audit_with_caller(
@@ -246,7 +246,7 @@ mod tests {
     /// ones operators query by user when investigating an incident).
     #[tokio::test]
     async fn audit_security_with_caller_records_caller_and_severity() {
-        use crate::auth::Subject;
+        use peko_auth::Subject;
         let obs = Observability::new("tunnel");
         let caller = Subject::User("user:alice".to_string());
         obs.audit_security_with_caller(

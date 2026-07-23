@@ -1,0 +1,40 @@
+[package]
+name = "peko-auth"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Authentication and authorization (Phase 4 of the post-migration cleanup). Owns the canonical auth domain: ApiKey/ApiKeyStore, CallerContext, JwtValidator, RateLimiter, Permission, Resource, Action, AuthError, plus the Exposure enum lifted from principal/config. Trait ports (RuntimePaths, PrincipalResourceView) abstract root-only deps so peko-auth stays a leaf crate. Re-exports Subject from peko-subject for ergonomic access."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+peko-subject = { path = "../subject" }
+
+# Crypto / JWT
+ed25519-dalek = "2.1"
+jsonwebtoken = "9.3"
+base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Time + error
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Async + HTTP
+tokio = { version = "1.35", features = ["rt", "fs", "sync", "macros", "io-util", "net", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Logging
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio = { version = "1.35", features = ["macros", "rt-multi-thread"] }
+rsa = "0.9"

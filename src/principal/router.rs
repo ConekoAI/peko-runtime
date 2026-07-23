@@ -66,7 +66,7 @@ pub fn recalled_context_messages(injections: &[ContextInjection]) -> Vec<LlmMess
 pub struct RouterContext {
     pub principal_id: super::PrincipalId,
     pub principal_name: String,
-    pub peer: crate::auth::Subject,
+    pub peer: peko_auth::Subject,
     /// The raw user message text.
     pub message: String,
     pub channel: ChannelContext,

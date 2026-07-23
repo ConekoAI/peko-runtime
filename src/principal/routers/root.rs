@@ -36,7 +36,7 @@ pub fn default_root_prompt() -> AgentPrompt {
 
 /// Stable root-agent session id for a peer.
 #[must_use]
-pub fn root_session_id(peer: &crate::auth::Subject) -> String {
+pub fn root_session_id(peer: &peko_auth::Subject) -> String {
     format!("root:{peer}")
 }
 

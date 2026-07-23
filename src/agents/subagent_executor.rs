@@ -30,7 +30,6 @@ use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
 use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
-use crate::auth::Subject;
 use crate::extensions::framework::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncResultDeliveryMode,
     AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
@@ -42,6 +41,7 @@ use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::subject::PrincipalId;
+use peko_auth::Subject;
 
 /// Channel for announcing completed subagent runs
 pub type AnnouncementSender = mpsc::Sender<CompletedRun>;
@@ -1480,8 +1480,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_cleanup_delete_policy() {
-        use crate::auth::Subject;
         use crate::common::PathResolver;
+        use peko_auth::Subject;
 
         // Create a session manager with path resolver
         let path_resolver = PathResolver::new();

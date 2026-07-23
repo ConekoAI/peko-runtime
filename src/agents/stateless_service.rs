@@ -13,7 +13,6 @@
 //! - Session state is persisted separately
 
 use crate::agents::Agent;
-use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
 use crate::common::types::message::LlmMessage;
@@ -21,6 +20,7 @@ use crate::engine::AgenticEvent;
 use crate::providers::TokenUsage;
 use crate::session::manager::SessionManager;
 use crate::session::types::ChannelType;
+use peko_auth::Subject;
 // Note: Session storage uses jsonl module directly
 use crate::common::types::message::ContentBlock;
 use anyhow::{Context, Result};

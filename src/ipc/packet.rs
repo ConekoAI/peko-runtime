@@ -623,7 +623,7 @@ pub enum RequestPacket {
         request_id: u64,
         name: String,
         /// None means "the principal's owner" (default view).
-        peer: Option<crate::auth::Subject>,
+        peer: Option<peko_auth::Subject>,
         /// Cap on number of messages returned (default 50, max 1000).
         limit: Option<usize>,
         /// Only messages newer than `now() - since_secs` are returned.
@@ -716,16 +716,16 @@ pub enum RequestPacket {
     PrincipalGrantPermission {
         request_id: u64,
         name: String,
-        subject: crate::auth::Subject,
-        permission: crate::auth::ownership::Permission,
+        subject: peko_auth::Subject,
+        permission: peko_auth::ownership::Permission,
     },
 
     #[serde(rename = "principal_revoke_permission")]
     PrincipalRevokePermission {
         request_id: u64,
         name: String,
-        subject: crate::auth::Subject,
-        permission: crate::auth::ownership::Permission,
+        subject: peko_auth::Subject,
+        permission: peko_auth::ownership::Permission,
     },
 
     /// Set the live status of a Principal's tunnel instance. Persisted to
@@ -855,8 +855,8 @@ impl RequestPacket {
     /// callers can use the same match arm — but in practice the server
     /// only calls this inside the grant/revoke arms.
     #[must_use]
-    pub fn resolved_subject(&self) -> crate::auth::Subject {
-        use crate::auth::Subject;
+    pub fn resolved_subject(&self) -> peko_auth::Subject {
+        use peko_auth::Subject;
 
         match self {
             Self::PrincipalGrantPermission { subject, .. }
@@ -1442,7 +1442,7 @@ pub enum ResponsePacket {
     PrincipalLog {
         request_id: u64,
         name: String,
-        peer: crate::auth::Subject,
+        peer: peko_auth::Subject,
         messages: Vec<crate::chat_log::ChatLogMessage>,
         next_cursor: Option<String>,
         has_more: bool,
@@ -1518,22 +1518,22 @@ pub enum ResponsePacket {
     PrincipalPermissionGranted {
         request_id: u64,
         name: String,
-        subject: crate::auth::Subject,
-        permission: crate::auth::ownership::Permission,
+        subject: peko_auth::Subject,
+        permission: peko_auth::ownership::Permission,
     },
 
     #[serde(rename = "principal_permission_revoked")]
     PrincipalPermissionRevoked {
         request_id: u64,
         name: String,
-        subject: crate::auth::Subject,
-        permission: crate::auth::ownership::Permission,
+        subject: peko_auth::Subject,
+        permission: peko_auth::ownership::Permission,
     },
 
     #[serde(rename = "principal_permissions")]
     PrincipalPermissions {
         request_id: u64,
-        permissions: Vec<crate::auth::ownership::PermissionGrant>,
+        permissions: Vec<peko_auth::ownership::PermissionGrant>,
     },
 
     /// Result of `PrincipalSetStatus`. Echoes the persisted status so
@@ -2662,9 +2662,9 @@ mod tests {
             principals: vec![crate::principal::PrincipalSummary {
                 name: "helper".to_string(),
                 did: crate::subject::PrincipalDID("did:peko:local:helper".to_string()),
-                owner: crate::auth::Subject::User("alice".to_string()),
+                owner: peko_auth::Subject::User("alice".to_string()),
                 description: Some("test principal".to_string()),
-                exposure: crate::principal::config::Exposure::default(),
+                exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
                 capabilities: crate::extensions::framework::types::Capabilities::default(),
@@ -2694,9 +2694,9 @@ mod tests {
             principal: Some(crate::principal::PrincipalSummary {
                 name: "helper".to_string(),
                 did: crate::subject::PrincipalDID("did:peko:local:helper".to_string()),
-                owner: crate::auth::Subject::User("alice".to_string()),
+                owner: peko_auth::Subject::User("alice".to_string()),
                 description: None,
-                exposure: crate::principal::config::Exposure::default(),
+                exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
                 capabilities: crate::extensions::framework::types::Capabilities::default(),
@@ -3119,9 +3119,9 @@ mod tests {
             principal: crate::principal::PrincipalSummary {
                 name: "alice".to_string(),
                 did: crate::subject::PrincipalDID("did:peko:local:alice".to_string()),
-                owner: crate::auth::Subject::User("alice".to_string()),
+                owner: peko_auth::Subject::User("alice".to_string()),
                 description: Some("updated".to_string()),
-                exposure: crate::principal::config::Exposure::Public,
+                exposure: peko_auth::Exposure::Public,
                 status: Some(crate::principal::config::Status::Busy),
                 preferred_model_id: None,
                 capabilities: crate::extensions::framework::types::Capabilities::default(),
@@ -3174,9 +3174,9 @@ mod tests {
             principal: crate::principal::PrincipalSummary {
                 name: "alice".to_string(),
                 did: crate::subject::PrincipalDID("did:peko:local:alice".to_string()),
-                owner: crate::auth::Subject::User("alice".to_string()),
+                owner: peko_auth::Subject::User("alice".to_string()),
                 description: Some("personal assistant".to_string()),
-                exposure: crate::principal::config::Exposure::default(),
+                exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
                 capabilities: crate::extensions::framework::types::Capabilities::default(),
@@ -3696,9 +3696,9 @@ mod tests {
             principal: crate::principal::PrincipalSummary {
                 name: "helper".to_string(),
                 did: crate::subject::PrincipalDID("did:peko:local:helper".to_string()),
-                owner: crate::auth::Subject::User("alice".to_string()),
+                owner: peko_auth::Subject::User("alice".to_string()),
                 description: None,
-                exposure: crate::principal::config::Exposure::default(),
+                exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
                 capabilities: crate::extensions::framework::types::Capabilities::default(),
@@ -4461,12 +4461,12 @@ mod tests {
 
     // -- issue #30: `RequestPacket::resolved_subject` --
 
-    fn grant_pkt(subject: crate::auth::Subject) -> RequestPacket {
+    fn grant_pkt(subject: peko_auth::Subject) -> RequestPacket {
         RequestPacket::PrincipalGrantPermission {
             request_id: 1,
             name: "p".into(),
             subject,
-            permission: crate::auth::ownership::Permission::Chat,
+            permission: peko_auth::ownership::Permission::Chat,
         }
     }
 
@@ -4474,10 +4474,10 @@ mod tests {
     fn test_resolved_subject_canonical_shape() {
         // The grant carries the subject directly (ADR-039). The
         // resolver just clones it out.
-        let pkt = grant_pkt(crate::auth::Subject::Principal("helper".into()));
+        let pkt = grant_pkt(peko_auth::Subject::Principal("helper".into()));
         assert_eq!(
             pkt.resolved_subject(),
-            crate::auth::Subject::Principal("helper".into())
+            peko_auth::Subject::Principal("helper".into())
         );
     }
 
@@ -4487,10 +4487,10 @@ mod tests {
         let pkt = RequestPacket::PrincipalRevokePermission {
             request_id: 1,
             name: "p".into(),
-            subject: crate::auth::Subject::Public,
-            permission: crate::auth::ownership::Permission::Chat,
+            subject: peko_auth::Subject::Public,
+            permission: peko_auth::ownership::Permission::Chat,
         };
-        assert_eq!(pkt.resolved_subject(), crate::auth::Subject::Public);
+        assert_eq!(pkt.resolved_subject(), peko_auth::Subject::Public);
     }
 
     #[test]
@@ -4500,7 +4500,7 @@ mod tests {
         let pkt = RequestPacket::Ping { request_id: 1 };
         assert_eq!(
             pkt.resolved_subject(),
-            crate::auth::Subject::User(String::new())
+            peko_auth::Subject::User(String::new())
         );
     }
 
@@ -4510,7 +4510,7 @@ mod tests {
         // no legacy `subject_id` / `subject_type` fields exist on the
         // wire anymore. The wire must serialize `subject` and not the
         // dropped fields.
-        let pkt = grant_pkt(crate::auth::Subject::Principal("helper".into()));
+        let pkt = grant_pkt(peko_auth::Subject::Principal("helper".into()));
         let json = serde_json::to_string(&pkt).unwrap();
         assert!(
             json.contains("\"subject\""),
@@ -4712,8 +4712,8 @@ mod tests {
         let req = RequestPacket::PrincipalGrantPermission {
             request_id: 5002,
             name: "helper".to_string(),
-            subject: crate::auth::Subject::User("bob".to_string()),
-            permission: crate::auth::ownership::Permission::Chat,
+            subject: peko_auth::Subject::User("bob".to_string()),
+            permission: peko_auth::ownership::Permission::Chat,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -4726,8 +4726,8 @@ mod tests {
             } => {
                 assert_eq!(request_id, 5002);
                 assert_eq!(name, "helper");
-                assert_eq!(subject, crate::auth::Subject::User("bob".to_string()));
-                assert_eq!(permission, crate::auth::ownership::Permission::Chat);
+                assert_eq!(subject, peko_auth::Subject::User("bob".to_string()));
+                assert_eq!(permission, peko_auth::ownership::Permission::Chat);
             }
             _ => panic!("Wrong variant"),
         }
@@ -4853,7 +4853,7 @@ mod tests {
         let req = RequestPacket::PrincipalLog {
             request_id: 5200,
             name: "helper".to_string(),
-            peer: Some(crate::auth::Subject::User("alice".to_string())),
+            peer: Some(peko_auth::Subject::User("alice".to_string())),
             limit: Some(100),
             since_secs: Some(86_400),
             cursor: None,
@@ -4871,7 +4871,7 @@ mod tests {
             } => {
                 assert_eq!(request_id, 5200);
                 assert_eq!(name, "helper");
-                assert_eq!(peer, Some(crate::auth::Subject::User("alice".to_string())));
+                assert_eq!(peer, Some(peko_auth::Subject::User("alice".to_string())));
                 assert_eq!(limit, Some(100));
                 assert_eq!(since_secs, Some(86_400));
                 assert_eq!(cursor, None);
@@ -4893,9 +4893,9 @@ mod tests {
         let resp = ResponsePacket::PrincipalLog {
             request_id: 6200,
             name: "helper".to_string(),
-            peer: crate::auth::Subject::User("alice".to_string()),
+            peer: peko_auth::Subject::User("alice".to_string()),
             messages: vec![crate::chat_log::ChatLogMessage::new(
-                crate::auth::Subject::User("alice".to_string()),
+                peko_auth::Subject::User("alice".to_string()),
                 "hi",
                 None,
             )],
@@ -4915,7 +4915,7 @@ mod tests {
             } => {
                 assert_eq!(request_id, 6200);
                 assert_eq!(name, "helper");
-                assert_eq!(peer, crate::auth::Subject::User("alice".to_string()));
+                assert_eq!(peer, peko_auth::Subject::User("alice".to_string()));
                 assert_eq!(messages.len(), 1);
                 assert_eq!(messages[0].text, "hi");
                 assert_eq!(next_cursor.as_deref(), Some("opaque-cursor"));
@@ -4932,11 +4932,11 @@ mod tests {
 
     #[test]
     fn test_principal_permissions_response_roundtrip() {
-        let grant = crate::auth::ownership::PermissionGrant {
-            subject: crate::auth::Subject::User("bob".to_string()),
-            permission: crate::auth::ownership::Permission::Chat,
+        let grant = peko_auth::ownership::PermissionGrant {
+            subject: peko_auth::Subject::User("bob".to_string()),
+            permission: peko_auth::ownership::Permission::Chat,
             granted_at: "2026-06-01T00:00:00Z".to_string(),
-            granted_by: crate::auth::Subject::User("alice".to_string()),
+            granted_by: peko_auth::Subject::User("alice".to_string()),
         };
         let resp = ResponsePacket::PrincipalPermissions {
             request_id: 6001,
@@ -4953,7 +4953,7 @@ mod tests {
                 assert_eq!(permissions.len(), 1);
                 assert_eq!(
                     permissions[0].subject,
-                    crate::auth::Subject::User("bob".to_string())
+                    peko_auth::Subject::User("bob".to_string())
                 );
             }
             _ => panic!("Wrong variant"),
@@ -4976,16 +4976,16 @@ mod tests {
         let req_grant = RequestPacket::PrincipalGrantPermission {
             request_id: 2,
             name: "p".to_string(),
-            subject: crate::auth::Subject::Public,
-            permission: crate::auth::ownership::Permission::Chat,
+            subject: peko_auth::Subject::Public,
+            permission: peko_auth::ownership::Permission::Chat,
         };
         assert_eq!(req_grant.request_id(), 2);
 
         let req_revoke = RequestPacket::PrincipalRevokePermission {
             request_id: 3,
             name: "p".to_string(),
-            subject: crate::auth::Subject::Public,
-            permission: crate::auth::ownership::Permission::Chat,
+            subject: peko_auth::Subject::Public,
+            permission: peko_auth::ownership::Permission::Chat,
         };
         assert_eq!(req_revoke.request_id(), 3);
     }

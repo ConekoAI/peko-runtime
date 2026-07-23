@@ -24,7 +24,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::auth::caller::CallerContext;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{ModelPresetInfo, RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
@@ -32,6 +31,7 @@ use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use crate::providers::catalog::ApiFormat;
 use crate::providers::templates::{self, ModelTemplate, ProviderTemplate};
+use peko_auth::caller::CallerContext;
 
 /// Narrow port the `provider_templates` handler uses to read the
 /// built-in preset list.

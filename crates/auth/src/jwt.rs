@@ -8,11 +8,13 @@
 //! - `validate()` is async to support on-demand JWKS fetching
 //! - Signature verification uses `jsonwebtoken` for RS256 and `ed25519-dalek` for EdDSA
 
-use super::caller::CallerContext;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+
+use super::caller::CallerContext;
 
 /// Validated JWT claims extracted from a token
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,9 +103,12 @@ impl JwksCache {
         }
     }
 
-    /// Create a cache with pre-populated JWKS (for testing)
-    #[cfg(test)]
-    fn with_jwks(url: String, jwks: JwksResponse) -> Self {
+    /// Create a cache with pre-populated JWKS. Used by the public
+    /// test helper [`JwtValidator::with_jwks`] to construct a
+    /// `JwksCache` pre-filled with a static JWKS, avoiding the need
+    /// for a mock HTTP server in integration tests. Not for
+    /// production use.
+    pub fn with_jwks(url: String, jwks: JwksResponse) -> Self {
         Self {
             jwks: Some(jwks),
             fetched_at: Some(Instant::now()),
@@ -226,12 +231,14 @@ impl JwtValidator {
         }
     }
 
-    /// Create a validator with a pre-populated JWKS. Crate-visible
-    /// (not public) so integration tests in sibling modules can wire
-    /// a real `JwtValidator` against a static JWKS without standing up
-    /// a mock HTTP server. See `tunnel::dispatcher::tests` for usage.
-    #[cfg(test)]
-    pub(crate) fn with_jwks(
+    /// Create a validator with a pre-populated JWKS. Public so that
+    /// integration tests in sibling workspace crates (e.g.
+    /// `peko_tunnel::dispatcher::tests`) can wire a real
+    /// `JwtValidator` against a static JWKS without standing up
+    /// a mock HTTP server. Production callers should use
+    /// [`JwtValidator::new`] and let the validator fetch JWKS from
+    /// the configured URL.
+    pub fn with_jwks(
         trusted_issuers: Vec<String>,
         runtime_did: String,
         jwks: JwksResponse,

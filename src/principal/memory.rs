@@ -22,7 +22,7 @@ pub trait PrincipalMemory: Send + Sync {
     /// Find the most recent session artifact for a peer.
     async fn find_latest_session_for_peer(
         &self,
-        peer: &crate::auth::Subject,
+        peer: &peko_auth::Subject,
     ) -> Result<Option<SessionArtifact>, MemoryError>;
 
     /// List all sessions, most recent first.
@@ -35,7 +35,7 @@ pub trait PrincipalMemory: Send + Sync {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionArtifact {
     pub session_id: String,
-    pub peer: crate::auth::Subject,
+    pub peer: peko_auth::Subject,
     #[serde(default)]
     pub title: Option<String>,
     pub updated_at: DateTime<Utc>,
@@ -162,7 +162,7 @@ impl PrincipalMemory for DefaultPrincipalMemory {
 
     async fn find_latest_session_for_peer(
         &self,
-        peer: &crate::auth::Subject,
+        peer: &peko_auth::Subject,
     ) -> Result<Option<SessionArtifact>, MemoryError> {
         // Acquire the lock so we don't observe an in-flight rewrite. The
         // alternative — letting the read proceed without coordination —

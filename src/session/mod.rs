@@ -205,7 +205,7 @@ mod safe_filename_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::Subject;
+    use peko_auth::Subject;
 
     #[test]
     fn test_peer_re_export() {

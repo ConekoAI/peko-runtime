@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::auth::caller::CallerContext;
 use crate::daemon::background_runtime::{
     BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext,
 };
@@ -29,6 +28,7 @@ use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
+use peko_auth::caller::CallerContext;
 
 /// Narrow port the `ext_runtime` handler uses to reach the background
 /// runtime machinery. `AppState` is the sole implementor. `starter_context`

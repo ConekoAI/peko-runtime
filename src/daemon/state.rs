@@ -184,19 +184,19 @@ pub(crate) struct AppState {
     pub trust_store: std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>>,
 
     /// Auth configuration (ADR-034)
-    auth_config: crate::auth::config::AuthConfig,
+    auth_config: peko_auth::config::AuthConfig,
 
     /// API key store (ADR-034)
-    api_key_store: Option<crate::auth::api_key::ApiKeyStore>,
+    api_key_store: Option<peko_auth::api_key::ApiKeyStore>,
 
     /// API key verifier (ADR-034)
-    api_key_verifier: Option<crate::auth::api_key::ApiKeyVerifier>,
+    api_key_verifier: Option<peko_auth::api_key::ApiKeyVerifier>,
 
     /// JWT validator (ADR-034)
-    jwt_validator: Option<crate::auth::jwt::JwtValidator>,
+    jwt_validator: Option<peko_auth::jwt::JwtValidator>,
 
     /// Rate limiter (ADR-034)
-    rate_limiter: Option<crate::auth::rate_limit::RateLimiter>,
+    rate_limiter: Option<peko_auth::rate_limit::RateLimiter>,
 
     /// Tunnel cancellation token — set when tunnel is active
     tunnel_cancel: Arc<RwLock<Option<tokio_util::sync::CancellationToken>>>,
@@ -270,7 +270,7 @@ pub(crate) struct StreamingRunHandle {
     pub principal_name: String,
     /// Peer subject — needed to derive `session_id` for steer pushes.
     /// Cloned into the IPC handler's scope (cheap, `Subject` is small).
-    pub peer: crate::auth::Subject,
+    pub peer: peko_auth::Subject,
     /// Cancellation token for soft-interrupt. Setting this signals
     /// the agentic loop to finish the current step and exit cleanly.
     /// Cloned into both the agentic loop and the IPC handler.
@@ -794,17 +794,17 @@ impl AppState {
         );
 
         // ADR-034: Initialize auth components
-        let auth_config = crate::auth::config::AuthConfig::load(&path_resolver)?;
+        let auth_config = peko_auth::config::AuthConfig::load(&path_resolver)?;
         let api_key_store = if auth_config.enable_api_key() {
-            Some(crate::auth::api_key::ApiKeyStore::load(&path_resolver)?)
+            Some(peko_auth::api_key::ApiKeyStore::load(&path_resolver)?)
         } else {
             None
         };
         let api_key_verifier = api_key_store
             .as_ref()
-            .map(|s| crate::auth::api_key::ApiKeyVerifier::new(s.clone()));
+            .map(|s| peko_auth::api_key::ApiKeyVerifier::new(s.clone()));
         let jwt_validator = if auth_config.enable_pekohub_jwt() {
-            Some(crate::auth::jwt::JwtValidator::new(
+            Some(peko_auth::jwt::JwtValidator::new(
                 auth_config.trusted_issuers().to_vec(),
                 runtime_identity.runtime_did.clone(),
                 None,
@@ -813,7 +813,7 @@ impl AppState {
             None
         };
         let rate_limiter = if auth_config.has_any_remote_auth_method() {
-            Some(crate::auth::rate_limit::RateLimiter::new(
+            Some(peko_auth::rate_limit::RateLimiter::new(
                 auth_config.rate_limit().jwt_requests_per_minute,
                 auth_config.rate_limit().api_key_requests_per_minute,
                 auth_config.rate_limit().burst_jwt,
@@ -1145,31 +1145,31 @@ impl AppState {
 
     /// Get the auth configuration (ADR-034)
     #[must_use]
-    pub fn auth_config(&self) -> crate::auth::config::AuthConfig {
+    pub fn auth_config(&self) -> peko_auth::config::AuthConfig {
         self.auth_config.clone()
     }
 
     /// Get the API key store (ADR-034)
     #[must_use]
-    pub fn api_key_store(&self) -> Option<crate::auth::api_key::ApiKeyStore> {
+    pub fn api_key_store(&self) -> Option<peko_auth::api_key::ApiKeyStore> {
         self.api_key_store.clone()
     }
 
     /// Get the API key verifier (ADR-034)
     #[must_use]
-    pub fn api_key_verifier(&self) -> Option<crate::auth::api_key::ApiKeyVerifier> {
+    pub fn api_key_verifier(&self) -> Option<peko_auth::api_key::ApiKeyVerifier> {
         self.api_key_verifier.clone()
     }
 
     /// Get the JWT validator (ADR-034)
     #[must_use]
-    pub fn jwt_validator(&self) -> Option<crate::auth::jwt::JwtValidator> {
+    pub fn jwt_validator(&self) -> Option<peko_auth::jwt::JwtValidator> {
         self.jwt_validator.clone()
     }
 
     /// Get the rate limiter (ADR-034)
     #[must_use]
-    pub fn rate_limiter(&self) -> Option<crate::auth::rate_limit::RateLimiter> {
+    pub fn rate_limiter(&self) -> Option<peko_auth::rate_limit::RateLimiter> {
         self.rate_limiter.clone()
     }
 
@@ -2141,7 +2141,7 @@ impl crate::tunnel::TunnelHost for AppState {
         self.peko_config.network.direct.advertise_endpoint.clone()
     }
 
-    fn jwt_validator(&self) -> Option<crate::auth::jwt::JwtValidator> {
+    fn jwt_validator(&self) -> Option<peko_auth::jwt::JwtValidator> {
         self.jwt_validator.clone()
     }
 
@@ -2202,11 +2202,11 @@ impl crate::ipc::handlers::system::SystemHost for AppState {
 /// `ipc::handlers::auth`; both methods are sync (return owned values)
 /// so the trait is object-safe without `async_trait`.
 impl crate::ipc::handlers::auth::AuthHost for AppState {
-    fn auth_config(&self) -> crate::auth::config::AuthConfig {
+    fn auth_config(&self) -> peko_auth::config::AuthConfig {
         AppState::auth_config(self)
     }
 
-    fn api_key_store(&self) -> Option<crate::auth::api_key::ApiKeyStore> {
+    fn api_key_store(&self) -> Option<peko_auth::api_key::ApiKeyStore> {
         AppState::api_key_store(self)
     }
 }

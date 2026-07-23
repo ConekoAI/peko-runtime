@@ -1,24 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::auth::{Permission, PermissionGrant};
 use crate::extensions::framework::types::Capabilities;
 use crate::quota::QuotaConfig;
 use crate::subject::PrincipalDID;
-
-/// Network exposure level for a Principal (persisted in `principal.toml`).
-///
-/// Principal-owned mirror of `tunnel::protocol::InstanceExposure`; converted
-/// to the wire enum at the tunnel edge via `From`, so the persisted schema
-/// never depends on tunnel types.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Exposure {
-    Private,
-    Public,
-    #[default]
-    Unexposed,
-}
+pub use peko_auth::{Exposure, Permission, PermissionGrant};
 
 /// Persisted live status for a Principal's tunnel instance.
 ///
@@ -63,7 +49,7 @@ pub struct PrincipalConfig {
     pub did: Option<PrincipalDID>,
 
     #[serde(default)]
-    pub owner: crate::auth::Subject,
+    pub owner: peko_auth::Subject,
 
     #[serde(default)]
     pub identity: PrincipalIdentityConfig,
@@ -173,7 +159,7 @@ pub enum AuditLevel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegationGrant {
-    pub to: crate::auth::Subject,
+    pub to: peko_auth::Subject,
     pub permissions: Vec<Permission>,
     pub expires_at: Option<String>,
 }

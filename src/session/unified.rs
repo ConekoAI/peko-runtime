@@ -16,7 +16,6 @@
 //! `SessionManager`**. `Session` is now an internal implementation detail.
 //! External code should use `SessionHandle` obtained from `SessionManager`.
 
-use crate::auth::Subject;
 use crate::common::types::message::ContentBlock;
 use crate::common::types::message::LlmMessage;
 use crate::engine::ToolCall;
@@ -33,6 +32,7 @@ use crate::session::metadata_controller::MetadataController;
 use crate::session::NormalizedEntry;
 use anyhow::Result;
 use chrono::Utc;
+use peko_auth::Subject;
 use tracing::warn;
 
 /// Session - internal implementation for conversation persistence
@@ -920,7 +920,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = crate::auth::Subject::User("default".to_string());
+        let peer = peko_auth::Subject::User("default".to_string());
         let session_id = "test-session-123";
 
         // Create a session
@@ -1034,7 +1034,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = crate::auth::Subject::User("default".to_string());
+        let peer = peko_auth::Subject::User("default".to_string());
         let session_id = "test-session-f32a";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -1094,7 +1094,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = crate::auth::Subject::User("default".to_string());
+        let peer = peko_auth::Subject::User("default".to_string());
         let session_id = "test-build-context";
 
         // Create session and add messages
@@ -1131,7 +1131,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = crate::auth::Subject::User("default".to_string());
+        let peer = peko_auth::Subject::User("default".to_string());
         let session_id = "test-build-context-compact";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -1190,7 +1190,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::auth::Subject::User("default".to_string());
+        let peer = peko_auth::Subject::User("default".to_string());
         let session_id = "test-fast-context";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1229,7 +1229,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::auth::Subject::User("default".to_string());
+        let peer = peko_auth::Subject::User("default".to_string());
         let session_id = "test-fast-context-invalidate";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1268,7 +1268,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::auth::Subject::User("default".to_string());
+        let peer = peko_auth::Subject::User("default".to_string());
         let session_id = "test-update-cache";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1318,7 +1318,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::auth::Subject::User("default".to_string());
+        let peer = peko_auth::Subject::User("default".to_string());
         let session_id = "test-full-compaction";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1415,7 +1415,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::auth::Subject::User("default".to_string());
+        let peer = peko_auth::Subject::User("default".to_string());
         let session_id = "test-append-event";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());

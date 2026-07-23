@@ -100,7 +100,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
 
     let mut cursor = cursor.filter(|c| !c.is_empty());
     let mut accumulated: Vec<ChatLogMessage> = Vec::new();
-    let mut resolved_peer: Option<crate::auth::Subject> = None;
+    let mut resolved_peer: Option<peko_auth::Subject> = None;
     const MAX_PAGES: usize = 25;
     for _ in 0..MAX_PAGES {
         match client
@@ -174,8 +174,8 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
 
 /// Parse a `--peer` value into a `Subject`. Accepts the wire format
 /// `user:<id>`, `principal:<did>`, or `public`.
-fn parse_subject(value: &str) -> Result<crate::auth::Subject> {
-    crate::auth::Subject::from_str(value)
+fn parse_subject(value: &str) -> Result<peko_auth::Subject> {
+    peko_auth::Subject::from_str(value)
         .map_err(|e| anyhow::anyhow!("invalid --peer value '{value}': {e}"))
 }
 

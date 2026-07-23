@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-use crate::auth::Subject;
+use peko_auth::Subject;
 
 /// Audit logger
 pub struct AuditLogger {

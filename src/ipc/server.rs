@@ -35,11 +35,11 @@ use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
 #[cfg(windows)]
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
 use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
-use crate::auth::caller::CallerContext;
-#[cfg(not(windows))]
-use crate::auth::config::enforce_auth_for_public_bind;
-use crate::auth::permissions::AuthError;
 use crate::daemon::state::AppState;
+use peko_auth::caller::CallerContext;
+#[cfg(not(windows))]
+use peko_auth::config::enforce_auth_for_public_bind;
+use peko_auth::permissions::AuthError;
 
 /// `SO_SNDBUF` applied to both the Unix datagram and UDP server sockets
 /// at bind time.
@@ -777,7 +777,7 @@ impl IpcServer {
                 }
                 if let Some(validator) = state.jwt_validator() {
                     match validator.validate(token).await {
-                        Ok(validated) => Ok(crate::auth::jwt::JwtValidator::to_caller(validated)),
+                        Ok(validated) => Ok(peko_auth::jwt::JwtValidator::to_caller(validated)),
                         Err(e) => {
                             tracing::warn!("JWT validation failed: {}", e);
                             Err(AuthError::InvalidCredential)
@@ -794,7 +794,7 @@ impl IpcServer {
                 if let Some(verifier) = state.api_key_verifier() {
                     match verifier.verify(key).await {
                         Some(entry) => {
-                            let key_id = crate::auth::api_key::ApiKeyStore::extract_key_id(key);
+                            let key_id = peko_auth::api_key::ApiKeyStore::extract_key_id(key);
                             Ok(CallerContext::from_api_key(key_id, entry.scopes))
                         }
                         None => Err(AuthError::InvalidCredential),
