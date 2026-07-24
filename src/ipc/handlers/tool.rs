@@ -38,9 +38,6 @@ use async_trait::async_trait;
 use tracing::warn;
 
 use crate::engine::tool_runtime::ToolRuntime;
-use crate::extensions::framework::async_exec::executor::{
-    AsyncExecutor, AsyncTaskId, AsyncToolConfig,
-};
 use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
@@ -49,6 +46,7 @@ use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use crate::principal::manager::PrincipalManager;
 use peko_auth::caller::CallerContext;
+use peko_extension_host::async_exec::executor::{AsyncExecutor, AsyncTaskId, AsyncToolConfig};
 use peko_session::key::parse_session_key;
 
 /// Narrow port the `tool` handler uses to reach daemon state.

@@ -1,82 +1,18 @@
-//! `SpawnCleanupPolicy` — cleanup policy for spawn overlays.
+//! `SpawnCleanupPolicy` re-export.
 //!
-//! Moved from `src/session/types.rs` in Phase 8 commit 2. The enum
-//! is part of the cross-boundary `SubagentMetadata` payload that
-//! the framework's async executor passes through, so it has to live
-//! in the host crate. Root re-exports via
-//! `crate::session::types::SpawnCleanupPolicy` for backwards
-//! compatibility.
+//! The canonical home is `peko_extension_api::subagent::SpawnCleanupPolicy`.
+//! This module is a backwards-compat shim that re-exports it so callers
+//! that wrote `peko_extension_host::SpawnCleanupPolicy` (the pre-Phase-8b
+//! path when the enum was owned by the host) keep compiling.
+//!
+//! Why the canonical home moved in Phase 8b:
+//! the host crate depends on `peko_tools_builtin::async_control::*`
+//! (the `AsyncRuntime` port consumed by
+//! `async_exec/executor/async_runtime_impl.rs`). `peko_tools_builtin` in
+//! turn depended on `peko_extension_host::SpawnCleanupPolicy` via
+//! `messaging::dto::SpawnCleanupPolicy`, which created a cycle. Moving
+//! the enum into `peko_extension_api` (downstream of both crates)
+//! breaks the cycle without forcing the messaging module to import
+//! the host crate.
 
-use serde::{Deserialize, Serialize};
-
-/// Cleanup policy for spawn overlays
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum SpawnCleanupPolicy {
-    /// Keep the spawn session after completion
-    #[default]
-    Keep,
-    /// Delete the spawn session after completion
-    Delete,
-}
-
-impl SpawnCleanupPolicy {
-    /// Get the policy as a string
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            SpawnCleanupPolicy::Keep => "keep",
-            SpawnCleanupPolicy::Delete => "delete",
-        }
-    }
-
-    /// Parse from string
-    #[must_use]
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "keep" => Some(SpawnCleanupPolicy::Keep),
-            "delete" => Some(SpawnCleanupPolicy::Delete),
-            _ => None,
-        }
-    }
-
-    /// Check if this policy means persist
-    #[must_use]
-    pub const fn should_persist(&self) -> bool {
-        matches!(self, SpawnCleanupPolicy::Keep)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn as_str_roundtrip() {
-        assert_eq!(SpawnCleanupPolicy::Keep.as_str(), "keep");
-        assert_eq!(SpawnCleanupPolicy::Delete.as_str(), "delete");
-        assert_eq!(
-            SpawnCleanupPolicy::from_str("keep"),
-            Some(SpawnCleanupPolicy::Keep)
-        );
-        assert_eq!(
-            SpawnCleanupPolicy::from_str("KEEP"),
-            Some(SpawnCleanupPolicy::Keep)
-        );
-        assert_eq!(
-            SpawnCleanupPolicy::from_str("delete"),
-            Some(SpawnCleanupPolicy::Delete)
-        );
-        assert_eq!(SpawnCleanupPolicy::from_str("unknown"), None);
-    }
-
-    #[test]
-    fn should_persist() {
-        assert!(SpawnCleanupPolicy::Keep.should_persist());
-        assert!(!SpawnCleanupPolicy::Delete.should_persist());
-    }
-
-    #[test]
-    fn default_is_keep() {
-        assert_eq!(SpawnCleanupPolicy::default(), SpawnCleanupPolicy::Keep);
-    }
-}
+pub use peko_extension_api::subagent::SpawnCleanupPolicy;

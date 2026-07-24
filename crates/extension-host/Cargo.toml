@@ -27,12 +27,24 @@ peko-providers = { path = "../providers" }
 peko-events = { path = "../events" }
 peko-fs-persistence = { path = "../fs-persistence" }
 peko-quota = { path = "../quota" }
+peko-session = { path = "../session" }
+# Phase 8b lift: async_exec/executor/async_runtime_impl.rs adapts the
+# host's AsyncExecutor to the `AsyncRuntime` port trait owned by the
+# `peko_tools_builtin::async_control` module. Without this dep the
+# async spawn/cancel/wait triumvirate has no canonical home for its
+# port contract.
+peko-tools-builtin = { path = "../tools-builtin" }
 
 async-trait = "0.1"
 async-stream = "0.3"
 futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Phase 8b lift: services::reserved_params::parse_config uses
+# `toml::from_str` to materialise `ReservedParamsConfig` from TOML
+# manifests. The data type lives in peko-extension-api (no `toml`
+# dep), so the parse helper stays in the host where `toml` is allowed.
+toml = "0.8"
 anyhow = "1.0"
 # dirs is used by the inlined `default_async_tasks_dir()` helper that
 # mirrors `src/common/paths.rs::default_data_dir()`. The two MUST stay

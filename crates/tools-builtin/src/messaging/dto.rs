@@ -119,19 +119,17 @@ impl std::fmt::Display for SpawnError {
 
 impl std::error::Error for SpawnError {}
 
-// ─── SpawnCleanupPolicy (re-export of peko_extension_host) ─────────
+// ─── SpawnCleanupPolicy (re-export of peko_extension_api) ─────────
 //
-// The enum already lives in `peko-extension-host` (Phase 8 commit 2).
-// We re-export it here so consumers of the messaging module can
-// refer to one place; root re-exports preserve the
-// `crate::session::types::SpawnCleanupPolicy` path.
-//
-// Why re-export rather than copy: the enum's wire representation is
-// referenced by `peko_extension_api::SubagentMetadata` (a framework
-// host contract), and `peko-extension-host` is its owner. Splitting
-// the type across crates would require a `From` impl at every
-// boundary and the orphan rule blocks that.
-pub use peko_extension_host::SpawnCleanupPolicy;
+// The enum's canonical home moved from `peko_extension_host` to
+// `peko_extension_api` in Phase 8b to break the cycle that arose
+// when the host crate grew a `peko_tools_builtin` dep
+// (`async_exec/executor/async_runtime_impl.rs` adapts the host's
+// `AsyncExecutor` to the `AsyncRuntime` port). We re-export it here
+// so consumers of the messaging module can refer to one place;
+// root's `crate::session::types::SpawnCleanupPolicy` shim is
+// preserved for backwards compat.
+pub use peko_extension_api::SpawnCleanupPolicy;
 
 // ─── ExecutionConfig (lifted from src/agents/subagent_executor.rs) ─
 

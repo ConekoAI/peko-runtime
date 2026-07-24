@@ -24,9 +24,14 @@ pub use crate::extensions::framework::transport::async_router::{
     AsyncExecutionRouter, ToolExecutionContext, DEFAULT_TOOL_TIMEOUT_SECS,
 };
 pub use crate::extensions::framework::transport::async_transport::{
-    create_local_transport, create_transport, AsyncTaskTransport, DaemonIpcTransport,
-    LocalAsyncTransport, UnavailableAsyncTransport,
+    create_local_transport, AsyncTaskTransport, DaemonIpcTransport, LocalAsyncTransport,
+    UnavailableAsyncTransport,
 };
+// `create_transport` lives at the parent `transport::*` namespace (root-side
+// shim that probes the daemon + delegates to host crate). Phase 8b lifts the
+// canonical factory to `peko_extension_host::transport::async_transport` once
+// the legacy transport/ root shim is deleted in Phase 8b.1f.
+pub use crate::extensions::framework::transport::create_transport;
 
 pub use config_service::{ConfigScope, ExtensionConfigService};
 pub use reserved_params::{ParamSource, ReservedParamsConfig, ReservedParamsService};
@@ -88,8 +93,7 @@ impl Services {
     /// - If daemon is reachable, uses `DaemonHttpTransport`
     /// - Otherwise, returns an error — async tool execution requires the daemon
     pub async fn new_auto() -> anyhow::Result<Self> {
-        let transport =
-            crate::extensions::framework::transport::async_transport::create_transport().await?;
+        let transport = crate::extensions::framework::transport::create_transport().await?;
         Ok(Self::with_transport(transport))
     }
 

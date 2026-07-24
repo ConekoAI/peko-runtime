@@ -40,6 +40,7 @@ pub mod hook_io;
 pub mod manifest;
 pub mod reserved_params;
 pub mod session;
+pub mod subagent;
 pub mod tool;
 pub mod types;
 
@@ -54,6 +55,7 @@ pub use hook_io::{
 pub use manifest::{ExtensionDependency, ExtensionManifest};
 pub use reserved_params::{ConfigFormat, ParamSource, ReservedParamsConfig, ReservedParamsService};
 pub use session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};
+pub use subagent::SpawnCleanupPolicy;
 pub use tool::{ToolMetadata, ToolSource};
 pub use types::{
     ExtensionId, HookId, HookPriority, ToolRuntimeContext, DEFAULT_HOOK_PRIORITY,

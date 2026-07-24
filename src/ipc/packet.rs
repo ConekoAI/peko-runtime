@@ -919,7 +919,7 @@ pub enum ResponsePacket {
     #[serde(rename = "async_receipt")]
     AsyncReceipt {
         request_id: u64,
-        receipt: crate::extensions::framework::async_exec::executor::AsyncTaskReceipt,
+        receipt: peko_extension_host::async_exec::executor::AsyncTaskReceipt,
     },
 
     /// Final success/failure marker

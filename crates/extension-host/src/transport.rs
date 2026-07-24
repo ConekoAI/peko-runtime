@@ -1,76 +1,96 @@
-//! Cross-boundary transport trait + response projection.
+//! Cross-boundary transport trait + value-returning projection.
 //!
-//! Phase 8 commit 1 ships the narrow [`DaemonTransport`] trait that
-//! the framework host's IPC clients implement. The trait projects
-//! the root `ipc::ResponsePacket` stream down to a tiny
-//! [`DaemonResponse`] enum (just success / failure / error markers)
-//! so the host crate does not need to depend on root IPC types.
+//! Phase 8a shipped a narrow [`DaemonTransport`] trait as a placeholder.
+//! Phase 8b expands it into the real value-returning surface that the
+//! host's async-task transport consumes.
 //!
-//! Phase 8 commit 2 will move the host's `AsyncTaskTransport` and
-//! `DaemonIpcTransport` into this crate. At that point the host
-//! transport consumes `DaemonTransport`, and a fuller `DaemonResponse`
-//! variant set (with `AsyncReceipt` payload) will replace the
-//! current minimal one.
+//! ## Module layout
+//!
+//! This file is the parent for the [`transport`] module:
+//!
+//! - [`DaemonTransport`] (this file): the value-returning IPC projection
+//!   trait implemented in root for `Arc<DaemonClient>`.
+//! - [`ToolExecConfig`] / [`PreprocessorFn`] / [`ExecFn`] (this file):
+//!   the trait-port surface used by [`AsyncExecutionRouter::execute_from_hook`].
+//! - [`AsyncExecutionRouter`] (this file): the trait-port implemented
+//!   in root by the concrete `AsyncExecutionRouter` struct that now
+//!   lives in the submodule.
+//! - [`async_router`]: concrete router (5-minute timeout funnel). Implements
+//!   [`AsyncExecutionRouter`] for `Self`. Lifted from
+//!   `src/extensions/framework/transport/async_router.rs`.
+//! - [`async_transport`]: transport implementations (`LocalAsyncTransport`,
+//!   `DaemonIpcTransport`, `UnavailableAsyncTransport`) + the
+//!   `BoxedExecutionFn` helper type and `create_transport_with` /
+//!   `create_local_transport` factories. Lifted from
+//!   `src/extensions/framework/transport/async_transport.rs`.
+//!
+//! ## Why value-returning
+//!
+//! The host's `DaemonIpcTransport` (CLI side) consumes a stream of
+//! `ipc::ResponsePacket` values from `ipc::DaemonClient`, walks it
+//! for `ResponsePacket::AsyncReceipt { receipt, .. }` / `Done { success, .. }`
+//! / `Error { message, .. }`, and projects the final outcome. The
+//! trait sits one level above the host transport and exposes just the
+//! projected values (`AsyncTaskReceipt`, `bool`), so the host transport
+//! is the sole consumer of the raw stream.
+//!
+//! This is the minimal-surface trait port for the IPC dep: the host
+//! crate never imports `crate::ipc::*`; root implements `DaemonTransport`
+//! for `Arc<DaemonClient>` (see
+//! `src/ipc/daemon_transport_impl.rs`) and the host consumes
+//! `Arc<dyn DaemonTransport>`.
+//!
+//! ## Test doubles
+//!
+//! The trait is dyn-compatible (Send + Sync + 'static) so tests can
+//! substitute a `MockDaemonTransport` that returns canned receipts /
+//! `false` cancel results without needing a real daemon.
 
-use async_trait::async_trait;
-use futures::future::BoxFuture;
-use futures::stream::Stream;
-use serde_json::Value;
 use std::path::PathBuf;
-use std::pin::Pin;
-use std::time::Duration;
 
-use crate::core::context::HookContext;
-use crate::types::HookResult;
+use crate::async_exec::executor::AsyncTaskId;
+use crate::async_exec::executor::AsyncTaskReceipt;
+use async_trait::async_trait;
+use serde_json::Value;
 
-/// Subset of the daemon IPC response stream that the host cares
-/// about. The full `ipc::ResponsePacket` enum lives in the root
-/// (Phase 11 will move it to `peko-protocol`); the host uses this
-/// projection so it does not depend on root IPC types.
-///
-/// Phase 8 commit 1 only models the terminal markers (`Done` and
-/// `Error`); an `AsyncReceipt` variant is added in commit 2 when
-/// the host transport moves into the crate.
-#[derive(Debug, Clone)]
-pub enum DaemonResponse {
-    /// Final success/failure marker for a request.
-    Done {
-        success: bool,
-        error: Option<String>,
-        request_id: u64,
-    },
-    /// Error response.
-    Error { message: String, request_id: u64 },
-}
-
-/// Boxed stream of daemon responses for a single in-flight request.
-pub type DaemonResponseStream = Pin<Box<dyn Stream<Item = DaemonResponse> + Send + 'static>>;
+// Phase 8b lift: concrete implementations live alongside the
+// trait contracts above (which are the parent module's surface).
+pub mod async_router;
+pub mod async_transport;
 
 /// Cross-boundary abstraction over `ipc::DaemonClient`.
 ///
 /// Implemented by root's `DaemonClient` (production) and by test
-/// doubles. Phase 8 commit 1 ships the trait + projection; commit 2
-/// will move `AsyncTaskTransport` and `DaemonIpcTransport` into the
-/// host crate and have `DaemonIpcTransport` consume this trait.
+/// doubles. The trait projects the root `ipc::ResponsePacket` stream
+/// down to value-returning methods so the host crate does not need
+/// to depend on root IPC types.
 #[async_trait]
 pub trait DaemonTransport: Send + Sync + 'static {
-    /// Reachability probe — `true` if the daemon responds.
+    /// Reachability probe — `true` if the daemon responds to a ping
+    /// within the configured timeout.
     async fn is_reachable(&self) -> bool;
 
-    /// Spawn an async task on the daemon. Returns a stream of
-    /// [`DaemonResponse`]s; the caller interprets the terminal
-    /// `Done { success, .. }` or `Error { message, .. }` packet.
+    /// Spawn an async task on the daemon. Returns the receipt the
+    /// daemon emitted for the new task id; the caller stores it on
+    /// the local `AsyncTaskEntry` and can poll status / cancel via
+    /// the other trait methods.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon is unreachable, refuses the
+    /// spawn, or the response stream closes before an
+    /// `AsyncReceipt` is observed.
     async fn spawn_async_task(
         &self,
         tool_name: String,
-        params: serde_json::Value,
+        params: Value,
         session_key: String,
         workspace: PathBuf,
-    ) -> anyhow::Result<DaemonResponseStream>;
+    ) -> anyhow::Result<AsyncTaskReceipt>;
 
-    /// Cancel an async task by id. Returns a stream; the caller
-    /// interprets the terminal packet.
-    async fn cancel_async_task(&self, task_id: &str) -> anyhow::Result<DaemonResponseStream>;
+    /// Cancel an async task by id. Returns `true` if the daemon
+    /// confirmed the cancel, `false` if the task was already gone.
+    async fn cancel_async_task(&self, task_id: &AsyncTaskId) -> anyhow::Result<bool>;
 }
 
 /// Minimal tool-execution config visible to the [`AsyncExecutionRouter`]
@@ -127,6 +147,8 @@ pub type PreprocessorFn = Box<dyn Fn(&mut Value, Option<&str>) + Send + Sync>;
 /// `FnOnce` (consumed once during dispatch).
 pub type ExecFn = Box<dyn FnOnce(Value) -> BoxFuture<'static, anyhow::Result<Value>> + Send>;
 
+use futures::future::BoxFuture;
+
 /// Async execution router port trait.
 ///
 /// This is the host-crate-side projection of root's
@@ -151,12 +173,12 @@ pub trait AsyncExecutionRouter: Send + Sync {
     /// `Box::new(...)`.
     async fn execute_from_hook(
         &self,
-        ctx: &HookContext,
+        ctx: &crate::core::context::HookContext,
         tool_name: &str,
         exec_config: &ToolExecConfig,
         preprocessor: Option<PreprocessorFn>,
         exec_fn: ExecFn,
-    ) -> HookResult;
+    ) -> crate::types::HookResult;
 
     /// Wait for all async tasks to complete.
     ///
@@ -164,5 +186,5 @@ pub trait AsyncExecutionRouter: Send + Sync {
     /// or `timeout` elapses. For the HTTP transport, returns
     /// immediately because tasks live on the daemon and survive CLI
     /// exit.
-    async fn wait_for_all_tasks(&self, timeout: Duration);
+    async fn wait_for_all_tasks(&self, timeout: std::time::Duration);
 }

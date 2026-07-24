@@ -39,6 +39,15 @@ pub mod skill_catalog;
 pub mod tool_funnel_impl;
 pub mod types;
 
+// Phase 8b lift: framework/{async_exec,manager,services,protocols} +
+// the implementations under framework/transport/* moved into the host.
+// `transport.rs` (the trait contract from 8a) is the parent module;
+// `transport/{async_router,async_transport}.rs` are its submodules.
+pub mod async_exec;
+pub mod manager;
+pub mod protocols;
+pub mod services;
+
 // Trait contracts from 8a commits 1 + 2.
 pub mod inbox;
 pub mod paths;
@@ -84,8 +93,11 @@ pub use registry::{SharedRegistry, SimpleRegistry};
 pub use subagent::SpawnCleanupPolicy;
 pub use tool_funnel::ToolFunnel;
 pub use transport::{
-    AsyncExecutionRouter, DaemonResponse, DaemonResponseStream, DaemonTransport, ExecFn,
-    PreprocessorFn, ToolExecConfig,
+    async_transport::{
+        create_local_transport, create_transport_with, AsyncTaskTransport, BoxedExecutionFn,
+        DaemonIpcTransport, LocalAsyncTransport, UnavailableAsyncTransport,
+    },
+    DaemonTransport, ExecFn, PreprocessorFn, ToolExecConfig,
 };
 pub use vault::VaultAccess;
 

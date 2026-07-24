@@ -2,13 +2,20 @@
 //!
 //! Provides a trait-based abstraction over async task execution so that the
 //! `AsyncExecutionRouter` can work identically whether it is running inside the
-//! daemon (local execution) or inside the CLI (HTTP submission to daemon).
+//! daemon (local execution) or inside the CLI (IPC submission to daemon).
+//!
+//! Phase 8b: lifted into `peko-extension-host`. The `DaemonIpcTransport`
+//! consumes the value-returning [`DaemonTransport`] trait (declared in
+//! the parent `transport` module) — root owns the `DaemonClient`
+//! implementation and the host stays free of any root IPC dep.
 
-use crate::extensions::framework::async_exec::executor::{
+use crate::async_exec::executor::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig,
 };
+use crate::transport::DaemonTransport;
 use anyhow::Result;
 use serde_json::Value;
+use std::sync::Arc;
 
 /// Boxed async execution closure type
 ///
@@ -22,14 +29,15 @@ pub type BoxedExecutionFn = Box<
 ///
 /// Implementations:
 /// - `LocalAsyncTransport` — runs tasks in-process via `AsyncExecutor` (daemon mode)
-/// - `DaemonHttpTransport` — submits tasks to daemon via HTTP API (CLI mode)
+/// - `DaemonIpcTransport` — submits tasks to daemon via IPC (CLI mode)
+/// - `UnavailableAsyncTransport` — fail-fast with a clear error (no daemon reachable)
 #[async_trait::async_trait]
 pub trait AsyncTaskTransport: Send + Sync {
     /// Spawn a new async task
     ///
     /// For `LocalAsyncTransport`, this creates a placeholder task; use
     /// `spawn_task_boxed` for actual tool execution with a closure.
-    /// For `DaemonHttpTransport`, this submits the task to the daemon via HTTP.
+    /// For `DaemonIpcTransport`, this submits the task to the daemon via IPC.
     async fn spawn_task(
         &self,
         task_id: AsyncTaskId,
@@ -46,7 +54,7 @@ pub trait AsyncTaskTransport: Send + Sync {
     /// because the router has already built the execution closure.
     ///
     /// The default implementation delegates to `spawn_task` for transports that
-    /// don't need the closure (e.g. HTTP transport where the daemon executes
+    /// don't need the closure (e.g. IPC transport where the daemon executes
     /// the tool itself).
     async fn spawn_task_boxed(
         &self,
@@ -59,7 +67,7 @@ pub trait AsyncTaskTransport: Send + Sync {
         _execution_fn: BoxedExecutionFn,
     ) -> Result<AsyncTaskReceipt> {
         // Default: ignore the closure and delegate to spawn_task.
-        // HTTP transport uses this path because the daemon has its own ToolRuntime.
+        // IPC transport uses this path because the daemon has its own ToolRuntime.
         self.spawn_task(task_id, tool_name, params, session_key, workspace, config)
             .await
     }
@@ -77,8 +85,7 @@ pub trait AsyncTaskTransport: Send + Sync {
 // LocalAsyncTransport — used inside the daemon
 // ================================================================================
 
-use crate::extensions::framework::async_exec::executor::AsyncExecutor;
-use std::sync::Arc;
+use crate::async_exec::executor::AsyncExecutor;
 
 /// Local transport that executes tasks in-process via `AsyncExecutor`
 #[derive(Debug, Clone)]
@@ -158,25 +165,40 @@ impl LocalAsyncTransport {
 // DaemonIpcTransport — used inside the CLI
 // ================================================================================
 
-use crate::ipc::{DaemonClient, ResponsePacket};
-
-/// IPC transport that submits tasks to the daemon via UDP/Unix socket
-#[derive(Debug)]
+/// IPC transport that submits tasks to the daemon via the
+/// [`DaemonTransport`] projection.
+///
+/// `DaemonTransport` is the value-returning IPC projection owned by
+/// the host crate (see `transport.rs`). Root implements it for
+/// `Arc<DaemonClient>`; tests can substitute a mock.
+///
+/// Note: `DaemonTransport` is `dyn`-compatible but does not require
+/// `Debug` (the host stays free of any `DaemonClient` leak), so the
+/// `#[derive(Debug)]` below is omitted and we use a manual impl that
+/// prints `<dyn DaemonTransport>` for the opaque field.
 pub struct DaemonIpcTransport {
-    client: DaemonClient,
+    client: Arc<dyn DaemonTransport>,
+}
+
+impl std::fmt::Debug for DaemonIpcTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaemonIpcTransport")
+            .field("client", &"<dyn DaemonTransport>")
+            .finish()
+    }
 }
 
 impl DaemonIpcTransport {
-    /// Create a new IPC transport (connects to daemon, fails if not running)
-    pub async fn new() -> anyhow::Result<Self> {
-        Ok(Self {
-            client: DaemonClient::connect().await?,
-        })
+    /// Create a new IPC transport from a pre-built `Arc<dyn DaemonTransport>`.
+    /// Root's CLI factory builds the client and supplies it via
+    /// [`create_transport_with`]; tests can hand in a mock.
+    pub fn new(client: Arc<dyn DaemonTransport>) -> Self {
+        Self { client }
     }
 
     /// Check if the daemon is reachable
     pub async fn is_daemon_reachable(&self) -> bool {
-        self.client.is_running().await
+        self.client.is_reachable().await
     }
 }
 
@@ -184,56 +206,30 @@ impl DaemonIpcTransport {
 impl AsyncTaskTransport for DaemonIpcTransport {
     async fn spawn_task(
         &self,
-        task_id: AsyncTaskId,
+        _task_id: AsyncTaskId,
         tool_name: String,
         params: Value,
         session_key: String,
         workspace: std::path::PathBuf,
         _config: AsyncToolConfig,
     ) -> Result<AsyncTaskReceipt> {
-        let mut stream = self
-            .client
+        self.client
             .spawn_async_task(tool_name, params, session_key, workspace)
-            .await?;
-
-        // Wait for the async receipt response
-        while let Some(packet) = stream.next().await {
-            match packet {
-                ResponsePacket::AsyncReceipt { receipt, .. } => return Ok(receipt),
-                ResponsePacket::Error { message, .. } => anyhow::bail!(message),
-                ResponsePacket::Done { success, error, .. } => {
-                    if !success {
-                        anyhow::bail!(error.unwrap_or_else(|| "Async spawn failed".to_string()));
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        anyhow::bail!("Stream closed without receipt for task {}", task_id)
+            .await
     }
 
     async fn get_status(&self, _task_id: &AsyncTaskId) -> Result<Option<AsyncTaskStatus>> {
-        // TODO: Implement status check via IPC
-        // For now, return None to trigger fallback behavior
+        // The IPC `DaemonTransport` projection only exposes
+        // `spawn_async_task` + `cancel_async_task`; status polling is
+        // intentionally absent (the daemon's status channel is local
+        // to its own `AsyncTaskRegistry`). Callers fall back to
+        // `pending`/`running` while polling the task file the daemon
+        // returned in the spawn receipt.
         Ok(None)
     }
 
     async fn cancel_task(&self, task_id: &AsyncTaskId) -> Result<bool> {
-        let mut stream = self.client.cancel_async_task(task_id).await?;
-
-        while let Some(packet) = stream.next().await {
-            match packet {
-                ResponsePacket::Done { success, .. } => return Ok(success),
-                ResponsePacket::Error { message, .. } => anyhow::bail!(message),
-                _ => {}
-            }
-        }
-
-        anyhow::bail!(
-            "Stream closed without cancel confirmation for task {}",
-            task_id
-        )
+        self.client.cancel_async_task(task_id).await
     }
 }
 
@@ -297,66 +293,38 @@ impl AsyncTaskTransport for UnavailableAsyncTransport {
 }
 
 // ================================================================================
-// Transport factory — detects daemon and chooses transport
+// Transport factory — caller provides the daemon client
 // ================================================================================
 
-/// Create the appropriate transport for CLI mode
+/// Build a `DaemonIpcTransport` from an already-constructed
+/// `Arc<dyn DaemonTransport>`.
 ///
-/// - If the daemon is reachable via IPC, returns `DaemonIpcTransport`
-/// - Otherwise, returns an error — async tool execution requires the daemon
+/// # Why this shape
 ///
-/// # Why no fallback?
-///
-/// `LocalAsyncTransport` spawns tasks via `tokio::spawn`. When the CLI exits,
-/// the tokio runtime shuts down and any spawned tasks are dropped — they never
-/// complete. This produces "phantom success": the agent receives a valid receipt,
-/// but the task was never executed. Failing fast with a clear error is safer.
-pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTransport>> {
-    // Use try_connect_quick (200ms timeout, no auto-start) to avoid hanging
-    // on daemon-unreachable commands like `peko principal list`.
-    let client = match crate::ipc::ConnectionManager::try_connect_quick().await {
-        Ok(conn) => crate::ipc::DaemonClient::with_connection(conn).await?,
-        Err(e) => {
-            anyhow::bail!(
-                "peko daemon is not running. Async tool execution requires the daemon.\n\
-                 Start it with: peko daemon start\n\
-                 Or wait for the task to complete via the 'task' tool's 'output' action.\n\
-                 Details: {e}"
-            )
-        }
-    };
-
-    let ipc = DaemonIpcTransport { client };
-
-    if ipc.is_daemon_reachable().await {
-        tracing::info!("Using DaemonIpcTransport for async tasks (daemon is running)");
-        Ok(std::sync::Arc::new(ipc))
-    } else {
-        anyhow::bail!(
-            "peko daemon is not running. Async tool execution requires the daemon.\n\
-             Start it with: peko daemon start\n\
-             Or wait for the task to complete via the 'task' tool's 'output' action."
-        )
-    }
+/// `LocalAsyncTransport` spawns tasks via `tokio::spawn`. When the CLI
+/// exits, the tokio runtime shuts down and any spawned tasks are
+/// dropped — they never complete. This produces "phantom success": the
+/// agent receives a valid receipt, but the task was never executed.
+/// The CLI therefore refuses to fall back to local execution; the
+/// caller must construct the IPC client (via `ipc::ConnectionManager`)
+/// and hand it in. Failing fast with a clear error is safer than
+/// silently dropping work.
+pub fn create_transport_with(client: Arc<dyn DaemonTransport>) -> Arc<dyn AsyncTaskTransport> {
+    Arc::new(DaemonIpcTransport::new(client))
 }
 
-/// Create a local transport (for daemon mode where HTTP is not needed)
-pub fn create_local_transport() -> std::sync::Arc<dyn AsyncTaskTransport> {
-    // Use a shared registry from the global cache so that the `task` tool can
-    // find async tasks created by the router.
-    let registry =
-        crate::extensions::framework::async_exec::executor::get_or_create_registry_for_agent(
-            "_global",
-        );
-    let queue_manager = std::sync::Arc::new(tokio::sync::RwLock::new(
-        crate::extensions::framework::async_exec::executor::AsyncResultQueueManager::new(),
+/// Create a local transport (for daemon mode where IPC is not needed).
+///
+/// Uses a shared registry from the global cache so the `task` tool
+/// can find async tasks created by the router.
+pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {
+    let registry = crate::async_exec::executor::get_or_create_registry_for_agent("_global");
+    let queue_manager = Arc::new(tokio::sync::RwLock::new(
+        crate::async_exec::executor::AsyncResultQueueManager::new(),
     ));
     let executor =
-        crate::extensions::framework::async_exec::executor::AsyncExecutor::with_registries(
-            registry,
-            queue_manager,
-        );
-    std::sync::Arc::new(LocalAsyncTransport::from_executor(executor))
+        crate::async_exec::executor::AsyncExecutor::with_registries(registry, queue_manager);
+    Arc::new(LocalAsyncTransport::from_executor(executor))
 }
 
 #[cfg(test)]
