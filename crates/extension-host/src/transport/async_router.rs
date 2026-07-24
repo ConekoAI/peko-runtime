@@ -15,17 +15,13 @@
 //! ).await?;
 //! ```
 
-use crate::extensions::framework::async_exec::executor::{
+use crate::async_exec::executor::{
     AsyncResultDeliveryMode, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget,
 };
-use crate::extensions::framework::core::context::HookContext;
-use crate::extensions::framework::services::tool_execution::{
-    ToolExecutionConfig, ToolExecutionService,
-};
-use crate::extensions::framework::transport::async_transport::{
-    AsyncTaskTransport, LocalAsyncTransport,
-};
-use crate::extensions::framework::types::{HookOutput, HookResult};
+use crate::core::context::HookContext;
+use crate::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};
+use crate::transport::async_transport::{AsyncTaskTransport, LocalAsyncTransport};
+use crate::types::{HookOutput, HookResult};
 use anyhow::{anyhow, Result};
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -81,7 +77,7 @@ impl AsyncExecutionRouter {
     /// (5 min) and a local transport.
     #[must_use]
     pub fn new() -> Self {
-        use crate::extensions::framework::async_exec::executor::AsyncExecutor;
+        use crate::async_exec::executor::AsyncExecutor;
         let executor = AsyncExecutor::new();
         Self {
             default_tool_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
@@ -92,7 +88,7 @@ impl AsyncExecutionRouter {
     /// Create with a custom default tool timeout (local transport).
     #[must_use]
     pub fn with_default_tool_timeout(secs: u64) -> Self {
-        use crate::extensions::framework::async_exec::executor::AsyncExecutor;
+        use crate::async_exec::executor::AsyncExecutor;
         let executor = AsyncExecutor::new();
         Self {
             default_tool_timeout: Duration::from_secs(secs),
@@ -111,9 +107,7 @@ impl AsyncExecutionRouter {
 
     /// Create with a shared local async executor (for sharing registries across routers)
     #[must_use]
-    pub fn with_executor(
-        async_executor: crate::extensions::framework::async_exec::executor::AsyncExecutor,
-    ) -> Self {
+    pub fn with_executor(async_executor: crate::async_exec::executor::AsyncExecutor) -> Self {
         Self {
             default_tool_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(async_executor)),
@@ -215,7 +209,7 @@ impl AsyncExecutionRouter {
         };
 
         // Build a boxed execution closure that captures params and runs the tool.
-        let execution_fn: crate::extensions::framework::transport::async_transport::BoxedExecutionFn =
+        let execution_fn: crate::transport::async_transport::BoxedExecutionFn =
             Box::new(move || Box::pin(sync_executor(params)));
 
         // Spawn the real work as a background task via the transport.
@@ -459,9 +453,7 @@ impl AsyncExecutionRouter {
         let exec_service = std::sync::Arc::new(ToolExecutionService::new());
 
         // 5. Build execution context
-        let tool_ctx = match ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
-        {
+        let tool_ctx = match ctx.get_state::<crate::types::ToolRuntimeContext>("tool_context") {
             Some(tc) => ToolExecutionContext::new(
                 tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
                 tc.session_id
@@ -756,34 +748,32 @@ mod tests {
     impl AsyncTaskTransport for NullStatusTransport {
         async fn spawn_task(
             &self,
-            task_id: crate::extensions::framework::async_exec::executor::AsyncTaskId,
+            task_id: crate::async_exec::executor::AsyncTaskId,
             _tool_name: String,
             _params: Value,
             _session_key: String,
             _workspace: std::path::PathBuf,
-            _config: crate::extensions::framework::async_exec::executor::AsyncToolConfig,
-        ) -> Result<crate::extensions::framework::async_exec::executor::AsyncTaskReceipt> {
-            Ok(
-                crate::extensions::framework::async_exec::executor::AsyncTaskReceipt {
-                    task_id,
-                    status: AsyncTaskStatus::Running,
-                    estimated_duration_secs: None,
-                    task_file: None,
-                    params: None,
-                },
-            )
+            _config: crate::async_exec::executor::AsyncToolConfig,
+        ) -> Result<crate::async_exec::executor::AsyncTaskReceipt> {
+            Ok(crate::async_exec::executor::AsyncTaskReceipt {
+                task_id,
+                status: AsyncTaskStatus::Running,
+                estimated_duration_secs: None,
+                task_file: None,
+                params: None,
+            })
         }
 
         async fn get_status(
             &self,
-            _task_id: &crate::extensions::framework::async_exec::executor::AsyncTaskId,
+            _task_id: &crate::async_exec::executor::AsyncTaskId,
         ) -> Result<Option<AsyncTaskStatus>> {
             Ok(None)
         }
 
         async fn cancel_task(
             &self,
-            _task_id: &crate::extensions::framework::async_exec::executor::AsyncTaskId,
+            _task_id: &crate::async_exec::executor::AsyncTaskId,
         ) -> Result<bool> {
             Ok(false)
         }
@@ -846,14 +836,14 @@ mod tests {
 /// `Future<Output = _> + Send + 'static` bound, so the bridge is
 /// transparent.
 #[async_trait::async_trait]
-impl peko_extension_host::AsyncExecutionRouter for AsyncExecutionRouter {
+impl crate::transport::AsyncExecutionRouter for AsyncExecutionRouter {
     async fn execute_from_hook(
         &self,
         ctx: &HookContext,
         tool_name: &str,
-        exec_config: &peko_extension_host::ToolExecConfig,
-        preprocessor: Option<peko_extension_host::PreprocessorFn>,
-        exec_fn: peko_extension_host::ExecFn,
+        exec_config: &crate::transport::ToolExecConfig,
+        preprocessor: Option<crate::transport::PreprocessorFn>,
+        exec_fn: crate::transport::ExecFn,
     ) -> HookResult {
         // Rebuild a root-side ToolExecutionConfig. The trait-port
         // `ToolExecConfig` holds a `peko_extension_api::ReservedParamsConfig`,

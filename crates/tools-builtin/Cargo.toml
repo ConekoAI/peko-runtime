@@ -17,10 +17,11 @@ peko-message = { path = "../message" }
 peko-subject = { path = "../subject" }
 # Phase 10e: messaging (AgentTool) needs peko-extension-api for
 # `AsyncTaskStatus` (used in `SubagentRunView.status`) and
-# peko-extension-host for `SpawnCleanupPolicy` (re-exported via the
-# `messaging` module so consumers only need one import path).
+# `SpawnCleanupPolicy` (the canonical home moved here from
+# `peko_extension_host` in Phase 8b to break a cycle that arose
+# when the host crate grew a `peko_tools_builtin` dep for the
+# async-runtime port adapter).
 peko-extension-api = { path = "../extension-api" }
-peko-extension-host = { path = "../extension-host" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

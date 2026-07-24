@@ -73,7 +73,7 @@ async fn init_extension_core(command: &Commands) {
         )
     } else {
         tracing::info!("Auto-detecting async transport for CLI mode");
-        match peko::extensions::framework::services::async_transport::create_transport().await {
+        match peko::extensions::framework::transport::create_transport().await {
             Ok(transport) => AsyncExecutionRouter::with_transport(transport),
             Err(_) => {
                 // Daemon does not auto-start; user must start it manually.

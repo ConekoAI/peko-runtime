@@ -99,7 +99,14 @@ pub mod transport;
 // Re-export services trait-port surface (lives in host for 8a so
 // `framework::services::ToolExecutionConfig` etc. can be backed by
 // host-crate types without host depending on root services/).
-pub use peko_extension_host::{AsyncExecutionRouter, ExecFn, PreprocessorFn, ToolExecConfig};
+//
+// Note: `AsyncExecutionRouter` resolves here to the **trait** port.
+// The concrete router struct lives at
+// `peko_extension_host::transport::async_router::AsyncExecutionRouter`
+// — callers needing its `with_transport()` constructor import the
+// concrete path; trait-port callers use this re-export.
+pub use peko_extension_host::transport::AsyncExecutionRouter as AsyncExecutionRouterTrait;
+pub use peko_extension_host::{ExecFn, PreprocessorFn, ToolExecConfig};
 
 // Re-export core types at the framework root so callers using
 // `crate::extensions::framework::HookPoint` (no submodule) keep
