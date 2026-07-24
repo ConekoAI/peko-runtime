@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::{memory::PrincipalMemory, PrincipalConfig, PrincipalId};
+use peko_principal::memory::PrincipalMemory;
+use peko_principal::PrincipalConfig;
 use peko_providers::LlmResolver;
+use peko_subject::PrincipalId;
 // F19: removed `use peko_quota::QuotaMeter;` — the factory no
 // longer threads the meter through to the router.
 
@@ -40,7 +42,7 @@ impl PrincipalMemoryFactory for DefaultPrincipalMemoryFactory {
         workspace_path: &std::path::Path,
     ) -> Arc<dyn PrincipalMemory> {
         // Ensure the sessions directory exists.
-        let memory = super::memory::DefaultPrincipalMemory::new(workspace_path.to_path_buf());
+        let memory = peko_principal::memory::DefaultPrincipalMemory::new(workspace_path.to_path_buf());
         let _ = tokio::fs::create_dir_all(memory.sessions_dir()).await;
         Arc::new(memory)
     }
@@ -93,10 +95,10 @@ impl DefaultPrincipalRouterFactory {
     pub fn resolve_root_agent_prompt(
         config: &PrincipalConfig,
         workspace_path: &std::path::Path,
-    ) -> super::agent_prompt::AgentPrompt {
+    ) -> peko_principal::agent_prompt::AgentPrompt {
         // 1. Explicit override from principal.toml.
         if let Some(ref path) = config.routing.root_prompt {
-            match super::agent_prompt::load_agent_prompt(path) {
+            match peko_principal::agent_prompt::load_agent_prompt(path) {
                 Ok(prompt) => return prompt,
                 Err(e) => tracing::warn!(
                     "Failed to load root prompt from {}: {e}. Falling back to defaults.",
@@ -114,7 +116,7 @@ impl DefaultPrincipalRouterFactory {
         ];
         for candidate in &workspace_candidates {
             if candidate.exists() {
-                match super::agent_prompt::load_agent_prompt(candidate) {
+                match peko_principal::agent_prompt::load_agent_prompt(candidate) {
                     Ok(prompt) => return prompt,
                     Err(e) => tracing::warn!(
                         "Failed to load workspace root agent prompt from {}: {e}. \
@@ -131,4 +133,4 @@ impl DefaultPrincipalRouterFactory {
 }
 
 /// Re-export concrete factory types for ergonomics.
-pub use super::memory::DefaultPrincipalMemory;
+pub use peko_principal::memory::DefaultPrincipalMemory;

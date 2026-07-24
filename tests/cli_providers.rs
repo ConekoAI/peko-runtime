@@ -135,7 +135,7 @@ fn grant_tools_to_principal(cli: &PekoCli, name: &str, tools: &[&str]) {
         .join(name)
         .join("principal.toml");
     let raw = std::fs::read_to_string(&path).expect("read principal.toml");
-    let mut cfg: peko::principal::config::PrincipalConfig =
+    let mut cfg: peko_principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
 
     for tool in tools {

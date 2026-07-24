@@ -45,12 +45,12 @@ impl Default for TransportPreference {
 /// Edge conversion from the principal-owned persisted transport preference to
 /// the tunnel wire enum. Keeps `principal` free of any `tunnel` dependency
 /// (boundary rule 8): the tunnel adapts at its edge.
-impl From<crate::principal::config::TransportPreference> for TransportPreference {
-    fn from(p: crate::principal::config::TransportPreference) -> Self {
+impl From<peko_principal::config::TransportPreference> for TransportPreference {
+    fn from(p: peko_principal::config::TransportPreference) -> Self {
         match p {
-            crate::principal::config::TransportPreference::Auto => Self::Auto,
-            crate::principal::config::TransportPreference::Tunnel => Self::Tunnel,
-            crate::principal::config::TransportPreference::Direct => Self::Direct,
+            peko_principal::config::TransportPreference::Auto => Self::Auto,
+            peko_principal::config::TransportPreference::Tunnel => Self::Tunnel,
+            peko_principal::config::TransportPreference::Direct => Self::Direct,
         }
     }
 }

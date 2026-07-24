@@ -223,7 +223,9 @@ pub mod identity_compat;
 // PrincipalResourceView).
 pub mod auth_compat;
 
-// [extract:phase-14] peko-principal
+// [extract:phase-14-c.1] peko-principal (config/peer/memory/agent_prompt lifted;
+// factory contract + manager/context/extension_store/agent_runner/routers/slash
+// still in root pending 14.c.2)
 pub mod principal;
 
 // (Phase 15: peko-quota shim deleted; callers use peko_quota::* directly)

@@ -326,7 +326,7 @@ impl TunnelDispatcher {
     /// instance clears PekoHub's allow list when the last grant is
     /// revoked.
     fn compute_allowed_principals(
-        config: &crate::principal::PrincipalConfig,
+        config: &peko_principal::PrincipalConfig,
     ) -> Option<Vec<peko_auth::Subject>> {
         use peko_auth::Subject;
         let principals: Vec<Subject> = config
@@ -1445,7 +1445,7 @@ mod tests {
     use super::*;
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
     use crate::extensions::framework::types::Capabilities;
-    use crate::principal::config::{
+    use peko_principal::config::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };

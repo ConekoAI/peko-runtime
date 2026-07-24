@@ -216,7 +216,7 @@ fn write_principal_with_perm(
         .join(principal_name)
         .join("principal.toml");
     let raw = std::fs::read_to_string(&principal_toml).expect("read principal.toml");
-    let mut cfg: peko::principal::config::PrincipalConfig =
+    let mut cfg: peko_principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
 
     cfg.exposure = peko_auth::Exposure::Private;

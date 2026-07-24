@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::core::init_global_core;
-use crate::principal::config::{Exposure, TransportPreference};
+use peko_principal::config::{Exposure, TransportPreference};
 use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };

@@ -1,7 +1,7 @@
 //! Agent configuration (lifted from `src/types/agent.rs` in issue #31e)
 //!
 //! [`AgentConfig`] is the **per-agent** configuration that the engine
-//! owns. Principal-level config ([`PrincipalConfig`](crate::principal::config::PrincipalConfig))
+//! owns. Principal-level config ([`PrincipalConfig`](peko_principal::config::PrincipalConfig))
 //! and runtime state ([`PrincipalContext`](crate::principal::context::PrincipalContext))
 //! hold the authority for shared fields (owner, permissions, workspace,
 //! provider/model hint, capabilities). What stays here is per-agent:

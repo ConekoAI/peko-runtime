@@ -852,7 +852,7 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 status,
             } => {
-                use crate::principal::config::Status;
+                use peko_principal::config::Status;
                 let status_enum = match status.as_str() {
                     "online" => Status::Online,
                     "offline" => Status::Offline,
@@ -971,7 +971,7 @@ impl RequestHandler for PrincipalHandler {
                 model_id,
             } => {
                 use crate::common::identifiers::validate_agent_name;
-                use crate::principal::config::{
+                use peko_principal::config::{
                     Exposure, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
                     PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
                 };
@@ -1083,7 +1083,7 @@ impl RequestHandler for PrincipalHandler {
                 exposure,
                 preferred_model_id,
             } => {
-                use crate::principal::config::{Exposure, Status};
+                use peko_principal::config::{Exposure, Status};
 
                 let principal = match load_principal(host, &name).await {
                     Some(p) => p,

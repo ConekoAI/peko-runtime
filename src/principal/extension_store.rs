@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use crate::extensions::framework::store::GlobalExtensionItem;
 use crate::extensions::framework::types::{Capabilities, Capability, ExtensionManifest};
-use crate::principal::agent_prompt::AgentPrompt;
+use peko_principal::agent_prompt::AgentPrompt;
 use crate::principal::capability_evaluator::CapabilityEvaluator;
 
 /// A single row in the principal's extension catalog.

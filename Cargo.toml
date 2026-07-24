@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/cron", "crates/fs-persistence", "crates/identity", "crates/message", "crates/observability", "crates/peko-daemon", "crates/provider-api", "crates/providers", "crates/session",
+members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/cron", "crates/fs-persistence", "crates/identity", "crates/message", "crates/observability", "crates/peko-daemon", "crates/principal", "crates/provider-api", "crates/providers", "crates/session",
     "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
 # ---------------------------------------------------------------------------
@@ -178,6 +178,15 @@ peko-observability = { path = "crates/observability" }
 # (`src/cron/{mod,events,idle,event_trigger}.rs`, 1,301 lines) become
 # `crates/cron/src/{lib,events,idle,event_trigger}.rs`.
 peko-cron = { path = "crates/cron" }
+# Phase 14.c.1 — peko-principal owns the pure-deps subset of
+# `src/principal/`: `config`, `peer`, `memory`, `factory`,
+# `agent_prompt` (~1,418 lines). Depends only on `peko-extension-api`,
+# `peko-subject`, `peko-quota`, `peko-providers`. The runtime-coupled
+# subset (`manager`, `context`, `extension_store`, `agent_runner`,
+# `capability_evaluator`, `routers/*`, `slash/*`) stays in root for
+# Phase 14.c.2 — it depends on `ExtensionCore`, `PathResolver`,
+# `OutputFormat`, and the IPC `ExtensionSummary` wire shape.
+peko-principal = { path = "crates/principal" }
 # Phase 7 — peko-session owns the session persistence domain
 # (JSONL storage, metadata, recovery, compaction persistence,
 # InboxRegistry). Root re-exports the historical `crate::session::*`

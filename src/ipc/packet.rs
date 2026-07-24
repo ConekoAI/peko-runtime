@@ -3122,7 +3122,7 @@ mod tests {
                 owner: peko_auth::Subject::User("alice".to_string()),
                 description: Some("updated".to_string()),
                 exposure: peko_auth::Exposure::Public,
-                status: Some(crate::principal::config::Status::Busy),
+                status: Some(peko_principal::config::Status::Busy),
                 preferred_model_id: None,
                 capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 1,

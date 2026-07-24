@@ -14,16 +14,17 @@ use crate::commands::GlobalPaths;
 use crate::common::paths::PathResolver;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use crate::principal::{
-    config::{
-        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-        PrincipalMemoryConfig, PrincipalRoutingConfig,
-    },
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
-    memory::{DefaultPrincipalMemory, PrincipalMemory},
     router::{ChannelContext, ChannelKind},
-    Capabilities, PrincipalManager,
+    PrincipalManager,
 };
 use peko_auth::{subject_from_string_with_default_user, Subject};
+use peko_extension_api::Capabilities;
+use peko_principal::config::{
+    PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
+    PrincipalMemoryConfig, PrincipalRoutingConfig,
+};
+use peko_principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 
 /// Subcommands for `peko principal`.
 #[derive(Subcommand)]
@@ -1063,7 +1064,7 @@ impl PrincipalMemoryFactory for CliPrincipalMemoryFactory {
         &self,
         _principal_id: &peko_subject::PrincipalId,
         workspace_path: &Path,
-    ) -> Arc<dyn crate::principal::PrincipalMemory> {
+    ) -> Arc<dyn peko_principal::PrincipalMemory> {
         let name = workspace_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())

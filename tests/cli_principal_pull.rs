@@ -237,7 +237,7 @@ async fn pull_yes_selects_no_required_capabilities() {
     let config_toml = tokio::fs::read_to_string(&config_path)
         .await
         .expect("pulled principal.toml should exist");
-    let config: peko::principal::config::PrincipalConfig =
+    let config: peko_principal::config::PrincipalConfig =
         toml::from_str(&config_toml).expect("parse pulled principal.toml");
 
     assert!(
@@ -309,7 +309,7 @@ async fn pull_interactive_partial_capability_selection() {
     let config_toml = tokio::fs::read_to_string(&config_path)
         .await
         .expect("pulled principal.toml should exist");
-    let config: peko::principal::config::PrincipalConfig =
+    let config: peko_principal::config::PrincipalConfig =
         toml::from_str(&config_toml).expect("parse pulled principal.toml");
 
     assert!(
@@ -383,7 +383,7 @@ async fn pull_unsigned_with_allow_unsigned_yes_selects_none() {
     let config_toml = tokio::fs::read_to_string(&config_path)
         .await
         .expect("pulled principal.toml should exist");
-    let config: peko::principal::config::PrincipalConfig =
+    let config: peko_principal::config::PrincipalConfig =
         toml::from_str(&config_toml).expect("parse pulled principal.toml");
 
     assert!(

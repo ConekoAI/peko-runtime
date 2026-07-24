@@ -4,7 +4,7 @@
 
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
-use crate::principal::config::PrincipalConfig;
+use peko_principal::config::PrincipalConfig;
 use crate::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
 use crate::registry::packaging::types::{compute_digest, ExtensionRef, Layer, LayerType};
 use anyhow::Context;
@@ -576,7 +576,7 @@ pub async fn export_principal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::config::PrincipalConfig;
+    use peko_principal::config::PrincipalConfig;
     use peko_identity::did::DIDScope;
     use peko_identity::Identity;
     use peko_subject::PrincipalDID;

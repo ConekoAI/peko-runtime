@@ -1,0 +1,45 @@
+[package]
+name = "peko-principal"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Principal domain DTOs + memory + peer registry + factory contracts (Phase 14.c.1). The runtime-coupled subset (manager + context + routers + slash) stays in root for Phase 14.c.2 because it depends on ExtensionCore, PathResolver, and the IPC `ExtensionSummary` wire shape."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+# Phase 14.c.1 surface — pure-deps subset. Lifted from
+# src/principal/{config,peer,memory,factory,agent_prompt}.rs.
+# Re-exports `Capabilities` for `PrincipalConfig` field types.
+peko-extension-api = { path = "../extension-api" }
+# Subject is the canonical principal ID type (F3 cycle break).
+peko-subject = { path = "../subject" }
+# Quota domain types appear in `peer.rs` (F20 per-peer metering) and
+# `config.rs` (`QuotaConfig` field). Pure dependency.
+peko-quota = { path = "../quota" }
+# Auth supplies `Subject`, `Exposure`, `Permission`, `PermissionGrant`
+# for `PrincipalConfig.owner`, `PrincipalConfig.exposure`, and the
+# `DelegationGrant.permissions` vector. Re-exported by `config.rs`.
+peko-auth = { path = "../auth" }
+# Provider resolver appears in `factory.rs` (used by the memory +
+# router factories). Pure dependency.
+peko-providers = { path = "../providers" }
+# peko-message is needed for `LlmMessage` (used in `memory.rs` for
+# `SessionArtifact::messages`).
+peko-message = { path = "../message" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+tokio = { version = "1.35", features = ["sync", "macros"] }
+tracing = "0.1"
+anyhow = "1.0"
+thiserror = "1.0"
+
+[dev-dependencies]
+# Test fixtures inside `peer.rs:373` use `super::*` which already pulls
+# in tempfile via the crate's own dev-deps. No external test deps
+# needed at this stage.
+tempfile = "3.10"
