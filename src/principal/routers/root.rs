@@ -24,7 +24,7 @@ use crate::principal::router::{
     recalled_context_messages, AgentPromptSummary, PrincipalRouter, RouteDecision, RouterContext,
     RouterError,
 };
-// F19: removed `use crate::quota::QuotaMeter;` — the router no
+// F19: removed `use peko_quota::QuotaMeter;` — the router no
 // longer carries a quota meter field.
 use peko_providers::LlmResolver;
 

@@ -838,7 +838,7 @@ impl DaemonClient {
     pub async fn quota_set(
         &self,
         name: impl Into<String>,
-        config: crate::quota::QuotaConfig,
+        config: peko_quota::QuotaConfig,
         is_peer: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();

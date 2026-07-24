@@ -1,7 +1,7 @@
 //! Per-principal token quota CLI (F18).
 //!
 //! All operations are delegated to the daemon via IPC — the daemon
-//! owns the live [`QuotaMeter`](crate::quota::QuotaMeter) and the
+//! owns the live [`QuotaMeter`](peko_quota::QuotaMeter) and the
 //! persisted `quota_state.json` per principal.
 //!
 //! Subcommands:
@@ -13,10 +13,10 @@
 
 use crate::commands::GlobalPaths;
 use crate::ipc::{DaemonClient, ResponsePacket};
-use crate::quota::{QuotaConfig, QuotaCycle, QuotaState};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Subcommand;
+use peko_quota::{QuotaConfig, QuotaCycle, QuotaState};
 use std::str::FromStr;
 
 /// Quota management subcommands.

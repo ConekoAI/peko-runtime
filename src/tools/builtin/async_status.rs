@@ -9,7 +9,7 @@ pub use peko_tools_builtin::async_control::AsyncStatusTool;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::core::Tool;
+    use peko_tools_core::Tool;
     use serde_json::json;
     use std::sync::Arc;
 

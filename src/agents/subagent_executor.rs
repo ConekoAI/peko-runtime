@@ -32,7 +32,6 @@ use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
 use crate::extensions::framework::types::Capabilities;
 use crate::observability::Observability;
-use crate::subject::PrincipalId;
 use peko_auth::Subject;
 use peko_extension_host::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncResultDeliveryMode,
@@ -42,6 +41,7 @@ use peko_extension_host::async_exec::executor::{
 use peko_extension_host::SpawnCleanupPolicy;
 use peko_session::context::SessionContext;
 use peko_session::manager::SessionManager;
+use peko_subject::PrincipalId;
 
 /// Channel for announcing completed subagent runs
 pub type AnnouncementSender = mpsc::Sender<CompletedRun>;
@@ -139,11 +139,11 @@ pub struct SubagentExecutor {
     /// inside the spawned closure. `None` means
     /// `QuotaMeter::unlimited()` fallback so subagents of principals
     /// with no quota config still run (no behavior change vs F19).
-    quota_meter: Option<Arc<crate::quota::meter::QuotaMeter>>,
+    quota_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
     /// F39: snapshot of the spawning principal's peer-attribution
     /// `QuotaMeter`. Stacked inside `QuotaScope::with(parent_meter, ...)`
     /// so both meters charge when nested. `None` skips peer attribution.
-    peer_meter: Option<Arc<crate::quota::meter::QuotaMeter>>,
+    peer_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
 }
 
 impl SubagentExecutor {
@@ -192,14 +192,14 @@ impl SubagentExecutor {
     /// task (task-locals don't cross `tokio::spawn` — F19's design
     /// assumption on this point was incorrect).
     #[must_use]
-    pub fn with_quota_meter(mut self, meter: Option<Arc<crate::quota::meter::QuotaMeter>>) -> Self {
+    pub fn with_quota_meter(mut self, meter: Option<Arc<peko_quota::meter::QuotaMeter>>) -> Self {
         self.quota_meter = meter;
         self
     }
 
     /// F39: get the spawning principal's `QuotaMeter`, if set.
     #[must_use]
-    pub fn quota_meter(&self) -> Option<&Arc<crate::quota::meter::QuotaMeter>> {
+    pub fn quota_meter(&self) -> Option<&Arc<peko_quota::meter::QuotaMeter>> {
         self.quota_meter.as_ref()
     }
 
@@ -207,7 +207,7 @@ impl SubagentExecutor {
     /// `QuotaMeter`. Stacked inside the subagent's `QuotaScope::with`
     /// along with the principal meter.
     #[must_use]
-    pub fn with_peer_meter(mut self, meter: Option<Arc<crate::quota::meter::QuotaMeter>>) -> Self {
+    pub fn with_peer_meter(mut self, meter: Option<Arc<peko_quota::meter::QuotaMeter>>) -> Self {
         self.peer_meter = meter;
         self
     }
@@ -215,7 +215,7 @@ impl SubagentExecutor {
     /// F39: get the spawning principal's peer-attribution
     /// `QuotaMeter`, if set.
     #[must_use]
-    pub fn peer_meter(&self) -> Option<&Arc<crate::quota::meter::QuotaMeter>> {
+    pub fn peer_meter(&self) -> Option<&Arc<peko_quota::meter::QuotaMeter>> {
         self.peer_meter.as_ref()
     }
 
@@ -620,7 +620,7 @@ impl SubagentExecutor {
                                     );
                                     (
                                         AsyncTaskStatus::Completed {
-                                            result: crate::tools::ToolResult::success(
+                                            result: peko_tools_core::ToolResult::success(
                                                 serde_json::json!({"output": &output}),
                                             ),
                                         },
@@ -979,12 +979,12 @@ async fn execute_subagent_task(
     // subagent's `MeteredProvider::from_current_scope` charges the
     // parent principal. `None` falls open to
     // `QuotaMeter::unlimited()` (matches F19/F20 behavior).
-    parent_quota_meter: Option<Arc<crate::quota::meter::QuotaMeter>>,
+    parent_quota_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
     // F39: snapshot of the spawning principal's peer-attribution
     // `QuotaMeter`. Stacked inside the subagent's `QuotaScope::with`
     // along with `parent_quota_meter` so both meters charge when
     // nested. `None` skips peer attribution.
-    parent_peer_meter: Option<Arc<crate::quota::meter::QuotaMeter>>,
+    parent_peer_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
 ) -> Result<String> {
     info!(
         "Executing subagent task: agent={} session={}",
@@ -1132,11 +1132,11 @@ async fn execute_subagent_task(
     // overflow at default stack; passes with `RUST_MIN_STACK=8MB`).
     // The Box::pin is the clippy "large_futures" fix the compiler
     // suggests at `commands/agents` and elsewhere.
-    let parent_quota_meter = parent_quota_meter
-        .unwrap_or_else(|| Arc::new(crate::quota::meter::QuotaMeter::unlimited()));
+    let parent_quota_meter =
+        parent_quota_meter.unwrap_or_else(|| Arc::new(peko_quota::meter::QuotaMeter::unlimited()));
     let parent_peer_meter =
-        parent_peer_meter.unwrap_or_else(|| Arc::new(crate::quota::meter::QuotaMeter::unlimited()));
-    let inner_fut = Box::pin(crate::quota::scope::QuotaScope::with(
+        parent_peer_meter.unwrap_or_else(|| Arc::new(peko_quota::meter::QuotaMeter::unlimited()));
+    let inner_fut = Box::pin(peko_quota::scope::QuotaScope::with(
         parent_peer_meter,
         subagent.execute_with_session(
             &combined_prompt,
@@ -1151,7 +1151,7 @@ async fn execute_subagent_task(
             None, // explicit_peer_meter override: None = use the task-local peer meter
         ),
     ));
-    let result = crate::quota::scope::QuotaScope::with(parent_quota_meter, inner_fut).await;
+    let result = peko_quota::scope::QuotaScope::with(parent_quota_meter, inner_fut).await;
 
     match result {
         Ok(agentic_result) => {
@@ -1195,14 +1195,14 @@ async fn execute_subagent_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::types::message::LlmMessage;
-    use crate::quota::scope::QuotaScope;
-    use crate::quota::{QuotaConfig, QuotaCycle, QuotaMeter};
     use chrono::Utc;
     use peko_engine::StackedMeteredProvider;
+    use peko_message::LlmMessage;
     use peko_provider_api::ChatOptions;
     use peko_providers::resolver::ResolveRequest;
     use peko_providers::MockAdapter;
+    use peko_quota::scope::QuotaScope;
+    use peko_quota::{QuotaConfig, QuotaCycle, QuotaMeter};
     use peko_session::manager::SessionManager;
 
     /// F39 test fixture: build a `MockAdapter`-backed `Provider` and
@@ -1352,7 +1352,7 @@ mod tests {
         assert!(
             matches!(
                 meter.check(),
-                Some(crate::quota::error::QuotaError::RequestCountExceeded { .. })
+                Some(peko_quota::error::QuotaError::RequestCountExceeded { .. })
             ),
             "meter should report the request_count limit tripped"
         );
@@ -1452,7 +1452,7 @@ mod tests {
             manager,
             "test_agent",
             5,
-            crate::subject::PrincipalId::generate(),
+            peko_subject::PrincipalId::generate(),
         );
 
         assert_eq!(executor.agent_name, "test_agent");
@@ -1475,7 +1475,7 @@ mod tests {
             manager,
             "test_agent",
             5,
-            crate::subject::PrincipalId::generate(),
+            peko_subject::PrincipalId::generate(),
         );
 
         // Initially empty
@@ -1559,7 +1559,7 @@ mod tests {
             manager.clone(),
             "test_agent",
             5,
-            crate::subject::PrincipalId::generate(),
+            peko_subject::PrincipalId::generate(),
         )
         .with_principal_capabilities(Some(Arc::clone(&allowed)));
 

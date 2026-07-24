@@ -13,7 +13,6 @@
 //! captures the principal from `ToolContext::principal_id` and passes
 //! the matching `Arc<QuotaMeter>`.
 
-use crate::common::types::message::{ContentBlock, ImageSource, MessageRole};
 use crate::extensions::mcp::protocol::{
     client::ServerRequestHandler,
     types::{
@@ -21,11 +20,12 @@ use crate::extensions::mcp::protocol::{
         SamplingRole, Tool,
     },
 };
-use crate::quota::{QuotaMeter, QuotaScope};
 use async_trait::async_trait;
+use peko_message::{ContentBlock, ImageSource, MessageRole};
 use peko_provider_api::{ChatOptions, StopReason, ToolDefinition};
 use peko_providers::resolver::{LlmResolver, ResolveRequest};
 use peko_providers::MeteredProvider;
+use peko_quota::{QuotaMeter, QuotaScope};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -88,9 +88,7 @@ impl ServerRequestHandler for SamplingRequestHandler {
         // Prepend an explicit system prompt if the server provided one.
         if let Some(system_prompt) = req.system_prompt {
             if !system_prompt.is_empty() {
-                messages.push(crate::common::types::message::LlmMessage::system(
-                    system_prompt,
-                ));
+                messages.push(peko_message::LlmMessage::system(system_prompt));
             }
         }
 
@@ -100,7 +98,7 @@ impl ServerRequestHandler for SamplingRequestHandler {
                 SamplingRole::Assistant => MessageRole::Assistant,
             };
             let content = convert_sampling_content(content);
-            messages.push(crate::common::types::message::LlmMessage {
+            messages.push(peko_message::LlmMessage {
                 role,
                 content: vec![content],
                 timestamp: chrono::Utc::now(),
@@ -255,7 +253,7 @@ mod tests {
         let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog_path).await;
 
         let handler =
-            SamplingRequestHandler::new(resolver, Arc::new(crate::quota::QuotaMeter::unlimited()));
+            SamplingRequestHandler::new(resolver, Arc::new(peko_quota::QuotaMeter::unlimited()));
         let req = CreateMessageRequest {
             messages: vec![SamplingMessage {
                 role: SamplingRole::User,
@@ -326,8 +324,8 @@ mod tests {
         // Build a meter with a high input-token limit so a successful
         // charge is observable via `snapshot()` without tripping.
         let meter = Arc::new(
-            crate::quota::QuotaMeter::load_or_init(
-                crate::quota::QuotaConfig {
+            peko_quota::QuotaMeter::load_or_init(
+                peko_quota::QuotaConfig {
                     input_tokens: Some(1_000_000),
                     ..Default::default()
                 },

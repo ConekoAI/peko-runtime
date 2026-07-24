@@ -142,11 +142,11 @@ mod tests {
     fn test_format_announcement_completed() {
         let run = make_test_view(
             SubagentStatus::Completed {
-                result: crate::tools::ToolResult::success(serde_json::json!({})),
+                result: peko_tools_core::ToolResult::success(serde_json::json!({})),
             },
             Some(SubagentResult {
                 status: SubagentStatus::Completed {
-                    result: crate::tools::ToolResult::success(serde_json::json!({})),
+                    result: peko_tools_core::ToolResult::success(serde_json::json!({})),
                 },
                 output: Some("Success output".to_string()),
                 error: None,

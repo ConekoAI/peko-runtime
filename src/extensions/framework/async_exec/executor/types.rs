@@ -15,7 +15,7 @@
 //!   stay in the framework host; Phase 8 may move the entire executor
 //!   to `peko-extension-host`.
 
-use crate::tools::core::ToolResult;
+use peko_tools_core::ToolResult;
 use serde::{Deserialize, Serialize};
 
 // Re-export the framework-contract types that moved to peko-extension-api

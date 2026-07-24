@@ -1061,7 +1061,7 @@ struct CliPrincipalMemoryFactory {
 impl PrincipalMemoryFactory for CliPrincipalMemoryFactory {
     async fn create(
         &self,
-        _principal_id: &crate::subject::PrincipalId,
+        _principal_id: &peko_subject::PrincipalId,
         workspace_path: &Path,
     ) -> Arc<dyn crate::principal::PrincipalMemory> {
         let name = workspace_path

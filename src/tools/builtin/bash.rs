@@ -19,11 +19,11 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
-use crate::tools::core::{Tool, ToolContext};
 use peko_extension_host::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncResultQueueManager,
 };
 use peko_extension_host::async_exec::AsyncToolConfig;
+use peko_tools_core::{Tool, ToolContext};
 
 /// Platform-specific shell configuration
 #[cfg(unix)]
@@ -697,8 +697,8 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let tool = BashTool::new();
-        let abort = crate::tools::AbortSignal::new();
-        let ctx = crate::tools::ToolContext::for_hook_run_with_abort(
+        let abort = peko_tools_core::AbortSignal::new();
+        let ctx = peko_tools_core::ToolContext::for_hook_run_with_abort(
             "abort_test",
             "Bash",
             "Bash",

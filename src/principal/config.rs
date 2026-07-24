@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::extensions::framework::types::Capabilities;
-use crate::quota::QuotaConfig;
-use crate::subject::PrincipalDID;
 pub use peko_auth::{Exposure, Permission, PermissionGrant};
+use peko_quota::QuotaConfig;
+use peko_subject::PrincipalDID;
 
 /// Persisted live status for a Principal's tunnel instance.
 ///

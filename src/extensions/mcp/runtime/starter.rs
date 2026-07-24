@@ -263,7 +263,7 @@ impl McpRuntimeStarter {
             ctx.resolver.as_ref().map(|resolver| {
                 Arc::new(SamplingRequestHandler::new(
                     Arc::clone(resolver),
-                    Arc::new(crate::quota::QuotaMeter::unlimited()),
+                    Arc::new(peko_quota::QuotaMeter::unlimited()),
                 )) as Arc<dyn ServerRequestHandler>
             });
 

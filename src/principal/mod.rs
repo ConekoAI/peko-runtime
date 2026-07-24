@@ -13,7 +13,6 @@ pub mod routers;
 pub mod slash;
 
 pub use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, Capability};
-pub use crate::quota::QuotaMeter;
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use capability_evaluator::CapabilityEvaluator;
@@ -31,6 +30,7 @@ pub use factory::{
 pub use manager::{PrincipalManager, PrincipalManagerError};
 pub use memory::{MemoryError, PrincipalMemory, SessionArtifact};
 pub use peer::{Peer, PeerConfig, PeerError, PeerRegistry};
+pub use peko_quota::QuotaMeter;
 pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,
     PrincipalRouter, RouteDecision, RouterContext, RouterError,
@@ -45,7 +45,7 @@ use tokio::sync::RwLock;
 // Actor identifiers are sourced from `subject` (the canonical actor module) so
 // `principal` does not own them and `agents` can reach them without depending
 // on `principal` (F3 cycle break).
-use crate::subject::{PrincipalDID, PrincipalId};
+use peko_subject::{PrincipalDID, PrincipalId};
 
 /// Runtime representation of a Principal.
 pub struct Principal {

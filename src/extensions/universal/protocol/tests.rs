@@ -3,8 +3,8 @@
 //! These tests verify the full flow: manifest -> adapter -> protocol -> result
 
 use super::*;
-use crate::tools::core::traits::Tool;
 use peko_extension_host::services::ReservedParamsConfig;
+use peko_tools_core::traits::Tool;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -133,7 +133,7 @@ async fn test_parameter_injection() {
     assert!(manifest.reserved_parameters.contains("agent_id"));
 
     // Verify we can resolve them with a ToolContext
-    let tool_ctx = crate::tools::AbortSignal::new()
+    let tool_ctx = peko_tools_core::AbortSignal::new()
         .create_context("run_1", "tool", "inject_test")
         .with_session_id("sess_123")
         .with_agent_id("agent_456");

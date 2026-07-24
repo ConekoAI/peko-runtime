@@ -20,8 +20,8 @@ use peko_session::InboxRegistry;
 pub fn default_inbox_factory() -> peko_session::InboxFactory {
     Arc::new(|| -> Arc<dyn peko_extension_api::AsyncInboxLike> { Arc::new(SessionInbox::new()) })
 }
-use crate::tools::core::ToolResult;
 use anyhow::Result;
+use peko_tools_core::ToolResult;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1082,8 +1082,8 @@ mod dispatch_tool_tests {
     use super::*;
     use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
     use crate::extensions::framework::async_exec::executor::ToolDispatchContext;
-    use crate::tools::core::Tool;
     use async_trait::async_trait;
+    use peko_tools_core::Tool;
     use std::sync::atomic::AtomicBool;
 
     /// Minimal stub tool used to register an entry in `ExtensionCore`'s

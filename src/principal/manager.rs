@@ -17,7 +17,6 @@ use crate::common::types::OutputFormat;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::observability::Observability;
-use crate::subject::PrincipalDID;
 use peko_auth::ownership::{check_permission, Permission, Resource};
 use peko_auth::Subject;
 use peko_extension_host::SteeringMessage;
@@ -25,6 +24,7 @@ use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
+use peko_subject::PrincipalDID;
 
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
@@ -263,7 +263,7 @@ impl PrincipalManager {
         // needs to swap the meter on the principal.
         let quota_config = config.quota.clone().unwrap_or_default();
         let quota_state_path = workspace_path.join("quota_state.json");
-        let quota_meter = crate::quota::QuotaMeter::load_or_init(
+        let quota_meter = peko_quota::QuotaMeter::load_or_init(
             quota_config,
             Some(quota_state_path),
             chrono::Utc::now(),
@@ -342,7 +342,7 @@ impl PrincipalManager {
         // `QuotaScope::with` at run entrypoint.
         let quota_config = config.quota.clone().unwrap_or_default();
         let quota_state_path = workspace_path.join("quota_state.json");
-        let quota_meter = crate::quota::QuotaMeter::load_or_init(
+        let quota_meter = peko_quota::QuotaMeter::load_or_init(
             quota_config,
             Some(quota_state_path),
             chrono::Utc::now(),
@@ -935,7 +935,7 @@ impl PrincipalManager {
         };
         let key = peko_chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
         let entry = peko_chat_log::ChatLogMessage::new(
-            crate::subject::Subject::Principal(principal.did().await),
+            peko_subject::Subject::Principal(principal.did().await),
             response.to_string(),
             None,
         );

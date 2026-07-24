@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use super::{memory::PrincipalMemory, PrincipalConfig, PrincipalId};
 use peko_providers::LlmResolver;
-// F19: removed `use crate::quota::QuotaMeter;` — the factory no
+// F19: removed `use peko_quota::QuotaMeter;` — the factory no
 // longer threads the meter through to the router.
 
 /// Factory for building a Principal's memory store.

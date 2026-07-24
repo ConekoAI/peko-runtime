@@ -577,9 +577,9 @@ pub async fn export_principal(
 mod tests {
     use super::*;
     use crate::principal::config::PrincipalConfig;
-    use crate::subject::PrincipalDID;
     use peko_identity::did::DIDScope;
     use peko_identity::Identity;
+    use peko_subject::PrincipalDID;
 
     #[test]
     fn test_export_options_default() {

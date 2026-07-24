@@ -28,10 +28,10 @@ use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::observability::Observability;
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
-use crate::subject::PrincipalId;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
+use peko_subject::PrincipalId;
 
 use super::Capabilities;
 
@@ -308,7 +308,7 @@ impl PrincipalContext {
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
     workspace_path: &Path,
-    principal_id: &crate::subject::PrincipalId,
+    principal_id: &peko_subject::PrincipalId,
 ) -> anyhow::Result<()> {
     // Built-in tools.
     let path_resolver = crate::common::paths::PathResolver::new();
@@ -371,7 +371,7 @@ async fn install_principal_tool_bag(
 pub(crate) async fn install_agent_catalog(
     core: &ExtensionCore,
     available_agents: Vec<AgentPromptSummary>,
-    principal_id: &crate::subject::PrincipalId,
+    principal_id: &peko_subject::PrincipalId,
 ) -> anyhow::Result<()> {
     BuiltinToolAdapter::register_tool(
         core,
@@ -386,7 +386,7 @@ mod tests {
     use super::*;
     use crate::principal::memory::DefaultPrincipalMemory;
     use crate::principal::Capabilities;
-    use crate::subject::PrincipalId;
+    use peko_subject::PrincipalId;
     use serial_test::serial;
     use std::sync::Arc;
 

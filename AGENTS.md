@@ -347,45 +347,68 @@ domain size.
 | 8c.1 | Host trait ports + service lift (8b follow-up) | `peko::extensions::framework::{services::*,manager::{packaging,storage},transport::create_transport_shim}` now re-export from `peko_extension_host::{services,manager}::packaging/storage` + relocated `create_transport` to `peko::ipc::create_transport` (no root path breakage; callers migrate in 8c.2; see PR #295) |
 | 8c.2 | Path sweep + framework shim deletion (8b follow-up) | `peko::extensions::framework::{manager::{packaging,storage},services::{config_service,reserved_params,tool_execution,mod},transport::{create_transport_shim,mod},protocols::shared::{process_transport,proxy_utils,validation},async_exec::executor/*}` (see PR #296) |
 | 8a.L | Narrow framework/ tree further (8a leftover pure shims) | `peko::extensions::framework::{integration,protocols,scaffold,skill_catalog}` deleted; live callers in `src/commands/ext.rs`, `src/extensions/skill/{mod.rs,skill_runtime_impl.rs}`, `src/extensions/framework/store.rs` migrated to canonical `peko_extension_host::{scaffold,skill_catalog}` paths (see PR #297) |
-| 9 | Extract `peko-agents` | `peko::agents::*` |
-| 10 | Move remaining built-in tools (non-deferred) into `peko-tools-builtin` | `peko::tools::builtin::*` (excl. bash, tool_search, agent_catalog) |
-| 11 | Extract `peko-registry` | `peko::registry::*` |
-| 12 | Extract `peko-tunnel` + `peko-ipc` | `peko::tunnel::*`, `peko::ipc::*` |
-| 13 | Extract daemon implementation | `peko::daemon::*` |
-| 14 | Extract remaining runtime domains | `peko::observability::*`, `peko::cron::*`, `peko::principal::*` |
+| 9a | Extract `peko-engine` (pure-dependency subset) | `src/engine/{chunker,event_processor,events,execution,state,stream_buffer,stream_orchestrator,tool_stream,parallel_gate,error}` lifted (see PR #254) |
+| 9b.1 | Move `engine::stream_types` into `peko-engine` | `ToolCallInfo` lifted to `peko_message` first (see PR #255) |
+| 9b.N.1 | Lift `engine::async_completion` into `peko-engine` | introduces `AsyncCompletionLike` view trait bridging the duplicate `CompletionEvent` structs Phase 8 left behind (see PR #265) |
+| 9b.N.2 | Lift `engine::tool_runtime` funnel via `ToolFunnel` trait port | trait is transient scaffolding (gone when Phase 8 bulk-moves `ExtensionCore`); unblocks tool_executor/compaction_orchestrator/agentic_loop (see PR #266) |
+| 9b.N.3 | Lift `engine::tool_executor` via `SessionView` trait port | `ToolFunnel` widened to expose `is_parallelizable`/`pre_tool_use`/`post_tool_use`/`execute_tool_via_hook` (see PR #267) |
+| 9b.N.4 | Lift `engine::compaction_orchestrator` via `CompactorBackend` + `SessionView` | 3 new hook-firing methods on `ToolFunnel`; `CompactionEntry::details` widened to `serde_json::Value` for trait-port compat (see PR #268) |
+| 9b.N.5a | `agentic_loop` trait port shims | `AgentView` (12 methods) + `AsyncInboxLike` + `CapabilityDiffTracker` + `ToolFunnel` 3 hook methods (see PR #269) |
+| 9b.N.5b.1-9e | Lift `engine::agentic_loop.rs` into `peko-engine` (split across 9 sub-PRs) | 2,285 prod + 3,182 test lines lifted; `ToolCallBlock`/`ThinkingBlock` → `peko_message`; `tool_search_metadata` re-pointed; `Arc<ExtensionCore>` → `Arc<dyn ToolFunnel>` (see PRs #270-#285) |
+| 10a | Extract filesystem tools (Read/Write/Edit/Glob/Grep) + `expand_tilde` into `peko-tools-builtin` | `HOOK_TIMEOUT` lifted too (see PR #256) |
+| 10b | Extract cron tools + `CronRuntime` port trait | root-side `DaemonCronAdapter` (see PR #257) |
+| 10c | Extract async tools + `AsyncRuntime` port trait | per-agent `Weak<ExtensionCore>` + capabilities snapshot moved into the runtime (see PR #258) |
+| 10d | Extract session/task/skill tools with their port traits (`SessionRuntime`, `TodoRuntime`, `SkillRuntime`) | root-side adapters (see PR #259) |
+| 10e | Extract `AgentTool` + `SubagentRuntime` port into `peko-tools-builtin::messaging` | root owns `SubagentExecutorRuntime` adapter (see PR #260) |
+| 11a | Create `peko-protocol` crate (IPC auth envelope + constants) | bulk `RequestPacket`/`ResponsePacket`/`TunnelMessage` deferred (see PR #261) |
+| 11b | Separate `peko-daemon` binary artifact | surgical `pub(crate)` → `pub` widening for `Daemon`/`DaemonConfig` (see PR #262) |
+| 11c | Route CLI daemon-spawn through `peko-daemon` | `DaemonProcessService::spawn_daemon_with` switches to invoke `peko-daemon` next to `current_exe()` (see PR #263) |
+| 12 | Lift `peko-daemon` into its own crate | daemon internals stay `pub(crate)` from the binary (see PR #264) |
+| 12b | Deterministic workspace dep-graph check | `scripts/check_workspace_deps.py` (see PR #274) |
+| 12c | Root facade intent cleanup | legacy facade cruft removed (see PR #275) |
+| 12 | Foreground switch launches `peko-daemon` binary | CLI `--foreground` re-execs into `peko-daemon` instead of in-process fork (see PR #276) |
+| 13 | Extract remaining runtime domains | `peko::daemon::*` absorbed into `peko-daemon` (PR #264); still pending: `peko::observability::*`, `peko::cron::*`, `peko::principal::*` |
+| 14 | Extract observability + cron + principal | `peko::observability::*`, `peko::cron::*`, `peko::principal::*` |
 | 15 | **Delete pure re-export shims** | `peko::subject::*`, `peko::quota::*`, `peko::tools::core::*`, `peko::common::types::message::*` |
 | 16 | Delete trait-port compat impls | `peko::engine::{agent,async_completion,async_inbox,background_compactor_factory,compaction_backend,extension_core_funnel,provider,session}_view_compat::*` |
 | 17 | Build `peko-engine-test-support` + move engine tests | (no root path breakage; tests relocate) |
 | 18 | Move deferred built-in tools (`BashTool`, `ToolSearchTool`, `AgentCatalog`) + `tool_runtime.rs` | `peko::tools::builtin::bash`, `peko::tools::builtin::tool_search`, `peko::tools::builtin::agent_catalog`, `peko::engine::tool_runtime` |
 
-#### Final crate layout (26 workspace members)
+#### Current crate layout (19 workspace members, 2026-07-24)
 
-- `crates/engine` — agentic loop core.
-- `crates/engine-test-support` — dev-deps-only fixtures for engine tests.
-- `crates/events` — neutral agentic event contract.
-- `crates/extension-api` — extension framework contracts.
-- `crates/extension-host` — extension framework implementation.
-- `crates/message` — neutral message contract.
-- `crates/providers` — concrete provider implementations.
-- `crates/provider-api` — provider contracts.
-- `crates/protocol` — IPC + tunnel wire contracts.
-- `crates/quota` — token quota.
-- `crates/subject` — canonical actor type.
-- `crates/tools-builtin` — concrete built-in tool implementations (incl. bash, tool_search, agent_catalog).
-- `crates/tools-core` — tool API.
-- `crates/agents` — agent lifecycle + subagent execution.
-- `crates/session` — session persistence + compaction.
-- `crates/auth` — authentication/authorization.
-- `crates/identity` — DID identity + key storage.
-- `crates/chat-log` — append-only chat-log storage.
-- `crates/registry` — packaging + registry client + trust store.
-- `crates/tunnel` — tunnel protocol + A2A dispatcher.
-- `crates/ipc` — IPC server + handlers.
-- `crates/observability` — instrumentation.
-- `crates/cron` — persistent cron scheduling.
-- `crates/principal` — principal orchestration.
-- `crates/peko-daemon` (binary + lib) — daemon implementation + entry point.
-- root `peko` (lib + bin) — CLI entry + thin composition only.
+Already extracted (`crates/`):
+
+- `auth` — auth + DID helpers.
+- `chat-log` — append-only chat-log storage.
+- `engine` — agentic loop core (Phase 9 series).
+- `events` — neutral agentic event contract.
+- `extension-api` — extension framework contracts.
+- `extension-host` — extension framework implementation.
+- `fs-persistence` — filesystem persistence helpers.
+- `identity` — DID identity + key storage.
+- `message` — neutral message contract.
+- `peko-daemon` — daemon binary + lib (Phase 12).
+- `protocol` — IPC + tunnel wire contracts (Phase 11a).
+- `provider-api` — provider contracts.
+- `providers` — concrete provider implementations.
+- `quota` — per-principal token quota.
+- `session` — session storage + `InboxRegistry` (Phase 7).
+- `subject` — canonical actor type + identifier newtypes.
+- `tools-builtin` — concrete built-in tool implementations (Phase 10).
+- `tools-core` — tool API.
+
+Root `peko` (lib + bin) — CLI entry + thin composition only.
+
+Planned for later phases (not yet extracted):
+
+- `crates/engine-test-support` — dev-deps-only fixtures for engine tests (Phase 17).
+- `crates/agents` — agent lifecycle + subagent execution (still in root `src/agents/`).
+- `crates/registry` — packaging + registry client + trust store (still in root `src/registry/`).
+- `crates/tunnel` — tunnel protocol + A2A dispatcher (still in root `src/tunnel/`).
+- `crates/ipc` — IPC server + handlers (still in root `src/ipc/`).
+- `crates/observability` — instrumentation (still in root).
+- `crates/cron` — persistent cron scheduling (still in root).
+- `crates/principal` — principal orchestration (still in root).
 
 #### Cleanup invariant
 

@@ -320,19 +320,16 @@ impl McpManager {
     /// `principal_manager`. When the manager isn't configured, or the
     /// principal can't be found, fall back to an unlimited meter so
     /// sampling keeps working without charging.
-    async fn resolve_quota_meter(
-        &self,
-        principal_id: Option<&str>,
-    ) -> Arc<crate::quota::QuotaMeter> {
+    async fn resolve_quota_meter(&self, principal_id: Option<&str>) -> Arc<peko_quota::QuotaMeter> {
         let Some(pm) = &self.principal_manager else {
-            return Arc::new(crate::quota::QuotaMeter::unlimited());
+            return Arc::new(peko_quota::QuotaMeter::unlimited());
         };
         let Some(pid) = principal_id else {
-            return Arc::new(crate::quota::QuotaMeter::unlimited());
+            return Arc::new(peko_quota::QuotaMeter::unlimited());
         };
         match pm.get_by_name(pid).await {
             Some(p) => Arc::clone(&p.quota_meter),
-            None => Arc::new(crate::quota::QuotaMeter::unlimited()),
+            None => Arc::new(peko_quota::QuotaMeter::unlimited()),
         }
     }
 
@@ -900,14 +897,14 @@ impl McpManager {
     ///
     /// # Returns
     /// A vector of `Arc<dyn Tool>` containing all MCP tools from running servers
-    pub async fn get_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
+    pub async fn get_tools(&self) -> Vec<Arc<dyn peko_tools_core::Tool>> {
         use crate::extensions::mcp::runtime::{
             injectable_proxy::InjectableMcpToolProxy, tool_proxy::McpToolProxy,
         };
 
         let servers = self.servers.read().await;
         let manager_arc = Arc::new(RwLock::new(self.clone()));
-        let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+        let mut tools: Vec<Arc<dyn peko_tools_core::Tool>> = Vec::new();
 
         for (server_name, handle) in servers.iter() {
             if !handle.state.running || !handle.state.healthy {
@@ -929,7 +926,7 @@ impl McpManager {
             };
 
             for tool in server_tools {
-                let proxy: Arc<dyn crate::tools::Tool> = if has_reserved {
+                let proxy: Arc<dyn peko_tools_core::Tool> = if has_reserved {
                     // Use InjectableMcpToolProxy to inject reserved params
                     Arc::new(InjectableMcpToolProxy::new(
                         server_name.clone(),

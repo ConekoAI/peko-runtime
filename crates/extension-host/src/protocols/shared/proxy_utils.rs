@@ -4,7 +4,7 @@
 //! with consistent context handling, abort/timeout checks, and progress reporting.
 
 // Phase 8c.1.C: lift from `src/extensions/framework/protocols/shared/proxy_utils.rs`.
-// The root file used `crate::tools::core::{ToolContext, ToolError}`. Those types live
+// The root file used `peko_tools_core::{ToolContext, ToolError}`. Those types live
 // in `peko_tools_core` (re-exported at crate root), so the canonical home is
 // `peko_tools_core::{ToolContext, ToolError}`.
 use peko_tools_core::{ToolContext, ToolError};

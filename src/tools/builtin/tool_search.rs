@@ -45,8 +45,8 @@ use std::sync::Weak;
 
 use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::types::ToolExposure;
-use crate::tools::core::Tool;
-use crate::tools::ToolError;
+use peko_tools_core::Tool;
+use peko_tools_core::ToolError;
 
 // Phase 9b.N.5b.9d: the four data-only constants/functions lifted to
 // `peko_tools_builtin::tool_search_metadata`. Re-exported here for
@@ -151,7 +151,7 @@ impl Tool for ToolSearchTool {
         // principal's grants — typically wide-open for built-ins. A
         // per-principal refinement (track the calling principal on the
         // tool) is a follow-up if a use case materializes.
-        let principal_id = crate::subject::PrincipalId::system();
+        let principal_id = peko_subject::PrincipalId::system();
         let matched = core
             .list_deferred_tool_definitions(principal_id, query, limit_usize)
             .await;
@@ -195,7 +195,7 @@ mod tests {
         use crate::extensions::framework::core::handler::HookHandler;
         use crate::extensions::framework::core::HookContext;
         use crate::extensions::framework::types::{HookOutput, HookResult};
-        use crate::subject::PrincipalId;
+        use peko_subject::PrincipalId;
 
         #[derive(Debug)]
         struct NoopHandler;

@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use crate::quota::{QuotaConfig, QuotaMeter, QuotaState};
+use peko_quota::{QuotaConfig, QuotaMeter, QuotaState};
 
 /// Errors that `PeerRegistry` can return. Mirrors the shape of
 /// [`PrincipalManagerError`](super::manager::PrincipalManagerError)
@@ -477,7 +477,7 @@ mod tests {
                 input_tokens: Some(1000),
                 output_tokens: None,
                 request_count: None,
-                cycle: crate::quota::QuotaCycle::Daily,
+                cycle: peko_quota::QuotaCycle::Daily,
             },
         )
         .await
@@ -499,10 +499,10 @@ mod tests {
             input_tokens: Some(1000),
             output_tokens: None,
             request_count: None,
-            cycle: crate::quota::QuotaCycle::Daily,
+            cycle: peko_quota::QuotaCycle::Daily,
         });
         peer.quota_meter
-            .charge(&crate::common::types::message::TokenUsage {
+            .charge(&peko_message::TokenUsage {
                 input: 50,
                 output: 0,
                 total: 50,

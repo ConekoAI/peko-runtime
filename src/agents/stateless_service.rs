@@ -15,15 +15,15 @@
 use crate::agents::Agent;
 use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
-use crate::common::types::message::LlmMessage;
 use crate::engine::AgenticEvent;
 use peko_auth::Subject;
+use peko_message::LlmMessage;
 use peko_providers::TokenUsage;
 use peko_session::manager::SessionManager;
 use peko_session::types::ChannelType;
 // Note: Session storage uses jsonl module directly
-use crate::common::types::message::ContentBlock;
 use anyhow::{Context, Result};
+use peko_message::ContentBlock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

@@ -14,10 +14,10 @@
 use crate::extensions::framework::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
 use crate::extensions::framework::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
 use crate::extensions::framework::HookResult;
-use crate::subject::PrincipalId;
-use crate::tools::{Tool, ToolInterruptNotice};
 use anyhow::Result;
 use async_trait::async_trait;
+use peko_subject::PrincipalId;
+use peko_tools_core::{Tool, ToolInterruptNotice};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -149,7 +149,7 @@ impl BuiltinToolAdapter {
     }
 
     /// Register a single global built-in tool under
-    /// [`PrincipalId::system`](crate::subject::PrincipalId::system).
+    /// [`PrincipalId::system`](peko_subject::PrincipalId::system).
     ///
     /// This is the canonical call shape for the daemon-init path: built-ins
     /// are visible to every principal and registered exactly once on the
@@ -419,7 +419,7 @@ impl HookHandler for BuiltinExecuteHandler {
         // Build the ToolContext once so both the watcher task and the exec
         // closure share the same abort receiver / identity fields.
         let base_ctx =
-            crate::tools::ToolContext::for_hook_run("hook_run", "hook", &tool_name_for_ctx)
+            peko_tools_core::ToolContext::for_hook_run("hook_run", "hook", &tool_name_for_ctx)
                 .with_agent_id(runtime_ctx.agent_id.clone().unwrap_or_default())
                 .with_session_id(runtime_ctx.session_id.clone().unwrap_or_default())
                 .with_workspace(runtime_ctx.workspace.clone().unwrap_or_default())
@@ -929,7 +929,7 @@ mod tests {
     async fn cancel_fires_custom_on_interrupt_when_tool_opts_in() {
         use crate::extensions::framework::core::{HookContext, HookPoint};
         use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
-        use crate::tools::{ToolContext, ToolInterruptNotice};
+        use peko_tools_core::{ToolContext, ToolInterruptNotice};
         use std::time::Duration;
 
         struct EnrichingMockTool;
@@ -1031,7 +1031,7 @@ mod tests {
     async fn on_interrupt_performs_actual_cleanup_of_tool_state() {
         use crate::extensions::framework::core::{HookContext, HookPoint};
         use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
-        use crate::tools::{ToolContext, ToolInterruptNotice};
+        use peko_tools_core::{ToolContext, ToolInterruptNotice};
         use std::sync::Mutex as StdMutex;
         use std::time::Duration;
 

@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 
-use crate::common::types::message::LlmMessage;
 use crate::observability::Observability;
+use peko_message::LlmMessage;
 use peko_session::InboxRegistry;
 
 /// A routing decision emitted by a `PrincipalRouter`.
@@ -237,7 +237,7 @@ pub enum RouterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::types::message::{ContentBlock, MessageRole};
+    use peko_message::{ContentBlock, MessageRole};
 
     #[test]
     fn test_recalled_context_messages_empty() {
