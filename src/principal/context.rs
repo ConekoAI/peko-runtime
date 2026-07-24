@@ -394,16 +394,27 @@ mod tests {
     /// Phase-2 redo there is no per-principal core; the global core
     /// is shared across principals and the principal's tool bag is
     /// installed on first call via `install_principal_tool_bag`.
+    ///
+    /// The assertion is intentionally relaxed: the global core may
+    /// have been pre-populated by a previous test that ran in the
+    /// same process. Both outcomes prove the singleton semantics —
+    /// `core()` returns *whatever* the daemon-global is, never a
+    /// fresh per-call instance.
     #[tokio::test]
-    #[serial]
+    #[serial(global_core_lock)]
     async fn core_returns_global_singleton() {
         let dir = tempfile::tempdir().unwrap();
         let memory: Arc<dyn PrincipalMemory> =
             Arc::new(DefaultPrincipalMemory::new(dir.path().to_path_buf()));
 
-        // Initialise the global core for this test.
-        let core = Arc::new(crate::extensions::framework::ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(Arc::clone(&core));
+        // Initialise the global core for this test, then read it back
+        // through `ctx.core()` and confirm pointer identity. If another
+        // test in this binary already populated the global (the only
+        // valid state in our process-shared design), accept that too —
+        // the singleton semantics are still proven because `core()`
+        // returns the daemon-global, not a fresh instance.
+        let our_core = Arc::new(crate::extensions::framework::ExtensionCore::new());
+        crate::extensions::framework::core::init_global_core(Arc::clone(&our_core));
 
         let ctx = PrincipalContext::new(
             dir.path().to_path_buf(),
@@ -420,8 +431,13 @@ mod tests {
             PrincipalId::generate(),
         );
 
-        let a = ctx.core().await;
-        assert!(Arc::ptr_eq(&a, &core));
+        let returned = ctx.core().await;
+        let global = crate::extensions::framework::core::global_core()
+            .expect("we just initialized the global");
+        assert!(
+            Arc::ptr_eq(&returned, &global),
+            "ctx.core() must return the same Arc as global_core()"
+        );
     }
 
     /// `set_root_prompt` is idempotent — once a principal's root
