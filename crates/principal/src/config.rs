@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::extensions::framework::types::Capabilities;
+use peko_auth::host::PrincipalResourceView;
+use peko_extension_api::Capabilities;
 pub use peko_auth::{Exposure, Permission, PermissionGrant};
 use peko_quota::QuotaConfig;
 use peko_subject::PrincipalDID;
@@ -257,7 +258,7 @@ mod tests {
         assert_eq!(cfg.preferred_model_id, None);
         assert_eq!(
             cfg.transport_preference,
-            crate::principal::config::TransportPreference::Auto
+            super::TransportPreference::Auto
         );
     }
 
@@ -277,7 +278,7 @@ mod tests {
             status: None,
             permissions: Vec::new(),
             preferred_model_id: None,
-            transport_preference: crate::principal::config::TransportPreference::Tunnel,
+            transport_preference: super::TransportPreference::Tunnel,
             quota: None,
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
@@ -289,7 +290,7 @@ mod tests {
         let back: PrincipalConfig = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(
             back.transport_preference,
-            crate::principal::config::TransportPreference::Tunnel
+            super::TransportPreference::Tunnel
         );
     }
 
@@ -311,7 +312,7 @@ mod tests {
             status: None,
             permissions: Vec::new(),
             preferred_model_id: Some("ollama-llama3.1".into()),
-            transport_preference: crate::principal::config::TransportPreference::Direct,
+            transport_preference: super::TransportPreference::Direct,
             quota: None,
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
@@ -328,7 +329,7 @@ mod tests {
         assert_eq!(back.preferred_model_id.as_deref(), Some("ollama-llama3.1"));
         assert_eq!(
             back.transport_preference,
-            crate::principal::config::TransportPreference::Direct
+            super::TransportPreference::Direct
         );
     }
 
@@ -437,5 +438,54 @@ mod tests {
             .capabilities
             .is_granted(&"agent:agency-agents/writer".into()));
         assert!(!cfg.capabilities.is_granted(&"agent:other/writer".into()));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `PrincipalResourceView` impl for `PrincipalConfig`
+// ---------------------------------------------------------------------------
+
+/// `PrincipalConfig` exposes the four fields
+/// `auth::ownership::principal_resource` needs to build an
+/// `auth::Resource::Principal` value.
+///
+/// ## Why a trait port and not a direct function in principal
+///
+/// The original code had `auth::ownership::principal_resource(name,
+/// &PrincipalConfig)` taking the principal concrete type. That
+/// creates a `peko-auth ↔ peko-principal` cycle when both become
+/// workspace crates. The trait port in `peko-auth::host` flips the
+/// direction — auth declares the contract, principal implements it
+/// here.
+///
+/// ## Orphan rule note
+///
+/// This impl lives in `peko-principal` (not root) because both
+/// `PrincipalResourceView` and `PrincipalConfig` are foreign types
+/// from root's perspective. The trait is local to `peko_auth`, the
+/// type is local to `peko_principal`, so the impl belongs here.
+///
+/// Note: this is the *opposite* direction from the `peko-auth →
+/// peko-principal` import that used to live in
+/// `auth::ownership::Resource::Principal`'s `exposure` field. The
+/// `Exposure` enum used to live in `crate::principal::config` and
+/// was imported by auth. To break the cycle, `Exposure` was lifted
+/// into `peko-auth` (its natural home as part of `Resource`), and
+/// `PrincipalConfig.exposure` is now typed as `peko_auth::Exposure`.
+impl PrincipalResourceView for PrincipalConfig {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn owner(&self) -> &peko_auth::Subject {
+        &self.owner
+    }
+
+    fn permissions(&self) -> &[peko_auth::PermissionGrant] {
+        &self.permissions
+    }
+
+    fn exposure(&self) -> peko_auth::Exposure {
+        self.exposure
     }
 }

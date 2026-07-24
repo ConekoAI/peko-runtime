@@ -15,7 +15,8 @@ use peko_message::LlmMessage;
 use peko_session::manager::SessionManager;
 use peko_session::SessionCreateOptions;
 
-use super::{agent_prompt::AgentPrompt, Capabilities};
+use peko_extension_api::Capabilities;
+use peko_principal::agent_prompt::AgentPrompt;
 
 /// Build an `AgentConfig` from a thin Markdown prompt + the Principal's
 /// allowed extensions.

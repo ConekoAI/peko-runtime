@@ -24,7 +24,7 @@
 //! Rust's orphan rule forbids `impl ForeignTrait for ForeignType` in a
 //! third crate. These traits live in `peko-auth`, but the
 //! implementing types (`crate::common::paths::PathResolver`,
-//! `crate::principal::config::PrincipalConfig`) live in root. The
+//! `peko_principal::config::PrincipalConfig`) live in root. The
 //! implementations live in root's `src/auth_compat.rs`, with the
 //! local-type side satisfying the orphan rule.
 //!
@@ -69,7 +69,7 @@ pub trait RuntimePaths: Send + Sync + 'static {
 /// Network exposure level for a Principal (persisted in
 /// `principal.toml`).
 ///
-/// This used to live in `crate::principal::config::Exposure` and was
+/// This used to live in `peko_principal::config::Exposure` and was
 /// imported by `auth::Resource::Principal` to fill the `exposure`
 /// field. Moving it to `peko-auth` makes `Resource` self-contained
 /// (no inbound dep from peko-auth to peko-principal) and lets
@@ -103,7 +103,7 @@ impl std::fmt::Display for Exposure {
 /// `auth::ownership::principal_resource` needs to build a
 /// `Resource::Principal`.
 ///
-/// Implementor is `crate::principal::config::PrincipalConfig` in
+/// Implementor is `peko_principal::config::PrincipalConfig` in
 /// root. The trait port breaks the
 /// `peko-auth ↔ peko-principal` cycle: auth does not import the
 /// concrete `PrincipalConfig`; principal implements the trait in root.

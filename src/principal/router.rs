@@ -3,8 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 
+use peko_extension_api::Capabilities;
 use peko_message::LlmMessage;
 use peko_observability::Observability;
+use peko_principal::config::{
+    PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
+};
 use peko_session::InboxRegistry;
 
 /// A routing decision emitted by a `PrincipalRouter`.
@@ -69,12 +73,12 @@ pub struct RouterContext {
     /// The raw user message text.
     pub message: String,
     pub channel: ChannelContext,
-    pub routing: super::PrincipalRoutingConfig,
+    pub routing: PrincipalRoutingConfig,
     pub recalled_context: Vec<ContextInjection>,
     pub available_agents: Vec<AgentPromptSummary>,
-    pub capabilities: super::Capabilities,
-    pub intent: super::PrincipalIntentConfig,
-    pub governance: super::PrincipalGovernanceConfig,
+    pub capabilities: Capabilities,
+    pub intent: PrincipalIntentConfig,
+    pub governance: PrincipalGovernanceConfig,
     /// Per-principal snapshot of all detected extensions/agents and their
     /// authority state.
     pub extension_store: super::ExtensionCatalog,

@@ -1,26 +1,29 @@
-pub mod agent_prompt;
+// Phase 14.c.1: 5 lifted files moved to `peko-principal` (config, peer,
+// memory, factory, agent_prompt). Their canonical home is now
+// `peko_principal::*` and the `pub mod X;` declarations below for those
+// files were removed. Root callers of `crate::principal::*` for
+// `PrincipalConfig`, `PrincipalMemory`, `PeerRegistry`, etc. migrate
+// to `peko_principal::*` paths in this PR.
+//
+// The runtime-coupled files (manager, context, extension_store,
+// agent_runner, capability_evaluator, routers, slash) stay in root
+// and will lift in Phase 14.c.2 once their root-only deps
+// (ExtensionCore, PathResolver, OutputFormat, ExtensionSummary)
+// are port-trait-shaped.
+
 pub mod agent_runner;
 pub mod capability_evaluator;
-pub mod config;
 pub mod context;
 pub mod extension_store;
 pub mod factory;
 pub mod manager;
-pub mod memory;
-pub mod peer;
 pub mod router;
 pub mod routers;
 pub mod slash;
 
 pub use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, Capability};
-pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use capability_evaluator::CapabilityEvaluator;
-pub use config::{
-    AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig,
-    PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-    PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
-};
 pub use context::PrincipalContext;
 pub use extension_store::{ExtensionCatalog, ExtensionCatalogItem};
 pub use factory::{
@@ -28,9 +31,6 @@ pub use factory::{
     PrincipalMemoryFactory, PrincipalRouterFactory,
 };
 pub use manager::{PrincipalManager, PrincipalManagerError};
-pub use memory::{MemoryError, PrincipalMemory, SessionArtifact};
-pub use peer::{Peer, PeerConfig, PeerError, PeerRegistry};
-pub use peko_quota::QuotaMeter;
 pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,
     PrincipalRouter, RouteDecision, RouterContext, RouterError,
@@ -46,6 +46,13 @@ use tokio::sync::RwLock;
 // `principal` does not own them and `agents` can reach them without depending
 // on `principal` (F3 cycle break).
 use peko_subject::{PrincipalDID, PrincipalId};
+// Phase 14.c.1: pure-deps types lifted into `peko-principal` (config,
+// peer, memory, factory, agent_prompt). The runtime-coupled files in
+// root that compose a `Principal` (manager, context, extension_store,
+// agent_runner, capability_evaluator, routers, slash) continue to
+// live alongside the `Principal` struct definition here, so they
+// reach for the same DTOs.
+use peko_principal::{AgentPrompt, PrincipalConfig, PrincipalMemory, QuotaMeter};
 
 /// Runtime representation of a Principal.
 pub struct Principal {
@@ -128,7 +135,7 @@ pub struct PrincipalSummary {
     pub owner: peko_auth::Subject,
     pub description: Option<String>,
     pub exposure: peko_auth::Exposure,
-    pub status: Option<crate::principal::config::Status>,
+    pub status: Option<peko_principal::config::Status>,
     pub preferred_model_id: Option<String>,
     pub capabilities: Capabilities,
     pub agent_prompt_count: usize,

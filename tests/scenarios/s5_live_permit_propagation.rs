@@ -131,7 +131,7 @@ fn write_principal(cli: &PekoCli, principal_name: &str, mock_llm_url: &str) {
         .join(principal_name)
         .join("principal.toml");
     let raw = std::fs::read_to_string(&principal_toml).expect("read principal.toml");
-    let mut cfg: peko::principal::config::PrincipalConfig =
+    let mut cfg: peko_principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
     cfg.owner = peko_auth::Subject::User("local".into());
     std::fs::write(

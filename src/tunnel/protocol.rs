@@ -51,13 +51,13 @@ impl From<peko_auth::Exposure> for InstanceExposure {
     }
 }
 
-impl From<crate::principal::config::Status> for InstanceStatus {
-    fn from(s: crate::principal::config::Status) -> Self {
+impl From<peko_principal::config::Status> for InstanceStatus {
+    fn from(s: peko_principal::config::Status) -> Self {
         match s {
-            crate::principal::config::Status::Online => Self::Online,
-            crate::principal::config::Status::Offline => Self::Offline,
-            crate::principal::config::Status::Busy => Self::Busy,
-            crate::principal::config::Status::Error => Self::Error,
+            peko_principal::config::Status::Online => Self::Online,
+            peko_principal::config::Status::Offline => Self::Offline,
+            peko_principal::config::Status::Busy => Self::Busy,
+            peko_principal::config::Status::Error => Self::Error,
         }
     }
 }

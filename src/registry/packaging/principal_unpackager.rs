@@ -6,7 +6,7 @@
 use crate::common::paths::PathResolver;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
-use crate::principal::config::PrincipalConfig;
+use peko_principal::config::PrincipalConfig;
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
@@ -794,7 +794,7 @@ fn validate_package_for_principal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::config::PrincipalConfig;
+    use peko_principal::config::PrincipalConfig;
     use crate::registry::packaging::principal_packager::{
         PrincipalExportOptions, PrincipalPackager,
     };

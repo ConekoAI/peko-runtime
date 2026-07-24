@@ -16,10 +16,10 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use async_trait::async_trait;
 
 use crate::engine::AgenticEvent;
-use crate::principal::agent_prompt::{parse_agent_prompt, AgentPrompt};
+use peko_principal::agent_prompt::{parse_agent_prompt, AgentPrompt};
 use crate::principal::agent_runner::{run_root_agent_prompt, run_root_agent_prompt_streaming};
 use crate::principal::context::PrincipalContext;
-use crate::principal::memory::{PrincipalMemory, SessionArtifact};
+use peko_principal::memory::{PrincipalMemory, SessionArtifact};
 use crate::principal::router::{
     recalled_context_messages, AgentPromptSummary, PrincipalRouter, RouteDecision, RouterContext,
     RouterError,

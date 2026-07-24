@@ -283,7 +283,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
 //
 // The workspace boundary rule "src/agents/ must NOT import from
 // src/principal/" forbids this module from calling
-// `crate::principal::agent_prompt::load_agent_prompt`. The
+// `peko_principal::agent_prompt::load_agent_prompt`. The
 // implementation below is a self-contained copy of that parser
 // (frontmatter + body). Keep the two implementations in sync; a
 // future phase will lift agent-prompt parsing into a shared module.

@@ -49,7 +49,7 @@
 use anyhow::Context;
 use peko::extensions::framework::store::ExtensionStore;
 use peko::extensions::skill::SkillAdapter;
-use peko::principal::config::PrincipalConfig;
+use peko_principal::config::PrincipalConfig;
 use peko::registry::packaging::{
     PrincipalExportOptions, PrincipalImportOptions, PrincipalManifest, PrincipalPackager,
     PrincipalUnpackager,

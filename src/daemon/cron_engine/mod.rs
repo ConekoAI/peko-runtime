@@ -632,9 +632,12 @@ mod tests {
     use crate::engine::tool_runtime::ToolRuntime;
     use crate::extensions::framework::core::init_global_core;
     use crate::principal::{
-        Capabilities, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
+        DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalManager,
+    };
+    use peko_extension_api::Capabilities;
+    use peko_principal::config::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-        PrincipalManager, PrincipalMemoryConfig, PrincipalRoutingConfig,
+        PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
     use chrono::{Duration, Utc};
     use peko_auth::Exposure;

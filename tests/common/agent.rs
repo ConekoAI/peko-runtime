@@ -126,7 +126,7 @@ pub fn create_mock_principal_with_tools(
         .join(name)
         .join("principal.toml");
     let raw = std::fs::read_to_string(&path).expect("read principal.toml");
-    let mut cfg: peko::principal::config::PrincipalConfig =
+    let mut cfg: peko_principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
     cfg.capabilities.extend(tools.iter().map(|t| {
         if t.contains(':') {

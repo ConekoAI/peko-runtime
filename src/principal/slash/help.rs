@@ -5,7 +5,7 @@ use crate::common::types::OutputFormat;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::{Capabilities, Capability};
 use crate::ipc::packet::ExtensionSummary;
-use crate::principal::config::PrincipalConfig;
+use peko_principal::config::PrincipalConfig;
 use crate::principal::Principal;
 use anyhow::Result;
 use peko_extension_host::services::Services as ExtensionServices;

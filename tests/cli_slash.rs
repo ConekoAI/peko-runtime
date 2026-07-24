@@ -101,7 +101,7 @@ fn allow_extension(cli: &PekoCli, principal_name: &str, ext_id: &str) {
         .join(principal_name)
         .join("principal.toml");
     let raw = std::fs::read_to_string(&path).expect("read principal.toml");
-    let mut cfg: peko::principal::config::PrincipalConfig =
+    let mut cfg: peko_principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
     cfg.capabilities.push(format!("skill:{ext_id}"));
     std::fs::write(
