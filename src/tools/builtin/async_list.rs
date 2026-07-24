@@ -12,16 +12,15 @@ pub use peko_tools_builtin::async_control::AsyncListTool;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::async_exec::executor::{AsyncTaskEntry, AsyncTaskStatus};
     use crate::tools::ToolResult;
+    use peko_extension_host::async_exec::executor::{AsyncTaskEntry, AsyncTaskStatus};
     use peko_tools_core::traits::Tool;
     use serde_json::json;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn test_async_list_empty() {
-        let runtime =
-            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        let runtime = Arc::new(peko_extension_host::async_exec::executor::TestAsyncRuntime::new());
         let tool = AsyncListTool::new(runtime.as_shared());
         let result = tool.execute(json!({})).await.unwrap();
         assert_eq!(result["total"], 0);
@@ -30,34 +29,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_list_with_filters() {
-        let runtime =
-            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
-        runtime.insert(
-            crate::extensions::framework::async_exec::executor::TestTaskEntry {
-                task_id: "Bash:test-1".to_string(),
-                tool_name: "Bash".to_string(),
-                status: "completed".to_string(),
-                parent_session_key: "session_1".to_string(),
-                created_at: chrono::Utc::now(),
-                completed_at: None,
-                result: Some(json!({"done": true})),
-                label: None,
-                metadata_type: "none".to_string(),
-            },
-        );
-        runtime.insert(
-            crate::extensions::framework::async_exec::executor::TestTaskEntry {
-                task_id: "Agent:test-2".to_string(),
-                tool_name: "Agent".to_string(),
-                status: "pending".to_string(),
-                parent_session_key: "session_1".to_string(),
-                created_at: chrono::Utc::now(),
-                completed_at: None,
-                result: None,
-                label: None,
-                metadata_type: "none".to_string(),
-            },
-        );
+        let runtime = Arc::new(peko_extension_host::async_exec::executor::TestAsyncRuntime::new());
+        runtime.insert(peko_extension_host::async_exec::executor::TestTaskEntry {
+            task_id: "Bash:test-1".to_string(),
+            tool_name: "Bash".to_string(),
+            status: "completed".to_string(),
+            parent_session_key: "session_1".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+            result: Some(json!({"done": true})),
+            label: None,
+            metadata_type: "none".to_string(),
+        });
+        runtime.insert(peko_extension_host::async_exec::executor::TestTaskEntry {
+            task_id: "Agent:test-2".to_string(),
+            tool_name: "Agent".to_string(),
+            status: "pending".to_string(),
+            parent_session_key: "session_1".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+            result: None,
+            label: None,
+            metadata_type: "none".to_string(),
+        });
 
         let tool = AsyncListTool::new(runtime.as_shared());
 

@@ -19,11 +19,11 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
-use crate::extensions::framework::async_exec::executor::{
+use crate::tools::core::{Tool, ToolContext};
+use peko_extension_host::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncResultQueueManager,
 };
-use crate::extensions::framework::async_exec::AsyncToolConfig;
-use crate::tools::core::{Tool, ToolContext};
+use peko_extension_host::async_exec::AsyncToolConfig;
 
 /// Platform-specific shell configuration
 #[cfg(unix)]

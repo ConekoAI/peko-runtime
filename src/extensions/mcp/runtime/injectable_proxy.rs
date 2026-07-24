@@ -18,12 +18,12 @@
 //! api_key = { source = "vault", namespace = "mcp:my-server", name = "default" }
 //! ```
 
-use crate::extensions::framework::protocols::shared::proxy_utils::execute_with_context_handling;
-use crate::extensions::framework::services::ReservedParamsConfig;
 use crate::extensions::mcp::protocol::types::Tool as McpTool;
 use crate::extensions::mcp::runtime::tool_proxy::McpToolProxy;
 use crate::tools::{Tool, ToolContext};
 use async_trait::async_trait;
+use peko_extension_host::protocols::shared::proxy_utils::execute_with_context_handling;
+use peko_extension_host::services::ReservedParamsConfig;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -121,7 +121,7 @@ impl InjectableMcpToolProxy {
     ///
     /// Uses the shared schema filter for consistency with Universal Tools.
     fn filter_schema(schema: &Value, reserved: &ReservedParamsConfig) -> Value {
-        use crate::extensions::framework::protocols::shared::filter_reserved_params;
+        use peko_extension_host::protocols::shared::schema_filter::filter_reserved_params;
         use std::collections::HashSet;
 
         let reserved_set: HashSet<String> = reserved.names().cloned().collect();
@@ -158,15 +158,14 @@ impl InjectableMcpToolProxy {
             // so callers don't have to switch to the trait-object form.
             let vault: Option<&dyn peko_extension_host::vault::VaultAccess> =
                 vault.map(|v| v as &dyn peko_extension_host::vault::VaultAccess);
-            let value =
-                crate::extensions::framework::services::reserved_params::resolve_reserved_params(
-                    &self.reserved_params,
-                    ctx,
-                    vault,
-                )
-                .get(name)
-                .cloned()
-                .unwrap_or(Value::Null);
+            let value = peko_extension_host::services::reserved_params::resolve_reserved_params(
+                &self.reserved_params,
+                ctx,
+                vault,
+            )
+            .get(name)
+            .cloned()
+            .unwrap_or(Value::Null);
             trace!("Injecting reserved param '{}' = {:?}", name, value);
             obj.insert(name.clone(), value);
         }
@@ -328,12 +327,11 @@ mod tests {
             .with_runtime("peer_id", "peer_id")
             .with_static("static_val", "hardcoded");
 
-        let resolved =
-            crate::extensions::framework::services::reserved_params::resolve_reserved_params(
-                &config,
-                Some(&ctx),
-                None,
-            );
+        let resolved = peko_extension_host::services::reserved_params::resolve_reserved_params(
+            &config,
+            Some(&ctx),
+            None,
+        );
 
         assert_eq!(resolved.get("agent_id"), Some(&json!("agent_456")));
         assert_eq!(resolved.get("session_id"), Some(&json!("sess_123")));
@@ -347,10 +345,9 @@ mod tests {
             .with_runtime("agent_id", "agent_id")
             .with_static("static_val", "hardcoded");
 
-        let resolved =
-            crate::extensions::framework::services::reserved_params::resolve_reserved_params(
-                &config, None, None,
-            );
+        let resolved = peko_extension_host::services::reserved_params::resolve_reserved_params(
+            &config, None, None,
+        );
 
         // Without context, runtime params resolve to null
         assert_eq!(resolved.get("agent_id"), Some(&json!(null)));

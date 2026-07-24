@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 // Re-export shared types for convenience
-pub use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
+pub use peko_extension_host::services::{ParamSource, ReservedParamsConfig};
 
 /// Tool manifest with reserved parameter support
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,7 +153,7 @@ impl Manifest {
     /// preventing confusion and security issues.
     #[must_use]
     pub fn exposed_parameters(&self) -> Value {
-        use crate::extensions::framework::protocols::shared::filter_reserved_params;
+        use peko_extension_host::protocols::shared::schema_filter::filter_reserved_params;
         use std::collections::HashSet;
 
         let reserved: HashSet<String> = self.reserved_param_names().into_iter().cloned().collect();
@@ -187,7 +187,7 @@ impl Manifest {
     /// 1. All required exposed parameters are present
     /// 2. No reserved parameters are present (they should be injected)
     pub fn validate_params(&self, params: &Value) -> anyhow::Result<()> {
-        use crate::extensions::framework::protocols::shared::validation;
+        use peko_extension_host::protocols::shared::validation;
         use std::collections::HashSet;
 
         let reserved: HashSet<String> = self.reserved_param_names().into_iter().cloned().collect();

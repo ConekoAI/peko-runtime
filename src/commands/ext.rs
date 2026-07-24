@@ -8,10 +8,10 @@
 use crate::commands::mcp;
 use crate::commands::GlobalPaths;
 use crate::extensions::framework::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
-use crate::extensions::framework::services::{ConfigScope, ExtensionConfigService};
 use crate::ipc::client_service::DaemonClientService;
 use crate::registry::client::ProgressEvent;
 use clap::Subcommand;
+use peko_extension_host::services::{ConfigScope, ExtensionConfigService};
 use std::path::PathBuf;
 
 /// Extension management subcommands
@@ -538,12 +538,10 @@ pub fn prepare_install_path(path: &std::path::Path) -> anyhow::Result<std::path:
         );
         std::fs::create_dir_all(&temp_dir)?;
         let extracted =
-            crate::extensions::framework::manager::packaging::ExtensionUnpackager::install(
-                path, &temp_dir,
-            )
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to extract .ext package '{}': {}", path.display(), e)
-            })?;
+            peko_extension_host::manager::packaging::ExtensionUnpackager::install(path, &temp_dir)
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to extract .ext package '{}': {}", path.display(), e)
+                })?;
         Ok(extracted)
     } else {
         Ok(path.to_path_buf())

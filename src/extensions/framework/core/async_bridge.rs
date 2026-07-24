@@ -40,12 +40,12 @@
 //! let cancelled = adapter.cancel("my_tool", &receipt.task_id).await?;
 //! ```
 
-use crate::extensions::framework::async_exec::executor::{
-    AsyncExecutor, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, WaitResult,
-};
 use crate::extensions::framework::core::{ExtensionCore, HookPointBuilder};
 use crate::extensions::framework::types::{AsyncReceipt, HookInput, HookOutput, HookResult};
 use anyhow::{anyhow, Result};
+use peko_extension_host::async_exec::executor::{
+    AsyncExecutor, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, WaitResult,
+};
 
 use serde_json::{json, Value};
 use std::collections::HashMap;

@@ -170,7 +170,7 @@ async fn add_cmd(
         max_restarts: 0,
         init_timeout_secs: 30,
         tool_timeout_secs: 60,
-        reserved_parameters: crate::extensions::framework::services::ReservedParamsConfig::new(),
+        reserved_parameters: peko_extension_host::services::ReservedParamsConfig::new(),
         bundle: false,
         bundled_path: None,
         auth,

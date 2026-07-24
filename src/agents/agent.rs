@@ -1402,8 +1402,7 @@ impl Agent {
             Arc::clone(reg)
         } else {
             Arc::new(peko_session::InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                peko_extension_host::async_exec::executor::executor::default_inbox_factory(),
             ))
         };
         let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
@@ -1411,7 +1410,7 @@ impl Agent {
 
         // 2. Per-call AsyncExecutor wired to the same registry.
         let async_executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
+            peko_extension_host::async_exec::executor::AsyncExecutor::new()
                 .with_inbox_registry(async_inbox_registry.clone()),
         );
 
@@ -1440,7 +1439,7 @@ impl Agent {
             // can take just an `Arc<dyn AsyncRuntime>` rather than
             // reaching into the framework itself.
             let runtime = Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime::new(
+                peko_extension_host::async_exec::executor::AsyncExecutorRuntime::new(
                     async_executor,
                     core_weak,
                     Some(self.identity.did.clone()),

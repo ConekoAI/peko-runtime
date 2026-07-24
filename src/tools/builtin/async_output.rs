@@ -15,22 +15,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_output_tail_lines_string_result() {
-        let runtime =
-            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        let runtime = Arc::new(peko_extension_host::async_exec::executor::TestAsyncRuntime::new());
         let result_value = json!("line1\nline2\nline3\nline4\nline5");
-        runtime.insert(
-            crate::extensions::framework::async_exec::executor::TestTaskEntry {
-                task_id: "Bash:string-result".to_string(),
-                tool_name: "Bash".to_string(),
-                status: "completed".to_string(),
-                parent_session_key: "session_1".to_string(),
-                created_at: chrono::Utc::now(),
-                completed_at: Some(chrono::Utc::now()),
-                result: Some(result_value),
-                label: None,
-                metadata_type: "none".to_string(),
-            },
-        );
+        runtime.insert(peko_extension_host::async_exec::executor::TestTaskEntry {
+            task_id: "Bash:string-result".to_string(),
+            tool_name: "Bash".to_string(),
+            status: "completed".to_string(),
+            parent_session_key: "session_1".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            result: Some(result_value),
+            label: None,
+            metadata_type: "none".to_string(),
+        });
 
         let tool = AsyncOutputTool::new(runtime.as_shared());
         let result = tool
@@ -46,25 +43,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_output_tail_lines_object_with_stdout() {
-        let runtime =
-            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        let runtime = Arc::new(peko_extension_host::async_exec::executor::TestAsyncRuntime::new());
         let result_value = json!({
             "stdout": "line1\nline2\nline3",
             "exit_code": 0
         });
-        runtime.insert(
-            crate::extensions::framework::async_exec::executor::TestTaskEntry {
-                task_id: "Bash:obj-result".to_string(),
-                tool_name: "Bash".to_string(),
-                status: "completed".to_string(),
-                parent_session_key: "session_1".to_string(),
-                created_at: chrono::Utc::now(),
-                completed_at: Some(chrono::Utc::now()),
-                result: Some(result_value),
-                label: None,
-                metadata_type: "none".to_string(),
-            },
-        );
+        runtime.insert(peko_extension_host::async_exec::executor::TestTaskEntry {
+            task_id: "Bash:obj-result".to_string(),
+            tool_name: "Bash".to_string(),
+            status: "completed".to_string(),
+            parent_session_key: "session_1".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            result: Some(result_value),
+            label: None,
+            metadata_type: "none".to_string(),
+        });
 
         let tool = AsyncOutputTool::new(runtime.as_shared());
         let result = tool
@@ -81,22 +75,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_output_tail_lines_unknown_shape_passthrough() {
-        let runtime =
-            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        let runtime = Arc::new(peko_extension_host::async_exec::executor::TestAsyncRuntime::new());
         let result_value = json!({"count": 42});
-        runtime.insert(
-            crate::extensions::framework::async_exec::executor::TestTaskEntry {
-                task_id: "Bash:unknown-shape".to_string(),
-                tool_name: "Bash".to_string(),
-                status: "completed".to_string(),
-                parent_session_key: "session_1".to_string(),
-                created_at: chrono::Utc::now(),
-                completed_at: Some(chrono::Utc::now()),
-                result: Some(result_value),
-                label: None,
-                metadata_type: "none".to_string(),
-            },
-        );
+        runtime.insert(peko_extension_host::async_exec::executor::TestTaskEntry {
+            task_id: "Bash:unknown-shape".to_string(),
+            tool_name: "Bash".to_string(),
+            status: "completed".to_string(),
+            parent_session_key: "session_1".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            result: Some(result_value),
+            label: None,
+            metadata_type: "none".to_string(),
+        });
 
         let tool = AsyncOutputTool::new(runtime.as_shared());
         let result = tool
@@ -112,22 +103,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_output_tail_lines_zero_passthrough() {
-        let runtime =
-            Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        let runtime = Arc::new(peko_extension_host::async_exec::executor::TestAsyncRuntime::new());
         let result_value = json!("line1\nline2\nline3\nline4\nline5");
-        runtime.insert(
-            crate::extensions::framework::async_exec::executor::TestTaskEntry {
-                task_id: "Bash:zero".to_string(),
-                tool_name: "Bash".to_string(),
-                status: "completed".to_string(),
-                parent_session_key: "session_1".to_string(),
-                created_at: chrono::Utc::now(),
-                completed_at: Some(chrono::Utc::now()),
-                result: Some(result_value),
-                label: None,
-                metadata_type: "none".to_string(),
-            },
-        );
+        runtime.insert(peko_extension_host::async_exec::executor::TestTaskEntry {
+            task_id: "Bash:zero".to_string(),
+            tool_name: "Bash".to_string(),
+            status: "completed".to_string(),
+            parent_session_key: "session_1".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            result: Some(result_value),
+            label: None,
+            metadata_type: "none".to_string(),
+        });
 
         let tool = AsyncOutputTool::new(runtime.as_shared());
         let result = tool.execute(json!({"task_id": "Bash:zero"})).await.unwrap();

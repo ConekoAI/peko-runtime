@@ -27,7 +27,7 @@ use std::collections::HashMap;
 /// `CompletionEvent` struct. Two structurally-identical types exist
 /// side-by-side because the Phase 8 split moved one copy to
 /// `peko-extension-host` (`peko_extension_host::CompletionEvent`)
-/// while `crate::extensions::framework::async_exec::executor::completion_queue::CompletionEvent`
+/// while `peko_extension_host::async_exec::executor::completion_queue::CompletionEvent`
 /// remains the legacy root-owned copy. Both implement this trait so the
 /// synthesis function works against either path without forcing the
 /// agentic loop to convert. Consolidating the two structs into one is
@@ -123,7 +123,7 @@ fn truncate_for_preview(text: &str) -> String {
 /// Generic over [`AsyncCompletionLike`] so the function works against
 /// `peko_extension_host::CompletionEvent` (used directly in
 /// `crates/engine` tests) and the legacy root-owned
-/// `crate::extensions::framework::async_exec::executor::completion_queue::CompletionEvent`
+/// `peko_extension_host::async_exec::executor::completion_queue::CompletionEvent`
 /// (drained by `src/engine/agentic_loop.rs` from
 /// `SharedSessionInbox`). Both are structurally identical.
 pub fn build_async_completion_message<E: AsyncCompletionLike>(

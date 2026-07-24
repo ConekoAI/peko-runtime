@@ -7,9 +7,6 @@
 use crate::common::json_utils::json_subset;
 use crate::cron::events::SystemEvent;
 use crate::cron::{CronJob, CronJobAction, CronRun, CronScheduler, DeliveryMode, IdleDetector};
-use crate::extensions::framework::async_exec::executor::{
-    AsyncExecutor, AsyncTaskStatus, AsyncToolConfig,
-};
 use crate::extensions::framework::core::ExtensionCore;
 use crate::observability::Observability;
 use crate::principal::manager::PrincipalManager;
@@ -18,6 +15,7 @@ use crate::tools::core::ToolResult;
 use anyhow::Result;
 use chrono::Utc;
 use peko_auth::caller::CallerContext;
+use peko_extension_host::async_exec::executor::{AsyncExecutor, AsyncTaskStatus, AsyncToolConfig};
 use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -456,13 +454,12 @@ impl CronEngine {
         // CancellationToken into `run_spawn_tool_job` and switch to
         // `dispatch_tool_with_signal`. The funnel is mandatory now,
         // which is the F38 invariant we care about.
-        let context =
-            crate::extensions::framework::async_exec::executor::ToolDispatchContext::builder(
-                tool_name.clone(),
-                tool_params.clone(),
-                principal_root_session_key.clone(),
-            )
-            .for_principal(snapshot_principal_id, snapshot_capabilities);
+        let context = peko_extension_host::async_exec::executor::ToolDispatchContext::builder(
+            tool_name.clone(),
+            tool_params.clone(),
+            principal_root_session_key.clone(),
+        )
+        .for_principal(snapshot_principal_id, snapshot_capabilities);
 
         let receipt = executor.dispatch_tool(&core, context, config).await?;
 
@@ -872,14 +869,13 @@ mod tests {
         // Build a CronEngine with an executor whose registry holds a
         // terminal entry for `shell:abc`.
         let async_executor = Arc::new(AsyncExecutor::new());
-        let mut entry =
-            crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
-                "shell:abc".to_string(),
-                "Bash".to_string(),
-                serde_json::json!({"command": "echo done"}),
-                "session_worker_1".to_string(),
-                AsyncToolConfig::default(),
-            );
+        let mut entry = peko_extension_host::async_exec::executor::registry::AsyncTaskEntry::new(
+            "shell:abc".to_string(),
+            "Bash".to_string(),
+            serde_json::json!({"command": "echo done"}),
+            "session_worker_1".to_string(),
+            AsyncToolConfig::default(),
+        );
         entry.set_result(serde_json::json!("done"));
         async_executor.registry().write().await.register(entry);
         // Mark the entry as Completed so reconcile treats it as terminal.

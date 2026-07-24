@@ -140,7 +140,7 @@ pub(crate) struct AppState {
     extension_store: Arc<ExtensionStore>,
 
     /// Extension services for built-in extension operations
-    extension_services: Arc<crate::extensions::framework::services::Services>,
+    extension_services: Arc<peko_extension_host::services::Services>,
 
     /// Shutdown broadcast channel - send () to trigger graceful shutdown
     shutdown_tx: Arc<broadcast::Sender<()>>,
@@ -706,9 +706,9 @@ impl AppState {
                 e
             );
         }
-        let extension_services = Arc::new(
-            crate::extensions::framework::services::Services::with_core(Arc::clone(&global_core)),
-        );
+        let extension_services = Arc::new(peko_extension_host::services::Services::with_core(
+            Arc::clone(&global_core),
+        ));
 
         // Observability hub is constructed early so it can be shared with the
         // PrincipalManager and threaded through to subagent spawn audit events.
@@ -1149,7 +1149,7 @@ impl AppState {
 
     /// Get the extension services
     #[must_use]
-    pub fn extension_services(&self) -> &Arc<crate::extensions::framework::services::Services> {
+    pub fn extension_services(&self) -> &Arc<peko_extension_host::services::Services> {
         &self.extension_services
     }
 

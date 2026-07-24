@@ -12,11 +12,11 @@
 
 use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter};
 use crate::extensions::framework::core::ExtensionCore;
-pub use crate::extensions::framework::manager::storage::ExtensionStorage;
+pub use peko_extension_host::manager::storage::ExtensionStorage;
 
-use crate::extensions::framework::manager::discovery::{discovery_paths, DiscoveredExtension};
 use crate::extensions::framework::types::HookId;
 use anyhow::{Context, Result};
+use peko_extension_host::manager::discovery::{discovery_paths, DiscoveredExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
