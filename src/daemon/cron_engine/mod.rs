@@ -5,8 +5,8 @@
 //! lifecycle and shutdown.
 
 use crate::common::json_utils::json_subset;
-use crate::cron::events::SystemEvent;
-use crate::cron::{CronJob, CronJobAction, CronRun, CronScheduler, DeliveryMode, IdleDetector};
+use peko_cron::events::SystemEvent;
+use peko_cron::{CronJob, CronJobAction, CronRun, CronScheduler, DeliveryMode, IdleDetector};
 use crate::extensions::framework::core::ExtensionCore;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::router::{ChannelContext, ChannelKind};
@@ -111,7 +111,7 @@ impl CronEngine {
 
     /// Check for idle-triggered jobs and execute if conditions are met.
     pub async fn check_idle(&self) -> Result<()> {
-        use crate::cron::ScheduleKind;
+        use peko_cron::ScheduleKind;
 
         let idle_jobs = self.scheduler.idle_jobs(false)?;
         if idle_jobs.is_empty() {
@@ -143,7 +143,7 @@ impl CronEngine {
 
     /// Handle a system event and trigger matching event-triggered jobs.
     pub async fn handle_event(&self, event: SystemEvent) -> Result<()> {
-        use crate::cron::ScheduleKind;
+        use peko_cron::ScheduleKind;
 
         let event_type = event.event_type().to_string();
         debug!("Handling system event: {}", event_type);
@@ -784,7 +784,7 @@ mod tests {
             id: "job-1".to_string(),
             name: "test-job".to_string(),
             principal_name: "crony".to_string(),
-            schedule: crate::cron::ScheduleKind::Every { every_ms: 60_000 },
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::Send {
                 message: "Hello from cron".to_string(),
             },
@@ -832,7 +832,7 @@ mod tests {
             id: "job-recon".to_string(),
             name: "recon-job".to_string(),
             principal_name: "crony".to_string(),
-            schedule: crate::cron::ScheduleKind::Every { every_ms: 60_000 },
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::SpawnTool {
                 tool_name: "Agent".to_string(),
                 tool_params: serde_json::json!({"prompt": "ping"}),
@@ -935,7 +935,7 @@ mod tests {
             id: "job-vanished".to_string(),
             name: "vanished".to_string(),
             principal_name: "crony".to_string(),
-            schedule: crate::cron::ScheduleKind::Every { every_ms: 60_000 },
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::SpawnTool {
                 tool_name: "Bash".to_string(),
                 tool_params: serde_json::json!({}),

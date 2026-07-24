@@ -238,8 +238,13 @@ pub mod principal;
 // Infrastructure
 // ============================================================================
 
-// [extract:phase-14] peko-cron
-pub(crate) mod cron;
+// [extract:phase-14] peko-cron — DONE (PR #301, 2026-07-24):
+// 4 root files moved to `crates/cron/src/{lib,events,idle,event_trigger}.rs`.
+// `daemon_adapter.rs` relocated to `src/daemon/cron_runtime.rs` because it
+// depends on root-only `crate::ipc::{DaemonClient, ResponsePacket}`.
+// Callers in commands/cron, ipc/handlers/cron, daemon/state, and
+// daemon/mod import from `peko_cron::*` and `crate::daemon::cron_runtime::*`
+// directly.
 
 // [extract:phase-13] peko-daemon (impl crate)
 //

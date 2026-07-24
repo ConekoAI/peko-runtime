@@ -2399,6 +2399,7 @@ dependencies = [
  "once_cell",
  "peko-auth",
  "peko-chat-log",
+ "peko-cron",
  "peko-engine",
  "peko-events",
  "peko-extension-api",
@@ -2488,6 +2489,23 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "peko-cron"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "cron",
+ "peko-tools-builtin",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",

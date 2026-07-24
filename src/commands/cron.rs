@@ -6,8 +6,8 @@
 //! owner permissions.
 
 use crate::commands::GlobalPaths;
-use crate::cron::{CronJob, CronJobAction, DeliveryMode, ScheduleKind};
 use crate::ipc::{DaemonClient, ResponsePacket};
+use peko_cron::{CronJob, CronJobAction, DeliveryMode, ScheduleKind};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Subcommand;
@@ -243,7 +243,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             let client = connect_daemon().await?;
 
             // Validate cron expression (normalize 5-field to 7-field for the cron crate)
-            let normalized = crate::cron::normalize_cron_expr(&schedule);
+            let normalized = peko_cron::normalize_cron_expr(&schedule);
             let _ = cron::Schedule::from_str(&normalized)
                 .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
 
@@ -263,7 +263,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             };
 
             // Compute next run
-            let next_run = crate::cron::calculate_next_run(&schedule_kind, Utc::now())?;
+            let next_run = peko_cron::calculate_next_run(&schedule_kind, Utc::now())?;
 
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
@@ -372,7 +372,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             let schedule_kind = ScheduleKind::Every {
                 every_ms: interval_ms,
             };
-            let next_run = crate::cron::calculate_next_run(&schedule_kind, Utc::now())?;
+            let next_run = peko_cron::calculate_next_run(&schedule_kind, Utc::now())?;
 
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),

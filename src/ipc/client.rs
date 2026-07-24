@@ -227,7 +227,7 @@ impl DaemonClient {
     }
 
     /// Add a cron job
-    pub async fn cron_add(&self, job: crate::cron::CronJob) -> anyhow::Result<ResponsePacket> {
+    pub async fn cron_add(&self, job: peko_cron::CronJob) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::CronAdd { request_id, job };
         let mut stream = self.send_request(packet).await?;
