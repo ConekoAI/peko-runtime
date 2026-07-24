@@ -655,9 +655,10 @@ mod tests {
     /// handles schema validation, preprocessor, and exec-fn dispatch the
     /// same way it always has.
     fn make_test_core() -> Arc<crate::extensions::framework::core::ExtensionCore> {
-        let router = crate::extensions::framework::transport::async_router::AsyncExecutionRouter::with_transport(
-            crate::extensions::framework::transport::async_transport::create_local_transport(),
-        );
+        let router =
+            peko_extension_host::transport::async_router::AsyncExecutionRouter::with_transport(
+                peko_extension_host::transport::async_transport::create_local_transport(),
+            );
         let services = crate::extensions::framework::core::ExtensionServices::with_async_router(
             Arc::new(router),
         );

@@ -36,6 +36,11 @@ pub mod core;
 pub mod integration;
 pub mod scaffold;
 pub mod skill_catalog;
+// Phase 8c.1.D.2: ExtensionStore trait port + the data types its
+// methods return. The concrete `ExtensionStore` impl stays in root
+// (it depends on root-only adapters + storage + ExtensionCore); the
+// host owns the trait contract + pure-data types.
+pub mod store;
 pub mod tool_funnel_impl;
 pub mod types;
 

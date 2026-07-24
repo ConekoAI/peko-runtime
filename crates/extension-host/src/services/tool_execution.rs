@@ -39,8 +39,12 @@
 //! ).await?;
 //! ```
 
-use crate::services::reserved_params::ReservedParamsConfig;
+// Phase 8c.1.D.3: lift from `src/extensions/framework/services/tool_execution.rs`.
+// Root used `crate::extensions::framework::services::reserved_params::ReservedParamsConfig`
+// and `crate::tools::core::ToolContext`. Both types live in workspace crates now:
+// the config in `peko_extension_api`, the context in `peko_tools_core`.
 use anyhow::Result;
+use peko_extension_api::reserved_params::ReservedParamsConfig;
 use peko_tools_core::ToolContext;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -321,6 +325,10 @@ impl ToolExecutionService {
     /// Filtered schema without reserved parameters
     #[must_use]
     pub fn filter_schema_for_llm(&self, schema: &Value, reserved: &ReservedParamsConfig) -> Value {
+        // Phase 8c.1.D.3: `filter_reserved_params` lives at
+        // `crate::protocols::shared::schema_filter` (lifted in Phase 8b.2).
+        // Use the crate-internal path; the root crate aliases it to
+        // `peko_extension_host::protocols::shared::schema_filter` for callers.
         use crate::protocols::shared::schema_filter::filter_reserved_params;
 
         let reserved_set: HashSet<String> = reserved.names().cloned().collect();
@@ -379,7 +387,8 @@ impl ToolExecutionConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::reserved_params::ReservedParamsConfig;
+    // Phase 8c.1.D.3: import path moves to peko_extension_api.
+    use peko_extension_api::reserved_params::ReservedParamsConfig;
     use serde_json::json;
 
     #[tokio::test]

@@ -47,7 +47,9 @@ use peko_tools_builtin::async_control::{
     AsyncRuntime, CancelResult as PortCancelResult, SharedAsyncRuntime, SpawnReceipt, SpawnRequest,
     TaskView, WaitResult,
 };
-#[cfg(test)]
+// Phase 8c.1.A: gated on `test-utils` so external root tests can construct
+// `TestAsyncRuntime` via the host's `test-utils` feature flag.
+#[cfg(any(test, feature = "test-utils"))]
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -224,13 +226,18 @@ impl AsyncRuntime for AsyncExecutorRuntime {
 /// framework's `AsyncTaskRegistry`. Supports manual status flips so
 /// tests can simulate terminal states (`completed`, `failed`, etc.)
 /// without running a real `AsyncExecutor`.
-#[cfg(test)]
+///
+/// Gated `#[cfg(any(test, feature = "test-utils"))]` so external test
+/// crates (root `src/tools/builtin/async_*.rs`) can construct it via
+/// the host's `test-utils` feature, not just host-internal tests.
+/// (Phase 8c.1.A)
+#[cfg(any(test, feature = "test-utils"))]
 pub struct TestAsyncRuntime {
     map: std::sync::Mutex<HashMap<String, TestTaskEntry>>,
 }
 
 /// In-memory task entry for `TestAsyncRuntime` tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[derive(Clone)]
 pub struct TestTaskEntry {
     pub task_id: String,
@@ -244,7 +251,7 @@ pub struct TestTaskEntry {
     pub metadata_type: String,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 impl TestAsyncRuntime {
     /// Build an empty test runtime.
     #[must_use]
@@ -255,28 +262,28 @@ impl TestAsyncRuntime {
     }
 
     /// Insert a task entry directly.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn insert(&self, entry: TestTaskEntry) {
         let mut map = self.map.lock().unwrap();
         map.insert(entry.task_id.clone(), entry);
     }
 
     /// Convert into a shared trait handle for built-in tools.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn as_shared(self: Arc<Self>) -> SharedAsyncRuntime {
         self as Arc<dyn AsyncRuntime>
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 impl Default for TestAsyncRuntime {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[async_trait]
 impl AsyncRuntime for TestAsyncRuntime {
     async fn spawn(&self, _request: SpawnRequest) -> Result<SpawnReceipt> {
