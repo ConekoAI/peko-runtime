@@ -6,7 +6,7 @@
 //! All metadata mutations go through the `MetadataController`, which is the
 //! sole authority for session metadata operations.
 
-use crate::session::index::SessionEntry;
+use crate::index::SessionEntry;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Immutable session metadata
@@ -254,7 +254,7 @@ impl ReconciliationResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn test_metadata_new() {

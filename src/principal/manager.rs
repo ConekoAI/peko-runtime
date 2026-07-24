@@ -17,7 +17,6 @@ use crate::common::types::OutputFormat;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::observability::Observability;
-use crate::session::InboxRegistry;
 use crate::subject::PrincipalDID;
 use peko_auth::ownership::{check_permission, Permission, Resource};
 use peko_auth::Subject;
@@ -25,6 +24,7 @@ use peko_extension_host::SteeringMessage;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
 use peko_providers::LlmResolver;
+use peko_session::InboxRegistry;
 
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
@@ -122,7 +122,10 @@ impl PrincipalManager {
             memory_factory,
             router_factory,
             resolver: None,
-            inbox_registry: Arc::new(InboxRegistry::new()),
+            inbox_registry: Arc::new(InboxRegistry::new(
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
+            )),
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
             slash_dispatcher: Arc::new(RwLock::new(None)),
             extension_store: None,
@@ -565,7 +568,7 @@ impl PrincipalManager {
         &self,
         principal_id: &PrincipalId,
     ) -> (
-        Arc<crate::session::InboxRegistry>,
+        Arc<peko_session::InboxRegistry>,
         Arc<tokio::sync::Mutex<()>>,
     ) {
         let lock = self.session_creation_lock(principal_id.clone()).await;
@@ -787,7 +790,9 @@ impl PrincipalManager {
             }
             None => {
                 let inbox = self.inbox_registry.get_or_create(&session_id).await;
-                inbox.push(SteeringMessage::new(ctx.message.clone()));
+                inbox
+                    .push(SteeringMessage::new(ctx.message.clone()).into())
+                    .await;
                 let queued = format!("Queued for root agent session {session_id}.");
                 self.record_response(&principal, &response_peer, &queued)
                     .await;
@@ -861,7 +866,9 @@ impl PrincipalManager {
             }
             None => {
                 let inbox = self.inbox_registry.get_or_create(&session_id).await;
-                inbox.push(SteeringMessage::new(ctx.message.clone()));
+                inbox
+                    .push(SteeringMessage::new(ctx.message.clone()).into())
+                    .await;
                 let queued = format!("Queued for root agent session {session_id}.");
                 self.record_response(&principal, &response_peer, &queued)
                     .await;

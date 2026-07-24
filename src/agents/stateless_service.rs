@@ -17,10 +17,10 @@ use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
 use crate::common::types::message::LlmMessage;
 use crate::engine::AgenticEvent;
-use crate::session::manager::SessionManager;
-use crate::session::types::ChannelType;
 use peko_auth::Subject;
 use peko_providers::TokenUsage;
+use peko_session::manager::SessionManager;
+use peko_session::types::ChannelType;
 // Note: Session storage uses jsonl module directly
 use crate::common::types::message::ContentBlock;
 use anyhow::{Context, Result};
@@ -207,8 +207,10 @@ pub struct StatelessAgentService {
     default_timeout: Duration,
     /// Execution metrics
     metrics: RwLock<ExecutionMetrics>,
-    /// Path resolver for agent data paths
-    path_resolver: PathResolver,
+    /// Path resolver for agent data paths (lifted to `peko_session`'s
+    /// `PathResolverLike` trait so the daemon-global `SessionManager`
+    /// can hold it without depending on root's concrete `PathResolver`).
+    path_resolver: Arc<dyn peko_subject::PathResolverLike>,
     /// v3 LLM resolver. Required in production (every `peko send`
     /// goes through `LlmResolver::build`); may be `None` only in
     /// offline unit tests that don't exercise the LLM path.
@@ -240,6 +242,10 @@ impl StatelessAgentService {
         config_service: Arc<ConfigAuthorityImpl>,
         path_resolver: PathResolver,
     ) -> Result<Self> {
+        let path_resolver: Arc<dyn peko_subject::PathResolverLike> =
+            Arc::new(peko_session::DefaultPathResolver::with_data_dir(
+                path_resolver.data_dir().to_path_buf(),
+            ));
         Self::new_with_resolver(config_service, path_resolver, None).await
     }
 
@@ -252,7 +258,7 @@ impl StatelessAgentService {
     /// tests that don't exercise the LLM call path.
     pub async fn new_with_resolver(
         config_service: Arc<ConfigAuthorityImpl>,
-        path_resolver: PathResolver,
+        path_resolver: Arc<dyn peko_subject::PathResolverLike>,
         resolver: Option<Arc<peko_providers::LlmResolver>>,
     ) -> Result<Self> {
         let service = Self {
@@ -562,7 +568,7 @@ impl StatelessAgentService {
                     .caller_principal
                     .clone()
                     .unwrap_or_else(|| Subject::User(request.user.clone()));
-                let options = crate::session::SessionCreateOptions::new()
+                let options = peko_session::SessionCreateOptions::new()
                     .with_trigger("api")
                     .with_session_id(&request.session_id);
                 let handle = session_manager
@@ -835,7 +841,7 @@ impl StatelessAgentService {
                     .caller_principal
                     .clone()
                     .unwrap_or_else(|| Subject::User(request.user.clone()));
-                let options = crate::session::SessionCreateOptions::new()
+                let options = peko_session::SessionCreateOptions::new()
                     .with_trigger("api")
                     .with_session_id(&request.session_id);
                 let handle = session_manager
@@ -858,7 +864,7 @@ impl StatelessAgentService {
     async fn execute_streaming_with_session(
         &self,
         request: ExecutionRequest,
-        session: Arc<RwLock<crate::session::unified::Session>>,
+        session: Arc<RwLock<peko_session::unified::Session>>,
     ) -> Result<crate::engine::EventStream> {
         let message = match request.caller_agent.as_deref() {
             Some(caller) if !caller.is_empty() => {
@@ -1017,7 +1023,7 @@ impl StatelessAgentService {
     }
 
     /// Run a new agentic loop for an existing session whose
-    /// [`crate::session::InboxRegistry`] has just received a steering
+    /// [`peko_session::InboxRegistry`] has just received a steering
     /// message. The handler (`ipc::server::handle_session_steer`)
     /// pushes the steering item into the registry's inbox, acquires
     /// the per-session run permit, and calls this method.
@@ -1038,9 +1044,9 @@ impl StatelessAgentService {
     ///   post-drain `messages` check (no `User` role → no LLM call).
     pub async fn run_session_on_inbox(
         &self,
-        session: Arc<RwLock<crate::session::Session>>,
-        inbox_registry: Arc<crate::session::InboxRegistry>,
-        run_permit: crate::session::RunPermitGuard,
+        session: Arc<RwLock<peko_session::Session>>,
+        inbox_registry: Arc<peko_session::InboxRegistry>,
+        run_permit: peko_session::RunPermitGuard,
         caller_id: Option<String>,
     ) -> Result<crate::engine::EventStream> {
         let session_id = session.read().await.id.clone();
@@ -1122,7 +1128,7 @@ impl StatelessAgentService {
     /// (including `ToolCall` and `ToolResult` blocks), instead of the lossy normalized format.
     async fn load_session_history(
         &self,
-        session: Arc<RwLock<crate::session::Session>>,
+        session: Arc<RwLock<peko_session::Session>>,
     ) -> Result<Vec<LlmMessage>> {
         let messages = session.read().await.load_history().await?;
         Ok(messages)

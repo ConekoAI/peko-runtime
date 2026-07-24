@@ -15,12 +15,12 @@
 //! - **SRP**: Only conversion logic, no persistence or I/O
 //! - **DRY**: Single source of truth for all message format conversions
 
-use crate::common::types::message::ContentBlock;
-use crate::common::types::message::{LlmMessage, MessageRole};
-use crate::session::events::SessionEvent;
+use crate::events::SessionEvent;
 #[cfg(test)]
-use crate::session::events::SessionMessage;
-use crate::session::NormalizedEntry;
+use crate::events::SessionMessage;
+use crate::jsonl::NormalizedEntry;
+use peko_message::ContentBlock;
+use peko_message::{LlmMessage, MessageRole};
 
 /// Convert a `SessionEvent` to an `LlmMessage`
 ///
@@ -29,7 +29,7 @@ use crate::session::NormalizedEntry;
 ///
 /// Uses the unified `as_message()` method to support both the new `MessageV2`
 /// format and all legacy formats seamlessly.
-pub(crate) fn event_to_llm_message(event: &SessionEvent) -> Option<LlmMessage> {
+pub fn event_to_llm_message(event: &SessionEvent) -> Option<LlmMessage> {
     // Use unified conversion for all message types (handles MessageV2 and legacy)
     if let Some(msg) = event.as_message() {
         return Some(msg.to_llm_message());
@@ -76,7 +76,7 @@ pub(crate) fn normalized_entry_to_llm_message(entry: &NormalizedEntry) -> Option
 /// Convert a slice of `NormalizedEntry` to context text
 ///
 /// This function extracts text content from normalized entries for LLM context.
-pub(crate) fn entries_to_context_text(entries: &[NormalizedEntry]) -> String {
+pub fn entries_to_context_text(entries: &[NormalizedEntry]) -> String {
     let mut context = String::new();
 
     for entry in entries {
@@ -115,8 +115,8 @@ pub(crate) fn entries_to_context_text(entries: &[NormalizedEntry]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::session::events::{EventEnvelope, MessageSource, SessionCreatedEvent};
+    use crate::events::{EventEnvelope, MessageSource, SessionCreatedEvent};
+    use crate::*;
     use chrono::Utc;
 
     #[test]
@@ -152,7 +152,7 @@ mod tests {
             instance_id: "instance-1".to_string(),
             image_digest: "sha256:abc".to_string(),
             parent_session_id: None,
-            trigger: crate::session::events::SessionTrigger::User,
+            trigger: crate::events::SessionTrigger::User,
             envelope: EventEnvelope {
                 id: "test-4".to_string(),
                 ts: Utc::now(),

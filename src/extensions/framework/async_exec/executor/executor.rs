@@ -10,7 +10,16 @@ use super::types::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget, WaitResult,
 };
 use crate::extensions::framework::core::ExtensionCore;
-use crate::session::InboxRegistry;
+use peko_extension_host::SessionInbox;
+use peko_session::InboxRegistry;
+
+/// Default `InboxFactory` used by [`AsyncExecutor::new`] and
+/// [`AsyncExecutor::with_registries`] when the caller doesn't
+/// supply one. Constructs an empty `SessionInbox` per session key.
+#[must_use]
+pub fn default_inbox_factory() -> peko_session::InboxFactory {
+    Arc::new(|| -> Arc<dyn peko_extension_api::AsyncInboxLike> { Arc::new(SessionInbox::new()) })
+}
 use crate::tools::core::ToolResult;
 use anyhow::Result;
 use serde_json::Value;
@@ -76,7 +85,7 @@ impl AsyncExecutor {
             deliveries: Arc::new(RwLock::new(HashMap::new())),
             default_delivery: DeliveryTarget::AsyncQueue,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
-            inbox_registry: Arc::new(InboxRegistry::new()),
+            inbox_registry: Arc::new(InboxRegistry::new(default_inbox_factory())),
         }
     }
 
@@ -95,7 +104,7 @@ impl AsyncExecutor {
             deliveries: Arc::new(RwLock::new(HashMap::new())),
             default_delivery: DeliveryTarget::AsyncQueue,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
-            inbox_registry: Arc::new(InboxRegistry::new()),
+            inbox_registry: Arc::new(InboxRegistry::new(default_inbox_factory())),
         }
     }
 
@@ -425,7 +434,9 @@ impl AsyncExecutor {
                             &status,
                         );
                     let inbox = inbox_registry.get_or_create(&target).await;
-                    inbox.push(InboxItem::Steering(SteeringMessage::new(text)));
+                    inbox
+                        .push(InboxItem::Steering(SteeringMessage::new(text)).into())
+                        .await;
                 } else {
                     let event = CompletionEvent {
                         task_id: task_id_clone.clone(),
@@ -439,7 +450,7 @@ impl AsyncExecutor {
                     let inbox = inbox_registry
                         .get_or_create(&parent_session_key_for_completion)
                         .await;
-                    inbox.push(InboxItem::Completion(event));
+                    inbox.push(InboxItem::Completion(event).into()).await;
                 }
             }
         });
@@ -802,12 +813,14 @@ impl Default for AsyncExecutor {
 #[cfg(test)]
 mod completion_queue_fan_out_tests {
     use super::*;
-    use crate::session::InboxRegistry;
+    use peko_session::InboxRegistry;
     use std::sync::Arc;
     use std::time::Duration;
 
     fn make_executor_with_registry() -> (AsyncExecutor, Arc<InboxRegistry>) {
-        let registry = Arc::new(InboxRegistry::new());
+        let registry = Arc::new(InboxRegistry::new(
+            super::super::executor::default_inbox_factory(),
+        ));
         let exec = AsyncExecutor::new().with_inbox_registry(registry.clone());
         (exec, registry)
     }
@@ -838,13 +851,13 @@ mod completion_queue_fan_out_tests {
         let items = inbox.drain_all().await;
         assert_eq!(items.len(), 1, "expected one completion event");
         match &items[0] {
-            InboxItem::Completion(e) => {
+            peko_extension_api::AsyncInboxItem::Completion(e) => {
                 assert_eq!(e.task_id, task_id);
                 assert_eq!(e.tool_name, "shell");
                 assert_eq!(e.parent_session_key, "session_1");
                 assert!(matches!(e.status, AsyncTaskStatus::Completed { .. }));
             }
-            other => panic!("expected InboxItem::Completion, got {other:?}"),
+            other => panic!("expected AsyncInboxItem::Completion, got {other:?}"),
         }
     }
 
@@ -877,10 +890,10 @@ mod completion_queue_fan_out_tests {
                 let items = inbox.drain_all().await;
                 assert_eq!(items.len(), 1);
                 match &items[0] {
-                    InboxItem::Completion(e) => {
+                    peko_extension_api::AsyncInboxItem::Completion(e) => {
                         assert!(matches!(e.status, AsyncTaskStatus::Failed { .. }));
                     }
-                    other => panic!("expected InboxItem::Completion, got {other:?}"),
+                    other => panic!("expected AsyncInboxItem::Completion, got {other:?}"),
                 }
                 return;
             }
@@ -926,7 +939,7 @@ mod completion_queue_fan_out_tests {
         let items_a = inbox_a.drain_all().await;
         assert_eq!(items_a.len(), 1);
         match &items_a[0] {
-            InboxItem::Completion(e) => assert_eq!(e.task_id, task_a),
+            peko_extension_api::AsyncInboxItem::Completion(e) => assert_eq!(e.task_id, task_a),
             other => panic!("expected Completion, got {other:?}"),
         }
 
@@ -934,7 +947,7 @@ mod completion_queue_fan_out_tests {
         let items_b = inbox_b.drain_all().await;
         assert_eq!(items_b.len(), 1);
         match &items_b[0] {
-            InboxItem::Completion(e) => assert_eq!(e.task_id, task_b),
+            peko_extension_api::AsyncInboxItem::Completion(e) => assert_eq!(e.task_id, task_b),
             other => panic!("expected Completion, got {other:?}"),
         }
     }
@@ -982,12 +995,12 @@ mod completion_queue_fan_out_tests {
                     "expected exactly one steer message in principal root inbox"
                 );
                 match &root_items[0] {
-                    InboxItem::Steering(s) => {
+                    peko_extension_api::AsyncInboxItem::Steering(s) => {
                         assert!(s.content.contains("daily-summary"));
                         assert!(s.content.contains("TaskOutput"));
                         assert!(s.content.contains(&task_id));
                     }
-                    other => panic!("expected InboxItem::Steering, got {other:?}"),
+                    other => panic!("expected AsyncInboxItem::Steering, got {other:?}"),
                 }
 
                 // Completion event did NOT land in the executor's parent inbox.
@@ -1036,7 +1049,10 @@ mod completion_queue_fan_out_tests {
         let worker_inbox = registry.get_or_create("session_worker_2").await;
         let items = worker_inbox.drain_all().await;
         assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], InboxItem::Completion(_)));
+        assert!(matches!(
+            items[0],
+            peko_extension_api::AsyncInboxItem::Completion(_)
+        ));
 
         // principal_root inbox stays empty.
         let root_inbox = registry.get_or_create("root:alice").await;

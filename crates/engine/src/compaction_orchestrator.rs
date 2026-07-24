@@ -32,7 +32,7 @@ use crate::compaction::{
     CompactionConfig, CompactionRequest, CompactionResponse, CompactionResult, CompactorBackend,
 };
 use crate::events::AgenticEvent;
-use crate::session_view::SessionView;
+use crate::SessionView;
 use anyhow::Result;
 use peko_extension_api::hook_io::{CompactionPreparationPayload, CompactionResultPayload};
 use peko_extension_api::session::SessionSnapshot;

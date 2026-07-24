@@ -7,8 +7,8 @@
 use crate::extensions::framework::async_exec::executor::{
     AsyncTaskEntry, AsyncTaskStatus, TaskMetadata,
 };
-use crate::session::types::SpawnCleanupPolicy;
 use chrono::{DateTime, Utc};
+use peko_session::types::SpawnCleanupPolicy;
 
 // Re-export SubagentResult and SubagentStatus from the unified registry to avoid duplication.
 pub use crate::extensions::framework::async_exec::executor::AsyncTaskStatus as SubagentStatus;

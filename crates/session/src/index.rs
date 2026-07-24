@@ -10,7 +10,7 @@
 //! - No data duplication
 //! - Clean separation of concerns
 
-use crate::session::safe_filename_component;
+use crate::key::safe_filename_component;
 use anyhow::{Context, Result};
 use peko_fs_persistence::FileLock;
 use serde::{Deserialize, Serialize};
@@ -197,16 +197,16 @@ impl SessionEntry {
     ///
     /// This is the preferred conversion method when passing to API boundaries.
     #[must_use]
-    pub fn to_metadata(&self) -> crate::session::metadata::SessionMetadata {
-        crate::session::metadata::SessionMetadata::from_entry(self.clone())
+    pub fn to_metadata(&self) -> crate::metadata::SessionMetadata {
+        crate::metadata::SessionMetadata::from_entry(self.clone())
     }
 
     /// Convert to `SessionInfo` for service layer
     ///
     /// This is the preferred conversion method when passing to `SessionService`.
     #[must_use]
-    pub fn to_info(&self) -> crate::common::services::session_service::SessionInfo {
-        crate::common::services::session_service::SessionInfo::from(self.clone())
+    pub fn to_info(&self) -> crate::session_info::SessionInfo {
+        crate::session_info::SessionInfo::from(self.clone())
     }
 }
 
@@ -886,7 +886,7 @@ impl SessionIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
     use tempfile::TempDir;
 
     /// Regression test for issue #89: concurrent `SessionIndex` instances on

@@ -6,9 +6,9 @@
 //!
 //! Only active in daemon mode.
 
-use crate::common::paths::PathResolver;
-use crate::session::index::MaintenanceConfig;
-use crate::session::metadata_controller::MetadataController;
+use crate::index::MaintenanceConfig;
+use crate::metadata_controller::MetadataController;
+use peko_subject::PathResolverLike;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::interval;
@@ -77,10 +77,8 @@ impl MaintenanceScheduler {
     ///
     /// Walks the `agents_dir` looking for `sessions/` subdirectories and
     /// runs `MetadataController::maintenance` in each one.
-    pub async fn run_maintenance(
-        &self,
-    ) -> anyhow::Result<crate::session::index::MaintenanceReport> {
-        use crate::session::index::MaintenanceReport;
+    pub async fn run_maintenance(&self) -> anyhow::Result<crate::index::MaintenanceReport> {
+        use crate::index::MaintenanceReport;
 
         let mut total_report = MaintenanceReport::default();
 
@@ -116,7 +114,7 @@ impl MaintenanceScheduler {
     }
 
     /// Run maintenance once at startup
-    pub async fn run_at_startup(&self) -> anyhow::Result<crate::session::index::MaintenanceReport> {
+    pub async fn run_at_startup(&self) -> anyhow::Result<crate::index::MaintenanceReport> {
         info!("Running initial maintenance at startup");
         self.run_maintenance().await
     }
@@ -126,8 +124,8 @@ impl MaintenanceScheduler {
 pub async fn maintain_agent(
     agent_name: &str,
     config: &MaintenanceConfig,
-) -> anyhow::Result<crate::session::index::MaintenanceReport> {
-    let resolver = PathResolver::new();
+) -> anyhow::Result<crate::index::MaintenanceReport> {
+    let resolver = crate::default_path_resolver::DefaultPathResolver::new();
     let sessions_dir = resolver.agent_sessions_dir(agent_name);
 
     let mut controller = MetadataController::new(&sessions_dir);
@@ -144,7 +142,8 @@ pub fn spawn_scheduler(agents_dir: PathBuf) -> tokio::task::JoinHandle<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     #[tokio::test]

@@ -2,10 +2,10 @@
 //!
 //! Coordinates JSONL storage, ensuring consistency for the source of truth.
 
-use crate::session::events::SessionEvent;
-use crate::session::events::SessionTrigger;
-use crate::session::jsonl::SessionStorage;
-use crate::session::safe_filename_component;
+use crate::events::SessionEvent;
+use crate::events::SessionTrigger;
+use crate::jsonl::SessionStorage;
+use crate::key::safe_filename_component;
 use anyhow::Result;
 use std::path::PathBuf;
 use tracing::info;
@@ -42,7 +42,7 @@ impl SyncSessionStorage {
         trigger: SessionTrigger,
         _cwd: Option<String>,
     ) -> Result<()> {
-        use crate::session::events::{EventEnvelope, SessionCreatedEvent};
+        use crate::events::{EventEnvelope, SessionCreatedEvent};
         use chrono::Utc;
         use tokio::fs;
         use tokio::io::AsyncWriteExt;
@@ -112,11 +112,11 @@ impl SyncSessionStorage {
     pub async fn end_session(
         &self,
         session_id: &str,
-        reason: crate::session::events::SessionEndReason,
+        reason: crate::events::SessionEndReason,
         turn_count: u32,
         total_tokens: u32,
     ) -> Result<()> {
-        use crate::session::events::{EventEnvelope, SessionEndedEvent};
+        use crate::events::{EventEnvelope, SessionEndedEvent};
         use chrono::Utc;
 
         // Create ended event
@@ -172,8 +172,8 @@ impl SyncSessionStorage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::session::SessionMessage;
+    use crate::SessionMessage;
+    use crate::*;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -207,7 +207,7 @@ mod tests {
         // Append user message
         let user_event = SessionEvent::MessageV2(SessionMessage::user(
             "Hello",
-            crate::session::events::MessageSource::User,
+            crate::events::MessageSource::User,
         ));
 
         storage.append_event("sess_123", &user_event).await.unwrap();
@@ -238,7 +238,7 @@ mod tests {
         storage
             .end_session(
                 "sess_123",
-                crate::session::events::SessionEndReason::UserClosed,
+                crate::events::SessionEndReason::UserClosed,
                 5,
                 100,
             )
@@ -297,7 +297,7 @@ mod tests {
 
         let user_event = SessionEvent::MessageV2(SessionMessage::user(
             "Hello",
-            crate::session::events::MessageSource::User,
+            crate::events::MessageSource::User,
         ));
         storage
             .append_event("parent_sess", &user_event)

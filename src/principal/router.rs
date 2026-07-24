@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::common::types::message::LlmMessage;
 use crate::observability::Observability;
-use crate::session::InboxRegistry;
+use peko_session::InboxRegistry;
 
 /// A routing decision emitted by a `PrincipalRouter`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,7 +62,6 @@ pub fn recalled_context_messages(injections: &[ContextInjection]) -> Vec<LlmMess
 }
 
 /// Context passed to a `PrincipalRouter`.
-#[derive(Debug, Clone)]
 pub struct RouterContext {
     pub principal_id: super::PrincipalId,
     pub principal_name: String,
@@ -97,6 +96,60 @@ pub struct RouterContext {
     /// `preferred_model_id`. Resolver source becomes
     /// `ResolveSource::ExplicitOverride`.
     pub override_model: Option<String>,
+}
+
+// Manual `Debug` impl — `InboxRegistry` (peko-session) contains an
+// `Arc<dyn AsyncInboxLike>` so it doesn't derive `Debug`. Custom
+// impls of `Debug` for wrappers containing it would otherwise force
+// `peko_session` to add a `Debug` impl that allocates a formatter
+// name. Same for `Clone` — `InboxRegistry` is wrapped in `Arc` and
+// implements `Clone`, so a trivial derived `Clone` works.
+impl std::fmt::Debug for RouterContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RouterContext")
+            .field("principal_id", &self.principal_id)
+            .field("principal_name", &self.principal_name)
+            .field("peer", &self.peer)
+            .field("message", &self.message)
+            .field("channel", &self.channel)
+            .field("routing", &self.routing)
+            .field("recalled_context", &self.recalled_context)
+            .field("available_agents", &self.available_agents)
+            .field("capabilities", &self.capabilities)
+            .field("intent", &self.intent)
+            .field("governance", &self.governance)
+            .field("extension_store", &self.extension_store)
+            .field("active_extensions", &self.active_extensions)
+            .field("inbox_registry", &"<InboxRegistry>")
+            .field("session_creation_lock", &"<Mutex>")
+            .field("observability", &self.observability)
+            .field("override_model", &self.override_model)
+            .finish()
+    }
+}
+
+impl Clone for RouterContext {
+    fn clone(&self) -> Self {
+        Self {
+            principal_id: self.principal_id.clone(),
+            principal_name: self.principal_name.clone(),
+            peer: self.peer.clone(),
+            message: self.message.clone(),
+            channel: self.channel.clone(),
+            routing: self.routing.clone(),
+            recalled_context: self.recalled_context.clone(),
+            available_agents: self.available_agents.clone(),
+            capabilities: self.capabilities.clone(),
+            intent: self.intent.clone(),
+            governance: self.governance.clone(),
+            extension_store: self.extension_store.clone(),
+            active_extensions: self.active_extensions.clone(),
+            inbox_registry: Arc::clone(&self.inbox_registry),
+            session_creation_lock: Arc::clone(&self.session_creation_lock),
+            observability: self.observability.clone(),
+            override_model: self.override_model.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

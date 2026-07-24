@@ -14,12 +14,12 @@
 //!   drops any leftover `.tmp` from a pre-F30 install.
 //! - Support for Peko event format (13 event types)
 
-use crate::common::types::message::LlmMessage;
-use crate::session::events::SessionEvent;
-use crate::session::safe_filename_component;
+use crate::events::SessionEvent;
+use crate::key::safe_filename_component;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use peko_fs_persistence::{append_bytes_durable, FileLock};
+use peko_message::LlmMessage;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -45,7 +45,7 @@ pub enum NormalizedEntry {
         id: String,
         content: String,
         timestamp: DateTime<Utc>,
-        source: crate::session::events::MessageSource,
+        source: crate::events::MessageSource,
     },
     /// Assistant message
     AssistantMessage {
@@ -124,7 +124,7 @@ impl SessionStorage {
 
     /// Initialize a new session file with a `SessionCreated` event
     pub async fn create_session(&self, session_id: &str, cwd: Option<String>) -> Result<()> {
-        use crate::session::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
+        use crate::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
 
         // Ensure directory exists
         fs::create_dir_all(&self.storage_dir).await?;
@@ -150,7 +150,7 @@ impl SessionStorage {
 
         // Write cwd as a separate system event if provided
         if let Some(cwd_path) = cwd {
-            use crate::session::events::SystemEvent;
+            use crate::events::SystemEvent;
             let cwd_event = SessionEvent::System(SystemEvent {
                 envelope: EventEnvelope {
                     id: format!("evt_{}", uuid::Uuid::new_v4().simple()),
@@ -175,7 +175,7 @@ impl SessionStorage {
         provider: &str,
         model_id: &str,
     ) -> Result<String> {
-        use crate::session::events::{EventEnvelope, SystemEvent};
+        use crate::events::{EventEnvelope, SystemEvent};
 
         let path = self.session_path(session_id);
         let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
@@ -213,9 +213,9 @@ impl SessionStorage {
         tokens_before: usize,
         tokens_after: usize,
         compaction_number: usize,
-        details: Option<&crate::session::compaction::summary_format::CompactionDetails>,
+        details: Option<&crate::compaction::summary_format::CompactionDetails>,
     ) -> Result<String> {
-        use crate::session::events::{EventEnvelope, SystemEvent};
+        use crate::events::{EventEnvelope, SystemEvent};
 
         let path = self.session_path(session_id);
         let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
@@ -414,8 +414,8 @@ impl SessionStorage {
 
     /// Convert Event Format to `NormalizedEntry`
     fn normalize_event(event: SessionEvent) -> Option<NormalizedEntry> {
-        use crate::common::types::message::MessageRole;
-        use crate::session::events::SessionEvent::{SessionCreated, ToolResult};
+        use crate::events::SessionEvent::{SessionCreated, ToolResult};
+        use peko_message::MessageRole;
 
         // Try unified message conversion first
         if let Some(msg) = event.as_message() {
@@ -427,9 +427,7 @@ impl SessionStorage {
                     id: message_id,
                     content: text,
                     timestamp,
-                    source: msg
-                        .source()
-                        .unwrap_or(crate::session::events::MessageSource::User),
+                    source: msg.source().unwrap_or(crate::events::MessageSource::User),
                 }),
                 MessageRole::Assistant => Some(NormalizedEntry::AssistantMessage {
                     id: message_id,
@@ -448,11 +446,7 @@ impl SessionStorage {
                         .content
                         .iter()
                         .find_map(|block| {
-                            if let crate::common::types::message::ContentBlock::ToolResult {
-                                name,
-                                ..
-                            } = block
-                            {
+                            if let peko_message::ContentBlock::ToolResult { name, .. } = block {
                                 Some(name.clone())
                             } else {
                                 None
@@ -483,61 +477,59 @@ impl SessionStorage {
                 content: e.output.unwrap_or_default(),
                 is_error: e.error.is_some(),
             }),
-            crate::session::events::SessionEvent::System(sys_event) => {
-                match sys_event.event.as_str() {
-                    "compaction" => {
-                        let detail = &sys_event.detail;
-                        Some(NormalizedEntry::Compaction {
-                            summary: detail
-                                .get("summary")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            messages_compacted: detail
-                                .get("messages_compacted")
-                                .and_then(|v| v.as_u64())
-                                .map(|n| n as usize)
-                                .unwrap_or(0),
-                            tokens_before: detail
-                                .get("tokens_before")
-                                .and_then(|v| v.as_u64())
-                                .map(|n| n as usize)
-                                .unwrap_or(0),
-                            tokens_after: detail
-                                .get("tokens_after")
-                                .and_then(|v| v.as_u64())
-                                .map(|n| n as usize)
-                                .unwrap_or(0),
-                            compaction_number: detail
-                                .get("compaction_number")
-                                .and_then(|v| v.as_u64())
-                                .map(|n| n as usize)
-                                .unwrap_or(0),
-                            timestamp: sys_event.envelope.ts,
-                        })
-                    }
-                    "model_change" => {
-                        let detail = &sys_event.detail;
-                        Some(NormalizedEntry::ModelChange {
-                            provider: detail
-                                .get("provider")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            model_id: detail
-                                .get("model_id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            timestamp: sys_event.envelope.ts,
-                        })
-                    }
-                    _ => {
-                        debug!("Unnormalized system event: {}", sys_event.event);
-                        None
-                    }
+            crate::events::SessionEvent::System(sys_event) => match sys_event.event.as_str() {
+                "compaction" => {
+                    let detail = &sys_event.detail;
+                    Some(NormalizedEntry::Compaction {
+                        summary: detail
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        messages_compacted: detail
+                            .get("messages_compacted")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n as usize)
+                            .unwrap_or(0),
+                        tokens_before: detail
+                            .get("tokens_before")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n as usize)
+                            .unwrap_or(0),
+                        tokens_after: detail
+                            .get("tokens_after")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n as usize)
+                            .unwrap_or(0),
+                        compaction_number: detail
+                            .get("compaction_number")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n as usize)
+                            .unwrap_or(0),
+                        timestamp: sys_event.envelope.ts,
+                    })
                 }
-            }
+                "model_change" => {
+                    let detail = &sys_event.detail;
+                    Some(NormalizedEntry::ModelChange {
+                        provider: detail
+                            .get("provider")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        model_id: detail
+                            .get("model_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        timestamp: sys_event.envelope.ts,
+                    })
+                }
+                _ => {
+                    debug!("Unnormalized system event: {}", sys_event.event);
+                    None
+                }
+            },
             _ => {
                 // Other event types can be added as needed
                 debug!("Unnormalized event type: {}", event.event_type());
@@ -813,10 +805,11 @@ impl SessionStorage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::session::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
+    use crate::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
+    use crate::*;
     use chrono::Utc;
     use tempfile::TempDir;
+    use tokio::fs;
 
     #[tokio::test]
     async fn test_load_events() {
@@ -877,15 +870,10 @@ mod tests {
         storage.create_session("f30_test", None).await.unwrap();
 
         // A single user message through `append_event`.
-        let msg = crate::session::message::SessionMessage::user(
-            "hello",
-            crate::session::message::MessageSource::User,
-        );
+        let msg =
+            crate::message::SessionMessage::user("hello", crate::message::MessageSource::User);
         storage
-            .append_event(
-                "f30_test",
-                &crate::session::events::SessionEvent::MessageV2(msg),
-            )
+            .append_event("f30_test", &crate::events::SessionEvent::MessageV2(msg))
             .await
             .unwrap();
 
@@ -927,7 +915,7 @@ mod tests {
         // No half-written event should appear in the returned list:
         // the torn envelope id "half" must not leak through.
         for e in &events {
-            if let crate::session::events::SessionEvent::MessageV2(m) = e {
+            if let crate::events::SessionEvent::MessageV2(m) = e {
                 assert_ne!(m.envelope.id, "half", "torn-line event leaked");
             }
         }
@@ -989,8 +977,8 @@ mod tests {
         storage.create_session("cache_test", None).await.unwrap();
 
         let messages = vec![
-            crate::common::types::message::LlmMessage::system("You are a helpful assistant."),
-            crate::common::types::message::LlmMessage::user("Hello"),
+            peko_message::LlmMessage::system("You are a helpful assistant."),
+            peko_message::LlmMessage::user("Hello"),
         ];
 
         let checksum = storage.compute_jsonl_checksum("cache_test").await.unwrap();
@@ -1022,7 +1010,7 @@ mod tests {
 
         storage.create_session("cache_test", None).await.unwrap();
 
-        let messages = vec![crate::common::types::message::LlmMessage::user("Hello")];
+        let messages = vec![peko_message::LlmMessage::user("Hello")];
 
         let checksum = storage.compute_jsonl_checksum("cache_test").await.unwrap();
         let entry_count = storage.count_jsonl_entries("cache_test").await.unwrap();
@@ -1048,7 +1036,7 @@ mod tests {
 
         storage.create_session("cache_test", None).await.unwrap();
 
-        let messages = vec![crate::common::types::message::LlmMessage::user("Hello")];
+        let messages = vec![peko_message::LlmMessage::user("Hello")];
 
         let checksum = storage.compute_jsonl_checksum("cache_test").await.unwrap();
         let entry_count = storage.count_jsonl_entries("cache_test").await.unwrap();
@@ -1087,7 +1075,7 @@ mod tests {
 
         storage.create_session("cache_test", None).await.unwrap();
 
-        let messages = vec![crate::common::types::message::LlmMessage::user("Hello")];
+        let messages = vec![peko_message::LlmMessage::user("Hello")];
 
         let checksum = storage.compute_jsonl_checksum("cache_test").await.unwrap();
         let entry_count = storage.count_jsonl_entries("cache_test").await.unwrap();

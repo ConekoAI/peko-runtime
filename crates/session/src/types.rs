@@ -7,7 +7,8 @@
 //! Session ownership identity uses `peko_subject::Subject`
 //! (ADR-039). The former `Subject` type alias was removed in the
 //! `refactor/peer-to-principal-rename` cleanup; callers should now
-//! import `Subject` directly from `peko_subject`.
+//! import `Subject` directly from `crate::auth` (re-exported via
+//! `peko_subject::Subject`).
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -110,7 +111,7 @@ pub enum OverlayType {
 impl OverlayType {
     /// Get the overlay type as a string
     #[must_use]
-    pub const fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             OverlayType::Channel(_) => "channel",
             OverlayType::Spawn => "spawn",
@@ -150,24 +151,23 @@ impl fmt::Display for OverlayType {
 
 /// Cleanup policy for spawn overlays.
 ///
-/// Phase 7 promoted this enum from
-/// `peko_extension_host::subagent::SpawnCleanupPolicy` (where
-/// Phase 8 commit 2 had moved it) back into `peko-session` — the
-/// canonical home is the session overlay architecture, not the
-/// framework async-execution payload. The host crate re-exports
-/// from here (in a Phase 8 follow-up) so framework code keeps
-/// compiling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// The enum lives in `peko-session::types` because the spawn overlay
+/// DTO that uses it (`SubagentMetadata`) is part of the session
+/// persistence layer. `peko-extension-host` re-exports the same type
+/// under `peko_extension_host::subagent::SpawnCleanupPolicy` for
+/// the framework code paths that need to reference it without
+/// depending on the session crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SpawnCleanupPolicy {
-    /// Keep the spawn overlay after the subagent finishes.
+    /// Keep the spawn session after completion
     #[default]
     Keep,
-    /// Delete the spawn overlay after the subagent finishes.
+    /// Delete the spawn session after completion
     Delete,
 }
 
 impl SpawnCleanupPolicy {
-    /// String form used in serialized config / CLI args.
+    /// Get the policy as a string
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -176,7 +176,7 @@ impl SpawnCleanupPolicy {
         }
     }
 
-    /// Parse from a string (case-insensitive). Inverse of [`as_str`].
+    /// Parse from string
     #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -186,25 +186,65 @@ impl SpawnCleanupPolicy {
         }
     }
 
-    /// Whether the spawn overlay should persist across subagent
-    /// completion. `Keep` overlays stay queryable for follow-up
-    /// turns; `Delete` overlays are dropped as soon as the subagent
-    /// returns.
+    /// Check if this policy means persist
     #[must_use]
     pub const fn should_persist(&self) -> bool {
         matches!(self, SpawnCleanupPolicy::Keep)
     }
 }
 
-impl fmt::Display for SpawnCleanupPolicy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
+    use peko_subject::Subject;
+
+    #[test]
+    fn test_peer_id() {
+        let user = Subject::User("alice".to_string());
+        assert_eq!(user.subject_id(), "alice");
+        assert_eq!(user.kind().to_string(), "user");
+        assert!(matches!(user, Subject::User(_)));
+        assert!(!matches!(user, Subject::Principal(_)));
+
+        let agent = Subject::Principal("researcher".into());
+        assert_eq!(agent.subject_id(), "researcher");
+        assert_eq!(agent.kind().to_string(), "principal");
+        assert!(matches!(agent, Subject::Principal(_)));
+        assert!(!matches!(agent, Subject::User(_)));
+    }
+
+    #[test]
+    fn test_peer_display() {
+        let user = Subject::User("alice".to_string());
+        assert_eq!(format!("{user}"), "user:alice");
+
+        let agent = Subject::Principal("helper".into());
+        assert_eq!(format!("{agent}"), "principal:helper");
+    }
+
+    #[test]
+    fn test_peer_equality() {
+        let user1 = Subject::User("alice".to_string());
+        let user2 = Subject::User("alice".to_string());
+        let user3 = Subject::User("bob".to_string());
+        let agent = Subject::Principal("alice".into());
+
+        assert_eq!(user1, user2);
+        assert_ne!(user1, user3);
+        assert_ne!(user1, agent); // Same ID but different types
+    }
+
+    #[test]
+    fn test_peer_hash() {
+        use std::collections::HashSet;
+
+        let mut set = HashSet::new();
+        set.insert(Subject::User("alice".to_string()));
+        set.insert(Subject::User("alice".to_string())); // Duplicate
+        set.insert(Subject::User("bob".to_string()));
+
+        assert_eq!(set.len(), 2);
+    }
 
     #[test]
     fn test_channel_type_as_str() {
@@ -271,5 +311,27 @@ mod tests {
         // Test default
         let default: SpawnCleanupPolicy = Default::default();
         assert_eq!(default, SpawnCleanupPolicy::Keep);
+    }
+
+    #[test]
+    fn test_serialization() {
+        // CHANGED IN ADR-039: `Subject` is now a type alias for
+        // `Subject`, which uses `#[serde(tag = "kind", content = "id")]`.
+        // The in-memory JSON shape changed from the pre-039 default
+        // (external tagging) `{"User":"alice"}` to the canonical
+        // `{"kind":"user","id":"alice"}`. The on-disk session key
+        // format is unchanged (string-keyed, not JSON-tagged), so this
+        // only affects in-memory serde round-trips.
+        let peer = Subject::User("alice".to_string());
+        let json = serde_json::to_string(&peer).unwrap();
+        assert_eq!(json, r#"{"kind":"user","id":"alice"}"#);
+
+        let peer2: Subject = serde_json::from_str(&json).unwrap();
+        assert_eq!(peer, peer2);
+
+        let channel = ChannelType::Discord;
+        let json = serde_json::to_string(&channel).unwrap();
+        let channel2: ChannelType = serde_json::from_str(&json).unwrap();
+        assert_eq!(channel, channel2);
     }
 }

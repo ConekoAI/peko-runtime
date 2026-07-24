@@ -1,29 +1,17 @@
-//! Compatibility shim: implements `peko_engine::SessionCore` for root's
-//! `Session` so the lifted `ToolExecutor` (Phase 9b.N.3,
-//! `crates/engine/src/tool_executor.rs`) and `CompactionOrchestrator`
-//! (Phase 9b.N.4, `crates/engine/src/compaction_orchestrator.rs`)
-//! can persist results without holding a direct borrow of root's
-//! [`crate::session::Session`].
+//! `impl SessionCore for Session` — Phase 7 orphan-rule compliant
+//! location. The trait lives in this crate (see `session_core.rs`);
+//! the impl lives next to the canonical `Session` type, satisfying
+//! the "local type before any uncovered type parameter" rule.
 //!
-//! The impl lives here rather than in `peko-engine` because of the
-//! orphan rule: `peko_engine::SessionCore` is a foreign trait, and
-//! `Session` is a root-only type. The `impl SessionCore for Session`
-//! form is allowed because `Session` is local to root (see the orphan
-//! rule's "local type before any uncovered type parameter" clause).
-//!
-//! The blanket `impl<T: SessionCore> SessionView for Arc<RwLock<T>>`
-//! in `crates/engine/src/session_view.rs` then gives
-//! `Arc<RwLock<Session>>` a `SessionView` impl for free. Callers in
-//! the agentic loop pass `&session` directly — the same ergonomic as
-//! pre-Phase-9b.N.3 — without ever knowing about `SessionCore`.
-//!
-//! Module location: rooted at `src/engine/session_view_compat.rs` so
-//! `src/engine/mod.rs` declares it via `pub mod`, mirroring the
-//! `src/engine/extension_core_funnel_compat.rs` (Phase 9b.N.2) and
-//! `src/engine/async_completion_compat.rs` (Phase 9b.N.1) patterns.
+//! Pre-Phase 7 this impl lived in root's
+//! `src/engine/session_view_compat.rs`. Phase 7 lifts `Session` out
+//! of root, which broke the root-side impl (foreign trait + foreign
+//! type). Moving the impl here is the only correct fix; engine code
+//! continues to import `peko_engine::SessionCore` (re-exported from
+//! this crate) and consume `Arc<dyn SessionView>` exactly as before.
 
-use crate::session::Session;
-use peko_engine::SessionCore;
+use crate::session_core::SessionCore;
+use crate::unified::Session;
 
 #[async_trait::async_trait]
 impl SessionCore for Session {
@@ -46,16 +34,13 @@ impl SessionCore for Session {
         compaction_number: usize,
         details: Option<&serde_json::Value>,
     ) -> anyhow::Result<()> {
-        // Phase 9b.N.4 widens the `details` field from
-        // `summary_format::CompactionDetails` to `serde_json::Value`
-        // in `peko_engine::CompactionEntry`. Root's `record_compaction`
-        // still takes `Option<&CompactionDetails>` — re-deserialize
-        // the value back into the concrete type before forwarding.
-        // `null` and `None` map to `None`; deserialization failure
-        // is treated as `None` (the on-disk record still has the
-        // raw JSON via `serde_json::to_value(d)` in the compactor).
+        // `details` is forwarded as `Option<&serde_json::Value>` by
+        // the trait port to keep the engine crate free of the
+        // concrete `summary_format::CompactionDetails` type. The
+        // concrete `Session::record_compaction` still takes the typed
+        // form — re-deserialize here at the trait impl boundary.
         let concrete_details = details.and_then(|v| {
-            serde_json::from_value::<crate::session::compaction::summary_format::CompactionDetails>(
+            serde_json::from_value::<crate::compaction::summary_format::CompactionDetails>(
                 v.clone(),
             )
             .ok()
@@ -82,10 +67,6 @@ impl SessionCore for Session {
     ) -> anyhow::Result<()> {
         Session::update_context_cache(session, messages).await
     }
-
-    // ============================================================
-    // Phase 9b.N.5b.9b additions: agentic_loop surface
-    // ============================================================
 
     async fn id(session: &Self) -> String {
         session.id.clone()
@@ -117,17 +98,16 @@ impl SessionCore for Session {
         tool_calls: Option<Vec<peko_message::ToolCallInfo>>,
         usage: Option<peko_message::TokenUsage>,
     ) -> anyhow::Result<()> {
-        // Convert `peko_message::ToolCallInfo` → root's legacy `ToolCall`
-        // struct so `Session::add_assistant` keeps its current signature.
-        // The legacy struct only carries `name` + `parameters`; the
-        // `id` and `result` fields from `ToolCallInfo` are dropped.
-        // Every existing call site passes `None`, so this conversion is
-        // dead in practice — kept for forward-compatibility with future
-        // callers that surface tool-call IDs.
+        // Convert `peko_message::ToolCallInfo` → legacy `ToolCall`
+        // so the canonical `Session::add_assistant` keeps its current
+        // signature. The legacy struct only carries `name` +
+        // `parameters`; the `id` and `result` fields from `ToolCallInfo`
+        // are dropped. Every existing call site passes `None`, so this
+        // conversion is dead in practice — kept for forward-compat.
         let legacy_tool_calls = tool_calls.map(|calls| {
             calls
                 .into_iter()
-                .map(|info| crate::engine::ToolCall {
+                .map(|info| crate::ToolCall {
                     name: info.name,
                     parameters: info.parameters,
                 })

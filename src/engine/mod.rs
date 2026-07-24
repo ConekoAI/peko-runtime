@@ -58,9 +58,9 @@ pub use peko_engine::{
     agentic_loop, async_completion, async_inbox, build_async_completion_message, chunker,
     compaction, default_process_stream, error, event_processor, events, execute_tool_via_core,
     execute_tool_via_core_with_context, execution, funnel, iteration_state, parallel_gate,
-    parse_tool_calls_from_text, session_view, state, stream_buffer, stream_orchestrator,
-    tool_executor, tool_stream, AgentState, AgentView, AgenticError, AgenticEvent, AgenticLoop,
-    AgenticResult, AsyncInboxItem, AsyncInboxLike, BlockChunker, BreakPreference, CapabilityChange,
+    parse_tool_calls_from_text, state, stream_buffer, stream_orchestrator, tool_executor,
+    tool_stream, AgentState, AgentView, AgenticError, AgenticEvent, AgenticLoop, AgenticResult,
+    AsyncInboxItem, AsyncInboxLike, BlockChunker, BreakPreference, CapabilityChange,
     CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker, ChannelAction, ChannelOutput,
     ChunkerConfig, CoalesceConfig, CoalescingChunker, CompactionConfig, CompactionEntry,
     CompactionQuota, CompactionRequest, CompactionResponse, CompactionResponseResult,
@@ -76,5 +76,4 @@ pub mod agentic_loop_compat;
 pub mod async_inbox_compat;
 pub mod background_compactor_factory_compat;
 pub mod extension_core_funnel_compat;
-pub mod session_view_compat;
 pub mod tool_runtime;

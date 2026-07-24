@@ -28,10 +28,10 @@ use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::observability::Observability;
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
-use crate::session::InboxRegistry;
 use crate::subject::PrincipalId;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 use peko_providers::LlmResolver;
+use peko_session::InboxRegistry;
 
 use super::Capabilities;
 
@@ -406,7 +406,10 @@ mod tests {
         let ctx = PrincipalContext::new(
             dir.path().to_path_buf(),
             memory,
-            Arc::new(InboxRegistry::new()),
+            Arc::new(InboxRegistry::new(
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
+            )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
             None,
@@ -431,7 +434,10 @@ mod tests {
         let ctx = PrincipalContext::new(
             dir.path().to_path_buf(),
             memory,
-            Arc::new(InboxRegistry::new()),
+            Arc::new(InboxRegistry::new(
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
+            )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
             None,
@@ -466,7 +472,10 @@ mod tests {
         let ctx = PrincipalContext::new(
             dir.path().to_path_buf(),
             memory,
-            Arc::new(InboxRegistry::new()),
+            Arc::new(InboxRegistry::new(
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
+            )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
             None,

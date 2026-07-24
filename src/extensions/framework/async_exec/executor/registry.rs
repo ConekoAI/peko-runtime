@@ -38,7 +38,7 @@ pub enum TaskMetadata {
 #[derive(Debug, Clone)]
 pub struct SubagentMetadata {
     pub child_session_key: String,
-    pub cleanup: crate::session::types::SpawnCleanupPolicy,
+    pub cleanup: peko_session::types::SpawnCleanupPolicy,
     pub depth: u32,
     pub announce_completion: bool,
     /// The subagent result (output, error, token_usage) —

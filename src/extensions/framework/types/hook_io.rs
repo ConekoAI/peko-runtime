@@ -23,7 +23,7 @@ use std::path::PathBuf;
 /// Phase 7 introduces this so the engine can construct the variant
 /// with typed data; the variant itself carries the fields as
 /// `serde_json::Value` blobs (the API crate must not depend on
-/// `crate::session::compaction::*`).
+/// `peko_session::compaction::*`).
 #[derive(Debug, Clone)]
 pub struct CompactionPreparationPayload {
     pub messages_to_summarize: Vec<LlmMessage>,

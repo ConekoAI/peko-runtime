@@ -10,9 +10,9 @@
 //! The new `SessionMessage` type uses SRP-compliant `RoleMetadata` to separate
 //! role-specific concerns while reusing the existing `LlmMessage` from `types::message`.
 
-use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
-use crate::session::events::EventEnvelope;
+use crate::events::EventEnvelope;
 use chrono::Utc;
+use peko_message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -303,7 +303,7 @@ fn generate_message_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn test_session_message_user() {
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_session_event_message_v2_format() {
-        use crate::session::events::SessionEvent;
+        use crate::events::SessionEvent;
 
         // Test user message
         let msg = SessionMessage::user("Hello", MessageSource::User);

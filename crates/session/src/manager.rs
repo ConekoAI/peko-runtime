@@ -39,19 +39,19 @@
 //! The `MetadataController` is the SOLE authority for session metadata.
 //! All session listings are verified for consistency.
 
-use super::index::{SessionEntry, SessionIndex};
-use super::jsonl::SessionStorage;
-use super::key::{derive_base_session_key, derive_overlay_key};
-use super::metadata::SessionMetadata;
-use super::metadata_controller::MetadataController;
-use super::overlay::{ChannelOverlay, SessionOverlay};
-use super::safe_filename_component;
-use super::spawn::SpawnOverlay;
-use super::types::{ChannelType, SpawnCleanupPolicy};
-use super::unified::Session;
-use crate::common::paths::PathResolver;
+use crate::index::{SessionEntry, SessionIndex};
+use crate::jsonl::SessionStorage;
+use crate::key::safe_filename_component;
+use crate::key::{derive_base_session_key, derive_overlay_key};
+use crate::metadata::SessionMetadata;
+use crate::metadata_controller::MetadataController;
+use crate::overlay::{ChannelOverlay, SessionOverlay};
+use crate::spawn::SpawnOverlay;
+use crate::types::{ChannelType, SpawnCleanupPolicy};
+use crate::unified::Session;
 use anyhow::Result;
-use peko_auth::Subject;
+use peko_subject::PathResolverLike;
+use peko_subject::Subject;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -145,7 +145,8 @@ impl SessionHandle {
     }
 
     /// Get the base session (for internal operations)
-    pub(crate) fn base(&self) -> &Arc<RwLock<Session>> {
+    #[must_use]
+    pub fn base(&self) -> &Arc<RwLock<Session>> {
         &self.base
     }
 
@@ -284,7 +285,7 @@ impl SessionHandle {
     pub async fn add_assistant(
         &self,
         content: impl Into<String>,
-        tool_calls: Option<Vec<crate::engine::ToolCall>>,
+        tool_calls: Option<Vec<crate::ToolCall>>,
         usage: Option<peko_providers::TokenUsage>,
     ) -> Result<()> {
         let mut base = self.base.write().await;
@@ -309,7 +310,7 @@ impl SessionHandle {
     }
 
     /// Load conversation history
-    pub async fn load_history(&self) -> Result<Vec<crate::common::types::message::LlmMessage>> {
+    pub async fn load_history(&self) -> Result<Vec<peko_message::LlmMessage>> {
         let base = self.base.read().await;
         base.load_history().await
     }
@@ -456,7 +457,6 @@ pub struct ResolvedSession {
 /// The `SessionManager` is the SOLE authority for session LIFECYCLE operations.
 /// The `MetadataController` is the SOLE authority for session metadata.
 /// All session resolution goes through this manager.
-#[derive(Debug)]
 pub struct SessionManager {
     /// Base sessions: (`agent_id`, peer) -> `Session`
     base_sessions: HashMap<(String, Subject), Arc<RwLock<Session>>>,
@@ -474,7 +474,7 @@ pub struct SessionManager {
     /// Agent name for index operations
     agent_name: Option<String>,
     /// Path resolver for consistent path resolution
-    path_resolver: Option<PathResolver>,
+    path_resolver: Option<Arc<dyn PathResolverLike>>,
     /// User identifier for CLI session isolation.
     ///
     /// Empty by default. Production callers that route a request through
@@ -528,13 +528,13 @@ impl SessionManager {
         }
     }
 
-    /// Initialize with session index for an agent using `PathResolver`
+    /// Initialize with session index for an agent using `Arc<dyn PathResolverLike>`
     ///
     /// This is the PREFERRED way to initialize `SessionManager` as it ensures
     /// consistent path resolution across all components.
     pub async fn with_path_resolver(
         mut self,
-        path_resolver: PathResolver,
+        path_resolver: Arc<dyn PathResolverLike>,
         agent_name: &str,
     ) -> Result<Self> {
         let sessions_dir = path_resolver.agent_sessions_dir(agent_name);
@@ -572,7 +572,7 @@ impl SessionManager {
     /// );
     /// ```
     #[must_use]
-    pub fn for_cli(path_resolver: PathResolver, agent_name: &str, user: &str) -> Self {
+    pub fn for_cli(path_resolver: Arc<dyn PathResolverLike>, agent_name: &str, user: &str) -> Self {
         let sessions_dir = path_resolver.agent_sessions_dir(agent_name);
         Self::new()
             .with_sessions_dir_internal(sessions_dir)
@@ -592,7 +592,7 @@ impl SessionManager {
     }
 
     /// Set the path resolver (internal use only, for builder pattern)
-    fn with_path_resolver_internal(mut self, path_resolver: PathResolver) -> Self {
+    fn with_path_resolver_internal(mut self, path_resolver: Arc<dyn PathResolverLike>) -> Self {
         self.path_resolver = Some(path_resolver);
         self
     }
@@ -698,7 +698,7 @@ impl SessionManager {
 
     /// Get the path resolver if available
     #[must_use]
-    pub fn path_resolver(&self) -> Option<&PathResolver> {
+    pub fn path_resolver(&self) -> Option<&Arc<dyn PathResolverLike>> {
         self.path_resolver.as_ref()
     }
 
@@ -901,7 +901,7 @@ impl SessionManager {
             Some(handle) => handle,
             None => {
                 info!("Session '{}' not found, creating new", session_id);
-                let options = crate::session::SessionCreateOptions::new()
+                let options = SessionCreateOptions::new()
                     .with_trigger("api")
                     .with_session_id(session_id);
                 self.create_session(agent_name, &peer, options).await?
@@ -1692,7 +1692,7 @@ impl SessionManager {
     /// Get the parent's base session from a session key (which may be an overlay key)
     async fn get_parent_base_session(&self, session_key: &str) -> Option<Arc<RwLock<Session>>> {
         // Extract base key from overlay key if needed
-        let base_key = crate::session::key::base_key_from_overlay(session_key)
+        let base_key = crate::key::base_key_from_overlay(session_key)
             .unwrap_or_else(|| session_key.to_string());
 
         // Parse the base key to get agent and peer
@@ -1832,11 +1832,11 @@ impl SessionManager {
         }
 
         // Extract base key from overlay key
-        let base_key = crate::session::key::base_key_from_overlay(child_session_key)
+        let base_key = crate::key::base_key_from_overlay(child_session_key)
             .unwrap_or_else(|| child_session_key.to_string());
 
         // Parse the base key to get agent and peer
-        if let Some(parsed) = crate::session::key::parse_session_key_v2(&base_key) {
+        if let Some(parsed) = crate::key::parse_session_key_v2(&base_key) {
             // The wildcard arm aligns with the v1 defaults at
             // `manager.rs:1046, 1049, 1052` (which default to
             // `Subject::User("default")` for unknown peer types). This
@@ -2120,7 +2120,7 @@ async fn copy_session_context(
     parent: &Arc<RwLock<Session>>,
     child: &Arc<RwLock<Session>>,
 ) -> Result<()> {
-    use crate::common::types::message::ContentBlock;
+    use peko_message::ContentBlock;
     use peko_providers::MessageRole;
 
     // Load parent's conversation history
@@ -2186,7 +2186,7 @@ async fn copy_session_context(
                     .collect();
 
                 // Extract tool calls from content blocks (ContentBlock::ToolCall)
-                let tool_calls: Vec<crate::engine::ToolCall> = msg
+                let tool_calls: Vec<crate::ToolCall> = msg
                     .content
                     .iter()
                     .filter_map(|c| {
@@ -2194,7 +2194,7 @@ async fn copy_session_context(
                             name, arguments, ..
                         } = c
                         {
-                            Some(crate::engine::ToolCall {
+                            Some(crate::ToolCall {
                                 name: name.clone(),
                                 parameters: arguments.clone(),
                             })
@@ -2226,7 +2226,7 @@ async fn copy_session_context(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[tokio::test]
     async fn test_session_manager_new() {

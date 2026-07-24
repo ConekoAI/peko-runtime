@@ -9,8 +9,8 @@
 //! Per REQ-SM-001 and REQ-RL-003: Session history must be fully recoverable
 //! from JSONL files alone.
 
-use crate::session::jsonl::SessionStorage;
-use crate::session::safe_filename_component;
+use crate::jsonl::SessionStorage;
+use crate::key::safe_filename_component;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -264,9 +264,10 @@ impl RecoveryState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     use tempfile::TempDir;
+    use tokio::fs;
 
     #[tokio::test]
     async fn test_recovery_report() {

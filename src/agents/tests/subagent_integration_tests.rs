@@ -13,9 +13,9 @@ use crate::common::paths::PathResolver;
 use crate::extensions::framework::async_exec::executor::{
     get_or_create_registry_for_agent, SharedAsyncTaskRegistry,
 };
-use crate::session::manager::SessionManager;
-use crate::session::types::SpawnCleanupPolicy;
 use peko_auth::Subject;
+use peko_session::manager::SessionManager;
+use peko_session::types::SpawnCleanupPolicy;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -87,6 +87,9 @@ async fn create_test_components() -> (Arc<RwLock<SessionManager>>, SharedAsyncTa
         temp_path.join("data"),
         temp_path.join("cache"),
     );
+    let path_resolver: Arc<dyn peko_subject::PathResolverLike> = Arc::new(
+        peko_session::DefaultPathResolver::with_data_dir(path_resolver.data_dir().to_path_buf()),
+    );
     let session_manager = SessionManager::new()
         .with_path_resolver(path_resolver, &agent_name)
         .await
@@ -116,7 +119,7 @@ async fn test_e2e_spawn_and_complete() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -186,7 +189,7 @@ async fn subagent_inherits_parent_cancel() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -282,7 +285,7 @@ async fn test_spawn_depth_limit() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -364,7 +367,7 @@ async fn test_spawn_depth_limit() {
     // And spawning from a fresh, unrelated parent must still succeed —
     // there's no run with `child_session_key == that key`, so parent_depth
     // stays 0 and the spawn is allowed.
-    let other_parent_key = crate::session::key::derive_base_session_key(
+    let other_parent_key = peko_session::key::derive_base_session_key(
         &agent_name,
         &Subject::User("charlie".to_string()),
     );
@@ -401,7 +404,7 @@ async fn test_isolated_vs_shared_session() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -497,7 +500,7 @@ async fn test_result_format_in_registry() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -551,7 +554,7 @@ async fn test_list_runs_functionality() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -640,7 +643,7 @@ async fn test_cleanup_policy_tracking() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -684,7 +687,7 @@ async fn test_cleanup_policy_tracking() {
             &parent_key,
             ExecutionConfig {
                 max_depth: 10,
-                cleanup: SpawnCleanupPolicy::Delete,
+                cleanup: peko_extension_host::SpawnCleanupPolicy::Delete,
                 ..Default::default()
             },
             None,
@@ -722,7 +725,7 @@ async fn test_parent_child_relationship() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -775,8 +778,8 @@ async fn test_runs_by_parent_filtering() {
     // peer, which is exactly what `create_session` and the registry do.
     let peer1 = Subject::User("alice".to_string());
     let peer2 = Subject::User("bob".to_string());
-    let parent_key1 = crate::session::key::derive_base_session_key(&agent_name, &peer1);
-    let parent_key2 = crate::session::key::derive_base_session_key(&agent_name, &peer2);
+    let parent_key1 = peko_session::key::derive_base_session_key(&agent_name, &peer1);
+    let parent_key2 = peko_session::key::derive_base_session_key(&agent_name, &peer2);
     assert_ne!(
         parent_key1, parent_key2,
         "test setup: peers must produce distinct parent keys"
@@ -845,7 +848,7 @@ async fn test_concurrent_runs_counting() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -933,7 +936,7 @@ async fn test_executor_get_status() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -989,7 +992,7 @@ async fn test_executor_get_run() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )
@@ -1100,7 +1103,7 @@ async fn test_max_concurrent_limit() {
         let resolved = manager
             .route(
                 &peer,
-                crate::session::types::ChannelType::Cli,
+                peko_session::types::ChannelType::Cli,
                 "default",
                 None,
             )

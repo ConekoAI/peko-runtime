@@ -16,23 +16,23 @@
 //! `SessionManager`**. `Session` is now an internal implementation detail.
 //! External code should use `SessionHandle` obtained from `SessionManager`.
 
-use crate::common::types::message::ContentBlock;
-use crate::common::types::message::LlmMessage;
-use crate::engine::ToolCall;
-use crate::session::events::{
+use crate::events::{
     generate_event_id, generate_message_id, EventEnvelope, SessionEvent, ToolCallBlock,
 };
-use crate::session::jsonl::SessionStorage;
-use crate::session::message::SessionMessage;
-use crate::session::message_conversion::{
+use crate::jsonl::NormalizedEntry;
+use crate::jsonl::SessionStorage;
+use crate::message::SessionMessage;
+use crate::message_conversion::{
     entries_to_context_text, event_to_llm_message, normalized_entry_to_llm_message,
 };
-use crate::session::metadata_controller::MetadataController;
-use crate::session::NormalizedEntry;
+use crate::metadata_controller::MetadataController;
+use crate::ToolCall;
 use anyhow::Result;
 use chrono::Utc;
-use peko_auth::Subject;
+use peko_message::ContentBlock;
+use peko_message::LlmMessage;
 use peko_providers::TokenUsage as ProviderTokenUsage;
+use peko_subject::{PathResolverLike, Subject};
 use tracing::warn;
 
 /// Session - internal implementation for conversation persistence
@@ -151,7 +151,7 @@ impl Session {
         let peer = peer
             .cloned()
             .unwrap_or_else(|| Subject::User(String::new()));
-        let session_key = crate::session::key::derive_base_session_key(agent_name, &peer);
+        let session_key = crate::key::derive_base_session_key(agent_name, &peer);
 
         Self::from_entries(
             session_id.to_string(),
@@ -322,17 +322,16 @@ impl Session {
         let content_str = content.into();
 
         // Convert ToolCall to ToolCallBlock
-        let tool_call_blocks: Option<Vec<crate::session::events::ToolCallBlock>> =
-            tool_calls.map(|calls| {
-                calls
-                    .into_iter()
-                    .map(|call| ToolCallBlock {
-                        id: format!("tc_{}", uuid::Uuid::new_v4().to_string().replace('-', "")),
-                        name: call.name,
-                        arguments: call.parameters,
-                    })
-                    .collect()
-            });
+        let tool_call_blocks: Option<Vec<crate::events::ToolCallBlock>> = tool_calls.map(|calls| {
+            calls
+                .into_iter()
+                .map(|call| ToolCallBlock {
+                    id: format!("tc_{}", uuid::Uuid::new_v4().to_string().replace('-', "")),
+                    name: call.name,
+                    arguments: call.parameters,
+                })
+                .collect()
+        });
 
         // Build content blocks: text + tool calls
         let mut content_blocks = vec![ContentBlock::Text { text: content_str }];
@@ -387,7 +386,7 @@ impl Session {
         thinking: impl Into<String>,
         signature: Option<String>,
     ) -> Result<()> {
-        let thinking_block = crate::session::events::ThinkingBlock {
+        let thinking_block = crate::events::ThinkingBlock {
             text: thinking.into(),
             signature,
         };
@@ -428,7 +427,7 @@ impl Session {
         role: impl Into<String>,
         content_blocks: Vec<ContentBlock>,
         _tool_calls: Option<Vec<ToolCallBlock>>,
-        _thinking: Option<crate::session::events::ThinkingBlock>,
+        _thinking: Option<crate::events::ThinkingBlock>,
         usage: Option<ProviderTokenUsage>,
     ) -> Result<()> {
         let role_str = role.into();
@@ -461,8 +460,8 @@ impl Session {
                     id: generate_event_id(),
                     ts: Utc::now(),
                 },
-                message: crate::common::types::message::LlmMessage {
-                    role: crate::common::types::message::MessageRole::User,
+                message: peko_message::LlmMessage {
+                    role: peko_message::MessageRole::User,
                     content: final_content_blocks,
                     timestamp: Utc::now(),
                     metadata: std::collections::HashMap::new(),
@@ -470,8 +469,8 @@ impl Session {
                     usage: None,
                 },
                 message_id: msg_id.clone(),
-                role_metadata: crate::session::message::RoleMetadata::User {
-                    source: crate::session::events::MessageSource::User,
+                role_metadata: crate::message::RoleMetadata::User {
+                    source: crate::events::MessageSource::User,
                 },
             },
             "assistant" => {
@@ -481,17 +480,18 @@ impl Session {
                 // `total = input + output`, which silently discarded
                 // the wire `total_tokens` (lossy for OpenAI, harmless
                 // for Anthropic) and dropped the new cache fields.
-                let token_usage = usage.as_ref().map_or(
-                    crate::common::types::message::TokenUsage::default(),
-                    |u| crate::common::types::message::TokenUsage {
-                        input: u.input,
-                        output: u.output,
-                        total: u.total,
-                        cache_creation_input_tokens: u.cache_creation_input_tokens,
-                        cache_read_input_tokens: u.cache_read_input_tokens,
-                        reasoning_output_tokens: u.reasoning_output_tokens,
-                    },
-                );
+                let token_usage = usage
+                    .as_ref()
+                    .map_or(peko_message::TokenUsage::default(), |u| {
+                        peko_message::TokenUsage {
+                            input: u.input,
+                            output: u.output,
+                            total: u.total,
+                            cache_creation_input_tokens: u.cache_creation_input_tokens,
+                            cache_read_input_tokens: u.cache_read_input_tokens,
+                            reasoning_output_tokens: u.reasoning_output_tokens,
+                        }
+                    });
 
                 SessionMessage::assistant_with_blocks(
                     final_content_blocks,
@@ -558,7 +558,7 @@ impl Session {
                             _ => None,
                         })
                         .collect::<String>(),
-                    crate::session::events::MessageSource::User,
+                    crate::events::MessageSource::User,
                 )
             }
         };
@@ -584,8 +584,8 @@ impl Session {
     pub async fn add_assistant_with_blocks(
         &mut self,
         content_blocks: Vec<ContentBlock>,
-        tool_calls: Option<Vec<crate::session::events::ToolCallBlock>>,
-        thinking: Option<crate::session::events::ThinkingBlock>,
+        tool_calls: Option<Vec<crate::events::ToolCallBlock>>,
+        thinking: Option<crate::events::ThinkingBlock>,
         usage: Option<ProviderTokenUsage>,
     ) -> Result<()> {
         self.add_llm_message("assistant", content_blocks, tool_calls, thinking, usage)
@@ -676,7 +676,7 @@ impl Session {
         tokens_before: usize,
         tokens_after: usize,
         compaction_number: usize,
-        details: Option<&crate::session::compaction::summary_format::CompactionDetails>,
+        details: Option<&crate::compaction::summary_format::CompactionDetails>,
     ) -> Result<()> {
         self.storage
             .append_compaction(
@@ -697,7 +697,7 @@ impl Session {
     ///
     /// Uses normalized loading to support both Legacy V3 and Event Format sessions.
     pub async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
-        use crate::session::NormalizedEntry;
+        use crate::jsonl::NormalizedEntry;
 
         let entries = self.storage.load_normalized(&self.id).await?;
 
@@ -732,7 +732,7 @@ impl Session {
     ///
     /// This is called once at session load; the result is kept in memory for the run.
     pub async fn build_context(&self) -> Result<Vec<LlmMessage>> {
-        use crate::session::NormalizedEntry;
+        use crate::jsonl::NormalizedEntry;
 
         let entries = self.storage.load_normalized(&self.id).await?;
         let mut messages = Vec::new();
@@ -859,8 +859,8 @@ impl Session {
 
     /// List available sessions for an agent
     pub async fn list_sessions(agent_name: &str) -> Result<Vec<(String, std::time::SystemTime)>> {
-        // Use PathResolver for consistent path resolution
-        let resolver = crate::common::paths::PathResolver::new();
+        // Use DefaultPathResolver for consistent path resolution
+        let resolver = crate::default_path_resolver::DefaultPathResolver::new();
         let storage_dir = resolver.agent_sessions_dir(agent_name);
 
         let mut sessions = Vec::new();
@@ -896,7 +896,8 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
+    use peko_subject::Subject;
 
     // Note: Creation tests moved to SessionManager tests
     // Session::create* methods were removed in Phase 3
@@ -905,22 +906,22 @@ mod tests {
     #[test]
     fn test_derive_session_key() {
         let peer = Subject::User("alice".to_string());
-        let key = crate::session::key::derive_base_session_key("test_agent", &peer);
+        let key = crate::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:user:alice");
 
         let peer = Subject::Principal("helper".into());
-        let key = crate::session::key::derive_base_session_key("test_agent", &peer);
+        let key = crate::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:agent:helper");
     }
 
     #[tokio::test]
     async fn test_load_history_preserves_tool_calls_and_results() {
-        use crate::common::types::message::ContentBlock;
+        use peko_message::ContentBlock;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_auth::Subject::User("default".to_string());
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
         let session_id = "test-session-123";
 
         // Create a session
@@ -945,7 +946,7 @@ mod tests {
                         arguments: serde_json::json!({"path": "test.txt"}),
                     },
                 ],
-                Some(vec![crate::session::events::ToolCallBlock {
+                Some(vec![crate::events::ToolCallBlock {
                     id: "tool_abc".to_string(),
                     name: "Read".to_string(),
                     arguments: serde_json::json!({"path": "test.txt"}),
@@ -972,7 +973,7 @@ mod tests {
         let assistant = &history[0];
         assert!(matches!(
             assistant.role,
-            crate::common::types::message::MessageRole::Assistant
+            peko_message::MessageRole::Assistant
         ));
         assert_eq!(
             assistant.content.len(),
@@ -997,10 +998,7 @@ mod tests {
 
         // Check tool result preserves tool_call_id
         let tool = &history[1];
-        assert!(matches!(
-            tool.role,
-            crate::common::types::message::MessageRole::Tool
-        ));
+        assert!(matches!(tool.role, peko_message::MessageRole::Tool));
         assert_eq!(tool.content.len(), 1);
         if let ContentBlock::ToolResult {
             tool_call_id,
@@ -1029,12 +1027,12 @@ mod tests {
     /// original dispatch outcome on rehydration.
     #[tokio::test]
     async fn test_add_tool_result_persists_is_error_flag() {
-        use crate::common::types::message::ContentBlock;
+        use peko_message::ContentBlock;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_auth::Subject::User("default".to_string());
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
         let session_id = "test-session-f32a";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -1093,8 +1091,8 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_auth::Subject::User("default".to_string());
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
         let session_id = "test-build-context";
 
         // Create session and add messages
@@ -1108,7 +1106,7 @@ mod tests {
         // turn by the renderer. For build_context tests we synthesize a
         // system message directly via append_event so the cache path is
         // exercised end-to-end.
-        use crate::session::events::{SessionEvent, SessionMessage};
+        use crate::events::{SessionEvent, SessionMessage};
         session
             .append_event(&SessionEvent::MessageV2(SessionMessage::system(
                 "You are helpful.",
@@ -1130,8 +1128,8 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_auth::Subject::User("default".to_string());
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
         let session_id = "test-build-context-compact";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -1142,7 +1140,7 @@ mod tests {
 
         // add_system was removed; synthesize the system message via
         // append_event to exercise the compaction path end-to-end.
-        use crate::session::events::{SessionEvent, SessionMessage};
+        use crate::events::{SessionEvent, SessionMessage};
         session
             .append_event(&SessionEvent::MessageV2(SessionMessage::system(
                 "You are helpful.",
@@ -1177,7 +1175,7 @@ mod tests {
         );
         assert_eq!(context[0].role, peko_providers::MessageRole::System);
         let summary_text = match &context[0].content[0] {
-            crate::common::types::message::ContentBlock::Text { text } => text.as_str(),
+            peko_message::ContentBlock::Text { text } => text.as_str(),
             _ => "",
         };
         assert!(summary_text.contains("Summary of old messages"));
@@ -1190,10 +1188,10 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = peko_auth::Subject::User("default".to_string());
+        let peer = peko_subject::Subject::User("default".to_string());
         let session_id = "test-fast-context";
 
-        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
         storage.create_session(session_id, None).await.unwrap();
 
         let mut session =
@@ -1203,7 +1201,7 @@ mod tests {
 
         // add_system was removed; synthesize the system message via
         // append_event for the cache test.
-        use crate::session::events::{SessionEvent, SessionMessage};
+        use crate::events::{SessionEvent, SessionMessage};
         session
             .append_event(&SessionEvent::MessageV2(SessionMessage::system(
                 "You are helpful.",
@@ -1229,10 +1227,10 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = peko_auth::Subject::User("default".to_string());
+        let peer = peko_subject::Subject::User("default".to_string());
         let session_id = "test-fast-context-invalidate";
 
-        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
         storage.create_session(session_id, None).await.unwrap();
 
         let mut session =
@@ -1242,7 +1240,7 @@ mod tests {
 
         // add_system was removed; synthesize the system message via
         // append_event for the cache test.
-        use crate::session::events::{SessionEvent, SessionMessage};
+        use crate::events::{SessionEvent, SessionMessage};
         session
             .append_event(&SessionEvent::MessageV2(SessionMessage::system(
                 "You are helpful.",
@@ -1268,10 +1266,10 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = peko_auth::Subject::User("default".to_string());
+        let peer = peko_subject::Subject::User("default".to_string());
         let session_id = "test-update-cache";
 
-        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
         storage.create_session(session_id, None).await.unwrap();
 
         let session = Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
@@ -1318,10 +1316,10 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = peko_auth::Subject::User("default".to_string());
+        let peer = peko_subject::Subject::User("default".to_string());
         let session_id = "test-full-compaction";
 
-        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
         storage.create_session(session_id, None).await.unwrap();
 
         let mut session =
@@ -1330,7 +1328,7 @@ mod tests {
                 .unwrap();
 
         // 1. Build up conversation history (synthesize system via append_event)
-        use crate::session::events::{SessionEvent, SessionMessage};
+        use crate::events::{SessionEvent, SessionMessage};
         session
             .append_event(&SessionEvent::MessageV2(SessionMessage::system(
                 "You are helpful.",
@@ -1373,7 +1371,7 @@ mod tests {
             "First message should be summary"
         );
         let summary_text = match &context_after[0].content[0] {
-            crate::common::types::message::ContentBlock::Text { text } => text.as_str(),
+            peko_message::ContentBlock::Text { text } => text.as_str(),
             _ => "",
         };
         assert!(
@@ -1410,15 +1408,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_append_event_and_build_context() {
-        use crate::session::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
+        use crate::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
         use chrono::Utc;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = peko_auth::Subject::User("default".to_string());
+        let peer = peko_subject::Subject::User("default".to_string());
         let session_id = "test-append-event";
 
-        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
         storage.create_session(session_id, None).await.unwrap();
 
         let mut session =
@@ -1427,7 +1425,7 @@ mod tests {
                 .unwrap();
 
         // Append a custom event via the low-level API
-        let event = crate::session::events::SessionEvent::SessionCreated(SessionCreatedEvent {
+        let event = crate::events::SessionEvent::SessionCreated(SessionCreatedEvent {
             envelope: EventEnvelope {
                 id: "test-event".to_string(),
                 ts: Utc::now(),
@@ -1459,11 +1457,11 @@ mod tests {
     /// verbatim into `RoleMetadata::Assistant.usage`.
     #[tokio::test]
     async fn test_jsonl_rehydration_preserves_wire_total_and_cache_subfields() {
-        use crate::session::events::SessionEvent;
+        use crate::events::SessionEvent;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
         let session_id = "test-session-rehydrate";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -1474,7 +1472,7 @@ mod tests {
         //   from input+output=150 by 849 (the cache-read tokens
         //   OpenAI prices into `total_tokens` but not into
         //   `prompt_tokens`).
-        let wire_usage = crate::common::types::message::TokenUsage {
+        let wire_usage = peko_message::TokenUsage {
             input: 100,
             output: 50,
             total: 999,
@@ -1482,8 +1480,8 @@ mod tests {
             cache_read_input_tokens: Some(842),
             reasoning_output_tokens: Some(20),
         };
-        let session_msg = crate::session::message::SessionMessage::assistant_with_blocks(
-            vec![crate::common::types::message::ContentBlock::Text {
+        let session_msg = crate::message::SessionMessage::assistant_with_blocks(
+            vec![peko_message::ContentBlock::Text {
                 text: "Hello".to_string(),
             }],
             "openai",
@@ -1507,7 +1505,7 @@ mod tests {
             .expect("assistant message must round-trip");
 
         let loaded = match &assistant_event.role_metadata {
-            crate::session::message::RoleMetadata::Assistant { usage, .. } => *usage,
+            crate::message::RoleMetadata::Assistant { usage, .. } => *usage,
             other => panic!("expected Assistant role_metadata, got {other:?}"),
         };
 

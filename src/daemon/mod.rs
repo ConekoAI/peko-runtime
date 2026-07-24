@@ -524,7 +524,7 @@ impl Daemon {
             return Ok(());
         }
 
-        let scheduler = crate::session::MaintenanceScheduler::new(sessions_root.to_path_buf());
+        let scheduler = peko_session::MaintenanceScheduler::new(sessions_root.to_path_buf());
         let report = scheduler.run_maintenance().await?;
 
         if report.pruned > 0 || report.total > 0 {

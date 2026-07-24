@@ -8,11 +8,11 @@
 //! - In-flight compaction tracking
 //! - Result notification via callback
 
-use peko_message::LlmMessage;
-use peko_quota::{QuotaMeter, QuotaScope};
 use crate::compaction::{CompactionConfig, Compactor};
 use anyhow::Result;
+use peko_message::LlmMessage;
 use peko_providers::ProviderView;
+use peko_quota::{QuotaMeter, QuotaScope};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot, Mutex};

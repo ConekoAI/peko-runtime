@@ -4,11 +4,11 @@
 //! Spawn overlays enable parallel task execution with configurable
 //! context inheritance and lifecycle policies.
 
-use super::overlay::SessionOverlay;
-use super::types::{OverlayType, SpawnCleanupPolicy};
+use crate::overlay::SessionOverlay;
+use crate::types::{OverlayType, SpawnCleanupPolicy};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use peko_auth::Subject;
+use peko_subject::Subject;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -427,7 +427,7 @@ impl From<SpawnOverlayData> for SpawnOverlay {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn test_spawn_overlay_new() {

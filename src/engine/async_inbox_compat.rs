@@ -34,22 +34,25 @@
 use std::sync::Arc;
 
 use peko_engine::{AsyncInboxItem, AsyncInboxLike};
-use peko_extension_host::{InboxItem, SessionInbox};
 
 /// Root-side adapter that converts the host-owned `Arc<SessionInbox>`
 /// into the engine-facing `AsyncInboxLike` trait. The loop stores
 /// `Arc<dyn AsyncInboxLike + ...>` and never sees `SessionInbox`
 /// directly.
 pub struct AsyncInboxAdapter {
-    inner: Arc<SessionInbox>,
+    inner: Arc<dyn AsyncInboxLike>,
 }
 
 impl AsyncInboxAdapter {
-    /// Wrap an `Arc<peko_extension_host::SessionInbox>` so the lifted
-    /// `AgenticLoop` can consume it through the `AsyncInboxLike`
-    /// trait port.
+    /// Wrap any `Arc<dyn AsyncInboxLike>` so the lifted `AgenticLoop`
+    /// can consume it through the engine's `AsyncInboxLike` trait
+    /// port. Phase 7 widened the accepted type from `Arc<SessionInbox>`
+    /// to the trait object so callers can hand in either a concrete
+    /// inbox (via direct coercion from `Arc<SessionInbox>`) or the
+    /// trait object they already received from the daemon-global
+    /// `InboxRegistry::get_or_create`.
     #[must_use]
-    pub fn new(inner: Arc<SessionInbox>) -> Self {
+    pub fn new(inner: Arc<dyn AsyncInboxLike>) -> Self {
         Self { inner }
     }
 }
@@ -57,34 +60,10 @@ impl AsyncInboxAdapter {
 #[async_trait::async_trait]
 impl AsyncInboxLike for AsyncInboxAdapter {
     async fn drain_all(&self) -> Vec<AsyncInboxItem> {
-        // Phase 7 envelope conversion: `peko_extension_host::InboxItem`
-        // holds native `CompletionEvent` / `SteeringMessage`; the API
-        // crate's `AsyncInboxItem` holds envelope forms. Wrap each at
-        // the trait impl boundary.
-        self.inner
-            .drain_all()
-            .await
-            .into_iter()
-            .map(|item| match item {
-                InboxItem::Completion(e) => {
-                    AsyncInboxItem::Completion(peko_extension_api::CompletionEnvelope {
-                        task_id: e.task_id,
-                        tool_name: e.tool_name,
-                        result: e.result,
-                        status: e.status,
-                        completed_at: e.completed_at,
-                        output_path: e.output_path,
-                        parent_session_key: e.parent_session_key,
-                    })
-                }
-                InboxItem::Steering(m) => {
-                    AsyncInboxItem::Steering(peko_extension_api::SteeringEnvelope {
-                        id: m.id,
-                        content: m.content,
-                        queued_at: m.queued_at,
-                    })
-                }
-            })
-            .collect()
+        // Delegate to the trait object. `SessionInbox` already
+        // implements `AsyncInboxLike` in `peko-extension-host` and
+        // converts its native `InboxItem` to envelope forms at the
+        // impl boundary; we just pass through.
+        self.inner.drain_all().await
     }
 }

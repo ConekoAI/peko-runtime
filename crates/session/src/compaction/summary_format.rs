@@ -75,9 +75,7 @@ pub fn format_summary_with_file_ops(summary: &str, details: &CompactionDetails) 
 ///
 /// Scans tool calls for `Read`, `Write`, `Edit`, etc.
 /// This is a best-effort heuristic — exact tracking depends on tool naming.
-pub fn extract_file_ops_from_messages(
-    messages: &[peko_message::LlmMessage],
-) -> CompactionDetails {
+pub fn extract_file_ops_from_messages(messages: &[peko_message::LlmMessage]) -> CompactionDetails {
     use peko_message::ContentBlock;
     use peko_message::MessageRole;
 

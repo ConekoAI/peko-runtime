@@ -48,8 +48,8 @@ use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use crate::principal::manager::PrincipalManager;
-use crate::session::key::parse_session_key;
 use peko_auth::caller::CallerContext;
+use peko_session::key::parse_session_key;
 
 /// Narrow port the `tool` handler uses to reach daemon state.
 ///

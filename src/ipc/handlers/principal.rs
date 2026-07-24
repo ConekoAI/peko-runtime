@@ -175,7 +175,7 @@ pub(crate) trait PrincipalHost: Send + Sync {
 
     /// Principal-session inbox registry used to deliver `Steer`
     /// pushes (`PrincipalSendControl { mode: Steer }`).
-    fn inbox_registry(&self) -> &Arc<crate::session::InboxRegistry>;
+    fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry>;
 
     /// On-disk extension store used by `PrincipalImport`'s
     /// embedded-extension install path and by `PrincipalExport`'s
@@ -1297,7 +1297,7 @@ async fn handle_principal_send_control(
         (Some((_cancel, peer, _name)), PrincipalSendControlMode::Steer { text }) => {
             let session_id = root_session_id(&peer);
             let inbox = host.inbox_registry().get_or_create(&session_id).await;
-            inbox.push(SteeringMessage::new(text));
+            inbox.push(SteeringMessage::new(text).into()).await;
             (true, None)
         }
         (None, _) => (

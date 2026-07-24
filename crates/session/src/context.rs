@@ -3,8 +3,8 @@
 //! Provides a lightweight DTO for session routing metadata.
 //! All session operations go through `SessionHandle` obtained from `SessionManager`.
 
-use super::types::ChannelType;
-use peko_auth::Subject;
+use crate::types::ChannelType;
+use peko_subject::Subject;
 
 /// Lightweight context for session-aware agent execution — pure DTO, no operations.
 ///
@@ -57,7 +57,7 @@ impl SessionContext {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn test_session_context_new() {

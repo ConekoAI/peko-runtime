@@ -130,7 +130,7 @@ mod tests {
             status,
             started_at: Utc::now(),
             completed_at: Some(Utc::now()),
-            cleanup: crate::session::types::SpawnCleanupPolicy::Keep,
+            cleanup: peko_session::types::SpawnCleanupPolicy::Keep,
             label: Some("my_label".to_string()),
             result,
             depth: 1,

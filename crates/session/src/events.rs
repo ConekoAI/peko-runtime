@@ -13,9 +13,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub use crate::common::types::message::TokenUsage;
 /// Re-export unified message types
-pub use crate::session::message::{MessageSource, RoleMetadata, SessionMessage};
+pub use crate::message::{MessageSource, RoleMetadata, SessionMessage};
+pub use peko_message::TokenUsage;
 
 /// Event envelope - every line in JSONL shares this structure
 ///
@@ -335,7 +335,7 @@ pub struct SystemEvent {
 /// `peko_message::{ToolCallBlock, ThinkingBlock}` so `peko-engine`'s
 /// `SessionView::add_assistant_with_blocks` can accept them in its
 /// trait signature. The re-export below preserves every existing
-/// `crate::session::events::ToolCallBlock` import path.
+/// `crate::events::ToolCallBlock` import path.
 pub use peko_message::ToolCallBlock;
 
 /// Thinking block for reasoning models
@@ -459,9 +459,7 @@ impl SessionEvent {
     #[must_use]
     pub fn is_assistant_message(&self) -> bool {
         match self {
-            SessionEvent::MessageV2(m) => {
-                m.role() == crate::common::types::message::MessageRole::Assistant
-            }
+            SessionEvent::MessageV2(m) => m.role() == peko_message::MessageRole::Assistant,
             _ => false,
         }
     }
@@ -470,9 +468,7 @@ impl SessionEvent {
     #[must_use]
     pub fn assistant_content(&self) -> Option<String> {
         match self {
-            SessionEvent::MessageV2(m)
-                if m.role() == crate::common::types::message::MessageRole::Assistant =>
-            {
+            SessionEvent::MessageV2(m) if m.role() == peko_message::MessageRole::Assistant => {
                 Some(m.text_content())
             }
             _ => None,
@@ -501,10 +497,10 @@ impl SessionEvent {
         match self {
             SessionEvent::SessionCreated(_) => "session.created",
             SessionEvent::MessageV2(m) => match m.role() {
-                crate::common::types::message::MessageRole::User => "user",
-                crate::common::types::message::MessageRole::Assistant => "assistant",
-                crate::common::types::message::MessageRole::System => "system",
-                crate::common::types::message::MessageRole::Tool => "tool",
+                peko_message::MessageRole::User => "user",
+                peko_message::MessageRole::Assistant => "assistant",
+                peko_message::MessageRole::System => "system",
+                peko_message::MessageRole::Tool => "tool",
             },
             SessionEvent::Thinking(_) => "thinking",
             SessionEvent::ToolCall(_) => "tool.call",

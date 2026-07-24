@@ -67,14 +67,35 @@ pub struct SteeringEnvelope {
 /// Implementors must be `Send + Sync` so the loop can hold
 /// `Arc<dyn AsyncInboxLike>` across `.await` points.
 ///
-/// The trait exposes exactly the surface the loop needs: drain
-/// everything in one batch, once per iteration. Drain-order
-/// preservation is the implementor's responsibility (FIFO insertion
-/// order is the host's contract).
+/// The trait exposes the surface the loop needs: drain everything
+/// in one batch, once per iteration. Drain-order preservation is
+/// the implementor's responsibility (FIFO insertion order is the
+/// host's contract). Producers (extension-host tasks, principal
+/// send, etc.) push items through [`AsyncInboxLike::push`] — a
+/// default no-op implementation lets test stubs opt out.
 #[async_trait::async_trait]
 pub trait AsyncInboxLike: Send + Sync + 'static {
     /// Drain all pending items. Called once per agentic-loop
     /// iteration; events arriving mid-iteration wait for the next
     /// one.
     async fn drain_all(&self) -> Vec<AsyncInboxItem>;
+
+    /// Push an item into the inbox. Default is a no-op (test stubs
+    /// don't need to retain pushed items). Real implementations
+    /// (peko-extension-host's `SessionInbox`) override to append to
+    /// their internal buffer.
+    async fn push(&self, _item: AsyncInboxItem) {}
+
+    /// Number of pending items waiting to be drained. Default is 0
+    /// (test stubs don't track pending state). Real implementations
+    /// override so producers / polling tests can observe non-empty
+    /// inboxes without forcing a drain.
+    async fn len(&self) -> usize {
+        0
+    }
+
+    /// Convenience: `self.len() == 0`. Mirrors `Vec::is_empty`.
+    async fn is_empty(&self) -> bool {
+        self.len().await == 0
+    }
 }

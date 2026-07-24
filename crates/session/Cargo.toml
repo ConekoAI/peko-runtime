@@ -45,6 +45,8 @@ toml = "0.8"
 # `scopeguard` is used by `BackgroundCompactor` to release in-flight
 # tracking on early return / panic.
 scopeguard = "1.2"
+# `blake3` is used by session id hashing in index/lock helpers.
+blake3 = "1.5"
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["full"] }
