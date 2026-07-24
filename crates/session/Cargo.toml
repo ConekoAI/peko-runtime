@@ -1,0 +1,54 @@
+[package]
+name = "peko-session"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@peko.ai>"]
+description = "Peko session persistence (Phase 7) — owns the session overlay architecture, JSONL storage, atomic-append compaction persistence, context-window tracking, and the InboxRegistry (per-session async inbox + run permits). Compaction orchestration stays in peko-engine via CompactorBackend trait port; persistence impls (BackgroundCompactor + Compactor LLM summarization helper) live here. InboxRegistry holds Arc<dyn AsyncInboxLike> from peko-extension-api so the session crate is downstream of the API crate, not the host."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+# Crate hierarchy: peko-session is downstream of peko-message / peko-subject /
+# peko-events / peko-quota / peko-extension-api / peko-provider-api /
+# peko-tools-core. It MUST NOT depend on peko-engine, peko-agents,
+# peko-extension-host, or root. Engine re-exports the compaction data types +
+# CompactorBackend trait + drop_oldest_respecting_pairs helper from here so
+# pre-Phase-7 import paths keep compiling.
+peko-message = { path = "../message" }
+peko-subject = { path = "../subject" }
+peko-events = { path = "../events" }
+peko-quota = { path = "../quota" }
+peko-extension-api = { path = "../extension-api" }
+peko-provider-api = { path = "../provider-api" }
+peko-tools-core = { path = "../tools-core" }
+peko-providers = { path = "../providers" }
+peko-fs-persistence = { path = "../fs-persistence" }
+
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.7", features = ["v4", "serde"] }
+tracing = "0.1"
+tokio = { version = "1.35", features = ["sync", "time", "rt", "macros", "rt-multi-thread"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+# `regex` is used by `SessionKey::validate_safe_filename` (sanitize session
+# ids for Windows filesystems).
+regex = "1.10"
+# `dirs` is used by `load_compaction_config` to look up `~/.peko/config.toml`.
+dirs = "5.0"
+# `toml` is used by `load_compaction_config` + `MetadataDiscrepancy` config
+# diffing.
+toml = "0.8"
+# `scopeguard` is used by `BackgroundCompactor` to release in-flight
+# tracking on early return / panic.
+scopeguard = "1.2"
+
+[dev-dependencies]
+tokio = { version = "1.35", features = ["full"] }
+tempfile = "3.10"
+# `serial_test` is used by compaction integration tests to serialize
+# state-touching checks; mirrors root's compaction integration tests.
+serial_test = "3.0"

@@ -7,41 +7,29 @@
 //!
 //! # Why a wrapper?
 //!
-//! `peko_extension_host::SessionInbox` is a foreign type (lives in
-//! the workspace crate, not in root), and `AsyncInboxLike` is a
-//! foreign trait (lives in `peko_engine`). Rust's orphan rule forbids
-//! `impl ForeignTrait for ForeignType` in root. The wrapper struct
-//! `AsyncInboxAdapter` is root-local so the impl is legal here.
+//! Phase 7 promoted `AsyncInboxLike` into the `peko-extension-api`
+//! crate so `peko-session` can hold `Arc<dyn AsyncInboxLike>`
+//! without importing `peko-extension-host`. The trait is now
+//! foreign to root (lives in `peko-extension-api`), and
+//! `SessionInbox` is foreign to root too. Rust's orphan rule
+//! forbids `impl ForeignTrait for ForeignType` in root.
 //!
-//! The orphan-rule pressure also prevents moving the impl into
-//! `peko_extension_host` directly: that crate doesn't depend on
-//! `peko_engine`, so it can't see the `AsyncInboxLike` trait. Phase
-//! 16 deletes this shim once the trait ownership settles (either the
-//! trait moves into `peko_extension_host`, or `peko_engine` adds a
-//! blanket `Arc<T>` impl and `peko_extension_host` implements the
-//! inner trait — see Phase 16's plan).
+//! Note: `peko-extension-host::SessionInbox` already implements
+//! `AsyncInboxLike` directly (in `crates/extension-host/src/inbox.rs`).
+//! `Arc<SessionInbox>` therefore coerces to `Arc<dyn AsyncInboxLike>`
+//! without needing this wrapper. The wrapper exists only to preserve
+//! the historical `AsyncInboxAdapter::new(...)` constructor at the
+//! three call sites (`src/agents/agent.rs:1578` + two test sites in
+//! `src/engine/agentic_loop_compat.rs`) — Phase 16 deletes this
+//! shim once callers migrate to direct coercion.
 //!
-//! # Phase 2 simplification
+//! # Phase 7 envelope conversion
 //!
-//! Pre-Phase-2, root carried a field-identical clone of
-//! `peko_extension_host::{CompletionEvent, SteeringMessage, InboxItem}`.
-//! The wrapper's `drain_all` body had to convert field-by-field from
-//! root's `InboxItem` to `peko_engine::AsyncInboxItem`. After Phase
-//! 2, root's `InboxItem` IS `peko_extension_host::InboxItem` (a
-//! single canonical type); the conversion becomes a direct pattern
-//! match — no field copy.
-//!
-//! # Trait port rationale
-//!
-//! `AsyncInboxLike` (defined in `peko_engine::async_inbox`) is a
-//! narrow 1-method trait port: `drain_all() -> Vec<AsyncInboxItem>`.
-//! The loop pattern-matches the two relevant variants:
-//!
-//! - `InboxItem::Completion(e)` → completion events consumed by
-//!   `build_async_completion_message` (which already takes the
-//!   `AsyncCompletionLike` trait; `peko_extension_host::CompletionEvent`
-//!   implements it in `crates/engine/src/async_completion.rs`).
-//! - `InboxItem::Steering(m)` → pushed onto the message stream verbatim.
+//! Post-Phase-7, `AsyncInboxItem` carries
+//! `peko_extension_api::{CompletionEnvelope, SteeringEnvelope}` (not
+//! the host's `CompletionEvent` / `SteeringMessage`). The wrapper
+//! constructs the envelopes at the trait impl boundary; the agentic
+//! loop downstream sees only envelope forms.
 
 use std::sync::Arc;
 
@@ -69,20 +57,33 @@ impl AsyncInboxAdapter {
 #[async_trait::async_trait]
 impl AsyncInboxLike for AsyncInboxAdapter {
     async fn drain_all(&self) -> Vec<AsyncInboxItem> {
-        // Phase 2 simplification: `peko_extension_host::InboxItem` is
-        // the single canonical item type. The two relevant variants
-        // map 1:1 onto `peko_engine::AsyncInboxItem` (which itself
-        // holds `peko_extension_host::CompletionEvent` /
-        // `peko_extension_host::SteeringMessage`). The previous
-        // field-by-field conversion went away because the structs are
-        // now the same type.
+        // Phase 7 envelope conversion: `peko_extension_host::InboxItem`
+        // holds native `CompletionEvent` / `SteeringMessage`; the API
+        // crate's `AsyncInboxItem` holds envelope forms. Wrap each at
+        // the trait impl boundary.
         self.inner
             .drain_all()
             .await
             .into_iter()
             .map(|item| match item {
-                InboxItem::Completion(e) => AsyncInboxItem::Completion(e),
-                InboxItem::Steering(m) => AsyncInboxItem::Steering(m),
+                InboxItem::Completion(e) => {
+                    AsyncInboxItem::Completion(peko_extension_api::CompletionEnvelope {
+                        task_id: e.task_id,
+                        tool_name: e.tool_name,
+                        result: e.result,
+                        status: e.status,
+                        completed_at: e.completed_at,
+                        output_path: e.output_path,
+                        parent_session_key: e.parent_session_key,
+                    })
+                }
+                InboxItem::Steering(m) => {
+                    AsyncInboxItem::Steering(peko_extension_api::SteeringEnvelope {
+                        id: m.id,
+                        content: m.content,
+                        queued_at: m.queued_at,
+                    })
+                }
             })
             .collect()
     }

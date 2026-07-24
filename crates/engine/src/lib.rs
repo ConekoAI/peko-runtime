@@ -87,12 +87,15 @@ pub use agentic_loop::{AgenticLoop, AgenticResult, ToolCall};
 pub use async_completion::build_async_completion_message;
 pub use async_inbox::{AsyncInboxItem, AsyncInboxLike};
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
-pub use compaction::{
-    drop_oldest_respecting_pairs, BackgroundCompactorFactory, CompactionConfig, CompactionEntry,
-    CompactionQuota, CompactionRequest, CompactionResponse, CompactionResponseResult,
-    CompactionResult, CompactionState, CompactorBackend, ContextUsageEstimate,
-};
 pub use compaction_orchestrator::CompactionOrchestrator;
+// Phase 7 — the compaction data types + trait ports + eviction
+// helper live in `peko-session` (the persistence-side owner).
+// Re-export through `peko_engine::compaction::{...}` so the
+// pre-Phase-7 import paths (`peko_engine::compaction::CompactionConfig`,
+// etc.) keep compiling. The legacy
+// `crates/engine/src/compaction/types.rs` / `backend.rs` / `factory.rs`
+// / `eviction.rs` are deleted in Phase 7.2 once their last consumers
+// migrate.
 pub use error::AgenticError;
 pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, LifecyclePhase};
@@ -100,6 +103,11 @@ pub use execution::{ExecutionMode, TaskId, TaskStatus, TaskSummary};
 pub use funnel::{execute_tool_via_core, execute_tool_via_core_with_context};
 pub use iteration_state::{
     CapabilityChange, CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker,
+};
+pub use peko_session::compaction::{
+    drop_oldest_respecting_pairs, BackgroundCompactorFactory, CompactionConfig, CompactionEntry,
+    CompactionQuota, CompactionRequest, CompactionResponse, CompactionResponseResult,
+    CompactionResult, CompactionState, CompactorBackend, ContextUsageEstimate,
 };
 pub use prompt::renderer::PromptRenderer;
 pub use prompt::{

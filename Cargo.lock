@@ -2410,6 +2410,7 @@ dependencies = [
  "peko-provider-api",
  "peko-providers",
  "peko-quota",
+ "peko-session",
  "peko-subject",
  "peko-tools-builtin",
  "peko-tools-core",
@@ -2515,6 +2516,7 @@ dependencies = [
  "peko-provider-api",
  "peko-providers",
  "peko-quota",
+ "peko-session",
  "peko-subject",
  "peko-tools-core",
  "regex",
@@ -2540,6 +2542,8 @@ name = "peko-extension-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "chrono",
  "peko-message",
  "peko-provider-api",
  "peko-tools-core",
@@ -2690,6 +2694,37 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "peko-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "peko-events",
+ "peko-extension-api",
+ "peko-fs-persistence",
+ "peko-message",
+ "peko-provider-api",
+ "peko-providers",
+ "peko-quota",
+ "peko-subject",
+ "peko-tools-core",
+ "regex",
+ "scopeguard",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

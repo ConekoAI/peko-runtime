@@ -32,6 +32,7 @@
 //!   `Vault` (root-only types) live in the host as free functions
 //!   `resolve_reserved_params` / `resolve_param_source_with_vault`.
 
+pub mod async_inbox;
 pub mod async_status;
 pub mod async_types;
 pub mod capabilities;
@@ -42,6 +43,7 @@ pub mod session;
 pub mod tool;
 pub mod types;
 
+pub use async_inbox::{AsyncInboxItem, AsyncInboxLike, CompletionEnvelope, SteeringEnvelope};
 pub use async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
 pub use async_types::AsyncReceipt;
 pub use capabilities::{ActiveExtensionSet, Capabilities, Capability};

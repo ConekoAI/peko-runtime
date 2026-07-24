@@ -244,6 +244,48 @@ impl SessionInboxSink for SessionInbox {
     }
 }
 
+/// Phase 7 trait-port: `SessionInbox` implements
+/// `peko_extension_api::AsyncInboxLike` so the daemon-global
+/// `peko_session::InboxRegistry` can hold
+/// `Arc<dyn AsyncInboxLike>` without importing `peko-extension-host`
+/// directly (a forbidden direction: `peko-session` is downstream of
+/// the API crate and must not see host concrete types).
+///
+/// The conversion from native `CompletionEvent` /
+/// `SteeringMessage` to the API crate's envelope forms happens at
+/// the trait impl boundary; the agentic loop downstream sees only
+/// `AsyncInboxItem::Completion(CompletionEnvelope)` /
+/// `AsyncInboxItem::Steering(SteeringEnvelope)`.
+#[async_trait::async_trait]
+impl peko_extension_api::AsyncInboxLike for SessionInbox {
+    async fn drain_all(&self) -> Vec<peko_extension_api::AsyncInboxItem> {
+        let items = SessionInbox::drain_all(self).await;
+        items
+            .into_iter()
+            .map(|item| match item {
+                InboxItem::Completion(e) => peko_extension_api::AsyncInboxItem::Completion(
+                    peko_extension_api::CompletionEnvelope {
+                        task_id: e.task_id,
+                        tool_name: e.tool_name,
+                        result: e.result,
+                        status: e.status,
+                        completed_at: e.completed_at,
+                        output_path: e.output_path,
+                        parent_session_key: e.parent_session_key,
+                    },
+                ),
+                InboxItem::Steering(m) => peko_extension_api::AsyncInboxItem::Steering(
+                    peko_extension_api::SteeringEnvelope {
+                        id: m.id,
+                        content: m.content,
+                        queued_at: m.queued_at,
+                    },
+                ),
+            })
+            .collect()
+    }
+}
+
 /// Default [`InboxSinkProvider`] implementation. Owns a `HashMap` of
 /// per-key inboxes and creates a fresh [`SessionInbox`] on first
 /// lookup.

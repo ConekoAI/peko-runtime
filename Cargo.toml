@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/fs-persistence", "crates/identity", "crates/message", "crates/peko-daemon", "crates/provider-api", "crates/providers",
+members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/fs-persistence", "crates/identity", "crates/message", "crates/peko-daemon", "crates/provider-api", "crates/providers", "crates/session",
     "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
 # ---------------------------------------------------------------------------
@@ -163,6 +163,15 @@ peko-chat-log = { path = "crates/chat-log" }
 # implements the `RuntimePaths` / `PrincipalResourceView` trait ports
 # defined in `peko-auth::host` so `peko-auth` stays a leaf crate.
 peko-auth = { path = "crates/auth" }
+# Phase 7 — peko-session owns the session persistence domain
+# (JSONL storage, metadata, recovery, compaction persistence,
+# InboxRegistry). Root re-exports the historical `crate::session::*`
+# paths via the legacy `src/session/` shim until Phase 7.4 deletes
+# the directory. After 7.4, root-side callers will import from
+# `peko_session::*` directly. The crate is downstream of
+# peko-extension-api / peko-providers / peko-fs-persistence / etc.
+# (see crates/session/Cargo.toml).
+peko-session = { path = "crates/session" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).

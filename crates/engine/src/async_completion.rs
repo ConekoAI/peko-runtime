@@ -58,6 +58,29 @@ impl AsyncCompletionLike for peko_extension_host::CompletionEvent {
     }
 }
 
+/// Phase 7 envelope impl: `AsyncInboxItem::Completion` now carries the
+/// API crate's [`CompletionEnvelope`] (down from
+/// `peko_extension_host::CompletionEvent`). This impl lets
+/// `build_async_completion_message` consume envelope-form events
+/// directly without an intermediate conversion back to the host type.
+impl AsyncCompletionLike for peko_extension_api::CompletionEnvelope {
+    fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+    fn result(&self) -> &serde_json::Value {
+        &self.result
+    }
+    fn status(&self) -> &AsyncTaskStatus {
+        &self.status
+    }
+    fn parent_session_key(&self) -> &str {
+        &self.parent_session_key
+    }
+}
+
 /// Maximum size of a tool result to include verbatim in the synthetic
 /// completion message. Results larger than this are truncated and the
 /// model is told to call `AsyncOutput` for the full content. Keeps the

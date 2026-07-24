@@ -1,39 +1,20 @@
 //! Pure-data types for the compaction subsystem.
 //!
+//! Phase 7 promotes these into the `peko-session` crate. The
+//! persistence layer owns the data layout (`CompactionEntry`,
+//! `CompactionState`, `ContextUsageEstimate`, `CompactionResult`,
+//! `CompactionRequest`, `CompactionResponse`, `CompactionQuota`,
+//! `CompactionConfig`), so they live alongside the persistence impl
+//! that produces and consumes them. `peko-engine` re-exports them
+//! via `peko_engine::compaction::{CompactionConfig, ...}` so the
+//! pre-Phase-7 import paths keep compiling.
+//!
 //! Phase 9b.N.4 lifted these out of `src/session/compaction.rs` and
 //! `src/session/compaction/background.rs` so the `CompactionOrchestrator`
-//! (also lifted in 9b.N.4) can build them without a root dependency.
-//! The structs/enums are pure data: no behavior, no provider/session
-//! coupling. The `BackgroundCompactor` and `Compactor` logic that
-//! produces and consumes them stays in root — the orchestrator only
-//! needs the shapes for its bookkeeping and the trait-port signatures.
-//!
-//! Types lifted:
-//! - [`CompactionConfig`] — user-tunable settings
-//!   (`src/session/compaction.rs:107`).
-//! - [`CompactionEntry`] — record of one compaction run
-//!   (`src/session/compaction.rs:173`).
-//! - [`CompactionState`] — running counters
-//!   (`src/session/compaction.rs:195`).
-//! - [`ContextUsageEstimate`] — F21 hybrid token estimator result
-//!   (`src/session/compaction.rs:207`).
-//! - [`CompactionResult`] — completion payload from the compactor
-//!   (`src/session/compaction.rs:243`).
-//! - [`CompactionQuota`] — max-compactions-per-session + cooldown
-//!   tracking (`src/session/compaction/background.rs:44`).
-//! - [`CompactionRequest`] — request envelope
-//!   (`src/session/compaction/background.rs:65`).
-//! - [`CompactionResponse`] — completion outcome (the orchestrator
-//!   polls this enum via `tokio::sync::oneshot`)
-//!   (`src/session/compaction/background.rs:76`).
-//!
-//! The root crate re-exports these names from
-//! `src/session/compaction.rs` so pre-Phase-9b.N.4 import paths
-//! (`crate::session::compaction::CompactionConfig`, etc.) keep
-//! resolving. `CompactionDetails` (file-ops accumulator) stays in
-//! `src/session/compaction/summary_format.rs` because it's only
-//! consumed inside `Compactor::compact`, which the orchestrator never
-//! touches.
+//! could build them without a root dependency. Phase 7 moves them one
+//! step further — into the crate that owns the persistence impl
+//! itself — so the orchestrator's re-export is the only thing left in
+//! `peko-engine` for the data layout.
 
 use anyhow::Result;
 use peko_message::{LlmMessage, TokenUsage};
@@ -42,8 +23,8 @@ use serde::{Deserialize, Serialize};
 /// Compaction configuration
 ///
 /// User-tunable settings read from `~/.peko/config.toml` under the
-/// `[compaction]` block. See `CompactionOrchestrator::load_config`
-/// (root) for the loader.
+/// `[compaction]` block. See `load_compaction_config()` in this crate
+/// for the loader.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionConfig {
     /// Enable auto-compaction
@@ -122,19 +103,15 @@ pub struct CompactionEntry {
     pub compaction_number: usize,
     /// Tracked file operations from compacted messages.
     ///
-    /// Defined in `src/session/compaction/summary_format.rs` and
-    /// re-exported here as `Box<dyn Any>` would break serde — the
-    /// orchestrator never deserializes this directly; it only
-    /// forwards it to the session log. We type it as `serde_json::Value`
-    /// here (the wire shape is what the compactor emits) and the root
-    /// crate re-exports the concrete type alongside for callers that
-    /// want to inspect details.
-    ///
-    /// TODO(phase9b-n4-cleanup): if root callers end up needing
-    /// strongly-typed access to details, lift `summary_format` +
-    /// `CompactionDetails` into `peko-engine` and switch this field
-    /// back to the concrete type. Out of scope for this PR — the
-    /// orchestrator only stores/passes the value.
+    /// Phase 9b.N.4 widened this from
+    /// `summary_format::CompactionDetails` to
+    /// `serde_json::Value` so the orchestrator can store/persist
+    /// the value without depending on the root-owned summary
+    /// helper. Hooks see `serde_json::Value` blobs and degrade
+    /// gracefully if the structure changes. The `summary_format`
+    /// module (still in this crate) owns the strongly-typed
+    /// `CompactionDetails` and is consumed only inside
+    /// `Compactor::compact`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
@@ -166,9 +143,11 @@ pub struct ContextUsageEstimate {
 
 /// Result of a compaction operation.
 ///
-/// Mirrors `src/session/compaction.rs:243` with the `details` field
-/// widened to `serde_json::Value` (see [`CompactionEntry`] docstring
-/// for the rationale).
+/// `details` is `serde_json::Value` to avoid a hard dep on the
+/// `summary_format::CompactionDetails` type from the orchestrator's
+/// hot path (the orchestrator just forwards the value into the
+/// session log). Strongly-typed access goes through
+/// `serde_json::from_value::<summary_format::CompactionDetails>(v)`.
 #[derive(Debug, Clone)]
 pub struct CompactionResult {
     /// Messages after compaction (summary + kept messages)
@@ -184,11 +163,11 @@ pub struct CompactionResult {
     pub usage: TokenUsage,
 }
 
-/// Compaction quota tracking (`src/session/compaction/background.rs:44`).
+/// Compaction quota tracking — owned by `BackgroundCompactor`.
 ///
-/// `BackgroundCompactor` owns one of these; the orchestrator reads
-/// it through the [`crate::compaction::CompactorBackend`] trait port
-/// to decide whether to ask for another compaction.
+/// `BackgroundCompactor` reads/writes one of these; the orchestrator
+/// consults the dual-threshold check separately so the quota state is
+/// internal to the worker.
 ///
 /// `Copy` matches the original in `background.rs` (no heap state).
 #[derive(Debug, Clone, Copy, Default)]
@@ -201,18 +180,16 @@ pub struct CompactionQuota {
     pub max_consecutive_auto: usize,
 }
 
-/// Request envelope passed to the [`CompactorBackend`]
-/// (`src/session/compaction/background.rs:65`).
+/// Request envelope passed to the [`super::CompactorBackend`].
 ///
-/// This is the **public** shape — the orchestrator constructs one
-/// of these per call and hands it to the backend. The original
+/// This is the **public** shape — the orchestrator constructs one of
+/// these per call and hands it to the backend. The internal
 /// `background::CompactionRequest` (which carries the
 /// `response_tx: oneshot::Sender<CompactionResponse>`) is the
-/// **internal** shape used to ferry the request through the
-/// worker's `mpsc` channel; the backend wrapper attaches the
-/// `response_tx` before forwarding, so it stays inside `background.rs`.
-/// Phase 9b.N.4 deliberately does not lift the internal type to
-/// keep the trait port minimal.
+/// worker-channel plumbing and stays inside `background.rs`. The
+/// backend wrapper attaches the `response_tx` before forwarding, so
+/// it stays internal to `background.rs`. Phase 7 deliberately does
+/// not lift the internal type to keep the trait port minimal.
 #[derive(Debug, Clone)]
 pub struct CompactionRequest {
     /// Messages to potentially compact
@@ -221,8 +198,7 @@ pub struct CompactionRequest {
     pub previous_summary: Option<String>,
 }
 
-/// Completion outcome from the `BackgroundCompactor` worker
-/// (`src/session/compaction/background.rs:76`).
+/// Completion outcome from the `BackgroundCompactor` worker.
 ///
 /// The orchestrator polls the oneshot receiver and pattern-matches
 /// on this enum. Variants:
@@ -236,9 +212,6 @@ pub struct CompactionRequest {
 /// - `Failed(err)` — compactor errored; surfaced as a warn log.
 ///   `err` is the formatted error message (the orchestrator treats
 ///   it as opaque display text).
-///
-/// `Clone` matches the original in `background.rs:75` so the existing
-/// worker-task `mpsc` plumbing continues to type-check.
 #[derive(Debug, Clone)]
 pub enum CompactionResponse {
     Completed(CompactionResult),

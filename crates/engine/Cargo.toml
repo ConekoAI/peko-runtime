@@ -44,6 +44,14 @@ peko-extension-host = { path = "../extension-host" }
 # already takes a `String` in the constructor, but the test fixtures
 # and the `load_principal_memory` helper reference the typed subject.
 peko-subject = { path = "../subject" }
+# Phase 7 — the compaction data types + CompactorBackend trait port +
+# `drop_oldest_respecting_pairs` helper live in `peko-session`. Engine
+# re-exports them via `peko_engine::compaction::{...}` /
+# `peko_engine::drop_oldest_respecting_pairs` so the pre-Phase-7
+# import paths keep compiling. Engine depends on `peko-session`
+# (allowed direction); `peko-session` MUST NOT depend on
+# `peko-engine`.
+peko-session = { path = "../session" }
 
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
