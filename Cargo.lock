@@ -2406,6 +2406,7 @@ dependencies = [
  "peko-fs-persistence",
  "peko-identity",
  "peko-message",
+ "peko-observability",
  "peko-protocol",
  "peko-provider-api",
  "peko-providers",
@@ -2642,6 +2643,18 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "peko-observability"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "peko-auth",
  "serde",
  "serde_json",
  "tokio",

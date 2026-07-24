@@ -1,0 +1,24 @@
+[package]
+name = "peko-observability"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Observability hub — audit log + metrics + tracing (Phase 14 entry point of the post-migration cleanup). Replaces root src/observability/. Depends only on peko-auth (for Subject caller attribution) plus chrono/serde/tokio/anyhow. No runtime deps on session/agent/daemon."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+# Caller attribution on audit events (issues #17 + #26). Subject is the
+# canonical actor type per ADR-039; observability doesn't need any
+# deeper peko-* crate.
+peko-auth = { path = "../auth" }
+
+# Audit timestamps
+chrono = { version = "0.4", features = ["serde"] }
+# Serialization for AuditEvent.details + MetricsCollector snapshot
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async + error
+tokio = { version = "1.35", features = ["sync", "macros", "rt-multi-thread", "time"] }
+anyhow = "1.0"

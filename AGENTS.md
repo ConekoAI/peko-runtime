@@ -302,16 +302,16 @@ The workflow runs a path-aware, six-tier pipeline. Doc-only PRs (only
 
 ### Cleanup phases (post-migration)
 
-The 13-member workspace migration is complete, but the migration
-was deliberately conservative: every historical `peko::subject`,
-`peko::quota`, `peko::tools::core`, `peko::common::types::message`
-import path is preserved through `pub use peko_foo::*` shims in
-`src/`. Seven trait-port compat impls (`agent_view_compat.rs`,
-`async_completion_compat.rs`, `async_inbox_compat.rs`,
-`background_compactor_factory_compat.rs`,
-`compaction_backend_compat.rs`, `extension_core_funnel_compat.rs`,
-`provider_view_compat.rs`, `session_view_compat.rs`) live in
-`src/engine/`. The 3,871-line `agentic_loop_compat.rs` keeps
+The 13-member workspace migration is complete. Phase 15 retired the
+4 pure re-export shims (`src/subject.rs`, `src/quota/mod.rs`,
+`src/tools/core/mod.rs`, `src/common/types/message.rs`) — see
+PR #298. Phase 16 retired 2 of the 7 trait-port compat impls
+(`agent_view_compat.rs`, `async_inbox_compat.rs`) and removed the
+dead `pub use peko_engine::agentic_loop::{...}` re-export from
+`agentic_loop_compat.rs` — see PR #299. One trait-port adapter
+remains (`background_compactor_factory_compat.rs`); it dies when
+`BackgroundCompactor` itself lifts into `peko-engine` (deferred
+per Phase 6 note). The 3,871-line `agentic_loop_compat.rs` keeps
 engine integration tests in root because they reference root-only
 fixtures (`Agent`, `ExtensionCore`, `SessionManager`, `Provider`,
 `MockAdapter`, `BuiltinToolAdapter`, `LlmResolver`).
@@ -369,8 +369,8 @@ domain size.
 | 12 | Foreground switch launches `peko-daemon` binary | CLI `--foreground` re-execs into `peko-daemon` instead of in-process fork (see PR #276) |
 | 13 | Extract remaining runtime domains | `peko::daemon::*` absorbed into `peko-daemon` (PR #264); still pending: `peko::observability::*`, `peko::cron::*`, `peko::principal::*` |
 | 14 | Extract observability + cron + principal | `peko::observability::*`, `peko::cron::*`, `peko::principal::*` |
-| 15 | **Delete pure re-export shims** | `peko::subject::*`, `peko::quota::*`, `peko::tools::core::*`, `peko::common::types::message::*` |
-| 16 | Delete trait-port compat impls | `peko::engine::{agent,async_completion,async_inbox,background_compactor_factory,compaction_backend,extension_core_funnel,provider,session}_view_compat::*` |
+| 15 | **Delete pure re-export shims** (✅ merged PR #298, 2026-07-24) | `peko::subject::*`, `peko::quota::*`, `peko::tools::core::*`, `peko::common::types::message::*` |
+| 16 | Delete trait-port compat impls (✅ merged PR #299, 2026-07-24) | `peko::engine::{agent_view_compat,async_inbox_compat}` deleted; `background_compactor_factory_compat` retained (orphan rule — needs `BackgroundCompactor` lift deferred from Phase 6); `agentic_loop_compat` narrowed (dead re-export removed, 3,871-line test module stays) |
 | 17 | Build `peko-engine-test-support` + move engine tests | (no root path breakage; tests relocate) |
 | 18 | Move deferred built-in tools (`BashTool`, `ToolSearchTool`, `AgentCatalog`) + `tool_runtime.rs` | `peko::tools::builtin::bash`, `peko::tools::builtin::tool_search`, `peko::tools::builtin::agent_catalog`, `peko::engine::tool_runtime` |
 
@@ -413,11 +413,11 @@ Planned for later phases (not yet extracted):
 #### Cleanup invariant
 
 **Every historical `peko::...` import path is intentionally broken.**
-No new `pub use peko_*::*` shims. The 4 pure-shim modules that exist
-today (`src/subject.rs`, `src/quota/mod.rs`, `src/tools/core/mod.rs`,
-`src/common/types/message.rs`) carry deletion banners pointing to
-Phase 15. Every other historical path breaks across Phases 3–14,
-16, and 18.
+No new `pub use peko_*::*` shims. The 4 pure-shim modules
+(`src/subject.rs`, `src/quota/mod.rs`, `src/tools/core/mod.rs`,
+`src/common/types/message.rs`) were deleted in Phase 15 (merged
+PR #298, 2026-07-24). Every other historical path breaks across
+Phases 3–14, 17, and 18.
 
 #### Root facade boundary rule (Phase 1)
 
@@ -429,10 +429,9 @@ Every `pub mod` in `src/lib.rs` carries an inline `[kept]` or
   wiring after Phase 14 trim) are the only modules that remain
   `pub`/`pub(crate)` after the cleanup completes.
 - **Root must NOT `pub use peko_*::*` from another crate.** The 4
-  pure-shim modules that exist today (`src/subject.rs`,
-  `src/quota/mod.rs`, `src/tools/core/mod.rs`,
-  `src/common/types/message.rs`) are deletion candidates and will
-  be removed in Phase 15. No new shims may be added.
+  pure-shim modules (`src/subject.rs`, `src/quota/mod.rs`,
+  `src/tools/core/mod.rs`, `src/common/types/message.rs`) were
+  deleted in Phase 15 (PR #298). No new shims may be added.
 - **Every domain `pub mod` becomes `[extract:phase-N]`.** When the
   extraction PR lands, the root entry is removed or narrowed to
   `pub(crate)` so the public surface of `peko` (lib) reflects only

@@ -17,9 +17,9 @@ use tokio::sync::RwLock;
 
 use super::a2a_pending::PendingA2aResponses;
 use super::TunnelHandle;
-use crate::observability::Observability;
 use crate::principal::PrincipalManager;
 use peko_auth::jwt::JwtValidator;
+use peko_observability::Observability;
 
 /// Narrow host interface the tunnel dispatcher uses to reach daemon services.
 ///

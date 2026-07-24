@@ -153,7 +153,7 @@ impl Daemon {
         let cron_engine = CronEngine::new(
             std::sync::Arc::new(crate::cron::CronScheduler::new(&config.cron_db_path)?),
             std::sync::Arc::new(crate::cron::IdleDetector::new()),
-            std::sync::Arc::new(crate::observability::Observability::new("daemon")),
+            std::sync::Arc::new(peko_observability::Observability::new("daemon")),
             config.data_dir.clone(),
             None,
             // Placeholder executor for the un-wired constructor — the
@@ -187,7 +187,7 @@ impl Daemon {
         let cron_engine = CronEngine::new(
             std::sync::Arc::new(crate::cron::CronScheduler::new(&config.cron_db_path)?),
             std::sync::Arc::new(crate::cron::IdleDetector::new()),
-            std::sync::Arc::new(crate::observability::Observability::new("daemon")),
+            std::sync::Arc::new(peko_observability::Observability::new("daemon")),
             config.data_dir.clone(),
             None,
             std::sync::Arc::new(peko_extension_host::async_exec::executor::AsyncExecutor::new()),
@@ -287,7 +287,7 @@ impl Daemon {
         self.cron_engine = CronEngine::new(
             Arc::new(crate::cron::CronScheduler::new(&self.config.cron_db_path)?),
             idle_detector,
-            Arc::new(crate::observability::Observability::new("daemon")),
+            Arc::new(peko_observability::Observability::new("daemon")),
             self.config.data_dir.clone(),
             Some(app_state.principal_manager().clone()),
             cron_async_executor,

@@ -31,7 +31,6 @@ use crate::agents::subagent_announce::{build_subagent_system_prompt, build_subag
 use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
 use crate::extensions::framework::types::Capabilities;
-use crate::observability::Observability;
 use peko_auth::Subject;
 use peko_extension_host::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncResultDeliveryMode,
@@ -39,6 +38,7 @@ use peko_extension_host::async_exec::executor::{
     SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
 };
 use peko_extension_host::SpawnCleanupPolicy;
+use peko_observability::Observability;
 use peko_session::context::SessionContext;
 use peko_session::manager::SessionManager;
 use peko_subject::PrincipalId;

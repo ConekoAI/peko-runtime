@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 
-use crate::observability::Observability;
 use peko_message::LlmMessage;
+use peko_observability::Observability;
 use peko_session::InboxRegistry;
 
 /// A routing decision emitted by a `PrincipalRouter`.

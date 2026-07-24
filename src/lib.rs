@@ -258,8 +258,10 @@ pub mod daemon;
 // [extract:phase-12b] peko-ipc
 pub mod ipc;
 
-// [extract:phase-14] peko-observability
-pub(crate) mod observability;
+// [extract:phase-14] peko-observability — DONE (PR #300, 2026-07-24):
+// 4 root files moved to `crates/observability/src/{lib,audit,metrics,tracer}.rs`.
+// Callers in daemon/cron_engine, principal/{context,manager,router}, tunnel/host,
+// agents/subagent_executor import from `peko_observability::*` directly.
 
 // ============================================================================
 // Tools

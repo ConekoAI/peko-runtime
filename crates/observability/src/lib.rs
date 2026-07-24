@@ -4,6 +4,12 @@
 //! - What agents are doing (audit log)
 //! - Performance metrics (counters, timers)
 //! - Execution traces (request flows)
+//!
+//! Phase 14 of the post-migration cleanup: this crate replaces the
+//! root `src/observability/` directory. The single external dep is
+//! `peko-auth` (for `Subject` caller attribution per ADR-039, issues
+//! #17 + #26). No runtime deps on session/agent/daemon — the audit
+//! log, metrics collector, and tracer are pure infrastructure.
 
 pub mod audit;
 pub mod metrics;
