@@ -71,9 +71,7 @@ pub use peko_engine::{
     ToolCallParseError, ToolCallStreamParser, ToolExecutionResult, ToolExecutor,
 };
 
-pub mod agent_view_compat;
 pub mod agentic_loop_compat;
-pub mod async_inbox_compat;
 pub mod background_compactor_factory_compat;
 // `extension_core_funnel_compat` was removed in Phase 8a: the
 // `impl ToolFunnel for ExtensionCore` lives next to ExtensionCore in
