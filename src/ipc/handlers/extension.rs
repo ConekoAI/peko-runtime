@@ -327,7 +327,7 @@ impl RequestHandler for ExtensionHandler {
             } => {
                 let store = self.host.extension_store();
                 let ext_id = ExtensionId::new(&id);
-                match crate::extensions::framework::manager::packaging::ExtensionPackager::export(
+                match peko_extension_host::manager::packaging::ExtensionPackager::export(
                     store, &ext_id, &output,
                 )
                 .await

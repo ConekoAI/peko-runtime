@@ -2,9 +2,9 @@
 //!
 //! End-to-end: install → export → install from `.ext`
 
-use peko::extensions::framework::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
 use peko::extensions::framework::store::ExtensionStore;
 use peko::extensions::framework::types::ExtensionId;
+use peko_extension_host::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
 use peko_subject::PrincipalId;
 use std::path::PathBuf;
 use tempfile::TempDir;

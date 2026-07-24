@@ -3,8 +3,8 @@
 //! These tests verify the full flow: manifest -> adapter -> protocol -> result
 
 use super::*;
-use crate::extensions::framework::services::ReservedParamsConfig;
 use crate::tools::core::traits::Tool;
+use peko_extension_host::services::ReservedParamsConfig;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -138,7 +138,7 @@ async fn test_parameter_injection() {
         .with_session_id("sess_123")
         .with_agent_id("agent_456");
 
-    let resolved = crate::extensions::framework::services::reserved_params::resolve_reserved_params(
+    let resolved = peko_extension_host::services::reserved_params::resolve_reserved_params(
         &manifest.reserved_parameters,
         Some(&tool_ctx),
         None,

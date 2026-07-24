@@ -123,8 +123,7 @@ impl PrincipalManager {
             router_factory,
             resolver: None,
             inbox_registry: Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                peko_extension_host::async_exec::executor::executor::default_inbox_factory(),
             )),
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
             slash_dispatcher: Arc::new(RwLock::new(None)),

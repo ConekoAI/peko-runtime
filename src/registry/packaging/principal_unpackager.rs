@@ -4,7 +4,6 @@
 #![allow(dead_code)]
 
 use crate::common::paths::PathResolver;
-use crate::extensions::framework::manager::packaging::ExtensionUnpackager;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
 use crate::principal::config::PrincipalConfig;
@@ -14,6 +13,7 @@ use crate::registry::packaging::validation::ValidationResult;
 use crate::subject::PrincipalDID;
 use anyhow::Context;
 use peko_auth::Subject;
+use peko_extension_host::manager::packaging::ExtensionUnpackager;
 use peko_identity::{storage::KeyStorage, Identity, KeyPairExport};
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;

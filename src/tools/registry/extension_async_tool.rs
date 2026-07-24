@@ -84,16 +84,16 @@ impl Tool for ExtensionAsyncTool {
             .await?;
 
         match result {
-            crate::extensions::framework::async_exec::executor::WaitResult::Completed {
-                result,
-            } => Ok(result.to_json()),
-            crate::extensions::framework::async_exec::executor::WaitResult::Failed { error } => {
+            peko_extension_host::async_exec::executor::WaitResult::Completed { result } => {
+                Ok(result.to_json())
+            }
+            peko_extension_host::async_exec::executor::WaitResult::Failed { error } => {
                 Err(anyhow::anyhow!("Async execution failed: {error}"))
             }
-            crate::extensions::framework::async_exec::executor::WaitResult::Cancelled => {
+            peko_extension_host::async_exec::executor::WaitResult::Cancelled => {
                 Err(anyhow::anyhow!("Async execution was cancelled"))
             }
-            crate::extensions::framework::async_exec::executor::WaitResult::Timeout => {
+            peko_extension_host::async_exec::executor::WaitResult::Timeout => {
                 Err(anyhow::anyhow!("Async execution timed out"))
             }
         }

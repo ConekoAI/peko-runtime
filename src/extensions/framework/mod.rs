@@ -34,7 +34,8 @@ pub mod adapters;
 
 /// Async task execution framework.
 ///
-/// Lifts into `peko_extension_host` in Phase 8b. Until then, stays in root.
+/// Lifts into `peko_extension_host` in Phase 8b. The executor submodule
+/// remains as a backwards-compat shim until Phase 8c.2 deletes it.
 pub mod async_exec;
 
 /// Hook points, registry, handler traits — the core of the extension system.
@@ -74,23 +75,16 @@ pub mod store;
 
 /// Extension lifecycle management (install, enable, disable, discover, bundle).
 ///
-/// Lifts into `peko_extension_host` in Phase 8b. Until then, stays in root.
+/// Phase 8b lifted the bulk of `manager/` into `peko_extension_host::manager`;
+/// Phase 8c adds `packaging` + `storage` (which depends on the ExtensionStore
+/// trait port). `discovery` stays here as a backwards-compat shim.
 pub mod manager;
 
 /// Shared protocol utilities (process transport, validation, schema filter).
 ///
-/// Lifts into `peko_extension_host` in Phase 8c.
+/// Phase 8c.1 lifted all 4 files into `peko_extension_host::protocols::shared`;
+/// the root `shared/mod.rs` is now a kitchen-sink re-export shim.
 pub mod protocols;
-
-/// Param injection, tool execution, validation.
-///
-/// Lifts into `peko_extension_host` in Phase 8c.
-pub mod services;
-
-/// Async task transport layer.
-///
-/// Lifts into `peko_extension_host` in Phase 8b.
-pub mod transport;
 
 // ============================================================================
 // Re-exports

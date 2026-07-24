@@ -6,9 +6,9 @@
 pub mod help;
 
 use crate::common::types::OutputFormat;
-use crate::extensions::framework::services::Services as ExtensionServices;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::principal::Principal;
+use peko_extension_host::services::Services as ExtensionServices;
 use std::sync::Arc;
 
 /// Result of handling a slash command.
