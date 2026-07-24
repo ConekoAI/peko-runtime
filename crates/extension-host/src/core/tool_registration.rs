@@ -18,10 +18,10 @@
 //! Adapters that need real native async should register their own higher-priority
 //! handler; the registry handles the rest.
 
-use crate::extensions::framework::core::context::HookContext;
-use crate::extensions::framework::core::handler::HookHandler;
-use crate::extensions::framework::core::hook_points::HookPoint;
-use crate::extensions::framework::types::{
+use crate::core::context::HookContext;
+use crate::core::handler::HookHandler;
+use crate::core::hook_points::HookPoint;
+use crate::types::{
     Capabilities, Capability, ExtensionId, HookId, HookOutput, HookResult, ToolExposure,
     ToolMetadata, ToolRuntimeContext,
 };
@@ -330,14 +330,14 @@ impl HookHandler for AutoCancelHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::core::config::ExtensionServices;
+    use crate::core::config::ExtensionServices;
 
     fn sample_metadata(name: &str) -> ToolMetadata {
         ToolMetadata::new(
             name.to_string(),
             format!("The {name} tool"),
             serde_json::json!({"type": "object"}),
-            crate::extensions::framework::types::ToolSource::BuiltIn,
+            crate::types::ToolSource::BuiltIn,
         )
     }
 
@@ -351,7 +351,7 @@ mod tests {
                 section: "tools".to_string(),
                 priority: 100,
             },
-            crate::extensions::framework::types::HookInput::Unit,
+            crate::types::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
 
@@ -382,7 +382,7 @@ mod tests {
                 section: "tools".to_string(),
                 priority: 100,
             },
-            crate::extensions::framework::types::HookInput::Unit,
+            crate::types::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
         let tc = ToolRuntimeContext::new().with_capabilities(["tool:Write".to_string()]);
@@ -407,7 +407,7 @@ mod tests {
                 section: "tools".to_string(),
                 priority: 100,
             },
-            crate::extensions::framework::types::HookInput::Unit,
+            crate::types::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
         // Grant uses the original-case tool name; matching is
@@ -436,7 +436,7 @@ mod tests {
                 section: "tools".to_string(),
                 priority: 100,
             },
-            crate::extensions::framework::types::HookInput::Unit,
+            crate::types::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
         let tc = ToolRuntimeContext::new().with_capabilities(["tool:*".to_string()]);
@@ -458,7 +458,7 @@ mod tests {
             HookPoint::ToolExecuteAsync {
                 tool_name: "test_tool".to_string(),
             },
-            crate::extensions::framework::types::HookInput::ToolCall {
+            crate::types::HookInput::ToolCall {
                 tool_name: "test_tool".to_string(),
                 params: serde_json::json!({}),
                 workspace: None,
@@ -492,7 +492,7 @@ mod tests {
             HookPoint::ToolCheckStatus {
                 tool_name: "test_tool".to_string(),
             },
-            crate::extensions::framework::types::HookInput::TaskStatus {
+            crate::types::HookInput::TaskStatus {
                 task_id: "task-123".to_string(),
                 tool_name: "test_tool".to_string(),
             },
@@ -516,7 +516,7 @@ mod tests {
             HookPoint::ToolCancel {
                 tool_name: "test_tool".to_string(),
             },
-            crate::extensions::framework::types::HookInput::TaskCancel {
+            crate::types::HookInput::TaskCancel {
                 task_id: "task-123".to_string(),
                 tool_name: "test_tool".to_string(),
             },

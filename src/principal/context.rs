@@ -387,6 +387,7 @@ mod tests {
     use crate::principal::memory::DefaultPrincipalMemory;
     use crate::principal::Capabilities;
     use crate::subject::PrincipalId;
+    use serial_test::serial;
     use std::sync::Arc;
 
     /// `core()` returns the daemon-global `ExtensionCore`. After the
@@ -394,6 +395,7 @@ mod tests {
     /// is shared across principals and the principal's tool bag is
     /// installed on first call via `install_principal_tool_bag`.
     #[tokio::test]
+    #[serial]
     async fn core_returns_global_singleton() {
         let dir = tempfile::tempdir().unwrap();
         let memory: Arc<dyn PrincipalMemory> =

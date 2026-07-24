@@ -88,7 +88,7 @@ async fn init_extension_core(command: &Commands) {
         }
     };
 
-    let services = ExtensionServices::with_async_router(router);
+    let services = ExtensionServices::with_async_router(Arc::new(router));
     let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
     init_global_core(core);
     tracing::debug!("Initialized global ExtensionCore with async transport");

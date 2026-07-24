@@ -3,8 +3,8 @@
 //! This module defines the binding between hook points and handler factories,
 //! along with a convenience builder for common binding patterns.
 
-use crate::extensions::framework::core::handler::HookHandlerFactory;
-use crate::extensions::framework::core::hook_points::HookPoint;
+use crate::core::handler::HookHandlerFactory;
+use crate::core::hook_points::HookPoint;
 
 /// Binding between a hook point and a handler factory
 #[derive(Debug)]

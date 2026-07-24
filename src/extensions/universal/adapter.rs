@@ -401,9 +401,8 @@ impl HookHandler for UniversalToolExecuteHandler {
         let manifest_path = self.manifest_path.clone();
         let executable = self.executable.clone();
 
-        let exec_config = crate::extensions::framework::services::ToolExecutionConfig::with_schema(
-            self.full_schema.clone(),
-        );
+        let exec_config =
+            peko_extension_host::ToolExecConfig::with_schema(self.full_schema.clone());
 
         ctx.services
             .async_router()
@@ -411,15 +410,17 @@ impl HookHandler for UniversalToolExecuteHandler {
                 &ctx,
                 &self.tool_name,
                 &exec_config,
-                None::<fn(&mut serde_json::Value, Option<&str>)>,
-                move |merged_params| async move {
-                    let adapter = crate::extensions::universal::protocol::UniversalToolAdapter::from_manifest(
-                        &manifest_path,
-                        &executable,
-                    )
-                    .await?;
-                    adapter.execute_raw(merged_params).await
-                },
+                None::<peko_extension_host::PreprocessorFn>,
+                Box::new(move |merged_params| {
+                    Box::pin(async move {
+                        let adapter = crate::extensions::universal::protocol::UniversalToolAdapter::from_manifest(
+                            &manifest_path,
+                            &executable,
+                        )
+                        .await?;
+                        adapter.execute_raw(merged_params).await
+                    }) as futures::future::BoxFuture<'static, anyhow::Result<serde_json::Value>>
+                }) as peko_extension_host::ExecFn,
             )
             .await
     }

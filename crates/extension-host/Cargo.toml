@@ -19,6 +19,14 @@ peko-message = { path = "../message" }
 peko-tools-core = { path = "../tools-core" }
 peko-provider-api = { path = "../provider-api" }
 peko-subject = { path = "../subject" }
+peko-providers = { path = "../providers" }
+# Phase 8a: framework/core + store.rs + skill_catalog.rs + integration/
+# + scaffold/ moved into this crate. Store uses peko-fs-persistence for
+# file-lock semantics on the global extension store; scaffold uses
+# peko-events; Phase 8b will add peko-session once async_exec moves in.
+peko-events = { path = "../events" }
+peko-fs-persistence = { path = "../fs-persistence" }
+peko-quota = { path = "../quota" }
 
 async-trait = "0.1"
 async-stream = "0.3"
@@ -35,9 +43,21 @@ tokio-util = { version = "0.7", features = ["io"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.7", features = ["v4", "serde"] }
 tracing = "0.1"
+# F32b — JSON-Schema validator used by `NoopAsyncExecutionRouter` (the
+# host's default `AsyncExecutionRouter`) to validate LLM-emitted args
+# before invoking the tool. Mirrors root's `jsonschema = { version = "0.48",
+# default-features = false }` dep.
+jsonschema = { version = "0.48", default-features = false }
 # `secrecy` is needed by the `VaultAccess` trait (returns `SecretString`).
 # Mirrors the root crate's `secrecy = "0.10"` dep.
 secrecy = { version = "0.10", features = ["serde"] }
+# `thiserror` is needed by the `TestSyncHandler` (F36) which is gated on
+# the `test-utils` feature. Always available because root's `test-utils`
+# feature forwards the host's `test-utils` feature.
+thiserror = "1.0"
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["full"] }
+tempfile = "3.10"
+thiserror = "1.0"
+serial_test = "3.0"

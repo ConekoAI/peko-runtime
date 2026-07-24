@@ -409,9 +409,7 @@ impl HookHandler for BuiltinExecuteHandler {
         let tool_name_for_ctx = tool_name.clone();
         let tool_name_for_notice = tool_name.clone();
 
-        let exec_config = crate::extensions::framework::services::ToolExecutionConfig::with_schema(
-            self.tool.parameters(),
-        );
+        let exec_config = peko_extension_host::ToolExecConfig::with_schema(self.tool.parameters());
 
         let runtime_ctx = ctx
             .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
@@ -475,7 +473,7 @@ impl HookHandler for BuiltinExecuteHandler {
                 &ctx,
                 &tool_name,
                 &exec_config,
-                Some(
+                Some(Box::new(
                     move |params: &mut serde_json::Value, workspace: Option<&str>| {
                         if let Some(obj) = params.as_object_mut() {
                             // Subagent spawn inherently takes longer than simple tools because
@@ -555,16 +553,17 @@ impl HookHandler for BuiltinExecuteHandler {
                             }
                         }
                     },
-                ),
-                move |p| {
+                )),
+                Box::new(move |p| {
                     let tool = tool.clone();
                     let tool_ctx = tool_ctx_for_exec.clone();
-                    async move {
+                    Box::pin(async move {
                         // Use execute_with_context so tools receive session/agent
                         // context injected by the extension framework.
                         tool.execute_with_context(p, &tool_ctx).await
-                    }
-                },
+                    })
+                        as futures::future::BoxFuture<'static, anyhow::Result<serde_json::Value>>
+                }) as peko_extension_host::ExecFn,
             )
             .await;
 
@@ -645,6 +644,27 @@ impl HookHandler for BuiltinPromptHandler {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Arc;
+
+    /// Build an `ExtensionCore` whose async router is a working local
+    /// transport. Phase 8a changed `peko_extension_host::ExtensionServices::new`
+    /// to use a `NoopAsyncExecutionRouter` (the host crate cannot depend on
+    /// root to construct a real router), so test code that exercises
+    /// `BuiltinExecuteHandler::handle` must wire one in explicitly. The root
+    /// `AsyncExecutionRouter` impl is what production callers use, and it
+    /// handles schema validation, preprocessor, and exec-fn dispatch the
+    /// same way it always has.
+    fn make_test_core() -> Arc<crate::extensions::framework::core::ExtensionCore> {
+        let router = crate::extensions::framework::transport::async_router::AsyncExecutionRouter::with_transport(
+            crate::extensions::framework::transport::async_transport::create_local_transport(),
+        );
+        let services = crate::extensions::framework::core::ExtensionServices::with_async_router(
+            Arc::new(router),
+        );
+        Arc::new(
+            crate::extensions::framework::core::ExtensionCore::with_services(Arc::new(services)),
+        )
+    }
 
     // Mock tool for testing
     struct MockTool {
@@ -778,7 +798,7 @@ mod tests {
         use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
         use std::time::Duration;
 
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let core = make_test_core();
         let tool: Arc<dyn Tool> = Arc::new(MockTool {
             name: "Fast".to_string(),
         });
@@ -859,7 +879,7 @@ mod tests {
             }
         }
 
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let core = make_test_core();
         let tool: Arc<dyn Tool> = Arc::new(SlowMockTool);
         BuiltinToolAdapter::register_tool_system(&core, tool.clone())
             .await
@@ -951,7 +971,7 @@ mod tests {
             }
         }
 
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let core = make_test_core();
         let tool: Arc<dyn Tool> = Arc::new(EnrichingMockTool);
         BuiltinToolAdapter::register_tool_system(&core, tool.clone())
             .await
@@ -1077,7 +1097,7 @@ mod tests {
         // Wrap in a tool that exposes `as_any` so `Arc<dyn Tool>` works.
         let tool: Arc<dyn Tool> = Arc::new(tool_struct);
 
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let core = make_test_core();
         BuiltinToolAdapter::register_tool_system(&core, tool.clone())
             .await
             .unwrap();
@@ -1198,7 +1218,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let core = make_test_core();
         BuiltinToolAdapter::register_tool_system(&core, tool.clone())
             .await
             .unwrap();
@@ -1296,7 +1316,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let core = make_test_core();
         BuiltinToolAdapter::register_tool_system(&core, tool.clone())
             .await
             .unwrap();

@@ -1285,7 +1285,7 @@ impl HookHandler for McpToolExecuteHandler {
             .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
             .and_then(|tc| tc.principal_id.clone());
 
-        let exec_config = crate::extensions::framework::services::ToolExecutionConfig::new(
+        let exec_config = peko_extension_host::ToolExecConfig::new(
             reserved_params,
             serde_json::json!({"type": "object"}),
         );
@@ -1295,13 +1295,13 @@ impl HookHandler for McpToolExecuteHandler {
                 &ctx,
                 &called_tool_name,
                 &exec_config,
-                None::<fn(&mut serde_json::Value, Option<&str>)>,
-                move |p| {
+                None::<peko_extension_host::PreprocessorFn>,
+                Box::new(move |p| {
                     let manager = manager.clone();
                     let server = server_name.clone();
                     let tool = actual_tool.clone();
                     let principal_id = calling_principal_id.clone();
-                    async move {
+                    Box::pin(async move {
                         // Phase 2: on-demand server start. If the MCP server is not
                         // running when the tool is invoked, attempt to start it once.
                         let needs_start = {
@@ -1358,8 +1358,8 @@ impl HookHandler for McpToolExecuteHandler {
                             }).collect::<Vec<_>>(),
                         });
                         Ok(json_result)
-                    }
-                },
+                    }) as futures::future::BoxFuture<'static, anyhow::Result<serde_json::Value>>
+                }) as peko_extension_host::ExecFn,
             )
             .await
     }

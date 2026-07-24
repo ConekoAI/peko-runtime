@@ -3,27 +3,27 @@
 //! This module implements the central facade for extension hooks and tools.
 //! It composes `HookRegistry` and `ToolRegistry` to provide a unified interface.
 
-use crate::extensions::framework::core::config::ExtensionServices;
-use crate::extensions::framework::core::context::HookContext;
-use crate::extensions::framework::core::handler::HookHandler;
-use crate::extensions::framework::core::hook_points::HookPoint;
-use crate::extensions::framework::core::hook_registry::HookRegistry;
-use crate::extensions::framework::core::tool_registry::ToolRegistry;
-use crate::extensions::framework::types::{
+use crate::core::config::ExtensionServices;
+use crate::core::context::HookContext;
+use crate::core::handler::HookHandler;
+use crate::core::hook_points::HookPoint;
+use crate::core::hook_registry::HookRegistry;
+use crate::core::tool_registry::ToolRegistry;
+use crate::types::{
     tool_result_from_hook, ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata,
     ToolRuntimeContext,
 };
-use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, ToolExposure};
-use crate::subject::PrincipalId;
-use crate::tools::core::Tool;
+use crate::types::{ActiveExtensionSet, Capabilities, ToolExposure};
 use anyhow::Result;
+use peko_subject::PrincipalId;
+use peko_tools_core::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, instrument, trace, warn};
 
 // Re-export types from sub-registries for backward compatibility
-pub use crate::extensions::framework::core::hook_registry::{BuiltinExtensionInfo, RegisteredHook};
+pub use crate::core::hook_registry::{BuiltinExtensionInfo, RegisteredHook};
 
 /// Central facade for extension hooks and tools
 ///
@@ -732,7 +732,7 @@ impl ExtensionCore {
     /// F35 — Search the principal's `ToolExposure::Deferred` tool catalog
     /// and return up to `limit` matching `ToolDefinition`s ranked by the
     /// simple word-overlap backend at
-    /// [`crate::extensions::framework::core::scoring`].
+    /// [`crate::core::scoring`].
     ///
     /// This is the engine-side of the synthetic `__tool_search` stub.
     /// Returns `ToolDefinition`s (name + description + JSON schema) so the
@@ -775,11 +775,7 @@ impl ExtensionCore {
         let mut scored: Vec<_> = deferred
             .iter()
             .map(|m| {
-                let s = crate::extensions::framework::core::scoring::score(
-                    query,
-                    &m.name,
-                    &m.description,
-                );
+                let s = crate::core::scoring::score(query, &m.name, &m.description);
                 (m, s)
             })
             .filter(|(_, s)| *s > 0)
@@ -846,6 +842,20 @@ impl ExtensionCore {
         self.tool_registry.tool_count(principal_id).await
     }
 
+    /// F35 — return `true` if at least one `ToolExposure::Deferred`
+    /// tool is registered for `principal_id`.
+    ///
+    /// Used by the engine's `build_tool_definitions` to gate whether
+    /// the synthetic `__tool_search` stub should be appended to the
+    /// native catalog (F35, PR #239). Walks the unfiltered `list_tools`
+    /// because `Deferred` tools are filtered out of
+    /// `list_tool_definitions_with_allowlist` (F34 — exposure gate).
+    pub async fn has_deferred_tools_for(&self, principal_id: &PrincipalId) -> bool {
+        let all = self.list_tools(principal_id).await;
+        all.iter()
+            .any(|m| matches!(m.exposure, ToolExposure::Deferred))
+    }
+
     /// Look up a registered tool by name.
     ///
     /// Returns `Some(Arc<dyn Tool>)` if a tool with this name is registered,
@@ -872,7 +882,7 @@ impl ExtensionCore {
     pub(crate) async fn get_tool_handle(
         &self,
         name: &str,
-    ) -> Option<Arc<dyn crate::tools::core::Tool>> {
+    ) -> Option<Arc<dyn peko_tools_core::Tool>> {
         let instances = self.tool_instances.read().await;
         instances.get(name).cloned()
     }
@@ -898,7 +908,7 @@ impl ExtensionCore {
     ///
     /// `tool_instances` is keyed by name only — see the field doc on
     /// `ExtensionCore::tool_instances` for the rationale.
-    pub(crate) async fn insert_tool_instance(&self, name: String, tool: Arc<dyn Tool>) {
+    pub async fn insert_tool_instance(&self, name: String, tool: Arc<dyn Tool>) {
         let mut instances = self.tool_instances.write().await;
         instances.insert(name, tool);
     }
@@ -993,8 +1003,8 @@ pub fn global_core() -> Option<Arc<ExtensionCore>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::core::handler::HookHandler;
-    use crate::extensions::framework::types::HookOutput;
+    use crate::core::handler::HookHandler;
+    use crate::types::HookOutput;
 
     /// Mock handler for testing
     #[derive(Debug)]

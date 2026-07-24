@@ -3,10 +3,10 @@
 //! This module implements the registry for hook handlers.
 //! It manages registration, enable/disable, and invocation of hooks.
 
-use crate::extensions::framework::core::config::ExtensionServices;
-use crate::extensions::framework::core::context::HookContext;
-use crate::extensions::framework::core::hook_points::HookPoint;
-use crate::extensions::framework::types::{
+use crate::core::config::ExtensionServices;
+use crate::core::context::HookContext;
+use crate::core::hook_points::HookPoint;
+use crate::types::{
     ExtensionId, HookId, HookInput, HookOutput, HookPriority, HookResult, ToolMetadata,
 };
 use anyhow::Result;
@@ -459,7 +459,7 @@ impl HookRegistry {
             ..
         } = input
         {
-            let tool_ctx = crate::extensions::framework::types::ToolRuntimeContext::new()
+            let tool_ctx = crate::types::ToolRuntimeContext::new()
                 .with_run_id("hook_run")
                 .with_agent_id(agent_id.clone().unwrap_or_else(|| "unknown".to_string()))
                 .with_session_id(session_id.clone().unwrap_or_else(|| "unknown".to_string()));
@@ -500,7 +500,7 @@ impl HookRegistry {
         let point = ctx.point.clone();
         let input = ctx.input.clone();
         let tool_ctx = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            .get_state::<crate::types::ToolRuntimeContext>("tool_context")
             .cloned();
 
         let handlers = self.get_hooks_for_point(&point).await;

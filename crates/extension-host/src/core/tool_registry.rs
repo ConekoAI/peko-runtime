@@ -6,7 +6,7 @@
 //!
 //! Entries are keyed by `(String, PrincipalId)`. Built-in, universal, and MCP
 //! tools are registered once at core init under
-//! [`PrincipalId::system`](crate::subject::PrincipalId::system) — the
+//! [`PrincipalId::system`](peko_subject::PrincipalId::system) — the
 //! "system" sentinel that is visible to every principal. Per-principal tools
 //! (e.g. a principal's `Skill` or `AgentCatalog`) are registered under the
 //! principal's own `PrincipalId` and shadow any same-named system entry.
@@ -15,15 +15,13 @@
 //! `tool_count`, `resolve_canonical_ids`) use a two-probe fallback:
 //! `(name, principal_id)` first, then `(name, PrincipalId::system())`.
 //!
-//! Built on [`crate::common::registry::SharedRegistry`] to avoid hand-rolling
+//! Built on [`crate::registry::SharedRegistry`] to avoid hand-rolling
 //! `Arc<RwLock<HashMap<K, V>>>` patterns.
 
-use crate::common::registry::SharedRegistry;
-use crate::extensions::framework::types::{
-    ActiveExtensionSet, Capabilities, Capability, ExtensionId, HookId,
-};
-use crate::subject::PrincipalId;
+use crate::registry::SharedRegistry;
+use crate::types::{ActiveExtensionSet, Capabilities, Capability, ExtensionId, HookId};
 use anyhow::Result;
+use peko_subject::PrincipalId;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tracing::{debug, instrument, warn};
@@ -119,7 +117,7 @@ impl ToolRegistry {
     /// Register a tool in the index
     ///
     /// The tool is keyed by `(tool_name, principal_id)`. Pass
-    /// [`PrincipalId::system`](crate::subject::PrincipalId::system) as
+    /// [`PrincipalId::system`](peko_subject::PrincipalId::system) as
     /// `principal_id` to register a globally-visible tool (built-ins,
     /// universal, MCP). Per-principal tools override same-named system
     /// entries on read; the system entry remains in place for other

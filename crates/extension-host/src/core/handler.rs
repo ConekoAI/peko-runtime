@@ -3,9 +3,9 @@
 //! This module defines the [`HookHandler`] trait that all extension handlers must
 //! implement, along with a [`ClosureHookHandler`] wrapper for closure-based handlers.
 
-use crate::extensions::framework::core::context::HookContext;
-use crate::extensions::framework::core::hook_points::HookPoint;
-use crate::extensions::framework::types::{HookPriority, HookResult};
+use crate::core::context::HookContext;
+use crate::core::hook_points::HookPoint;
+use crate::types::{HookPriority, HookResult};
 use async_trait::async_trait;
 use std::fmt;
 
@@ -104,8 +104,5 @@ where
 #[async_trait]
 pub trait HookHandlerFactory: Send + Sync + fmt::Debug {
     /// Create a handler instance
-    fn create(
-        &self,
-        manifest: crate::extensions::framework::types::ExtensionManifest,
-    ) -> Box<dyn HookHandler>;
+    fn create(&self, manifest: crate::types::ExtensionManifest) -> Box<dyn HookHandler>;
 }

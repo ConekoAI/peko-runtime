@@ -1,38 +1,45 @@
-//! `peko-extension-host` — Phase 8 trait contracts and `common::registry`
-//! home.
+//! `peko-extension-host` — Extension framework host (Phase 8).
 //!
-//! Phase 8 is split across two commits:
+//! Phase 8a moves the bulk of `src/extensions/framework/` into this
+//! crate: the `core` registry tree (`ExtensionCore`, `HookRegistry`,
+//! `ToolRegistry`, hook points/handlers/config), the `types` data
+//! tree (capabilities, hook IO, manifest, etc.), the global
+//! `ExtensionStore`, the `skill_catalog`, the small `integration`
+//! bridge, and the `scaffold` template engine.
 //!
-//! - **Commit 1 (this crate's initial state):** Define the
-//!   cross-boundary traits that the root facade uses to wire the
-//!   host's facilities without leaking root-only types into the
-//!   host crate:
+//! Phase 8b will move `framework/manager` + `framework/async_exec` +
+//! `framework/transport` (3,500 lines). Phase 8c will move
+//! `framework/services` + `framework/protocols` + `framework/adapters`
+//! (2,800 lines). After 8c, `src/extensions/framework/` is empty and
+//! gets deleted entirely.
 //!
-//!   - [`inbox::SessionInboxSink`] / [`inbox::InboxSinkProvider`] /
-//!     [`inbox::InboxSinkRegistry`] — the host executor looks up an
-//!     `Arc<dyn SessionInboxSink>` and pushes completion events.
-//!     Root's richer `session::InboxRegistry` (which also tracks run
-//!     permits) implements `InboxSinkProvider` so the daemon can
-//!     wire the executor against it without creating a cycle.
-//!   - [`transport::DaemonTransport`] / [`transport::DaemonResponse`] —
-//!     the host IPC transport depends only on this trait; root's
-//!     `ipc::DaemonClient` implements it and is the production
-//!     adapter.
+//! Trait contracts already present pre-8a:
+//! - [`inbox::SessionInbox`] / [`inbox::InboxSinkProvider`] — async
+//!   task inbox sinks that peko-session's `InboxRegistry` implements
+//! - [`transport::DaemonTransport`] / [`transport::DaemonResponse`] —
+//!   IPC transport projection for host-side async dispatch
+//! - [`principal_message::PrincipalMessageService`] — A2A
+//!   inter-principal messaging port
+//! - [`vault::VaultAccess`] — credential vault access port
+//! - [`subagent::SpawnCleanupPolicy`] — subagent cleanup policy enum
+//! - [`tool_funnel::ToolFunnel`] — F37 `execute_tool_via_core` funnel
+//! - [`registry::SimpleRegistry`] / [`registry::SharedRegistry`] —
+//!   generic registry utilities
 //!
-//!   Phase 8 commit 1 also moves [`registry::SimpleRegistry`] /
-//!   [`registry::SharedRegistry`] out of `src/common/registry.rs`
-//!   into this crate, with a root shim that re-exports for
-//!   backwards compatibility until Phase 10 deletes it.
-//!
-//! - **Commit 2:** Define the remaining service traits
-//!   (`PrincipalMessageService`, `VaultAccess`,
-//!   `PathResolver`) and move `SpawnCleanupPolicy` so the framework's
-//!   other root couplings (which the Phase 8 audit surfaced) can
-//!   later be lifted. The bulk move of the framework implementation
-//!   files is deferred to a follow-up PR — Phase 8 commit 2 ships
-//!   only the trait contracts and root impls so the audit's P0
-//!   coupling risks stay bounded.
+//! Forbidden deps: peko-engine, peko-agents, peko-session, root.
+//! Enforced via `scripts/check_workspace_deps.py`.
 
+// Framework bulk-moved in 8a.
+// (store.rs and core/async_bridge.rs stay in root until 8b/8c lift
+// their cross-subtree deps; see the 8a plan.)
+pub mod core;
+pub mod integration;
+pub mod scaffold;
+pub mod skill_catalog;
+pub mod tool_funnel_impl;
+pub mod types;
+
+// Trait contracts from 8a commits 1 + 2.
 pub mod inbox;
 pub mod paths;
 pub mod principal_message;
@@ -40,12 +47,29 @@ pub mod registry;
 pub mod subagent;
 pub mod tool_funnel;
 pub mod transport;
-pub mod types;
 pub mod vault;
 
 // Re-export peko-extension-api surface for callers that want
 // `peko_extension_host::api::*`.
 pub use peko_extension_api as api;
+
+// Re-exports from the moved framework/ subtrees (mirrors the
+// pre-8a `crate::extensions::framework::*` public surface).
+pub use core::{
+    binding::{HookBinding, HookBindingBuilder},
+    common,
+    config::{ExtensionConfig, ExtensionServices, TelemetryService},
+    context::{HookContext, HookState},
+    handler::{HookHandler, HookHandlerFactory},
+    hook_points::{HookPoint, HookPointBuilder},
+    registry::{global_core, init_global_core, ExtensionCore, RegisteredHook},
+};
+pub use types::{
+    tool_result_from_hook, ActiveExtensionSet, AsyncReceipt, Capabilities, Capability, ExtensionId,
+    ExtensionManifest, HookId, HookInput, HookOutput, HookPriority, HookResult, MessageEnvelope,
+    PromptBuildState, SessionSnapshot, ToolMetadata, ToolRegistryAccess, ToolSource,
+    DEFAULT_HOOK_PRIORITY, FALLBACK_HOOK_PRIORITY, SYSTEM_HOOK_PRIORITY, USER_HOOK_PRIORITY,
+};
 
 // Convenience re-exports at the crate root.
 pub use inbox::{
@@ -59,5 +83,18 @@ pub use principal_message::{
 pub use registry::{SharedRegistry, SimpleRegistry};
 pub use subagent::SpawnCleanupPolicy;
 pub use tool_funnel::ToolFunnel;
-pub use transport::{DaemonResponse, DaemonResponseStream, DaemonTransport};
+pub use transport::{
+    AsyncExecutionRouter, DaemonResponse, DaemonResponseStream, DaemonTransport, ExecFn,
+    PreprocessorFn, ToolExecConfig,
+};
 pub use vault::VaultAccess;
+
+// Prelude for convenient imports.
+pub mod prelude {
+    pub use crate::core::{
+        common, ExtensionCore, HookContext, HookHandler, HookPoint, HookPointBuilder,
+    };
+    pub use crate::types::{
+        ExtensionId, ExtensionManifest, HookId, HookInput, HookOutput, HookResult,
+    };
+}
