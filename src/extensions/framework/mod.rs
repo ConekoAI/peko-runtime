@@ -1,14 +1,23 @@
 //! Extension Framework — Generic Extension Core (ADR-017)
 //!
-//! Phase 8a moved the bulk of this module into `peko_extension_host`:
-//! `core`, `types`, `skill_catalog`, `integration`, and `scaffold`.
-//! The root module tree retains `adapters`, `async_exec`, `manager`,
-//! `protocols`, `services`, `transport` (Phase 8b/8c) plus
-//! `core/async_bridge.rs` and `store.rs` (Phase 8b).
+//! Phase 8a + 8b + 8c moved the bulk of this module into `peko_extension_host`:
+//! `core`, `types`, `skill_catalog`, `integration`, `scaffold`, `manager/*`,
+//! `services/*`, `transport/*`, and `protocols/shared/*` all live in host.
 //!
-//! Each moved subtree is re-exported here from `peko_extension_host`
-//! so the historical `crate::extensions::framework::core::*` (etc.)
-//! paths continue to compile until Phase 15 deletes them.
+//! The root module tree retains only the root-only pieces that need root
+//! types:
+//! - `adapters/` — extension type adapter trait + manifests (root-only)
+//! - `async_exec/` — async task executor (references root's `ExtensionCore`;
+//!   3,378 lines; deferred until `ExtensionCore` itself lifts)
+//! - `core/async_bridge.rs` — root-only IPC bridge to daemon
+//! - `store.rs` — concrete `ExtensionStore` impl (root because the trait
+//!   port lives in host; root owns the actual struct)
+//! - `types/` — re-export shim for `peko_extension_host::types` (still
+//!   used by ~30 callers in `engine/agentic_loop_compat.rs` etc.)
+//!
+//! Each shim is `pub use peko_extension_host::*` so the historical
+//! `crate::extensions::framework::core::*` (etc.) paths continue to
+//! compile until Phase 15 deletes them.
 //!
 //! Extension type implementations (MCP, Gateway, Skill, etc.) live in
 //! `crate::extensions` (plural), not here.
@@ -21,7 +30,7 @@
 //! - `crate::daemon` (daemon-specific code)
 //! - `crate::tools` (tool implementations)
 //!
-//! Dependency direction: `extension::core` → `extension::types` → `extension::manager|services|protocols|async_exec|transport`
+//! Dependency direction: `extension::core` → `extension::types` → `extension::manager|async_exec`
 
 // ============================================================================
 // Submodules
@@ -52,21 +61,6 @@ pub mod core;
 /// so the historical path keeps compiling.
 pub mod types;
 
-/// Extension integration layer (tool bridge).
-///
-/// Phase 8a: moved into `peko_extension_host::integration`. Re-exported here.
-pub mod integration;
-
-/// Extension scaffolding — `peko ext init` templates and engine.
-///
-/// Phase 8a: moved into `peko_extension_host::scaffold`. Re-exported here.
-pub mod scaffold;
-
-/// Global skill location catalog used by the builtin `Skill` tool.
-///
-/// Phase 8a: moved into `peko_extension_host::skill_catalog`. Re-exported here.
-pub mod skill_catalog;
-
 /// Global, process-wide extension store.
 ///
 /// Deferred — `store.rs` lifts with `core/store.rs` in Phase 8b after
@@ -79,12 +73,6 @@ pub mod store;
 /// Phase 8c adds `packaging` + `storage` (which depends on the ExtensionStore
 /// trait port). `discovery` stays here as a backwards-compat shim.
 pub mod manager;
-
-/// Shared protocol utilities (process transport, validation, schema filter).
-///
-/// Phase 8c.1 lifted all 4 files into `peko_extension_host::protocols::shared`;
-/// the root `shared/mod.rs` is now a kitchen-sink re-export shim.
-pub mod protocols;
 
 // ============================================================================
 // Re-exports

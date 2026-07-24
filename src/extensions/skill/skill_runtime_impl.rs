@@ -15,7 +15,7 @@ use async_trait::async_trait;
 
 use peko_tools_builtin::skill::{SkillEntry, SkillRuntime};
 
-use crate::extensions::framework::skill_catalog::SkillCatalog;
+use peko_extension_host::skill_catalog::SkillCatalog;
 
 /// Adapter exposing the global `SkillCatalog` as a `SkillRuntime`.
 pub struct SkillCatalogRuntime;

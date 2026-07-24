@@ -311,7 +311,7 @@ impl ExtensionStore {
         let mut report = LoadReport::default();
         let mut scanned_paths = HashSet::new();
 
-        crate::extensions::framework::skill_catalog::SkillCatalog::global().clear();
+        peko_extension_host::skill_catalog::SkillCatalog::global().clear();
 
         let mut all_paths = discovery_paths::all();
         if let Some(storage_dir) = self.storage.dir() {
@@ -479,8 +479,7 @@ impl ExtensionStore {
             .remove(id)
             .context(format!("Extension '{id}' not found"))?;
 
-        crate::extensions::framework::skill_catalog::SkillCatalog::global()
-            .unregister_by_extension(id);
+        peko_extension_host::skill_catalog::SkillCatalog::global().unregister_by_extension(id);
 
         for hook_id in &loaded_ext.hook_ids {
             if let Err(e) = self.core.unregister_hook(hook_id).await {
@@ -521,7 +520,7 @@ impl ExtensionStore {
             return;
         };
         let name = loaded.manifest.id.0.clone();
-        crate::extensions::framework::skill_catalog::SkillCatalog::global().register(
+        peko_extension_host::skill_catalog::SkillCatalog::global().register(
             name,
             PathBuf::from(skill_file),
             Some(loaded.manifest.id.clone()),

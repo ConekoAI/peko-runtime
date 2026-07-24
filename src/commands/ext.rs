@@ -7,10 +7,10 @@
 
 use crate::commands::mcp;
 use crate::commands::GlobalPaths;
-use crate::extensions::framework::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
 use crate::ipc::client_service::DaemonClientService;
 use crate::registry::client::ProgressEvent;
 use clap::Subcommand;
+use peko_extension_host::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
 use peko_extension_host::services::{ConfigScope, ExtensionConfigService};
 use std::path::PathBuf;
 
