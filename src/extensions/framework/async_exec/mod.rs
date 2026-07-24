@@ -1,10 +1,14 @@
 //! Async execution infrastructure for extensions
 //!
 //! This module provides async task execution capabilities used across
-//! all extension types.
+//! all extension types. Phase 8b.2 deleted the `steer` root shim and now
+//! re-exports `format_cron_steer_message` directly from `peko_extension_host`.
 
 pub mod executor;
-pub mod steer;
+pub mod steer {
+    //! Re-export of host-side steer helpers (Phase 8b.2).
+    pub use peko_extension_host::async_exec::steer::format_cron_steer_message;
+}
 
 pub use executor::{
     build_completion_event, cancel_task_across_all_registries, find_run_across_all_registries,
@@ -17,4 +21,4 @@ pub use executor::{
     SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, TaskFileRecord,
     TaskFileWriter, WaitResult,
 };
-pub use steer::format_cron_steer_message;
+pub use peko_extension_host::async_exec::steer::format_cron_steer_message;
