@@ -20,13 +20,13 @@ use crate::principal::{
     slash::SlashDispatcher,
     PrincipalManager,
 };
-use peko_principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 use crate::registry::{load_from_workspace, RegistryConfig};
+use peko_cron::IdleDetector;
 use peko_extension_host::async_exec::executor::AsyncExecutor;
 use peko_extension_host::SessionInbox;
 use peko_observability::Observability;
+use peko_principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 use peko_session::InboxRegistry;
-use peko_cron::IdleDetector;
 use secrecy::SecretString;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -775,11 +775,8 @@ impl AppState {
         // a separate dependency.
         let (principal_manager, peer_registry) = {
             let root = path_resolver.peers_root_dir();
-            match peko_principal::peer::PeerRegistry::load_or_init(
-                root.clone(),
-                chrono::Utc::now(),
-            )
-            .await
+            match peko_principal::peer::PeerRegistry::load_or_init(root.clone(), chrono::Utc::now())
+                .await
             {
                 Ok(reg) => {
                     let mgr = principal_manager.with_peer_registry(Arc::clone(&reg));

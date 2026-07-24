@@ -80,8 +80,7 @@ impl EventTriggerService {
                 for job_id in job_ids {
                     // Check filter if present
                     if let Ok(Some(job)) = self.scheduler.get_job(&job_id) {
-                        if let ScheduleKind::Event { filter, once, .. } = &job.schedule
-                        {
+                        if let ScheduleKind::Event { filter, once, .. } = &job.schedule {
                             // Check if filter matches
                             if let Some(filter) = filter {
                                 if !Self::event_matches_filter(&event, filter) {

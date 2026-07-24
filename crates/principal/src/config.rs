@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use peko_auth::host::PrincipalResourceView;
-use peko_extension_api::Capabilities;
 pub use peko_auth::{Exposure, Permission, PermissionGrant};
+use peko_extension_api::Capabilities;
 use peko_quota::QuotaConfig;
 use peko_subject::PrincipalDID;
 
@@ -256,10 +256,7 @@ mod tests {
         let cfg: PrincipalConfig = toml::from_str(toml).expect("legacy TOML must parse");
         assert_eq!(cfg.name, "legacy");
         assert_eq!(cfg.preferred_model_id, None);
-        assert_eq!(
-            cfg.transport_preference,
-            super::TransportPreference::Auto
-        );
+        assert_eq!(cfg.transport_preference, super::TransportPreference::Auto);
     }
 
     #[test]

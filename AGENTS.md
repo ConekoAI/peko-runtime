@@ -372,8 +372,8 @@ domain size.
 | 12b | Deterministic workspace dep-graph check | `scripts/check_workspace_deps.py` (see PR #274) |
 | 12c | Root facade intent cleanup | legacy facade cruft removed (see PR #275) |
 | 12 | Foreground switch launches `peko-daemon` binary | CLI `--foreground` re-execs into `peko-daemon` instead of in-process fork (see PR #276) |
-| 13 | Extract remaining runtime domains | `peko::daemon::*` absorbed into `peko-daemon` (PR #264); `peko::observability::*` landed in Phase 14 (PR #300); `peko::cron::*` landed in Phase 14 (PR #301); `peko::principal::config/peer/memory/agent_prompt/factory` lifted in Phase 14.c.1 (PR #302); `peko::principal::manager/context/extension_store/routers/slash` still pending |
-| 14 | Extract observability (✅ merged PR #300) + cron (✅ merged PR #301) + principal (✅ 14.c.1 merged PR #302; 14.c.2 still pending) | `peko::observability::*`; `peko::cron::*`; `peko::principal::config/peer/memory/agent_prompt/factory`; manager/context/etc. still in root |
+| 13 | Extract remaining runtime domains | `peko::daemon::*` absorbed into `peko-daemon` (PR #264); `peko::observability::*` landed in Phase 14 (PR #300); `peko::cron::*` landed in Phase 14 (PR #301); `peko::principal::config/peer/memory/agent_prompt/factory` lifted in Phase 14.c.1 (PR #302); `peko::principal::capability_evaluator/extension_store` + `OutputFormat` + `builtin_tools` lifted in Phase 14.c.2a (PR #303); `peko::principal::manager/context/agent_runner/routers/slash` still pending |
+| 14 | Extract observability (✅ merged PR #300) + cron (✅ merged PR #301) + principal (✅ 14.c.1 merged PR #302; ✅ 14.c.2a merged PR #303; 14.c.2b still pending) | `peko::observability::*`; `peko::cron::*`; `peko::principal::config/peer/memory/agent_prompt/factory` + `capability_evaluator/extension_store` + `runtime::{OutputFormat,builtin_tools}`; manager/context/routers/slash still in root |
 | 15 | **Delete pure re-export shims** (✅ merged PR #298, 2026-07-24) | `peko::subject::*`, `peko::quota::*`, `peko::tools::core::*`, `peko::common::types::message::*` |
 | 16 | Delete trait-port compat impls (✅ merged PR #299, 2026-07-24) | `peko::engine::{agent_view_compat,async_inbox_compat}` deleted; `background_compactor_factory_compat` retained (orphan rule — needs `BackgroundCompactor` lift deferred from Phase 6); `agentic_loop_compat` narrowed (dead re-export removed, 3,871-line test module stays) |
 | 17 | Build `peko-engine-test-support` + move engine tests | (no root path breakage; tests relocate) |
@@ -395,7 +395,7 @@ Already extracted (`crates/`):
 - `message` — neutral message contract.
 - `observability` — observability hub (audit log + metrics + tracing; Phase 14 entry).
 - `peko-daemon` — daemon binary + lib (Phase 12).
-- `principal` — principal DTOs + memory + peer + agent prompt + config (Phase 14.c.1; manager/context/etc. still in root).
+- `principal` — principal DTOs + memory + peer + agent prompt + config + capability_evaluator + extension_store + `runtime::{OutputFormat,builtin_tools}` (Phase 14.c.1 + 14.c.2a; manager/context/etc. still in root).
 - `protocol` — IPC + tunnel wire contracts (Phase 11a).
 - `provider-api` — provider contracts.
 - `providers` — concrete provider implementations.

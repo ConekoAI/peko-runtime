@@ -10,11 +10,7 @@ use super::{
     slash::{SlashDispatcher, SlashError},
     Principal, PrincipalId,
 };
-use peko_principal::agent_prompt::load_agent_prompt;
-use peko_principal::PrincipalConfig;
-use peko_principal::AgentPrompt;
 use crate::common::paths::PathResolver;
-use crate::common::types::OutputFormat;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::store::ExtensionStore;
 use peko_auth::ownership::{check_permission, Permission, Resource};
@@ -23,6 +19,10 @@ use peko_extension_host::SteeringMessage;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
 use peko_observability::Observability;
+use peko_principal::agent_prompt::load_agent_prompt;
+use peko_principal::runtime::OutputFormat;
+use peko_principal::AgentPrompt;
+use peko_principal::PrincipalConfig;
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_subject::PrincipalDID;
@@ -646,8 +646,8 @@ impl PrincipalManager {
                     name: p.name.clone(),
                     description: p.frontmatter.description.clone(),
                     enabled: allowed
-                        .is_granted(&crate::principal::Capability::new(format!("agent:{id}")))
-                        || allowed.is_granted(&crate::principal::Capability::new(format!(
+                        .is_granted(&peko_extension_api::Capability::new(format!("agent:{id}")))
+                        || allowed.is_granted(&peko_extension_api::Capability::new(format!(
                             "agent:{}",
                             p.name
                         ))),
@@ -658,8 +658,11 @@ impl PrincipalManager {
                 Some(store) => store.global_items().await,
                 None => Vec::new(),
             };
-            let extension_store =
-                super::ExtensionCatalog::build(allowed, &principal.agent_prompts, &global_items);
+            let extension_store = peko_principal::ExtensionCatalog::build(
+                allowed,
+                &principal.agent_prompts,
+                &global_items,
+            );
             let active_extensions = extension_store.active_extensions();
 
             (
@@ -1002,8 +1005,8 @@ mod tests {
     };
     use peko_extension_api::Capabilities;
     use peko_principal::{
-        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
-        PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
+        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
+        PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
     use peko_providers::{LlmResolver, MockAdapter};
     use std::sync::Arc;

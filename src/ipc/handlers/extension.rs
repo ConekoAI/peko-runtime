@@ -115,7 +115,7 @@ impl RequestHandler for ExtensionHandler {
                 // the bundle is stable and complete, instead of the live hook
                 // registry which only contains tools registered so far.
                 let mut builtin_provides: Vec<String> =
-                    crate::extensions::framework::adapters::builtin_tools::all_tool_names()
+                    peko_principal::runtime::builtin_tools::all_tool_names()
                         .into_iter()
                         .map(|name| format!("tool:{name}"))
                         .collect();

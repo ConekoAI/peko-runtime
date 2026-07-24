@@ -6,7 +6,6 @@
 use crate::common::paths::PathResolver;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
-use peko_principal::config::PrincipalConfig;
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
@@ -14,6 +13,7 @@ use anyhow::Context;
 use peko_auth::Subject;
 use peko_extension_host::manager::packaging::ExtensionUnpackager;
 use peko_identity::{storage::KeyStorage, Identity, KeyPairExport};
+use peko_principal::config::PrincipalConfig;
 use peko_subject::PrincipalDID;
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
@@ -794,12 +794,12 @@ fn validate_package_for_principal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_principal::config::PrincipalConfig;
     use crate::registry::packaging::principal_packager::{
         PrincipalExportOptions, PrincipalPackager,
     };
     use peko_identity::did::DIDScope;
     use peko_identity::Identity;
+    use peko_principal::config::PrincipalConfig;
 
     #[test]
     fn test_import_options_default() {

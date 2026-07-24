@@ -189,7 +189,7 @@ impl ToolHandler {
             Some(principal) => {
                 let caps = principal.capabilities().await;
                 let global_items = self.host.extension_store().global_items().await;
-                let catalog = crate::principal::ExtensionCatalog::build(
+                let catalog = peko_principal::ExtensionCatalog::build(
                     &caps,
                     &principal.agent_prompts,
                     &global_items,

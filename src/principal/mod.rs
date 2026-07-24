@@ -1,31 +1,31 @@
 // Phase 14.c.1: 5 lifted files moved to `peko-principal` (config, peer,
 // memory, factory, agent_prompt). Their canonical home is now
 // `peko_principal::*` and the `pub mod X;` declarations below for those
-// files were removed. Root callers of `crate::principal::*` for
-// `PrincipalConfig`, `PrincipalMemory`, `PeerRegistry`, etc. migrate
-// to `peko_principal::*` paths in this PR.
+// files were removed.
 //
-// The runtime-coupled files (manager, context, extension_store,
-// agent_runner, capability_evaluator, routers, slash) stay in root
-// and will lift in Phase 14.c.2 once their root-only deps
-// (ExtensionCore, PathResolver, OutputFormat, ExtensionSummary)
-// are port-trait-shaped.
+// Phase 14.c.2a: 2 more lifted (capability_evaluator, extension_store),
+// plus the shared `OutputFormat` enum (`peko_principal::runtime::OutputFormat`)
+// and the `builtin_tools` const lists
+// (`peko_principal::runtime::builtin_tools::*`) move out of
+// `crate::common::types` and `crate::extensions::framework::adapters`.
+// The `PrincipalExtensionRow` re-type lives in `peko_principal::slash`.
+//
+// The runtime-coupled files (manager, context, agent_runner,
+// routers, slash dispatcher impl) stay in root and will lift in
+// Phase 14.c.2b once their root-only deps (ExtensionCore,
+// PathResolver, the IPC `ExtensionSummary` wire DTO) are
+// port-trait-shaped.
 
 pub mod agent_runner;
-pub mod capability_evaluator;
 pub mod context;
-pub mod extension_store;
 pub mod factory;
 pub mod manager;
 pub mod router;
 pub mod routers;
 pub mod slash;
 
-pub use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, Capability};
 pub use agent_runner::build_agent_config;
-pub use capability_evaluator::CapabilityEvaluator;
 pub use context::PrincipalContext;
-pub use extension_store::{ExtensionCatalog, ExtensionCatalogItem};
 pub use factory::{
     DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     PrincipalMemoryFactory, PrincipalRouterFactory,
@@ -46,12 +46,12 @@ use tokio::sync::RwLock;
 // `principal` does not own them and `agents` can reach them without depending
 // on `principal` (F3 cycle break).
 use peko_subject::{PrincipalDID, PrincipalId};
-// Phase 14.c.1: pure-deps types lifted into `peko-principal` (config,
-// peer, memory, factory, agent_prompt). The runtime-coupled files in
-// root that compose a `Principal` (manager, context, extension_store,
-// agent_runner, capability_evaluator, routers, slash) continue to
-// live alongside the `Principal` struct definition here, so they
-// reach for the same DTOs.
+// Phase 14.c.1/14.c.2a: pure-deps types lifted into `peko-principal`
+// (config, peer, memory, factory, agent_prompt, capability_evaluator,
+// extension_store). The runtime-coupled files in root that compose
+// a `Principal` (manager, context, agent_runner, routers, slash)
+// continue to live alongside the `Principal` struct definition here,
+// so they reach for the same DTOs.
 use peko_principal::{AgentPrompt, PrincipalConfig, PrincipalMemory, QuotaMeter};
 
 /// Runtime representation of a Principal.
@@ -88,7 +88,7 @@ impl Principal {
     }
 
     /// The capabilities for this Principal.
-    pub async fn capabilities(&self) -> Capabilities {
+    pub async fn capabilities(&self) -> peko_extension_api::Capabilities {
         self.config.read().await.capabilities.clone()
     }
 
@@ -137,7 +137,7 @@ pub struct PrincipalSummary {
     pub exposure: peko_auth::Exposure,
     pub status: Option<peko_principal::config::Status>,
     pub preferred_model_id: Option<String>,
-    pub capabilities: Capabilities,
+    pub capabilities: peko_extension_api::Capabilities,
     pub agent_prompt_count: usize,
     pub workspace_path: String,
 }

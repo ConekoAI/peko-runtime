@@ -49,13 +49,13 @@
 use anyhow::Context;
 use peko::extensions::framework::store::ExtensionStore;
 use peko::extensions::skill::SkillAdapter;
-use peko_principal::config::PrincipalConfig;
 use peko::registry::packaging::{
     PrincipalExportOptions, PrincipalImportOptions, PrincipalManifest, PrincipalPackager,
     PrincipalUnpackager,
 };
 use peko::registry::{AgentRegistry, RegistryClient, RegistryConfig, RegistrySource};
 use peko_identity::{did::DIDScope, Identity};
+use peko_principal::config::PrincipalConfig;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

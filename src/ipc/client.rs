@@ -539,7 +539,7 @@ impl DaemonClient {
         message: impl Into<String>,
         user: impl Into<String>,
         no_slash: bool,
-        output_format: crate::common::types::OutputFormat,
+        output_format: peko_principal::runtime::OutputFormat,
         override_model: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
@@ -564,7 +564,7 @@ impl DaemonClient {
         message: impl Into<String>,
         user: impl Into<String>,
         no_slash: bool,
-        output_format: crate::common::types::OutputFormat,
+        output_format: peko_principal::runtime::OutputFormat,
         override_model: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();

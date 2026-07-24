@@ -25,8 +25,8 @@ use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use crate::principal::manager::PrincipalManager;
-use peko_principal::peer::PeerRegistry;
 use peko_auth::caller::CallerContext;
+use peko_principal::peer::PeerRegistry;
 use peko_quota::{QuotaConfig, QuotaState};
 
 /// Narrow port the `quota` handler uses to reach daemon state.

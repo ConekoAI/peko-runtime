@@ -42,7 +42,8 @@ impl PrincipalMemoryFactory for DefaultPrincipalMemoryFactory {
         workspace_path: &std::path::Path,
     ) -> Arc<dyn PrincipalMemory> {
         // Ensure the sessions directory exists.
-        let memory = peko_principal::memory::DefaultPrincipalMemory::new(workspace_path.to_path_buf());
+        let memory =
+            peko_principal::memory::DefaultPrincipalMemory::new(workspace_path.to_path_buf());
         let _ = tokio::fs::create_dir_all(memory.sessions_dir()).await;
         Arc::new(memory)
     }

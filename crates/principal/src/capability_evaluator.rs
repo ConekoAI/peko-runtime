@@ -8,8 +8,7 @@
 //! the Principal config. Callers pass those in, keeping the evaluator easy to
 //! unit test and cheap to instantiate per evaluation.
 
-use crate::extensions::framework::types::ExtensionManifest;
-use crate::principal::{Capabilities, Capability};
+use peko_extension_api::{Capabilities, Capability, ExtensionManifest};
 
 /// Evaluates capability grants against extension manifests.
 #[derive(Debug, Clone, Copy, Default)]
@@ -92,7 +91,7 @@ mod tests {
 
     fn manifest_with(id: &str, provides: &[&str], requires: &[&str]) -> ExtensionManifest {
         ExtensionManifest {
-            id: crate::extensions::framework::types::ExtensionId::new(id),
+            id: peko_extension_api::ExtensionId::new(id),
             extension_type: "tool".to_string(),
             name: id.to_string(),
             description: "test".to_string(),

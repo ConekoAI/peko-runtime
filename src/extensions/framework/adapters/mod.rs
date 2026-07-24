@@ -576,96 +576,11 @@ impl ExtensionState {
     }
 }
 
-/// Built-in tool name registry.
-///
-/// The framework owns the canonical list of built-in tool names so that
-/// callers in `crate::extensions::framework::*` (notably `manager::resolve_tool_name`
-/// and the IPC tool-allowlist check) can ask "is this a built-in tool?"
-/// without depending on `crate::extensions::builtin`.
-///
-/// Extension type implementations (e.g. `extensions::builtin`) should
-/// call into these helpers so the lists stay in sync — they are free to
-/// depend on the framework, but the framework does not depend on them.
-pub mod builtin_tools {
-    /// Tools registered once at daemon startup by `BuiltinToolAdapter::register_all()`.
-    pub const GLOBAL_TOOL_NAMES: &[&str] = &[
-        "Bash",
-        "Read",
-        "Write",
-        "Glob",
-        "Grep",
-        "Edit",
-        "session",
-        "CronCreate",
-        "CronDelete",
-        "CronList",
-        "AsyncStatus",
-        "AsyncList",
-        "AsyncStop",
-        "Skill",
-    ];
-
-    /// Tools registered per-agent in `Agent::init_builtins_async()`.
-    pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] = &[
-        "Agent",
-        "principal_send",
-        "AsyncSpawn",
-        "AsyncOutput",
-        "TaskCreate",
-        "TaskGet",
-        "TaskList",
-        "TaskUpdate",
-    ];
-
-    /// Concatenation of [`GLOBAL_TOOL_NAMES`] and [`AGENT_SPECIFIC_TOOL_NAMES`].
-    pub fn all_tool_names() -> Vec<&'static str> {
-        let mut names: Vec<&'static str> = GLOBAL_TOOL_NAMES.to_vec();
-        names.extend_from_slice(AGENT_SPECIFIC_TOOL_NAMES);
-        names
-    }
-
-    /// True iff `name` (case-insensitive) is in [`all_tool_names`].
-    pub fn is_builtin_tool(name: &str) -> bool {
-        let lower = name.to_lowercase();
-        all_tool_names().iter().any(|&n| n.to_lowercase() == lower)
-    }
-
-    /// True iff `name` (case-insensitive) is in [`AGENT_SPECIFIC_TOOL_NAMES`].
-    pub fn is_agent_specific_builtin_tool(name: &str) -> bool {
-        let lower = name.to_lowercase();
-        AGENT_SPECIFIC_TOOL_NAMES
-            .iter()
-            .any(|&n| n.to_lowercase() == lower)
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn all_tool_names_includes_both_lists() {
-            let names = all_tool_names();
-            assert!(names.contains(&"Bash"));
-            assert!(names.contains(&"Agent"));
-        }
-
-        #[test]
-        fn is_builtin_tool_is_case_insensitive() {
-            assert!(is_builtin_tool("Bash"));
-            assert!(is_builtin_tool("BASH"));
-            assert!(is_builtin_tool("Agent"));
-            assert!(is_builtin_tool("PRINCIPAL_SEND"));
-            assert!(!is_builtin_tool("unknown_tool"));
-        }
-
-        #[test]
-        fn is_agent_specific_builtin_tool_filters() {
-            assert!(is_agent_specific_builtin_tool("Agent"));
-            assert!(!is_agent_specific_builtin_tool("Bash"));
-            assert!(!is_agent_specific_builtin_tool("unknown"));
-        }
-    }
-}
+// Phase 14.c.2a: the `builtin_tools` submodule moved to
+// `peko_principal::runtime::builtin_tools`. Callers in root
+// (`extensions/builtin/adapter.rs`, `extensions/framework/store.rs`,
+// `ipc/handlers/extension.rs`) now read
+// `peko_principal::runtime::builtin_tools::*` directly.
 
 #[cfg(test)]
 mod tests {
