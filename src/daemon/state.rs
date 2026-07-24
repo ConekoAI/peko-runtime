@@ -16,7 +16,6 @@ use crate::common::types::config::PekoConfig;
 use crate::cron::IdleDetector;
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::store::ExtensionStore;
-use crate::observability::Observability;
 use crate::principal::{
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
     memory::{DefaultPrincipalMemory, PrincipalMemory},
@@ -26,6 +25,7 @@ use crate::principal::{
 use crate::registry::{load_from_workspace, RegistryConfig};
 use peko_extension_host::async_exec::executor::AsyncExecutor;
 use peko_extension_host::SessionInbox;
+use peko_observability::Observability;
 use peko_session::InboxRegistry;
 use secrecy::SecretString;
 use std::collections::HashMap;

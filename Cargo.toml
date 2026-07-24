@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/fs-persistence", "crates/identity", "crates/message", "crates/peko-daemon", "crates/provider-api", "crates/providers", "crates/session",
+members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/fs-persistence", "crates/identity", "crates/message", "crates/observability", "crates/peko-daemon", "crates/provider-api", "crates/providers", "crates/session",
     "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
 # ---------------------------------------------------------------------------
@@ -163,6 +163,12 @@ peko-chat-log = { path = "crates/chat-log" }
 # implements the `RuntimePaths` / `PrincipalResourceView` trait ports
 # defined in `peko-auth::host` so `peko-auth` stays a leaf crate.
 peko-auth = { path = "crates/auth" }
+# Phase 14 of the post-migration cleanup — observability hub
+# (audit log + metrics + tracing). Depends only on `peko-auth` for
+# `Subject` caller attribution (ADR-039, issues #17 + #26). The 4
+# root files (`src/observability/{mod,audit,metrics,tracer}.rs`)
+# are deleted when the 8 callers migrate to `peko_observability::*`.
+peko-observability = { path = "crates/observability" }
 # Phase 7 — peko-session owns the session persistence domain
 # (JSONL storage, metadata, recovery, compaction persistence,
 # InboxRegistry). Root re-exports the historical `crate::session::*`
