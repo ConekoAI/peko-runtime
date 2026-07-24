@@ -123,7 +123,7 @@ peko-extension-api = { path = "crates/extension-api" }
 # peko-extension-api + peko-message + peko-tools-core + peko-provider-api
 # + peko-subject. The root re-exports through
 # `crate::extensions::framework::*` for backwards compatibility.
-peko-extension-host = { path = "crates/extension-host" }
+peko-extension-host = { path = "crates/extension-host", features = ["test-utils"] }
 # Workspace member providing the IPC + tunnel wire-shape contracts
 # (Phase 11a) — owns the auth envelope (`AuthCredential`,
 # `PrincipalSendControlMode`, `AuthHeader`) and the shared packet/timeout
@@ -298,7 +298,9 @@ jsonschema = { version = "0.48", default-features = false }
 # internal access opt in explicitly, e.g.
 #   cargo test --lib --features test-utils daemon::e2e_tests
 default = []
-# Expose internal modules for integration tests
+# Expose internal modules for integration tests. The `peko-extension-host`
+# `test-utils` feature is always-on in the host dep (above) so the
+# `TestSyncHandler` re-export at `framework::core::test_sync` resolves.
 test-utils = []
 
 [dev-dependencies]

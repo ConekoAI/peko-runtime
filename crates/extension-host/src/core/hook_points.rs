@@ -452,7 +452,7 @@ impl HookPointBuilder {
     pub fn prompt_section(section: impl Into<String>) -> HookPoint {
         HookPoint::PromptSystemSection {
             section: section.into(),
-            priority: crate::extensions::framework::types::DEFAULT_HOOK_PRIORITY,
+            priority: crate::types::DEFAULT_HOOK_PRIORITY,
         }
     }
 

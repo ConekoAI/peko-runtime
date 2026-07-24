@@ -27,7 +27,7 @@
 //! until `unregister` is called OR the `Arc<ExtensionCore>` is
 //! dropped — whichever comes first.
 
-#![cfg(all(test, feature = "test-utils"))]
+#![cfg(feature = "test-utils")]
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -36,11 +36,11 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::oneshot;
 
-use crate::extensions::framework::core::context::HookContext;
-use crate::extensions::framework::core::handler::ClosureHookHandler;
-use crate::extensions::framework::core::hook_points::HookPoint;
-use crate::extensions::framework::core::registry::ExtensionCore;
-use crate::extensions::framework::types::{ExtensionId, HookId, HookInput, HookResult};
+use crate::core::context::HookContext;
+use crate::core::handler::ClosureHookHandler;
+use crate::core::hook_points::HookPoint;
+use crate::core::registry::ExtensionCore;
+use crate::types::{ExtensionId, HookId, HookInput, HookResult};
 
 /// Reasons `TestSyncHandler::wait` can fail without the tool ever firing.
 #[derive(Debug, Error)]

@@ -589,7 +589,7 @@ impl AppState {
                 crate::extensions::framework::services::async_transport::create_local_transport(),
             );
             let services = ExtensionServices::with_async_router_and_principal_message_service(
-                router,
+                Arc::new(router),
                 Arc::clone(&principal_service_dyn),
             );
             Arc::new(ExtensionCore::with_services(Arc::new(services)))
@@ -605,7 +605,7 @@ impl AppState {
                 crate::extensions::framework::services::async_transport::create_local_transport(),
             );
             let services = ExtensionServices::with_async_router_and_principal_message_service(
-                router,
+                Arc::new(router),
                 Arc::clone(&principal_service_dyn),
             );
             let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));

@@ -92,7 +92,7 @@ async fn create_test_principal(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[serial_test::serial]
+#[serial_test::serial(global_core_lock)]
 async fn same_runtime_principal_send_short_circuits_offline() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_var("PEKO_HOME", temp.path());

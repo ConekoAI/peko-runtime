@@ -3,8 +3,8 @@
 //! This module defines the context passed to hook handlers and the mutable
 //! state container for hook invocations.
 
-use crate::extensions::framework::core::hook_points::HookPoint;
-use crate::extensions::framework::types::HookInput;
+use crate::core::hook_points::HookPoint;
+use crate::types::HookInput;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,9 +67,7 @@ impl HookContext {
 
     /// Get input as prompt build state if applicable
     #[must_use]
-    pub fn as_prompt_build(
-        &self,
-    ) -> Option<&crate::extensions::framework::types::PromptBuildState> {
+    pub fn as_prompt_build(&self) -> Option<&crate::types::PromptBuildState> {
         match &self.input {
             HookInput::PromptBuild(state) => Some(state),
             _ => None,
@@ -92,9 +90,7 @@ impl HookContext {
 
     /// Get input as session state if applicable
     #[must_use]
-    pub fn as_session_state(
-        &self,
-    ) -> Option<&crate::extensions::framework::types::SessionSnapshot> {
+    pub fn as_session_state(&self) -> Option<&crate::types::SessionSnapshot> {
         match &self.input {
             HookInput::SessionState(state) => Some(state),
             _ => None,
@@ -103,7 +99,7 @@ impl HookContext {
 
     /// Get input as message if applicable
     #[must_use]
-    pub fn as_message(&self) -> Option<&crate::extensions::framework::types::MessageEnvelope> {
+    pub fn as_message(&self) -> Option<&crate::types::MessageEnvelope> {
         match &self.input {
             HookInput::Message(msg) => Some(msg),
             _ => None,
@@ -213,7 +209,7 @@ impl HookState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::types::HookInput;
+    use crate::types::HookInput;
 
     #[test]
     fn test_hook_state() {

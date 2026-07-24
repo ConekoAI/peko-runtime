@@ -75,5 +75,7 @@ pub mod agent_view_compat;
 pub mod agentic_loop_compat;
 pub mod async_inbox_compat;
 pub mod background_compactor_factory_compat;
-pub mod extension_core_funnel_compat;
+// `extension_core_funnel_compat` was removed in Phase 8a: the
+// `impl ToolFunnel for ExtensionCore` lives next to ExtensionCore in
+// `peko_extension_host::tool_funnel_impl`.
 pub mod tool_runtime;
