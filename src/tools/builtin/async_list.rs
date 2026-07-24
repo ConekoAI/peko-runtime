@@ -12,9 +12,9 @@ pub use peko_tools_builtin::async_control::AsyncListTool;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::ToolResult;
     use peko_extension_host::async_exec::executor::{AsyncTaskEntry, AsyncTaskStatus};
     use peko_tools_core::traits::Tool;
+    use peko_tools_core::ToolResult;
     use serde_json::json;
     use std::sync::Arc;
 

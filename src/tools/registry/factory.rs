@@ -29,7 +29,7 @@ use crate::tools::builtin::{
     BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
     SessionTool, WriteTool,
 };
-use crate::tools::core::traits::Tool;
+use peko_tools_core::traits::Tool;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -282,7 +282,7 @@ impl CustomToolsDiscoveryResult {
 /// Tool creation result with metadata
 pub struct ToolCreationResult {
     /// Created tools
-    pub tools: Vec<Arc<dyn crate::tools::Tool>>,
+    pub tools: Vec<Arc<dyn peko_tools_core::Tool>>,
     /// Names of tools that were disabled
     pub disabled: Vec<String>,
     /// MCP discovery result

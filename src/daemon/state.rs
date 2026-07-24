@@ -1843,7 +1843,7 @@ struct DaemonPrincipalMemoryFactory {
 impl PrincipalMemoryFactory for DaemonPrincipalMemoryFactory {
     async fn create(
         &self,
-        _principal_id: &crate::subject::PrincipalId,
+        _principal_id: &peko_subject::PrincipalId,
         workspace_path: &Path,
     ) -> Arc<dyn PrincipalMemory> {
         let name = workspace_path
@@ -1978,7 +1978,7 @@ mod tests {
 
         // ExtensionCore should list the tools
         let core = tool_runtime.extension_core();
-        let tools = core.list_tools(crate::subject::PrincipalId::system()).await;
+        let tools = core.list_tools(peko_subject::PrincipalId::system()).await;
         assert!(!tools.is_empty(), "No tools in ExtensionCore");
 
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
@@ -2020,7 +2020,7 @@ mod tests {
         // Tools should still be available after agent init
         let core = agent.extension_core();
         let tools: Vec<crate::extensions::framework::types::ToolMetadata> =
-            core.list_tools(crate::subject::PrincipalId::system()).await;
+            core.list_tools(peko_subject::PrincipalId::system()).await;
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         assert!(
             tool_names.contains(&"Bash".to_string()),

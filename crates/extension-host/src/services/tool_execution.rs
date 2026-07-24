@@ -41,7 +41,7 @@
 
 // Phase 8c.1.D.3: lift from `src/extensions/framework/services/tool_execution.rs`.
 // Root used `crate::extensions::framework::services::reserved_params::ReservedParamsConfig`
-// and `crate::tools::core::ToolContext`. Both types live in workspace crates now:
+// and `peko_tools_core::ToolContext`. Both types live in workspace crates now:
 // the config in `peko_extension_api`, the context in `peko_tools_core`.
 use anyhow::Result;
 use peko_extension_api::reserved_params::ReservedParamsConfig;

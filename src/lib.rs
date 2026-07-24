@@ -223,14 +223,10 @@ pub mod identity_compat;
 // PrincipalResourceView).
 pub mod auth_compat;
 
-// [extract:phase-15] deletion candidate — pure shim of peko-subject
-pub mod subject;
-
 // [extract:phase-14] peko-principal
 pub mod principal;
 
-// [extract:phase-15] deletion candidate — pure shim of peko-quota
-pub mod quota;
+// (Phase 15: peko-quota shim deleted; callers use peko_quota::* directly)
 
 // ============================================================================
 // Append-only runtime surfaces

@@ -3,7 +3,7 @@
 //! Lifted from `src/extensions/framework/types/session.rs` in Phase 7.
 //! The `ToolRegistryAccess.tools` field uses `peko_provider_api::ToolDefinition`
 //! (was `crate::providers::ToolDefinition`); the content payload uses
-//! `peko_message::ContentBlock` (was `crate::common::types::message::ContentBlock`).
+//! `peko_message::ContentBlock` (was `peko_message::ContentBlock`).
 
 use peko_message::ContentBlock;
 use peko_provider_api::ToolDefinition;

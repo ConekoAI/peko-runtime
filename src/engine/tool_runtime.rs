@@ -18,9 +18,10 @@ use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::tools::{
     BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
-    Tool, WriteTool,
+    WriteTool,
 };
 use anyhow::Result;
+use peko_tools_core::Tool;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
@@ -257,7 +258,7 @@ impl ToolRuntime {
     #[must_use]
     pub async fn list_tools(&self) -> Vec<crate::extensions::framework::types::ToolMetadata> {
         self.extension_core
-            .list_tools(crate::subject::PrincipalId::system())
+            .list_tools(peko_subject::PrincipalId::system())
             .await
     }
 
@@ -265,7 +266,7 @@ impl ToolRuntime {
     #[must_use]
     pub async fn has_tool(&self, tool_name: &str) -> bool {
         self.extension_core
-            .get_tool_metadata(tool_name, crate::subject::PrincipalId::system())
+            .get_tool_metadata(tool_name, peko_subject::PrincipalId::system())
             .await
             .is_some()
     }

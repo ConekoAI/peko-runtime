@@ -8,13 +8,13 @@ use crate::engine::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
-use crate::tools::core::Tool;
 use anyhow::{Context, Result};
 use peko_auth::Subject;
 use peko_identity::{did::DIDScope, storage::KeyStorage, Identity};
 use peko_session::manager::{ResolvedSession, SessionManager};
 use peko_session::types::ChannelType;
 use peko_session::InboxRegistry;
+use peko_tools_core::Tool;
 use std::sync::Arc;
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::{debug, error, info, warn};
@@ -81,7 +81,7 @@ pub struct Agent {
     /// such as `Skill` can resolve per-principal state at handle time
     /// without re-registering themselves on the shared `ExtensionCore`
     /// per principal.
-    principal_id: crate::subject::PrincipalId,
+    principal_id: peko_subject::PrincipalId,
     /// Spawning principal's human-readable name. Threaded into
     /// `ToolContext` so Principal-scoped tools (e.g. cron) can target
     /// jobs by name.
@@ -152,7 +152,8 @@ impl Agent {
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
     /// Extension tools (Universal and MCP) are registered via `ExtensionStore` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
-        use crate::tools::{AgentTool, SessionTool, Tool};
+        use crate::tools::{AgentTool, SessionTool};
+        use peko_tools_core::Tool;
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
         // AppState::new() calls ToolRuntime::with_workspace_and_core() which registers
@@ -160,7 +161,7 @@ impl Agent {
         // Built-ins are under PrincipalId::system(), so the lookup is system-scoped.
         let has_bash = self
             .extension_core
-            .get_tool_metadata("Bash", crate::subject::PrincipalId::system())
+            .get_tool_metadata("Bash", peko_subject::PrincipalId::system())
             .await
             .is_some();
         if !has_bash {
@@ -461,7 +462,7 @@ impl Agent {
             session_manager,
             llm_resolver,
             None,
-            crate::subject::PrincipalId::generate(),
+            peko_subject::PrincipalId::generate(),
             None,
             None,
         )
@@ -489,7 +490,7 @@ impl Agent {
         // Model-first: a single configured model id pinned by the
         // Principal, or `None` for non-principal callers/tests.
         provider_hint: Option<String>,
-        principal_id: crate::subject::PrincipalId,
+        principal_id: peko_subject::PrincipalId,
         inbox_registry: Option<Arc<InboxRegistry>>,
         // Model-first: per-message configured model override
         // (`peko send --model`). `None` preserves the principal hint.
@@ -1053,7 +1054,7 @@ impl Agent {
         let session_key = self.current_session_id.read().await.clone();
         // F19: CLI one-shot path — no principal in scope, default to
         // an unlimited meter (no charging, no persistence).
-        let quota_meter = Arc::new(crate::quota::QuotaMeter::unlimited());
+        let quota_meter = Arc::new(peko_quota::QuotaMeter::unlimited());
         let loop_ = self
             .build_agentic_loop(
                 agent_arc,
@@ -1116,13 +1117,13 @@ impl Agent {
     pub async fn execute_with_session(
         &self,
         user_text: &str,
-        pre_user_messages: Vec<crate::common::types::message::LlmMessage>,
+        pre_user_messages: Vec<peko_message::LlmMessage>,
         session: Arc<tokio::sync::RwLock<peko_session::Session>>,
-        history: Option<Vec<crate::common::types::message::LlmMessage>>,
+        history: Option<Vec<peko_message::LlmMessage>>,
         cancel: Option<tokio_util::sync::CancellationToken>,
         on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
-        quota_meter: Option<Arc<crate::quota::QuotaMeter>>,
-        peer_meter: Option<Arc<crate::quota::QuotaMeter>>,
+        quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
+        peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
     ) -> Result<crate::engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
@@ -1157,7 +1158,7 @@ impl Agent {
         // supplies the principal's quota meter via the optional
         // `quota_meter` parameter; default to unlimited when omitted.
         let quota_meter =
-            quota_meter.unwrap_or_else(|| Arc::new(crate::quota::QuotaMeter::unlimited()));
+            quota_meter.unwrap_or_else(|| Arc::new(peko_quota::QuotaMeter::unlimited()));
         let loop_ = self
             .build_agentic_loop(
                 agent_arc,
@@ -1215,14 +1216,14 @@ impl Agent {
     pub async fn execute_streaming_with_session<F>(
         &self,
         user_text: &str,
-        pre_user_messages: Vec<crate::common::types::message::LlmMessage>,
+        pre_user_messages: Vec<peko_message::LlmMessage>,
         session: std::sync::Arc<tokio::sync::RwLock<peko_session::Session>>,
-        history: Option<Vec<crate::common::types::message::LlmMessage>>,
+        history: Option<Vec<peko_message::LlmMessage>>,
         caller_id: Option<String>,
         on_event: F,
         cancel: Option<tokio_util::sync::CancellationToken>,
-        quota_meter: Option<Arc<crate::quota::QuotaMeter>>,
-        peer_meter: Option<Arc<crate::quota::QuotaMeter>>,
+        quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
+        peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
     ) -> Result<crate::engine::AgenticResult>
     where
         F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
@@ -1261,7 +1262,7 @@ impl Agent {
         // F19: tunnel/pekohub streaming path. Caller supplies the
         // principal's quota meter; default to unlimited when omitted.
         let quota_meter =
-            quota_meter.unwrap_or_else(|| Arc::new(crate::quota::QuotaMeter::unlimited()));
+            quota_meter.unwrap_or_else(|| Arc::new(peko_quota::QuotaMeter::unlimited()));
         let loop_ = match self
             .build_agentic_loop(
                 agent_arc,
@@ -1312,7 +1313,7 @@ impl Agent {
         &self,
         on_event: F,
         session: std::sync::Arc<tokio::sync::RwLock<peko_session::Session>>,
-        history: Option<Vec<crate::common::types::message::LlmMessage>>,
+        history: Option<Vec<peko_message::LlmMessage>>,
         caller_id: Option<String>,
     ) -> Result<crate::engine::AgenticResult>
     where
@@ -1333,7 +1334,7 @@ impl Agent {
         let agent_arc = Arc::new(self.clone());
         let session_id = self.current_session_id.read().await.clone();
         // F19: same unlimited fallback as the other `execute_*` paths.
-        let quota_meter = Arc::new(crate::quota::QuotaMeter::unlimited());
+        let quota_meter = Arc::new(peko_quota::QuotaMeter::unlimited());
         let loop_ = self
             .build_agentic_loop(
                 agent_arc,
@@ -1387,8 +1388,8 @@ impl Agent {
         session_key: Option<String>,
         caller_id: Option<String>,
         cancel: Option<tokio_util::sync::CancellationToken>,
-        quota_meter: Arc<crate::quota::QuotaMeter>,
-        peer_meter: Option<Arc<crate::quota::QuotaMeter>>,
+        quota_meter: Arc<peko_quota::QuotaMeter>,
+        peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
     ) -> Result<crate::engine::agentic_loop::AgenticLoop> {
         let extension_core = self.extension_core();
 
@@ -1634,7 +1635,7 @@ impl Agent {
     /// Threaded through tool execution so extension-scoped tools can
     /// resolve per-principal state at handle time.
     #[must_use]
-    pub fn principal_id(&self) -> &crate::subject::PrincipalId {
+    pub fn principal_id(&self) -> &peko_subject::PrincipalId {
         &self.principal_id
     }
 
@@ -1984,7 +1985,7 @@ impl Agent {
             Arc::clone(&session_manager),
             config.name.clone(),
             5,
-            crate::subject::PrincipalId::generate(),
+            peko_subject::PrincipalId::generate(),
         );
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
@@ -2010,7 +2011,7 @@ impl Agent {
             inbox_registry: None,
             principal_workspace: None,
             caller_principal_did: None,
-            principal_id: crate::subject::PrincipalId::generate(),
+            principal_id: peko_subject::PrincipalId::generate(),
             principal_name: None,
             principal_capabilities: None,
             principal_active_extensions: None,

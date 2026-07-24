@@ -8,9 +8,9 @@
 //! framework must not depend on `crate::tools` per ADR-017.
 
 use crate::extensions::framework::core::ExtensionAsyncAdapter;
-use crate::tools::core::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
+use peko_tools_core::Tool;
 use serde_json::Value;
 
 /// Extension-based tool wrapper that implements `Tool`.

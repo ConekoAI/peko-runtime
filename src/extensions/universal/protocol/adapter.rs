@@ -6,9 +6,9 @@
 use super::manifest::Manifest;
 use super::protocol::{ExecuteParams, ExecuteResult, ExecutionContext, Request, ResponseResult};
 use super::transport::Transport;
-use crate::tools::core::{Tool, ToolContext};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use peko_tools_core::{Tool, ToolContext};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -70,7 +70,7 @@ impl UniversalToolAdapter {
         let mut merged = params;
         if !self.manifest.reserved_parameters.is_empty() {
             // Convert ExecutionContext to ToolContext for resolution
-            let tool_ctx = crate::tools::AbortSignal::new()
+            let tool_ctx = peko_tools_core::AbortSignal::new()
                 .create_context(
                     context.run_id.clone().unwrap_or_default(),
                     "tool",

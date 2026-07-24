@@ -51,8 +51,6 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::principal::{ChannelContext, ChannelKind};
-use crate::subject::PrincipalDID;
-use crate::tools::core::Tool;
 use crate::tunnel::a2a_audit;
 use crate::tunnel::a2a_signature::{sign_request, SignedFields};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
@@ -61,6 +59,8 @@ use crate::tunnel::hub_directory::{DirectoryError, ResolvedExposure};
 use crate::tunnel::TunnelMessage;
 use peko_auth::Subject;
 use peko_chat_log::{ChatLogMessage, ChatThreadKey};
+use peko_subject::PrincipalDID;
+use peko_tools_core::Tool;
 
 /// Arguments for the `principal_send` tool.
 ///

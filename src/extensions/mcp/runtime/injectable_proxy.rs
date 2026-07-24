@@ -20,10 +20,10 @@
 
 use crate::extensions::mcp::protocol::types::Tool as McpTool;
 use crate::extensions::mcp::runtime::tool_proxy::McpToolProxy;
-use crate::tools::{Tool, ToolContext};
 use async_trait::async_trait;
 use peko_extension_host::protocols::shared::proxy_utils::execute_with_context_handling;
 use peko_extension_host::services::ReservedParamsConfig;
+use peko_tools_core::{Tool, ToolContext};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn test_reserved_params_resolve() {
         // Create a ToolContext using the constructor
-        let abort_signal = crate::tools::AbortSignal::new();
+        let abort_signal = peko_tools_core::AbortSignal::new();
         let ctx = abort_signal
             .create_context("run_abc", "tool_1", "test_tool")
             .with_agent_id("agent_456")

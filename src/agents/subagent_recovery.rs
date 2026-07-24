@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::common::types::message::ContentBlock;
-use crate::common::types::message::LlmMessage;
+use peko_message::ContentBlock;
+use peko_message::LlmMessage;
 use peko_providers::MessageRole;
 
 /// Service for recovering meaningful output from subagent session history.

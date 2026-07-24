@@ -1,7 +1,7 @@
 //! Per-tool interrupt hook point and structured cancel notice.
 //!
-//! This module lives next to [`Tool`](crate::tools::Tool) and
-//! [`ToolContext`](crate::tools::ToolContext) but is kept in its own file so
+//! This module lives next to [`Tool`](peko_tools_core::Tool) and
+//! [`ToolContext`](peko_tools_core::ToolContext) but is kept in its own file so
 //! the core trait surface stays small. It provides:
 //!
 //! - [`ToolInterruptNotice`]: a structured record describing the consequences
@@ -9,13 +9,13 @@
 //!   resume hint for the calling agent).
 //!
 //! The hook point itself lives on the [`Tool`] trait as
-//! [`Tool::on_interrupt`](crate::tools::Tool::on_interrupt). Every tool
+//! [`Tool::on_interrupt`](peko_tools_core::Tool::on_interrupt). Every tool
 //! inherits a soft-path default that emits a minimal notice; individual tools
 //! override the method to describe their own side-effects.
 
 /// Structured notice emitted by the framework when a tool call is cancelled.
 ///
-/// Custom tools override [`Tool::on_interrupt`](crate::tools::Tool::on_interrupt)
+/// Custom tools override [`Tool::on_interrupt`](peko_tools_core::Tool::on_interrupt)
 /// to fill in the consequence fields. The soft default (provided by the trait
 /// default) leaves `preserved`, `rolled_back`, and `leaked` empty and supplies
 /// a generic resume hint.
@@ -96,7 +96,7 @@ mod tests {
     // `Tool` and `ToolContext` are re-exported at the crate root via
     // `lib.rs`. Tests inside the crate use `crate::Tool` /
     // `crate::ToolContext` rather than the historical
-    // `crate::tools::Tool` facade (which lives one layer up in the
+    // `peko_tools_core::Tool` facade (which lives one layer up in the
     // root `peko` package).
     use crate::{Tool, ToolContext};
     use serde_json::json;

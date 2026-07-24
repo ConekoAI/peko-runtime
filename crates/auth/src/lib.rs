@@ -35,7 +35,7 @@ pub use types::{ApiKeyEntry, ApiKeyScope, ApiKeysFile, AuthConfigFile, RateLimit
 
 // Re-export `Subject` from `peko-subject` so downstream callers can
 // keep using `peko_auth::Subject` (the historical `crate::auth::Subject`
-// path was a re-export of `crate::subject::Subject`).
+// path was a re-export of `peko_subject::Subject`).
 pub use peko_subject::{
     subject_from_string_with_default_user, Subject, SubjectKind, SubjectParseError,
 };

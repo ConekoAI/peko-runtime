@@ -252,18 +252,15 @@ pub fn session_event_to_history(
             // bubbles to render the root-agent prompt as an assistant message
             // and to merge adjacent non-user chunks (e.g. model-change JSON)
             // into the assistant reply.
-            if matches!(
-                msg.role(),
-                crate::common::types::message::MessageRole::System
-            ) {
+            if matches!(msg.role(), peko_message::MessageRole::System) {
                 return None;
             }
             HistoryEvent::Message {
                 role: match msg.role() {
-                    crate::common::types::message::MessageRole::User => "user",
-                    crate::common::types::message::MessageRole::Assistant => "assistant",
-                    crate::common::types::message::MessageRole::System => "system",
-                    crate::common::types::message::MessageRole::Tool => "tool",
+                    peko_message::MessageRole::User => "user",
+                    peko_message::MessageRole::Assistant => "assistant",
+                    peko_message::MessageRole::System => "system",
+                    peko_message::MessageRole::Tool => "tool",
                 }
                 .to_string(),
                 content: msg.text_content(),

@@ -28,9 +28,9 @@ use crate::extensions::framework::core::{
     ExtensionCore, HookBinding, HookContext, HookHandler, HookPoint, ToolMetadata, ToolSource,
 };
 use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookResult};
-use crate::subject::PrincipalId;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use peko_subject::PrincipalId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, trace, warn};

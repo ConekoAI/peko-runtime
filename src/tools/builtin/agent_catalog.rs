@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::principal::router::AgentPromptSummary;
-use crate::tools::core::traits::Tool;
+use peko_tools_core::traits::Tool;
 
 /// Tool for listing available agents in a Principal.
 pub struct AgentCatalogTool {

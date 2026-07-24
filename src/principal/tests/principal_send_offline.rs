@@ -19,8 +19,6 @@ use crate::principal::config::{Exposure, TransportPreference};
 use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };
-use crate::subject::PrincipalDID;
-use crate::tools::Tool;
 use crate::tunnel::a2a_pending::PendingA2aResponses;
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::direct::DirectConnectionManager;
@@ -33,6 +31,8 @@ use ed25519_dalek::SigningKey;
 use peko_auth::Subject;
 use peko_chat_log::ChatLogStore;
 use peko_providers::LlmResolver;
+use peko_subject::PrincipalDID;
+use peko_tools_core::Tool;
 use tokio::sync::RwLock;
 
 /// A directory client that panics if consulted. Wrapping it inside

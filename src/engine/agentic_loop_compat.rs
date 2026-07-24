@@ -1009,7 +1009,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt008_quota_preflight_trips_with_typed_error() {
         use crate::engine::AgenticError;
-        use crate::quota::{QuotaConfig, QuotaCycle, QuotaError, QuotaMeter};
+        use peko_quota::{QuotaConfig, QuotaCycle, QuotaError, QuotaMeter};
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -1037,7 +1037,7 @@ mod tests {
             .await
             .unwrap(),
         );
-        let prime = crate::common::types::message::TokenUsage {
+        let prime = peko_message::TokenUsage {
             input: 1,
             output: 0,
             total: 1,
@@ -1206,8 +1206,8 @@ mod tests {
     async fn test_parallel_tool_execution_overlaps_in_time() {
         use crate::extensions::builtin::adapter::BuiltinToolAdapter;
         use crate::extensions::framework::types::{Capabilities, Capability};
-        use crate::tools::Tool;
         use peko_providers::MockResponse;
+        use peko_tools_core::Tool;
         use serde_json::json;
         use std::sync::Mutex as StdMutex;
         use std::time::{Duration, Instant};
@@ -1406,10 +1406,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_e2e_async_completion_reaches_llm_real() {
-        use crate::common::types::message::{ContentBlock as CB, LlmMessage, MessageRole};
         use chrono::Utc;
         use peko_extension_host::async_exec::executor::SharedSessionInbox;
         use peko_extension_host::async_exec::executor::{AsyncTaskStatus, CompletionEvent};
+        use peko_message::{ContentBlock as CB, LlmMessage, MessageRole};
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -1452,7 +1452,7 @@ mod tests {
             tool_name: "shell".to_string(),
             result: serde_json::json!({"exit_code": 0, "stdout": "done"}),
             status: AsyncTaskStatus::Completed {
-                result: crate::tools::core::ToolResult::success(
+                result: peko_tools_core::ToolResult::success(
                     serde_json::json!({"exit_code": 0, "stdout": "done"}),
                 ),
             },
@@ -1551,11 +1551,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_e2e_steering_message_reaches_llm_real() {
-        use crate::common::types::message::{ContentBlock as CB, LlmMessage, MessageRole};
         use peko_extension_host::async_exec::executor::completion_queue::{
             SessionInbox, SharedSessionInbox, SteeringMessage,
         };
         use peko_extension_host::async_exec::executor::AsyncTaskStatus;
+        use peko_message::{ContentBlock as CB, LlmMessage, MessageRole};
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -1597,9 +1597,7 @@ mod tests {
             tool_name: "shell".to_string(),
             result: serde_json::json!({"exit_code": 0}),
             status: AsyncTaskStatus::Completed {
-                result: crate::tools::core::ToolResult::success(
-                    serde_json::json!({"exit_code": 0}),
-                ),
+                result: peko_tools_core::ToolResult::success(serde_json::json!({"exit_code": 0})),
             },
             completed_at: chrono::Utc::now(),
             output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
@@ -1770,8 +1768,8 @@ mod tests {
     // check (when present) trips before the LLM call.
     // -----------------------------------------------------------------
 
-    use crate::quota::{QuotaConfig, QuotaCycle, QuotaMeter};
     use peko_providers::LlmResolver;
+    use peko_quota::{QuotaConfig, QuotaCycle, QuotaMeter};
 
     /// `with_peer_meter(Some(meter))` stores the meter on the loop;
     /// `with_peer_meter(None)` clears it.
@@ -1809,7 +1807,7 @@ mod tests {
             .unwrap(),
         );
         // First charge: cap=1, charge 1 → OK.
-        let usage = crate::common::types::message::TokenUsage {
+        let usage = peko_message::TokenUsage {
             input: 1,
             output: 0,
             total: 1,
@@ -1884,7 +1882,7 @@ mod tests {
                 let _ = stacked
                     .chat_with_tools(
                         "default",
-                        &[crate::common::types::message::LlmMessage::user("hi")],
+                        &[peko_message::LlmMessage::user("hi")],
                         &[],
                         &peko_providers::ChatOptions::default(),
                     )
@@ -2058,7 +2056,7 @@ mod tests {
                 matches!(
                     e,
                     peko_session::events::SessionEvent::MessageV2(m)
-                        if matches!(m.role(), crate::common::types::message::MessageRole::System)
+                        if matches!(m.role(), peko_message::MessageRole::System)
                 )
             })
             .count();
@@ -2486,7 +2484,7 @@ mod tests {
         // renderer then emits the `## Quota status` section. We pin
         // the field directly AND verify the rendered body to catch
         // regressions in either the loop plumbing or the render path.
-        use crate::quota::{QuotaConfig, QuotaMeter};
+        use peko_quota::{QuotaConfig, QuotaMeter};
         peko_identity::init_test_env();
         ensure_global_core();
 
@@ -3703,7 +3701,7 @@ mod tests {
             meta,
             Arc::new(F35NoopHandler),
             &ExtensionId::new(format!("test:f35:{name_prefix}")),
-            &crate::subject::PrincipalId::system(),
+            &peko_subject::PrincipalId::system(),
         )
         .await
         .expect("register f35 test tool");
@@ -3769,7 +3767,7 @@ mod tests {
         // Teardown: remove the system-registered tool so subsequent
         // tests see a clean core.
         let _ = core
-            .unregister_tool(&tool_name, &crate::subject::PrincipalId::system())
+            .unregister_tool(&tool_name, &peko_subject::PrincipalId::system())
             .await;
     }
 
@@ -3814,7 +3812,7 @@ mod tests {
 
         // Teardown.
         let _ = core
-            .unregister_tool(&tool_name, &crate::subject::PrincipalId::system())
+            .unregister_tool(&tool_name, &peko_subject::PrincipalId::system())
             .await;
     }
 
@@ -3860,7 +3858,7 @@ mod tests {
 
         // Teardown.
         let _ = core
-            .unregister_tool(&tool_name, &crate::subject::PrincipalId::system())
+            .unregister_tool(&tool_name, &peko_subject::PrincipalId::system())
             .await;
     }
 }

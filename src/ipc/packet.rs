@@ -401,7 +401,7 @@ pub enum RequestPacket {
         name: String,
         #[serde(default)]
         is_peer: bool,
-        config: crate::quota::QuotaConfig,
+        config: peko_quota::QuotaConfig,
     },
 
     /// Force-reset the principal's quota meter to a fresh window
@@ -972,12 +972,12 @@ pub enum ResponsePacket {
     #[serde(rename = "quota_status")]
     QuotaStatus {
         request_id: u64,
-        state: crate::quota::QuotaState,
+        state: peko_quota::QuotaState,
         /// The principal's effective `QuotaConfig`. Mirrors the
         /// `state.cycle` and exposes the configured limits so the
         /// CLI can render "1000 / 5000 input tokens" without a
         /// second round-trip.
-        config: crate::quota::QuotaConfig,
+        config: peko_quota::QuotaConfig,
     },
 
     /// Cron job run started response
@@ -2661,7 +2661,7 @@ mod tests {
             request_id: 600,
             principals: vec![crate::principal::PrincipalSummary {
                 name: "helper".to_string(),
-                did: crate::subject::PrincipalDID("did:peko:local:helper".to_string()),
+                did: peko_subject::PrincipalDID("did:peko:local:helper".to_string()),
                 owner: peko_auth::Subject::User("alice".to_string()),
                 description: Some("test principal".to_string()),
                 exposure: peko_auth::Exposure::default(),
@@ -2693,7 +2693,7 @@ mod tests {
             request_id: 601,
             principal: Some(crate::principal::PrincipalSummary {
                 name: "helper".to_string(),
-                did: crate::subject::PrincipalDID("did:peko:local:helper".to_string()),
+                did: peko_subject::PrincipalDID("did:peko:local:helper".to_string()),
                 owner: peko_auth::Subject::User("alice".to_string()),
                 description: None,
                 exposure: peko_auth::Exposure::default(),
@@ -3118,7 +3118,7 @@ mod tests {
             request_id: 604,
             principal: crate::principal::PrincipalSummary {
                 name: "alice".to_string(),
-                did: crate::subject::PrincipalDID("did:peko:local:alice".to_string()),
+                did: peko_subject::PrincipalDID("did:peko:local:alice".to_string()),
                 owner: peko_auth::Subject::User("alice".to_string()),
                 description: Some("updated".to_string()),
                 exposure: peko_auth::Exposure::Public,
@@ -3173,7 +3173,7 @@ mod tests {
             request_id: 603,
             principal: crate::principal::PrincipalSummary {
                 name: "alice".to_string(),
-                did: crate::subject::PrincipalDID("did:peko:local:alice".to_string()),
+                did: peko_subject::PrincipalDID("did:peko:local:alice".to_string()),
                 owner: peko_auth::Subject::User("alice".to_string()),
                 description: Some("personal assistant".to_string()),
                 exposure: peko_auth::Exposure::default(),
@@ -3695,7 +3695,7 @@ mod tests {
             request_id: 12,
             principal: crate::principal::PrincipalSummary {
                 name: "helper".to_string(),
-                did: crate::subject::PrincipalDID("did:peko:local:helper".to_string()),
+                did: peko_subject::PrincipalDID("did:peko:local:helper".to_string()),
                 owner: peko_auth::Subject::User("alice".to_string()),
                 description: None,
                 exposure: peko_auth::Exposure::default(),

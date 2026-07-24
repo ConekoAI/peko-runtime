@@ -7,7 +7,6 @@
 
 pub mod config;
 pub mod extension;
-pub mod message;
 pub mod output_format;
 pub mod principal_message;
 pub mod task;

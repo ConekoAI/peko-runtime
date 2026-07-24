@@ -11,11 +11,11 @@ use crate::extensions::framework::core::ExtensionCore;
 use crate::observability::Observability;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::router::{ChannelContext, ChannelKind};
-use crate::tools::core::ToolResult;
 use anyhow::Result;
 use chrono::Utc;
 use peko_auth::caller::CallerContext;
 use peko_extension_host::async_exec::executor::{AsyncExecutor, AsyncTaskStatus, AsyncToolConfig};
+use peko_tools_core::ToolResult;
 use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -636,12 +636,12 @@ mod tests {
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalManager, PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
-    use crate::subject::Subject;
     use chrono::{Duration, Utc};
     use peko_auth::Exposure;
     use peko_auth::{Permission, PermissionGrant};
     use peko_providers::mock::MockAdapter;
     use peko_providers::resolver::LlmResolver;
+    use peko_subject::Subject;
     use std::sync::Arc;
     use tempfile::TempDir;
 

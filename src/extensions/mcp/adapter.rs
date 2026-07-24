@@ -35,9 +35,9 @@ use crate::extensions::framework::core::{
     ToolMetadata, ToolSource,
 };
 use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookOutput, HookResult};
-use crate::subject::PrincipalId;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use peko_subject::PrincipalId;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
@@ -633,7 +633,7 @@ impl McpAdapter {
     pub async fn create_tool_instances(
         &self,
         server_name: &str,
-    ) -> Result<Vec<Arc<dyn crate::tools::Tool>>> {
+    ) -> Result<Vec<Arc<dyn peko_tools_core::Tool>>> {
         let manager = self.manager.read().await;
 
         let all_tools = manager.list_all_tools().await;
@@ -645,7 +645,7 @@ impl McpAdapter {
 
         drop(manager);
 
-        let mut tool_instances: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+        let mut tool_instances: Vec<Arc<dyn peko_tools_core::Tool>> = Vec::new();
 
         for tool in server_tools {
             let proxy = crate::extensions::mcp::runtime::tool_proxy::McpToolProxy::new(
@@ -941,7 +941,7 @@ impl HookHandler for McpServerInitHandler {
                 .register_server_tools(
                     &core,
                     &self.server_name,
-                    crate::subject::PrincipalId::system(),
+                    peko_subject::PrincipalId::system(),
                 )
                 .await
             {
@@ -1422,7 +1422,7 @@ pub async fn load_and_register_servers(
             .register_server_tools(
                 core,
                 &server.manifest.name,
-                crate::subject::PrincipalId::system(),
+                peko_subject::PrincipalId::system(),
             )
             .await
         {

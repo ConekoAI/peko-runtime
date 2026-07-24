@@ -21,7 +21,7 @@
 //! `summary_format` (file-ops accumulator), `turn_boundaries`
 //! (tool-pairing preservation), `eviction`, and `cli` modules stay in
 //! root because they all depend on root-only types
-//! (`peko_providers::Provider`, `crate::quota::QuotaScope`, etc.).
+//! (`peko_providers::Provider`, `peko_quota::QuotaScope`, etc.).
 //!
 //! The `details: Option<...>` field on [`CompactionEntry`] /
 //! [`CompactionResult`] is now `Option<serde_json::Value>` in the
@@ -132,7 +132,7 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 // The constants below (`CHARS_PER_TOKEN`, prompts) and the `Compactor`
 // struct / impl that uses them stay here because the LLM summarization
 // depends on root-only types (`peko_providers::Provider`,
-// `crate::quota::QuotaScope`).
+// `peko_quota::QuotaScope`).
 
 /// Find the last assistant message with usage data.
 /// Returns `(usage, index)` if found.
