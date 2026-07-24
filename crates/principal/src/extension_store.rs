@@ -8,17 +8,18 @@
 //! installed-but-disabled entries without claiming they are callable.
 //!
 //! It is built from plain [`GlobalExtensionItem`] data produced by the
-//! process-wide [`ExtensionStore`](crate::extensions::framework::store::ExtensionStore)
+//! process-wide [`ExtensionStore`](peko_extension_host::store::ExtensionStore)
 //! so the per-Principal view does not need to hold a reference to the global
 //! store or acquire its lock.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::extensions::framework::store::GlobalExtensionItem;
-use crate::extensions::framework::types::{Capabilities, Capability, ExtensionManifest};
-use peko_principal::agent_prompt::AgentPrompt;
-use crate::principal::capability_evaluator::CapabilityEvaluator;
+use crate::agent_prompt::AgentPrompt;
+use crate::capability_evaluator::CapabilityEvaluator;
+use crate::runtime::builtin_tools;
+use peko_extension_api::{Capabilities, Capability, ExtensionManifest};
+use peko_extension_host::store::GlobalExtensionItem;
 
 /// A single row in the principal's extension catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +81,7 @@ impl ExtensionCatalog {
         let mut seen: HashSet<String> = HashSet::new();
 
         // Built-in tools.
-        for name in crate::extensions::framework::adapters::builtin_tools::all_tool_names() {
+        for name in builtin_tools::all_tool_names() {
             let id = format!("builtin:tool:{name}");
             if seen.insert(id.clone()) {
                 items.push(ExtensionCatalogItem {
@@ -149,8 +150,8 @@ impl ExtensionCatalog {
 
     /// Return the set of extension IDs that are currently enabled.
     #[must_use]
-    pub fn active_extensions(&self) -> crate::principal::ActiveExtensionSet {
-        crate::principal::ActiveExtensionSet::with_ids(
+    pub fn active_extensions(&self) -> peko_extension_api::ActiveExtensionSet {
+        peko_extension_api::ActiveExtensionSet::with_ids(
             self.items
                 .iter()
                 .filter(|i| i.enabled)
@@ -237,7 +238,8 @@ impl ExtensionCatalog {
 
 /// Map an extension type string to the capability kind used in grant
 /// requirements.
-pub(crate) fn capability_kind_for_extension_type(ext_type: &str) -> String {
+#[must_use]
+pub fn capability_kind_for_extension_type(ext_type: &str) -> String {
     match ext_type {
         "builtin" | "tool" => "tool".to_string(),
         "agent" => "agent".to_string(),

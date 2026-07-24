@@ -7,7 +7,7 @@
 //! Packet size is limited to ~60KB to stay well under UDP MTU.
 //! Larger payloads are chunked at the application layer.
 
-use crate::common::types::OutputFormat;
+use peko_principal::runtime::OutputFormat;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;

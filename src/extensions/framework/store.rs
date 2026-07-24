@@ -853,7 +853,7 @@ impl ExtensionStore {
     }
 
     pub async fn resolve_tool_name(&self, name: &str) -> Option<ToolResolution> {
-        if crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(name)
+        if peko_principal::runtime::builtin_tools::is_builtin_tool(name)
             || name.starts_with("builtin:")
         {
             return None;

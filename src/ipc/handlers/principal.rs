@@ -1332,7 +1332,7 @@ async fn run_principal_send(
     message: String,
     user: String,
     no_slash: bool,
-    output_format: crate::common::types::OutputFormat,
+    output_format: peko_principal::runtime::OutputFormat,
     override_model: Option<String>,
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,

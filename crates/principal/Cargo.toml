@@ -27,6 +27,11 @@ peko-providers = { path = "../providers" }
 # peko-message is needed for `LlmMessage` (used in `memory.rs` for
 # `SessionArtifact::messages`).
 peko-message = { path = "../message" }
+# Phase 14.c.2a: `extension_store.rs` reads plain data
+# `GlobalExtensionItem` from the process-wide `ExtensionStore` rather
+# than holding a reference to the live store. Pure data dep — no
+# `ExtensionCore`/runtime cluster is reached through this.
+peko-extension-host = { path = "../extension-host" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"

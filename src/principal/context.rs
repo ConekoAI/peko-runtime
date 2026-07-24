@@ -25,15 +25,15 @@ use std::sync::{Arc, OnceLock};
 use crate::extensions::agent::{register_agents_with_core, AgentAdapter};
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
-use peko_principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 use peko_observability::Observability;
+use peko_principal::memory::PrincipalMemory;
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_subject::PrincipalId;
 
-use super::Capabilities;
+use peko_extension_api::Capabilities;
 
 /// Per-principal runtime state shared by the root agent and its
 /// subagents.
@@ -103,7 +103,7 @@ pub struct PrincipalContext {
     /// snapshot and consulted by the agent's tool gate so a tool is only
     /// callable when both its capability is granted and its owning extension
     /// is active.
-    active_extensions: OnceLock<crate::principal::ActiveExtensionSet>,
+    active_extensions: OnceLock<peko_extension_api::ActiveExtensionSet>,
     // F19: removed `quota_meter` field. The engine loop fetches the
     // principal's meter directly from `Principal.quota_meter` at run
     // entrypoint and opens `QuotaScope::with` around the run. No
@@ -225,17 +225,17 @@ impl PrincipalContext {
     /// Idempotent.
     pub fn set_active_extensions(
         &self,
-        active_extensions: crate::principal::ActiveExtensionSet,
-    ) -> Result<(), crate::principal::ActiveExtensionSet> {
+        active_extensions: peko_extension_api::ActiveExtensionSet,
+    ) -> Result<(), peko_extension_api::ActiveExtensionSet> {
         self.active_extensions.set(active_extensions)
     }
 
     /// Snapshot of extension IDs active for this principal. Returns an empty
     /// set if no snapshot has been bound.
     #[must_use]
-    pub fn active_extensions(&self) -> &crate::principal::ActiveExtensionSet {
+    pub fn active_extensions(&self) -> &peko_extension_api::ActiveExtensionSet {
         self.active_extensions
-            .get_or_init(crate::principal::ActiveExtensionSet::empty)
+            .get_or_init(peko_extension_api::ActiveExtensionSet::empty)
     }
 
     /// Get the daemon-global `ExtensionCore` and ensure the
@@ -384,8 +384,8 @@ pub(crate) async fn install_agent_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use peko_extension_api::Capabilities;
     use peko_principal::memory::DefaultPrincipalMemory;
-    use crate::principal::Capabilities;
     use peko_subject::PrincipalId;
     use serial_test::serial;
     use std::sync::Arc;

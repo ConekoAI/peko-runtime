@@ -1,14 +1,14 @@
 //! Built-in `/help` slash command renderer for the daemon-side slash
 //! dispatcher.
 
-use crate::common::types::OutputFormat;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::{Capabilities, Capability};
 use crate::ipc::packet::ExtensionSummary;
-use peko_principal::config::PrincipalConfig;
 use crate::principal::Principal;
 use anyhow::Result;
 use peko_extension_host::services::Services as ExtensionServices;
+use peko_principal::config::PrincipalConfig;
+use peko_principal::runtime::OutputFormat;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -105,7 +105,7 @@ fn is_extension_allowed(ext: &ExtensionSummary, allowed: &Capabilities) -> bool 
         return false;
     }
 
-    let kind = crate::principal::extension_store::capability_kind_for_extension_type(&ext.ext_type);
+    let kind = peko_principal::capability_kind_for_extension_type(&ext.ext_type);
     let id_required = Capability::new(format!("{kind}:{}", ext.id));
     let name_required = Capability::new(format!("{kind}:{}", ext.name));
 

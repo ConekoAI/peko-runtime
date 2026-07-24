@@ -92,7 +92,7 @@ impl RequestHandler for CapabilityHandler {
                 principal,
                 capability,
             } => {
-                let cap = crate::principal::Capability::new(capability);
+                let cap = peko_extension_api::Capability::new(capability);
                 let pm = self.host.principal_manager().clone();
                 let result = pm
                     .update_config(&principal, |config| {
@@ -129,7 +129,7 @@ impl RequestHandler for CapabilityHandler {
                 principal,
                 capability,
             } => {
-                let cap = crate::principal::Capability::new(capability);
+                let cap = peko_extension_api::Capability::new(capability);
                 let pm = self.host.principal_manager().clone();
                 let result = pm
                     .update_config(&principal, |config| {
@@ -171,7 +171,7 @@ impl RequestHandler for CapabilityHandler {
                         let granted = capabilities.to_strings();
 
                         let global_items = store.global_items().await;
-                        let catalog = crate::principal::ExtensionCatalog::build(
+                        let catalog = peko_principal::ExtensionCatalog::build(
                             &capabilities,
                             &principal_ref.agent_prompts,
                             &global_items,

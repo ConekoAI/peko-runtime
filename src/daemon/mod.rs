@@ -13,11 +13,11 @@ pub(crate) mod cron_runtime;
 pub(crate) mod state;
 
 use crate::common::paths::PathResolver;
-use peko_cron::events::SystemEvent;
-use peko_cron::IdleDetector;
 use crate::daemon::cron_engine::CronEngine;
 use anyhow::Result;
 use chrono::Utc;
+use peko_cron::events::SystemEvent;
+use peko_cron::IdleDetector;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;

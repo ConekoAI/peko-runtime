@@ -1445,12 +1445,12 @@ mod tests {
     use super::*;
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
     use crate::extensions::framework::types::Capabilities;
+    use crate::tunnel::protocol::{InstanceExposure, InstanceType};
+    use peko_auth::{Permission, PermissionGrant, Subject};
     use peko_principal::config::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
-    use crate::tunnel::protocol::{InstanceExposure, InstanceType};
-    use peko_auth::{Permission, PermissionGrant, Subject};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 

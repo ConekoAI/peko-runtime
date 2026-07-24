@@ -5,14 +5,14 @@
 //! lifecycle and shutdown.
 
 use crate::common::json_utils::json_subset;
-use peko_cron::events::SystemEvent;
-use peko_cron::{CronJob, CronJobAction, CronRun, CronScheduler, DeliveryMode, IdleDetector};
 use crate::extensions::framework::core::ExtensionCore;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::router::{ChannelContext, ChannelKind};
 use anyhow::Result;
 use chrono::Utc;
 use peko_auth::caller::CallerContext;
+use peko_cron::events::SystemEvent;
+use peko_cron::{CronJob, CronJobAction, CronRun, CronScheduler, DeliveryMode, IdleDetector};
 use peko_extension_host::async_exec::executor::{AsyncExecutor, AsyncTaskStatus, AsyncToolConfig};
 use peko_observability::Observability;
 use peko_tools_core::ToolResult;
@@ -634,14 +634,14 @@ mod tests {
     use crate::principal::{
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalManager,
     };
+    use chrono::{Duration, Utc};
+    use peko_auth::Exposure;
+    use peko_auth::{Permission, PermissionGrant};
     use peko_extension_api::Capabilities;
     use peko_principal::config::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
-    use chrono::{Duration, Utc};
-    use peko_auth::Exposure;
-    use peko_auth::{Permission, PermissionGrant};
     use peko_providers::mock::MockAdapter;
     use peko_providers::resolver::LlmResolver;
     use peko_subject::Subject;

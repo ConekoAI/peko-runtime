@@ -81,11 +81,11 @@ pub struct RouterContext {
     pub governance: PrincipalGovernanceConfig,
     /// Per-principal snapshot of all detected extensions/agents and their
     /// authority state.
-    pub extension_store: super::ExtensionCatalog,
+    pub extension_store: peko_principal::ExtensionCatalog,
     /// Set of extension IDs that are currently active for this Principal.
     /// Derived from `extension_store.active_extensions()` and carried here
     /// so routers can thread it into `PrincipalContext` without recomputing.
-    pub active_extensions: super::ActiveExtensionSet,
+    pub active_extensions: peko_extension_api::ActiveExtensionSet,
     /// Shared inbox registry so the router can wire the root agent
     /// to the same inbox the Principal boundary pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,
