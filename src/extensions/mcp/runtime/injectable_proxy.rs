@@ -153,6 +153,11 @@ impl InjectableMcpToolProxy {
 
         // Inject each reserved parameter
         for name in self.reserved_params.names() {
+            // Phase 8c.1.D.1: shim resolves to host's `resolve_reserved_params`
+            // which takes `Option<&dyn VaultAccess>`. Coerce at the call site
+            // so callers don't have to switch to the trait-object form.
+            let vault: Option<&dyn peko_extension_host::vault::VaultAccess> =
+                vault.map(|v| v as &dyn peko_extension_host::vault::VaultAccess);
             let value =
                 crate::extensions::framework::services::reserved_params::resolve_reserved_params(
                     &self.reserved_params,

@@ -584,10 +584,9 @@ impl AppState {
         // between concurrent tests.
         let global_core = if for_test {
             use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
-            use crate::extensions::framework::services::AsyncExecutionRouter;
-            let router = AsyncExecutionRouter::with_transport(
-                crate::extensions::framework::services::async_transport::create_local_transport(),
-            );
+            use peko_extension_host::transport::async_router::AsyncExecutionRouter;
+            use peko_extension_host::transport::async_transport::create_local_transport;
+            let router = AsyncExecutionRouter::with_transport(create_local_transport());
             let services = ExtensionServices::with_async_router_and_principal_message_service(
                 Arc::new(router),
                 Arc::clone(&principal_service_dyn),
@@ -600,10 +599,9 @@ impl AppState {
             use crate::extensions::framework::core::{
                 init_global_core, ExtensionCore, ExtensionServices,
             };
-            use crate::extensions::framework::services::AsyncExecutionRouter;
-            let router = AsyncExecutionRouter::with_transport(
-                crate::extensions::framework::services::async_transport::create_local_transport(),
-            );
+            use peko_extension_host::transport::async_router::AsyncExecutionRouter;
+            use peko_extension_host::transport::async_transport::create_local_transport;
+            let router = AsyncExecutionRouter::with_transport(create_local_transport());
             let services = ExtensionServices::with_async_router_and_principal_message_service(
                 Arc::new(router),
                 Arc::clone(&principal_service_dyn),

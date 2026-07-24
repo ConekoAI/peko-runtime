@@ -15,13 +15,24 @@ use crate::extensions::framework::core::ExtensionCore;
 pub use crate::extensions::framework::manager::storage::ExtensionStorage;
 
 use crate::extensions::framework::manager::discovery::{discovery_paths, DiscoveredExtension};
-use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookId};
+use crate::extensions::framework::types::HookId;
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+
+// Phase 8c.1.D.2: data types now live in `peko_extension_host::store`
+// (the trait port's home). Re-export so the historical
+// `crate::extensions::framework::store::LoadedExtension` path keeps
+// resolving for callers (e.g., packaging, IPC handlers, principal).
+use peko_extension_api::{ExtensionId, ExtensionManifest};
+pub use peko_extension_host::store::{
+    BundleMetadata, DependencyResolution, DependencyStatus, ExtensionBundle,
+    ExtensionStore as ExtensionStoreTrait, GlobalExtensionItem, LoadReport, LoadedExtension,
+    ToolResolution,
+};
 
 /// Extension Store - Central, process-wide owner of extension runtime state.
 #[derive(Debug, Clone)]
@@ -38,117 +49,23 @@ struct ExtensionStoreInner {
     extension_states: HashMap<ExtensionId, ExtensionState>,
 }
 
-/// An extension that has been loaded into the store.
-///
-/// Note: Enable/disable state is NOT stored here. It is managed by the
-/// Principal's `capabilities` grant set. The store handles loading and
-/// lifecycle; access control is determined by configuration.
-#[derive(Debug, Clone)]
-pub struct LoadedExtension {
-    pub manifest: ExtensionManifest,
-    pub extension_type: String,
-    pub hook_ids: Vec<HookId>,
-    pub path: PathBuf,
-}
-
-/// Result of a load operation.
-#[derive(Debug, Default)]
-pub struct LoadReport {
-    pub loaded: Vec<ExtensionId>,
-    pub failed: Vec<(PathBuf, anyhow::Error)>,
-}
-
-/// Bundle of multiple extensions.
-#[derive(Debug, Clone)]
-pub struct ExtensionBundle {
-    pub name: String,
-    pub extensions: Vec<ExtensionManifest>,
-    pub metadata: BundleMetadata,
-}
-
-/// Metadata for an extension bundle.
-#[derive(Debug, Default, Clone)]
-pub struct BundleMetadata {
-    pub version: String,
-    pub description: String,
-    pub dependencies: Vec<String>,
-    pub conflicts: Vec<String>,
-}
-
-/// Status of a single dependency after resolution.
-#[derive(Debug, Clone)]
-pub enum DependencyStatus {
-    /// Already installed and version satisfies constraint.
-    Satisfied {
-        package: String,
-        installed_version: String,
-    },
-    /// Not installed, needs pull.
-    Missing { package: String, required: bool },
-    /// Installed but version doesn't satisfy constraint (informational only for v1).
-    VersionMismatch {
-        package: String,
-        have: String,
-        need: Option<String>,
-    },
-}
-
-/// Result of resolving a tool name to an extension.
-#[derive(Debug, Clone)]
-pub struct ToolResolution {
-    pub id: String,
-    pub registry_ref: Option<String>,
-}
-
-/// Result of resolving dependencies for an extension.
-#[derive(Debug, Clone, Default)]
-pub struct DependencyResolution {
-    /// Dependencies that are already satisfied.
-    pub satisfied: Vec<DependencyStatus>,
-    /// Dependencies that need to be pulled.
-    pub missing: Vec<DependencyStatus>,
-    /// Dependencies with version mismatches (informational).
-    pub version_mismatches: Vec<DependencyStatus>,
-    /// Circular dependency chains detected (if any).
-    pub circular: Vec<Vec<String>>,
-}
-
-/// Plain data snapshot of a globally loaded extension, used by the Principal
-/// layer to build a per-Principal view without holding a reference to the store.
-#[derive(Debug, Clone)]
-pub struct GlobalExtensionItem {
-    pub id: String,
-    pub name: String,
-    pub ext_type: String,
-    pub source: Option<String>,
-    pub provides: Vec<String>,
-    pub requires: Vec<String>,
-}
-
-impl DependencyResolution {
-    /// Check if there are any required missing dependencies.
-    #[must_use]
-    pub fn has_required_missing(&self) -> bool {
-        self.missing
-            .iter()
-            .any(|m| matches!(m, DependencyStatus::Missing { required: true, .. }))
+// Phase 8c.1.D.2: blanket impl of the host trait port. Lets the
+// concrete `ExtensionStore` flow through `Arc<dyn ExtensionStore>` for
+// the packaging layer (which can no longer hold the root-concrete
+// type across crate boundaries). Mirrors the `VaultAccess` impl at
+// `src/common/vault.rs:2274`.
+#[async_trait::async_trait]
+impl ExtensionStoreTrait for ExtensionStore {
+    async fn get_extension(&self, id: &ExtensionId) -> Option<LoadedExtension> {
+        ExtensionStore::get_extension(self, id).await
     }
 
-    /// Get only the optional missing dependencies.
-    #[must_use]
-    pub fn optional_missing(&self) -> Vec<&DependencyStatus> {
-        self.missing
-            .iter()
-            .filter(|m| {
-                matches!(
-                    m,
-                    DependencyStatus::Missing {
-                        required: false,
-                        ..
-                    }
-                )
-            })
-            .collect()
+    async fn resolve_tool_name(&self, name: &str) -> Option<ToolResolution> {
+        ExtensionStore::resolve_tool_name(self, name).await
+    }
+
+    async fn install(&self, path: &Path) -> Result<ExtensionId> {
+        ExtensionStore::install(self, path).await
     }
 }
 

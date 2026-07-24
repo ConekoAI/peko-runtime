@@ -1,9 +1,13 @@
 //! Extension storage backend
 //!
 //! Handles file-system operations for extension installation and removal.
+//!
+//! Phase 8c.1.D.5: lifted from `src/extensions/framework/manager/storage.rs`.
+//! Only dep on a workspace crate is `ExtensionId` (now from
+//! `peko_extension_api` instead of root's `crate::extensions::framework::types`).
 
-use crate::types::ExtensionId;
 use anyhow::{Context, Result};
+use peko_extension_api::ExtensionId;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
