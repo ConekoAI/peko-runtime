@@ -184,16 +184,21 @@ contracts and binaries live under `crates/`. Final workspace members:
 
 ```text
 crates/
+├── chat-log/               # Append-only chat-log storage (peko-chat-log, Phase 5)
+├── cron/                   # Cron scheduler + idle + event-trigger (peko-cron, Phase 14.b)
 ├── engine/                 # Agentic loop core (peko-engine)
 ├── events/                 # Neutral agentic event contract (peko-events)
 ├── extension-api/          # Framework API contracts (peko-extension-api)
 ├── extension-host/         # Framework host impl (peko-extension-host)
+├── fs-persistence/         # File-lock + atomic append helpers (peko-fs-persistence, Phase 5)
+├── identity/               # DID identity + key storage (peko-identity, Phase 3)
 ├── message/                # Neutral message contract (peko-message)
-├── observability/          # Observability hub: audit log + metrics + tracing (peko-observability, Phase 14)
+├── observability/          # Observability hub (peko-observability, Phase 14)
 ├── peko-daemon/            # Long-running daemon binary (peko-daemon)
 ├── provider-api/           # Provider contract types (peko-provider-api)
 ├── protocol/               # IPC + tunnel wire-shape contracts (peko-protocol)
 ├── quota/                  # Per-principal token quota (peko-quota)
+├── session/                # Session persistence + InboxRegistry (peko-session, Phase 7)
 ├── subject/                # Canonical actor type (peko-subject, ADR-041)
 ├── tools-builtin/          # Concrete built-in tool implementations
 └── tools-core/             # Tool execution API (peko-tools-core, F34 ToolExposure)
@@ -202,7 +207,6 @@ src/
 ├── auth/                   # Authentication and authorization (principal, ownership, JWT, API keys)
 ├── commands/               # CLI command implementations
 ├── common/                 # Shared services and core types (AgentService, config authority, vault, KV, types)
-├── cron/                   # Cron job scheduling and persistence
 ├── daemon/                 # HTTP daemon (Axum-based), health, info endpoints, AppState composition root
 │   └── background_runtime/ # Generic process supervision (manager, supervisor, adapter traits)
 ├── engine/                 # Core agentic loop execution engine
@@ -367,19 +371,20 @@ domain size.
 | 12b | Deterministic workspace dep-graph check | `scripts/check_workspace_deps.py` (see PR #274) |
 | 12c | Root facade intent cleanup | legacy facade cruft removed (see PR #275) |
 | 12 | Foreground switch launches `peko-daemon` binary | CLI `--foreground` re-execs into `peko-daemon` instead of in-process fork (see PR #276) |
-| 13 | Extract remaining runtime domains | `peko::daemon::*` absorbed into `peko-daemon` (PR #264); `peko::observability::*` landed in Phase 14 (PR #300); still pending: `peko::cron::*`, `peko::principal::*` |
-| 14 | Extract observability (✅ merged PR #300, 2026-07-24) + cron + principal | `peko::observability::*`; still pending: `peko::cron::*`, `peko::principal::*` |
+| 13 | Extract remaining runtime domains | `peko::daemon::*` absorbed into `peko-daemon` (PR #264); `peko::observability::*` landed in Phase 14 (PR #300); `peko::cron::*` landed in Phase 14 (PR #301); still pending: `peko::principal::*` |
+| 14 | Extract observability (✅ merged PR #300) + cron (✅ merged PR #301) + principal | `peko::observability::*`; `peko::cron::*`; still pending: `peko::principal::*` |
 | 15 | **Delete pure re-export shims** (✅ merged PR #298, 2026-07-24) | `peko::subject::*`, `peko::quota::*`, `peko::tools::core::*`, `peko::common::types::message::*` |
 | 16 | Delete trait-port compat impls (✅ merged PR #299, 2026-07-24) | `peko::engine::{agent_view_compat,async_inbox_compat}` deleted; `background_compactor_factory_compat` retained (orphan rule — needs `BackgroundCompactor` lift deferred from Phase 6); `agentic_loop_compat` narrowed (dead re-export removed, 3,871-line test module stays) |
 | 17 | Build `peko-engine-test-support` + move engine tests | (no root path breakage; tests relocate) |
 | 18 | Move deferred built-in tools (`BashTool`, `ToolSearchTool`, `AgentCatalog`) + `tool_runtime.rs` | `peko::tools::builtin::bash`, `peko::tools::builtin::tool_search`, `peko::tools::builtin::agent_catalog`, `peko::engine::tool_runtime` |
 
-#### Current crate layout (20 workspace members, 2026-07-24)
+#### Current crate layout (21 workspace members, 2026-07-24)
 
 Already extracted (`crates/`):
 
 - `auth` — auth + DID helpers.
 - `chat-log` — append-only chat-log storage.
+- `cron` — cron scheduler + idle detection + event-trigger (Phase 14.b).
 - `engine` — agentic loop core (Phase 9 series).
 - `events` — neutral agentic event contract.
 - `extension-api` — extension framework contracts.
@@ -407,7 +412,6 @@ Planned for later phases (not yet extracted):
 - `crates/registry` — packaging + registry client + trust store (still in root `src/registry/`).
 - `crates/tunnel` — tunnel protocol + A2A dispatcher (still in root `src/tunnel/`).
 - `crates/ipc` — IPC server + handlers (still in root `src/ipc/`).
-- `crates/cron` — persistent cron scheduling (still in root).
 - `crates/principal` — principal orchestration (still in root).
 
 #### Cleanup invariant
