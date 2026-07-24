@@ -9,11 +9,12 @@
 
 pub(crate) mod background_runtime;
 pub(crate) mod cron_engine;
+pub(crate) mod cron_runtime;
 pub(crate) mod state;
 
 use crate::common::paths::PathResolver;
-use crate::cron::events::SystemEvent;
-use crate::cron::IdleDetector;
+use peko_cron::events::SystemEvent;
+use peko_cron::IdleDetector;
 use crate::daemon::cron_engine::CronEngine;
 use anyhow::Result;
 use chrono::Utc;
@@ -151,8 +152,8 @@ impl Daemon {
         }));
 
         let cron_engine = CronEngine::new(
-            std::sync::Arc::new(crate::cron::CronScheduler::new(&config.cron_db_path)?),
-            std::sync::Arc::new(crate::cron::IdleDetector::new()),
+            std::sync::Arc::new(peko_cron::CronScheduler::new(&config.cron_db_path)?),
+            std::sync::Arc::new(peko_cron::IdleDetector::new()),
             std::sync::Arc::new(peko_observability::Observability::new("daemon")),
             config.data_dir.clone(),
             None,
@@ -185,8 +186,8 @@ impl Daemon {
         let (event_tx, event_rx) = mpsc::channel(1024);
 
         let cron_engine = CronEngine::new(
-            std::sync::Arc::new(crate::cron::CronScheduler::new(&config.cron_db_path)?),
-            std::sync::Arc::new(crate::cron::IdleDetector::new()),
+            std::sync::Arc::new(peko_cron::CronScheduler::new(&config.cron_db_path)?),
+            std::sync::Arc::new(peko_cron::IdleDetector::new()),
             std::sync::Arc::new(peko_observability::Observability::new("daemon")),
             config.data_dir.clone(),
             None,
@@ -285,7 +286,7 @@ impl Daemon {
         // Replace the placeholder cron engine with one wired to the real
         // PrincipalManager, shared idle detector, and cron-owned executor.
         self.cron_engine = CronEngine::new(
-            Arc::new(crate::cron::CronScheduler::new(&self.config.cron_db_path)?),
+            Arc::new(peko_cron::CronScheduler::new(&self.config.cron_db_path)?),
             idle_detector,
             Arc::new(peko_observability::Observability::new("daemon")),
             self.config.data_dir.clone(),
@@ -359,7 +360,11 @@ impl Daemon {
         // adapter wraps a fresh `DaemonClient` connected back to the
         // IPC server we just spawned above. Idempotent — repeated calls
         // with the same adapter are a no-op.
-        match crate::cron::daemon_adapter::DaemonCronAdapter::connect().await {
+        // Phase 14.b: the adapter moved from `src/cron/daemon_adapter.rs`
+        // (pre-extraction) to `src/daemon/cron_runtime.rs` because it
+        // depends on `crate::ipc::{DaemonClient, ResponsePacket}` which
+        // stays in root.
+        match crate::daemon::cron_runtime::DaemonCronAdapter::connect().await {
             Ok(adapter) => {
                 let adapter = std::sync::Arc::new(adapter);
                 adapter.install_as_global();

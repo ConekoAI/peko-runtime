@@ -9,8 +9,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
-use crate::cron::events::SystemEvent;
-use crate::cron::CronScheduler;
+use crate::events::SystemEvent;
+use crate::{CronScheduler, ScheduleKind};
 
 /// Service that listens for system events and triggers matching jobs
 pub struct EventTriggerService {
@@ -46,7 +46,7 @@ impl EventTriggerService {
         event_jobs.clear();
 
         for job in jobs {
-            if let crate::cron::ScheduleKind::Event { event_type, .. } = &job.schedule {
+            if let ScheduleKind::Event { event_type, .. } = &job.schedule {
                 event_jobs
                     .entry(event_type.clone())
                     .or_default()
@@ -80,7 +80,7 @@ impl EventTriggerService {
                 for job_id in job_ids {
                     // Check filter if present
                     if let Ok(Some(job)) = self.scheduler.get_job(&job_id) {
-                        if let crate::cron::ScheduleKind::Event { filter, once, .. } = &job.schedule
+                        if let ScheduleKind::Event { filter, once, .. } = &job.schedule
                         {
                             // Check if filter matches
                             if let Some(filter) = filter {
@@ -212,7 +212,7 @@ impl Default for EventTriggerServiceBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cron::events::FileChangeType;
+    use crate::events::FileChangeType;
     use std::collections::HashMap;
 
     #[test]

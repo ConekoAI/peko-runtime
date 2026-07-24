@@ -96,7 +96,7 @@ pub enum RequestPacket {
     #[serde(rename = "cron_add")]
     CronAdd {
         request_id: u64,
-        job: crate::cron::CronJob,
+        job: peko_cron::CronJob,
     },
 
     /// Remove a cron job
@@ -954,7 +954,7 @@ pub enum ResponsePacket {
     #[serde(rename = "cron_list")]
     CronList {
         request_id: u64,
-        jobs: Vec<crate::cron::CronJob>,
+        jobs: Vec<peko_cron::CronJob>,
     },
 
     /// Cron job added response
@@ -992,7 +992,7 @@ pub enum ResponsePacket {
     #[serde(rename = "cron_history")]
     CronHistory {
         request_id: u64,
-        runs: Vec<crate::cron::CronRun>,
+        runs: Vec<peko_cron::CronRun>,
     },
 
     /// Background runtime started (ADR-026)
@@ -2330,15 +2330,15 @@ mod tests {
 
     #[test]
     fn test_cron_add_request_roundtrip() {
-        let job = crate::cron::CronJob {
+        let job = peko_cron::CronJob {
             id: "job-1".to_string(),
             name: "Test Job".to_string(),
-            schedule: crate::cron::ScheduleKind::Every { every_ms: 60000 },
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60000 },
             principal_name: "test-principal".to_string(),
-            action: crate::cron::CronJobAction::Send {
+            action: peko_cron::CronJobAction::Send {
                 message: "Hello cron".to_string(),
             },
-            delivery: crate::cron::DeliveryMode::None,
+            delivery: peko_cron::DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
             created_at: chrono::Utc::now(),
@@ -2422,15 +2422,15 @@ mod tests {
 
     #[test]
     fn test_cron_list_response_roundtrip() {
-        let job = crate::cron::CronJob {
+        let job = peko_cron::CronJob {
             id: "job-1".to_string(),
             name: "Test Job".to_string(),
-            schedule: crate::cron::ScheduleKind::Every { every_ms: 60000 },
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60000 },
             principal_name: "test-principal".to_string(),
-            action: crate::cron::CronJobAction::Send {
+            action: peko_cron::CronJobAction::Send {
                 message: "Hello cron".to_string(),
             },
-            delivery: crate::cron::DeliveryMode::None,
+            delivery: peko_cron::DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
             created_at: chrono::Utc::now(),
@@ -2514,7 +2514,7 @@ mod tests {
 
     #[test]
     fn test_cron_history_response_roundtrip() {
-        let run = crate::cron::CronRun {
+        let run = peko_cron::CronRun {
             id: "run-1".to_string(),
             job_id: "job-1".to_string(),
             started_at: chrono::Utc::now(),
@@ -2551,15 +2551,15 @@ mod tests {
 
         let req_add = RequestPacket::CronAdd {
             request_id: 2,
-            job: crate::cron::CronJob {
+            job: peko_cron::CronJob {
                 id: "j".to_string(),
                 name: "n".to_string(),
-                schedule: crate::cron::ScheduleKind::Every { every_ms: 1000 },
+                schedule: peko_cron::ScheduleKind::Every { every_ms: 1000 },
                 principal_name: "test-principal".to_string(),
-                action: crate::cron::CronJobAction::Send {
+                action: peko_cron::CronJobAction::Send {
                     message: "m".to_string(),
                 },
-                delivery: crate::cron::DeliveryMode::None,
+                delivery: peko_cron::DeliveryMode::None,
                 delete_after_run: false,
                 enabled: true,
                 created_at: chrono::Utc::now(),

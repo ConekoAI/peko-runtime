@@ -15,7 +15,7 @@
 //!
 //! The tools speak to a [`peko_tools_builtin::cron::CronRuntime`] port
 //! that the daemon implements (see
-//! [`crate::cron::daemon_adapter::DaemonCronAdapter`]).
+//! [`peko_cron::daemon_adapter::DaemonCronAdapter`]).
 
 pub use peko_tools_builtin::cron::{
     build_send_job, build_spawn_tool_job, calculate_next_run, create, delete,

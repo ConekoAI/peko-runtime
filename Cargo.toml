@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/fs-persistence", "crates/identity", "crates/message", "crates/observability", "crates/peko-daemon", "crates/provider-api", "crates/providers", "crates/session",
+members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/cron", "crates/fs-persistence", "crates/identity", "crates/message", "crates/observability", "crates/peko-daemon", "crates/provider-api", "crates/providers", "crates/session",
     "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
 
 # ---------------------------------------------------------------------------
@@ -169,6 +169,15 @@ peko-auth = { path = "crates/auth" }
 # root files (`src/observability/{mod,audit,metrics,tracer}.rs`)
 # are deleted when the 8 callers migrate to `peko_observability::*`.
 peko-observability = { path = "crates/observability" }
+# Phase 14.b — peko-cron owns the cron scheduler + idle detection +
+# event-trigger engine. Depends only on `peko-tools-builtin` for the
+# canonical cron DTO re-exports (Phase 10b). The daemon-side
+# `DaemonCronAdapter` impl of the `CronRuntime` port trait stays in
+# root (`src/daemon/cron_runtime.rs`) because it depends on root-only
+# `crate::ipc::{DaemonClient, ResponsePacket}`. The 4 lifted files
+# (`src/cron/{mod,events,idle,event_trigger}.rs`, 1,301 lines) become
+# `crates/cron/src/{lib,events,idle,event_trigger}.rs`.
+peko-cron = { path = "crates/cron" }
 # Phase 7 — peko-session owns the session persistence domain
 # (JSONL storage, metadata, recovery, compaction persistence,
 # InboxRegistry). Root re-exports the historical `crate::session::*`

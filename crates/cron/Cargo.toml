@@ -1,0 +1,33 @@
+[package]
+name = "peko-cron"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Cron scheduler + idle detection + event-trigger engine (Phase 14.b). Pure domain with no runtime deps on session/agent/daemon; the daemon-side `CronRuntime` impl (`DaemonCronAdapter`) lives in the root binary and depends on `DaemonClient`."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[dependencies]
+# Phase 14.b re-export-only dependency: the cron DTOs (CronJob, CronJobAction,
+# DeliveryMode, ScheduleKind) and helpers (build_send_job, render_job_list, ...)
+# live in `peko_tools_builtin::cron` per Phase 10b. Re-exposing them through
+# `peko_cron::*` lets the root callers use a single canonical path
+# (peko_cron::{CronJob, DeliveryMode, ...}) without reaching into two crates.
+peko-tools-builtin = { path = "../tools-builtin" }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tokio = { version = "1.35", features = ["fs", "io-util", "macros", "sync", "time"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+# Schedule parsing/next-time evaluation in `CronScheduler` and
+# `event_trigger::EventTrigger`. The `peko_tools_builtin::cron` re-exports
+# only re-surface helpers; the underlying `cron` crate still needs to
+# be a direct dep of the crate that consumes it.
+cron = "0.12"
+tracing = "0.1"
+
+[dev-dependencies]
+# Test helpers in `crates/cron/src/lib.rs:439-440`.
+tempfile = "3.10"
+uuid = { version = "1.7", features = ["v4"] }

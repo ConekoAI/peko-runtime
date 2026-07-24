@@ -13,7 +13,6 @@ use crate::agents::lifecycle::LifecycleManager;
 use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl, SessionService};
 use crate::common::types::config::PekoConfig;
-use crate::cron::IdleDetector;
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::principal::{
@@ -27,6 +26,7 @@ use peko_extension_host::async_exec::executor::AsyncExecutor;
 use peko_extension_host::SessionInbox;
 use peko_observability::Observability;
 use peko_session::InboxRegistry;
+use peko_cron::IdleDetector;
 use secrecy::SecretString;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -21,14 +21,16 @@
 //!
 //! [`peko_tools_builtin::cron::CronRuntime`] is the port the cron tools
 //! use to talk to the daemon. The concrete implementation in root is
-//! [`crate::cron::daemon_adapter::DaemonCronAdapter`] which wraps
-//! `crate::ipc::DaemonClient::cron_add/cron_remove/cron_list`.
+//! [`crate::daemon::cron_runtime::DaemonCronAdapter`] which wraps
+//! `crate::ipc::DaemonClient::cron_add/cron_remove/cron_list`. That
+//! adapter lives in root because it depends on `DaemonClient`; it
+//! implements the `CronRuntime` trait via the orphan rule (the trait
+//! is foreign to root, but the adapter type is local).
 //!
 //! Includes idle detection and event-based triggers.
 
 #![allow(dead_code)]
 
-pub mod daemon_adapter;
 pub mod event_trigger;
 pub mod events;
 pub mod idle;
