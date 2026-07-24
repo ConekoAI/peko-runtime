@@ -1,24 +1,22 @@
-//! Root-side compat shim for `peko_engine::AgenticLoop`.
+//! Root-side test harness for `peko_engine::AgenticLoop`.
 //!
-//! Re-exports the lifted loop so existing `use crate::engine::AgenticLoop;`
-//! paths remain valid. The test suite lives here (Phase 9b.N.5b.9) because
-//! the fixtures (`Agent`, `ExtensionCore`, `Subject`, etc.) are root-only
-//! types that `peko-engine` cannot depend on without violating
-//! `check_workspace_deps.py` forbidden-edge rules.
+//! The test suite lives here (Phase 9b.N.5b.9) because the fixtures
+//! (`Agent`, `ExtensionCore`, `Subject`, `SessionManager`, etc.) are
+//! root-only types that `peko-engine` cannot depend on without violating
+//! `check_workspace_deps.py` forbidden-edge rules. Root provides the test
+//! harness, `peko-engine` owns the production type — production callers
+//! import `peko_engine::AgenticLoop` (or `crate::engine::AgenticLoop`
+//! via the re-export block in `src/engine/mod.rs`).
 //!
-//! Mirrors the pattern from `src/engine/session_view_compat.rs`,
-//! `src/engine/provider_view_compat.rs` (Phase 9b.N.5b.7), and
-//! `src/engine/tool_executor_compat.rs` (Phase 9b.N.3): root provides
-//! the test harness, `peko-engine` owns the production type.
-
-#[allow(unused_imports)]
-pub use peko_engine::agentic_loop::{AgenticLoop, AgenticResult};
+//! Phase 16 retired the `pub use peko_engine::agentic_loop::{...}`
+//! re-export that used to live here: those items are already exported
+//! from `src/engine/mod.rs`'s `pub use peko_engine::{...}` block, so the
+//! in-file re-export was dead. The file is now a test-only module.
 
 #[cfg(test)]
 mod tests {
     use crate::agents::agent_config::AgentConfig;
     use crate::agents::Agent;
-    use crate::engine::async_inbox_compat::AsyncInboxAdapter;
     use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
     use peko_auth::Subject;
     use peko_engine::AgenticEvent;
@@ -1437,9 +1435,7 @@ mod tests {
         peko_engine::CompactionConfig::default(),
     )
         .await
-        .with_async_completion_queue(std::sync::Arc::new(AsyncInboxAdapter::new(
-            queue.clone(),
-        )));
+        .with_async_completion_queue(queue.clone());
 
         // Push a completion event BEFORE the loop runs. The first
         // iteration will drain it at start and inject the synthetic
@@ -1580,9 +1576,7 @@ mod tests {
         peko_engine::CompactionConfig::default(),
     )
         .await
-        .with_async_completion_queue(std::sync::Arc::new(AsyncInboxAdapter::new(
-            queue.clone(),
-        )));
+        .with_async_completion_queue(queue.clone());
 
         // Pre-push a steering message AND a completion event. They
         // must arrive in insertion order, with the steering item

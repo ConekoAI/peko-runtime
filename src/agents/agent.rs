@@ -1580,9 +1580,7 @@ impl Agent {
             compaction_config,
         )
         .await
-        .with_async_completion_queue(std::sync::Arc::new(
-            crate::engine::async_inbox_compat::AsyncInboxAdapter::new(async_completion_queue),
-        ))
+        .with_async_completion_queue(async_completion_queue)
         .with_caller_id(caller_id)
         .with_quota_meter(quota_meter)
         .with_peer_meter(peer_meter);
@@ -2269,6 +2267,88 @@ impl Agent {
         self.provider
             .as_ref()
             .is_some_and(|p| p.supports_native_tools())
+    }
+}
+
+// `AgentView` trait port (Phase 9b.N.5a). The impl lives here, not in
+// `peko-engine`, because of the orphan rule: `AgentView` is a foreign
+// trait and `Agent` is a local type — `impl ForeignTrait for LocalType`
+// is allowed in any crate where the local type lives. This block used
+// to live at `src/engine/agent_view_compat.rs`; Phase 16 folded it
+// into the inherent impl block to retire the compat shim.
+impl peko_engine::AgentView for Agent {
+    fn name(&self) -> &str {
+        Agent::name(self)
+    }
+
+    fn identity_did(&self) -> &str {
+        // `Agent::identity` is a private field; the public surface uses
+        // `Agent::did()` which returns the same value. We avoid
+        // exposing the `Identity` struct through the trait.
+        Agent::did(self)
+    }
+
+    fn has_llm_resolver(&self) -> bool {
+        Agent::llm_resolver(self).is_some()
+    }
+
+    fn principal_name(&self) -> Option<&str> {
+        Agent::principal_name(self)
+    }
+
+    fn principal_id(&self) -> &str {
+        &Agent::principal_id(self).0
+    }
+
+    fn resolved_model_id(&self) -> Option<&str> {
+        Agent::resolved_model_id(self)
+    }
+
+    fn principal_workspace(&self) -> Option<&std::path::PathBuf> {
+        Agent::principal_workspace(self)
+    }
+
+    fn principal_capabilities(&self) -> Option<&Arc<peko_extension_api::Capabilities>> {
+        // `Agent::principal_capabilities` returns
+        // `Option<&Arc<Capabilities>>` (the Arc lets the agent cache
+        // a principal's capability snapshot across iterations); the
+        // trait surface keeps the `&Arc<...>` shape so callers can
+        // `.cloned()` straight into `Option<Arc<Capabilities>>` slots
+        // (e.g. `TurnPromptContext::capabilities`) without an extra
+        // `Arc::new(...)` wrap at every site.
+        Agent::principal_capabilities(self)
+    }
+
+    fn principal_active_extensions(&self) -> Option<&peko_extension_api::ActiveExtensionSet> {
+        Agent::principal_active_extensions(self)
+    }
+
+    fn channel(&self) -> Option<&str> {
+        Agent::channel(self)
+    }
+
+    fn thinking_level(&self) -> Option<&str> {
+        Agent::thinking_level(self)
+    }
+
+    fn sandbox_enabled(&self) -> bool {
+        Agent::sandbox_enabled(self)
+    }
+
+    fn model_aliases(&self) -> &[String] {
+        Agent::model_aliases(self)
+    }
+
+    fn config_enable_tool_search(&self) -> bool {
+        self.config.enable_tool_search
+    }
+
+    fn config_prompt_body(&self) -> Option<String> {
+        self.config.prompt.clone()
+    }
+
+    fn set_config_prompt_body_for_test(&mut self, body: Option<String>) {
+        self.config.prompt = body;
     }
 }
 
