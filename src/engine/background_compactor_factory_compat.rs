@@ -47,9 +47,9 @@
 //! `src/engine/session_view_compat.rs` and
 //! `src/engine/extension_core_funnel_compat.rs` patterns.
 
-use crate::session::compaction::background::BackgroundCompactor;
 use peko_engine::{BackgroundCompactorFactory, CompactorBackend, ProviderView};
 use peko_quota::QuotaMeter;
+use peko_session::compaction::background::BackgroundCompactor;
 use std::sync::Arc;
 
 /// Adapter that captures the inner `Arc<dyn ProviderView>` and rebuilds a

@@ -4,12 +4,12 @@
 //! `peko_tools_builtin::session`. The tool surface there speaks to a
 //! [`peko_tools_builtin::session::SessionRuntime`] port trait so the
 //! built-in crate can stay free of root-only deps
-//! (`crate::session::SessionManager`, `crate::session::jsonl::*`, the
+//! (`crate::SessionManager`, `crate::jsonl::*`, the
 //! LlmMessage event-conversion helpers, etc.). This file is the
 //! production adapter: it preserves the exact behaviour of the
 //! legacy root-side [`crate::tools::builtin::session::SessionIntrospector`]
 //! but routes through the new peko_tools_builtin port trait so the
-//! tool side has no `crate::session::*` dependency.
+//! tool side has no `crate::*` dependency.
 //!
 //! Behaviour preserved:
 //! - `list_sessions` uses the manager's `list_all_sessions(false)` and
@@ -40,14 +40,15 @@ use peko_tools_builtin::session::{
     UsageStats,
 };
 
-use crate::common::types::message::ContentBlock;
-use crate::session::jsonl::SessionStorage;
-use crate::session::message_conversion::event_to_llm_message;
+use peko_message::ContentBlock;
+use peko_session::jsonl::SessionStorage;
+use peko_session::message_conversion::event_to_llm_message;
+use peko_session::SessionManager;
 
 /// Adapter that exposes the real `SessionManager` through the
 /// `SessionRuntime` port trait.
 pub struct SessionManagerRuntime {
-    session_manager: Arc<tokio::sync::RwLock<crate::session::SessionManager>>,
+    session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
@@ -55,7 +56,7 @@ impl SessionManagerRuntime {
     /// Build a new runtime wrapping the supplied manager.
     #[must_use]
     pub fn new(
-        session_manager: Arc<tokio::sync::RwLock<crate::session::SessionManager>>,
+        session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
         current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
     ) -> Self {
         Self {

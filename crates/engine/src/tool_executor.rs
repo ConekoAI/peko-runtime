@@ -23,7 +23,7 @@
 
 use crate::events::AgenticEvent;
 use crate::parallel_gate::ParallelGate;
-use crate::session_view::SessionView;
+use crate::SessionView;
 use anyhow::Result;
 use peko_extension_host::ToolFunnel;
 use peko_message::ContentBlock;

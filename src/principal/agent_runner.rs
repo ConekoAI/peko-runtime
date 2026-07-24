@@ -10,10 +10,10 @@ use crate::common::types::message::LlmMessage;
 use crate::engine::AgenticEvent;
 use crate::principal::context::{install_agent_catalog, PrincipalContext};
 use crate::principal::router::AgentPromptSummary;
-use crate::session::manager::SessionManager;
-use crate::session::SessionCreateOptions;
 use crate::tools::builtin::{AgentTool, DynamicSessionKeyProvider};
 use peko_auth::Subject;
+use peko_session::manager::SessionManager;
+use peko_session::SessionCreateOptions;
 
 use super::{agent_prompt::AgentPrompt, Capabilities};
 

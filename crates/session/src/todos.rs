@@ -4,7 +4,7 @@
 //! alongside the main session JSONL. Writes are atomic (tmp + rename) and
 //! use the same durability strategy as `SessionStorage`.
 
-use crate::session::safe_filename_component;
+use crate::key::safe_filename_component;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use peko_fs_persistence::FileLock;
@@ -236,7 +236,7 @@ impl TodoStorage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
     use std::str::FromStr;
     use tempfile::TempDir;
 

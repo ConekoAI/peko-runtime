@@ -87,6 +87,43 @@ impl From<SteeringMessage> for InboxItem {
     }
 }
 
+/// Phase 7 trait-port helpers: convert host `InboxItem` values into
+/// the API crate's `AsyncInboxItem` envelopes so root-side callers
+/// (e.g. `AsyncExecutor::execute_inner`) can `.into()` their
+/// host-native variants and push through `Arc<dyn AsyncInboxLike>`.
+impl From<CompletionEvent> for peko_extension_api::AsyncInboxItem {
+    fn from(e: CompletionEvent) -> Self {
+        peko_extension_api::AsyncInboxItem::Completion(peko_extension_api::CompletionEnvelope {
+            task_id: e.task_id,
+            tool_name: e.tool_name,
+            result: e.result,
+            status: e.status,
+            completed_at: e.completed_at,
+            output_path: e.output_path,
+            parent_session_key: e.parent_session_key,
+        })
+    }
+}
+
+impl From<SteeringMessage> for peko_extension_api::AsyncInboxItem {
+    fn from(m: SteeringMessage) -> Self {
+        peko_extension_api::AsyncInboxItem::Steering(peko_extension_api::SteeringEnvelope {
+            id: m.id,
+            content: m.content,
+            queued_at: m.queued_at,
+        })
+    }
+}
+
+impl From<InboxItem> for peko_extension_api::AsyncInboxItem {
+    fn from(item: InboxItem) -> Self {
+        match item {
+            InboxItem::Completion(e) => e.into(),
+            InboxItem::Steering(m) => m.into(),
+        }
+    }
+}
+
 /// Minimum surface `AsyncExecutor` needs from a per-session inbox.
 ///
 /// `AsyncExecutor::execute_inner` pushes a completion event (or a
@@ -283,6 +320,34 @@ impl peko_extension_api::AsyncInboxLike for SessionInbox {
                 ),
             })
             .collect()
+    }
+
+    async fn push(&self, item: peko_extension_api::AsyncInboxItem) {
+        let native = match item {
+            peko_extension_api::AsyncInboxItem::Completion(e) => {
+                InboxItem::Completion(CompletionEvent {
+                    task_id: e.task_id,
+                    tool_name: e.tool_name,
+                    result: e.result,
+                    status: e.status,
+                    completed_at: e.completed_at,
+                    output_path: e.output_path,
+                    parent_session_key: e.parent_session_key,
+                })
+            }
+            peko_extension_api::AsyncInboxItem::Steering(m) => {
+                InboxItem::Steering(SteeringMessage {
+                    id: m.id,
+                    content: m.content,
+                    queued_at: m.queued_at,
+                })
+            }
+        };
+        SessionInbox::push(self, native);
+    }
+
+    async fn len(&self) -> usize {
+        SessionInbox::len(self).await
     }
 }
 

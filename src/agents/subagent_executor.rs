@@ -37,11 +37,11 @@ use crate::extensions::framework::async_exec::executor::{
 };
 use crate::extensions::framework::types::Capabilities;
 use crate::observability::Observability;
-use crate::session::context::SessionContext;
-use crate::session::manager::SessionManager;
-use crate::session::types::SpawnCleanupPolicy;
 use crate::subject::PrincipalId;
 use peko_auth::Subject;
+use peko_extension_host::SpawnCleanupPolicy;
+use peko_session::context::SessionContext;
+use peko_session::manager::SessionManager;
 
 /// Channel for announcing completed subagent runs
 pub type AnnouncementSender = mpsc::Sender<CompletedRun>;
@@ -463,7 +463,10 @@ impl SubagentExecutor {
         // Build the metadata extension that carries subagent-specific data
         let metadata = TaskMetadata::Subagent(SubagentMetadata {
             child_session_key: child_session_key.clone(),
-            cleanup: config.cleanup,
+            cleanup: match config.cleanup {
+                SpawnCleanupPolicy::Keep => peko_session::types::SpawnCleanupPolicy::Keep,
+                SpawnCleanupPolicy::Delete => peko_session::types::SpawnCleanupPolicy::Delete,
+            },
             depth: child_depth,
             announce_completion: config.announce_completion,
             subagent_result: None,
@@ -999,11 +1002,11 @@ async fn execute_subagent_task(
     };
 
     // Get the base session key from the session key
-    let base_key = crate::session::key::base_key_from_overlay(session_key)
+    let base_key = peko_session::key::base_key_from_overlay(session_key)
         .unwrap_or_else(|| session_key.to_string());
 
     // Parse to get agent and peer, then find the child session
-    let child_session: Option<Arc<RwLock<crate::session::Session>>> = {
+    let child_session: Option<Arc<RwLock<peko_session::Session>>> = {
         let parts: Vec<&str> = base_key.split(':').collect();
         if parts.len() >= 5 {
             if let Some(peer_idx) = parts.iter().position(|&p| p == "peer") {
@@ -1195,12 +1198,12 @@ mod tests {
     use crate::common::types::message::LlmMessage;
     use crate::quota::scope::QuotaScope;
     use crate::quota::{QuotaConfig, QuotaCycle, QuotaMeter};
-    use crate::session::manager::SessionManager;
     use chrono::Utc;
     use peko_engine::StackedMeteredProvider;
     use peko_provider_api::ChatOptions;
     use peko_providers::resolver::ResolveRequest;
     use peko_providers::MockAdapter;
+    use peko_session::manager::SessionManager;
 
     /// F39 test fixture: build a `MockAdapter`-backed `Provider` and
     /// a single quota meter (request_count cap = 10 so a successful
@@ -1485,7 +1488,8 @@ mod tests {
         use peko_auth::Subject;
 
         // Create a session manager with path resolver
-        let path_resolver = PathResolver::new();
+        let path_resolver: Arc<dyn peko_subject::PathResolverLike> =
+            Arc::new(peko_session::DefaultPathResolver::new());
         let manager = SessionManager::new()
             .with_path_resolver(path_resolver, "test_agent")
             .await

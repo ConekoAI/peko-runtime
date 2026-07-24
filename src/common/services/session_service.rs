@@ -4,14 +4,15 @@
 //! Handles session listing, history retrieval, branching, and deletion.
 
 use crate::common::paths::PathResolver;
-use crate::session::events::SessionEvent;
-use crate::session::metadata_controller::MetadataController;
-use crate::session::sync::SyncSessionStorage;
-use crate::session::SessionEntry;
-use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use peko_auth::Subject;
+use peko_session::events::SessionEvent;
+use peko_session::metadata_controller::MetadataController;
+use peko_session::sync::SyncSessionStorage;
+use peko_session::SessionEntry;
+use peko_session::SessionManager;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Session information
@@ -339,13 +340,17 @@ pub fn session_event_to_history(
 
 /// Unified session service
 pub struct SessionService {
-    path_resolver: PathResolver,
+    path_resolver: Arc<dyn peko_subject::PathResolverLike>,
 }
 
 impl SessionService {
     /// Create a new session service
     #[must_use]
     pub fn new(path_resolver: PathResolver) -> Self {
+        let path_resolver: Arc<dyn peko_subject::PathResolverLike> =
+            Arc::new(peko_session::DefaultPathResolver::with_data_dir(
+                path_resolver.data_dir().to_path_buf(),
+            ));
         Self { path_resolver }
     }
 
@@ -390,7 +395,7 @@ impl SessionService {
         let active_session = if !sessions.is_empty() {
             let sessions_dir = self.get_sessions_dir(agent_name).await?;
             let mut controller = MetadataController::new(&sessions_dir);
-            let peer_key = crate::session::key::derive_base_session_key(agent_name, peer);
+            let peer_key = peko_session::key::derive_base_session_key(agent_name, peer);
             controller
                 .get_active_session_id(&peer_key)
                 .await
@@ -638,7 +643,7 @@ impl SessionService {
     pub async fn get_session_metadata(
         &self,
         session_id: &str,
-    ) -> Result<crate::session::metadata::SessionMetadata> {
+    ) -> Result<peko_session::metadata::SessionMetadata> {
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
@@ -718,10 +723,10 @@ impl SessionService {
         agent_name: &str,
         session_id: &str,
         user: &str,
-    ) -> Result<crate::session::unified::Session> {
+    ) -> Result<peko_session::unified::Session> {
         let sessions_dir = self.get_sessions_dir(agent_name).await?;
         let peer = Subject::User(user.to_string());
-        crate::session::unified::Session::open_by_id(
+        peko_session::unified::Session::open_by_id(
             agent_name,
             session_id,
             &sessions_dir,
@@ -832,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_session_event_to_history_hides_system_prompt() {
-        use crate::session::message::SessionMessage;
+        use peko_session::message::SessionMessage;
         let event = SessionEvent::MessageV2(SessionMessage::system(
             "You are the root agent for a Principal...",
         ));
@@ -844,10 +849,10 @@ mod tests {
 
     #[test]
     fn test_session_event_to_history_keeps_user_and_assistant() {
-        use crate::session::message::SessionMessage;
+        use peko_session::message::SessionMessage;
         let user = SessionEvent::MessageV2(SessionMessage::user(
             "hello",
-            crate::session::message::MessageSource::User,
+            peko_session::message::MessageSource::User,
         ));
         let assistant = SessionEvent::MessageV2(SessionMessage::assistant_text(
             "hi there",
@@ -868,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_session_event_to_history_model_change() {
-        use crate::session::events::{EventEnvelope, SystemEvent};
+        use peko_session::events::{EventEnvelope, SystemEvent};
         let event = SessionEvent::System(SystemEvent {
             envelope: EventEnvelope::new(),
             event: "model_change".to_string(),
@@ -885,7 +890,7 @@ mod tests {
 
     #[test]
     fn test_session_event_to_history_compaction() {
-        use crate::session::events::{EventEnvelope, SystemEvent};
+        use peko_session::events::{EventEnvelope, SystemEvent};
         let event = SessionEvent::System(SystemEvent {
             envelope: EventEnvelope::new(),
             event: "compaction".to_string(),
@@ -899,7 +904,7 @@ mod tests {
 
     #[test]
     fn test_session_event_to_history_hides_generic_system_annotations() {
-        use crate::session::events::{EventEnvelope, SystemEvent};
+        use peko_session::events::{EventEnvelope, SystemEvent};
         let event = SessionEvent::System(SystemEvent {
             envelope: EventEnvelope::new(),
             event: "session_resumed".to_string(),

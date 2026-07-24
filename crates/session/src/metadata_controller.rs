@@ -6,9 +6,9 @@
 //! - Single point of truth for metadata
 //! - Centralized caching and reconciliation
 
-use crate::session::index::{MaintenanceConfig, MaintenanceReport, SessionEntry, SessionIndex};
-use crate::session::jsonl::SessionStorage;
-use crate::session::metadata::{ReconciliationResult, SessionMetadata};
+use crate::index::{MaintenanceConfig, MaintenanceReport, SessionEntry, SessionIndex};
+use crate::jsonl::SessionStorage;
+use crate::metadata::{ReconciliationResult, SessionMetadata};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -368,8 +368,8 @@ impl MetadataController {
         // and clear peer routing if this session is still the active one.
         // This prevents "Session not found" errors when sending without --new flag.
         if let Some(e) = entry {
-            use crate::session::key::derive_base_session_key;
-            use peko_auth::Subject;
+            use crate::key::derive_base_session_key;
+            use peko_subject::Subject;
 
             let peer = match e.peer_type.as_deref() {
                 Some("user") => e.peer_id.as_ref().map(|id| Subject::User(id.clone())),
@@ -530,7 +530,7 @@ impl MetadataController {
         &mut self,
         peer_key: &str,
         sync_from_jsonl: bool,
-    ) -> Result<Vec<crate::common::services::session_service::SessionInfo>> {
+    ) -> Result<Vec<crate::session_info::SessionInfo>> {
         let entries = self
             .list_entries_for_peer(peer_key, sync_from_jsonl)
             .await?;
@@ -573,7 +573,7 @@ impl MetadataController {
         let mut last_total = 0usize;
 
         for event in &events {
-            if let crate::session::events::SessionEvent::MessageV2(msg) = event {
+            if let crate::events::SessionEvent::MessageV2(msg) = event {
                 if let Some(usage) = msg.usage() {
                     total_input += usage.input as usize;
                     total_output += usage.output as usize;
@@ -850,7 +850,7 @@ pub struct ConsistencyStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
     use tempfile::TempDir;
 
     async fn setup_controller() -> (MetadataController, TempDir) {

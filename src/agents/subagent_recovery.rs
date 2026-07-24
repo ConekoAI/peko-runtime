@@ -19,7 +19,7 @@ impl ResultRecovery {
     /// Attempt to recover a non-empty answer from session history.
     /// Returns `Some(recovered_text)` if recovery succeeds.
     pub async fn recover_from_session(
-        session: &Arc<RwLock<crate::session::Session>>,
+        session: &Arc<RwLock<peko_session::Session>>,
     ) -> Option<String> {
         match session.read().await.load_history().await {
             Ok(history) => {

@@ -4,10 +4,10 @@
 //! - `ChannelOverlay`: Channel-specific state storage
 //! - `ChannelContext`: Interface for channel-specific data
 
-use super::types::{ChannelType, OverlayType};
+use crate::types::{ChannelType, OverlayType};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use peko_auth::Subject;
+use peko_subject::Subject;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -286,7 +286,9 @@ impl From<ChannelOverlayData> for ChannelOverlay {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
+    use chrono::Utc;
+    use std::collections::HashMap;
 
     #[test]
     fn test_channel_overlay_new() {

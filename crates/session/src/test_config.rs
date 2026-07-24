@@ -4,7 +4,7 @@
 //! via environment variables for integration testing.
 
 /// Get prune duration with test override support
-/// 
+///
 /// Environment variable: `SESSION_TEST_PRUNE_DAYS`
 /// Default: 30 days
 pub fn prune_duration() -> std::time::Duration {
@@ -96,7 +96,7 @@ pub fn stale_lock_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn test_defaults() {

@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::debug;
 
-use crate::session::safe_filename_component;
+use crate::key::safe_filename_component;
+use peko_subject::PathResolverLike;
 
 /// Session directory manager
 ///
@@ -25,10 +26,10 @@ impl SessionDirectory {
         Self { path }
     }
 
-    /// Create from agent name using `PathResolver`
+    /// Create from agent name using `DefaultPathResolver`
     #[must_use]
     pub fn for_agent(agent_name: &str) -> Self {
-        let resolver = crate::common::paths::PathResolver::new();
+        let resolver = crate::default_path_resolver::DefaultPathResolver::new();
         let path = resolver.agent_sessions_dir(agent_name);
         Self::new(path)
     }
@@ -82,7 +83,7 @@ impl SessionDirectory {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
     use tempfile::TempDir;
 
     #[tokio::test]

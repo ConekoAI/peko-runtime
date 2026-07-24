@@ -8,7 +8,6 @@
 //! - Structured summary format with file operations
 //! - Cache validation and invalidation
 
-use peko_message::{ContentBlock, LlmMessage, MessageRole};
 use crate::compaction::{
     summary_format::{
         extract_file_ops_from_messages, format_summary_with_file_ops, CompactionDetails,
@@ -18,6 +17,7 @@ use crate::compaction::{
     },
     CompactionConfig, CompactionEntry, Compactor,
 };
+use peko_message::{ContentBlock, LlmMessage, MessageRole};
 use peko_providers::catalog::{ModelCatalog, ModelConfig};
 use peko_providers::templates;
 

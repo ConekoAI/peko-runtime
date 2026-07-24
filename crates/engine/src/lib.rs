@@ -68,7 +68,6 @@ pub mod funnel;
 pub mod iteration_state;
 pub mod parallel_gate;
 pub mod prompt;
-pub mod session_view;
 pub mod stacked_metered_provider;
 pub mod state;
 pub mod stream_buffer;
@@ -83,11 +82,16 @@ pub mod tool_stream;
 // `src/engine/mod.rs` exposed pre-Phase 9, so the root shim's
 // `pub use peko_engine::*` preserves every downstream import path.
 pub use agent_view::AgentView;
-pub use agentic_loop::{AgenticLoop, AgenticResult, ToolCall};
+pub use agentic_loop::{AgenticLoop, AgenticResult};
+// Phase 7.4: `ToolCall` lifted into `peko-session` (the session-storage
+// compatibility layer). peko-engine re-exports from there so the
+// `peko_engine::ToolCall` path keeps compiling; the local definition
+// is removed in Phase 16.
 pub use async_completion::build_async_completion_message;
 pub use async_inbox::{AsyncInboxItem, AsyncInboxLike};
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
 pub use compaction_orchestrator::CompactionOrchestrator;
+pub use peko_session::ToolCall;
 // Phase 7 — the compaction data types + trait ports + eviction
 // helper live in `peko-session` (the persistence-side owner).
 // Re-export through `peko_engine::compaction::{...}` so the
@@ -125,7 +129,7 @@ pub use prompt::{
 // there. Engine keeps a thin re-export so the many `Arc<dyn ProviderView>`
 // sites that pre-date Phase 6 keep compiling.
 pub use peko_providers::ProviderView;
-pub use session_view::{SessionCore, SessionView};
+pub use peko_session::{SessionCore, SessionView};
 pub use stacked_metered_provider::StackedMeteredProvider;
 pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};

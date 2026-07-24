@@ -108,7 +108,7 @@ pub fn get_key_depth(key: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn test_generate_subagent_key() {

@@ -31,8 +31,8 @@ use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
 use crate::common::identifiers::parse_agent_name;
 use crate::common::paths::PathResolver;
-use crate::session::types::SpawnCleanupPolicy;
 use anyhow::Context;
+use peko_extension_host::SpawnCleanupPolicy;
 use peko_tools_builtin::messaging::{
     AgentConfig as BuiltinAgentConfig, SpawnAuditEvent, SpawnRequest, SubagentRunView,
     SubagentRuntime,
@@ -251,7 +251,10 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             status: view.status,
             started_at: view.started_at,
             completed_at: view.completed_at,
-            cleanup: view.cleanup,
+            cleanup: match view.cleanup {
+                peko_session::types::SpawnCleanupPolicy::Keep => SpawnCleanupPolicy::Keep,
+                peko_session::types::SpawnCleanupPolicy::Delete => SpawnCleanupPolicy::Delete,
+            },
             label: view.label,
             result: view
                 .result

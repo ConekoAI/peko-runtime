@@ -6,7 +6,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use crate::session::lock_utils::{try_write_lock, try_read_lock, DEFAULT_WRITE_TIMEOUT};
+//! use crate::lock_utils::{try_write_lock, try_read_lock, DEFAULT_WRITE_TIMEOUT};
 //!
 //! // Acquire write lock with timeout
 //! let guard = try_write_lock(&lock, DEFAULT_WRITE_TIMEOUT, "my_lock").await?;
@@ -82,7 +82,7 @@ pub fn into_anyhow(err: LockError) -> anyhow::Error {
 ///
 /// # Example
 /// ```rust,ignore
-/// use crate::session::lock_utils::{try_write_lock, DEFAULT_WRITE_TIMEOUT};
+/// use crate::lock_utils::{try_write_lock, DEFAULT_WRITE_TIMEOUT};
 ///
 /// let guard = try_write_lock(&my_lock, DEFAULT_WRITE_TIMEOUT, "session_cache").await?;
 /// // Use guard...
@@ -114,7 +114,7 @@ pub async fn try_write_lock<'a, T>(
 ///
 /// # Example
 /// ```rust,ignore
-/// use crate::session::lock_utils::{try_read_lock, DEFAULT_READ_TIMEOUT};
+/// use crate::lock_utils::{try_read_lock, DEFAULT_READ_TIMEOUT};
 ///
 /// let guard = try_read_lock(&my_lock, DEFAULT_READ_TIMEOUT, "session_cache").await?;
 /// // Use guard (read-only)...
@@ -155,7 +155,7 @@ pub async fn try_read_lock_default<'a, T>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
 

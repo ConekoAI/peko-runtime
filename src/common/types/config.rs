@@ -226,13 +226,13 @@ impl PekoConfig {
 // ============================================================================
 
 /// Session compaction configuration (re-exported from the canonical
-/// definition in `crate::session::compaction`).
+/// definition in `peko_session::compaction`).
 ///
 /// `PekoConfig.compaction` keeps this name so existing TOML configs
 /// continue to round-trip. The canonical type lives next to the engine
 /// that consumes it (`engine/compaction_orchestrator`, `session/compaction/*`).
 #[allow(unused_imports)]
-pub use crate::session::compaction::CompactionConfig;
+pub use peko_session::compaction::CompactionConfig;
 
 #[cfg(test)]
 mod tests {

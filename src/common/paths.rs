@@ -33,7 +33,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::session::safe_filename_component;
+use peko_session::safe_filename_component;
 
 /// Expand a leading `~` in a path string to the user's home directory.
 ///

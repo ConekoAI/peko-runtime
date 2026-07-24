@@ -15,6 +15,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+pub mod path_resolver;
+pub use path_resolver::PathResolverLike;
+
 // Actor identifiers live here (not in `principal`) so the actor module is a
 // clean lower layer: both `principal` and `agents` depend on `subject`, and
 // `subject` depends on neither. This breaks the principal↔agents cycle (F3).

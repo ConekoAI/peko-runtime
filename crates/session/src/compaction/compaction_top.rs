@@ -34,17 +34,17 @@ pub use crate::compaction::types::{
     CompactionConfig, CompactionEntry, CompactionQuota, CompactionRequest, CompactionResponse,
     CompactionResponseResult, CompactionResult, CompactionState, ContextUsageEstimate,
 };
-pub use crate::compaction::{CompactorBackend, drop_oldest_respecting_pairs};
+pub use crate::compaction::{drop_oldest_respecting_pairs, CompactorBackend};
 
 #[cfg(test)]
 #[path = "integration_tests.rs"]
 mod integration_tests;
 
+use anyhow::{Context as _, Result};
 use peko_message::ContentBlock;
 use peko_message::LlmMessage;
-use anyhow::{Context as _, Result};
-use peko_providers::ProviderView;
 use peko_message::MessageRole;
+use peko_providers::ProviderView;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -545,7 +545,8 @@ impl Compactor {
         };
 
         // Track file operations from messages being summarized
-        let _file_ops = crate::compaction::summary_format::extract_file_ops_from_messages(&to_compact);
+        let _file_ops =
+            crate::compaction::summary_format::extract_file_ops_from_messages(&to_compact);
         let cumulative_details = crate::compaction::summary_format::compute_cumulative_details(
             None, // TODO: pass previous details when available
             &to_compact,
@@ -555,8 +556,10 @@ impl Compactor {
         self.previous_summary = Some(summary.clone());
 
         // Create summary message with structured format and file operations
-        let summary_with_ops =
-            crate::compaction::summary_format::format_summary_with_file_ops(&summary, &cumulative_details);
+        let summary_with_ops = crate::compaction::summary_format::format_summary_with_file_ops(
+            &summary,
+            &cumulative_details,
+        );
         let summary_content = format!(
             "[Conversation Summary - {} messages]:\n{}",
             to_compact.len(),
@@ -653,6 +656,7 @@ impl Default for Compactor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use peko_providers::adapters::AnyAdapter;
     use peko_providers::core::ProviderRuntimeOptions;
     use peko_providers::mock::MockAdapter;

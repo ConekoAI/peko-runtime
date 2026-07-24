@@ -28,7 +28,7 @@
 use serde_json::json;
 use tracing::info;
 
-use crate::session::events::{A2aMessageType, A2aReceivedEvent, A2aSentEvent, EventEnvelope};
+use peko_session::events::{A2aMessageType, A2aReceivedEvent, A2aSentEvent, EventEnvelope};
 
 /// Construct an `A2aSentEvent` for the outbound side — emitted
 /// after `PrincipalSendTool::execute_remote` has successfully sent

@@ -190,6 +190,29 @@ pub fn sanitize_key_component(s: &str) -> String {
         .collect()
 }
 
+/// Sanitize a session identifier for use as an on-disk filename
+/// component. Rewrites only characters Windows rejects (POSIX is
+/// preserved bit-for-bit so existing on-disk files remain reachable on
+/// Linux/macOS). The semantic session id stored in memory and
+/// serialized into JSONL is unchanged — only the on-disk filename is
+/// transformed.
+#[must_use]
+pub fn safe_filename_component(s: &str) -> String {
+    if !cfg!(windows) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || (ch as u32) < 0x20
+        {
+            out.push('-');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Get the scope from a session key
 #[must_use]
 pub fn scope_from_key(key: &str) -> Option<SessionScope> {
@@ -254,8 +277,8 @@ pub fn discord_session_key(
 /// and logs a warning, so a stray non-peer subject never produces an
 /// orphan key. This is the documented behavior, not a bug.
 #[must_use]
-pub fn derive_base_session_key(agent: &str, peer: &peko_auth::Subject) -> String {
-    use peko_auth::Subject;
+pub fn derive_base_session_key(agent: &str, peer: &peko_subject::Subject) -> String {
+    use peko_subject::Subject;
     match peer {
         Subject::User(id) => {
             format!("agent:{}:peer:user:{}", agent, sanitize_key_component(id))
@@ -367,7 +390,7 @@ pub fn base_key_from_overlay(overlay_key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn test_cli_default_key() {
@@ -468,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_derive_base_session_key() {
-        use peko_auth::Subject;
+        use peko_subject::Subject;
 
         let user_peer = Subject::User("alice".to_string());
         let key = derive_base_session_key("testagent", &user_peer);

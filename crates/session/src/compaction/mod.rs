@@ -40,8 +40,8 @@
 //! from here and the legacy `src/session/compaction/` directory is
 //! deleted in Phase 7.4.
 
-pub mod background;
 pub mod backend;
+pub mod background;
 pub mod compaction_top;
 pub mod eviction;
 pub mod factory;
@@ -52,8 +52,8 @@ pub mod types;
 #[cfg(test)]
 mod integration_tests;
 
-pub use background::{should_auto_compact, BackgroundCompactor};
 pub use backend::CompactorBackend;
+pub use background::{should_auto_compact, BackgroundCompactor};
 pub use compaction_top::{load_compaction_config, Compactor};
 pub use eviction::drop_oldest_respecting_pairs;
 pub use factory::BackgroundCompactorFactory;

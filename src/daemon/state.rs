@@ -25,7 +25,8 @@ use crate::principal::{
     PrincipalManager,
 };
 use crate::registry::{load_from_workspace, RegistryConfig};
-use crate::session::InboxRegistry;
+use peko_extension_host::SessionInbox;
+use peko_session::InboxRegistry;
 use secrecy::SecretString;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -552,7 +553,9 @@ impl AppState {
         let principal_service = Arc::new(
             StatelessAgentService::new_with_resolver(
                 config_service.clone(),
-                path_resolver.clone(),
+                Arc::new(peko_session::DefaultPathResolver::with_data_dir(
+                    path_resolver.data_dir().to_path_buf(),
+                )),
                 Some(resolver.clone()),
             )
             .await
@@ -638,7 +641,9 @@ impl AppState {
         // background tasks), and the in-flight `AgenticLoop` (which
         // drains at iteration start). Lazy-initializes entries on
         // first access; no explicit cleanup.
-        let inbox_registry = Arc::new(InboxRegistry::new());
+        let inbox_registry = Arc::new(InboxRegistry::new(Arc::new(
+            || -> Arc<dyn peko_extension_api::AsyncInboxLike> { Arc::new(SessionInbox::new()) },
+        )));
 
         let async_task_executor =
             Arc::new(AsyncExecutor::new().with_inbox_registry(Arc::clone(&inbox_registry)));
@@ -2949,7 +2954,7 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
         AppState::streaming_runs(self)
     }
 
-    fn inbox_registry(&self) -> &Arc<crate::session::InboxRegistry> {
+    fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry> {
         &self.inbox_registry
     }
 

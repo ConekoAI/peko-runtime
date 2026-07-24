@@ -7,14 +7,14 @@ use crate::engine::state::StateMachine;
 use crate::engine::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
-use crate::session::manager::{ResolvedSession, SessionManager};
-use crate::session::types::ChannelType;
-use crate::session::InboxRegistry;
 use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
 use peko_auth::Subject;
 use peko_identity::{did::DIDScope, storage::KeyStorage, Identity};
+use peko_session::manager::{ResolvedSession, SessionManager};
+use peko_session::types::ChannelType;
+use peko_session::InboxRegistry;
 use std::sync::Arc;
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::{debug, error, info, warn};
@@ -207,7 +207,7 @@ impl Agent {
         // root-only deps.
         if self.config.enable_task_tools {
             if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
-                let todo_storage = Arc::new(crate::session::todos::TodoStorage::new(sessions_dir));
+                let todo_storage = Arc::new(peko_session::todos::TodoStorage::new(sessions_dir));
                 let runtime = std::sync::Arc::new(
                     crate::session::todo_runtime_impl::TodoStorageRuntime::new(todo_storage),
                 );
@@ -403,7 +403,8 @@ impl Agent {
     /// Create a new agent with the given configuration
     pub async fn new(config: AgentConfig) -> Result<Self> {
         // Initialize session manager with path resolver
-        let path_resolver = PathResolver::new();
+        let path_resolver: Arc<dyn peko_subject::PathResolverLike> =
+            Arc::new(peko_session::DefaultPathResolver::new());
         let session_manager = SessionManager::new()
             .with_path_resolver(path_resolver, &config.name)
             .await?;
@@ -423,7 +424,8 @@ impl Agent {
         config: AgentConfig,
         resolver: Arc<peko_providers::LlmResolver>,
     ) -> Result<Self> {
-        let path_resolver = PathResolver::new();
+        let path_resolver: Arc<dyn peko_subject::PathResolverLike> =
+            Arc::new(peko_session::DefaultPathResolver::new());
         let session_manager = SessionManager::new()
             .with_path_resolver(path_resolver, &config.name)
             .await?;
@@ -1071,7 +1073,8 @@ impl Agent {
         // route through `run_with_resume` directly. Mirrors the
         // 9b.N.5b.9c convention where callers explicitly construct
         // their `BackgroundCompactorFactory` + `CompactionConfig`.
-        let path_resolver = PathResolver::new();
+        let path_resolver: Arc<dyn peko_subject::PathResolverLike> =
+            Arc::new(peko_session::DefaultPathResolver::new());
         let mut session_manager = SessionManager::new()
             .with_path_resolver(path_resolver, self.name())
             .await?;
@@ -1114,7 +1117,7 @@ impl Agent {
         &self,
         user_text: &str,
         pre_user_messages: Vec<crate::common::types::message::LlmMessage>,
-        session: Arc<tokio::sync::RwLock<crate::session::Session>>,
+        session: Arc<tokio::sync::RwLock<peko_session::Session>>,
         history: Option<Vec<crate::common::types::message::LlmMessage>>,
         cancel: Option<tokio_util::sync::CancellationToken>,
         on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
@@ -1213,7 +1216,7 @@ impl Agent {
         &self,
         user_text: &str,
         pre_user_messages: Vec<crate::common::types::message::LlmMessage>,
-        session: std::sync::Arc<tokio::sync::RwLock<crate::session::Session>>,
+        session: std::sync::Arc<tokio::sync::RwLock<peko_session::Session>>,
         history: Option<Vec<crate::common::types::message::LlmMessage>>,
         caller_id: Option<String>,
         on_event: F,
@@ -1308,7 +1311,7 @@ impl Agent {
     pub async fn run_streaming_with_session_skip_user_add<F>(
         &self,
         on_event: F,
-        session: std::sync::Arc<tokio::sync::RwLock<crate::session::Session>>,
+        session: std::sync::Arc<tokio::sync::RwLock<peko_session::Session>>,
         history: Option<Vec<crate::common::types::message::LlmMessage>>,
         caller_id: Option<String>,
     ) -> Result<crate::engine::AgenticResult>
@@ -1398,7 +1401,10 @@ impl Agent {
         let async_inbox_registry = if let Some(ref reg) = self.inbox_registry {
             Arc::clone(reg)
         } else {
-            Arc::new(crate::session::InboxRegistry::new())
+            Arc::new(peko_session::InboxRegistry::new(
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
+            ))
         };
         let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
         let async_completion_queue = async_inbox_registry.get_or_create(&async_inbox_key).await;
@@ -1565,7 +1571,7 @@ impl Agent {
                 Arc::clone(&provider) as Arc<dyn peko_engine::ProviderView>,
             ),
         );
-        let compaction_config = crate::session::compaction::load_compaction_config();
+        let compaction_config = peko_session::compaction::load_compaction_config();
         let mut loop_ = crate::engine::agentic_loop::AgenticLoop::new(
             agent_arc,
             provider,
@@ -1766,7 +1772,7 @@ impl Agent {
 
     /// Create a new session (/new command)
     pub async fn session_new(&self, peer: &Subject) -> Result<String> {
-        use crate::session::manager::SessionCreateOptions;
+        use peko_session::manager::SessionCreateOptions;
         let mut manager = self.session_manager.write().await;
         let options = SessionCreateOptions::new().with_trigger("user");
         let handle = manager
@@ -1794,7 +1800,7 @@ impl Agent {
     }
 
     /// List all sessions for a peer (/sessions command)
-    pub async fn session_list(&self, peer: &Subject) -> Result<Vec<crate::session::SessionEntry>> {
+    pub async fn session_list(&self, peer: &Subject) -> Result<Vec<peko_session::SessionEntry>> {
         let mut manager = self.session_manager.write().await;
         let sessions = manager.list_sessions_for_peer(peer).await?;
         Ok(sessions)
@@ -1804,7 +1810,7 @@ impl Agent {
     #[must_use]
     pub fn format_session_list(
         &self,
-        sessions: &[crate::session::SessionEntry],
+        sessions: &[peko_session::SessionEntry],
         active_id: Option<&str>,
     ) -> String {
         if sessions.is_empty() {
@@ -1941,10 +1947,8 @@ impl Agent {
     pub async fn new_for_test(config: AgentConfig, temp_dir: &std::path::Path) -> Result<Self> {
         use peko_identity::storage::KeyStorage;
 
-        let path_resolver = PathResolver::with_dirs(
-            temp_dir.join("config"),
-            temp_dir.join("data"),
-            temp_dir.join("cache"),
+        let path_resolver: Arc<dyn peko_subject::PathResolverLike> = Arc::new(
+            peko_session::DefaultPathResolver::with_data_dir(temp_dir.join("data")),
         );
         let session_manager = SessionManager::new()
             .with_path_resolver(path_resolver, &config.name)
@@ -2330,8 +2334,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
         use crate::extensions::framework::core::ExtensionCore;
-        use crate::session::types::ChannelType;
         use peko_auth::Subject;
+        use peko_session::types::ChannelType;
 
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
@@ -2363,8 +2367,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
         use crate::extensions::framework::core::ExtensionCore;
-        use crate::session::types::ChannelType;
         use peko_auth::Subject;
+        use peko_session::types::ChannelType;
 
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
@@ -2415,7 +2419,7 @@ mod tests {
 
         // Create a parent session first
         let parent_resolved = agent
-            .resolve_session(&peer, crate::session::types::ChannelType::Cli, "default")
+            .resolve_session(&peer, peko_session::types::ChannelType::Cli, "default")
             .await
             .unwrap();
         let parent_key = parent_resolved.context.full_session_key.clone();
