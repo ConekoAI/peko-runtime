@@ -189,6 +189,7 @@ crates/
 ├── extension-api/          # Framework API contracts (peko-extension-api)
 ├── extension-host/         # Framework host impl (peko-extension-host)
 ├── message/                # Neutral message contract (peko-message)
+├── observability/          # Observability hub: audit log + metrics + tracing (peko-observability, Phase 14)
 ├── peko-daemon/            # Long-running daemon binary (peko-daemon)
 ├── provider-api/           # Provider contract types (peko-provider-api)
 ├── protocol/               # IPC + tunnel wire-shape contracts (peko-protocol)
@@ -215,7 +216,6 @@ src/
 │   └── universal/          # Universal tool adapter and protocol
 ├── identity/               # DID identity system, ed25519 keys, key storage, runtime identity
 ├── ipc/                    # Inter-process communication
-├── observability/          # Metrics, logging, tracing, audit
 ├── providers/              # LLM provider integrations (v3: catalog + resolver)
 │   ├── adapters/           # OpenAI / Anthropic / openai-compatible ApiAdapters
 │   ├── catalog.rs          # ProviderCatalog — runtime-owned, persisted to `~/.peko/providers.toml`
@@ -367,14 +367,14 @@ domain size.
 | 12b | Deterministic workspace dep-graph check | `scripts/check_workspace_deps.py` (see PR #274) |
 | 12c | Root facade intent cleanup | legacy facade cruft removed (see PR #275) |
 | 12 | Foreground switch launches `peko-daemon` binary | CLI `--foreground` re-execs into `peko-daemon` instead of in-process fork (see PR #276) |
-| 13 | Extract remaining runtime domains | `peko::daemon::*` absorbed into `peko-daemon` (PR #264); still pending: `peko::observability::*`, `peko::cron::*`, `peko::principal::*` |
-| 14 | Extract observability + cron + principal | `peko::observability::*`, `peko::cron::*`, `peko::principal::*` |
+| 13 | Extract remaining runtime domains | `peko::daemon::*` absorbed into `peko-daemon` (PR #264); `peko::observability::*` landed in Phase 14 (PR #300); still pending: `peko::cron::*`, `peko::principal::*` |
+| 14 | Extract observability (✅ merged PR #300, 2026-07-24) + cron + principal | `peko::observability::*`; still pending: `peko::cron::*`, `peko::principal::*` |
 | 15 | **Delete pure re-export shims** (✅ merged PR #298, 2026-07-24) | `peko::subject::*`, `peko::quota::*`, `peko::tools::core::*`, `peko::common::types::message::*` |
 | 16 | Delete trait-port compat impls (✅ merged PR #299, 2026-07-24) | `peko::engine::{agent_view_compat,async_inbox_compat}` deleted; `background_compactor_factory_compat` retained (orphan rule — needs `BackgroundCompactor` lift deferred from Phase 6); `agentic_loop_compat` narrowed (dead re-export removed, 3,871-line test module stays) |
 | 17 | Build `peko-engine-test-support` + move engine tests | (no root path breakage; tests relocate) |
 | 18 | Move deferred built-in tools (`BashTool`, `ToolSearchTool`, `AgentCatalog`) + `tool_runtime.rs` | `peko::tools::builtin::bash`, `peko::tools::builtin::tool_search`, `peko::tools::builtin::agent_catalog`, `peko::engine::tool_runtime` |
 
-#### Current crate layout (19 workspace members, 2026-07-24)
+#### Current crate layout (20 workspace members, 2026-07-24)
 
 Already extracted (`crates/`):
 
@@ -387,6 +387,7 @@ Already extracted (`crates/`):
 - `fs-persistence` — filesystem persistence helpers.
 - `identity` — DID identity + key storage.
 - `message` — neutral message contract.
+- `observability` — observability hub (audit log + metrics + tracing; Phase 14 entry).
 - `peko-daemon` — daemon binary + lib (Phase 12).
 - `protocol` — IPC + tunnel wire contracts (Phase 11a).
 - `provider-api` — provider contracts.
@@ -406,7 +407,6 @@ Planned for later phases (not yet extracted):
 - `crates/registry` — packaging + registry client + trust store (still in root `src/registry/`).
 - `crates/tunnel` — tunnel protocol + A2A dispatcher (still in root `src/tunnel/`).
 - `crates/ipc` — IPC server + handlers (still in root `src/ipc/`).
-- `crates/observability` — instrumentation (still in root).
 - `crates/cron` — persistent cron scheduling (still in root).
 - `crates/principal` — principal orchestration (still in root).
 
