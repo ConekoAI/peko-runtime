@@ -311,7 +311,7 @@ fn principal_capability_grant_round_trip() {
 
     // Patch the Principal's `[capabilities] grants` to grant `tool:Grep`.
     let raw = std::fs::read_to_string(&cfg_path).expect("read principal.toml");
-    let mut cfg: crate::principal::config::PrincipalConfig =
+    let mut cfg: peko_core::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
     cfg.capabilities = peko_extension_api::Capabilities::with_grants(["tool:Grep"]);
     std::fs::write(
@@ -364,7 +364,7 @@ fn principal_capability_revoke_round_trip() {
 
     // Revoke: clear the capabilities list.
     let raw = std::fs::read_to_string(&cfg_path).expect("read principal.toml");
-    let mut cfg: crate::principal::config::PrincipalConfig =
+    let mut cfg: peko_core::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
     cfg.capabilities = peko_extension_api::Capabilities::new();
     std::fs::write(

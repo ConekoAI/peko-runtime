@@ -15,7 +15,7 @@ use peko_core::registry::packaging::{
     PrincipalRegistryDescriptor,
 };
 use peko_identity::{did::DIDScope, Identity};
-use crate::principal::config::PrincipalConfig;
+use peko_core::principal::config::PrincipalConfig;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
