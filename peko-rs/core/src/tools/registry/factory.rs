@@ -25,8 +25,9 @@
 //!
 //! Note: Custom tools can also be disabled by name.
 
-use crate::tools::builtin::{
-    BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
+use crate::tools::builtin::BashTool;
+use peko_tools_builtin::{
+    CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
     SessionTool, WriteTool,
 };
 use peko_tools_core::traits::Tool;
@@ -357,7 +358,7 @@ impl ToolFactory {
                 // takes a `SharedSessionRuntime` (Arc<dyn SessionRuntime>).
                 // The legacy placeholder `SessionCache` is provided by
                 // peko_tools_builtin and exposed here for back-compat.
-                let cache = std::sync::Arc::new(crate::tools::SessionCache::new("main"));
+                let cache = std::sync::Arc::new(peko_tools_builtin::SessionCache::new("main"));
                 Arc::new(SessionTool::new(
                     cache.as_shared() as peko_tools_builtin::session::SharedSessionRuntime
                 ))

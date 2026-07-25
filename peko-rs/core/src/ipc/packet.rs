@@ -12,24 +12,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Maximum packet size in bytes (conservative UDP limit).
-///
-/// Phase 11a lift: the canonical home is
-/// [`peko_protocol::ipc::MAX_PACKET_SIZE`]. This re-export keeps
-/// every `crate::ipc::packet::MAX_PACKET_SIZE` import site working
-/// unchanged while the source-of-truth lives in the new crate.
-pub use peko_protocol::ipc::MAX_PACKET_SIZE;
-
-// ============================================================================
-// Auth Credential Types (ADR-034)
-// ============================================================================
-//
-// Phase 11a lift: the canonical home is
-// `peko_protocol::ipc::{AuthCredential, PrincipalSendControlMode,
-// AuthHeader}`. Re-exports here preserve every
-// `crate::ipc::packet::AuthCredential` import path.
-
+// Auth envelope types are `pub use` (not internal `use`) because the CLI
+// crate depends on `peko_core::ipc::packet::{AuthCredential, AuthHeader,
+// PrincipalSendControlMode}` paths and does not yet depend on `peko-protocol`.
+// `MAX_PACKET_SIZE` is internal-use only (the in-tree `if json.len() >
+// MAX_PACKET_SIZE` checks at packet serialize time).
 pub use peko_protocol::ipc::{AuthCredential, AuthHeader, PrincipalSendControlMode};
+use peko_protocol::ipc::MAX_PACKET_SIZE;
 
 /// Authenticated request envelope (ADR-034).
 ///
@@ -43,10 +32,6 @@ pub struct AuthenticatedRequest {
     #[serde(flatten)]
     pub packet: RequestPacket,
 }
-
-/// Re-exports for the heartbeat + CLI-timeout packet constants.
-/// Canonical home is `peko_protocol::ipc::*`.
-pub use peko_protocol::ipc::{CLI_TIMEOUT_SECS, HEARTBEAT_INTERVAL_SECS};
 
 /// Request sent from CLI → Daemon
 #[derive(Debug, Clone, Serialize, Deserialize)]

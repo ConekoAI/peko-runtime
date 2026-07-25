@@ -16,11 +16,11 @@
 use crate::common::paths::PathResolver;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
-use crate::tools::{
-    BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
-    WriteTool,
-};
+use crate::tools::builtin::BashTool;
 use anyhow::Result;
+use peko_tools_builtin::{
+    CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool,
+};
 use peko_tools_core::Tool;
 use std::path::PathBuf;
 use std::sync::Arc;

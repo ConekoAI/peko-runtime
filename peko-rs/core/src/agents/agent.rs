@@ -152,7 +152,8 @@ impl Agent {
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
     /// Extension tools (Universal and MCP) are registered via `ExtensionStore` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
-        use crate::tools::{AgentTool, SessionTool};
+        use crate::tools::builtin::AgentTool;
+        use peko_tools_builtin::SessionTool;
         use peko_tools_core::Tool;
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
@@ -212,10 +213,10 @@ impl Agent {
                 let runtime = std::sync::Arc::new(
                     crate::session::todo_runtime_impl::TodoStorageRuntime::new(todo_storage),
                 );
-                tools.push(Arc::new(crate::tools::TaskCreateTool::new(runtime.clone())));
-                tools.push(Arc::new(crate::tools::TaskGetTool::new(runtime.clone())));
-                tools.push(Arc::new(crate::tools::TaskListTool::new(runtime.clone())));
-                tools.push(Arc::new(crate::tools::TaskUpdateTool::new(runtime)));
+                tools.push(Arc::new(peko_tools_builtin::TaskCreateTool::new(runtime.clone())));
+                tools.push(Arc::new(peko_tools_builtin::TaskGetTool::new(runtime.clone())));
+                tools.push(Arc::new(peko_tools_builtin::TaskListTool::new(runtime.clone())));
+                tools.push(Arc::new(peko_tools_builtin::TaskUpdateTool::new(runtime)));
             } else {
                 tracing::warn!(
                     "Session storage directory not available for agent '{}'; Task* tools will not be registered",
@@ -1449,7 +1450,7 @@ impl Agent {
                 ),
             );
             let runtime_handle = runtime.as_shared();
-            let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
+            let spawn_tool = Arc::new(peko_tools_builtin::AsyncSpawnTool::new(
                 runtime_handle.clone(),
             ));
             let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::new(

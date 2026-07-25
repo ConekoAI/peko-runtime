@@ -12,7 +12,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
 use super::connection::ConnectionHandle;
-use super::packet::{ResponsePacket, CLI_TIMEOUT_SECS};
+use super::packet::ResponsePacket;
+use peko_protocol::ipc::CLI_TIMEOUT_SECS;
 
 /// Stream of response packets for a single request
 ///

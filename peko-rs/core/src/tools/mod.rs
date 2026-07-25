@@ -3,14 +3,23 @@
 //! This module is organized into two layers (Phase 15 deleted the third):
 //!
 //! 1. **`registry`** — Tool discovery, factory, and registration (`factory`)
-//! 2. **`builtin`** — Built-in tool implementations (filesystem, Bash, cron, session, messaging, async control, planning todos)
+//! 2. **`builtin`** — Built-in tool implementations that still live in root
+//!    (Bash, Agent, Skill, agent_catalog, tool_search, async_list/output/
+//!    status/stop shims with framework-internal test fixtures). All other
+//!    built-in tools (filesystem, cron, session, planning todos,
+//!    AsyncSpawn, …) now live in `peko_tools_builtin` and consumers import
+//!    them directly via `peko_tools_builtin::*`.
 //!
 //! Phase 15 deleted the `core` sub-shim (the `Tool`/`ToolContext`/`ToolResult`
 //! traits + `AbortSignal` + bridge helpers + `ToolInterruptNotice` + `ToolError`).
-//! Callers must import these directly from `peko_tools_core`. The
-//! previously-convenient `crate::tools::Tool` re-exports at this module
-//! level have also been deleted per the cleanup invariant (root must not
-//! `pub use peko_*::*`).
+//! Callers must import these directly from `peko_tools_core`.
+//!
+//! Phase 18 deleted the per-file re-export shims in `tools/builtin/` for
+//! `cron`, `cron_create`, `cron_delete`, `cron_list`, `fs`, `session`,
+//! `task_common`, `task_create`, `task_get`, `task_list`, `task_update`,
+//! and `async_spawn`. It also deleted the convenience re-exports at this
+//! module level (`pub use builtin::{...}` + `pub use registry::{...}`) per
+//! the cleanup invariant (root must not `pub use peko_*::*`).
 //!
 //! Previously, this module also contained `framework` (async_executor, universal protocol,
 //! shared utilities). These have been migrated to `src/extensions/` (Issue 014).
@@ -20,16 +29,3 @@
 
 pub mod builtin;
 pub mod registry;
-
-// Re-exports from builtin for convenience.
-pub use builtin::{
-    AgentTool, AsyncListTool, AsyncOutputTool, AsyncSpawnTool, AsyncStatusTool, AsyncStopTool,
-    BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
-    SessionCache, SessionInfo, SessionIntrospectionRegistry, SessionIntrospector, SessionTool,
-    TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool, WriteTool,
-};
-
-// Re-exports from registry
-pub use registry::{
-    McpDiscoveryResult, McpFactoryConfig, ToolCreationResult, ToolFactory, ToolFactoryConfig,
-};

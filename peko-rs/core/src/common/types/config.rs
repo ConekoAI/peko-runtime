@@ -225,14 +225,10 @@ impl PekoConfig {
 // Compaction Configuration (ADR-022)
 // ============================================================================
 
-/// Session compaction configuration (re-exported from the canonical
-/// definition in `peko_session::compaction`).
-///
-/// `PekoConfig.compaction` keeps this name so existing TOML configs
-/// continue to round-trip. The canonical type lives next to the engine
-/// that consumes it (`engine/compaction_orchestrator`, `session/compaction/*`).
-#[allow(unused_imports)]
-pub use peko_session::compaction::CompactionConfig;
+// Internal use of the canonical CompactionConfig. The `pub use` shim at this
+// module level was deleted in the Item 2c cleanup pass — external callers that
+// need `CompactionConfig` should import it directly from `peko_session::compaction`.
+use peko_session::compaction::CompactionConfig;
 
 #[cfg(test)]
 mod tests {

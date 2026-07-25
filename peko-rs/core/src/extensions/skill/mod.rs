@@ -20,7 +20,6 @@ pub mod skill_runtime_impl;
 pub use adapter::{
     load_skills_from_directory, register_skills_with_core, DiscoveredSkill, SkillAdapter,
 };
-pub use peko_extension_host::skill_catalog::{SkillCatalog, SkillEntry};
 pub use peko_tools_builtin::skill::{
     parse_yaml_frontmatter, parse_yaml_frontmatter_typed, SkillFrontmatter,
 };
