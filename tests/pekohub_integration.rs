@@ -24,12 +24,12 @@
 //! Run in container:
 //!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test pekohub_integration -- --ignored
 
-use peko::registry::client::ResourceType;
-use peko::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
-use peko::registry::packaging::Layer;
-use peko::registry::packaging::LayerType;
-use peko::registry::AgentRegistry;
-use peko::registry::{
+use peko_core::registry::client::ResourceType;
+use peko_core::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
+use peko_core::registry::packaging::Layer;
+use peko_core::registry::packaging::LayerType;
+use peko_core::registry::AgentRegistry;
+use peko_core::registry::{
     media_types, RegistryClient, RegistryConfig, RegistryManifest, RegistryRef, RegistrySource,
 };
 use std::time::Duration;
@@ -121,7 +121,7 @@ fn create_test_manifest(name: &str) -> (PrincipalManifest, Vec<Layer>) {
 async fn store_registry_manifest_local(
     registry: &AgentRegistry,
     manifest: &RegistryManifest,
-    digest: &peko::registry::packaging::types::ImageDigest,
+    digest: &peko_core::registry::packaging::types::ImageDigest,
 ) {
     let image_dir = registry
         .root_path()

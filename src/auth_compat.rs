@@ -1,6 +1,6 @@
 //! Host-side adapters for the [`peko_auth::host`] trait ports.
 //!
-//! [`peko_auth::host`]: ../../crates/auth/src/host.rs
+//! [`peko_auth::host`]: ../../peko-rs/auth/src/host.rs
 //!
 //! `peko-auth` is a leaf crate. It defines two narrow trait
 //! ports ([`RuntimePaths`], [`PrincipalResourceView`]) that

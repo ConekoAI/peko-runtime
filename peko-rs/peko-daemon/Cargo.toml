@@ -12,11 +12,13 @@ name = "peko-daemon"
 path = "src/main.rs"
 
 [dependencies]
-# Phase 12: the `peko-daemon` binary depends on the root `peko` lib
-# only for the daemon entry surface (`Daemon`, `DaemonConfig`,
-# `LaunchMode`). The lib's daemon internals (`background_runtime`,
+# Phase 12: the `peko-daemon` binary depends on the root lib for
+# the daemon entry surface (`Daemon`, `DaemonConfig`, `LaunchMode`).
+# Phase 0.Z-A: root lib was renamed `peko` → `peko_core` (only
+# `[lib].name` flipped; `[package].name` and `[[bin]].name` stay
+# `peko`). The lib's daemon internals (`background_runtime`,
 # `cron_engine`, `state`, `DaemonStatus`) stay `pub(crate)` — only
 # the entry surface is reachable.
-peko = { path = "../.." }
+peko_core = { package = "peko", path = "../.." }
 anyhow = "1.0"
 tokio = { version = "1.35", features = ["full", "net", "macros", "rt-multi-thread"] }

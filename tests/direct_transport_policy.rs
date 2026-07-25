@@ -17,17 +17,17 @@ use std::time::Duration;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::SigningKey;
 use futures::{SinkExt, StreamExt};
-use peko::tunnel::a2a_pending::PendingA2aResponses;
-use peko::tunnel::direct::{
+use peko_core::tunnel::a2a_pending::PendingA2aResponses;
+use peko_core::tunnel::direct::{
     routing::{select_transport, TransportChoice},
     DirectConnectionManager, DirectMessageHandler, DirectServer, DirectTlsConfig,
 };
-use peko::tunnel::hub_directory::{AgentDirectory, HubAgentDirectoryClient, ResolvedExposure};
-use peko::tunnel::known_runtimes::{KnownRuntimes, TransportPreference, TrustLevel};
-use peko::tunnel::protocol::{
+use peko_core::tunnel::hub_directory::{AgentDirectory, HubAgentDirectoryClient, ResolvedExposure};
+use peko_core::tunnel::known_runtimes::{KnownRuntimes, TransportPreference, TrustLevel};
+use peko_core::tunnel::protocol::{
     InstanceAnnouncePayload, InstanceExposure, InstanceStatus, InstanceType, TunnelMessage,
 };
-use peko::tunnel::verifying_key_to_did_key;
+use peko_core::tunnel::verifying_key_to_did_key;
 use rand::RngCore;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
@@ -41,8 +41,8 @@ fn runtime_id_for(signing_key: &SigningKey) -> String {
     verifying_key_to_did_key(&signing_key.verifying_key())
 }
 
-fn plaintext_direct_config() -> peko::common::types::config::DirectNetworkConfig {
-    peko::common::types::config::DirectNetworkConfig {
+fn plaintext_direct_config() -> peko_core::common::types::config::DirectNetworkConfig {
+    peko_core::common::types::config::DirectNetworkConfig {
         enabled: true,
         bind_address: "127.0.0.1".to_string(),
         port: 0,
@@ -257,7 +257,7 @@ async fn start_echo_direct_server(
     let known_runtimes = Arc::new(RwLock::new(known));
 
     let handler: DirectMessageHandler = Arc::new(
-        move |msg: TunnelMessage, handle: peko::tunnel::TunnelHandle| {
+        move |msg: TunnelMessage, handle: peko_core::tunnel::TunnelHandle| {
             Box::pin(async move {
                 if let TunnelMessage::AgentToAgentRequest {
                     request_id,

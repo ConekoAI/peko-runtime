@@ -5,11 +5,11 @@
 Phase 12b of the Cargo workspace migration. Enforces the forbidden
 crate-to-crate edges from the workspace-migration plan, replacing
 the path-grep approach in ``check_module_boundaries.sh`` with a
-deterministic dependency-graph read of every ``crates/*/Cargo.toml``
+deterministic dependency-graph read of every ``peko-rs/*/Cargo.toml``
 plus the root crate.
 
 The script:
-1. Walks ``crates/*/Cargo.toml`` (one workspace member each) and
+1. Walks ``peko-rs/*/Cargo.toml`` (one workspace member each) and
    the root ``Cargo.toml``.
 2. Extracts ``[dependencies]``, ``[dev-dependencies]``, and
    ``[build-dependencies]`` sections for each member.
@@ -706,7 +706,7 @@ def _parse_peko_deps(cargo_toml_path: Path) -> Dict[str, List[str]]:
 def _crate_name_for(cargo_toml_path: Path, fallback: str) -> str:
     """Return the ``[package].name`` declared in the given Cargo.toml.
 
-    Used to translate ``crates/tools-builtin/Cargo.toml`` → ``peko-tools-builtin``
+    Used to translate ``peko-rs/tools-builtin/Cargo.toml`` → ``peko-tools-builtin``
     so the dep edges line up with the ``FORBIDDEN_EDGES`` table.
     """
     text = cargo_toml_path.read_text()
@@ -733,7 +733,7 @@ def _crate_name_for(cargo_toml_path: Path, fallback: str) -> str:
 def discover_workspace_members(repo_root: Path) -> List[Tuple[str, Path]]:
     """Return ``[(crate_name, cargo_toml_path), ...]`` for every workspace member.
 
-    Walks ``crates/*/Cargo.toml`` plus the root ``Cargo.toml``. The root
+    Walks ``peko-rs/*/Cargo.toml`` plus the root ``Cargo.toml``. The root
     crate is keyed under the name declared in its ``[package].name``
     (``peko`` today, per the per-phase protocol that keeps it as the
     facade).
@@ -742,7 +742,7 @@ def discover_workspace_members(repo_root: Path) -> List[Tuple[str, Path]]:
     root_cargo = repo_root / "Cargo.toml"
     if root_cargo.exists():
         members.append((_crate_name_for(root_cargo, "peko"), root_cargo))
-    crates_dir = repo_root / "crates"
+    crates_dir = repo_root / "peko-rs"
     if not crates_dir.is_dir():
         return members
     for entry in sorted(crates_dir.iterdir()):

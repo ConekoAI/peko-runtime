@@ -9,7 +9,7 @@
 //!
 //! The trait declaration lives at
 //! `peko_extension_host::transport::DaemonTransport` (see
-//! `crates/extension-host/src/transport.rs`); the impl is here because
+//! `peko-rs/extension-host/src/transport.rs`); the impl is here because
 //! `DaemonClient` is a root-only type.
 
 use futures::StreamExt;

@@ -1,6 +1,6 @@
 //! Host-side adapters for the [`peko_identity::host`] trait ports.
 //!
-//! [`peko_identity::host`]: ../../crates/identity/src/host.rs
+//! [`peko_identity::host`]: ../../peko-rs/identity/src/host.rs
 //!
 //! `peko-identity` is a leaf crate. It defines three narrow trait
 //! ports ([`RuntimePaths`], [`IdentityDataDir`], [`IdentityVault`]) that

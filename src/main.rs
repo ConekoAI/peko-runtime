@@ -1,6 +1,6 @@
 use clap::Parser;
 use clap_complete::generate;
-use peko::commands::{
+use peko_core::commands::{
     auth, capability, config, credential, cron, daemon, ext, init_logging, interrupt, log, model,
     principal, quota, registry, runtime, search, send, system, tunnel, update, vault, version, Cli,
     Commands, GlobalPaths,
@@ -60,7 +60,9 @@ async fn main() {
 ///   so that async tools fail fast with a clear error instead of falling back to
 ///   in-process execution that would be dropped on CLI exit (ADR-020).
 async fn init_extension_core(command: &Commands) {
-    use peko::extensions::framework::core::{init_global_core, ExtensionCore, ExtensionServices};
+    use peko_core::extensions::framework::core::{
+        init_global_core, ExtensionCore, ExtensionServices,
+    };
     use peko_extension_host::transport::async_router::AsyncExecutionRouter;
     use peko_extension_host::transport::async_transport::{
         create_local_transport, UnavailableAsyncTransport,
@@ -74,7 +76,7 @@ async fn init_extension_core(command: &Commands) {
         AsyncExecutionRouter::with_transport(create_local_transport())
     } else {
         tracing::info!("Auto-detecting async transport for CLI mode");
-        match peko::ipc::create_transport::create_transport().await {
+        match peko_core::ipc::create_transport::create_transport().await {
             Ok(transport) => AsyncExecutionRouter::with_transport(transport),
             Err(_) => {
                 // Daemon does not auto-start; user must start it manually.

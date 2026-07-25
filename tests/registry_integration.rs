@@ -18,10 +18,10 @@
 //! Run in container:
 //!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test registry_integration -- --ignored
 
-use peko::registry::client::ResourceType;
-use peko::registry::packaging::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
-use peko::registry::AgentRegistry;
-use peko::registry::{
+use peko_core::registry::client::ResourceType;
+use peko_core::registry::packaging::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
+use peko_core::registry::AgentRegistry;
+use peko_core::registry::{
     media_types, RegistryClient, RegistryConfig, RegistryManifest, RegistryRef, RegistrySource,
 };
 use std::time::Duration;
@@ -94,7 +94,7 @@ fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
 async fn store_registry_manifest_local(
     registry: &AgentRegistry,
     manifest: &RegistryManifest,
-    digest: &peko::registry::packaging::types::ImageDigest,
+    digest: &peko_core::registry::packaging::types::ImageDigest,
 ) {
     let image_dir = registry
         .root_path()
@@ -482,7 +482,7 @@ async fn test_registry_client_push_and_pull() {
 
     let has_done = push_events
         .iter()
-        .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. }));
+        .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. }));
     assert!(has_done, "Push should complete with Done event");
 
     // --- PULL ---
@@ -504,7 +504,7 @@ async fn test_registry_client_push_and_pull() {
 
     let has_done = pull_events
         .iter()
-        .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. }));
+        .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. }));
     assert!(has_done, "Pull should complete with Done event");
 
     // Verify layers were pulled
@@ -679,7 +679,7 @@ async fn test_registry_client_skips_existing_layers() {
 
     let has_done = second_push_events
         .iter()
-        .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. }));
+        .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. }));
     assert!(has_done, "Second push should complete");
 }
 

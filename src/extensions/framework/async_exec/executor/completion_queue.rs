@@ -19,7 +19,7 @@
 //!    in `src/engine/async_completion_compat.rs` that just re-exposed
 //!    root's field-identical copy as an `AsyncCompletionLike` (the
 //!    canonical `peko_extension_host::CompletionEvent` already
-//!    implements it in `crates/engine/src/async_completion.rs:43`).
+//!    implements it in `peko-rs/engine/src/async_completion.rs:43`).
 //!
 //! Phase 2 deletes both shims. The types are now single-sourced in
 //! `peko_extension_host`. Root re-exports them through this module so
@@ -67,7 +67,7 @@ mod tests {
     //! — there is no separate root type to test. The duplication that
     //! existed before Phase 2 is gone, so the test suite is now
     //! hosted on the canonical type in `peko-extension-host` (see
-    //! `crates/extension-host/src/inbox.rs`).
+    //! `peko-rs/extension-host/src/inbox.rs`).
     //!
     //! This module exists to pin the root re-exports and the
     //! `SharedSessionInbox` alias so that any accidental decoupling
