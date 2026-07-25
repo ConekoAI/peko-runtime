@@ -6,9 +6,9 @@
 //! Phase 8c.1.D.4: lifted from `src/extensions/framework/manager/packaging.rs`.
 //! The trait-object signature `store: &dyn ExtensionStore` (instead of
 //! `&ExtensionStore` concrete) lets the runtime pass in a root-side store
-//! that implements the [`crate::store::ExtensionStore`] trait port.
+//! that implements the [`crate::extensions::framework::store::ExtensionStore`] trait port.
 
-use crate::store::{ExtensionStore, LoadedExtension};
+use crate::extensions::framework::store_trait::{ExtensionStore, LoadedExtension};
 use anyhow::Context;
 use peko_extension_api::{ExtensionId, ExtensionManifest};
 use std::collections::HashMap;
@@ -532,7 +532,7 @@ pub fn prepare_install_path(path: &Path) -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::ToolResolution;
+    use crate::extensions::framework::store_trait::ToolResolution;
     use peko_extension_api::ExtensionId;
     use std::path::PathBuf;
     use std::sync::Mutex;

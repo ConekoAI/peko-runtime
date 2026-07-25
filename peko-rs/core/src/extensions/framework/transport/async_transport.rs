@@ -9,10 +9,10 @@
 //! the parent `transport` module) — root owns the `DaemonClient`
 //! implementation and the host stays free of any root IPC dep.
 
-use crate::async_exec::executor::{
+use crate::extensions::framework::async_exec::executor::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig,
 };
-use crate::transport::DaemonTransport;
+use crate::extensions::framework::transport::DaemonTransport;
 use anyhow::Result;
 use serde_json::Value;
 use std::sync::Arc;
@@ -85,7 +85,7 @@ pub trait AsyncTaskTransport: Send + Sync {
 // LocalAsyncTransport — used inside the daemon
 // ================================================================================
 
-use crate::async_exec::executor::AsyncExecutor;
+use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 
 /// Local transport that executes tasks in-process via `AsyncExecutor`
 #[derive(Debug, Clone)]
@@ -318,12 +318,12 @@ pub fn create_transport_with(client: Arc<dyn DaemonTransport>) -> Arc<dyn AsyncT
 /// Uses a shared registry from the global cache so the `task` tool
 /// can find async tasks created by the router.
 pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {
-    let registry = crate::async_exec::executor::get_or_create_registry_for_agent("_global");
+    let registry = crate::extensions::framework::async_exec::executor::get_or_create_registry_for_agent("_global");
     let queue_manager = Arc::new(tokio::sync::RwLock::new(
-        crate::async_exec::executor::AsyncResultQueueManager::new(),
+        crate::extensions::framework::async_exec::executor::AsyncResultQueueManager::new(),
     ));
     let executor =
-        crate::async_exec::executor::AsyncExecutor::with_registries(registry, queue_manager);
+        crate::extensions::framework::async_exec::executor::AsyncExecutor::with_registries(registry, queue_manager);
     Arc::new(LocalAsyncTransport::from_executor(executor))
 }
 

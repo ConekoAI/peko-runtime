@@ -39,7 +39,7 @@
 use super::dispatch::ToolDispatchContext;
 use super::executor::AsyncExecutor;
 use super::types::AsyncToolConfig;
-use crate::core::ExtensionCore;
+use crate::extensions::framework::core::ExtensionCore;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use peko_subject::PrincipalId;

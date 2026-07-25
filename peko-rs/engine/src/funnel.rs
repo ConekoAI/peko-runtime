@@ -24,7 +24,7 @@
 //! trait can be removed.
 
 use anyhow::Result;
-use peko_extension_host::ToolFunnel;
+use peko_extension_api::ToolFunnel;
 use peko_tools_core::{bridge_from_cancellation_token, AbortSignalBridgeGuard};
 
 /// Canonical tool execution via the [`ToolFunnel`] host surface.

@@ -7,7 +7,7 @@
 //! it implements the `Tool` trait — a tool-world concept. The generic extension
 //! framework must not depend on `crate::tools` per ADR-017.
 
-use crate::extensions::framework::core::ExtensionAsyncAdapter;
+use crate::extensions::framework::core::async_bridge::ExtensionAsyncAdapter;
 use anyhow::Result;
 use async_trait::async_trait;
 use peko_tools_core::Tool;
@@ -84,16 +84,16 @@ impl Tool for ExtensionAsyncTool {
             .await?;
 
         match result {
-            peko_extension_host::async_exec::executor::WaitResult::Completed { result } => {
+            crate::extensions::framework::async_exec::executor::WaitResult::Completed { result } => {
                 Ok(result.to_json())
             }
-            peko_extension_host::async_exec::executor::WaitResult::Failed { error } => {
+            crate::extensions::framework::async_exec::executor::WaitResult::Failed { error } => {
                 Err(anyhow::anyhow!("Async execution failed: {error}"))
             }
-            peko_extension_host::async_exec::executor::WaitResult::Cancelled => {
+            crate::extensions::framework::async_exec::executor::WaitResult::Cancelled => {
                 Err(anyhow::anyhow!("Async execution was cancelled"))
             }
-            peko_extension_host::async_exec::executor::WaitResult::Timeout => {
+            crate::extensions::framework::async_exec::executor::WaitResult::Timeout => {
                 Err(anyhow::anyhow!("Async execution timed out"))
             }
         }
@@ -103,7 +103,7 @@ impl Tool for ExtensionAsyncTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_extension_host::ExtensionCore;
+    use crate::extensions::framework::core::ExtensionCore;
     use std::sync::Arc;
 
     #[test]

@@ -24,105 +24,20 @@
 //! `peek_run_held` API for daemon-side run-permit bookkeeping; only
 //! the `get_or_create`-style lookup is funnelled through
 //! `InboxSinkProvider`.
+//!
+//! ## Phase F2 foldback
+//!
+//! `CompletionEvent`, `SteeringMessage`, and `InboxItem` moved to
+//! `peko_extension_api::completion_event` so the engine can reach
+//! them without depending on root (which would cycle). The concrete
+//! `SessionInbox` impl below uses those data types; conversions to
+//! the API's `AsyncInboxItem` envelopes happen at the
+//! `AsyncInboxLike` trait impl boundary.
 
-use chrono::{DateTime, Utc};
+use peko_extension_api::{AsyncInboxItem, AsyncInboxLike, CompletionEvent, InboxItem, SteeringMessage};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
-use uuid::Uuid;
-
-/// Event pushed to the inbox when an async task reaches a terminal
-/// state. The agentic loop drains these at iteration start and
-/// synthesizes a single user-role message containing all of them.
-#[derive(Debug, Clone)]
-pub struct CompletionEvent {
-    pub task_id: String,
-    pub tool_name: String,
-    pub result: serde_json::Value,
-    pub status: peko_extension_api::AsyncTaskStatus,
-    pub completed_at: DateTime<Utc>,
-    pub output_path: std::path::PathBuf,
-    pub parent_session_key: String,
-}
-
-/// User-supplied message queued for delivery to a session at the
-/// start of the next agentic loop iteration.
-#[derive(Debug, Clone)]
-pub struct SteeringMessage {
-    pub id: Uuid,
-    pub content: String,
-    pub queued_at: DateTime<Utc>,
-}
-
-impl SteeringMessage {
-    /// Construct a steering message with a freshly generated id and
-    /// the current UTC timestamp.
-    #[must_use]
-    pub fn new(content: impl Into<String>) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            content: content.into(),
-            queued_at: Utc::now(),
-        }
-    }
-}
-
-/// Item carried in a [`SessionInboxSink`]. Either a user steering
-/// message or a completion event from a background async task.
-#[derive(Debug, Clone)]
-pub enum InboxItem {
-    Steering(SteeringMessage),
-    Completion(CompletionEvent),
-}
-
-impl From<CompletionEvent> for InboxItem {
-    fn from(e: CompletionEvent) -> Self {
-        InboxItem::Completion(e)
-    }
-}
-
-impl From<SteeringMessage> for InboxItem {
-    fn from(m: SteeringMessage) -> Self {
-        InboxItem::Steering(m)
-    }
-}
-
-/// Phase 7 trait-port helpers: convert host `InboxItem` values into
-/// the API crate's `AsyncInboxItem` envelopes so root-side callers
-/// (e.g. `AsyncExecutor::execute_inner`) can `.into()` their
-/// host-native variants and push through `Arc<dyn AsyncInboxLike>`.
-impl From<CompletionEvent> for peko_extension_api::AsyncInboxItem {
-    fn from(e: CompletionEvent) -> Self {
-        peko_extension_api::AsyncInboxItem::Completion(peko_extension_api::CompletionEnvelope {
-            task_id: e.task_id,
-            tool_name: e.tool_name,
-            result: e.result,
-            status: e.status,
-            completed_at: e.completed_at,
-            output_path: e.output_path,
-            parent_session_key: e.parent_session_key,
-        })
-    }
-}
-
-impl From<SteeringMessage> for peko_extension_api::AsyncInboxItem {
-    fn from(m: SteeringMessage) -> Self {
-        peko_extension_api::AsyncInboxItem::Steering(peko_extension_api::SteeringEnvelope {
-            id: m.id,
-            content: m.content,
-            queued_at: m.queued_at,
-        })
-    }
-}
-
-impl From<InboxItem> for peko_extension_api::AsyncInboxItem {
-    fn from(item: InboxItem) -> Self {
-        match item {
-            InboxItem::Completion(e) => e.into(),
-            InboxItem::Steering(m) => m.into(),
-        }
-    }
-}
 
 /// Minimum surface `AsyncExecutor` needs from a per-session inbox.
 ///
@@ -256,7 +171,7 @@ impl SessionInbox {
 
     /// Remove a single pending steering message by id. Returns `true`
     /// if it was present.
-    pub async fn cancel_steering(&self, id: Uuid) -> bool {
+    pub async fn cancel_steering(&self, id: uuid::Uuid) -> bool {
         let mut guard = self.inner.lock().await;
         let before = guard.len();
         guard.retain(|i| !matches!(i, InboxItem::Steering(m) if m.id == id));
@@ -294,54 +209,34 @@ impl SessionInboxSink for SessionInbox {
 /// `AsyncInboxItem::Completion(CompletionEnvelope)` /
 /// `AsyncInboxItem::Steering(SteeringEnvelope)`.
 #[async_trait::async_trait]
-impl peko_extension_api::AsyncInboxLike for SessionInbox {
-    async fn drain_all(&self) -> Vec<peko_extension_api::AsyncInboxItem> {
+impl AsyncInboxLike for SessionInbox {
+    async fn drain_all(&self) -> Vec<AsyncInboxItem> {
         let items = SessionInbox::drain_all(self).await;
         items
             .into_iter()
             .map(|item| match item {
-                InboxItem::Completion(e) => peko_extension_api::AsyncInboxItem::Completion(
-                    peko_extension_api::CompletionEnvelope {
-                        task_id: e.task_id,
-                        tool_name: e.tool_name,
-                        result: e.result,
-                        status: e.status,
-                        completed_at: e.completed_at,
-                        output_path: e.output_path,
-                        parent_session_key: e.parent_session_key,
-                    },
-                ),
-                InboxItem::Steering(m) => peko_extension_api::AsyncInboxItem::Steering(
-                    peko_extension_api::SteeringEnvelope {
-                        id: m.id,
-                        content: m.content,
-                        queued_at: m.queued_at,
-                    },
-                ),
+                InboxItem::Completion(e) => AsyncInboxItem::Completion(e.into()),
+                InboxItem::Steering(m) => AsyncInboxItem::Steering(m.into()),
             })
             .collect()
     }
 
-    async fn push(&self, item: peko_extension_api::AsyncInboxItem) {
+    async fn push(&self, item: AsyncInboxItem) {
         let native = match item {
-            peko_extension_api::AsyncInboxItem::Completion(e) => {
-                InboxItem::Completion(CompletionEvent {
-                    task_id: e.task_id,
-                    tool_name: e.tool_name,
-                    result: e.result,
-                    status: e.status,
-                    completed_at: e.completed_at,
-                    output_path: e.output_path,
-                    parent_session_key: e.parent_session_key,
-                })
-            }
-            peko_extension_api::AsyncInboxItem::Steering(m) => {
-                InboxItem::Steering(SteeringMessage {
-                    id: m.id,
-                    content: m.content,
-                    queued_at: m.queued_at,
-                })
-            }
+            AsyncInboxItem::Completion(e) => InboxItem::Completion(CompletionEvent {
+                task_id: e.task_id,
+                tool_name: e.tool_name,
+                result: e.result,
+                status: e.status,
+                completed_at: e.completed_at,
+                output_path: e.output_path,
+                parent_session_key: e.parent_session_key,
+            }),
+            AsyncInboxItem::Steering(m) => InboxItem::Steering(SteeringMessage {
+                id: m.id,
+                content: m.content,
+                queued_at: m.queued_at,
+            }),
         };
         SessionInbox::push(self, native);
     }
@@ -422,7 +317,7 @@ mod tests {
             status: peko_extension_api::AsyncTaskStatus::Completed {
                 result: peko_tools_core::ToolResult::success(json!({"ok": true})),
             },
-            completed_at: Utc::now(),
+            completed_at: chrono::Utc::now(),
             output_path: std::path::PathBuf::from("/tmp/out"),
             parent_session_key: session.to_string(),
         }

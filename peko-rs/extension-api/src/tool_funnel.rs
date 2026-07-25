@@ -40,14 +40,14 @@
 //! from `peko-extension-api::hook_io`).
 
 use anyhow::Result;
-use peko_extension_api::hook_io::{
+use crate::hook_io::{
     CompactionPreparationPayload, CompactionResultPayload, HookDecision,
 };
-use peko_extension_api::session::SessionSnapshot;
+use crate::session::SessionSnapshot;
 
 /// The engine-facing surface of root's `ExtensionCore`.
 ///
-/// Implemented by root's `peko_extension_host::core::ExtensionCore`
+/// Implemented by root's `crate::extensions::framework::core::ExtensionCore`
 /// via `src/engine/extension_core_funnel_compat.rs`. The trait is
 /// object-safe because `async-trait` is used in production via
 /// `#[async_trait]` — see F37's `ExtensionCore::execute_tool_via_hook`
@@ -260,8 +260,8 @@ pub trait ToolFunnel: Send + Sync + 'static {
     /// agent as having zero grants).
     async fn list_tool_definitions_with_allowlist(
         &self,
-        capabilities: &peko_extension_api::Capabilities,
-        active_extensions: Option<&peko_extension_api::ActiveExtensionSet>,
+        capabilities: &crate::Capabilities,
+        active_extensions: Option<&crate::ActiveExtensionSet>,
         principal_id: &peko_subject::PrincipalId,
     ) -> Vec<peko_provider_api::ToolDefinition>;
 

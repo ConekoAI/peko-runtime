@@ -24,10 +24,10 @@
 //! registry; this adapter only supplies the execution handler.
 
 use crate::extensions::framework::adapters::{ExtensionTypeAdapter, ManifestFormat};
-use peko_extension_host::core::{
+use crate::extensions::framework::core::{
     ExtensionCore, HookBinding, HookContext, HookHandler, HookPoint, ToolMetadata, ToolSource,
 };
-use peko_extension_host::types::{ExtensionId, ExtensionManifest, HookResult};
+use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use peko_subject::PrincipalId;
@@ -284,7 +284,7 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
         &self,
         path: &std::path::Path,
         content: &str,
-    ) -> anyhow::Result<peko_extension_host::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extensions::framework::types::ExtensionManifest> {
         use anyhow::Context;
 
         // Parse as unified YAML manifest
@@ -362,7 +362,7 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
 
     async fn register_tools(
         &self,
-        core: &peko_extension_host::core::ExtensionCore,
+        core: &crate::extensions::framework::core::ExtensionCore,
         manifest: &ExtensionManifest,
         principal_id: &PrincipalId,
     ) -> Result<usize> {
@@ -402,7 +402,7 @@ impl HookHandler for UniversalToolExecuteHandler {
         let executable = self.executable.clone();
 
         let exec_config =
-            peko_extension_host::ToolExecConfig::with_schema(self.full_schema.clone());
+            crate::extensions::framework::transport::ToolExecConfig::with_schema(self.full_schema.clone());
 
         ctx.services
             .async_router()
@@ -410,7 +410,7 @@ impl HookHandler for UniversalToolExecuteHandler {
                 &ctx,
                 &self.tool_name,
                 &exec_config,
-                None::<peko_extension_host::PreprocessorFn>,
+                None::<crate::extensions::framework::transport::PreprocessorFn>,
                 Box::new(move |merged_params| {
                     Box::pin(async move {
                         let adapter = crate::extensions::universal::protocol::UniversalToolAdapter::from_manifest(
@@ -420,7 +420,7 @@ impl HookHandler for UniversalToolExecuteHandler {
                         .await?;
                         adapter.execute_raw(merged_params).await
                     }) as futures::future::BoxFuture<'static, anyhow::Result<serde_json::Value>>
-                }) as peko_extension_host::ExecFn,
+                }) as crate::extensions::framework::transport::ExecFn,
             )
             .await
     }
@@ -452,7 +452,7 @@ pub async fn load_tools_from_directory(path: &Path) -> Vec<DiscoveredUniversalTo
 
 /// Load and register universal tools with an ExtensionCore
 pub async fn load_and_register_tools(
-    core: &peko_extension_host::ExtensionCore,
+    core: &crate::extensions::framework::core::ExtensionCore,
     tools_dir: impl AsRef<Path>,
     principal_id: &PrincipalId,
 ) -> Result<usize> {
@@ -537,7 +537,7 @@ mod tests {
         create_test_tool(temp.path(), "tool1", "First tool");
         create_test_tool(temp.path(), "tool2", "Second tool");
 
-        let core = peko_extension_host::ExtensionCore::new();
+        let core = crate::extensions::framework::core::ExtensionCore::new();
         let adapter = UniversalToolAdapter::new();
         let tools = adapter.discover_tools(temp.path()).await;
 
@@ -567,7 +567,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         create_test_tool(temp.path(), "tool1", "First tool");
 
-        let core = peko_extension_host::ExtensionCore::new();
+        let core = crate::extensions::framework::core::ExtensionCore::new();
         let count = load_and_register_tools(&core, temp.path(), PrincipalId::system())
             .await
             .unwrap();

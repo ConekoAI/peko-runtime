@@ -43,10 +43,10 @@
 //!     topic: "instance.*"
 //! ```
 
-use peko_extension_host::core::HookBinding;
+use crate::extensions::framework::core::HookBinding;
 use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter};
-use peko_extension_host::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
-use peko_extension_host::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
+use crate::extensions::framework::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
+use crate::extensions::framework::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -113,7 +113,7 @@ impl std::fmt::Debug for GatewayAdapter {
 }
 
 impl GatewayAdapter {
-    pub fn new(_core: Arc<peko_extension_host::ExtensionCore>) -> Self {
+    pub fn new(_core: Arc<crate::extensions::framework::core::ExtensionCore>) -> Self {
         Self
     }
 }
@@ -137,7 +137,7 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         &self,
         path: &std::path::Path,
         content: &str,
-    ) -> anyhow::Result<peko_extension_host::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extensions::framework::types::ExtensionManifest> {
         use anyhow::Context;
 
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
@@ -381,7 +381,7 @@ impl HookHandler for GatewayHookHandler {
 impl GatewayHookHandler {
     /// Handle I/O lifecycle hooks (ChannelInput, ChannelOutput, MessagePreSend, MessagePostReceive)
     async fn handle_io_hook(&self, ctx: &HookContext) -> HookResult {
-        use peko_extension_host::core::hook_points::HookPoint;
+        use crate::extensions::framework::core::hook_points::HookPoint;
 
         match ctx.point {
             HookPoint::ChannelInput => {
@@ -446,7 +446,7 @@ impl GatewayHookHandler {
 
     /// Handle agent lifecycle hooks (AgentInit, AgentShutdown, AgentIteration)
     async fn handle_agent_hook(&self, ctx: &HookContext) -> HookResult {
-        use peko_extension_host::core::hook_points::HookPoint;
+        use crate::extensions::framework::core::hook_points::HookPoint;
 
         match ctx.point {
             HookPoint::AgentInit => {
@@ -482,7 +482,7 @@ impl GatewayHookHandler {
 
     /// Handle event lifecycle hooks (EventSubscribe, EventEmit)
     async fn handle_event_hook(&self, ctx: &HookContext) -> HookResult {
-        use peko_extension_host::core::hook_points::HookPoint;
+        use crate::extensions::framework::core::hook_points::HookPoint;
 
         match ctx.point {
             HookPoint::EventSubscribe { ref topic_pattern } => {
@@ -740,7 +740,7 @@ fn parse_gateway_manifest_toml(
 
 /// Register gateway extensions
 pub async fn register_gateways_with_core(
-    _core: Arc<peko_extension_host::ExtensionCore>,
+    _core: Arc<crate::extensions::framework::core::ExtensionCore>,
     gateways: Vec<DiscoveredGateway>,
 ) -> Result<usize> {
     info!("Registered {} gateway extensions", gateways.len());
@@ -749,7 +749,7 @@ pub async fn register_gateways_with_core(
 
 /// Load and register gateway extensions
 pub async fn load_and_register_gateways(
-    core: Arc<peko_extension_host::ExtensionCore>,
+    core: Arc<crate::extensions::framework::core::ExtensionCore>,
     gateways_dir: &Path,
 ) -> Result<usize> {
     let gateways = discover_gateway_extensions(gateways_dir).await?;

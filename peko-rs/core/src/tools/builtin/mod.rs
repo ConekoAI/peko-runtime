@@ -11,7 +11,7 @@
 //! - `async_list` / `async_output` / `async_status` / `async_stop`:
 //!   re-export shims from `peko_tools_builtin::async_control` with
 //!   framework-internal test fixtures that depend on
-//!   `peko_extension_host::async_exec::executor`. Tests stay here
+//!   `crate::extensions::framework::async_exec::executor`. Tests stay here
 //!   until the fixture migrates.
 //! - `bash`: real implementation (uses `tokio::process::Command`
 //!   directly with root-only permission policy hooks; future Phase

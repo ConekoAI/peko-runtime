@@ -2271,7 +2271,7 @@ impl Vault {
 // impl is a one-liner.
 // =============================================================================
 
-impl peko_extension_host::vault::VaultAccess for Vault {
+impl crate::extensions::framework::vault::VaultAccess for Vault {
     fn get_material_for(
         &self,
         namespace: &str,

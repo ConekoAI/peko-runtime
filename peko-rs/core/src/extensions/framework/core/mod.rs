@@ -76,9 +76,10 @@ pub use hook_registry::HookRegistry;
 pub use tool_registry::ToolRegistry;
 
 // Re-export tool registry types
-pub use crate::types::{ToolMetadata, ToolSource};
+pub use crate::extensions::framework::types::{ToolMetadata, ToolSource};
 
 // Submodules
+pub mod async_bridge;
 pub mod binding;
 pub mod config;
 pub mod context;
@@ -96,7 +97,7 @@ pub mod test_sync;
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::types::{ExtensionId, HookInput, HookOutput, HookResult};
+    use crate::extensions::framework::types::{ExtensionId, HookInput, HookOutput, HookResult};
     use std::sync::Arc;
 
     /// Integration test handler that tracks invocations

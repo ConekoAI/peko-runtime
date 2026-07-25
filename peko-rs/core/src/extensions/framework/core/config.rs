@@ -3,10 +3,10 @@
 //! This module defines the service locator [`ExtensionServices`] passed to hook
 //! handlers, along with [`ExtensionConfig`] and [`TelemetryService`].
 
-use crate::core::context::HookContext;
-use crate::core::hook_points::HookPoint;
-use crate::transport::AsyncExecutionRouter;
-use crate::types::HookId;
+use crate::extensions::framework::core::context::HookContext;
+use crate::extensions::framework::core::hook_points::HookPoint;
+use crate::extensions::framework::transport::AsyncExecutionRouter;
+use crate::extensions::framework::types::HookId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -49,10 +49,10 @@ pub struct ExtensionServices {
 
     /// Stateless principal message service (set by AppState after initialization).
     /// Implements principal-to-principal message dispatch
-    /// ([`crate::principal_message::PrincipalMessageService`]).
+    /// ([`crate::extensions::framework::principal_message::PrincipalMessageService`]).
     /// Held as a trait object to avoid a framework → agents dependency.
     principal_message_service:
-        std::sync::RwLock<Option<Arc<dyn crate::principal_message::PrincipalMessageService>>>,
+        std::sync::RwLock<Option<Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>>>,
 
     /// Cross-runtime a2a dispatch context (issue #29). Set by the
     /// daemon-state after the tunnel client is built and the
@@ -114,7 +114,7 @@ impl ExtensionServices {
     #[must_use]
     pub fn with_async_router_and_principal_message_service(
         async_router: Arc<dyn AsyncExecutionRouter>,
-        principal_message_service: Arc<dyn crate::principal_message::PrincipalMessageService>,
+        principal_message_service: Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>,
     ) -> Self {
         let s = Self::with_async_router(async_router);
         s.set_principal_message_service(principal_message_service);
@@ -166,7 +166,7 @@ impl ExtensionServices {
     /// Set the stateless principal message service
     pub fn set_principal_message_service(
         &self,
-        service: Arc<dyn crate::principal_message::PrincipalMessageService>,
+        service: Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>,
     ) {
         if let Ok(mut guard) = self.principal_message_service.write() {
             *guard = Some(service);
@@ -177,7 +177,7 @@ impl ExtensionServices {
     #[must_use]
     pub fn principal_message_service(
         &self,
-    ) -> Option<Arc<dyn crate::principal_message::PrincipalMessageService>> {
+    ) -> Option<Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>> {
         self.principal_message_service
             .read()
             .ok()
@@ -391,16 +391,16 @@ impl AsyncExecutionRouter for NoopAsyncExecutionRouter {
         &self,
         ctx: &HookContext,
         tool_name: &str,
-        exec_config: &crate::transport::ToolExecConfig,
-        preprocessor: Option<crate::transport::PreprocessorFn>,
-        exec_fn: crate::transport::ExecFn,
-    ) -> crate::types::HookResult {
+        exec_config: &crate::extensions::framework::transport::ToolExecConfig,
+        preprocessor: Option<crate::extensions::framework::transport::PreprocessorFn>,
+        exec_fn: crate::extensions::framework::transport::ExecFn,
+    ) -> crate::extensions::framework::types::HookResult {
         // Pull the (name, params, workspace) triple out of the tool-call
         // input. If the input isn't a ToolCall (e.g. a prompt-section
         // hook mistakenly routed here), fall back to PassThrough.
         let (called_tool_name, mut params, workspace) = match ctx.as_tool_call() {
             Some((name, params, ws)) => (name.to_string(), params.clone(), ws.map(str::to_string)),
-            None => return crate::types::HookResult::PassThrough,
+            None => return crate::extensions::framework::types::HookResult::PassThrough,
         };
 
         // F32b — validate LLM-emitted args against the tool's declared JSON
@@ -408,7 +408,7 @@ impl AsyncExecutionRouter for NoopAsyncExecutionRouter {
         // router's behavior so the noop-router is faithful enough for
         // production semantics on synchronous tools.
         if let Err(msg) = validate_tool_args(&exec_config.full_schema, &params, tool_name) {
-            return crate::types::HookResult::Error(anyhow::anyhow!(msg));
+            return crate::extensions::framework::types::HookResult::Error(anyhow::anyhow!(msg));
         }
 
         // Run the preprocessor if the caller passed one. Preprocessor is
@@ -422,8 +422,8 @@ impl AsyncExecutionRouter for NoopAsyncExecutionRouter {
         // adapter-supplied wrapper around `tool.execute_with_context(...)`;
         // running it here yields the tool's JSON output (or an error).
         match exec_fn(params).await {
-            Ok(value) => crate::types::HookResult::Continue(crate::types::HookOutput::Json(value)),
-            Err(e) => crate::types::HookResult::Error(e),
+            Ok(value) => crate::extensions::framework::types::HookResult::Continue(crate::extensions::framework::types::HookOutput::Json(value)),
+            Err(e) => crate::extensions::framework::types::HookResult::Error(e),
         }
     }
 

@@ -48,8 +48,8 @@
 
 use std::path::PathBuf;
 
-use crate::async_exec::executor::AsyncTaskId;
-use crate::async_exec::executor::AsyncTaskReceipt;
+use crate::extensions::framework::async_exec::executor::AsyncTaskId;
+use crate::extensions::framework::async_exec::executor::AsyncTaskReceipt;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -173,12 +173,12 @@ pub trait AsyncExecutionRouter: Send + Sync {
     /// `Box::new(...)`.
     async fn execute_from_hook(
         &self,
-        ctx: &crate::core::context::HookContext,
+        ctx: &crate::extensions::framework::core::context::HookContext,
         tool_name: &str,
         exec_config: &ToolExecConfig,
         preprocessor: Option<PreprocessorFn>,
         exec_fn: ExecFn,
-    ) -> crate::types::HookResult;
+    ) -> crate::extensions::framework::types::HookResult;
 
     /// Wait for all async tasks to complete.
     ///

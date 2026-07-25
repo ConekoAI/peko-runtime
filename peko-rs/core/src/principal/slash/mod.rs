@@ -7,7 +7,7 @@ pub mod help;
 
 use crate::extensions::framework::store::ExtensionStore;
 use crate::principal::Principal;
-use peko_extension_host::services::Services as ExtensionServices;
+use crate::extensions::framework::services::Services as ExtensionServices;
 use peko_principal::runtime::OutputFormat;
 use std::sync::Arc;
 

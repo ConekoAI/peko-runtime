@@ -15,11 +15,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::agent_prompt::AgentPrompt;
-use crate::capability_evaluator::CapabilityEvaluator;
-use crate::runtime::builtin_tools;
+use peko_principal::AgentPrompt;
+use peko_principal::capability_evaluator::CapabilityEvaluator;
+use peko_principal::runtime::builtin_tools;
 use peko_extension_api::{Capabilities, Capability, ExtensionManifest};
-use peko_extension_host::store::GlobalExtensionItem;
+use crate::extensions::framework::store_trait::GlobalExtensionItem;
 
 /// A single row in the principal's extension catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]

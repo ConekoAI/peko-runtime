@@ -15,7 +15,7 @@ use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::store::ExtensionStore;
 use peko_auth::ownership::{check_permission, Permission, Resource};
 use peko_auth::Subject;
-use peko_extension_host::SteeringMessage;
+use peko_extension_api::SteeringMessage;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
 use peko_observability::Observability;
@@ -124,7 +124,7 @@ impl PrincipalManager {
             router_factory,
             resolver: None,
             inbox_registry: Arc::new(InboxRegistry::new(
-                peko_extension_host::async_exec::executor::executor::default_inbox_factory(),
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(),
             )),
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
             slash_dispatcher: Arc::new(RwLock::new(None)),
@@ -658,7 +658,7 @@ impl PrincipalManager {
                 Some(store) => store.global_items().await,
                 None => Vec::new(),
             };
-            let extension_store = peko_principal::ExtensionCatalog::build(
+            let extension_store = crate::principal::extension_store::ExtensionCatalog::build(
                 allowed,
                 &principal.agent_prompts,
                 &global_items,
@@ -998,7 +998,7 @@ mod tests {
     use peko_auth::{Permission, PermissionGrant, Subject};
 
     use crate::engine::tool_runtime::ToolRuntime;
-    use peko_extension_host::core::init_global_core;
+    use crate::extensions::framework::core::init_global_core;
     use crate::principal::{
         router::{ChannelContext, ChannelKind},
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,

@@ -38,7 +38,15 @@ peko-tools-core = { path = "../tools-core" }
 peko-quota = { path = "../quota" }
 peko-events = { path = "../events" }
 peko-extension-api = { path = "../extension-api" }
-peko-extension-host = { path = "../extension-host" }
+# Phase F2 foldback: `peko-extension-host` was deleted; its `ToolFunnel`
+# trait moved into `peko-rs/core/src/extensions/framework/tool_funnel.rs`
+# and the concrete funnel impls into `framework/tool_funnel_impl.rs` /
+# `framework/transport/async_router.rs`. Engine's 5 call sites that
+# imported `peko_extension_host::ToolFunnel` now reach the trait via
+# this crate via `peko-session`-style chained re-export — the trait
+# type itself is reachable through the file path after the F2 rewrite
+# since `peko-engine` already depends on `peko-message`/`peko-subject`
+# (the trait's only deps).
 # Phase 9b.N.5b.9 — `PrincipalId` is used in the loop's hook-input
 # construction (`HookInput::ToolCall::principal_id`). peko-engine
 # already takes a `String` in the constructor, but the test fixtures

@@ -20,7 +20,7 @@ use crate::{
 };
 use anyhow::Result;
 use futures::StreamExt;
-use peko_extension_host::ToolFunnel;
+use peko_extension_api::ToolFunnel;
 use peko_message::{ContentBlock, LlmMessage};
 use peko_provider_api::{
     clamp_openai_prompt_cache_key, CacheRetention, ChatOptions, MessageRole, RetryableError,
@@ -89,7 +89,7 @@ pub struct AgenticLoop {
     system_prompt: String,
     /// Extension core for skill loading, tool registration, and hook
     /// firing. Phase 9b.N.5b.4 switched the field from the concrete
-    /// root `Arc<peko_extension_host::ExtensionCore>` to
+    /// root `Arc<peko_extension_api::ExtensionCore>` to
     /// `Arc<dyn ToolFunnel>` — the trait port the renderer, tool
     /// executor, and compaction orchestrator all use. The renderer
     /// (now in `peko_engine::prompt::renderer`) calls
@@ -199,7 +199,7 @@ impl AgenticLoop {
     ///   `Agent`; see `peko_engine::AgentView`).
     /// * `provider` - The LLM provider to use
     /// * `extension_core` - The trait-object view of the extension host
-    ///   (`peko_extension_host::ToolFunnel`). Phase 9b.N.5b.4 switched
+    ///   (`peko_extension_api::ToolFunnel`). Phase 9b.N.5b.4 switched
     ///   the constructor param to `Arc<dyn ToolFunnel>` — the concrete
     ///   `ExtensionCore` still implements `ToolFunnel` via the
     ///   `src/engine/extension_core_funnel_compat.rs` impl, so
@@ -1988,7 +1988,7 @@ impl AgenticLoop {
             .principal_workspace()
             .cloned()
             .unwrap_or_else(|| {
-                let resolver = peko_extension_host::default_agent_workspace(self.agent.name());
+                let resolver = peko_extension_api::default_agent_workspace(self.agent.name());
                 resolver
             });
 

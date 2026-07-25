@@ -22,8 +22,8 @@ use crate::principal::{
 };
 use crate::registry::{load_from_workspace, RegistryConfig};
 use peko_cron::IdleDetector;
-use peko_extension_host::async_exec::executor::AsyncExecutor;
-use peko_extension_host::SessionInbox;
+use crate::extensions::framework::async_exec::executor::AsyncExecutor;
+use crate::extensions::framework::inbox::SessionInbox;
 use peko_observability::Observability;
 use peko_principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 use peko_session::InboxRegistry;
@@ -140,7 +140,7 @@ pub(crate) struct AppState {
     extension_store: Arc<ExtensionStore>,
 
     /// Extension services for built-in extension operations
-    extension_services: Arc<peko_extension_host::services::Services>,
+    extension_services: Arc<crate::extensions::framework::services::Services>,
 
     /// Shutdown broadcast channel - send () to trigger graceful shutdown
     shutdown_tx: Arc<broadcast::Sender<()>>,
@@ -577,30 +577,30 @@ impl AppState {
         // Trait-object clone for the framework (avoids a framework → agents
         // dependency while keeping the concrete arc for other consumers).
         let principal_service_dyn: Arc<
-            dyn peko_extension_host::principal_message::PrincipalMessageService,
+            dyn crate::extensions::framework::principal_message::PrincipalMessageService,
         > = principal_service.clone();
 
         // For tests, always create a fresh core to avoid shared mutable state
         // between concurrent tests.
         let global_core = if for_test {
-            use peko_extension_host::core::{ExtensionCore, ExtensionServices};
-            use peko_extension_host::transport::async_router::AsyncExecutionRouter;
-            use peko_extension_host::transport::async_transport::create_local_transport;
+            use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
+            use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
+            use crate::extensions::framework::transport::async_transport::create_local_transport;
             let router = AsyncExecutionRouter::with_transport(create_local_transport());
             let services = ExtensionServices::with_async_router_and_principal_message_service(
                 Arc::new(router),
                 Arc::clone(&principal_service_dyn),
             );
             Arc::new(ExtensionCore::with_services(Arc::new(services)))
-        } else if let Some(existing) = peko_extension_host::core::global_core() {
+        } else if let Some(existing) = crate::extensions::framework::core::global_core() {
             tracing::info!("Reusing global ExtensionCore initialized by main.rs");
             existing
         } else {
-            use peko_extension_host::core::{
+            use crate::extensions::framework::core::{
                 init_global_core, ExtensionCore, ExtensionServices,
             };
-            use peko_extension_host::transport::async_router::AsyncExecutionRouter;
-            use peko_extension_host::transport::async_transport::create_local_transport;
+            use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
+            use crate::extensions::framework::transport::async_transport::create_local_transport;
             let router = AsyncExecutionRouter::with_transport(create_local_transport());
             let services = ExtensionServices::with_async_router_and_principal_message_service(
                 Arc::new(router),
@@ -706,7 +706,7 @@ impl AppState {
                 e
             );
         }
-        let extension_services = Arc::new(peko_extension_host::services::Services::with_core(
+        let extension_services = Arc::new(crate::extensions::framework::services::Services::with_core(
             Arc::clone(&global_core),
         ));
 
@@ -1146,7 +1146,7 @@ impl AppState {
 
     /// Get the extension services
     #[must_use]
-    pub fn extension_services(&self) -> &Arc<peko_extension_host::services::Services> {
+    pub fn extension_services(&self) -> &Arc<crate::extensions::framework::services::Services> {
         &self.extension_services
     }
 
@@ -1992,8 +1992,9 @@ mod tests {
     async fn test_agent_init_preserves_pre_registered_tools() {
         use crate::agents::agent_config::AgentConfig;
         use crate::agents::Agent;
-        use peko_extension_host::core::init_global_core;
-        use peko_extension_host::{HookInput, HookPoint};
+        use crate::extensions::framework::core::init_global_core;
+        use crate::extensions::framework::types::HookInput;
+        use crate::extensions::framework::core::HookPoint;
 
         let state = create_test_state().await;
         let global_core = state.tool_runtime.extension_core().clone();
@@ -2016,7 +2017,7 @@ mod tests {
 
         // Tools should still be available after agent init
         let core = agent.extension_core();
-        let tools: Vec<peko_extension_host::types::ToolMetadata> =
+        let tools: Vec<crate::extensions::framework::types::ToolMetadata> =
             core.list_tools(peko_subject::PrincipalId::system()).await;
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         assert!(

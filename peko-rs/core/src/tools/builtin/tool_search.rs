@@ -14,7 +14,7 @@
 //!
 //! * Codex uses BM25 over hundreds of MCP tools. Peko has <30 built-ins
 //!   today; a simple word-overlap scorer in
-//!   [`extensions::framework::core::scoring`](peko_extension_host::core::scoring)
+//!   [`extensions::framework::core::scoring`](crate::extensions::framework::core::scoring)
 //!   is sufficient.
 //! * Codex's `search_tool_enabled` lives on `TurnContext`. Peko's
 //!   `enable_tool_search` lives on [`AgentConfig`](crate::agents::AgentConfig)
@@ -43,8 +43,8 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Weak;
 
-use peko_extension_host::core::ExtensionCore;
-use peko_extension_host::types::ToolExposure;
+use crate::extensions::framework::core::ExtensionCore;
+use crate::extensions::framework::types::ToolExposure;
 use peko_tools_core::Tool;
 use peko_tools_core::ToolError;
 
@@ -169,8 +169,8 @@ impl Tool for ToolSearchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_extension_host::core::ExtensionCore;
-    use peko_extension_host::types::{ToolMetadata, ToolSource};
+    use crate::extensions::framework::core::ExtensionCore;
+    use crate::extensions::framework::types::{ToolMetadata, ToolSource};
     use std::sync::Arc;
 
     /// Build a stub `ToolMetadata` for the test registry.
@@ -192,9 +192,9 @@ mod tests {
         // Use a no-op handler via the lower-level registry. The search
         // backend walks `list_tools(principal_id)` which reads from the
         // hook registry directly, so we need a registered hook_id.
-        use peko_extension_host::core::handler::HookHandler;
-        use peko_extension_host::core::HookContext;
-        use peko_extension_host::types::{HookOutput, HookResult};
+        use crate::extensions::framework::core::handler::HookHandler;
+        use crate::extensions::framework::core::HookContext;
+        use crate::extensions::framework::types::{HookOutput, HookResult};
         use peko_subject::PrincipalId;
 
         #[derive(Debug)]
@@ -204,15 +204,15 @@ mod tests {
             async fn handle(&self, _ctx: HookContext) -> HookResult {
                 HookResult::Continue(HookOutput::Unit)
             }
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-                peko_extension_host::core::HookPoint::ToolExecute {
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::ToolExecute {
                     tool_name: String::new(),
                 }
             }
         }
 
         let handler = Arc::new(NoopHandler);
-        let ext_id = peko_extension_host::types::ExtensionId::new("test:tool_search");
+        let ext_id = crate::extensions::framework::types::ExtensionId::new("test:tool_search");
         let _ = core
             .register_tool(meta, handler, &ext_id, &PrincipalId::system())
             .await

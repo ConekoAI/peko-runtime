@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-// Internal use — types reachable directly via peko_extension_host::services::*.
-use peko_extension_host::services::{ParamSource, ReservedParamsConfig};
+// Internal use — types reachable directly via crate::extensions::framework::services::*.
+use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
 
 /// Transport type for MCP connections
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

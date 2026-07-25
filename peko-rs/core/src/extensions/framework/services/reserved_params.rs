@@ -26,7 +26,7 @@
 //! `extensions/mcp/runtime/injectable_proxy.rs`, and the historical
 //! internal sites in this file).
 
-use crate::vault::VaultAccess;
+use crate::extensions::framework::vault::VaultAccess;
 use peko_tools_core::ToolContext;
 use secrecy::ExposeSecret;
 use serde_json::Value;

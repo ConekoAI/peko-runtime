@@ -10,8 +10,8 @@ use crate::commands::GlobalPaths;
 use peko_core::ipc::client_service::DaemonClientService;
 use peko_core::registry::client::ProgressEvent;
 use clap::Subcommand;
-use peko_extension_host::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
-use peko_extension_host::services::{ConfigScope, ExtensionConfigService};
+use peko_core::extensions::framework::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
+use peko_core::extensions::framework::services::{ConfigScope, ExtensionConfigService};
 use std::path::PathBuf;
 
 /// Extension management subcommands
@@ -523,7 +523,7 @@ fn print_validation_report(
     Ok(())
 }
 
-// `prepare_install_path` now lives in `peko_extension_host::manager::packaging`
+// `prepare_install_path` now lives in `peko_core::extensions::framework::manager::packaging`
 // (Phase 0.Z-B). Both this CLI and the lib-side IPC handler in
 // `peko-rs/core/src/ipc/handlers/extension.rs` import it from there.
 

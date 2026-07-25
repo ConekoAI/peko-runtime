@@ -171,7 +171,7 @@ impl RequestHandler for CapabilityHandler {
                         let granted = capabilities.to_strings();
 
                         let global_items = store.global_items().await;
-                        let catalog = peko_principal::ExtensionCatalog::build(
+                        let catalog = crate::principal::extension_store::ExtensionCatalog::build(
                             &capabilities,
                             &principal_ref.agent_prompts,
                             &global_items,

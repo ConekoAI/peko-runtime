@@ -17,7 +17,7 @@
 mod tests {
     use crate::agents::agent_config::AgentConfig;
     use crate::agents::Agent;
-    use peko_extension_host::core::{global_core, init_global_core, ExtensionCore};
+    use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
     use peko_auth::Subject;
     use peko_engine::AgenticEvent;
     use peko_engine::{
@@ -110,20 +110,20 @@ mod tests {
         #[derive(Debug)]
         struct ContextBuildHandler;
         #[async_trait::async_trait]
-        impl peko_extension_host::core::HookHandler for ContextBuildHandler {
+        impl crate::extensions::framework::core::HookHandler for ContextBuildHandler {
             async fn handle(
                 &self,
-                _ctx: peko_extension_host::core::HookContext,
-            ) -> peko_extension_host::types::HookResult {
-                peko_extension_host::types::HookResult::Continue(
-                    peko_extension_host::types::HookOutput::Text(
+                _ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Text(
                         "Always use the Superpowers skill pack.".to_string(),
                     ),
                 )
             }
 
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-                peko_extension_host::core::HookPoint::SessionContextBuild
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::SessionContextBuild
             }
 
             fn priority(&self) -> i32 {
@@ -138,9 +138,9 @@ mod tests {
         let core = global_core().unwrap();
         let hook_id = core
             .register_hook(
-                peko_extension_host::core::HookPoint::SessionContextBuild,
+                crate::extensions::framework::core::HookPoint::SessionContextBuild,
                 Arc::new(ContextBuildHandler),
-                &peko_extension_host::types::ExtensionId::new("test-context-build"),
+                &crate::extensions::framework::types::ExtensionId::new("test-context-build"),
             )
             .await
             .unwrap()
@@ -1203,7 +1203,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_parallel_tool_execution_overlaps_in_time() {
         use crate::extensions::builtin::adapter::BuiltinToolAdapter;
-        use peko_extension_host::types::{Capabilities, Capability};
+        use crate::extensions::framework::types::{Capabilities, Capability};
         use peko_providers::MockResponse;
         use peko_tools_core::Tool;
         use serde_json::json;
@@ -1405,8 +1405,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_e2e_async_completion_reaches_llm_real() {
         use chrono::Utc;
-        use peko_extension_host::async_exec::executor::SharedSessionInbox;
-        use peko_extension_host::async_exec::executor::{AsyncTaskStatus, CompletionEvent};
+        use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
+        use crate::extensions::framework::async_exec::executor::{AsyncTaskStatus, CompletionEvent};
         use peko_message::{ContentBlock as CB, LlmMessage, MessageRole};
 
         peko_identity::init_test_env();
@@ -1422,7 +1422,7 @@ mod tests {
         // Build the queue the same way `Agent::build_agentic_loop` does:
         // shared between the executor and the agentic loop.
         let queue: SharedSessionInbox =
-            std::sync::Arc::new(peko_extension_host::async_exec::executor::SessionInbox::new());
+            std::sync::Arc::new(crate::extensions::framework::async_exec::executor::SessionInbox::new());
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -1547,10 +1547,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_e2e_steering_message_reaches_llm_real() {
-        use peko_extension_host::async_exec::executor::completion_queue::{
+        use crate::extensions::framework::async_exec::executor::completion_queue::{
             SessionInbox, SharedSessionInbox, SteeringMessage,
         };
-        use peko_extension_host::async_exec::executor::AsyncTaskStatus;
+        use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
         use peko_message::{ContentBlock as CB, LlmMessage, MessageRole};
 
         peko_identity::init_test_env();
@@ -1586,7 +1586,7 @@ mod tests {
         let session_id = session.id().await;
 
         queue.push(SteeringMessage::new("actually do X instead"));
-        queue.push(peko_extension_host::async_exec::executor::CompletionEvent {
+        queue.push(crate::extensions::framework::async_exec::executor::CompletionEvent {
             task_id: "shell:steer-test".to_string(),
             tool_name: "shell".to_string(),
             result: serde_json::json!({"exit_code": 0}),
@@ -2074,24 +2074,24 @@ mod tests {
 
         peko_identity::init_test_env();
         ensure_global_core();
-        let core = Arc::new(peko_extension_host::ExtensionCore::new());
+        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
 
         // Register four 50ms-sleep handlers (one per section).
         #[derive(Debug)]
         struct SleepHandler(&'static str, std::time::Duration);
         #[async_trait::async_trait]
-        impl peko_extension_host::core::HookHandler for SleepHandler {
+        impl crate::extensions::framework::core::HookHandler for SleepHandler {
             async fn handle(
                 &self,
-                _ctx: peko_extension_host::core::HookContext,
-            ) -> peko_extension_host::types::HookResult {
+                _ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
                 tokio::time::sleep(self.1).await;
-                peko_extension_host::types::HookResult::Continue(
-                    peko_extension_host::types::HookOutput::Text(self.0.to_string()),
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Text(self.0.to_string()),
                 )
             }
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-                peko_extension_host::core::HookPoint::PromptSystemSection {
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::PromptSystemSection {
                     section: self.0.to_string(),
                     priority: 100,
                 }
@@ -2106,12 +2106,12 @@ mod tests {
 
         for section in ["tools", "skills", "agents", "mcp_context"] {
             core.register_hook(
-                peko_extension_host::core::HookPoint::PromptSystemSection {
+                crate::extensions::framework::core::HookPoint::PromptSystemSection {
                     section: section.to_string(),
                     priority: 100,
                 },
                 Arc::new(SleepHandler(section, std::time::Duration::from_millis(50))),
-                &peko_extension_host::types::ExtensionId::new(format!("sleep-{section}")),
+                &crate::extensions::framework::types::ExtensionId::new(format!("sleep-{section}")),
             )
             .await
             .unwrap();
@@ -2164,24 +2164,24 @@ mod tests {
 
         peko_identity::init_test_env();
         ensure_global_core();
-        let core = Arc::new(peko_extension_host::ExtensionCore::new());
+        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
 
         #[derive(Debug)]
         struct StuckHandler;
         #[async_trait::async_trait]
-        impl peko_extension_host::core::HookHandler for StuckHandler {
+        impl crate::extensions::framework::core::HookHandler for StuckHandler {
             async fn handle(
                 &self,
-                _ctx: peko_extension_host::core::HookContext,
-            ) -> peko_extension_host::types::HookResult {
+                _ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
                 // Sleep far longer than the renderer's 2s timeout.
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                peko_extension_host::types::HookResult::Continue(
-                    peko_extension_host::types::HookOutput::Text("never".to_string()),
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Text("never".to_string()),
                 )
             }
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-                peko_extension_host::core::HookPoint::PromptSystemSection {
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::PromptSystemSection {
                     section: "skills".to_string(),
                     priority: 100,
                 }
@@ -2195,12 +2195,12 @@ mod tests {
         }
 
         core.register_hook(
-            peko_extension_host::core::HookPoint::PromptSystemSection {
+            crate::extensions::framework::core::HookPoint::PromptSystemSection {
                 section: "skills".to_string(),
                 priority: 100,
             },
             Arc::new(StuckHandler),
-            &peko_extension_host::types::ExtensionId::new("stuck"),
+            &crate::extensions::framework::types::ExtensionId::new("stuck"),
         )
         .await
         .unwrap();
@@ -2591,7 +2591,7 @@ mod tests {
         // (same code path the loop uses) plus a render of the diff
         // the loop would surface.
         use peko_engine::prompt::context::CapabilityDiffTracker;
-        use peko_extension_host::types::{Capabilities, Capability};
+        use crate::extensions::framework::types::{Capabilities, Capability};
         peko_identity::init_test_env();
         ensure_global_core();
 
@@ -2679,7 +2679,7 @@ mod tests {
         // shrinks between iterations, the diff surfaces the revoked
         // capability under `Revoked:`.
         use peko_engine::prompt::context::CapabilityDiffTracker;
-        use peko_extension_host::types::{Capabilities, Capability};
+        use crate::extensions::framework::types::{Capabilities, Capability};
         peko_identity::init_test_env();
         ensure_global_core();
 
@@ -2878,7 +2878,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn pre_post_tool_use_hooks_fire_in_order() {
-        use peko_extension_host::types::ExtensionId;
+        use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -2896,21 +2896,21 @@ mod tests {
         #[derive(Debug)]
         struct NamedRecorder {
             label: &'static str,
-            point: peko_extension_host::core::HookPoint,
+            point: crate::extensions::framework::core::HookPoint,
             log: Arc<Mutex<Vec<&'static str>>>,
         }
         #[async_trait::async_trait]
-        impl peko_extension_host::core::HookHandler for NamedRecorder {
+        impl crate::extensions::framework::core::HookHandler for NamedRecorder {
             async fn handle(
                 &self,
-                _ctx: peko_extension_host::core::HookContext,
-            ) -> peko_extension_host::types::HookResult {
+                _ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
                 self.log.lock().unwrap().push(self.label);
-                peko_extension_host::types::HookResult::Continue(
-                    peko_extension_host::types::HookOutput::Unit,
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
                 self.point.clone()
             }
             fn priority(&self) -> i32 {
@@ -2923,12 +2923,12 @@ mod tests {
 
         let pre_id = core
             .register_hook(
-                peko_extension_host::core::HookPoint::PreToolUse {
+                crate::extensions::framework::core::HookPoint::PreToolUse {
                     tool_name: "echo".to_string(),
                 },
                 Arc::new(NamedRecorder {
                     label: "pre_tool_use",
-                    point: peko_extension_host::core::HookPoint::PreToolUse {
+                    point: crate::extensions::framework::core::HookPoint::PreToolUse {
                         tool_name: "echo".to_string(),
                     },
                     log: log.clone(),
@@ -2940,12 +2940,12 @@ mod tests {
             .id;
         let post_id = core
             .register_hook(
-                peko_extension_host::core::HookPoint::PostToolUse {
+                crate::extensions::framework::core::HookPoint::PostToolUse {
                     tool_name: "echo".to_string(),
                 },
                 Arc::new(NamedRecorder {
                     label: "post_tool_use",
-                    point: peko_extension_host::core::HookPoint::PostToolUse {
+                    point: crate::extensions::framework::core::HookPoint::PostToolUse {
                         tool_name: "echo".to_string(),
                     },
                     log: log.clone(),
@@ -3008,7 +3008,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn stop_hook_fires_on_clean_end_with_reason_end() {
-        use peko_extension_host::types::ExtensionId;
+        use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -3024,20 +3024,20 @@ mod tests {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl peko_extension_host::core::HookHandler for StopRecorder {
+        impl crate::extensions::framework::core::HookHandler for StopRecorder {
             async fn handle(
                 &self,
-                ctx: peko_extension_host::core::HookContext,
-            ) -> peko_extension_host::types::HookResult {
-                if let peko_extension_host::types::HookInput::Json(v) = &ctx.input {
+                ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
                 }
-                peko_extension_host::types::HookResult::Continue(
-                    peko_extension_host::types::HookOutput::Unit,
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-                peko_extension_host::core::HookPoint::Stop
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::Stop
             }
             fn priority(&self) -> i32 {
                 100
@@ -3049,7 +3049,7 @@ mod tests {
 
         let hook_id = core
             .register_hook(
-                peko_extension_host::core::HookPoint::Stop,
+                crate::extensions::framework::core::HookPoint::Stop,
                 Arc::new(StopRecorder { log: log.clone() }),
                 &ExtensionId::new("f31x-stop-end"),
             )
@@ -3099,7 +3099,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn stop_hook_fires_on_cap_hit_with_reason_max_iterations() {
-        use peko_extension_host::types::ExtensionId;
+        use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -3117,20 +3117,20 @@ mod tests {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl peko_extension_host::core::HookHandler for StopRecorder {
+        impl crate::extensions::framework::core::HookHandler for StopRecorder {
             async fn handle(
                 &self,
-                ctx: peko_extension_host::core::HookContext,
-            ) -> peko_extension_host::types::HookResult {
-                if let peko_extension_host::types::HookInput::Json(v) = &ctx.input {
+                ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
                 }
-                peko_extension_host::types::HookResult::Continue(
-                    peko_extension_host::types::HookOutput::Unit,
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-                peko_extension_host::core::HookPoint::Stop
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::Stop
             }
             fn priority(&self) -> i32 {
                 100
@@ -3142,7 +3142,7 @@ mod tests {
 
         let hook_id = core
             .register_hook(
-                peko_extension_host::core::HookPoint::Stop,
+                crate::extensions::framework::core::HookPoint::Stop,
                 Arc::new(StopRecorder { log: log.clone() }),
                 &ExtensionId::new("f31x-stop-cap"),
             )
@@ -3201,7 +3201,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn stop_hook_fires_on_soft_interrupt_with_reason_interrupted() {
-        use peko_extension_host::types::ExtensionId;
+        use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -3217,20 +3217,20 @@ mod tests {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl peko_extension_host::core::HookHandler for StopRecorder {
+        impl crate::extensions::framework::core::HookHandler for StopRecorder {
             async fn handle(
                 &self,
-                ctx: peko_extension_host::core::HookContext,
-            ) -> peko_extension_host::types::HookResult {
-                if let peko_extension_host::types::HookInput::Json(v) = &ctx.input {
+                ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
                 }
-                peko_extension_host::types::HookResult::Continue(
-                    peko_extension_host::types::HookOutput::Unit,
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-                peko_extension_host::core::HookPoint::Stop
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::Stop
             }
             fn priority(&self) -> i32 {
                 100
@@ -3242,7 +3242,7 @@ mod tests {
 
         let hook_id = core
             .register_hook(
-                peko_extension_host::core::HookPoint::Stop,
+                crate::extensions::framework::core::HookPoint::Stop,
                 Arc::new(StopRecorder { log: log.clone() }),
                 &ExtensionId::new("f31x-stop-interrupt"),
             )
@@ -3298,7 +3298,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn after_agent_hook_fires_from_agent_stop_with_agent_name() {
-        use peko_extension_host::types::ExtensionId;
+        use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -3311,20 +3311,20 @@ mod tests {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl peko_extension_host::core::HookHandler for AfterAgentRecorder {
+        impl crate::extensions::framework::core::HookHandler for AfterAgentRecorder {
             async fn handle(
                 &self,
-                ctx: peko_extension_host::core::HookContext,
-            ) -> peko_extension_host::types::HookResult {
-                if let peko_extension_host::types::HookInput::Json(v) = &ctx.input {
+                ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
                 }
-                peko_extension_host::types::HookResult::Continue(
-                    peko_extension_host::types::HookOutput::Unit,
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-                peko_extension_host::core::HookPoint::AfterAgent
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::AfterAgent
             }
             fn priority(&self) -> i32 {
                 100
@@ -3336,7 +3336,7 @@ mod tests {
 
         let hook_id = core
             .register_hook(
-                peko_extension_host::core::HookPoint::AfterAgent,
+                crate::extensions::framework::core::HookPoint::AfterAgent,
                 Arc::new(AfterAgentRecorder { log: log.clone() }),
                 &ExtensionId::new("f31x-after-agent"),
             )
@@ -3386,7 +3386,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn pre_tool_use_wildcard_dispatch_matches_specific_tool() {
-        use peko_extension_host::types::ExtensionId;
+        use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -3407,23 +3407,23 @@ mod tests {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl peko_extension_host::core::HookHandler for WildcardPreRecorder {
+        impl crate::extensions::framework::core::HookHandler for WildcardPreRecorder {
             async fn handle(
                 &self,
-                ctx: peko_extension_host::core::HookContext,
-            ) -> peko_extension_host::types::HookResult {
-                if let peko_extension_host::types::HookInput::ToolCall {
+                ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                if let crate::extensions::framework::types::HookInput::ToolCall {
                     tool_name, ..
                 } = &ctx.input
                 {
                     self.log.lock().unwrap().push(serde_json::json!(tool_name));
                 }
-                peko_extension_host::types::HookResult::Continue(
-                    peko_extension_host::types::HookOutput::Unit,
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-                peko_extension_host::core::HookPoint::PreToolUse {
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::PreToolUse {
                     tool_name: "*".to_string(),
                 }
             }
@@ -3437,7 +3437,7 @@ mod tests {
 
         let hook_id = core
             .register_hook(
-                peko_extension_host::core::HookPoint::PreToolUse {
+                crate::extensions::framework::core::HookPoint::PreToolUse {
                     tool_name: "*".to_string(),
                 },
                 Arc::new(WildcardPreRecorder { log: log.clone() }),
@@ -3496,7 +3496,7 @@ mod tests {
     /// silently regress the wildcard resolution.
     #[test]
     fn pre_tool_use_wildcard_grammar_matches_specific_tool() {
-        use peko_extension_host::core::HookPoint;
+        use crate::extensions::framework::core::HookPoint;
 
         let wildcard = HookPoint::PreToolUse {
             tool_name: "*".to_string(),
@@ -3531,7 +3531,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn after_agent_hook_fires_from_loop_with_agent_name_and_did() {
-        use peko_extension_host::types::ExtensionId;
+        use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -3547,20 +3547,20 @@ mod tests {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl peko_extension_host::core::HookHandler for AfterAgentLoopRecorder {
+        impl crate::extensions::framework::core::HookHandler for AfterAgentLoopRecorder {
             async fn handle(
                 &self,
-                ctx: peko_extension_host::core::HookContext,
-            ) -> peko_extension_host::types::HookResult {
-                if let peko_extension_host::types::HookInput::Json(v) = &ctx.input {
+                ctx: crate::extensions::framework::core::HookContext,
+            ) -> crate::extensions::framework::types::HookResult {
+                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
                 }
-                peko_extension_host::types::HookResult::Continue(
-                    peko_extension_host::types::HookOutput::Unit,
+                crate::extensions::framework::types::HookResult::Continue(
+                    crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-                peko_extension_host::core::HookPoint::AfterAgent
+            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+                crate::extensions::framework::core::HookPoint::AfterAgent
             }
             fn priority(&self) -> i32 {
                 100
@@ -3572,7 +3572,7 @@ mod tests {
 
         let hook_id = core
             .register_hook(
-                peko_extension_host::core::HookPoint::AfterAgent,
+                crate::extensions::framework::core::HookPoint::AfterAgent,
                 Arc::new(AfterAgentLoopRecorder { log: log.clone() }),
                 &ExtensionId::new("f31x-1-after-agent-loop"),
             )
@@ -3647,18 +3647,18 @@ mod tests {
     struct F35NoopHandler;
 
     #[async_trait::async_trait]
-    impl peko_extension_host::core::HookHandler for F35NoopHandler {
+    impl crate::extensions::framework::core::HookHandler for F35NoopHandler {
         async fn handle(
             &self,
-            _ctx: peko_extension_host::core::HookContext,
-        ) -> peko_extension_host::types::HookResult {
-            peko_extension_host::types::HookResult::Continue(
-                peko_extension_host::types::HookOutput::Unit,
+            _ctx: crate::extensions::framework::core::HookContext,
+        ) -> crate::extensions::framework::types::HookResult {
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Unit,
             )
         }
 
-        fn hook_point(&self) -> peko_extension_host::core::HookPoint {
-            peko_extension_host::core::HookPoint::ToolExecute {
+        fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+            crate::extensions::framework::core::HookPoint::ToolExecute {
                 tool_name: String::new(),
             }
         }
@@ -3677,10 +3677,10 @@ mod tests {
     /// unregister it on teardown.
     async fn f35_register_tool(
         core: &Arc<ExtensionCore>,
-        exposure: peko_extension_host::types::ToolExposure,
+        exposure: crate::extensions::framework::types::ToolExposure,
         name_prefix: &str,
     ) -> String {
-        use peko_extension_host::types::{ExtensionId, ToolMetadata, ToolSource};
+        use crate::extensions::framework::types::{ExtensionId, ToolMetadata, ToolSource};
 
         let name = format!("{name_prefix}-{}", uuid::Uuid::new_v4());
         let meta = ToolMetadata::new(

@@ -28,7 +28,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::extensions::framework::store::ExtensionStore;
-use peko_extension_host::types::ExtensionId;
+use crate::extensions::framework::types::ExtensionId;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
@@ -169,7 +169,7 @@ impl RequestHandler for ExtensionHandler {
             RequestPacket::ExtensionInstall { request_id, path } => {
                 let store = self.host.extension_store();
                 let install_path =
-                    match peko_extension_host::manager::packaging::prepare_install_path(
+                    match crate::extensions::framework::manager::packaging::prepare_install_path(
                         std::path::Path::new(&path),
                     ) {
                         Ok(p) => p,
@@ -329,7 +329,7 @@ impl RequestHandler for ExtensionHandler {
             } => {
                 let store = self.host.extension_store();
                 let ext_id = ExtensionId::new(&id);
-                match peko_extension_host::manager::packaging::ExtensionPackager::export(
+                match crate::extensions::framework::manager::packaging::ExtensionPackager::export(
                     store, &ext_id, &output,
                 )
                 .await

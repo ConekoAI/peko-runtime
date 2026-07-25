@@ -81,7 +81,7 @@ pub struct RouterContext {
     pub governance: PrincipalGovernanceConfig,
     /// Per-principal snapshot of all detected extensions/agents and their
     /// authority state.
-    pub extension_store: peko_principal::ExtensionCatalog,
+    pub extension_store: crate::principal::extension_store::ExtensionCatalog,
     /// Set of extension IDs that are currently active for this Principal.
     /// Derived from `extension_store.active_extensions()` and carried here
     /// so routers can thread it into `PrincipalContext` without recomputing.

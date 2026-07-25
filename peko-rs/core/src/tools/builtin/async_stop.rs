@@ -15,8 +15,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_stop_success() {
-        let runtime = Arc::new(peko_extension_host::async_exec::executor::TestAsyncRuntime::new());
-        runtime.insert(peko_extension_host::async_exec::executor::TestTaskEntry {
+        let runtime = Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        runtime.insert(crate::extensions::framework::async_exec::executor::TestTaskEntry {
             task_id: "Bash:cancel-me".to_string(),
             tool_name: "Bash".to_string(),
             status: "pending".to_string(),
@@ -41,8 +41,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_stop_already_terminal() {
-        let runtime = Arc::new(peko_extension_host::async_exec::executor::TestAsyncRuntime::new());
-        runtime.insert(peko_extension_host::async_exec::executor::TestTaskEntry {
+        let runtime = Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
+        runtime.insert(crate::extensions::framework::async_exec::executor::TestTaskEntry {
             task_id: "Bash:done".to_string(),
             tool_name: "Bash".to_string(),
             status: "completed".to_string(),
@@ -70,7 +70,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_stop_not_found() {
-        let runtime = Arc::new(peko_extension_host::async_exec::executor::TestAsyncRuntime::new());
+        let runtime = Arc::new(crate::extensions::framework::async_exec::executor::TestAsyncRuntime::new());
         let tool = AsyncStopTool::new(runtime.as_shared());
         let result = tool
             .execute(json!({"task_id": "Bash:missing"}))

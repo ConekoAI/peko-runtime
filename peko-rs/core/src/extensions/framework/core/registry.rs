@@ -3,17 +3,17 @@
 //! This module implements the central facade for extension hooks and tools.
 //! It composes `HookRegistry` and `ToolRegistry` to provide a unified interface.
 
-use crate::core::config::ExtensionServices;
-use crate::core::context::HookContext;
-use crate::core::handler::HookHandler;
-use crate::core::hook_points::HookPoint;
-use crate::core::hook_registry::HookRegistry;
-use crate::core::tool_registry::ToolRegistry;
-use crate::types::{
+use crate::extensions::framework::core::config::ExtensionServices;
+use crate::extensions::framework::core::context::HookContext;
+use crate::extensions::framework::core::handler::HookHandler;
+use crate::extensions::framework::core::hook_points::HookPoint;
+use crate::extensions::framework::core::hook_registry::HookRegistry;
+use crate::extensions::framework::core::tool_registry::ToolRegistry;
+use crate::extensions::framework::types::{
     tool_result_from_hook, ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata,
     ToolRuntimeContext,
 };
-use crate::types::{ActiveExtensionSet, Capabilities, ToolExposure};
+use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, ToolExposure};
 use anyhow::Result;
 use peko_subject::PrincipalId;
 use peko_tools_core::Tool;
@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, instrument, trace, warn};
 
 // Re-export types from sub-registries for backward compatibility
-pub use crate::core::hook_registry::{BuiltinExtensionInfo, RegisteredHook};
+pub use crate::extensions::framework::core::hook_registry::{BuiltinExtensionInfo, RegisteredHook};
 
 /// Central facade for extension hooks and tools
 ///
@@ -732,7 +732,7 @@ impl ExtensionCore {
     /// F35 — Search the principal's `ToolExposure::Deferred` tool catalog
     /// and return up to `limit` matching `ToolDefinition`s ranked by the
     /// simple word-overlap backend at
-    /// [`crate::core::scoring`].
+    /// [`crate::extensions::framework::core::scoring`].
     ///
     /// This is the engine-side of the synthetic `__tool_search` stub.
     /// Returns `ToolDefinition`s (name + description + JSON schema) so the
@@ -775,7 +775,7 @@ impl ExtensionCore {
         let mut scored: Vec<_> = deferred
             .iter()
             .map(|m| {
-                let s = crate::core::scoring::score(query, &m.name, &m.description);
+                let s = crate::extensions::framework::core::scoring::score(query, &m.name, &m.description);
                 (m, s)
             })
             .filter(|(_, s)| *s > 0)
@@ -1003,8 +1003,8 @@ pub fn global_core() -> Option<Arc<ExtensionCore>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::handler::HookHandler;
-    use crate::types::HookOutput;
+    use crate::extensions::framework::core::handler::HookHandler;
+    use crate::extensions::framework::types::HookOutput;
 
     /// Mock handler for testing
     #[derive(Debug)]

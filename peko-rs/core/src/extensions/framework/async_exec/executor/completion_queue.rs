@@ -18,7 +18,7 @@
 //! 2. An orphan-rule `impl AsyncCompletionLike for CompletionEvent`
 //!    in `src/engine/async_completion_compat.rs` that just re-exposed
 //!    root's field-identical copy as an `AsyncCompletionLike` (the
-//!    canonical `peko_extension_host::CompletionEvent` already
+//!    canonical `peko_extension_api::CompletionEvent` already
 //!    implements it in `crates/engine/src/async_completion.rs:43`).
 //!
 //! Phase 2 deletes both shims. The types are now single-sourced in
@@ -26,7 +26,7 @@
 //! historical `crate::extensions::framework::async_exec::executor::*`
 //! import paths keep resolving until Phase 15 deletes them outright.
 //!
-//! `SharedSessionInbox = Arc<peko_extension_host::SessionInbox>` keeps
+//! `SharedSessionInbox = Arc<crate::extensions::framework::inbox::SessionInbox>` keeps
 //! the historical convenience alias for the existing
 //! `Arc<SharedSessionInbox>` callers.
 //!
@@ -48,7 +48,8 @@ use std::sync::Arc;
 // so these types are now intra-crate re-exports — root retains
 // compat shims under `crate::extensions::framework::async_exec::executor`
 // until the framework tree is fully deleted.
-pub use crate::inbox::{CompletionEvent, InboxItem, SessionInbox, SteeringMessage};
+pub use crate::extensions::framework::inbox::SessionInbox;
+pub use peko_extension_api::{CompletionEvent, InboxItem, SteeringMessage};
 
 /// Convenience alias preserved from the pre-Phase-2 root type:
 ///
@@ -56,7 +57,7 @@ pub use crate::inbox::{CompletionEvent, InboxItem, SessionInbox, SteeringMessage
 /// pub type SharedSessionInbox = Arc<SessionInbox>;
 /// ```
 ///
-/// where `SessionInbox` is now `peko_extension_host::SessionInbox`.
+/// where `SessionInbox` is now `crate::extensions::framework::inbox::SessionInbox`.
 /// Callers that held an `Arc<SharedSessionInbox>` (e.g.
 /// `AsyncExecutor::inbox_registry`, `agentic_loop_compat` tests, the
 /// `AsyncInboxAdapter` in `src/engine/async_inbox_compat.rs`) keep
@@ -68,7 +69,7 @@ mod tests {
     //! Verify the `SharedSessionInbox` alias still constructs from
     //! the canonical `inbox::SessionInbox`. The type-id assertions
     //! from the pre-Phase-8b root shim no longer apply because this
-    //! module now lives in the same crate as `crate::inbox::*`.
+    //! module now lives in the same crate as `crate::extensions::framework::inbox::*`.
     use super::*;
 
     #[test]

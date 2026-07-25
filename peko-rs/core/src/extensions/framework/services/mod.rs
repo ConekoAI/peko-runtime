@@ -18,11 +18,11 @@ pub use tool_execution::{ToolExecutionConfig, ToolExecutionService};
 // `transport::async_router` (mirrors how the trait port calls it);
 // re-exported here for backwards compat with the historical
 // `services::ToolExecutionContext` import path.
-pub use crate::transport::async_router::ToolExecutionContext;
+pub use crate::extensions::framework::transport::async_router::ToolExecutionContext;
 
-use crate::core::BuiltinExtensionInfo;
-use crate::transport::async_router::AsyncExecutionRouter;
-use crate::transport::async_transport::{create_local_transport, AsyncTaskTransport};
+use crate::extensions::framework::core::BuiltinExtensionInfo;
+use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
+use crate::extensions::framework::transport::async_transport::{create_local_transport, AsyncTaskTransport};
 use std::sync::Arc;
 
 /// Container for all extension services
@@ -35,7 +35,7 @@ pub struct Services {
     /// Async execution router (for _async parameter handling)
     async_router: Arc<AsyncExecutionRouter>,
     /// Extension core for hook and tool management (injected, not global)
-    core: Option<Arc<crate::core::ExtensionCore>>,
+    core: Option<Arc<crate::extensions::framework::core::ExtensionCore>>,
 }
 
 impl Services {
@@ -61,7 +61,7 @@ impl Services {
     /// This is the preferred constructor for CLI commands that need to
     /// manipulate hooks and built-in extensions without reaching for global state.
     #[must_use]
-    pub fn with_core(core: Arc<crate::core::ExtensionCore>) -> Self {
+    pub fn with_core(core: Arc<crate::extensions::framework::core::ExtensionCore>) -> Self {
         Self {
             reserved_params: Arc::new(reserved_params::ReservedParamsService::new()),
             tool_execution: Arc::new(tool_execution::ToolExecutionService::new()),
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_services_with_core() {
-        let core = Arc::new(crate::core::ExtensionCore::new());
+        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
         let services = Services::with_core(core);
         // Just verify it doesn't panic and core is set
         assert!(services.core.is_some());
@@ -154,7 +154,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_builtin_extensions_with_core() {
-        let core = Arc::new(crate::core::ExtensionCore::new());
+        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
         let services = Services::with_core(core);
         let builtins = services.list_builtin_extensions().await;
         // Initially empty since no builtins are registered

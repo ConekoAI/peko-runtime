@@ -2,7 +2,7 @@
 
 use super::event_bus::AsyncTaskCompletionEvent;
 use super::types::{AsyncTaskId, AsyncTaskStatus, AsyncToolConfig, WaitResult};
-use crate::registry::SimpleRegistry;
+use crate::extensions::framework::registry::SimpleRegistry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

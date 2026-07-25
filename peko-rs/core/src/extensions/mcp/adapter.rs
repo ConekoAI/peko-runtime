@@ -30,11 +30,11 @@
 use crate::extensions::framework::adapters::{
     ExtensionState, ExtensionTypeAdapter, ManifestFormat,
 };
-use peko_extension_host::core::{
+use crate::extensions::framework::core::{
     ExtensionCore, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
     ToolMetadata, ToolSource,
 };
-use peko_extension_host::types::{ExtensionId, ExtensionManifest, HookOutput, HookResult};
+use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookOutput, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use peko_subject::PrincipalId;
@@ -437,7 +437,7 @@ impl McpAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<peko_extension_host::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extensions::framework::types::ExtensionManifest> {
         use anyhow::Context;
 
         let registry_manifest: serde_json::Value = serde_json::from_str(content)
@@ -571,7 +571,7 @@ impl McpAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<peko_extension_host::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extensions::framework::types::ExtensionManifest> {
         use anyhow::Context;
 
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
@@ -696,7 +696,7 @@ impl ExtensionTypeAdapter for McpAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<peko_extension_host::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extensions::framework::types::ExtensionManifest> {
         // Dispatch to the appropriate parser based on file name
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if file_name == "server.json" {
@@ -772,7 +772,7 @@ impl ExtensionTypeAdapter for McpAdapter {
 
     async fn register_tools(
         &self,
-        core: &peko_extension_host::core::ExtensionCore,
+        core: &crate::extensions::framework::core::ExtensionCore,
         manifest: &ExtensionManifest,
         principal_id: &PrincipalId,
     ) -> Result<usize> {
@@ -883,7 +883,7 @@ impl HookHandler for McpServerInitHandler {
                         Err(e) => {
                             warn!(server_name = %self.server_name, error = %e, "Failed to load MCP server config from unified manifest");
                             return HookResult::Continue(
-                                peko_extension_host::types::HookOutput::Unit,
+                                crate::extensions::framework::types::HookOutput::Unit,
                             );
                         }
                     }
@@ -891,7 +891,7 @@ impl HookHandler for McpServerInitHandler {
                 None => {
                     warn!(server_name = %self.server_name, "No config_path or mcp_servers available for MCP server");
                     return HookResult::Continue(
-                        peko_extension_host::types::HookOutput::Unit,
+                        crate::extensions::framework::types::HookOutput::Unit,
                     );
                 }
             }
@@ -901,7 +901,7 @@ impl HookHandler for McpServerInitHandler {
                 Err(e) => {
                     warn!(server_name = %self.server_name, error = %e, "Failed to load MCP server config");
                     return HookResult::Continue(
-                        peko_extension_host::types::HookOutput::Unit,
+                        crate::extensions::framework::types::HookOutput::Unit,
                     );
                 }
             }
@@ -915,7 +915,7 @@ impl HookHandler for McpServerInitHandler {
             let manager = self.manager.read().await;
             if let Err(e) = manager.add_server_config(server_config).await {
                 warn!(server_name = %self.server_name, error = %e, "Failed to add MCP server config");
-                return HookResult::Continue(peko_extension_host::types::HookOutput::Unit);
+                return HookResult::Continue(crate::extensions::framework::types::HookOutput::Unit);
             }
             info!(server_name = %self.server_name, "Added MCP server config to manager");
         }
@@ -935,7 +935,7 @@ impl HookHandler for McpServerInitHandler {
         // Register tools with unified registry so the agent can use them.
         // Registration does not require the server to be running; tool
         // metadata was discovered when the extension was installed.
-        if let Some(core) = peko_extension_host::core::global_core() {
+        if let Some(core) = crate::extensions::framework::core::global_core() {
             let adapter = McpAdapter::new(self.manager.clone());
             match adapter
                 .register_server_tools(
@@ -956,7 +956,7 @@ impl HookHandler for McpServerInitHandler {
             warn!("No global ExtensionCore available for MCP tool registration");
         }
 
-        HookResult::Continue(peko_extension_host::types::HookOutput::Unit)
+        HookResult::Continue(crate::extensions::framework::types::HookOutput::Unit)
     }
 
     fn hook_point(&self) -> HookPoint {
@@ -1053,11 +1053,11 @@ impl HookHandler for McpServerShutdownHandler {
         match manager.stop_server(&self.server_name).await {
             Ok(()) => {
                 info!(server_name = %self.server_name, "MCP server stopped");
-                HookResult::Continue(peko_extension_host::types::HookOutput::Unit)
+                HookResult::Continue(crate::extensions::framework::types::HookOutput::Unit)
             }
             Err(e) => {
                 warn!(server_name = %self.server_name, error = %e, "Failed to stop MCP server");
-                HookResult::Continue(peko_extension_host::types::HookOutput::Unit)
+                HookResult::Continue(crate::extensions::framework::types::HookOutput::Unit)
             }
         }
     }
@@ -1282,10 +1282,10 @@ impl HookHandler for McpToolExecuteHandler {
         // scope (CLI, tests, internal auto-start) — the server gets an
         // unlimited meter.
         let calling_principal_id: Option<String> = ctx
-            .get_state::<peko_extension_host::types::ToolRuntimeContext>("tool_context")
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
             .and_then(|tc| tc.principal_id.clone());
 
-        let exec_config = peko_extension_host::ToolExecConfig::new(
+        let exec_config = crate::extensions::framework::transport::ToolExecConfig::new(
             reserved_params,
             serde_json::json!({"type": "object"}),
         );
@@ -1295,7 +1295,7 @@ impl HookHandler for McpToolExecuteHandler {
                 &ctx,
                 &called_tool_name,
                 &exec_config,
-                None::<peko_extension_host::PreprocessorFn>,
+                None::<crate::extensions::framework::transport::PreprocessorFn>,
                 Box::new(move |p| {
                     let manager = manager.clone();
                     let server = server_name.clone();
@@ -1359,7 +1359,7 @@ impl HookHandler for McpToolExecuteHandler {
                         });
                         Ok(json_result)
                     }) as futures::future::BoxFuture<'static, anyhow::Result<serde_json::Value>>
-                }) as peko_extension_host::ExecFn,
+                }) as crate::extensions::framework::transport::ExecFn,
             )
             .await
     }
@@ -1397,7 +1397,7 @@ pub async fn load_servers_from_directory(
 
 /// Load and register MCP servers with an ExtensionCore
 pub async fn load_and_register_servers(
-    core: &peko_extension_host::ExtensionCore,
+    core: &crate::extensions::framework::core::ExtensionCore,
     servers_dir: impl AsRef<Path>,
     manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
 ) -> Result<usize> {

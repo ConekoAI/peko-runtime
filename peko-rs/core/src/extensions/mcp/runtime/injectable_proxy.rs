@@ -21,8 +21,8 @@
 use crate::extensions::mcp::protocol::types::Tool as McpTool;
 use crate::extensions::mcp::runtime::tool_proxy::McpToolProxy;
 use async_trait::async_trait;
-use peko_extension_host::protocols::shared::proxy_utils::execute_with_context_handling;
-use peko_extension_host::services::ReservedParamsConfig;
+use crate::extensions::framework::protocols::shared::proxy_utils::execute_with_context_handling;
+use crate::extensions::framework::services::ReservedParamsConfig;
 use peko_tools_core::{Tool, ToolContext};
 use serde_json::Value;
 use std::sync::Arc;
@@ -121,7 +121,7 @@ impl InjectableMcpToolProxy {
     ///
     /// Uses the shared schema filter for consistency with Universal Tools.
     fn filter_schema(schema: &Value, reserved: &ReservedParamsConfig) -> Value {
-        use peko_extension_host::protocols::shared::schema_filter::filter_reserved_params;
+        use crate::extensions::framework::protocols::shared::schema_filter::filter_reserved_params;
         use std::collections::HashSet;
 
         let reserved_set: HashSet<String> = reserved.names().cloned().collect();
@@ -156,9 +156,9 @@ impl InjectableMcpToolProxy {
             // Phase 8c.1.D.1: shim resolves to host's `resolve_reserved_params`
             // which takes `Option<&dyn VaultAccess>`. Coerce at the call site
             // so callers don't have to switch to the trait-object form.
-            let vault: Option<&dyn peko_extension_host::vault::VaultAccess> =
-                vault.map(|v| v as &dyn peko_extension_host::vault::VaultAccess);
-            let value = peko_extension_host::services::reserved_params::resolve_reserved_params(
+            let vault: Option<&dyn crate::extensions::framework::vault::VaultAccess> =
+                vault.map(|v| v as &dyn crate::extensions::framework::vault::VaultAccess);
+            let value = crate::extensions::framework::services::reserved_params::resolve_reserved_params(
                 &self.reserved_params,
                 ctx,
                 vault,
@@ -327,7 +327,7 @@ mod tests {
             .with_runtime("peer_id", "peer_id")
             .with_static("static_val", "hardcoded");
 
-        let resolved = peko_extension_host::services::reserved_params::resolve_reserved_params(
+        let resolved = crate::extensions::framework::services::reserved_params::resolve_reserved_params(
             &config,
             Some(&ctx),
             None,
@@ -345,7 +345,7 @@ mod tests {
             .with_runtime("agent_id", "agent_id")
             .with_static("static_val", "hardcoded");
 
-        let resolved = peko_extension_host::services::reserved_params::resolve_reserved_params(
+        let resolved = crate::extensions::framework::services::reserved_params::resolve_reserved_params(
             &config, None, None,
         );
 

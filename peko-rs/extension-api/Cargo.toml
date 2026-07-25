@@ -8,11 +8,20 @@ description = "Extension framework API contracts (Phase 7) — owns ExtensionId,
 peko-message = { path = "../message" }
 peko-tools-core = { path = "../tools-core" }
 peko-provider-api = { path = "../provider-api" }
+# Phase F2 foldback: `ToolFunnel` trait moved here from
+# `peko-extension-host` (deleted). Engine depends on this crate but NOT
+# on root, so the trait's home is a leaf sat. `PrincipalId` is used in
+# `has_deferred_tools_for` / `list_tool_definitions_with_allowlist`.
+# No cycle: peko-subject has no inbound edge from peko-extension-api.
+peko-subject = { path = "../subject" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 tokio = { version = "1.35", features = ["sync"] }
 uuid = { version = "1.7", features = ["v4", "serde"] }
+# Phase F2 foldback: `paths::default_data_dir` uses `dirs::data_dir()`
+# as the fallback when `PEKO_DATA_DIR` is unset.
+dirs = "5.0"
 # Phase 7 — `AsyncInboxLike` trait port + the envelope types it carries
 # (`CompletionEnvelope` carries `DateTime<Utc>`, the trait is async).
 async-trait = "0.1"

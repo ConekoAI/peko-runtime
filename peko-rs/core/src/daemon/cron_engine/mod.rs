@@ -5,7 +5,7 @@
 //! lifecycle and shutdown.
 
 use crate::common::json_utils::json_subset;
-use peko_extension_host::core::ExtensionCore;
+use crate::extensions::framework::core::ExtensionCore;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::router::{ChannelContext, ChannelKind};
 use anyhow::Result;
@@ -13,7 +13,7 @@ use chrono::Utc;
 use peko_auth::caller::CallerContext;
 use peko_cron::events::SystemEvent;
 use peko_cron::{CronJob, CronJobAction, CronRun, CronScheduler, DeliveryMode, IdleDetector};
-use peko_extension_host::async_exec::executor::{AsyncExecutor, AsyncTaskStatus, AsyncToolConfig};
+use crate::extensions::framework::async_exec::executor::{AsyncExecutor, AsyncTaskStatus, AsyncToolConfig};
 use peko_observability::Observability;
 use peko_tools_core::ToolResult;
 use std::sync::{Arc, Weak};
@@ -454,7 +454,7 @@ impl CronEngine {
         // CancellationToken into `run_spawn_tool_job` and switch to
         // `dispatch_tool_with_signal`. The funnel is mandatory now,
         // which is the F38 invariant we care about.
-        let context = peko_extension_host::async_exec::executor::ToolDispatchContext::builder(
+        let context = crate::extensions::framework::async_exec::executor::ToolDispatchContext::builder(
             tool_name.clone(),
             tool_params.clone(),
             principal_root_session_key.clone(),
@@ -630,7 +630,7 @@ mod tests {
     use super::*;
     use crate::common::paths::PathResolver;
     use crate::engine::tool_runtime::ToolRuntime;
-    use peko_extension_host::core::init_global_core;
+    use crate::extensions::framework::core::init_global_core;
     use crate::principal::{
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalManager,
     };
@@ -872,7 +872,7 @@ mod tests {
         // Build a CronEngine with an executor whose registry holds a
         // terminal entry for `shell:abc`.
         let async_executor = Arc::new(AsyncExecutor::new());
-        let mut entry = peko_extension_host::async_exec::executor::registry::AsyncTaskEntry::new(
+        let mut entry = crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
             "shell:abc".to_string(),
             "Bash".to_string(),
             serde_json::json!({"command": "echo done"}),

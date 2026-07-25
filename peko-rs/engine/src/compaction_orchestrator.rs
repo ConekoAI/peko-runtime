@@ -36,7 +36,7 @@ use crate::SessionView;
 use anyhow::Result;
 use peko_extension_api::hook_io::{CompactionPreparationPayload, CompactionResultPayload};
 use peko_extension_api::session::SessionSnapshot;
-use peko_extension_host::ToolFunnel;
+use peko_extension_api::ToolFunnel;
 use peko_message::LlmMessage;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};

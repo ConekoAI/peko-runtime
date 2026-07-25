@@ -11,12 +11,12 @@
 //! agents and built-ins.
 
 use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter};
-use peko_extension_host::core::ExtensionCore;
-use peko_extension_host::manager::storage::ExtensionStorage;
+use crate::extensions::framework::core::ExtensionCore;
+use crate::extensions::framework::manager::storage::ExtensionStorage;
 
-use peko_extension_host::types::HookId;
+use crate::extensions::framework::types::HookId;
 use anyhow::{Context, Result};
-use peko_extension_host::manager::discovery::{discovery_paths, DiscoveredExtension};
+use crate::extensions::framework::manager::discovery::{discovery_paths, DiscoveredExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use tracing::{debug, info, warn};
 // (the trait port's home). Internal-only — callers reach for these
 // directly via the host crate's path.
 use peko_extension_api::{ExtensionId, ExtensionManifest};
-use peko_extension_host::store::{
+use crate::extensions::framework::store_trait::{
     BundleMetadata, DependencyResolution, DependencyStatus, ExtensionBundle,
     ExtensionStore as ExtensionStoreTrait, GlobalExtensionItem, LoadReport, LoadedExtension,
     ToolResolution,
@@ -246,7 +246,7 @@ impl ExtensionStore {
 
         for binding in bindings {
             let handler = binding.handler_factory.create(manifest.clone());
-            let handler_arc: Arc<dyn peko_extension_host::core::HookHandler> =
+            let handler_arc: Arc<dyn crate::extensions::framework::core::HookHandler> =
                 handler.into();
             let registration = self
                 .core
@@ -310,7 +310,7 @@ impl ExtensionStore {
         let mut report = LoadReport::default();
         let mut scanned_paths = HashSet::new();
 
-        peko_extension_host::skill_catalog::SkillCatalog::global().clear();
+        crate::extensions::framework::skill_catalog::SkillCatalog::global().clear();
 
         let mut all_paths = discovery_paths::all();
         if let Some(storage_dir) = self.storage.dir() {
@@ -478,7 +478,7 @@ impl ExtensionStore {
             .remove(id)
             .context(format!("Extension '{id}' not found"))?;
 
-        peko_extension_host::skill_catalog::SkillCatalog::global().unregister_by_extension(id);
+        crate::extensions::framework::skill_catalog::SkillCatalog::global().unregister_by_extension(id);
 
         for hook_id in &loaded_ext.hook_ids {
             if let Err(e) = self.core.unregister_hook(hook_id).await {
@@ -519,7 +519,7 @@ impl ExtensionStore {
             return;
         };
         let name = loaded.manifest.id.0.clone();
-        peko_extension_host::skill_catalog::SkillCatalog::global().register(
+        crate::extensions::framework::skill_catalog::SkillCatalog::global().register(
             name,
             PathBuf::from(skill_file),
             Some(loaded.manifest.id.clone()),
@@ -902,7 +902,7 @@ impl Default for ExtensionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_extension_host::types::ExtensionDependency;
+    use crate::extensions::framework::types::ExtensionDependency;
     use tempfile::TempDir;
 
     #[test]

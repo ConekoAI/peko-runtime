@@ -9,8 +9,8 @@ use super::task_file::{TaskFileRecord, TaskFileWriter};
 use super::types::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget, WaitResult,
 };
-use crate::core::ExtensionCore;
-use crate::inbox::SessionInbox;
+use crate::extensions::framework::core::ExtensionCore;
+use crate::extensions::framework::inbox::SessionInbox;
 use peko_session::InboxRegistry;
 
 /// Default `InboxFactory` used by [`AsyncExecutor::new`] and
@@ -76,7 +76,7 @@ impl AsyncExecutor {
     /// a registry with the rest of the daemon (the common case).
     #[must_use]
     pub fn new() -> Self {
-        let task_file_writer = crate::paths::default_data_dir().join("async_tasks").into();
+        let task_file_writer = crate::extensions::framework::paths::default_data_dir().join("async_tasks").into();
         Self {
             registry: Arc::new(RwLock::new(AsyncTaskRegistry::new())),
             queue_manager: Arc::new(RwLock::new(AsyncResultQueueManager::new())),
@@ -93,7 +93,7 @@ impl AsyncExecutor {
         registry: SharedAsyncTaskRegistry,
         queue_manager: SharedAsyncResultQueueManager,
     ) -> Self {
-        let task_file_writer = crate::paths::default_data_dir().join("async_tasks").into();
+        let task_file_writer = crate::extensions::framework::paths::default_data_dir().join("async_tasks").into();
         Self {
             registry,
             queue_manager,
@@ -422,7 +422,7 @@ impl AsyncExecutor {
                     .unwrap_or_else(|| std::path::PathBuf::from(""));
                 if let Some(target) = steer_target {
                     let label = config_for_spawn.label.clone().unwrap_or_default();
-                    let text = crate::async_exec::steer::format_cron_steer_message(
+                    let text = crate::extensions::framework::async_exec::steer::format_cron_steer_message(
                         &label,
                         &task_id_clone,
                         &tool_name,
@@ -1075,8 +1075,8 @@ mod completion_queue_fan_out_tests {
 #[cfg(test)]
 mod dispatch_tool_tests {
     use super::*;
-    use crate::async_exec::executor::AsyncTaskStatus;
-    use crate::async_exec::executor::ToolDispatchContext;
+    use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
+    use crate::extensions::framework::async_exec::executor::ToolDispatchContext;
     use async_trait::async_trait;
     use peko_tools_core::Tool;
     use std::sync::atomic::AtomicBool;

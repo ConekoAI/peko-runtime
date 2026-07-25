@@ -78,10 +78,10 @@
 //! - `agent.iteration` - Between loop iterations (params: iteration)
 
 use crate::extensions::framework::adapters::parsing;
-use peko_extension_host::core::HookBinding;
+use crate::extensions::framework::core::HookBinding;
 use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter};
-use peko_extension_host::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
-use peko_extension_host::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
+use crate::extensions::framework::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
+use crate::extensions::framework::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
 use crate::extensions::general::command_handler::{
     CommandHookConfig, CommandHookHandler, CommandOutputFormat, DEFAULT_COMMAND_TIMEOUT_SECS,
 };
@@ -235,7 +235,7 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
         &self,
         path: &std::path::Path,
         content: &str,
-    ) -> anyhow::Result<peko_extension_host::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extensions::framework::types::ExtensionManifest> {
         use anyhow::Context;
 
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
@@ -447,7 +447,7 @@ impl HookHandlerFactory for GeneralHandlerFactory {
         Box::new(GeneralHandler {
             handler_name: self.handler_name.clone(),
             hook_type: self.hook_point.name(),
-            extension_id: peko_extension_host::types::ExtensionId::new(
+            extension_id: crate::extensions::framework::types::ExtensionId::new(
                 &self.manifest.id.0,
             ),
         })
@@ -459,7 +459,7 @@ impl HookHandlerFactory for GeneralHandlerFactory {
 struct GeneralHandler {
     handler_name: String,
     hook_type: String,
-    extension_id: peko_extension_host::types::ExtensionId,
+    extension_id: crate::extensions::framework::types::ExtensionId,
 }
 
 impl std::fmt::Debug for GeneralHandler {
@@ -594,7 +594,7 @@ pub struct DiscoveredGeneralExtension {
 
 /// Register general extensions with an `ExtensionCore`
 pub async fn register_general_extensions_with_core(
-    core: &peko_extension_host::ExtensionCore,
+    core: &crate::extensions::framework::core::ExtensionCore,
     extensions: Vec<DiscoveredGeneralExtension>,
 ) -> Result<usize> {
     let adapter = GeneralExtensionAdapter::new();
@@ -609,7 +609,7 @@ pub async fn register_general_extensions_with_core(
 
         for binding in bindings {
             let handler = binding.handler_factory.create(ext.manifest.clone());
-            let handler_arc: Arc<dyn peko_extension_host::core::HookHandler> =
+            let handler_arc: Arc<dyn crate::extensions::framework::core::HookHandler> =
                 Arc::from(handler);
 
             if let Err(e) = core
@@ -635,7 +635,7 @@ pub async fn register_general_extensions_with_core(
 
 /// Convenience function to discover and register general extensions
 pub async fn load_and_register_general_extensions(
-    core: &peko_extension_host::ExtensionCore,
+    core: &crate::extensions::framework::core::ExtensionCore,
     extensions_dir: &Path,
 ) -> Result<usize> {
     let extensions = discover_general_extensions(extensions_dir).await?;
@@ -826,7 +826,7 @@ hooks:
             .await
             .unwrap();
 
-        let core = peko_extension_host::ExtensionCore::new();
+        let core = crate::extensions::framework::core::ExtensionCore::new();
         let count = load_and_register_general_extensions(&core, temp.path())
             .await
             .unwrap();

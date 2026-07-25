@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::engine::tool_runtime::ToolRuntime;
-use peko_extension_host::core::init_global_core;
+use crate::extensions::framework::core::init_global_core;
 use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };

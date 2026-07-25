@@ -1,4 +1,4 @@
-//! `ToolFunnel` impl for `peko_extension_host::ExtensionCore`.
+//! `ToolFunnel` impl for `crate::extensions::framework::core::ExtensionCore`.
 //!
 //! Phase 8a moved `ExtensionCore` from root `src/extensions/framework/`
 //! into `peko_extension_host`. The `impl ToolFunnel for ExtensionCore`
@@ -12,14 +12,14 @@
 //! semantics). The only change is the import path
 //! (`crate::extensions::framework::X` → `crate::X`).
 
-use crate::core::hook_points::HookPoint;
-use crate::core::ExtensionCore;
-use crate::tool_funnel::ToolFunnel;
-use crate::types::HookInput;
+use crate::extensions::framework::core::hook_points::HookPoint;
+use crate::extensions::framework::core::ExtensionCore;
+use crate::extensions::framework::types::HookInput;
 use peko_extension_api::hook_io::{
     CompactionPreparationPayload, CompactionResultPayload, HookDecision,
 };
 use peko_extension_api::session::SessionSnapshot;
+use peko_extension_api::ToolFunnel;
 use peko_tools_core::HOOK_TIMEOUT;
 
 #[async_trait::async_trait]

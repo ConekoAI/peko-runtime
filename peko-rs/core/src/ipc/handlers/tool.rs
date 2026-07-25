@@ -46,7 +46,7 @@ use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use crate::principal::manager::PrincipalManager;
 use peko_auth::caller::CallerContext;
-use peko_extension_host::async_exec::executor::{AsyncExecutor, AsyncTaskId, AsyncToolConfig};
+use crate::extensions::framework::async_exec::executor::{AsyncExecutor, AsyncTaskId, AsyncToolConfig};
 use peko_session::key::parse_session_key;
 
 /// Narrow port the `tool` handler uses to reach daemon state.
@@ -189,7 +189,7 @@ impl ToolHandler {
             Some(principal) => {
                 let caps = principal.capabilities().await;
                 let global_items = self.host.extension_store().global_items().await;
-                let catalog = peko_principal::ExtensionCatalog::build(
+                let catalog = crate::principal::extension_store::ExtensionCatalog::build(
                     &caps,
                     &principal.agent_prompts,
                     &global_items,

@@ -904,7 +904,7 @@ pub enum ResponsePacket {
     #[serde(rename = "async_receipt")]
     AsyncReceipt {
         request_id: u64,
-        receipt: peko_extension_host::async_exec::executor::AsyncTaskReceipt,
+        receipt: crate::extensions::framework::async_exec::executor::AsyncTaskReceipt,
     },
 
     /// Final success/failure marker
@@ -2652,7 +2652,7 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: peko_extension_host::types::Capabilities::default(),
+                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
             }],
@@ -2684,7 +2684,7 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: peko_extension_host::types::Capabilities::default(),
+                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 2,
                 workspace_path: "/tmp/helper".to_string(),
             }),
@@ -3109,7 +3109,7 @@ mod tests {
                 exposure: peko_auth::Exposure::Public,
                 status: Some(peko_principal::config::Status::Busy),
                 preferred_model_id: None,
-                capabilities: peko_extension_host::types::Capabilities::default(),
+                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
             },
@@ -3164,7 +3164,7 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: peko_extension_host::types::Capabilities::default(),
+                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
             },
@@ -3686,7 +3686,7 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: peko_extension_host::types::Capabilities::default(),
+                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
             },

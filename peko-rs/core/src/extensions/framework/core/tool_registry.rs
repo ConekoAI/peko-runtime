@@ -15,11 +15,11 @@
 //! `tool_count`, `resolve_canonical_ids`) use a two-probe fallback:
 //! `(name, principal_id)` first, then `(name, PrincipalId::system())`.
 //!
-//! Built on [`crate::registry::SharedRegistry`] to avoid hand-rolling
+//! Built on [`crate::extensions::framework::registry::SharedRegistry`] to avoid hand-rolling
 //! `Arc<RwLock<HashMap<K, V>>>` patterns.
 
-use crate::registry::SharedRegistry;
-use crate::types::{ActiveExtensionSet, Capabilities, Capability, ExtensionId, HookId};
+use crate::extensions::framework::registry::SharedRegistry;
+use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, Capability, ExtensionId, HookId};
 use anyhow::Result;
 use peko_subject::PrincipalId;
 use std::collections::HashMap;

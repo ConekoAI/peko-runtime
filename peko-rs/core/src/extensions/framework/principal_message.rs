@@ -36,7 +36,7 @@ use peko_subject::Subject;
 // `peko_engine` can hold `Vec<ToolCallInfo>` on `ChannelOutput`
 // without taking a host-crate dep just for a 4-field DTO.
 // Re-exported here so every existing
-// `peko_extension_host::principal_message::ToolCallInfo` call site
+// `crate::extensions::framework::principal_message::ToolCallInfo` call site
 // keeps compiling unchanged.
 pub use peko_message::ToolCallInfo;
 

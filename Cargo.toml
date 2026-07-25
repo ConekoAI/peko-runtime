@@ -9,7 +9,6 @@ members = [
     "peko-rs/engine",
     "peko-rs/events",
     "peko-rs/extension-api",
-    "peko-rs/extension-host",
     "peko-rs/fs-persistence",
     "peko-rs/identity",
     "peko-rs/message",

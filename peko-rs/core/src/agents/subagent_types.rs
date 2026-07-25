@@ -5,7 +5,7 @@
 //! directly — they are read-only projections constructed on demand.
 
 use chrono::{DateTime, Utc};
-use peko_extension_host::async_exec::executor::{
+use crate::extensions::framework::async_exec::executor::{
     AsyncTaskEntry, AsyncTaskStatus, SubagentResult, TaskMetadata,
 };
 use peko_session::types::SpawnCleanupPolicy;

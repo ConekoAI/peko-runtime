@@ -73,9 +73,9 @@ async fn main() {
 ///   so that async tools fail fast with a clear error instead of falling back to
 ///   in-process execution that would be dropped on CLI exit (ADR-020).
 async fn init_extension_core(command: &Commands) {
-    use peko_extension_host::core::{init_global_core, ExtensionCore, ExtensionServices};
-    use peko_extension_host::transport::async_router::AsyncExecutionRouter;
-    use peko_extension_host::transport::async_transport::{
+    use peko_core::extensions::framework::core::{init_global_core, ExtensionCore, ExtensionServices};
+    use peko_core::extensions::framework::transport::async_router::AsyncExecutionRouter;
+    use peko_core::extensions::framework::transport::async_transport::{
         create_local_transport, UnavailableAsyncTransport,
     };
     use std::sync::Arc;

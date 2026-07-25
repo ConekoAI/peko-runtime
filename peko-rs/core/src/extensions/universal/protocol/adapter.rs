@@ -81,7 +81,7 @@ impl UniversalToolAdapter {
                 .with_peer_id(context.peer_id.as_deref().unwrap_or(""))
                 .with_workspace(&context.workspace);
 
-            let resolved = peko_extension_host::services::reserved_params::resolve_reserved_params(
+            let resolved = crate::extensions::framework::services::reserved_params::resolve_reserved_params(
                 &self.manifest.reserved_parameters,
                 Some(&tool_ctx),
                 None,
@@ -355,7 +355,7 @@ impl Default for UniversalToolBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_extension_host::services::ReservedParamsConfig;
+    use crate::extensions::framework::services::ReservedParamsConfig;
     use serde_json::json;
 
     #[test]

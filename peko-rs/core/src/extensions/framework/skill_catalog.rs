@@ -7,7 +7,7 @@
 //! `ExtensionStore` whenever skills are loaded and provides a single,
 //! read-only lookup table from skill name to canonical `SKILL.md` path.
 
-use crate::types::ExtensionId;
+use crate::extensions::framework::types::ExtensionId;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};

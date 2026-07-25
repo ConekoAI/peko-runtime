@@ -8,10 +8,10 @@
 //! - List functionality
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use peko_extension_host::async_exec::executor::AsyncTaskStatus;
+use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
 use crate::common::paths::PathResolver;
 use peko_auth::Subject;
-use peko_extension_host::async_exec::executor::{
+use crate::extensions::framework::async_exec::executor::{
     get_or_create_registry_for_agent, SharedAsyncTaskRegistry,
 };
 use peko_session::manager::SessionManager;
@@ -229,7 +229,7 @@ async fn subagent_inherits_parent_cancel() {
         if let Some(entry) = registry_guard.get(&run_id) {
             if matches!(
                 entry.status,
-                peko_extension_host::async_exec::executor::types::AsyncTaskStatus::Cancelled
+                crate::extensions::framework::async_exec::executor::types::AsyncTaskStatus::Cancelled
             ) {
                 observed_cancelled = true;
                 break;
@@ -687,7 +687,7 @@ async fn test_cleanup_policy_tracking() {
             &parent_key,
             ExecutionConfig {
                 max_depth: 10,
-                cleanup: peko_extension_host::SpawnCleanupPolicy::Delete,
+                cleanup: crate::extensions::framework::subagent::SpawnCleanupPolicy::Delete,
                 ..Default::default()
             },
             None,
@@ -1048,13 +1048,13 @@ async fn test_executor_cancel() {
     let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
     {
         let mut registry_guard = registry.write().await;
-        let entry = peko_extension_host::async_exec::executor::registry::AsyncTaskEntry::new(
+        let entry = crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
             run_id.clone(),
             "Agent".to_string(),
             serde_json::json!({"task": "Long task"}),
             "agent:test:peer:user:alice".to_string(),
-            peko_extension_host::async_exec::executor::types::AsyncToolConfig {
-                delivery_mode: peko_extension_host::async_exec::executor::types::AsyncResultDeliveryMode::QueueWhenBusy,
+            crate::extensions::framework::async_exec::executor::types::AsyncToolConfig {
+                delivery_mode: crate::extensions::framework::async_exec::executor::types::AsyncResultDeliveryMode::QueueWhenBusy,
                 delivery_target: None,
                 timeout_secs: Some(3600),
                 timeout_millis: None,
@@ -1073,7 +1073,7 @@ async fn test_executor_cancel() {
         let entry = registry_guard.get(&run_id).unwrap();
         assert!(matches!(
             entry.status,
-            peko_extension_host::async_exec::executor::types::AsyncTaskStatus::Pending
+            crate::extensions::framework::async_exec::executor::types::AsyncTaskStatus::Pending
         ));
     }
 

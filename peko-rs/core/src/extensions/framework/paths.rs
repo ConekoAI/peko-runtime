@@ -14,7 +14,7 @@
 //! lib.rs doc-link resolved; commit 2 fills in the real method
 //! shapes (matching `crate::common::paths::PathResolver`).
 //!
-//! [`PathResolver`]: crate::paths::PathResolver
+//! [`PathResolver`]: crate::extensions::framework::paths::PathResolver
 
 use std::path::PathBuf;
 

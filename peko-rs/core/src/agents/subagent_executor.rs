@@ -12,7 +12,7 @@
 //!
 //! The executor carries a `principal_id` (the spawning principal's DID)
 //! rather than an `Arc<ExtensionCore>` — there is one daemon-global
-//! [`peko_extension_host::ExtensionCore`] (`global_core()`) and
+//! [`crate::extensions::framework::core::ExtensionCore`] (`global_core()`) and
 //! principals share it. Per-principal tool instances (sessions/memory/
 //! catalog) are registered on that single global core keyed by the
 //! principal, so per-subagent visibility is still scoped to the
@@ -30,15 +30,15 @@ use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
 use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_types::SubagentRunView;
-use peko_extension_host::async_exec::executor::{AsyncTaskStatus as SubagentStatus, SubagentResult};
-use peko_extension_host::types::Capabilities;
+use crate::extensions::framework::async_exec::executor::{AsyncTaskStatus as SubagentStatus, SubagentResult};
+use crate::extensions::framework::types::Capabilities;
 use peko_auth::Subject;
-use peko_extension_host::async_exec::executor::{
+use crate::extensions::framework::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncResultDeliveryMode,
     AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
     SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
 };
-use peko_extension_host::SpawnCleanupPolicy;
+use crate::extensions::framework::subagent::SpawnCleanupPolicy;
 use peko_observability::Observability;
 use peko_session::context::SessionContext;
 use peko_session::manager::SessionManager;
@@ -128,7 +128,7 @@ pub struct SubagentExecutor {
     /// Snapshot of the spawning principal's active extension IDs.
     /// `None` means unbound (no active-extension check). Propagated to
     /// descendant subagents.
-    active_extensions: Option<peko_extension_host::types::ActiveExtensionSet>,
+    active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     /// Optional observability hub for audit/metrics. When set, subagent
     /// spawns are recorded in the audit log under the parent principal.
     observability: Option<Arc<Observability>>,
@@ -156,7 +156,7 @@ impl SubagentExecutor {
     /// `principal_id` is the spawning principal's runtime id. There is no
     /// per-principal `ExtensionCore` — the executor and its subagents look
     /// tools up on the daemon-global
-    /// [`peko_extension_host::core::global_core`].
+    /// [`crate::extensions::framework::core::global_core`].
     #[must_use]
     pub fn new(
         session_manager: Arc<RwLock<SessionManager>>,
@@ -250,7 +250,7 @@ impl SubagentExecutor {
     #[must_use]
     pub fn with_active_extensions(
         mut self,
-        active_extensions: Option<peko_extension_host::types::ActiveExtensionSet>,
+        active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     ) -> Self {
         self.active_extensions = active_extensions;
         self
@@ -266,7 +266,7 @@ impl SubagentExecutor {
     #[must_use]
     pub fn active_extensions(
         &self,
-    ) -> Option<&peko_extension_host::types::ActiveExtensionSet> {
+    ) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
         self.active_extensions.as_ref()
     }
 
@@ -955,7 +955,7 @@ impl SubagentExecutor {
 /// 4. Returns the assistant's final answer
 ///
 /// The child resolves tools from the daemon-global
-/// [`peko_extension_host::core::global_core`]. The parent's
+/// [`crate::extensions::framework::core::global_core`]. The parent's
 /// `principal_id` is propagated so the child's own `SubagentExecutor`
 /// and any descendant spawns carry the same identity.
 async fn execute_subagent_task(
@@ -970,7 +970,7 @@ async fn execute_subagent_task(
     principal_id: PrincipalId,
     principal_workspace: Option<std::path::PathBuf>,
     principal_capabilities: Option<Arc<Capabilities>>,
-    active_extensions: Option<peko_extension_host::types::ActiveExtensionSet>,
+    active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     observability: Option<Arc<Observability>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
     // F39: snapshot of the spawning principal's `QuotaMeter`. The

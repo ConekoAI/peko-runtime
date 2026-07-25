@@ -18,6 +18,7 @@
 
 pub mod agent_runner;
 pub mod context;
+pub mod extension_store;
 pub mod factory;
 pub mod manager;
 pub mod router;

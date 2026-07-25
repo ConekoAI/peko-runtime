@@ -1,7 +1,7 @@
 //! GatewayRouter — routes incoming messages from gateways to agents
 
 use crate::agents::stateless_service::StatelessAgentService;
-use peko_extension_host::principal_message::PrincipalMessageRequest;
+use crate::extensions::framework::principal_message::PrincipalMessageRequest;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;

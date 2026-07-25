@@ -559,7 +559,7 @@ impl PathResolver {
 // `PathResolver` impls it via single-method delegation.
 // =============================================================================
 
-impl peko_extension_host::paths::PathResolver for PathResolver {
+impl crate::extensions::framework::paths::PathResolver for PathResolver {
     fn skills_dir(&self) -> PathBuf {
         PathResolver::skills_dir(self)
     }

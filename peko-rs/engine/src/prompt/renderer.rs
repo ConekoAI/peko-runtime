@@ -21,7 +21,7 @@
 //!   empty so a single misbehaving extension can't stall the loop.
 //! - **`mcp_context` normalized.** This section previously used plain
 //!   `invoke_hook_text`; the rest use the trait-port
-//!   [`ToolFunnel::invoke_prompt_section_hook`](peko_extension_host::ToolFunnel::invoke_prompt_section_hook).
+//!   [`ToolFunnel::invoke_prompt_section_hook`](peko_extension_api::ToolFunnel::invoke_prompt_section_hook).
 //! - **`remove_missing=true` for placeholders.** Templates that omit
 //!   any of the four control-surface placeholders get no section.
 //!
@@ -44,7 +44,7 @@ use super::context::{
 use super::placeholder::{replace_placeholders, Placeholder};
 use chrono::Local;
 use peko_extension_api::session::SessionSnapshot;
-use peko_extension_host::ToolFunnel;
+use peko_extension_api::ToolFunnel;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -70,7 +70,7 @@ pub(crate) use peko_tools_core::HOOK_TIMEOUT;
 /// only concrete type) to `Arc<dyn ToolFunnel>` so the renderer lifts
 /// into `peko-engine` without dragging root `HookPoint` / `HookInput`
 /// types along. The trait port is the same one the tool executor and
-/// compaction orchestrator use (see `peko_extension_host::ToolFunnel`).
+/// compaction orchestrator use (see `peko_extension_api::ToolFunnel`).
 #[derive(Clone)]
 pub struct PromptRenderer {
     extension_core: Arc<dyn ToolFunnel>,
@@ -602,7 +602,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use peko_extension_api::session::SessionSnapshot;
-    use peko_extension_host::ToolFunnel;
+    use peko_extension_api::ToolFunnel;
     use peko_subject::PrincipalId;
     use std::path::PathBuf;
 

@@ -13,8 +13,8 @@
 //! (`get_extension`, `resolve_tool_name`, `install`); future phases
 //! will add more as the framework is split further.
 //!
-//! [`ExtensionStore`]: peko_extension_host::store::ExtensionStore (root)
-//! [`VaultAccess`]: crate::vault::VaultAccess
+//! [`ExtensionStore`]: crate::extensions::framework::store::ExtensionStore (root)
+//! [`VaultAccess`]: crate::extensions::framework::vault::VaultAccess
 
 use anyhow::Result;
 use peko_extension_api::{ExtensionId, ExtensionManifest, HookId};
@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// across `.await` points (e.g., inside packaging, IPC handlers,
 /// registry flows). Mirrors the [`VaultAccess`] trait's bound.
 ///
-/// [`VaultAccess`]: crate::vault::VaultAccess
+/// [`VaultAccess`]: crate::extensions::framework::vault::VaultAccess
 #[async_trait::async_trait]
 pub trait ExtensionStore: Send + Sync {
     /// Look up a loaded extension by its [`ExtensionId`]. Returns

@@ -10,10 +10,10 @@ use crate::common::types::extension::{
 };
 use crate::common::vault::Vault;
 use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
-use peko_extension_host::core::global_core;
-use peko_extension_host::store::DependencyStatus;
+use crate::extensions::framework::core::global_core;
+use crate::extensions::framework::store_trait::DependencyStatus;
 use crate::extensions::framework::store::ExtensionStore;
-use peko_extension_host::types::{ExtensionId, ExtensionManifest};
+use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
 use crate::extensions::gateway::GatewayAdapter;
 use crate::extensions::general::GeneralExtensionAdapter;
 use crate::extensions::mcp::McpAdapter;
@@ -26,7 +26,7 @@ use crate::registry::manifest::RegistryManifest;
 use crate::registry::packaging::types::{compute_digest, ImageDigest, Layer, LayerType};
 use crate::registry::AgentRegistry;
 use anyhow::{Context, Result};
-use peko_extension_host::manager::packaging::ExtensionPackager;
+use crate::extensions::framework::manager::packaging::ExtensionPackager;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -327,7 +327,7 @@ impl ExtensionManagementService {
                     .to_string(),
             );
             tokio::fs::create_dir_all(&temp_dir).await?;
-            peko_extension_host::manager::packaging::ExtensionUnpackager::install(
+            crate::extensions::framework::manager::packaging::ExtensionUnpackager::install(
                 temp_path, &temp_dir,
             )
             .map_err(|e| {

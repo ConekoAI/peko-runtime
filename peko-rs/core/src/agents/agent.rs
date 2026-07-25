@@ -6,7 +6,7 @@ use crate::common::paths::PathResolver;
 use peko_engine::state::StateMachine;
 use peko_engine::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
-use peko_extension_host::core::{global_core, ExtensionCore};
+use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
 use anyhow::{Context, Result};
 use peko_auth::Subject;
@@ -105,13 +105,13 @@ pub struct Agent {
     /// `AgentConfig::extensions`/`extension_whitelist` for the
     /// runtime filter. Once `AgentConfig::extensions` is removed
     /// the principal's allowlist is the *only* source of truth.
-    principal_capabilities: Option<Arc<peko_extension_host::types::Capabilities>>,
+    principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
     /// Snapshot of the spawning principal's active extension IDs.
     ///
     /// When `Some`, tool execution verifies that the tool's owning
     /// extension is present in this set in addition to the capability
     /// grant check. Subagents inherit the same snapshot.
-    principal_active_extensions: Option<peko_extension_host::types::ActiveExtensionSet>,
+    principal_active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
 }
 
 impl Clone for Agent {
@@ -289,7 +289,7 @@ impl Agent {
         if let Some(caps) = self.principal_capabilities.as_ref() {
             let before_count = tools.len();
             tools.retain(|tool| {
-                let required = peko_extension_host::types::Capability::new(format!(
+                let required = crate::extensions::framework::types::Capability::new(format!(
                     "tool:{}",
                     tool.name()
                 ));
@@ -475,7 +475,7 @@ impl Agent {
     /// external `InboxRegistry`.
     ///
     /// There is no per-agent `ExtensionCore` — the global
-    /// [`peko_extension_host::core::global_core`] is used for
+    /// [`crate::extensions::framework::core::global_core`] is used for
     /// every agent of the principal. Per-agent visibility is enforced
     /// by each agent's own extension whitelist. `principal_id` is the
     /// spawning principal's runtime id, carried so the agent's
@@ -668,7 +668,7 @@ impl Agent {
     #[must_use]
     pub fn with_principal_capabilities(
         mut self,
-        capabilities: Option<Arc<peko_extension_host::types::Capabilities>>,
+        capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
     ) -> Self {
         let executor = (*self.subagent_executor)
             .clone()
@@ -686,7 +686,7 @@ impl Agent {
     #[must_use]
     pub fn with_active_extensions(
         mut self,
-        active_extensions: Option<peko_extension_host::types::ActiveExtensionSet>,
+        active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     ) -> Self {
         let executor = (*self.subagent_executor)
             .clone()
@@ -767,7 +767,7 @@ impl Agent {
     /// same provider/catalog entry.
     ///
     /// Tools resolve from the daemon-global
-    /// [`peko_extension_host::core::global_core`] — there is no
+    /// [`crate::extensions::framework::core::global_core`] — there is no
     /// per-agent core. The shared executor carries the spawning
     /// principal's DID so descendant spawns inherit the same principal
     /// scope; the agent's own `extension_core` field is initialised to
@@ -778,9 +778,9 @@ impl Agent {
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<peko_providers::Provider>>,
-        principal_capabilities: Option<Arc<peko_extension_host::types::Capabilities>>,
+        principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
         principal_active_extensions: Option<
-            peko_extension_host::types::ActiveExtensionSet,
+            crate::extensions::framework::types::ActiveExtensionSet,
         >,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
@@ -890,8 +890,8 @@ impl Agent {
         let shutdown_result = self
             .extension_core
             .invoke_hook(
-                peko_extension_host::core::HookPoint::AgentShutdown,
-                peko_extension_host::types::HookInput::Unit,
+                crate::extensions::framework::core::HookPoint::AgentShutdown,
+                crate::extensions::framework::types::HookInput::Unit,
             )
             .await;
         tracing::info!(
@@ -916,8 +916,8 @@ impl Agent {
         let _ = self
             .extension_core
             .invoke_hook(
-                peko_extension_host::core::HookPoint::AfterAgent,
-                peko_extension_host::types::HookInput::Json(after_agent_payload),
+                crate::extensions::framework::core::HookPoint::AfterAgent,
+                crate::extensions::framework::types::HookInput::Json(after_agent_payload),
             )
             .await;
 
@@ -1404,7 +1404,7 @@ impl Agent {
             Arc::clone(reg)
         } else {
             Arc::new(peko_session::InboxRegistry::new(
-                peko_extension_host::async_exec::executor::executor::default_inbox_factory(),
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(),
             ))
         };
         let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
@@ -1412,7 +1412,7 @@ impl Agent {
 
         // 2. Per-call AsyncExecutor wired to the same registry.
         let async_executor = Arc::new(
-            peko_extension_host::async_exec::executor::AsyncExecutor::new()
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
                 .with_inbox_registry(async_inbox_registry.clone()),
         );
 
@@ -1441,7 +1441,7 @@ impl Agent {
             // can take just an `Arc<dyn AsyncRuntime>` rather than
             // reaching into the framework itself.
             let runtime = Arc::new(
-                peko_extension_host::async_exec::executor::AsyncExecutorRuntime::new(
+                crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime::new(
                     async_executor,
                     core_weak,
                     Some(self.identity.did.clone()),
@@ -1600,8 +1600,8 @@ impl Agent {
         let init_result = self
             .extension_core
             .invoke_hook(
-                peko_extension_host::core::HookPoint::AgentInit,
-                peko_extension_host::types::HookInput::Unit,
+                crate::extensions::framework::core::HookPoint::AgentInit,
+                crate::extensions::framework::types::HookInput::Unit,
             )
             .await;
         tracing::info!(
@@ -1656,7 +1656,7 @@ impl Agent {
     #[must_use]
     pub fn principal_capabilities(
         &self,
-    ) -> Option<&Arc<peko_extension_host::types::Capabilities>> {
+    ) -> Option<&Arc<crate::extensions::framework::types::Capabilities>> {
         self.principal_capabilities.as_ref()
     }
 
@@ -1667,7 +1667,7 @@ impl Agent {
     #[must_use]
     pub fn principal_active_extensions(
         &self,
-    ) -> Option<&peko_extension_host::types::ActiveExtensionSet> {
+    ) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
         self.principal_active_extensions.as_ref()
     }
 
@@ -2361,7 +2361,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_creation() {
-        use peko_extension_host::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
 
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale (Windows-headless
@@ -2370,7 +2370,7 @@ mod tests {
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        peko_extension_host::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent".to_string(),
@@ -2388,7 +2388,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_has_session_manager() {
-        use peko_extension_host::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
 
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
@@ -2396,7 +2396,7 @@ mod tests {
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        peko_extension_host::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-session".to_string(),
@@ -2414,7 +2414,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
-        use peko_extension_host::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use peko_auth::Subject;
         use peko_session::types::ChannelType;
 
@@ -2424,7 +2424,7 @@ mod tests {
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        peko_extension_host::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-router".to_string(),
@@ -2447,7 +2447,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
-        use peko_extension_host::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use peko_auth::Subject;
         use peko_session::types::ChannelType;
 
@@ -2457,7 +2457,7 @@ mod tests {
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        peko_extension_host::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-context".to_string(),
@@ -2479,7 +2479,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_tool_session() {
-        use peko_extension_host::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use peko_auth::Subject;
 
         // Force the encrypted-file identity fallback — see
@@ -2488,7 +2488,7 @@ mod tests {
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        peko_extension_host::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-spawn".to_string(),
@@ -2531,7 +2531,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_two_runtimes_same_name_different_did() {
-        use peko_extension_host::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
 
         use tempfile::TempDir;
 
@@ -2540,7 +2540,7 @@ mod tests {
         peko_identity::init_test_env();
 
         let core = Arc::new(ExtensionCore::new());
-        peko_extension_host::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let make_config = |name: &str| AgentConfig {
             name: name.to_string(),
@@ -2583,12 +2583,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn agent_setters_round_trip() {
-        use peko_extension_host::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use tempfile::TempDir;
 
         peko_identity::init_test_env();
         let core = Arc::new(ExtensionCore::new());
-        peko_extension_host::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let tmp = TempDir::new().expect("tempdir");
         let mut config = AgentConfig::default();
@@ -2627,12 +2627,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn agent_resolved_model_id_default_is_none() {
-        use peko_extension_host::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use tempfile::TempDir;
 
         peko_identity::init_test_env();
         let core = Arc::new(ExtensionCore::new());
-        peko_extension_host::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let tmp = TempDir::new().expect("tempdir");
         let mut config = AgentConfig::default();

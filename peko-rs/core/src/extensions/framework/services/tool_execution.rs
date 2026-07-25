@@ -326,10 +326,10 @@ impl ToolExecutionService {
     #[must_use]
     pub fn filter_schema_for_llm(&self, schema: &Value, reserved: &ReservedParamsConfig) -> Value {
         // Phase 8c.1.D.3: `filter_reserved_params` lives at
-        // `crate::protocols::shared::schema_filter` (lifted in Phase 8b.2).
+        // `crate::extensions::framework::protocols::shared::schema_filter` (lifted in Phase 8b.2).
         // Use the crate-internal path; the root crate aliases it to
-        // `peko_extension_host::protocols::shared::schema_filter` for callers.
-        use crate::protocols::shared::schema_filter::filter_reserved_params;
+        // `crate::extensions::framework::protocols::shared::schema_filter` for callers.
+        use crate::extensions::framework::protocols::shared::schema_filter::filter_reserved_params;
 
         let reserved_set: HashSet<String> = reserved.names().cloned().collect();
         filter_reserved_params(schema, &reserved_set)

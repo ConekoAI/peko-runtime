@@ -25,7 +25,7 @@ use crate::events::AgenticEvent;
 use crate::parallel_gate::ParallelGate;
 use crate::SessionView;
 use anyhow::Result;
-use peko_extension_host::ToolFunnel;
+use peko_extension_api::ToolFunnel;
 use peko_message::ContentBlock;
 use peko_message::LlmMessage;
 use tracing::{info, warn};

@@ -160,7 +160,7 @@ impl Daemon {
             // Placeholder executor for the un-wired constructor — the
             // daemon replaces this in `Daemon::run` with a real one
             // bound to the AppState's `InboxRegistry`.
-            std::sync::Arc::new(peko_extension_host::async_exec::executor::AsyncExecutor::new()),
+            std::sync::Arc::new(crate::extensions::framework::async_exec::executor::AsyncExecutor::new()),
             std::sync::Weak::new(),
         );
 
@@ -191,7 +191,7 @@ impl Daemon {
             std::sync::Arc::new(peko_observability::Observability::new("daemon")),
             config.data_dir.clone(),
             None,
-            std::sync::Arc::new(peko_extension_host::async_exec::executor::AsyncExecutor::new()),
+            std::sync::Arc::new(crate::extensions::framework::async_exec::executor::AsyncExecutor::new()),
             std::sync::Weak::new(),
         );
 
@@ -276,10 +276,10 @@ impl Daemon {
         // `ExtensionCore` (`Arc::downgrade` so the cron engine does not
         // extend the core's lifetime).
         let cron_async_executor = Arc::new(
-            peko_extension_host::async_exec::executor::AsyncExecutor::new()
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
                 .with_inbox_registry(app_state.inbox_registry.clone()),
         );
-        let cron_extension_core = peko_extension_host::core::global_core()
+        let cron_extension_core = crate::extensions::framework::core::global_core()
             .map(|arc| std::sync::Arc::downgrade(&arc))
             .unwrap_or_else(std::sync::Weak::new);
 

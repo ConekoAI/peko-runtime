@@ -26,7 +26,7 @@ use crate::extensions::mcp::protocol::{
     types::{GetPromptResult, Prompt, Resource, ResourceContents, Tool},
 };
 use crate::extensions::mcp::runtime::adapter::{McpClientRegistry, McpRuntimeAdapter};
-use peko_extension_host::services::{ParamSource, ReservedParamsConfig};
+use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;

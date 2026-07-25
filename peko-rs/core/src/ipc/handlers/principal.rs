@@ -58,7 +58,7 @@ use peko_auth::ownership::{
 use peko_auth::Subject;
 use peko_chat_log::{ChatLogPage, ChatThreadKey};
 
-use peko_extension_host::SteeringMessage;
+use peko_extension_api::SteeringMessage;
 
 // ─── Principal log / preview types (privately owned by this handler) ──
 
@@ -1041,7 +1041,7 @@ impl RequestHandler for PrincipalHandler {
                     governance: PrincipalGovernanceConfig::default(),
                     memory: PrincipalMemoryConfig::default(),
                     routing: PrincipalRoutingConfig::default(),
-                    capabilities: peko_extension_host::types::Capabilities::starter_bundle(
+                    capabilities: crate::extensions::framework::types::Capabilities::starter_bundle(
                     ),
                     exposure: Exposure::Private,
                     status: None,

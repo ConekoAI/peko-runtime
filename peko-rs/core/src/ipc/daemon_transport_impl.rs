@@ -8,13 +8,13 @@
 //! the host crate.
 //!
 //! The trait declaration lives at
-//! `peko_extension_host::transport::DaemonTransport` (see
+//! `crate::extensions::framework::transport::DaemonTransport` (see
 //! `peko-rs/extension-host/src/transport.rs`); the impl is here because
 //! `DaemonClient` is a root-only type.
 
 use futures::StreamExt;
-use peko_extension_host::async_exec::executor::{AsyncTaskId, AsyncTaskReceipt};
-use peko_extension_host::transport::DaemonTransport;
+use crate::extensions::framework::async_exec::executor::{AsyncTaskId, AsyncTaskReceipt};
+use crate::extensions::framework::transport::DaemonTransport;
 use std::path::PathBuf;
 
 use crate::ipc::client::DaemonClient;

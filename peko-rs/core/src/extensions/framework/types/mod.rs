@@ -23,7 +23,7 @@ pub use peko_extension_api::{
 };
 
 // `ToolExposure` migrated to `peko-tools-core` in Phase 5. Re-export
-// from here so existing `crate::types::ToolExposure`
+// from here so existing `crate::extensions::framework::types::ToolExposure`
 // paths keep resolving unchanged.
 pub use peko_tools_core::ToolExposure;
 

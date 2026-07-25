@@ -35,7 +35,7 @@ use tracing::{debug, info, instrument, warn};
 // `PrincipalMessageService` trait live in
 // `peko_extension_host::principal_message`. No local aliases — use the
 // canonical names directly.
-use peko_extension_host::principal_message::ToolCallInfo;
+use crate::extensions::framework::principal_message::ToolCallInfo;
 
 /// Execution request for stateless agent
 #[derive(Debug, Clone)]
@@ -227,11 +227,11 @@ pub struct StatelessAgentService {
 // breaking the cycle that would otherwise form via the concrete-type
 // dependency.
 #[async_trait::async_trait]
-impl peko_extension_host::principal_message::PrincipalMessageService for StatelessAgentService {
+impl crate::extensions::framework::principal_message::PrincipalMessageService for StatelessAgentService {
     async fn execute_message(
         &self,
-        req: peko_extension_host::principal_message::PrincipalMessageRequest,
-    ) -> Result<peko_extension_host::principal_message::PrincipalMessageResponse> {
+        req: crate::extensions::framework::principal_message::PrincipalMessageRequest,
+    ) -> Result<crate::extensions::framework::principal_message::PrincipalMessageResponse> {
         StatelessAgentService::execute_message(self, req).await
     }
 }
@@ -348,8 +348,8 @@ impl StatelessAgentService {
     /// A `PrincipalMessageResponse` containing the response, session info, and execution metadata
     pub async fn execute_message(
         &self,
-        request: peko_extension_host::principal_message::PrincipalMessageRequest,
-    ) -> Result<peko_extension_host::principal_message::PrincipalMessageResponse> {
+        request: crate::extensions::framework::principal_message::PrincipalMessageRequest,
+    ) -> Result<crate::extensions::framework::principal_message::PrincipalMessageResponse> {
         let start = Instant::now();
 
         // Resolve session using SessionManager (single authority)
@@ -407,7 +407,7 @@ impl StatelessAgentService {
                     .collect();
 
                 Ok(
-                    peko_extension_host::principal_message::PrincipalMessageResponse {
+                    crate::extensions::framework::principal_message::PrincipalMessageResponse {
                         content: result.response,
                         session_id,
                         is_new_session,
@@ -436,7 +436,7 @@ impl StatelessAgentService {
     /// An `EventStream` containing the receiver for events and completion signal
     pub async fn execute_message_streaming(
         &self,
-        request: peko_extension_host::principal_message::PrincipalMessageRequest,
+        request: crate::extensions::framework::principal_message::PrincipalMessageRequest,
     ) -> Result<peko_engine::EventStream> {
         let start = Instant::now();
 
@@ -602,25 +602,25 @@ impl StatelessAgentService {
         let prompt = match agent
             .extension_core()
             .invoke_hook(
-                peko_extension_host::core::HookPoint::ChannelInput,
-                peko_extension_host::types::HookInput::Unit,
+                crate::extensions::framework::core::HookPoint::ChannelInput,
+                crate::extensions::framework::types::HookInput::Unit,
             )
             .await
         {
-            peko_extension_host::types::HookResult::Continue(
-                peko_extension_host::types::HookOutput::Text(transformed),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             )
-            | peko_extension_host::types::HookResult::Replace(
-                peko_extension_host::types::HookOutput::Text(transformed),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             ) => {
                 debug!("ChannelInput hook transformed prompt");
                 transformed
             }
-            peko_extension_host::types::HookResult::Continue(
-                peko_extension_host::types::HookOutput::Json(json),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Json(json),
             )
-            | peko_extension_host::types::HookResult::Replace(
-                peko_extension_host::types::HookOutput::Json(json),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Json(json),
             ) => {
                 // If the hook returns JSON with a "message" or "prompt" field, use it
                 if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
@@ -717,25 +717,25 @@ impl StatelessAgentService {
         let final_response = match agent
             .extension_core()
             .invoke_hook(
-                peko_extension_host::core::HookPoint::ChannelOutput,
-                peko_extension_host::types::HookInput::Unit,
+                crate::extensions::framework::core::HookPoint::ChannelOutput,
+                crate::extensions::framework::types::HookInput::Unit,
             )
             .await
         {
-            peko_extension_host::types::HookResult::Continue(
-                peko_extension_host::types::HookOutput::Text(transformed),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             )
-            | peko_extension_host::types::HookResult::Replace(
-                peko_extension_host::types::HookOutput::Text(transformed),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             ) => {
                 debug!("ChannelOutput hook transformed response");
                 transformed
             }
-            peko_extension_host::types::HookResult::Continue(
-                peko_extension_host::types::HookOutput::Json(json),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Json(json),
             )
-            | peko_extension_host::types::HookResult::Replace(
-                peko_extension_host::types::HookOutput::Json(json),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Json(json),
             ) => {
                 if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
                     debug!("ChannelOutput hook transformed response from JSON");
@@ -891,25 +891,25 @@ impl StatelessAgentService {
         let prompt = match agent
             .extension_core()
             .invoke_hook(
-                peko_extension_host::core::HookPoint::ChannelInput,
-                peko_extension_host::types::HookInput::Unit,
+                crate::extensions::framework::core::HookPoint::ChannelInput,
+                crate::extensions::framework::types::HookInput::Unit,
             )
             .await
         {
-            peko_extension_host::types::HookResult::Continue(
-                peko_extension_host::types::HookOutput::Text(transformed),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             )
-            | peko_extension_host::types::HookResult::Replace(
-                peko_extension_host::types::HookOutput::Text(transformed),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             ) => {
                 debug!("ChannelInput hook transformed prompt (streaming)");
                 transformed
             }
-            peko_extension_host::types::HookResult::Continue(
-                peko_extension_host::types::HookOutput::Json(json),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Json(json),
             )
-            | peko_extension_host::types::HookResult::Replace(
-                peko_extension_host::types::HookOutput::Json(json),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Json(json),
             ) => {
                 if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
                     debug!("ChannelInput hook transformed prompt from JSON (streaming)");
@@ -996,8 +996,8 @@ impl StatelessAgentService {
             // The hook can still perform side effects (logging, metrics, etc.)
             let channel_output_result = extension_core
                 .invoke_hook(
-                    peko_extension_host::core::HookPoint::ChannelOutput,
-                    peko_extension_host::types::HookInput::Unit,
+                    crate::extensions::framework::core::HookPoint::ChannelOutput,
+                    crate::extensions::framework::types::HookInput::Unit,
                 )
                 .await;
             debug!(
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[test]
     fn test_message_request_builder() {
-        let request = peko_extension_host::principal_message::PrincipalMessageRequest::new(
+        let request = crate::extensions::framework::principal_message::PrincipalMessageRequest::new(
             "my-agent", "Hello",
         )
         .with_session("sess_123")
@@ -1233,7 +1233,7 @@ mod tests {
 
     #[test]
     fn test_message_request_builder_defaults() {
-        let request = peko_extension_host::principal_message::PrincipalMessageRequest::new(
+        let request = crate::extensions::framework::principal_message::PrincipalMessageRequest::new(
             "my-agent", "Hello",
         );
 
@@ -1248,13 +1248,13 @@ mod tests {
     fn test_message_request_with_session_opt() {
         // Test with Some
         let request1 =
-            peko_extension_host::principal_message::PrincipalMessageRequest::new("agent", "hi")
+            crate::extensions::framework::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_session_opt(Some("session-id".to_string()));
         assert_eq!(request1.session_id, Some("session-id".to_string()));
 
         // Test with None
         let request2 =
-            peko_extension_host::principal_message::PrincipalMessageRequest::new("agent", "hi")
+            crate::extensions::framework::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_session_opt(None);
         assert_eq!(request2.session_id, None);
     }
@@ -1266,17 +1266,17 @@ mod tests {
     #[test]
     fn test_message_request_caller_agent_opt_filters_empty() {
         let req1 =
-            peko_extension_host::principal_message::PrincipalMessageRequest::new("agent", "hi")
+            crate::extensions::framework::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_caller_agent_opt(Some("researcher".to_string()));
         assert_eq!(req1.caller_agent, Some("researcher".to_string()));
 
         let req2 =
-            peko_extension_host::principal_message::PrincipalMessageRequest::new("agent", "hi")
+            crate::extensions::framework::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_caller_agent_opt(Some(String::new()));
         assert_eq!(req2.caller_agent, None);
 
         let req3 =
-            peko_extension_host::principal_message::PrincipalMessageRequest::new("agent", "hi")
+            crate::extensions::framework::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_caller_agent_opt(None);
         assert_eq!(req3.caller_agent, None);
     }

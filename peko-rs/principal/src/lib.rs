@@ -64,7 +64,6 @@
 pub mod agent_prompt;
 pub mod capability_evaluator;
 pub mod config;
-pub mod extension_store;
 pub mod memory;
 pub mod peer;
 pub mod runtime;
@@ -80,9 +79,6 @@ pub use config::{
     AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig,
     PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
     PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
-};
-pub use extension_store::{
-    capability_kind_for_extension_type, ExtensionCatalog, ExtensionCatalogItem,
 };
 pub use memory::{MemoryError, PrincipalMemory, SessionArtifact};
 pub use peer::{Peer, PeerConfig, PeerError, PeerRegistry};
