@@ -19,7 +19,7 @@ use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::tools::builtin::BashTool;
 use crate::tools::builtin::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use anyhow::Result;
-use peko_tools_builtin::{CronCreateTool, CronDeleteTool, CronListTool};
+use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
 use peko_tools_core::Tool;
 use std::path::PathBuf;
 use std::sync::Arc;

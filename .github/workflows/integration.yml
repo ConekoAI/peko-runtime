@@ -148,6 +148,10 @@ jobs:
               # logic — but the surrounding builtin tree now has Win32
               # gateways next to unix-only sibling tools, so tracking the
               # file from the lifted path keeps the filter honest).
+              # Phase 0.Z-E (2026-07-25): peko-tools-builtin deleted; cron
+              # port + tool_search_metadata moved to peko-cron / peko-engine
+              # respectively. Bulk tool impls (including skill/body.rs) stay
+              # at the F4-lifted path; this filter entry remains valid.
               - 'peko-rs/core/src/tools/builtin/skill/body.rs'
               # Phase 0.Z-D: tests/common/cli.rs → peko-rs/core/tests/common/cli.rs
               - 'peko-rs/core/tests/common/cli.rs'

@@ -1,59 +1,65 @@
-//! Cron scheduler for periodic task execution
+//! Cron domain — scheduler + tools + port + DTOs.
 //!
-//! Stores cron jobs in a JSON file and provides scheduling functionality.
-//! Each job targets a Principal; the daemon executes it by sending a message
-//! to that Principal through the PrincipalManager.
+//! Phase 0.Z-E (2026-07-25): this crate owns the entire cron surface
+//! natively. Previously the DTOs + `CronRuntime` port + 3 cron tools
+//! lived in `peko-tools-builtin` (Phase 10b), and this crate re-exported
+//! them. After F4 (2026-07-25) lifted the bulk of built-in tools into
+//! root, `peko-tools-builtin` survived only as a cron-port sat; 0.Z-E
+//! deletes that sat and consolidates cron here.
 //!
-//! ## DTOs (`ScheduleKind`, `DeliveryMode`, `CronJobAction`, `CronJob`)
+//! ## Layout
 //!
-//! As of Phase 10b these four types live canonically in
-//! [`peko_tools_builtin::cron`] and root re-exports them here. The cron
-//! engine (`CronScheduler`, `CronRun`, `CronDatabase`) and the
-//! scheduler-side persistence stay in this crate because they are
-//! daemon-internal state and have no business in the tool surface.
-//!
-//! The serialization shape is identical on both sides — a JSON-roundtrip
-//! test in `peko_tools_builtin::cron` pins the wire shape so a future
-//! change to either side trips the test rather than silently breaking
-//! the other.
+//! - [`tools`] — the cron DTOs (`CronJob`, `CronJobAction`, `ScheduleKind`,
+//!   `DeliveryMode`), the `CronRuntime` port trait + global registry, the
+//!   helper functions, and the 3 tool impls (`CronCreateTool`,
+//!   `CronDeleteTool`, `CronListTool`).
+//! - This file — the `CronScheduler` (engine + on-disk persistence),
+//!   `CronRun` records, `CronDatabase` schema. Daemon-internal state.
+//! - [`event_trigger`], [`events`], [`idle`] — scheduler-side submodules
+//!   (idle detection + event-based triggers).
 //!
 //! ## Port (`CronRuntime`)
 //!
-//! [`peko_tools_builtin::cron::CronRuntime`] is the port the cron tools
-//! use to talk to the daemon. The concrete implementation in root is
-//! [`crate::daemon::cron_runtime::DaemonCronAdapter`] which wraps
-//! `crate::ipc::DaemonClient::cron_add/cron_remove/cron_list`. That
-//! adapter lives in root because it depends on `DaemonClient`; it
+//! [`tools::CronRuntime`] is the port the cron tools use to talk to the
+//! daemon. The concrete implementation in root is
+//! `peko_core::daemon::cron_runtime::DaemonCronAdapter`, which wraps
+//! `peko_core::ipc::DaemonClient::cron_add/cron_remove/cron_list`. That
+//! adapter stays in root because it depends on `DaemonClient`; it
 //! implements the `CronRuntime` trait via the orphan rule (the trait
 //! is foreign to root, but the adapter type is local).
 //!
-//! Includes idle detection and event-based triggers.
+//! The trait deliberately does not touch IPC — the trait surface is
+//! pure data (`CronJob` / `&str` / `Vec<CronJob>`). The adapter wires
+//! the trait methods through to `DaemonClient` calls.
 
 #![allow(dead_code)]
 
 pub mod event_trigger;
 pub mod events;
 pub mod idle;
+pub mod tools;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+#[allow(unused_imports)]
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+#[allow(unused_imports)]
 use std::str::FromStr;
 use tracing::info;
 
-// ─── DTO re-exports (single source of truth: peko_tools_builtin::cron) ───
+// ── Cron domain surface (canonical home — no re-export dance) ──
 //
-// Re-exports kept for the root facade contract: downstream integration
-// tests, CLI commands, and the IPC handlers may reach into `crate::cron`
-// for these. Some are unused inside this crate's own modules today
-// (the cron tools moved to `peko-tools-builtin`); that's expected.
+// Single source of truth for the cron DTOs + port trait + tools + helpers.
+// All cron-related code (root, daemon, integration tests, CLI commands,
+// IPC handlers) imports from `peko_cron::*` directly.
 #[allow(unused_imports)]
-pub use peko_tools_builtin::cron::{
-    build_send_job, build_spawn_tool_job, calculate_next_run, normalize_cron_expr, render_job_list,
-    resolve_delete_after_run, resolve_label, resolve_prompt, resolve_schedule_kind, CronJob,
-    CronJobAction, CronRuntime, DeliveryMode, ScheduleKind,
+pub use tools::{
+    build_send_job, build_spawn_tool_job, calculate_next_run, global_runtime,
+    normalize_cron_expr, render_job_list, resolve_delete_after_run, resolve_label, resolve_prompt,
+    resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool, CronJob,
+    CronJobAction, CronListTool, CronRuntime, DeliveryMode, ScheduleKind,
 };
 
 pub use idle::IdleDetector;

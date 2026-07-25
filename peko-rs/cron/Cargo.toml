@@ -8,23 +8,26 @@ license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
 [dependencies]
-# Phase 14.b re-export-only dependency: the cron DTOs (CronJob, CronJobAction,
-# DeliveryMode, ScheduleKind) and helpers (build_send_job, render_job_list, ...)
-# live in `peko_tools_builtin::cron` per Phase 10b. Re-exposing them through
-# `peko_cron::*` lets the root callers use a single canonical path
-# (peko_cron::{CronJob, DeliveryMode, ...}) without reaching into two crates.
-peko-tools-builtin = { path = "../tools-builtin" }
+# Phase 0.Z-E (2026-07-25): cron domain now lives entirely in this crate.
+# Previously the cron DTOs + `CronRuntime` port + 3 tool impls were
+# `peko-tools-builtin::cron` (Phase 10b), re-exported through here. They
+# moved to `peko-rs/cron/src/tools/` and the sat was deleted.
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 tokio = { version = "1.35", features = ["fs", "io-util", "macros", "sync", "time"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 # Schedule parsing/next-time evaluation in `CronScheduler` and
-# `event_trigger::EventTrigger`. The `peko_tools_builtin::cron` re-exports
-# only re-surface helpers; the underlying `cron` crate still needs to
-# be a direct dep of the crate that consumes it.
+# `event_trigger::EventTrigger`.
 cron = "0.12"
 tracing = "0.1"
+# The cron tool impls (CronCreateTool / CronDeleteTool / CronListTool)
+# implement the `Tool` trait from `peko_tools_core`.
+peko-tools-core = { path = "../tools-core" }
+async-trait = "0.1"
+# Tools generate CronJob ids + support timezone-aware schedules.
+uuid = { version = "1.7", features = ["v4"] }
+chrono-tz = "0.10"
 
 [dev-dependencies]
 # Test helpers in `crates/cron/src/lib.rs:439-440`.

@@ -196,7 +196,7 @@ impl BuiltinToolAdapter {
     ) -> Result<()> {
         use crate::tools::builtin::BashTool;
         use crate::tools::builtin::{EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool};
-        use peko_tools_builtin::{CronCreateTool, CronDeleteTool, CronListTool};
+        use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
 
         let disabled_set: HashSet<String> = config
             .disabled_tools

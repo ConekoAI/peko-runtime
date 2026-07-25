@@ -3739,7 +3739,7 @@ mod tests {
         // synthetic-description formatter.
         let stub = defs
             .iter()
-            .find(|d| d.name == peko_tools_builtin::TOOL_SEARCH_TOOL_NAME);
+            .find(|d| d.name == peko_engine::TOOL_SEARCH_TOOL_NAME);
         assert!(
             stub.is_some(),
             "expected `__tool_search` in tool definitions; got {:?}",
@@ -3747,7 +3747,7 @@ mod tests {
         );
         assert_eq!(
             stub.unwrap().description,
-            peko_tools_builtin::synthetic_description()
+            peko_engine::synthetic_description()
         );
 
         // The Deferred tool itself MUST NOT appear in the catalog
@@ -3799,7 +3799,7 @@ mod tests {
         assert!(
             !defs
                 .iter()
-                .any(|d| d.name == peko_tools_builtin::TOOL_SEARCH_TOOL_NAME),
+                .any(|d| d.name == peko_engine::TOOL_SEARCH_TOOL_NAME),
             "stub must NOT be appended when enable_tool_search=false; got {:?}",
             defs.iter().map(|d| &d.name).collect::<Vec<_>>()
         );
@@ -3845,7 +3845,7 @@ mod tests {
         assert!(
             !defs
                 .iter()
-                .any(|d| d.name == peko_tools_builtin::TOOL_SEARCH_TOOL_NAME),
+                .any(|d| d.name == peko_engine::TOOL_SEARCH_TOOL_NAME),
             "stub must NOT be appended when no Deferred tools are visible; got {:?}",
             defs.iter().map(|d| &d.name).collect::<Vec<_>>()
         );

@@ -48,11 +48,13 @@ use crate::extensions::framework::types::ToolExposure;
 use peko_tools_core::Tool;
 use peko_tools_core::ToolError;
 
-// Phase 9b.N.5b.9d: the four data-only constants/functions lifted to
-// `peko_tools_builtin::tool_search_metadata`. Re-exported here for
+// Phase 0.Z-E (2026-07-25): `peko_tools_builtin::tool_search_metadata`
+// was deleted. The four data-only constants/functions live canonically
+// in `peko_engine::tool_search_metadata` (already inlined in
+// `peko-rs/engine/src/tool_search_metadata.rs`). Re-exported here for
 // backward compat with callers like `Agent::init_builtins_async` and
 // root-side tests.
-pub use peko_tools_builtin::tool_search_metadata::{
+pub use peko_engine::{
     synthetic_description, synthetic_parameters, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_TOOL_NAME,
 };
 

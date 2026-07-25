@@ -8,7 +8,7 @@
 //! Label and ID resolution are scoped to the current Principal from
 //! the tool execution context.
 
-use crate::cron::global_runtime;
+use crate::tools::global_runtime;
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
 use peko_tools_core::traits::Tool;
@@ -137,7 +137,7 @@ impl Tool for CronDeleteTool {
 
 /// Find a job ID by its label, restricted to the given Principal.
 async fn resolve_id_by_label(
-    runtime: &dyn crate::cron::CronRuntime,
+    runtime: &dyn crate::tools::CronRuntime,
     label: &str,
     principal_name: &str,
 ) -> anyhow::Result<String> {
@@ -150,7 +150,7 @@ async fn resolve_id_by_label(
 
 /// Verify that an explicit job ID belongs to the given Principal.
 async fn verify_id_belongs_to_principal(
-    runtime: &dyn crate::cron::CronRuntime,
+    runtime: &dyn crate::tools::CronRuntime,
     job_id: &str,
     principal_name: &str,
 ) -> anyhow::Result<()> {

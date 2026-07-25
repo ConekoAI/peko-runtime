@@ -24,8 +24,8 @@ PR descriptions):
 
   - ``peko-provider-api`` MUST NOT depend on ``peko-engine``
     (Rule 11 from Phase 1, "providers→engine ban").
-  - ``peko-engine`` MUST NOT depend on ``peko-tools-builtin``,
-    ``peko-protocol``, or ``peko-peko-daemon``.
+  - ``peko-engine`` MUST NOT depend on ``peko-protocol`` or
+    ``peko-peko-daemon``.
   - ``peko-protocol`` MUST NOT depend on any other ``peko-*``
     crate (wire-only contract; ``serde`` + ``serde_json`` only).
   - ``peko-subject``, ``peko-message``, ``peko-tools-core``,
@@ -33,10 +33,7 @@ PR descriptions):
     (pure value/type layers).
   - ``peko-quota`` MAY depend only on ``peko-message``.
   - ``peko-extension-api`` MUST NOT depend on ``peko-extension-host``
-    or any implementation crate (``peko-tools-builtin``,
-    ``peko-engine``, ``peko-protocol``).
-  - ``peko-tools-builtin`` MUST NOT depend on ``peko-engine`` or
-    ``peko-protocol``.
+    or any implementation crate (``peko-engine``, ``peko-protocol``).
 
 These are the documented plan rules. The script reports any new
 forbidden edge the moment it appears in a ``Cargo.toml``, before a
@@ -89,12 +86,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "concrete providers must depend on provider-api/message/quota/events/subject "
         "only — engine imports would invert the contract and force the "
         "agentic loop, compaction, and tool funnel to live next to the providers.",
-    ),
-    # peko-engine must not depend on concrete built-in implementations
-    (
-        "peko-engine",
-        "peko-tools-builtin",
-        "engine owns the loop, not the tools; built-ins are an implementation detail.",
     ),
     # peko-engine must not depend on the IPC protocol crate
     (
@@ -158,11 +149,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ),
     (
         "peko-protocol",
-        "peko-tools-builtin",
-        "protocol is serde+serde_json only; built-in tools are downstream.",
-    ),
-    (
-        "peko-protocol",
         "peko-engine",
         "protocol is serde+serde_json only; engine is downstream.",
     ),
@@ -210,11 +196,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ),
     (
         "peko-subject",
-        "peko-tools-builtin",
-        "subject is a pure value layer.",
-    ),
-    (
-        "peko-subject",
         "peko-quota",
         "subject is a pure value layer.",
     ),
@@ -252,11 +233,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     (
         "peko-message",
         "peko-events",
-        "message is a pure contract.",
-    ),
-    (
-        "peko-message",
-        "peko-tools-builtin",
         "message is a pure contract.",
     ),
     (
@@ -307,11 +283,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ),
     (
         "peko-tools-core",
-        "peko-tools-builtin",
-        "tools-core is a pure API crate.",
-    ),
-    (
-        "peko-tools-core",
         "peko-quota",
         "tools-core is a pure API crate.",
     ),
@@ -354,11 +325,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     (
         "peko-events",
         "peko-provider-api",
-        "events is a neutral agentic event contract.",
-    ),
-    (
-        "peko-events",
-        "peko-tools-builtin",
         "events is a neutral agentic event contract.",
     ),
     (
@@ -409,11 +375,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ),
     (
         "peko-quota",
-        "peko-tools-builtin",
-        "quota depends only on peko-message.",
-    ),
-    (
-        "peko-quota",
         "peko-protocol",
         "quota depends only on peko-message.",
     ),
@@ -427,11 +388,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-extension-api",
         "peko-extension-host",
         "extension-api must not depend on its implementation.",
-    ),
-    (
-        "peko-extension-api",
-        "peko-tools-builtin",
-        "extension-api must not depend on built-in tools.",
     ),
     (
         "peko-extension-api",
@@ -453,18 +409,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-quota",
         "extension-api is a contract crate; quota is downstream.",
     ),
-    # peko-tools-builtin must not depend on engine or protocol
-    (
-        "peko-tools-builtin",
-        "peko-engine",
-        "built-in tools run inside the engine but must not depend on it "
-        "(the loop depends on them via trait ports, not the other way).",
-    ),
-    (
-        "peko-tools-builtin",
-        "peko-protocol",
-        "built-in tools are in-process; the IPC protocol is irrelevant.",
-    ),
     # peko-fs-persistence is a leaf utility crate (Phase 5)
     (
         "peko-fs-persistence",
@@ -479,11 +423,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     (
         "peko-fs-persistence",
         "peko-tools-core",
-        "fs-persistence is leaf-utility; no peko-* deps allowed.",
-    ),
-    (
-        "peko-fs-persistence",
-        "peko-tools-builtin",
         "fs-persistence is leaf-utility; no peko-* deps allowed.",
     ),
     (
@@ -561,11 +500,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     (
         "peko-chat-log",
         "peko-tools-core",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-tools-builtin",
         "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
     ),
     (
@@ -730,8 +664,11 @@ def _parse_peko_deps(cargo_toml_path: Path) -> Dict[str, List[str]]:
 def _crate_name_for(cargo_toml_path: Path, fallback: str) -> str:
     """Return the ``[package].name`` declared in the given Cargo.toml.
 
-    Used to translate ``peko-rs/tools-builtin/Cargo.toml`` → ``peko-tools-builtin``
-    so the dep edges line up with the ``FORBIDDEN_EDGES`` table.
+    Used to translate each ``peko-rs/<dir>/Cargo.toml`` → its
+    ``[package].name`` so the dep edges line up with the
+    ``FORBIDDEN_EDGES`` table. Most sats follow the
+    ``peko-<dir>`` convention; a few (CLI, daemon-bin) override via
+    ``package = "peko"`` in the root lib's Cargo.toml.
     """
     text = cargo_toml_path.read_text()
     in_package = False

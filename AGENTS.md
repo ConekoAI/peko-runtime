@@ -169,13 +169,14 @@ contracts and binaries live under `peko-rs/. Final workspace members:
   lift is Phase 9b.N.5b.
 - `peko-quota` — per-principal token quota (F18/F19). `QuotaMeter`,
   `QuotaScope`, `QuotaState`, `QuotaConfig`, `QuotaError`.
-- `peko-tools-builtin` — **partial foldback (F4)**. The bulk of built-in
-  tool implementations (filesystem, async control, session, messaging,
-  skill, tasks) lifted into root `peko-rs/core/src/tools/builtin/`. Sat
-  retains only the cron port (`CronRuntime` trait + 3 cron tool impls +
-  DTOs) and the `tool_search_metadata` static catalog helpers. Port traits
-  for the lifted tools (`TodoRuntime`, `SessionRuntime`, `SkillRuntime`,
-  `SubagentRuntime`, `AsyncRuntime`) live in root alongside the tool impls.
+- `peko-tools-builtin` — **deleted in 0.Z-E** (2026-07-25). The cron port
+  (`CronRuntime` trait + 3 cron tool impls + DTOs) lives natively in
+  `peko-cron`; the `tool_search_metadata` static catalog helpers live
+  natively in `peko-engine`. Bulk tool implementations have been in
+  root `peko-rs/core/src/tools/builtin/` since F4. Port traits for the
+  lifted tools (`TodoRuntime`, `SessionRuntime`, `SkillRuntime`,
+  `SubagentRuntime`, `AsyncRuntime`) live in root alongside the tool
+  impls.
 - `peko-protocol` — IPC + tunnel wire-shape contracts (Phase 11a).
   `AuthCredential`, `PrincipalSendControlMode`, `AuthHeader`,
   `MAX_PACKET_SIZE`, `HEARTBEAT_INTERVAL_SECS`, `CLI_TIMEOUT_SECS`.
@@ -208,7 +209,6 @@ peko-rs/
 ├── quota/                  # Per-principal token quota (peko-quota)
 │   ├── session/            # Session persistence + InboxRegistry (peko-session, Phase 7)
 ├── subject/                # Canonical actor type (peko-subject, ADR-041)
-├── tools-builtin/          # Cron port + tool_search_metadata (F4 partial foldback — most tool impls in root)
 └── tools-core/             # Tool execution API (peko-tools-core, F34 ToolExposure)
 peko-rs/core/              # Root lib (Phase 0.Z-B — pure lib, no `[[bin]]`; CLI lifted to peko-rs/cli/)
 ├── src/
@@ -392,9 +392,10 @@ domain size.
 | F2 | **Fold back `peko-extension-host`** (✅ merged 2026-07-24) | 62 prod files → `peko-rs/core/src/extensions/framework/`; trait-only deps (`ToolFunnel`, `CompletionEvent`, `default_*_dir`) lifted into `peko-extension-api` |
 | F3 | **Fold back `peko-principal`** (✅ merged 2026-07-25) | 11 prod files → `peko-rs/core/src/principal/`; CLI bin's `crate::principal::*` had to use full `peko_core::principal::*` prefix; pre-flight `grep '^pub '` on moved files prevents re-exporting types that don't exist |
 | F4 | **Fold back partial `peko-tools-builtin`** (✅ merged 2026-07-25) | 30 prod files (~9500 LOC) → `peko-rs/core/src/tools/builtin/`; sat retained as cron-port-only sat (~1200 LOC) for cycle preservation (peko-cron re-exports DTOs; engine reaches `TOOL_SEARCH_TOOL_NAME`) |
-| F7 | **AGENTS.md + dep-graph updates for F2/F3/F4 foldbacks** (this PR, 2026-07-25) | no root path breakage; doc + script updates |
+| F7 | **AGENTS.md + dep-graph updates for F2/F3/F4 foldbacks** (✅ merged 2026-07-25) | no root path breakage; doc + script updates |
+| 0.Z-E | **Delete `peko-tools-builtin`** (✅ merged 2026-07-25) | cron port + DTOs + 3 cron tools → `peko-cron/src/tools/`; `tool_search_metadata` → `peko-engine/src/tool_search_metadata.rs` (already canonical); `peko_cron::tools::{CronRuntime, set_global_runtime, global_runtime}` is the new home; `DaemonCronAdapter` stays in root (cycle prevention — depends on `DaemonClient`); 12 forbidden-edge entries + 1 header docstring removed from `check_workspace_deps.py` |
 
-#### Current crate layout (21 workspace members, 2026-07-25)
+#### Current crate layout (20 workspace members, 2026-07-25)
 
 Already extracted (`peko-rs/):
 
@@ -415,7 +416,7 @@ Already extracted (`peko-rs/):
 - `quota` — per-principal token quota.
 - `session` — session storage + `InboxRegistry` (Phase 7).
 - `subject` — canonical actor type + identifier newtypes.
-- `tools-builtin` — cron port (`CronRuntime` trait + `CronCreateTool`/`CronDeleteTool`/`CronListTool` + cron DTOs) + `tool_search_metadata` static helpers (Phase F4 partial foldback).
+- ~~`tools-builtin`~~ — **deleted in 0.Z-E** (2026-07-25). Cron port + DTOs + 3 cron tools now live natively in `peko-cron`; `tool_search_metadata` lives natively in `peko-engine`.
 - `tools-core` — tool API.
 
 Root `peko` (lib) — thin composition only; the bin is `peko-rs/cli`.
@@ -428,6 +429,7 @@ pattern were folded back into the root crate to remove the indirection:
 - **F2 (2026-07-24):** `peko-extension-host` (62 prod files) → `peko-rs/core/src/extensions/framework/`. Trait-only deps (`ToolFunnel`, `CompletionEvent`/`InboxItem`, `default_*_dir`) lifted into `peko-extension-api` so engine reaches them without depending on root (cycle preservation).
 - **F3 (2026-07-25):** `peko-principal` (11 prod files) → `peko-rs/core/src/principal/`. CLI bin's `crate::principal::*` (CLI's `crate::` ≠ root crate) had to use the full `peko_core::principal::*` prefix; pre-flight `grep '^pub '` on moved files prevents re-exporting types that don't exist.
 - **F4 (2026-07-25):** `peko-tools-builtin` partial foldback. Bulk tool implementations (~9500 LOC / 30 files, fs/async_control/session/skill/messaging/tasks + paths.rs) lifted into `peko-rs/core/src/tools/builtin/`. Sat retained as a cron-port-only sat (~1200 LOC) because `peko-cron` re-exports the cron DTOs and engine reaches `TOOL_SEARCH_TOOL_NAME` for the static catalog entry — full deletion would force peko-cron → peko_core and engine → root cycles.
+- **0.Z-E (2026-07-25):** **Delete `peko-tools-builtin`**. Cron port (`CronRuntime` trait + 3 cron tool impls + 4 DTOs + 10 helpers + global runtime registry) lifted into `peko-cron` as `peko-rs/cron/src/tools/`. `tool_search_metadata` lifted into `peko-engine` (was already canonical there). `DaemonCronAdapter` stays in root (`peko-rs/core/src/daemon/cron_runtime.rs`) — depends on `peko_core::ipc::DaemonClient`, can't move into `peko-cron` without creating a lib→sat cycle. 6 cron import sites + 5 tool_search import sites updated. 12 forbidden-edge entries + 1 header docstring deleted from `check_workspace_deps.py`. Workspace: 21 → 20 members. Pattern C closed.
 
 Planned for later phases (not yet extracted):
 
@@ -438,7 +440,7 @@ Planned for later phases (not yet extracted):
 - `peko-rs/ipc` — IPC server + handlers (still in root `src/ipc/`).
 - `peko-rs/principal` — **deleted in F3** (2026-07-25). Principal DTOs + memory + peer + agent_prompt + config + capability_evaluator + extension_store + `runtime::{OutputFormat,builtin_tools}` + `slash::extension_row` all live in `peko-rs/core/src/principal/`. The runtime-coupled subset (manager/context/agent_runner/routers/slash dispatcher) stays in root next to the `Principal` struct definition.
 - `peko-rs/extension-host` — **deleted in F2** (2026-07-24). Framework host impl (registry, hook dispatch, capability gate, async executor, transport, manager/store, scaffold, skill catalog, integration, framework services, `SimpleRegistry`/`SharedRegistry`) live in `peko-rs/core/src/extensions/framework/`. The trait-only deps (`ToolFunnel`, `CompletionEvent`/`InboxItem`, `default_*_dir`) lifted into `peko-rs/extension-api/` so engine + provider-api can reach them without depending on root (cycle).
-- `peko-rs/tools-builtin` (partial) — **partially folded in F4** (2026-07-25). The cron port + DTOs + tool_search_metadata static helpers retain a tiny (~1,200-LOC) home in the sat; the tool implementations lifted into root (`peko-rs/core/src/tools/builtin/{fs,async_control,session,skill,messaging,tasks}/`).
+- `peko-rs/tools-builtin` — **deleted in 0.Z-E** (2026-07-25). Cron port + DTOs + 3 cron tools moved natively into `peko-cron` as `peko-rs/cron/src/tools/`; `tool_search_metadata` moved natively into `peko-engine` (was already canonical). Bulk tool implementations live in root (`peko-rs/core/src/tools/builtin/{fs,async_control,session,skill,messaging,tasks}/`) since F4.
 
 #### Cleanup invariant
 
@@ -532,10 +534,22 @@ cargo test --all-features
     `peko-rs/{extension-host,principal}` sat pair.
   - **F4 foldback consequence (2026-07-25):** the bulk of built-in
     tool impls live in root `tools::builtin/{fs,async_control,session,
-    skill,messaging,tasks}`. The `CronRuntime` port + cron DTOs +
-    `tool_search_metadata` static helpers remain in `peko-tools-builtin`
-    so `peko-cron` re-exports cycle through. New deps in root
-    `Cargo.toml` lifted from the sat: `glob`, `regex`, `chrono-tz`.
+    skill,messaging,tasks}`. `CronRuntime` port + cron DTOs +
+    `tool_search_metadata` static helpers were retained in
+    `peko-tools-builtin` so `peko-cron` re-exports cycle through. New
+    deps in root `Cargo.toml` lifted from the sat: `glob`, `regex`,
+    `chrono-tz`.
+  - **0.Z-E foldback consequence (2026-07-25):** `peko-tools-builtin`
+    deleted. Cron port + DTOs + 3 cron tool impls + helpers + global
+    registry all live natively in `peko-cron` as `cron::tools::*`. The
+    `tool_search_metadata` static helpers live natively in
+    `peko-engine`. `DaemonCronAdapter` (which implements
+    `CronRuntime` for the daemon side) stays in root because it
+    depends on `peko_core::ipc::DaemonClient`; moving it to `peko-cron`
+    would force `peko-cron → peko_core` (lib→sat cycle). The new root
+    `Cargo.toml` deps from the cron-tools migration: `chrono-tz` was
+    already lifted in F4; `uuid` + `async-trait` joined `peko-cron`'s
+    direct deps.
   - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
 - **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.

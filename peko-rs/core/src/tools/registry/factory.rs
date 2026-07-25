@@ -27,7 +27,7 @@
 
 use crate::tools::builtin::BashTool;
 use crate::tools::builtin::{EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool};
-use peko_tools_builtin::{CronCreateTool, CronDeleteTool, CronListTool};
+use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
 use peko_tools_core::traits::Tool;
 use std::collections::HashSet;
 use std::path::PathBuf;

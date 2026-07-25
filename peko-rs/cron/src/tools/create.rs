@@ -10,7 +10,7 @@
 //!   job whose `tool_name="Agent"` and `params={ prompt }`).
 //! - explicit `tool` + `params` — schedules any tool run.
 
-use crate::cron::{
+use crate::tools::{
     add_job_via_runtime, build_spawn_tool_job, global_runtime, resolve_delete_after_run,
     resolve_label, resolve_schedule_kind, DeliveryMode,
 };
@@ -266,7 +266,7 @@ impl Tool for CronCreateTool {
         // clock, but we precompute so the `add_job_via_runtime` response
         // shape can include a `next_run_at` field immediately.
         let job_id = format!("cron_{}", uuid::Uuid::new_v4().simple());
-        let next_run = crate::cron::calculate_next_run(&schedule, chrono::Utc::now())?;
+        let next_run = crate::tools::calculate_next_run(&schedule, chrono::Utc::now())?;
 
         let job = if let Some(tool_name) = tool {
             // Explicit SpawnTool path.

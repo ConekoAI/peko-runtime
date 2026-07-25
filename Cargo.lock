@@ -2304,7 +2304,6 @@ dependencies = [
  "peko-quota",
  "peko-session",
  "peko-subject",
- "peko-tools-builtin",
  "peko-tools-core",
  "rand 0.8.5",
  "regex",
@@ -2418,9 +2417,11 @@ name = "peko-cron"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
+ "chrono-tz",
  "cron",
- "peko-tools-builtin",
+ "peko-tools-core",
  "serde",
  "serde_json",
  "tempfile",
@@ -2652,31 +2653,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "toml",
- "uuid",
-]
-
-[[package]]
-name = "peko-tools-builtin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "chrono-tz",
- "cron",
- "dirs",
- "glob",
- "peko-extension-api",
- "peko-subject",
- "peko-tools-core",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "tokio",
- "tokio-util",
  "uuid",
 ]
 

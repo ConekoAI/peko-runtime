@@ -1,20 +1,25 @@
 //! `DaemonCronAdapter` — bridges `DaemonClient` to the
-//! `peko_tools_builtin::cron::CronRuntime` port.
+//! `peko_cron::CronRuntime` port.
 //!
-//! The cron tools in `peko-tools-builtin` do not import daemon state.
-//! They speak to a runtime port trait ([`peko_tools_builtin::cron::CronRuntime`]),
+//! The cron tools in `peko_cron::tools` do not import daemon state.
+//! They speak to a runtime port trait ([`peko_cron::CronRuntime`]),
 //! and the daemon side implements that trait via this adapter — wrapping
 //! `crate::ipc::DaemonClient::cron_add` / `cron_remove` / `cron_list`.
 //!
 //! Construct at daemon startup and register with
-//! [`peko_tools_builtin::cron::set_global_runtime`]. Tools read the
-//! global via [`peko_tools_builtin::cron::global_runtime`] at execute
-//! time.
+//! [`peko_cron::set_global_runtime`]. Tools read the
+//! global via [`peko_cron::global_runtime`] at execute time.
+//!
+//! Phase 0.Z-E (2026-07-25): cron port + DTOs + tools moved from
+//! `peko-tools-builtin` into `peko_cron`. The adapter stays in root
+//! because it depends on `DaemonClient` (root-only); it implements
+//! the trait via the orphan rule (trait is foreign to root, adapter
+//! type is local).
 
 use crate::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use peko_tools_builtin::cron::{CronJob, CronRuntime};
+use peko_cron::{set_global_runtime, CronJob, CronRuntime};
 use std::sync::Arc;
 
 /// `CronRuntime` impl that proxies all calls through an IPC-connected
@@ -43,7 +48,7 @@ impl DaemonCronAdapter {
     /// Convenience: install this adapter as the global runtime. Idempotent
     /// for repeated calls with the same adapter.
     pub fn install_as_global(self: Arc<Self>) {
-        peko_tools_builtin::cron::set_global_runtime(self.clone());
+        set_global_runtime(self.clone());
     }
 }
 
