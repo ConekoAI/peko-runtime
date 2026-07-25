@@ -35,7 +35,7 @@ use tracing::{debug, info, instrument, warn};
 // `PrincipalMessageService` trait live in
 // `common::types::principal_message`. No local aliases — use the
 // canonical names directly.
-pub use crate::common::types::principal_message::ToolCallInfo;
+pub use peko_extension_host::principal_message::ToolCallInfo;
 
 /// Execution request for stateless agent
 #[derive(Debug, Clone)]
@@ -227,11 +227,11 @@ pub struct StatelessAgentService {
 // breaking the cycle that would otherwise form via the concrete-type
 // dependency.
 #[async_trait::async_trait]
-impl crate::common::types::principal_message::PrincipalMessageService for StatelessAgentService {
+impl peko_extension_host::principal_message::PrincipalMessageService for StatelessAgentService {
     async fn execute_message(
         &self,
-        req: crate::common::types::principal_message::PrincipalMessageRequest,
-    ) -> Result<crate::common::types::principal_message::PrincipalMessageResponse> {
+        req: peko_extension_host::principal_message::PrincipalMessageRequest,
+    ) -> Result<peko_extension_host::principal_message::PrincipalMessageResponse> {
         StatelessAgentService::execute_message(self, req).await
     }
 }
@@ -348,8 +348,8 @@ impl StatelessAgentService {
     /// A `PrincipalMessageResponse` containing the response, session info, and execution metadata
     pub async fn execute_message(
         &self,
-        request: crate::common::types::principal_message::PrincipalMessageRequest,
-    ) -> Result<crate::common::types::principal_message::PrincipalMessageResponse> {
+        request: peko_extension_host::principal_message::PrincipalMessageRequest,
+    ) -> Result<peko_extension_host::principal_message::PrincipalMessageResponse> {
         let start = Instant::now();
 
         // Resolve session using SessionManager (single authority)
@@ -407,7 +407,7 @@ impl StatelessAgentService {
                     .collect();
 
                 Ok(
-                    crate::common::types::principal_message::PrincipalMessageResponse {
+                    peko_extension_host::principal_message::PrincipalMessageResponse {
                         content: result.response,
                         session_id,
                         is_new_session,
@@ -436,7 +436,7 @@ impl StatelessAgentService {
     /// An `EventStream` containing the receiver for events and completion signal
     pub async fn execute_message_streaming(
         &self,
-        request: crate::common::types::principal_message::PrincipalMessageRequest,
+        request: peko_extension_host::principal_message::PrincipalMessageRequest,
     ) -> Result<crate::engine::EventStream> {
         let start = Instant::now();
 
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[test]
     fn test_message_request_builder() {
-        let request = crate::common::types::principal_message::PrincipalMessageRequest::new(
+        let request = peko_extension_host::principal_message::PrincipalMessageRequest::new(
             "my-agent", "Hello",
         )
         .with_session("sess_123")
@@ -1233,7 +1233,7 @@ mod tests {
 
     #[test]
     fn test_message_request_builder_defaults() {
-        let request = crate::common::types::principal_message::PrincipalMessageRequest::new(
+        let request = peko_extension_host::principal_message::PrincipalMessageRequest::new(
             "my-agent", "Hello",
         );
 
@@ -1248,13 +1248,13 @@ mod tests {
     fn test_message_request_with_session_opt() {
         // Test with Some
         let request1 =
-            crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
+            peko_extension_host::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_session_opt(Some("session-id".to_string()));
         assert_eq!(request1.session_id, Some("session-id".to_string()));
 
         // Test with None
         let request2 =
-            crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
+            peko_extension_host::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_session_opt(None);
         assert_eq!(request2.session_id, None);
     }
@@ -1266,17 +1266,17 @@ mod tests {
     #[test]
     fn test_message_request_caller_agent_opt_filters_empty() {
         let req1 =
-            crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
+            peko_extension_host::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_caller_agent_opt(Some("researcher".to_string()));
         assert_eq!(req1.caller_agent, Some("researcher".to_string()));
 
         let req2 =
-            crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
+            peko_extension_host::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_caller_agent_opt(Some(String::new()));
         assert_eq!(req2.caller_agent, None);
 
         let req3 =
-            crate::common::types::principal_message::PrincipalMessageRequest::new("agent", "hi")
+            peko_extension_host::principal_message::PrincipalMessageRequest::new("agent", "hi")
                 .with_caller_agent_opt(None);
         assert_eq!(req3.caller_agent, None);
     }

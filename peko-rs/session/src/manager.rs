@@ -2112,7 +2112,7 @@ async fn build_session_context(
 ///
 /// **System messages are intentionally NOT copied.** The system prompt is
 /// reconstructed fresh on every iteration by
-/// [`crate::agents::prompt::PromptRenderer`]; the child loop will overwrite
+/// [`peko_engine::PromptRenderer`]; the child loop will overwrite
 /// `messages[0]` with a freshly rendered prompt built from the child's
 /// own principal + iteration state. Persisting the parent's rendered
 /// prompt into the child JSONL would be both redundant and stale.

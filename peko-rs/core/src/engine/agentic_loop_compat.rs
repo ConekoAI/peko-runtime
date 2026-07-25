@@ -1747,7 +1747,7 @@ mod tests {
     // `{{memory}}` placeholder, AGENTS.md not injected). The
     // underlying helpers (`discover_shared_context`,
     // `directory_from_tool_params`) remain in
-    // `crate::agents::prompt::memory` for agent extensions that want
+    // `peko_engine::prompt::memory` for agent extensions that want
     // to surface AGENTS.md themselves.
 
     // -----------------------------------------------------------------
@@ -2068,8 +2068,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial(core)]
     async fn loop_invokes_tools_skills_agents_mcp_hooks_in_parallel() {
-        use crate::agents::prompt::context::TurnPromptContext;
-        use crate::agents::prompt::PromptRenderer;
+        use peko_engine::prompt::context::TurnPromptContext;
+        use peko_engine::PromptRenderer;
         use std::time::Instant;
 
         peko_identity::init_test_env();
@@ -2159,8 +2159,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial(core)]
     async fn loop_per_hook_timeout_fails_open() {
-        use crate::agents::prompt::context::TurnPromptContext;
-        use crate::agents::prompt::PromptRenderer;
+        use peko_engine::prompt::context::TurnPromptContext;
+        use peko_engine::PromptRenderer;
 
         peko_identity::init_test_env();
         ensure_global_core();
@@ -2253,8 +2253,8 @@ mod tests {
     // The renderer already reads each placeholder from `ctx`; these
     // tests pin that wiring so Phase 2's back-compat guarantees hold.
 
-    use crate::agents::prompt::context::TurnPromptContext;
-    use crate::agents::prompt::PromptRenderer;
+    use peko_engine::prompt::context::TurnPromptContext;
+    use peko_engine::PromptRenderer;
 
     fn inert_ctx() -> TurnPromptContext {
         TurnPromptContext {
@@ -2464,7 +2464,7 @@ mod tests {
         // shows up in the Markdown body the loop would pass to the
         // LLM.
         let renderer =
-            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Iteration budget"));
         assert!(rendered.contains("Iteration 3 of 10"));
@@ -2525,7 +2525,7 @@ mod tests {
         assert_eq!(qs.request_count, 0);
 
         let renderer =
-            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Quota status (current window)"));
         assert!(rendered.contains("Requests:"));
@@ -2575,7 +2575,7 @@ mod tests {
         assert!(ctx.soft_cancel_pending);
 
         let renderer =
-            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Cancellation requested"));
     }
@@ -2590,7 +2590,7 @@ mod tests {
         // to `build_turn_context`. We exercise the tracker directly
         // (same code path the loop uses) plus a render of the diff
         // the loop would surface.
-        use crate::agents::prompt::context::CapabilityDiffTracker;
+        use peko_engine::prompt::context::CapabilityDiffTracker;
         use crate::extensions::framework::types::{Capabilities, Capability};
         peko_identity::init_test_env();
         ensure_global_core();
@@ -2665,7 +2665,7 @@ mod tests {
             tool_definitions: vec![],
         };
         let renderer =
-            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx2).await;
         assert!(rendered.contains("## Capability changes since last turn"));
         assert!(rendered.contains("Granted:"));
@@ -2678,7 +2678,7 @@ mod tests {
         // Phase 3: mirror of the grant test — when the grant set
         // shrinks between iterations, the diff surfaces the revoked
         // capability under `Revoked:`.
-        use crate::agents::prompt::context::CapabilityDiffTracker;
+        use peko_engine::prompt::context::CapabilityDiffTracker;
         use crate::extensions::framework::types::{Capabilities, Capability};
         peko_identity::init_test_env();
         ensure_global_core();
@@ -2741,7 +2741,7 @@ mod tests {
             tool_definitions: vec![],
         };
         let renderer =
-            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("Revoked:"));
         assert!(rendered.contains("- tool:Write"));
@@ -2816,7 +2816,7 @@ mod tests {
         let ctx1 = loop_.build_turn_context(1, &[]);
         assert_eq!(ctx1.body, "v1: You are {{agent_name}}.");
         let renderer =
-            crate::agents::prompt::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered1 = renderer.render_for_iteration(&ctx1).await;
         assert!(
             rendered1.starts_with("v1: You are phase4-rebuild-v1."),

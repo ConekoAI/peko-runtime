@@ -577,7 +577,7 @@ impl AppState {
         // Trait-object clone for the framework (avoids a framework → agents
         // dependency while keeping the concrete arc for other consumers).
         let principal_service_dyn: Arc<
-            dyn crate::common::types::principal_message::PrincipalMessageService,
+            dyn peko_extension_host::principal_message::PrincipalMessageService,
         > = principal_service.clone();
 
         // For tests, always create a fresh core to avoid shared mutable state

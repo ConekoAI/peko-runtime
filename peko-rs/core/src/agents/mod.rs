@@ -29,9 +29,6 @@ pub use stateless_service::{
 pub mod lifecycle;
 pub use lifecycle::{ExecutionRecord, LifecycleManager};
 
-// System prompt generation (absorbed from src/prompt/ in issue #31a)
-pub mod prompt;
-
 // Agent configuration types (lifted from src/types/agent.rs in issue #31e)
 pub mod agent_config;
 

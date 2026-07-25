@@ -12,5 +12,4 @@
 
 pub mod config;
 pub mod extension;
-pub mod principal_message;
 pub mod task;
