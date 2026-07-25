@@ -24,7 +24,6 @@ toml = "0.8"
 
 # Time + error
 chrono = { version = "0.4", features = ["serde"] }
-thiserror = "1.0"
 anyhow = "1.0"
 
 # Async + HTTP

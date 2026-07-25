@@ -21,9 +21,6 @@ peko-quota = { path = "../quota" }
 # for `PrincipalConfig.owner`, `PrincipalConfig.exposure`, and the
 # `DelegationGrant.permissions` vector. Re-exported by `config.rs`.
 peko-auth = { path = "../auth" }
-# Provider resolver appears in `factory.rs` (used by the memory +
-# router factories). Pure dependency.
-peko-providers = { path = "../providers" }
 # peko-message is needed for `LlmMessage` (used in `memory.rs` for
 # `SessionArtifact::messages`).
 peko-message = { path = "../message" }

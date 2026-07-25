@@ -20,13 +20,7 @@ peko-tools-core = { path = "../tools-core" }
 peko-provider-api = { path = "../provider-api" }
 peko-subject = { path = "../subject" }
 peko-providers = { path = "../providers" }
-# Phase 8a: framework/core + store.rs + skill_catalog.rs + integration/
-# + scaffold/ moved into this crate. Store uses peko-fs-persistence for
-# file-lock semantics on the global extension store; scaffold uses
-# peko-events; Phase 8b will add peko-session once async_exec moves in.
-peko-events = { path = "../events" }
-peko-fs-persistence = { path = "../fs-persistence" }
-peko-quota = { path = "../quota" }
+# Phase 8b lift: peko-session moved into this crate.
 peko-session = { path = "../session" }
 # Phase 8b lift: async_exec/executor/async_runtime_impl.rs adapts the
 # host's AsyncExecutor to the `AsyncRuntime` port trait owned by the
@@ -36,7 +30,6 @@ peko-session = { path = "../session" }
 peko-tools-builtin = { path = "../tools-builtin" }
 
 async-trait = "0.1"
-async-stream = "0.3"
 futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

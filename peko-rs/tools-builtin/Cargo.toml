@@ -10,10 +10,8 @@ repository = "https://github.com/ConekoAI/peko-runtime"
 [dependencies]
 # Phase 10a: filesystem tools only depend on the tool API contract.
 peko-tools-core = { path = "../tools-core" }
-# Phase 10d: tasks/session/skill tools need peko-message for LlmMessage
-# history conversion (session) and peko-subject for the Subject type
+# Phase 10d: tasks/session/skill tools need peko-subject for the Subject type
 # used in `SessionRuntime::list_sessions`.
-peko-message = { path = "../message" }
 peko-subject = { path = "../subject" }
 # Phase 10e: messaging (AgentTool) needs peko-extension-api for
 # `AsyncTaskStatus` (used in `SubagentRunView.status`) and
@@ -51,7 +49,6 @@ dirs = "5.0"
 uuid = { version = "1.10", features = ["v4"] }
 # YAML parsing for SkillFrontmatter in `skill::frontmatter`.
 serde_yaml = "0.9"
-tracing = "0.1"
 # CancellationToken for SubagentRuntime port (AgentTool's parent cancel
 # propagation through F38).
 tokio-util = { version = "0.7", features = ["rt"] }

@@ -14,7 +14,6 @@ repository = "https://github.com/ConekoAI/peko-runtime"
 # `peko_cron::*` lets the root callers use a single canonical path
 # (peko_cron::{CronJob, DeliveryMode, ...}) without reaching into two crates.
 peko-tools-builtin = { path = "../tools-builtin" }
-async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
