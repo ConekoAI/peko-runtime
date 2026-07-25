@@ -4,8 +4,9 @@
 //! implementations must use. Extension-specific adapters live in
 //! `crate::extensions::<type>::adapter`, not here.
 
-/// Re-export from core for convenience
-pub use peko_extension_host::core::HookBinding;
+/// Internal use — `HookBinding` is reachable via
+/// `peko_extension_host::core::HookBinding` directly.
+use peko_extension_host::core::HookBinding;
 
 /// Adapter trait definition
 ///

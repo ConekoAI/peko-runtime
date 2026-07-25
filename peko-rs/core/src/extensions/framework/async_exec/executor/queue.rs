@@ -2,7 +2,7 @@
 
 use super::event_bus::AsyncTaskCompletionEvent;
 use super::types::AsyncResultDeliveryMode;
-use crate::common::registry::SimpleRegistry;
+use peko_extension_host::registry::SimpleRegistry;
 
 /// Queue for managing async result delivery (inspired by OpenClaw)
 #[derive(Debug)]

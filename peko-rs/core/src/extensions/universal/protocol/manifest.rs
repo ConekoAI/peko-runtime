@@ -8,8 +8,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
-// Re-export shared types for convenience
-pub use peko_extension_host::services::{ParamSource, ReservedParamsConfig};
+// Internal use — types reachable directly via peko_extension_host::services::*.
+use peko_extension_host::services::{ParamSource, ReservedParamsConfig};
 
 /// Tool manifest with reserved parameter support
 #[derive(Debug, Clone, Serialize, Deserialize)]

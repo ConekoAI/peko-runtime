@@ -32,7 +32,7 @@
 //! `SessionIntrospector` (the production `SessionManagerRuntime` adapter)
 //! and `crate::session::SessionManager` stay in root — the manager
 //! depends on root-internal modules (`crate::session::lock::*`,
-//! `crate::common::registry::SimpleRegistry`, etc.) that can't move.
+//! `peko_extension_host::registry::SimpleRegistry`, etc.) that can't move.
 
 pub mod cache;
 pub mod tool;

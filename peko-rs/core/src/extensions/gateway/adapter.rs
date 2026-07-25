@@ -43,7 +43,8 @@
 //!     topic: "instance.*"
 //! ```
 
-use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter, HookBinding};
+use peko_extension_host::core::HookBinding;
+use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter};
 use peko_extension_host::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
 use peko_extension_host::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
 use anyhow::{Context, Result};
