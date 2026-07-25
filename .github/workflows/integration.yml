@@ -142,7 +142,13 @@ jobs:
               # tokio::process::Command — Unix-only); src/.../preprocess.rs
               # is now a 5-line re-export shim with no platform-specific
               # code, so the old entry would always be stale going forward.
-              - 'peko-rs/tools-builtin/src/skill/body.rs'
+              # Phase F4 foldback (2026-07-25): peko-rs/tools-builtin/src/skill/body.rs
+              # moved to peko-rs/core/src/tools/builtin/skill/body.rs (no
+              # platform-specific code in the file — pure environment-parser
+              # logic — but the surrounding builtin tree now has Win32
+              # gateways next to unix-only sibling tools, so tracking the
+              # file from the lifted path keeps the filter honest).
+              - 'peko-rs/core/src/tools/builtin/skill/body.rs'
               # Phase 0.Z-D: tests/common/cli.rs → peko-rs/core/tests/common/cli.rs
               - 'peko-rs/core/tests/common/cli.rs'
 
