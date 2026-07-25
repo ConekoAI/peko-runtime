@@ -2,7 +2,7 @@
 //!
 //! Phase 10d lifts `TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate` into
 //! `peko_tools_builtin::tasks`. The tool surface there speaks to a
-//! [`peko_tools_builtin::tasks::TodoRuntime`] port trait so the
+//! [`crate::tools::builtin::tasks::TodoRuntime`] port trait so the
 //! built-in crate can stay free of root-only deps. This file is the
 //! production adapter: it wraps the existing
 //! [`peko_session::TodoStorage`] so the same JSONL sidecar format,
@@ -10,7 +10,7 @@
 //! apply.
 //!
 //! Phase 7 lifted the actual `TodoStorage` into `peko-session`. The
-//! adapter constructs `peko_tools_builtin::tasks::Todo` from the
+//! adapter constructs `crate::tools::builtin::tasks::Todo` from the
 //! `peko_session::Todo` returned by storage field-by-field; the two
 //! structs are structurally identical so this is a direct copy of
 //! every field.
@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use peko_session::TodoStorage;
-use peko_tools_builtin::tasks::{Todo, TodoRuntime, TodoStatus};
+use crate::tools::builtin::tasks::{Todo, TodoRuntime, TodoStatus};
 
 /// Adapter that exposes [`TodoStorage`] through the [`TodoRuntime`]
 /// port trait. Clone is cheap: the underlying [`TodoStorage`] is a

@@ -227,6 +227,14 @@ dirs = "5.0"
 url = "2.5"
 urlencoding = "2.1"
 
+# Built-in tool deps (Phase F4 lift from peko-tools-builtin):
+# Glob pattern matching for `glob` tool's `Pattern` API.
+glob = "0.3"
+# Regular expression engine for the `grep` tool.
+regex = "1.10"
+# Timezone resolution in `session/tool.rs` (cron DTOs use it via the sat).
+chrono-tz = "0.10"
+
 # Binary discovery
 which = "6.0"
 

@@ -7,7 +7,7 @@ use peko_engine::state::StateMachine;
 use peko_engine::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
-use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
+use crate::tools::builtin::DynamicSessionKeyProvider;
 use anyhow::{Context, Result};
 use peko_auth::Subject;
 use peko_identity::{did::DIDScope, storage::KeyStorage, Identity};
@@ -153,7 +153,7 @@ impl Agent {
     /// Extension tools (Universal and MCP) are registered via `ExtensionStore` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::builtin::AgentTool;
-        use peko_tools_builtin::SessionTool;
+        use crate::tools::builtin::SessionTool;
         use peko_tools_core::Tool;
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
@@ -186,7 +186,7 @@ impl Agent {
         );
         tools.push(Arc::new(SessionTool::new(
             std::sync::Arc::new(session_runtime)
-                as peko_tools_builtin::session::SharedSessionRuntime,
+                as crate::tools::builtin::session::SharedSessionRuntime,
         )));
 
         // Add Agent tool with executor and session provider. When this agent
@@ -213,10 +213,10 @@ impl Agent {
                 let runtime = std::sync::Arc::new(
                     crate::session::todo_runtime_impl::TodoStorageRuntime::new(todo_storage),
                 );
-                tools.push(Arc::new(peko_tools_builtin::TaskCreateTool::new(runtime.clone())));
-                tools.push(Arc::new(peko_tools_builtin::TaskGetTool::new(runtime.clone())));
-                tools.push(Arc::new(peko_tools_builtin::TaskListTool::new(runtime.clone())));
-                tools.push(Arc::new(peko_tools_builtin::TaskUpdateTool::new(runtime)));
+                tools.push(Arc::new(crate::tools::builtin::TaskCreateTool::new(runtime.clone())));
+                tools.push(Arc::new(crate::tools::builtin::TaskGetTool::new(runtime.clone())));
+                tools.push(Arc::new(crate::tools::builtin::TaskListTool::new(runtime.clone())));
+                tools.push(Arc::new(crate::tools::builtin::TaskUpdateTool::new(runtime)));
             } else {
                 tracing::warn!(
                     "Session storage directory not available for agent '{}'; Task* tools will not be registered",
@@ -1435,7 +1435,7 @@ impl Agent {
                     .unwrap_or_default(),
             );
             // Phase 10c: `AsyncExecutorRuntime` is the framework-host
-            // adapter that implements `peko_tools_builtin::async_control::AsyncRuntime`.
+            // adapter that implements `crate::tools::builtin::async_control::AsyncRuntime`.
             // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ExtensionCore>` +
             // principal_id + capabilities snapshot, so each Async* tool
             // can take just an `Arc<dyn AsyncRuntime>` rather than
@@ -1450,7 +1450,7 @@ impl Agent {
                 ),
             );
             let runtime_handle = runtime.as_shared();
-            let spawn_tool = Arc::new(peko_tools_builtin::AsyncSpawnTool::new(
+            let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
                 runtime_handle.clone(),
             ));
             let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::new(

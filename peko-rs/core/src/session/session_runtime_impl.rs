@@ -2,7 +2,7 @@
 //!
 //! Phase 10d lifts the unified `SessionTool` into
 //! `peko_tools_builtin::session`. The tool surface there speaks to a
-//! [`peko_tools_builtin::session::SessionRuntime`] port trait so the
+//! [`crate::tools::builtin::session::SessionRuntime`] port trait so the
 //! built-in crate can stay free of root-only deps
 //! (`crate::SessionManager`, `crate::jsonl::*`, the
 //! LlmMessage event-conversion helpers, etc.). This file is the
@@ -35,7 +35,7 @@ use serde_json::json;
 
 use peko_message::LlmMessage;
 use peko_subject::Subject;
-use peko_tools_builtin::session::{
+use crate::tools::builtin::session::{
     HistoryMessage, SessionInfo, SessionRuntime, SessionStatusResult, ToolCallInfo, ToolResultInfo,
     UsageStats,
 };

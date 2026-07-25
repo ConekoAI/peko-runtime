@@ -6,7 +6,7 @@
 //! path when the enum was owned by the host) keep compiling.
 //!
 //! Why the canonical home moved in Phase 8b:
-//! the host crate depends on `peko_tools_builtin::async_control::*`
+//! the host crate depends on `crate::tools::builtin::async_control::*`
 //! (the `AsyncRuntime` port consumed by
 //! `async_exec/executor/async_runtime_impl.rs`). `peko_tools_builtin` in
 //! turn depended on `crate::extensions::framework::subagent::SpawnCleanupPolicy` via

@@ -1,6 +1,6 @@
-//! Production [`SubagentRuntime`](peko_tools_builtin::messaging::SubagentRuntime) adapter.
+//! Production [`SubagentRuntime`](crate::tools::builtin::messaging::SubagentRuntime) adapter.
 //!
-//! Bridges `peko_tools_builtin::messaging::AgentTool` to the root-side
+//! Bridges `crate::tools::builtin::messaging::AgentTool` to the root-side
 //! [`SubagentExecutor`]. The tool itself lives in the built-in crate
 //! (Phase 10e); the heavy executor stays in root because it is
 //! deeply entangled with the async-framework, quota metering,
@@ -33,7 +33,7 @@ use crate::common::identifiers::parse_agent_name;
 use crate::common::paths::PathResolver;
 use anyhow::Context;
 use crate::extensions::framework::subagent::SpawnCleanupPolicy;
-use peko_tools_builtin::messaging::{
+use crate::tools::builtin::messaging::{
     AgentConfig as BuiltinAgentConfig, SpawnAuditEvent, SpawnRequest, SubagentRunView,
     SubagentRuntime,
 };
@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Root-side adapter that implements the built-in
-/// [`SubagentRuntime`](peko_tools_builtin::messaging::SubagentRuntime)
+/// [`SubagentRuntime`](crate::tools::builtin::messaging::SubagentRuntime)
 /// port on top of [`SubagentExecutor`].
 ///
 /// Constructed once per agent (or per principal — the executor is
@@ -258,7 +258,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             label: view.label,
             result: view
                 .result
-                .map(|r| peko_tools_builtin::messaging::SubagentResult {
+                .map(|r| crate::tools::builtin::messaging::SubagentResult {
                     status: r.status,
                     output: r.output,
                     error: r.error,

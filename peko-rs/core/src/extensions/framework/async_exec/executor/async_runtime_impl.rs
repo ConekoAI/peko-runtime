@@ -1,5 +1,5 @@
 //! `AsyncExecutorRuntime` — implements the
-//! `peko_tools_builtin::async_control::AsyncRuntime` port by wrapping
+//! `crate::tools::builtin::async_control::AsyncRuntime` port by wrapping
 //! the per-agent `AsyncExecutor` + `Weak<ExtensionCore>` +
 //! `principal_id` + `capabilities` snapshot.
 //!
@@ -43,7 +43,7 @@ use crate::extensions::framework::core::ExtensionCore;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use peko_subject::PrincipalId;
-use peko_tools_builtin::async_control::{
+use crate::tools::builtin::async_control::{
     AsyncRuntime, CancelResult as PortCancelResult, SharedAsyncRuntime, SpawnReceipt, SpawnRequest,
     TaskView, WaitResult,
 };

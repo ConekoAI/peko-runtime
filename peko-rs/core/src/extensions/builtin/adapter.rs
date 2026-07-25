@@ -195,10 +195,8 @@ impl BuiltinToolAdapter {
         config: &BuiltinToolRegistrarConfig,
     ) -> Result<()> {
         use crate::tools::builtin::BashTool;
-        use peko_tools_builtin::{
-            CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
-            SessionTool, WriteTool,
-        };
+        use crate::tools::builtin::{EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool};
+        use peko_tools_builtin::{CronCreateTool, CronDeleteTool, CronListTool};
 
         let disabled_set: HashSet<String> = config
             .disabled_tools
@@ -253,9 +251,9 @@ impl BuiltinToolAdapter {
         if config.enable_session_tools && !disabled_set.contains("session") {
             // Phase 10d: SessionTool takes Arc<dyn SessionRuntime>; the
             // SessionCache placeholder is provided by peko_tools_builtin.
-            let registry = std::sync::Arc::new(peko_tools_builtin::SessionCache::new("main"));
+            let registry = std::sync::Arc::new(crate::tools::builtin::SessionCache::new("main"));
             let tool = Arc::new(SessionTool::new(
-                registry.as_shared() as peko_tools_builtin::session::SharedSessionRuntime
+                registry.as_shared() as crate::tools::builtin::session::SharedSessionRuntime
             ));
             Self::register_tool_system(core, tool).await?;
         }
@@ -303,7 +301,7 @@ impl BuiltinToolAdapter {
     /// introspection scoping described above.
     pub async fn register_async_spawn_tool(
         core: &ExtensionCore,
-        tool: Arc<peko_tools_builtin::AsyncSpawnTool>,
+        tool: Arc<crate::tools::builtin::AsyncSpawnTool>,
         principal_id: &PrincipalId,
     ) -> Result<()> {
         Self::register_tool(core, tool, principal_id).await

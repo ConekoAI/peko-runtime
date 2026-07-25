@@ -12,13 +12,13 @@
 //!       other root types.
 //!    b. **Compat shims with hosted tests** — `async_list.rs`,
 //!       `async_output.rs`, `async_status.rs`, `async_stop.rs`. Each is
-//!       a one-line `pub use peko_tools_builtin::async_control::*`
+//!       a one-line `pub use crate::tools::builtin::async_control::*`
 //!       followed by `#[cfg(test)] mod tests` blocks that exercise the
 //!       canonical implementation using `TestAsyncRuntime` /
 //!       `TestTaskEntry` from `peko_extension_host` (framework-internal
 //!       fixtures). These shims survive because removing them would
 //!       delete ~30 working tests; the production code is in
-//!       `peko_tools_builtin::async_control::*`.
+//!       `crate::tools::builtin::async_control::*`.
 //!
 //!    All other built-in tools (filesystem, cron, session, planning
 //!    todos, AsyncSpawn, …) live in `peko_tools_builtin` and consumers
