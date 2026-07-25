@@ -5,13 +5,13 @@
 //! `peko-auth` is a leaf crate. It defines two narrow trait
 //! ports ([`RuntimePaths`], [`PrincipalResourceView`]) that
 //! abstract the root-only `PathResolver` and the
-//! `peko_principal::config::PrincipalConfig` type respectively.
+//! `crate::principal::config::PrincipalConfig` type respectively.
 //!
 //! - `RuntimePaths` is implemented here in root for `PathResolver`
 //!   (the type is local to root).
 //! - `PrincipalResourceView` is implemented in `peko-principal`
 //!   itself for `PrincipalConfig` (the type is local to that
-//!   crate). See [`peko_principal::config::PrincipalConfig`] and the
+//!   crate). See [`crate::principal::config::PrincipalConfig`] and the
 //!   orphan rule: at least one of `{Trait, Type}` must be local to
 //!   the impl's crate.
 //!

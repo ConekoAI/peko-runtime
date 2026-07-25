@@ -7,8 +7,8 @@ use crate::ipc::packet::ExtensionSummary;
 use crate::principal::Principal;
 use anyhow::Result;
 use crate::extensions::framework::services::Services as ExtensionServices;
-use peko_principal::config::PrincipalConfig;
-use peko_principal::runtime::OutputFormat;
+use crate::principal::config::PrincipalConfig;
+use crate::principal::runtime::OutputFormat;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

@@ -7,7 +7,7 @@
 //! Packet size is limited to ~60KB to stay well under UDP MTU.
 //! Larger payloads are chunked at the application layer.
 
-use peko_principal::runtime::OutputFormat;
+use crate::principal::runtime::OutputFormat;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -3107,7 +3107,7 @@ mod tests {
                 owner: peko_auth::Subject::User("alice".to_string()),
                 description: Some("updated".to_string()),
                 exposure: peko_auth::Exposure::Public,
-                status: Some(peko_principal::config::Status::Busy),
+                status: Some(crate::principal::config::Status::Busy),
                 preferred_model_id: None,
                 capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 1,

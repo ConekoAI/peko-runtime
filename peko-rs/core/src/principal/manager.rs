@@ -19,10 +19,10 @@ use peko_extension_api::SteeringMessage;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
 use peko_observability::Observability;
-use peko_principal::agent_prompt::load_agent_prompt;
-use peko_principal::runtime::OutputFormat;
-use peko_principal::AgentPrompt;
-use peko_principal::PrincipalConfig;
+use crate::principal::agent_prompt::load_agent_prompt;
+use crate::principal::runtime::OutputFormat;
+use crate::principal::AgentPrompt;
+use crate::principal::PrincipalConfig;
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_subject::PrincipalDID;
@@ -85,7 +85,7 @@ pub struct PrincipalManager {
     /// [`PrincipalManager::get_or_create_peer`] and stack it alongside
     /// the principal's meter. `None` for tests / contexts that don't
     /// have a daemon-managed `PeerRegistry`.
-    peer_registry: Option<Arc<peko_principal::peer::PeerRegistry>>,
+    peer_registry: Option<Arc<crate::principal::peer::PeerRegistry>>,
     /// Runtime-owned, append-only chat-log store. When present, every
     /// accepted peer chat-channel message is recorded alongside its
     /// authoritative response. Pure peer-chat channels
@@ -173,7 +173,7 @@ impl PrincipalManager {
     #[must_use]
     pub fn with_peer_registry(
         mut self,
-        peer_registry: Arc<peko_principal::peer::PeerRegistry>,
+        peer_registry: Arc<crate::principal::peer::PeerRegistry>,
     ) -> Self {
         self.peer_registry = Some(peer_registry);
         self
@@ -183,12 +183,12 @@ impl PrincipalManager {
     /// peer registry is attached and the peer exists (or is freshly
     /// materialized); `None` when no registry is attached (tests /
     /// non-daemon contexts). `peer_id` must be a validated peer
-    /// identifier — see [`peko_principal::peer::validate_peer_id`]
+    /// identifier — see [`crate::principal::peer::validate_peer_id`]
     /// for the rules.
     pub async fn get_or_create_peer(
         &self,
         peer_id: &str,
-    ) -> Option<Arc<peko_principal::peer::Peer>> {
+    ) -> Option<Arc<crate::principal::peer::Peer>> {
         let registry = self.peer_registry.as_ref()?;
         match registry.get_or_create(peer_id, chrono::Utc::now()).await {
             Ok(peer) => Some(peer),
@@ -207,7 +207,7 @@ impl PrincipalManager {
     /// when no registry was attached at construction time. Used by the
     /// daemon's `PeerHost` impl to expose the registry to IPC handlers.
     #[must_use]
-    pub fn peer_registry(&self) -> Option<&Arc<peko_principal::peer::PeerRegistry>> {
+    pub fn peer_registry(&self) -> Option<&Arc<crate::principal::peer::PeerRegistry>> {
         self.peer_registry.as_ref()
     }
 
@@ -1004,7 +1004,7 @@ mod tests {
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     };
     use peko_extension_api::Capabilities;
-    use peko_principal::{
+    use crate::principal::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };

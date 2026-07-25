@@ -1,41 +1,59 @@
-// Phase 14.c.1: 5 lifted files moved to `peko-principal` (config, peer,
-// memory, factory, agent_prompt). Their canonical home is now
-// `peko_principal::*` and the `pub mod X;` declarations below for those
-// files were removed.
+// Phase F3 (foldback): 11 files moved back into root from the
+// `peko-principal` sat (deleted). The sat had no clean downstream
+// consumers — only root + cli referenced `crate::principal::*`, and
+// the leaf crates (tools-builtin, session, providers, etc.) had ZERO
+// direct deps. Reverse the half-extracted mess.
 //
-// Phase 14.c.2a: 2 more lifted (capability_evaluator, extension_store),
-// plus the shared `OutputFormat` enum (`peko_principal::runtime::OutputFormat`)
-// and the `builtin_tools` const lists
-// (`peko_principal::runtime::builtin_tools::*`) move out of
-// `crate::common::types` and `crate::extensions::framework::adapters`.
-// The `PrincipalExtensionRow` re-type lives in `peko_principal::slash`.
+// Modules lifted back into root (under `crate::principal::*`):
+//   config, peer, memory, agent_prompt, capability_evaluator — pure
+//     data types + DTOs (F14.c.1 surface)
+//   runtime::{mod, builtin_tools, output_format} — shared const
+//     lists + `OutputFormat` enum (F14.c.2a)
+//   slash::extension_row — IPC re-type
 //
 // The runtime-coupled files (manager, context, agent_runner,
-// routers, slash dispatcher impl) stay in root and will lift in
-// Phase 14.c.2b once their root-only deps (ExtensionCore,
-// PathResolver, the IPC `ExtensionSummary` wire DTO) are
-// port-trait-shaped.
+// routers, slash dispatcher impl) continue to live alongside the
+// `Principal` struct definition here.
 
+pub mod agent_prompt;
 pub mod agent_runner;
+pub mod capability_evaluator;
+pub mod config;
 pub mod context;
 pub mod extension_store;
 pub mod factory;
 pub mod manager;
+pub mod memory;
+pub mod peer;
 pub mod router;
 pub mod routers;
+pub mod runtime;
 pub mod slash;
 
 pub use agent_runner::build_agent_config;
+pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
+pub use capability_evaluator::CapabilityEvaluator;
+pub use config::{
+    ArtifactKind, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier,
+    PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+    PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig, Status,
+    TtlPolicy, TransportPreference,
+};
 pub use context::PrincipalContext;
+pub use extension_store::{capability_kind_for_extension_type, ExtensionCatalog, ExtensionCatalogItem};
 pub use factory::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalMemoryFactory,
     PrincipalRouterFactory,
 };
 pub use manager::{PrincipalManager, PrincipalManagerError};
+pub use memory::{DefaultPrincipalMemory, MemoryError, PrincipalMemory, SessionArtifact};
+pub use peer::{Peer, PeerConfig, PeerError, PeerRegistry};
 pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,
     PrincipalRouter, RouteDecision, RouterContext, RouterError,
 };
+pub use runtime::{builtin_tools, OutputFormat};
+pub use slash::extension_row::PrincipalExtensionRow;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -53,7 +71,7 @@ use peko_subject::{PrincipalDID, PrincipalId};
 // a `Principal` (manager, context, agent_runner, routers, slash)
 // continue to live alongside the `Principal` struct definition here,
 // so they reach for the same DTOs.
-use peko_principal::{AgentPrompt, PrincipalConfig, PrincipalMemory, QuotaMeter};
+use peko_quota::QuotaMeter;
 
 /// Runtime representation of a Principal.
 pub struct Principal {
@@ -136,7 +154,7 @@ pub struct PrincipalSummary {
     pub owner: peko_auth::Subject,
     pub description: Option<String>,
     pub exposure: peko_auth::Exposure,
-    pub status: Option<peko_principal::config::Status>,
+    pub status: Option<crate::principal::config::Status>,
     pub preferred_model_id: Option<String>,
     pub capabilities: peko_extension_api::Capabilities,
     pub agent_prompt_count: usize,

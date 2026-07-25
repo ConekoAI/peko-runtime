@@ -161,15 +161,12 @@ peko-observability = { path = "../observability" }
 # (`src/cron/{mod,events,idle,event_trigger}.rs`, 1,301 lines) become
 # `peko-rs/cron/src/{lib,events,idle,event_trigger}.rs`.
 peko-cron = { path = "../cron" }
-# Phase 14.c.1 — peko-principal owns the pure-deps subset of
-# `src/principal/`: `config`, `peer`, `memory`, `factory`,
-# `agent_prompt` (~1,418 lines). Depends only on `peko-extension-api`,
-# `peko-subject`, `peko-quota`, `peko-providers`. The runtime-coupled
-# subset (`manager`, `context`, `extension_store`, `agent_runner`,
-# `capability_evaluator`, `routers/*`, `slash/*`) stays in root for
-# Phase 14.c.2 — it depends on `ExtensionCore`, `PathResolver`,
-# `OutputFormat`, and the IPC `ExtensionSummary` wire shape.
-peko-principal = { path = "../principal" }
+# Phase F3 (foldback): peko-principal sat is deleted; the 11 pure-deps
+# files (config, peer, memory, agent_prompt, capability_evaluator,
+# extension_store, runtime::*, slash::extension_row) all live in
+# `peko-rs/core/src/principal/` directly now. The runtime-coupled
+# subset (manager, context, agent_runner, routers, slash dispatcher
+# impl) continues to live alongside the `Principal` struct.
 # Phase 7 — peko-session owns the session persistence domain
 # (JSONL storage, metadata, recovery, compaction persistence,
 # InboxRegistry). Root re-exports the historical `crate::session::*`

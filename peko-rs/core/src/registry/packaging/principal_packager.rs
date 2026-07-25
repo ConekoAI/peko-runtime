@@ -9,7 +9,7 @@ use crate::registry::packaging::types::{compute_digest, ExtensionRef, Layer, Lay
 use anyhow::Context;
 use crate::extensions::framework::manager::packaging::ExtensionPackager;
 use peko_identity::Identity;
-use peko_principal::config::PrincipalConfig;
+use crate::principal::config::PrincipalConfig;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -578,7 +578,7 @@ mod tests {
     use super::*;
     use peko_identity::did::DIDScope;
     use peko_identity::Identity;
-    use peko_principal::config::PrincipalConfig;
+    use crate::principal::config::PrincipalConfig;
     use peko_subject::PrincipalDID;
 
     #[test]

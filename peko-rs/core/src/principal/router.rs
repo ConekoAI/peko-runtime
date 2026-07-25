@@ -6,7 +6,7 @@ use std::sync::Arc;
 use peko_extension_api::Capabilities;
 use peko_message::LlmMessage;
 use peko_observability::Observability;
-use peko_principal::config::{
+use crate::principal::config::{
     PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
 };
 use peko_session::InboxRegistry;

@@ -15,9 +15,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use peko_principal::AgentPrompt;
-use peko_principal::capability_evaluator::CapabilityEvaluator;
-use peko_principal::runtime::builtin_tools;
+use crate::principal::AgentPrompt;
+use crate::principal::capability_evaluator::CapabilityEvaluator;
+use crate::principal::runtime::builtin_tools;
 use peko_extension_api::{Capabilities, Capability, ExtensionManifest};
 use crate::extensions::framework::store_trait::GlobalExtensionItem;
 

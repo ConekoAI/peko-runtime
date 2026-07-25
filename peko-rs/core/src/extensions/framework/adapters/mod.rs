@@ -578,10 +578,10 @@ impl ExtensionState {
 }
 
 // Phase 14.c.2a: the `builtin_tools` submodule moved to
-// `peko_principal::runtime::builtin_tools`. Callers in root
+// `crate::principal::runtime::builtin_tools`. Callers in root
 // (`extensions/builtin/adapter.rs`, `extensions/framework/store.rs`,
 // `ipc/handlers/extension.rs`) now read
-// `peko_principal::runtime::builtin_tools::*` directly.
+// `crate::principal::runtime::builtin_tools::*` directly.
 
 #[cfg(test)]
 mod tests {

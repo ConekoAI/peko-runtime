@@ -14,7 +14,6 @@ members = [
     "peko-rs/message",
     "peko-rs/observability",
     "peko-rs/peko-daemon",
-    "peko-rs/principal",
     "peko-rs/protocol",
     "peko-rs/provider-api",
     "peko-rs/providers",

@@ -55,7 +55,7 @@ use peko_core::registry::packaging::{
 };
 use peko_core::registry::{AgentRegistry, RegistryClient, RegistryConfig, RegistrySource};
 use peko_identity::{did::DIDScope, Identity};
-use peko_principal::config::PrincipalConfig;
+use crate::principal::config::PrincipalConfig;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

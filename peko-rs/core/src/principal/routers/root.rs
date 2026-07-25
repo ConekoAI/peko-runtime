@@ -22,8 +22,8 @@ use crate::principal::router::{
     recalled_context_messages, AgentPromptSummary, PrincipalRouter, RouteDecision, RouterContext,
     RouterError,
 };
-use peko_principal::agent_prompt::{parse_agent_prompt, AgentPrompt};
-use peko_principal::memory::{PrincipalMemory, SessionArtifact};
+use crate::principal::agent_prompt::{parse_agent_prompt, AgentPrompt};
+use crate::principal::memory::{PrincipalMemory, SessionArtifact};
 // F19: removed `use peko_quota::QuotaMeter;` — the router no
 // longer carries a quota meter field.
 use peko_providers::LlmResolver;

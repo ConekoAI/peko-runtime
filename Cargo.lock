@@ -2296,7 +2296,6 @@ dependencies = [
  "peko-identity",
  "peko-message",
  "peko-observability",
- "peko-principal",
  "peko-protocol",
  "peko-provider-api",
  "peko-providers",
@@ -2392,7 +2391,6 @@ dependencies = [
  "peko-cron",
  "peko-extension-api",
  "peko-identity",
- "peko-principal",
  "peko-providers",
  "peko-quota",
  "peko-subject",
@@ -2554,28 +2552,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "peko-principal"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "peko-auth",
- "peko-extension-api",
- "peko-message",
- "peko-quota",
- "peko-subject",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "toml",
- "tracing",
 ]
 
 [[package]]

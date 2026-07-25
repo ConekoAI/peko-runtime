@@ -20,11 +20,11 @@ use peko_core::principal::{
 };
 use peko_auth::{subject_from_string_with_default_user, Subject};
 use peko_extension_api::Capabilities;
-use peko_principal::config::{
+use peko_core::principal::config::{
     PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
     PrincipalMemoryConfig, PrincipalRoutingConfig,
 };
-use peko_principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
+use peko_core::principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 
 /// Subcommands for `peko principal`.
 #[derive(Subcommand)]
@@ -1064,7 +1064,7 @@ impl PrincipalMemoryFactory for CliPrincipalMemoryFactory {
         &self,
         _principal_id: &peko_subject::PrincipalId,
         workspace_path: &Path,
-    ) -> Arc<dyn peko_principal::PrincipalMemory> {
+    ) -> Arc<dyn peko_core::principal::PrincipalMemory> {
         let name = workspace_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())

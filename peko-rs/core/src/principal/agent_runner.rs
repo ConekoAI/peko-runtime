@@ -16,7 +16,7 @@ use peko_session::manager::SessionManager;
 use peko_session::SessionCreateOptions;
 
 use peko_extension_api::Capabilities;
-use peko_principal::agent_prompt::AgentPrompt;
+use crate::principal::agent_prompt::AgentPrompt;
 
 /// Build an `AgentConfig` from a thin Markdown prompt + the Principal's
 /// allowed extensions.

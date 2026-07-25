@@ -638,7 +638,7 @@ mod tests {
     use peko_auth::Exposure;
     use peko_auth::{Permission, PermissionGrant};
     use peko_extension_api::Capabilities;
-    use peko_principal::config::{
+    use crate::principal::config::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };

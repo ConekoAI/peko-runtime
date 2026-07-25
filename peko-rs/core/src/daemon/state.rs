@@ -25,7 +25,7 @@ use peko_cron::IdleDetector;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::extensions::framework::inbox::SessionInbox;
 use peko_observability::Observability;
-use peko_principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
+use crate::principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 use peko_session::InboxRegistry;
 use secrecy::SecretString;
 use std::collections::HashMap;
@@ -103,7 +103,7 @@ pub(crate) struct AppState {
     /// the engine loop reads it to resolve a peer's quota meter at
     /// run time. `None` means peer attribution is disabled (tests /
     /// slim daemon builds).
-    peer_registry: Option<Arc<peko_principal::peer::PeerRegistry>>,
+    peer_registry: Option<Arc<crate::principal::peer::PeerRegistry>>,
 
     /// Lifecycle manager (tracks active executions only)
     lifecycle: Arc<LifecycleManager>,
@@ -775,7 +775,7 @@ impl AppState {
         // a separate dependency.
         let (principal_manager, peer_registry) = {
             let root = path_resolver.peers_root_dir();
-            match peko_principal::peer::PeerRegistry::load_or_init(root.clone(), chrono::Utc::now())
+            match crate::principal::peer::PeerRegistry::load_or_init(root.clone(), chrono::Utc::now())
                 .await
             {
                 Ok(reg) => {
@@ -1104,7 +1104,7 @@ impl AppState {
     /// F20: get the peer quota registry. `None` when the daemon
     /// failed to load peer state at startup (logged as a warning).
     #[must_use]
-    pub fn peer_registry(&self) -> Option<&Arc<peko_principal::peer::PeerRegistry>> {
+    pub fn peer_registry(&self) -> Option<&Arc<crate::principal::peer::PeerRegistry>> {
         self.peer_registry.as_ref()
     }
 
@@ -2318,7 +2318,7 @@ impl crate::ipc::handlers::quota::QuotaHost for AppState {
         AppState::principal_manager(self)
     }
 
-    fn peer_registry(&self) -> Option<&Arc<peko_principal::peer::PeerRegistry>> {
+    fn peer_registry(&self) -> Option<&Arc<crate::principal::peer::PeerRegistry>> {
         self.peer_registry.as_ref()
     }
 }

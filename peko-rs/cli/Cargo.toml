@@ -24,7 +24,6 @@ peko-auth = { path = "../auth" }
 peko-chat-log = { path = "../chat-log" }
 peko-cron = { path = "../cron" }
 peko-extension-api = { path = "../extension-api" }
-peko-principal = { path = "../principal" }
 peko-providers = { path = "../providers" }
 peko-quota = { path = "../quota" }
 peko-identity = { path = "../identity" }

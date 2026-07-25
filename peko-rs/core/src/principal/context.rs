@@ -28,7 +28,7 @@ use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::principal::router::AgentPromptSummary;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 use peko_observability::Observability;
-use peko_principal::memory::PrincipalMemory;
+use crate::principal::memory::PrincipalMemory;
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_subject::PrincipalId;
@@ -80,7 +80,7 @@ pub struct PrincipalContext {
     /// prompt or a workspace-relative override. Captured at
     /// construction so the runner doesn't have to walk the principal's
     /// config every message.
-    root_prompt: OnceLock<Arc<peko_principal::agent_prompt::AgentPrompt>>,
+    root_prompt: OnceLock<Arc<crate::principal::agent_prompt::AgentPrompt>>,
 
     /// The principal's runtime id. Stable across the principal's
     /// lifetime; carried through agent + subagent construction so
@@ -278,7 +278,7 @@ impl PrincipalContext {
     }
 
     /// Get the principal's resolved root agent prompt.
-    pub fn root_prompt(&self) -> Option<Arc<peko_principal::agent_prompt::AgentPrompt>> {
+    pub fn root_prompt(&self) -> Option<Arc<crate::principal::agent_prompt::AgentPrompt>> {
         self.root_prompt.get().cloned()
     }
 
@@ -287,8 +287,8 @@ impl PrincipalContext {
     /// for the principal's lifetime.
     pub fn set_root_prompt(
         &self,
-        prompt: peko_principal::agent_prompt::AgentPrompt,
-    ) -> Arc<peko_principal::agent_prompt::AgentPrompt> {
+        prompt: crate::principal::agent_prompt::AgentPrompt,
+    ) -> Arc<crate::principal::agent_prompt::AgentPrompt> {
         self.root_prompt.get_or_init(|| Arc::new(prompt)).clone()
     }
 
@@ -385,7 +385,7 @@ pub(crate) async fn install_agent_catalog(
 mod tests {
     use super::*;
     use peko_extension_api::Capabilities;
-    use peko_principal::memory::DefaultPrincipalMemory;
+    use crate::principal::memory::DefaultPrincipalMemory;
     use peko_subject::PrincipalId;
     use serial_test::serial;
     use std::sync::Arc;
@@ -464,7 +464,7 @@ mod tests {
 
         // `set_root_prompt` requires an `AgentPrompt`; constructing one
         // with a minimal body is enough for the idempotency check.
-        use peko_principal::agent_prompt::AgentPrompt;
+        use crate::principal::agent_prompt::AgentPrompt;
         let prompt = AgentPrompt {
             name: "root".to_string(),
             path: PathBuf::from("builtin:root"),

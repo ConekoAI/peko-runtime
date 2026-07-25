@@ -13,7 +13,7 @@ use anyhow::Context;
 use peko_auth::Subject;
 use crate::extensions::framework::manager::packaging::ExtensionUnpackager;
 use peko_identity::{storage::KeyStorage, Identity, KeyPairExport};
-use peko_principal::config::PrincipalConfig;
+use crate::principal::config::PrincipalConfig;
 use peko_subject::PrincipalDID;
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
@@ -799,7 +799,7 @@ mod tests {
     };
     use peko_identity::did::DIDScope;
     use peko_identity::Identity;
-    use peko_principal::config::PrincipalConfig;
+    use crate::principal::config::PrincipalConfig;
 
     #[test]
     fn test_import_options_default() {

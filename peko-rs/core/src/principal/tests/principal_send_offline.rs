@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
 use peko_auth::Subject;
 use peko_chat_log::ChatLogStore;
-use peko_principal::config::{Exposure, TransportPreference};
+use crate::principal::config::{Exposure, TransportPreference};
 use peko_providers::LlmResolver;
 use peko_subject::PrincipalDID;
 use peko_tools_core::Tool;
