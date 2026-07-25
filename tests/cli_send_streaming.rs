@@ -23,7 +23,7 @@
 
 mod common;
 use common::PekoCli;
-use peko::ipc::{RequestPacket, ResponsePacket};
+use peko_core::ipc::{RequestPacket, ResponsePacket};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::net::UnixDatagram;

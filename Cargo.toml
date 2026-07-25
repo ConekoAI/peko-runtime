@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extension-api", "crates/extension-host", "crates/chat-log", "crates/cron", "crates/fs-persistence", "crates/identity", "crates/message", "crates/observability", "crates/peko-daemon", "crates/principal", "crates/provider-api", "crates/providers", "crates/session",
-    "crates/protocol", "crates/quota", "crates/subject", "crates/tools-builtin", "crates/tools-core"]
+members = [".", "peko-rs/auth", "peko-rs/engine", "peko-rs/events", "peko-rs/extension-api", "peko-rs/extension-host", "peko-rs/chat-log", "peko-rs/cron", "peko-rs/fs-persistence", "peko-rs/identity", "peko-rs/message", "peko-rs/observability", "peko-rs/peko-daemon", "peko-rs/principal", "peko-rs/provider-api", "peko-rs/providers", "peko-rs/session",
+    "peko-rs/protocol", "peko-rs/quota", "peko-rs/subject", "peko-rs/tools-builtin", "peko-rs/tools-core"]
 
 # ---------------------------------------------------------------------------
 # Cargo-shear intent block (Phase 0 of the post-migration cleanup).
@@ -9,7 +9,7 @@ members = [".", "crates/auth", "crates/engine", "crates/events", "crates/extensi
 # When `cargo-shear` is installed, it will use this block to surface any
 # workspace-crate dep that has no remaining consumer in the crate where
 # it is declared. During the 18-phase cleanup, dead deps are expected to
-# appear as we migrate root-only domains into workspace crates; Phase 0
+# appear as we migrate root-only domains into workspace peko-rs crates; Phase 0
 # only documents the intent, it does NOT install `cargo-shear` in CI yet
 # (lint policy was explicitly deferred per the plan).
 #
@@ -37,6 +37,16 @@ description = "Lightweight multi-agent runtime with optional Coneko network"
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
+# Phase 0.Z-A: lib name diverged from `package.name` so the workspace
+# root lib matches the codex convention `peko_core` (mirrors
+# codex-rs/core → `codex_core`). The on-disk CLI binary stays named
+# `peko`. External consumers continue to write `use peko::...` (which
+# resolves to the package) until a deliberate external-API release
+# flips `[package].name = "peko_core"`.
+[lib]
+name = "peko_core"
+path = "src/lib.rs"
+
 [dependencies]
 # Workspace member providing the agentic engine. Phase 9a extracted
 # the pure-dependency files (chunker, event_processor, state,
@@ -45,28 +55,28 @@ repository = "https://github.com/ConekoAI/peko-runtime"
 # (agentic_loop, compaction_orchestrator, tool_executor, tool_runtime,
 # async_completion, stream_types) stay in src/engine/ until Phase 9b
 # lifts the agent / session / tools couplings.
-peko-engine = { path = "crates/engine" }
+peko-engine = { path = "peko-rs/engine" }
 # Workspace member providing the neutral agentic event contract. The root
 # re-exports it through `engine::events` for compatibility.
-peko-events = { path = "crates/events" }
+peko-events = { path = "peko-rs/events" }
 # Workspace member providing the neutral message contract
 # (`ContentBlock`, `LlmMessage`, `MessageRole`, `TokenUsage`, …). The
 # root re-exports it through `common::types::message` so existing
 # `peko::common::types::message::...` and `peko::providers::...` paths
 # keep working unchanged.
-peko-message = { path = "crates/message" }
+peko-message = { path = "peko-rs/message" }
 # Workspace member providing the canonical actor type (`Subject`,
 # `SubjectKind`, `PrincipalId`, `PrincipalDID`, `SubjectParseError`,
 # `subject_from_string_with_default_user`). Pure value/type layer
 # with no inbound edge from principal, agents, engine, daemon,
 # providers, or extensions. The root re-exports it through
 # `crate::subject` and `crate::auth` for backwards compatibility.
-peko-subject = { path = "crates/subject" }
+peko-subject = { path = "peko-rs/subject" }
 # Workspace member providing per-principal token quota (F18). Owns
 # QuotaMeter, QuotaScope, QuotaState, QuotaConfig, QuotaError as one
 # coherent domain. Depends on peko-message for TokenUsage; the root
 # re-exports it through `crate::quota` for backwards compatibility.
-peko-quota = { path = "crates/quota" }
+peko-quota = { path = "peko-rs/quota" }
 # Workspace member providing the tool execution API (Tool trait,
 # ToolContext, AbortSignal, ToolResult, ToolError, ToolInterruptNotice,
 # ContextSource, ToolExposure — F34). The extension framework, the
@@ -74,12 +84,12 @@ peko-quota = { path = "crates/quota" }
 # it depends on nothing except serde/anyhow/tokio. The root
 # re-exports it through `crate::tools::core` for backwards
 # compatibility.
-peko-tools-core = { path = "crates/tools-core" }
+peko-tools-core = { path = "peko-rs/tools-core" }
 # Workspace member providing concrete built-in tool implementations
 # (Phase 10a ships filesystem tools; future Phase 10b+ commits will
 # move the async/cron/session/skill/task/messaging tools). Depends on
 # `peko-tools-core` for the `Tool` trait and external tokio/glob/regex.
-peko-tools-builtin = { path = "crates/tools-builtin" }
+peko-tools-builtin = { path = "peko-rs/tools-builtin" }
 # Workspace member providing the provider contract types
 # (ChatOptions, ChatResponse, StreamEvent, ContentDelta, StopReason,
 # BlockType, ToolDefinition, ContentBlockId, ThinkingEffort,
@@ -91,7 +101,7 @@ peko-tools-builtin = { path = "crates/tools-builtin" }
 # re-exports through `crate::providers::traits::*` (a transitional
 # shim) for backwards compatibility — the shim is deleted in
 # Phase 15.
-peko-provider-api = { path = "crates/provider-api" }
+peko-provider-api = { path = "peko-rs/provider-api" }
 # Workspace member providing the concrete LLM provider
 # implementations (Phase 6) — owns the unified Provider core,
 # HTTP transport, per-adapter request builders (OpenAI Chat
@@ -101,7 +111,7 @@ peko-provider-api = { path = "crates/provider-api" }
 # read-side `SecretStore` trait with `InMemorySecretStore` impl.
 # Replaces root `src/providers/`; the historical
 # `crate::providers::*` paths are intentionally broken.
-peko-providers = { path = "crates/providers" }
+peko-providers = { path = "peko-rs/providers" }
 # Workspace member providing the extension framework API contracts
 # (Phase 7) — owns ExtensionId, HookId, HookInput/Output/Result,
 # ExtensionManifest, Capability, Capabilities, ActiveExtensionSet,
@@ -114,7 +124,7 @@ peko-providers = { path = "crates/providers" }
 # peko-message, peko-tools-core, peko-provider-api; the root
 # re-exports through `crate::extensions::framework::types::*` for
 # backwards compatibility.
-peko-extension-api = { path = "crates/extension-api" }
+peko-extension-api = { path = "peko-rs/extension-api" }
 # Workspace member providing the extension framework host
 # implementation (Phase 8) — owns ExtensionCore, hook dispatch,
 # capability gate, async executor, transport, manager/store, scaffold,
@@ -123,14 +133,14 @@ peko-extension-api = { path = "crates/extension-api" }
 # peko-extension-api + peko-message + peko-tools-core + peko-provider-api
 # + peko-subject. The root re-exports through
 # `crate::extensions::framework::*` for backwards compatibility.
-peko-extension-host = { path = "crates/extension-host", features = ["test-utils"] }
+peko-extension-host = { path = "peko-rs/extension-host", features = ["test-utils"] }
 # Workspace member providing the IPC + tunnel wire-shape contracts
 # (Phase 11a) — owns the auth envelope (`AuthCredential`,
 # `PrincipalSendControlMode`, `AuthHeader`) and the shared packet/timeout
 # constants. The bulk of the wire protocol (`RequestPacket`,
 # `ResponsePacket`, `TunnelMessage`, instance payloads) stays in root
 # until the wider Phase 11 boundary lifts them.
-peko-protocol = { path = "crates/protocol" }
+peko-protocol = { path = "peko-rs/protocol" }
 # Workspace member providing the DID identity + key storage + runtime
 # identity domain (Phase 3) — owns Identity / DIDDocument / KeyPair /
 # KeyStorage / KeychainStorage / EncryptedKeyStorage /
@@ -139,7 +149,7 @@ peko-protocol = { path = "crates/protocol" }
 # `RuntimePaths` / `IdentityVault` / `IdentityDataDir` trait ports
 # defined in `peko-identity::host` so peko-identity stays a leaf crate.
 # The root re-exports are removed entirely in Phase 15.
-peko-identity = { path = "crates/identity" }
+peko-identity = { path = "peko-rs/identity" }
 # Workspace member providing append-only file-persistence utilities
 # (Phase 5) — owns FileLock / LockManager / append_bytes_durable and the
 # associated timeout constants. Depends on nothing except serde / tokio
@@ -147,14 +157,14 @@ peko-identity = { path = "crates/identity" }
 # until Phase 7 lifts those into `peko-session`. The
 # `src/common/persistence/` + `src/session/lock.rs` shims are removed
 # in Phase 5.
-peko-fs-persistence = { path = "crates/fs-persistence" }
+peko-fs-persistence = { path = "peko-rs/fs-persistence" }
 # Workspace member providing append-only runtime-owned chat log
 # storage (Phase 5) — owns ChatLogStore / ChatLogMessage /
 # ChatLogPage / ChatThreadKey / cursor codec. No runtime deps on
 # session/agent/daemon. The root `src/chat_log/` directory is deleted
 # in Phase 5 (historical `peko::chat_log::*` paths are intentionally
 # broken).
-peko-chat-log = { path = "crates/chat-log" }
+peko-chat-log = { path = "peko-rs/chat-log" }
 # Workspace member providing authentication/authorization (Phase 4 of
 # the post-migration cleanup). Owns the canonical auth domain:
 # ApiKey/ApiKeyStore, CallerContext, JwtValidator, RateLimiter,
@@ -162,13 +172,13 @@ peko-chat-log = { path = "crates/chat-log" }
 # lifted from principal/config. Depends only on `peko-subject`; root
 # implements the `RuntimePaths` / `PrincipalResourceView` trait ports
 # defined in `peko-auth::host` so `peko-auth` stays a leaf crate.
-peko-auth = { path = "crates/auth" }
+peko-auth = { path = "peko-rs/auth" }
 # Phase 14 of the post-migration cleanup — observability hub
 # (audit log + metrics + tracing). Depends only on `peko-auth` for
 # `Subject` caller attribution (ADR-039, issues #17 + #26). The 4
 # root files (`src/observability/{mod,audit,metrics,tracer}.rs`)
 # are deleted when the 8 callers migrate to `peko_observability::*`.
-peko-observability = { path = "crates/observability" }
+peko-observability = { path = "peko-rs/observability" }
 # Phase 14.b — peko-cron owns the cron scheduler + idle detection +
 # event-trigger engine. Depends only on `peko-tools-builtin` for the
 # canonical cron DTO re-exports (Phase 10b). The daemon-side
@@ -176,8 +186,8 @@ peko-observability = { path = "crates/observability" }
 # root (`src/daemon/cron_runtime.rs`) because it depends on root-only
 # `crate::ipc::{DaemonClient, ResponsePacket}`. The 4 lifted files
 # (`src/cron/{mod,events,idle,event_trigger}.rs`, 1,301 lines) become
-# `crates/cron/src/{lib,events,idle,event_trigger}.rs`.
-peko-cron = { path = "crates/cron" }
+# `peko-rs/cron/src/{lib,events,idle,event_trigger}.rs`.
+peko-cron = { path = "peko-rs/cron" }
 # Phase 14.c.1 — peko-principal owns the pure-deps subset of
 # `src/principal/`: `config`, `peer`, `memory`, `factory`,
 # `agent_prompt` (~1,418 lines). Depends only on `peko-extension-api`,
@@ -186,7 +196,7 @@ peko-cron = { path = "crates/cron" }
 # `capability_evaluator`, `routers/*`, `slash/*`) stays in root for
 # Phase 14.c.2 — it depends on `ExtensionCore`, `PathResolver`,
 # `OutputFormat`, and the IPC `ExtensionSummary` wire shape.
-peko-principal = { path = "crates/principal" }
+peko-principal = { path = "peko-rs/principal" }
 # Phase 7 — peko-session owns the session persistence domain
 # (JSONL storage, metadata, recovery, compaction persistence,
 # InboxRegistry). Root re-exports the historical `crate::session::*`
@@ -194,8 +204,8 @@ peko-principal = { path = "crates/principal" }
 # the directory. After 7.4, root-side callers will import from
 # `peko_session::*` directly. The crate is downstream of
 # peko-extension-api / peko-providers / peko-fs-persistence / etc.
-# (see crates/session/Cargo.toml).
-peko-session = { path = "crates/session" }
+# (see peko-rs/session/Cargo.toml).
+peko-session = { path = "peko-rs/session" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).

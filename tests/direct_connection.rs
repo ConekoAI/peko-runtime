@@ -10,13 +10,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use peko::tunnel::a2a_pending::PendingA2aResponses;
-use peko::tunnel::direct::{
+use peko_core::tunnel::a2a_pending::PendingA2aResponses;
+use peko_core::tunnel::direct::{
     DirectConnectionManager, DirectMessageHandler, DirectServer, DirectTlsConfig,
 };
-use peko::tunnel::known_runtimes::{KnownRuntimes, TrustLevel};
-use peko::tunnel::protocol::TunnelMessage;
-use peko::tunnel::verifying_key_to_did_key;
+use peko_core::tunnel::known_runtimes::{KnownRuntimes, TrustLevel};
+use peko_core::tunnel::protocol::TunnelMessage;
+use peko_core::tunnel::verifying_key_to_did_key;
 use tokio::sync::RwLock;
 
 fn runtime_id_for(signing_key: &SigningKey) -> String {
@@ -31,8 +31,8 @@ fn build_peer_keypair() -> SigningKey {
     SigningKey::from_bytes(&[2u8; 32])
 }
 
-fn plaintext_direct_config() -> peko::common::types::config::DirectNetworkConfig {
-    peko::common::types::config::DirectNetworkConfig {
+fn plaintext_direct_config() -> peko_core::common::types::config::DirectNetworkConfig {
+    peko_core::common::types::config::DirectNetworkConfig {
         enabled: true,
         bind_address: "127.0.0.1".to_string(),
         port: 0,
@@ -59,7 +59,7 @@ async fn direct_server_client_handshake_and_message_roundtrip() {
         "Peer Runtime",
         None,
         None,
-        peko::tunnel::known_runtimes::TransportPreference::Auto,
+        peko_core::tunnel::known_runtimes::TransportPreference::Auto,
         None,
         TrustLevel::Authorized,
     );
@@ -67,7 +67,7 @@ async fn direct_server_client_handshake_and_message_roundtrip() {
 
     // ── simple echo handler: respond to AgentToAgentRequest ───────
     let handler: DirectMessageHandler = Arc::new(
-        move |msg: TunnelMessage, handle: peko::tunnel::TunnelHandle| {
+        move |msg: TunnelMessage, handle: peko_core::tunnel::TunnelHandle| {
             Box::pin(async move {
                 if let TunnelMessage::AgentToAgentRequest {
                     request_id,

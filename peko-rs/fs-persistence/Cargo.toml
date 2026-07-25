@@ -25,6 +25,21 @@ tracing = "0.1"
 # Unix signal-0 PID liveness check (gated by #[cfg(unix)])
 libc = "0.2"
 
+# Windows OpenProcess PID-liveness check (gated by #[cfg(windows)] in
+# src/file_lock.rs::is_pid_alive). Phase 5 extracted this sat from
+# the root `peko` crate where `windows-sys` was a workspace-wide dep
+# declaration; the sat never declared it locally, so Linux compiles
+# with the #[cfg(windows)] block stripped but Windows CI cannot link.
+# Phase 0.Z-A surfaced this latent bug because `peko-rs/**` is now in
+# the changed-path filter (the root crate's `crates/**` coverage
+# didn't reach this file). Minimal feature set — only the two
+# modules the cfg block actually uses.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = "3.10"
 tokio = { version = "1.35", features = ["macros", "rt-multi-thread"] }

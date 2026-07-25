@@ -70,7 +70,7 @@ Key style notes from `clippy.toml`:
 
 Peko is a Cargo workspace with the strict separation the migration aimed for.
 The root `peko` package remains the compatibility facade and CLI; extracted
-contracts and binaries live under `crates/`. Final workspace members:
+contracts and binaries live under `peko-rs/. Final workspace members:
 
 - `peko-events` — neutral agentic event contract (`AgenticEvent`, `LifecyclePhase`,
   `ToolId`/`ToolCallId`/`RunId`) shared by the engine and legacy provider streaming.
@@ -183,7 +183,7 @@ contracts and binaries live under `crates/`. Final workspace members:
   and prefers it over re-exec'ing the CLI binary (Phase 11c).
 
 ```text
-crates/
+peko-rs/
 ├── chat-log/               # Append-only chat-log storage (peko-chat-log, Phase 5)
 ├── cron/                   # Cron scheduler + idle + event-trigger (peko-cron, Phase 14.b)
 ├── engine/                 # Agentic loop core (peko-engine)
@@ -299,7 +299,7 @@ The workflow runs a path-aware, six-tier pipeline. Doc-only PRs (only
 |---|---|---|---|
 | `smoke` | `src/**` or `tests/**` changed | < 6 min | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` |
 | `lint` | `src/**` changed | < 1 min | `bash scripts/check_module_boundaries.sh` |
-| `lint-workspace` | `crates/**`, root `Cargo.toml`/`Cargo.lock`, or `scripts/check_workspace_deps.py` changed (Phase 12b) | < 5 s | `python3 scripts/check_workspace_deps.py` |
+| `lint-workspace` | `peko-rs/**`, root `Cargo.toml`/`Cargo.lock`, or `scripts/check_workspace_deps.py` changed (Phase 12b) | < 5 s | `python3 scripts/check_workspace_deps.py` |
 | `unit-linux` | `src/**` or `tests/**` changed | ~3 min | `cargo test --lib` |
 | `unit-windows` | Windows-specific paths or `[windows]` keyword / schedule / manual | ~5 min | `cargo test --lib` |
 | `integration` | `tests/**`, `docker/**`, `Dockerfile*`, or workflow changed; or schedule / manual | ~10-15 min | `make docker-up` + `make test-integration` |
@@ -381,7 +381,7 @@ domain size.
 
 #### Current crate layout (22 workspace members, 2026-07-24)
 
-Already extracted (`crates/`):
+Already extracted (`peko-rs/):
 
 - `auth` — auth + DID helpers.
 - `chat-log` — append-only chat-log storage.
@@ -409,12 +409,12 @@ Root `peko` (lib + bin) — CLI entry + thin composition only.
 
 Planned for later phases (not yet extracted):
 
-- `crates/engine-test-support` — dev-deps-only fixtures for engine tests (Phase 17).
-- `crates/agents` — agent lifecycle + subagent execution (still in root `src/agents/`).
-- `crates/registry` — packaging + registry client + trust store (still in root `src/registry/`).
-- `crates/tunnel` — tunnel protocol + A2A dispatcher (still in root `src/tunnel/`).
-- `crates/ipc` — IPC server + handlers (still in root `src/ipc/`).
-- `crates/principal` — principal DTOs lifted in 14.c.1; orchestration (manager/context/etc.) still in root.
+- `peko-rs/engine-test-support` — dev-deps-only fixtures for engine tests (Phase 17).
+- `peko-rs/agents` — agent lifecycle + subagent execution (still in root `src/agents/`).
+- `peko-rs/registry` — packaging + registry client + trust store (still in root `src/registry/`).
+- `peko-rs/tunnel` — tunnel protocol + A2A dispatcher (still in root `src/tunnel/`).
+- `peko-rs/ipc` — IPC server + handlers (still in root `src/ipc/`).
+- `peko-rs/principal` — principal DTOs lifted in 14.c.1; orchestration (manager/context/etc.) still in root.
 
 #### Cleanup invariant
 
@@ -497,7 +497,7 @@ cargo test --all-features
   - Cycles 4 (`tools::core ↔ extension::types`) and 5 (`tunnel ↔ agents`) from `PLAN.md` §2.5 are now actually broken (not reshuffled).
   - `src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `crate::registry::packaging::`, `crate::common::services::config_authority::`, `crate::identity::storage::`, `crate::session::jsonl::`, `crate::session::metadata_controller::`). `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
-- **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `crates/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `crates/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.
+- **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.
 
 ---
 

@@ -52,11 +52,6 @@ anyhow = "1.0"
 dirs = "5.0"
 tokio = { version = "1.35", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
-# Phase 8c.1.C: process_transport.rs uses libc::kill for SIGTERM
-# graceful shutdown on Unix. Host needs its own dep since root-only
-# `libc = "0.2"` doesn't propagate into the host crate build.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.7", features = ["v4", "serde"] }
 tracing = "0.1"
@@ -77,6 +72,17 @@ secrecy = { version = "0.10", features = ["serde"] }
 # the `test-utils` feature. Always available because root's `test-utils`
 # feature forwards the host's `test-utils` feature.
 thiserror = "1.0"
+# Phase 8c.1.C: process_transport.rs uses libc::kill for SIGTERM
+# graceful shutdown on Unix. Host needs its own dep since root-only
+# `libc = "0.2"` doesn't propagate into the host crate build. ONLY
+# `libc` is unix-gated; all the deps above this block are
+# platform-neutral and MUST NOT be placed inside the unix block.
+# Phase 0.Z-A surfaced a latent Phase 8c.1 bug where these
+# platform-neutral deps were inside the `[target.'cfg(unix)'.dependencies]`
+# block, breaking Windows CI compilation because they were stripped
+# from the Windows build entirely.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["full"] }

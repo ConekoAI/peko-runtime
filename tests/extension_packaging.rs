@@ -2,8 +2,8 @@
 //!
 //! End-to-end: install → export → install from `.ext`
 
-use peko::extensions::framework::store::ExtensionStore;
-use peko::extensions::framework::types::ExtensionId;
+use peko_core::extensions::framework::store::ExtensionStore;
+use peko_core::extensions::framework::types::ExtensionId;
 use peko_extension_host::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
 use peko_subject::PrincipalId;
 use std::path::PathBuf;
@@ -34,7 +34,7 @@ fn create_test_extension(temp: &TempDir, id: &str) -> PathBuf {
 }
 
 async fn create_store_with_adapters() -> ExtensionStore {
-    use peko::extensions::skill::SkillAdapter;
+    use peko_core::extensions::skill::SkillAdapter;
 
     let store = ExtensionStore::new();
     store.register_adapter(Box::new(SkillAdapter::new())).await;
@@ -217,10 +217,10 @@ archive_format = "tar"
     );
 }
 
-use peko::extensions::framework::core::HookPoint;
-use peko::extensions::framework::types::{HookInput, HookOutput, HookResult};
-use peko::extensions::skill::SkillAdapter;
-use peko::extensions::universal::UniversalToolAdapter;
+use peko_core::extensions::framework::core::HookPoint;
+use peko_core::extensions::framework::types::{HookInput, HookOutput, HookResult};
+use peko_core::extensions::skill::SkillAdapter;
+use peko_core::extensions::universal::UniversalToolAdapter;
 
 fn create_test_tool_extension(temp: &TempDir, id: &str) -> PathBuf {
     let ext_dir = temp.path().join(id);

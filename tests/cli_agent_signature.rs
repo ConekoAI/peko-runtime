@@ -15,7 +15,7 @@
 //!  10. red:   a manifest DID that does not bind to the shipped key fails with identity_binding_failed (issue #91)
 //!
 //! These tests run without a daemon or registry — they call the
-//! [`peko::registry::packaging::PrincipalUnpackager`] directly against an
+//! [`peko_core::registry::packaging::PrincipalUnpackager`] directly against an
 //! in-memory file map, which is exactly the path the CLI's
 //! `peko principal import` command eventually reaches through the daemon
 //! IPC.
@@ -23,13 +23,13 @@
 //! ## Principal-era translation
 //!
 //! After the "Principal as the single actor" migration, the standalone
-//! `.agent` packager/unpackager (`peko::registry::packaging::Packager` /
+//! `.agent` packager/unpackager (`peko_core::registry::packaging::Packager` /
 //! `Unpackager` / `AgentManifest`) was replaced with the equivalent
 //! `.principal` surface:
 //!
-//! - [`peko::registry::packaging::PrincipalPackager`] (analog of `Packager`)
-//! - [`peko::registry::packaging::PrincipalUnpackager`] (analog of `Unpackager`)
-//! - [`peko::registry::packaging::PrincipalManifest`] (analog of `AgentManifest`)
+//! - [`peko_core::registry::packaging::PrincipalPackager`] (analog of `Packager`)
+//! - [`peko_core::registry::packaging::PrincipalUnpackager`] (analog of `Unpackager`)
+//! - [`peko_core::registry::packaging::PrincipalManifest`] (analog of `AgentManifest`)
 //!
 //! The byte-canonicalization contract, the `ed25519` algorithm pin, the
 //! `[signature_verification_failed]` error prefix, and the
@@ -45,8 +45,8 @@
 //! See: <https://github.com/ConekoAI/peko-runtime/issues/91>
 
 use base64::Engine;
-use peko::registry::packaging::principal_manifest::PrincipalManifest;
-use peko::registry::packaging::{
+use peko_core::registry::packaging::principal_manifest::PrincipalManifest;
+use peko_core::registry::packaging::{
     PrincipalImportOptions, PrincipalImportResult, PrincipalUnpackager, TrustPolicy, TrustStatus,
     TrustStore,
 };
@@ -152,7 +152,7 @@ fn build_signed_manifest(
 
     // Reconstruct the signed bytes (signature field zeroed).
     let manifest_for_signing = PrincipalManifest {
-        signatures: peko::registry::packaging::manifest::Signatures {
+        signatures: peko_core::registry::packaging::manifest::Signatures {
             manifest: String::new(),
             algorithm: "ed25519".to_string(),
         },
@@ -703,7 +703,7 @@ fn build_signed_manifest_pinned(
     manifest.add_file("identity/keys.enc", keys_bytes);
 
     let manifest_for_signing = PrincipalManifest {
-        signatures: peko::registry::packaging::manifest::Signatures {
+        signatures: peko_core::registry::packaging::manifest::Signatures {
             manifest: String::new(),
             algorithm: "ed25519".to_string(),
         },

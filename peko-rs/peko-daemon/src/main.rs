@@ -16,8 +16,8 @@
 use anyhow::{Context, Result};
 use std::time::Duration;
 
-use peko::common::paths::PathResolver;
-use peko::daemon::{Daemon, DaemonConfig, LaunchMode};
+use peko_core::common::paths::PathResolver;
+use peko_core::daemon::{Daemon, DaemonConfig, LaunchMode};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {

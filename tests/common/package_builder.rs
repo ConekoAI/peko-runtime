@@ -8,9 +8,9 @@
 #![allow(dead_code)]
 
 use anyhow::Context;
-use peko::extensions::framework::store::ExtensionStore;
-use peko::extensions::skill::SkillAdapter;
-use peko::registry::packaging::{
+use peko_core::extensions::framework::store::ExtensionStore;
+use peko_core::extensions::skill::SkillAdapter;
+use peko_core::registry::packaging::{
     compute_digest, PrincipalExportOptions, PrincipalManifest, PrincipalPackager,
     PrincipalRegistryDescriptor,
 };

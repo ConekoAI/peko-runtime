@@ -9,10 +9,10 @@ use common::{
     create_test_user, reset_pekohub, run_with_stdin, run_with_timeout, DaemonGuard, PekoCli,
     PekohubBackend, PrincipalPackageBuilder,
 };
-use peko::registry::manifest::RegistryManifest;
-use peko::registry::packaging::types::{compute_digest, ImageDigest};
-use peko::registry::packaging::PrincipalRegistryDescriptor;
-use peko::registry::{AgentRegistry, RegistryClient, RegistryConfig, RegistrySource};
+use peko_core::registry::manifest::RegistryManifest;
+use peko_core::registry::packaging::types::{compute_digest, ImageDigest};
+use peko_core::registry::packaging::PrincipalRegistryDescriptor;
+use peko_core::registry::{AgentRegistry, RegistryClient, RegistryConfig, RegistrySource};
 use std::time::Duration;
 
 fn unique_name(prefix: &str) -> String {
@@ -91,7 +91,7 @@ async fn push_signed_descriptor(
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. })),
+            .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. })),
         "signed push should complete with Done event"
     );
     Ok(remote_ref)
@@ -163,7 +163,7 @@ async fn push_unsigned_descriptor(
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. })),
+            .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. })),
         "unsigned push should complete with Done event"
     );
 

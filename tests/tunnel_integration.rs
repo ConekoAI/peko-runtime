@@ -22,8 +22,8 @@ use rand::RngCore;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use peko::tunnel::known_runtimes::TransportPreference;
-use peko::tunnel::protocol::{
+use peko_core::tunnel::known_runtimes::TransportPreference;
+use peko_core::tunnel::protocol::{
     InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload, InstanceStatus,
     InstanceType, TunnelMessage,
 };

@@ -158,7 +158,7 @@ fn write_pekohub_credential(
     // created by PekoCli with its own passphrase, so load it explicitly
     // rather than creating a new one with a different passphrase.
     let vault_path = cli.peko_dir().join("vault.enc");
-    let vault = peko::common::vault::Vault::load_with_passphrase(
+    let vault = peko_core::common::vault::Vault::load_with_passphrase(
         &vault_path,
         &SecretString::new(cli.vault_passphrase().into()),
     )
@@ -167,7 +167,7 @@ fn write_pekohub_credential(
         .set_tunnel_private_key(did, &private_key_b64)
         .expect("store tunnel private key in vault");
 
-    let cred = peko::tunnel::PekoHubCredential {
+    let cred = peko_core::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
         runtime_id: did.to_string(),
         tls: None,

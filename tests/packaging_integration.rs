@@ -16,7 +16,7 @@
 //! After the "Principal as the single actor" migration, the `.agent`
 //! packaging surface was replaced with `.principal` packaging:
 //!
-//! - `peko::registry::packaging::Packager` / `AgentManifest` /
+//! - `peko_core::registry::packaging::Packager` / `AgentManifest` /
 //!   `ExportOptions` / `Unpackager` → `PrincipalPackager` /
 //!   `PrincipalManifest` / `PrincipalExportOptions` /
 //!   `PrincipalUnpackager`.
@@ -47,13 +47,13 @@
 //!     workspace.
 
 use anyhow::Context;
-use peko::extensions::framework::store::ExtensionStore;
-use peko::extensions::skill::SkillAdapter;
-use peko::registry::packaging::{
+use peko_core::extensions::framework::store::ExtensionStore;
+use peko_core::extensions::skill::SkillAdapter;
+use peko_core::registry::packaging::{
     PrincipalExportOptions, PrincipalImportOptions, PrincipalManifest, PrincipalPackager,
     PrincipalUnpackager,
 };
-use peko::registry::{AgentRegistry, RegistryClient, RegistryConfig, RegistrySource};
+use peko_core::registry::{AgentRegistry, RegistryClient, RegistryConfig, RegistrySource};
 use peko_identity::{did::DIDScope, Identity};
 use peko_principal::config::PrincipalConfig;
 use std::io::Read;
@@ -365,7 +365,7 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     assert!(push_result.is_ok(), "Push failed: {:?}", push_result.err());
     let has_done = push_events
         .iter()
-        .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. }));
+        .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. }));
     assert!(has_done, "Push should complete with Done event");
 
     // ═════════════════════════════════════════════════════════════════
@@ -389,7 +389,7 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     assert!(pull_result.is_ok(), "Pull failed: {:?}", pull_result.err());
     let has_done = pull_events
         .iter()
-        .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. }));
+        .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. }));
     assert!(has_done, "Pull should complete with Done event");
 
     assert!(
@@ -552,7 +552,7 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
     assert!(
         push_events
             .iter()
-            .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. })),
+            .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. })),
         "Push should complete with Done event"
     );
 
@@ -577,7 +577,7 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
     assert!(
         pull_events
             .iter()
-            .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. })),
+            .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. })),
         "Pull should complete with Done event"
     );
 

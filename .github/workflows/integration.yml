@@ -61,7 +61,7 @@ jobs:
   # ── Path-aware change detector ────────────────────────────────────────
   # Output keys:
   #   src            — src/** changed
-  #   crates         — crates/** or root Cargo.toml changed
+  #   crates         — peko-rs/** or root Cargo.toml changed
   #   tests          — tests/** changed
   #   docker         — .github/docker/** changed
   #   dockerfile     — Dockerfile* / docker-compose*.yml changed
@@ -92,7 +92,7 @@ jobs:
               # introduce a new forbidden crate-to-crate edge; the
               # dep-graph check needs to run whenever the workspace
               # graph itself changes (or the script that enforces it).
-              - 'crates/**'
+              - 'peko-rs/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'scripts/check_workspace_deps.py'
@@ -110,16 +110,16 @@ jobs:
               - 'src/common/process/**'
               - 'src/extensions/skill/adapter.rs'
               - 'src/ipc/pipe_security.rs'
-              # Phase 10a moved fs/grep.rs into crates/tools-builtin;
+              # Phase 10a moved fs/grep.rs into peko-rs/tools-builtin;
               # the new path is platform-neutral (uses the `regex`
               # crate, no libc/cfg gates) so the old `src/...` entry
               # would always be stale going forward.
               # Phase 10d moved skill/preprocess.rs into peko-tools-builtin
-              # as crates/tools-builtin/src/skill/body.rs (which uses
+              # as peko-rs/tools-builtin/src/skill/body.rs (which uses
               # tokio::process::Command — Unix-only); src/.../preprocess.rs
               # is now a 5-line re-export shim with no platform-specific
               # code, so the old entry would always be stale going forward.
-              - 'crates/tools-builtin/src/skill/body.rs'
+              - 'peko-rs/tools-builtin/src/skill/body.rs'
               - 'tests/common/cli.rs'
 
   # ── Tier 0b: Lint — Issue-015 boundary rules, every PR ───────────────

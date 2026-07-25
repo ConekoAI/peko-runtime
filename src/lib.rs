@@ -52,7 +52,7 @@
 //! The `peko` crate is the **compatibility facade** and binary entry
 //! point. As of Phase 12, the runtime's pure-dependency contracts and
 //! implementation crates have been lifted into a 13-member Cargo
-//! workspace under `crates/` (see the workspace member list and per-crate
+//! workspace under `peko-rs/` (see the workspace member list and per-crate
 //! dependency rules in [`AGENTS.md`](../AGENTS.md#architecture-overview)).
 //! The root `peko` package preserves every public path used by
 //! integration tests, the CLI binary (`src/main.rs`), and external
@@ -236,14 +236,14 @@ pub mod principal;
 // Append-only runtime surfaces
 // ============================================================================
 
-// [extract:phase-5] peko-chat-log — moved to crates/chat-log/
+// [extract:phase-5] peko-chat-log — moved to peko-rs/chat-log/
 
 // ============================================================================
 // Infrastructure
 // ============================================================================
 
 // [extract:phase-14] peko-cron — DONE (PR #301, 2026-07-24):
-// 4 root files moved to `crates/cron/src/{lib,events,idle,event_trigger}.rs`.
+// 4 root files moved to `peko-rs/cron/src/{lib,events,idle,event_trigger}.rs`.
 // `daemon_adapter.rs` relocated to `src/daemon/cron_runtime.rs` because it
 // depends on root-only `crate::ipc::{DaemonClient, ResponsePacket}`.
 // Callers in commands/cron, ipc/handlers/cron, daemon/state, and
@@ -253,7 +253,7 @@ pub mod principal;
 // [extract:phase-13] peko-daemon (impl crate)
 //
 // `pub` since Phase 11b/12 because:
-// 1. The `peko-daemon` workspace member crate (`crates/peko-daemon/`)
+// 1. The `peko-daemon` workspace member crate (`peko-rs/peko-daemon/`)
 //    needs `Daemon::new`/`DaemonConfig`/`Daemon::run` to construct
 //    and run a daemon.
 // 2. `LaunchMode` is part of the public IPC wire envelope
@@ -268,7 +268,7 @@ pub mod daemon;
 pub mod ipc;
 
 // [extract:phase-14] peko-observability — DONE (PR #300, 2026-07-24):
-// 4 root files moved to `crates/observability/src/{lib,audit,metrics,tracer}.rs`.
+// 4 root files moved to `peko-rs/observability/src/{lib,audit,metrics,tracer}.rs`.
 // Callers in daemon/cron_engine, principal/{context,manager,router}, tunnel/host,
 // agents/subagent_executor import from `peko_observability::*` directly.
 
