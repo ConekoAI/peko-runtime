@@ -123,6 +123,12 @@ docker-down:
 # Plain --ignored would skip those 16 always-on tests entirely.
 
 test-integration: docker-up
+	# Phase 0.Z-B: `peko` bin lives in the `peko-cli` satellite. Cargo
+	# doesn't auto-build it for peko's integration tests because peko
+	# can't list peko-cli as a dev-dep (circular — peko-cli depends on
+	# peko_core). Pre-build here so peko-rs/core/tests/common/cli.rs's
+	# CARGO_BIN_EXE_peko fallback resolves to a real binary.
+	cargo build -p peko-cli --bin peko
 	@env -u MINIMAX_API_KEY \
 	    PEKOHUB_URL=$(PEKOHUB_URL) \
 	    MOCK_LLM_URL=$(MOCK_LLM_URL) \
@@ -145,6 +151,8 @@ test-integration: docker-up
 # an unset KIMI_API_KEY will then promote it back to a live run.
 
 test-integration-llm: docker-up
+	# See test-integration for the rationale (Phase 0.Z-B pre-build).
+	cargo build -p peko-cli --bin peko
 	@if [ -z "$$MINIMAX_API_KEY" ]; then \
 	    echo "ERROR: MINIMAX_API_KEY must be set for test-integration-llm"; exit 1; \
 	fi

@@ -176,8 +176,10 @@ impl PekoCli {
         // `CARGO_BIN_EXE_<name>` for tests in the same package as the
         // [[bin]], so when these integration tests run inside `peko`,
         // that env var is unset. Fall back to locating the workspace
-        // build artifact (cargo's test runner has built `peko-cli` as a
-        // transitive dev-dep, so the binary always exists in target/).
+        // build artifact. `make test-integration` pre-builds `peko-cli`
+        // explicitly; devs running `cargo test -p peko --tests` directly
+        // need `cargo build -p peko-cli --bin peko` first (cargo can't
+        // list peko-cli as a peko dev-dep — it'd be a cycle).
         let bin = std::env::var("CARGO_BIN_EXE_peko").unwrap_or_else(|_| {
             let manifest_dir = env!("CARGO_MANIFEST_DIR");
             let workspace_root = std::path::Path::new(manifest_dir)
