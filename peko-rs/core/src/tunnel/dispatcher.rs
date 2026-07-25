@@ -722,8 +722,8 @@ impl TunnelDispatcher {
         // Bounded channel: a slow tunnel back-pressures the root agent
         // (events drop on `try_send` failure rather than growing memory).
         let (event_tx, mut event_rx) =
-            tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(256);
-        let on_event: Box<dyn Fn(crate::engine::AgenticEvent) + Send + Sync> =
+            tokio::sync::mpsc::channel::<peko_engine::AgenticEvent>(256);
+        let on_event: Box<dyn Fn(peko_engine::AgenticEvent) + Send + Sync> =
             Box::new(move |event| {
                 let _ = event_tx.try_send(event);
             });
@@ -750,8 +750,8 @@ impl TunnelDispatcher {
         let mut streamed_any = false;
         while let Some(event) = event_rx.recv().await {
             let delta = match event {
-                crate::engine::AgenticEvent::AssistantDelta { text, .. } => text,
-                crate::engine::AgenticEvent::AssistantText { text, .. } => text,
+                peko_engine::AgenticEvent::AssistantDelta { text, .. } => text,
+                peko_engine::AgenticEvent::AssistantText { text, .. } => text,
                 _ => continue,
             };
             if delta.is_empty() {

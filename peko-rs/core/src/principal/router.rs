@@ -212,7 +212,7 @@ pub trait PrincipalRouter: Send + Sync {
     async fn route_streaming(
         &self,
         ctx: RouterContext,
-        _on_event: Box<dyn Fn(crate::engine::AgenticEvent) + Send + Sync>,
+        _on_event: Box<dyn Fn(peko_engine::AgenticEvent) + Send + Sync>,
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<RouteDecision, RouterError> {
         let _ = cancel;

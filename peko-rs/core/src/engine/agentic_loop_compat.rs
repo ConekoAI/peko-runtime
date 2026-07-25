@@ -5,7 +5,7 @@
 //! root-only types that `peko-engine` cannot depend on without violating
 //! `check_workspace_deps.py` forbidden-edge rules. Root provides the test
 //! harness, `peko-engine` owns the production type — production callers
-//! import `peko_engine::AgenticLoop` (or `crate::engine::AgenticLoop`
+//! import `peko_engine::AgenticLoop` (or `peko_engine::AgenticLoop`
 //! via the re-export block in `src/engine/mod.rs`).
 //!
 //! Phase 16 retired the `pub use peko_engine::agentic_loop::{...}`
@@ -318,7 +318,7 @@ mod tests {
         let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_clone = events.clone();
 
-        let streaming_config = crate::engine::OrchestratorConfig::live();
+        let streaming_config = peko_engine::OrchestratorConfig::live();
         let result = loop_
             .run_streaming_with_resume(
                 "Stream something",
@@ -1006,7 +1006,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_rt008_quota_preflight_trips_with_typed_error() {
-        use crate::engine::AgenticError;
+        use peko_engine::AgenticError;
         use peko_quota::{QuotaConfig, QuotaCycle, QuotaError, QuotaMeter};
 
         peko_identity::init_test_env();

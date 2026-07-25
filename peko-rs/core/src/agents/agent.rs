@@ -3,8 +3,8 @@
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
-use crate::engine::state::StateMachine;
-use crate::engine::AgentState;
+use peko_engine::state::StateMachine;
+use peko_engine::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use peko_extension_host::core::{global_core, ExtensionCore};
 use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
@@ -23,7 +23,7 @@ use tracing::{debug, error, info, warn};
 pub struct Agent {
     /// Agent configuration
     pub config: AgentConfig,
-    /// Current state (atomic, lock-free; see [`crate::engine::state::StateMachine`]).
+    /// Current state (atomic, lock-free; see [`peko_engine::state::StateMachine`]).
     state: Arc<StateMachine>,
     /// Agent identity
     pub identity: Identity,
@@ -1003,8 +1003,8 @@ impl Agent {
     pub async fn execute(
         &self,
         prompt: &str,
-        on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
-    ) -> Result<crate::engine::AgenticResult> {
+        on_event: impl Fn(peko_engine::AgenticEvent) + Send + Sync + 'static,
+    ) -> Result<peko_engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
         };
@@ -1122,10 +1122,10 @@ impl Agent {
         session: Arc<tokio::sync::RwLock<peko_session::Session>>,
         history: Option<Vec<peko_message::LlmMessage>>,
         cancel: Option<tokio_util::sync::CancellationToken>,
-        on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
+        on_event: impl Fn(peko_engine::AgenticEvent) + Send + Sync + 'static,
         quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
         peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
-    ) -> Result<crate::engine::AgenticResult> {
+    ) -> Result<peko_engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
         };
@@ -1225,9 +1225,9 @@ impl Agent {
         cancel: Option<tokio_util::sync::CancellationToken>,
         quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
         peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
-    ) -> Result<crate::engine::AgenticResult>
+    ) -> Result<peko_engine::AgenticResult>
     where
-        F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
+        F: Fn(peko_engine::AgenticEvent) + Send + Sync + 'static,
     {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
@@ -1283,7 +1283,7 @@ impl Agent {
             }
         };
 
-        let streaming_config = crate::engine::OrchestratorConfig::live();
+        let streaming_config = peko_engine::OrchestratorConfig::live();
 
         let result = loop_
             .run_streaming_with_resume(
@@ -1308,7 +1308,7 @@ impl Agent {
     ///
     /// The actual steering content reaches the LLM via the inbox
     /// drain at the start of `run_inner`'s first iteration (see
-    /// [`crate::engine::agentic_loop::AgenticLoop::run_streaming_with_resume_skip_user_add`]).
+    /// [`peko_engine::agentic_loop::AgenticLoop::run_streaming_with_resume_skip_user_add`]).
     #[allow(clippy::too_many_arguments)]
     pub async fn run_streaming_with_session_skip_user_add<F>(
         &self,
@@ -1316,9 +1316,9 @@ impl Agent {
         session: std::sync::Arc<tokio::sync::RwLock<peko_session::Session>>,
         history: Option<Vec<peko_message::LlmMessage>>,
         caller_id: Option<String>,
-    ) -> Result<crate::engine::AgenticResult>
+    ) -> Result<peko_engine::AgenticResult>
     where
-        F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
+        F: Fn(peko_engine::AgenticEvent) + Send + Sync + 'static,
     {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
@@ -1348,7 +1348,7 @@ impl Agent {
             )
             .await?;
 
-        let streaming_config = crate::engine::OrchestratorConfig::live();
+        let streaming_config = peko_engine::OrchestratorConfig::live();
 
         loop_
             .run_streaming_with_resume_skip_user_add(on_event, &session, history, streaming_config)
@@ -1391,7 +1391,7 @@ impl Agent {
         cancel: Option<tokio_util::sync::CancellationToken>,
         quota_meter: Arc<peko_quota::QuotaMeter>,
         peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
-    ) -> Result<crate::engine::agentic_loop::AgenticLoop> {
+    ) -> Result<peko_engine::agentic_loop::AgenticLoop> {
         let extension_core = self.extension_core();
 
         // 1. Per-call completion queue (shared by executor + loop).
@@ -1573,7 +1573,7 @@ impl Agent {
             ),
         );
         let compaction_config = peko_session::compaction::load_compaction_config();
-        let mut loop_ = crate::engine::agentic_loop::AgenticLoop::new(
+        let mut loop_ = peko_engine::agentic_loop::AgenticLoop::new(
             agent_arc,
             provider,
             extension_core,

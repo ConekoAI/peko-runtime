@@ -15,7 +15,7 @@
 use crate::agents::Agent;
 use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
-use crate::engine::AgenticEvent;
+use peko_engine::AgenticEvent;
 use peko_auth::Subject;
 use peko_message::LlmMessage;
 use peko_providers::TokenUsage;
@@ -437,7 +437,7 @@ impl StatelessAgentService {
     pub async fn execute_message_streaming(
         &self,
         request: peko_extension_host::principal_message::PrincipalMessageRequest,
-    ) -> Result<crate::engine::EventStream> {
+    ) -> Result<peko_engine::EventStream> {
         let start = Instant::now();
 
         // Resolve session using SessionManager (single authority)
@@ -489,7 +489,7 @@ impl StatelessAgentService {
             request.agent_name, duration_ms
         );
 
-        Ok(crate::engine::EventStream {
+        Ok(peko_engine::EventStream {
             receiver: event_stream.receiver,
             completion: event_stream.completion,
             session_id,
@@ -799,7 +799,7 @@ impl StatelessAgentService {
     pub async fn execute_streaming(
         &self,
         request: ExecutionRequest,
-    ) -> Result<crate::engine::EventStream> {
+    ) -> Result<peko_engine::EventStream> {
         // Load config, history, agent, session - these are all Send-safe
         let config_entry = self
             .config_service
@@ -865,7 +865,7 @@ impl StatelessAgentService {
         &self,
         request: ExecutionRequest,
         session: Arc<RwLock<peko_session::unified::Session>>,
-    ) -> Result<crate::engine::EventStream> {
+    ) -> Result<peko_engine::EventStream> {
         let message = match request.caller_agent.as_deref() {
             Some(caller) if !caller.is_empty() => {
                 format!("[Message from agent: {caller}]\n\n{}", request.message)
@@ -984,9 +984,9 @@ impl StatelessAgentService {
             // as a stream error instead of silently returning success.
             if let Err(e) = result {
                 let run_id = agent.name().to_string();
-                let _ = event_tx_for_error.try_send(crate::engine::AgenticEvent::Lifecycle {
+                let _ = event_tx_for_error.try_send(peko_engine::AgenticEvent::Lifecycle {
                     run_id,
-                    phase: crate::engine::LifecyclePhase::Error,
+                    phase: peko_engine::LifecyclePhase::Error,
                     error: Some(format!("Agent execution failed: {e:#}")),
                 });
             }
@@ -1014,7 +1014,7 @@ impl StatelessAgentService {
             // event_tx is dropped here, signaling end of stream
         });
 
-        Ok(crate::engine::EventStream {
+        Ok(peko_engine::EventStream {
             receiver: event_rx,
             completion: completion_rx,
             session_id: request.session_id,
@@ -1048,7 +1048,7 @@ impl StatelessAgentService {
         inbox_registry: Arc<peko_session::InboxRegistry>,
         run_permit: peko_session::RunPermitGuard,
         caller_id: Option<String>,
-    ) -> Result<crate::engine::EventStream> {
+    ) -> Result<peko_engine::EventStream> {
         let session_id = session.read().await.id.clone();
         let agent_name = session.read().await.agent_name.clone();
         info!(
@@ -1065,7 +1065,7 @@ impl StatelessAgentService {
             .with_context(|| format!("Failed to create agent: {agent_name}"))?;
 
         // Create channels.
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(1000);
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<peko_engine::AgenticEvent>(1000);
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<Result<()>>();
 
         let event_tx_for_error = event_tx.clone();
@@ -1079,7 +1079,7 @@ impl StatelessAgentService {
             // released and the registry reports the session as idle.
             let _permit = run_permit;
 
-            let on_event = move |event: crate::engine::AgenticEvent| {
+            let on_event = move |event: peko_engine::AgenticEvent| {
                 let _ = event_tx.try_send(event);
             };
 
@@ -1093,9 +1093,9 @@ impl StatelessAgentService {
                 .await;
 
             if let Err(e) = result {
-                let _ = event_tx_for_error.try_send(crate::engine::AgenticEvent::Lifecycle {
+                let _ = event_tx_for_error.try_send(peko_engine::AgenticEvent::Lifecycle {
                     run_id: agent.name().to_string(),
-                    phase: crate::engine::LifecyclePhase::Error,
+                    phase: peko_engine::LifecyclePhase::Error,
                     error: Some(format!("Steering run failed: {e:#}")),
                 });
             }
@@ -1109,7 +1109,7 @@ impl StatelessAgentService {
             // event_tx drops here, closing the stream.
         });
 
-        Ok(crate::engine::EventStream {
+        Ok(peko_engine::EventStream {
             receiver: event_rx,
             completion: completion_rx,
             session_id,

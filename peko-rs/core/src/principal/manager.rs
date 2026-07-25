@@ -823,7 +823,7 @@ impl PrincipalManager {
         peer: Subject,
         message: String,
         channel: ChannelContext,
-        on_event: Box<dyn Fn(crate::engine::AgenticEvent) + Send + Sync>,
+        on_event: Box<dyn Fn(peko_engine::AgenticEvent) + Send + Sync>,
         // Per-message configured model override (RP8 wires CLI flags).
         override_model: Option<String>,
     ) -> Result<PrincipalResponse, PrincipalManagerError> {

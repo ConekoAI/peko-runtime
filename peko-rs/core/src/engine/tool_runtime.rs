@@ -2,7 +2,7 @@
 //!
 //! Phase 9b.N.2 trimmed this file: the F37 `execute_tool_via_core` and
 //! `execute_tool_via_core_with_context` helpers have no `BashTool`
-//! coupling, so they lifted cleanly into [`crate::engine::funnel`]
+//! coupling, so they lifted cleanly into [`peko_engine::funnel`]
 //! (re-exported from `peko_engine::funnel`) — see PR #266. The
 //! surrounding `ToolRuntime` struct + `register_builtins` stay in root
 //! because the concrete `BashTool` registration still references
@@ -221,7 +221,7 @@ impl ToolRuntime {
         capabilities: Option<Vec<String>>,
         active_extensions: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
-        let (display, json, success) = crate::engine::funnel::execute_tool_via_core_with_context(
+        let (display, json, success) = peko_engine::funnel::execute_tool_via_core_with_context(
             &*self.extension_core,
             tool_name,
             params,

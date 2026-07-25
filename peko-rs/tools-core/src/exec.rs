@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 
 /// Progress event emitted by a tool during execution.
 ///
-/// Framework-defined; intentionally independent of `crate::engine::AgenticEvent`
+/// Framework-defined; intentionally independent of `peko_engine::AgenticEvent`
 /// so the extension framework does not depend on the engine. Callers that want
 /// to surface tool progress in the engine's event stream should convert this
 /// to an `AgenticEvent::ToolUpdate` at the integration boundary.

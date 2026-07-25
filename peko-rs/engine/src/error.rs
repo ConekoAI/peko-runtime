@@ -24,7 +24,7 @@
 use peko_quota::error::QuotaError;
 
 /// Typed errors that can be returned from the agentic loop at the
-/// `crate::engine::AgenticLoop` reference path (the root shim re-exports
+/// `peko_engine::AgenticLoop` reference path (the root shim re-exports
 /// the loop until Phase 9b). Loosely modeled on codex
 /// `protocol/src/error.rs:67` (`TurnAborted` and friends) but
 /// scoped to the two cases where peko's loop currently has *fully

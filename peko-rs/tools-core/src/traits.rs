@@ -54,8 +54,8 @@ pub trait Tool: Send + Sync {
     /// * DB/queue ops that aren't atomic (cron Create/Delete, task
     ///   Create/Update).
     ///
-    /// At dispatch time the [`ToolExecutor`](crate::engine::tool_executor::ToolExecutor)
-    /// takes a read-lock on the agent's [`ParallelGate`](crate::engine::parallel_gate::ParallelGate)
+    /// At dispatch time the [`ToolExecutor`](peko_engine::tool_executor::ToolExecutor)
+    /// takes a read-lock on the agent's [`ParallelGate`](peko_engine::parallel_gate::ParallelGate)
     /// when this returns `true` (concurrent dispatches OK) and a
     /// write-lock when `false` (exclusive against every other running
     /// tool, parallelizable or not). Mirrors codex's

@@ -15,7 +15,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 
-use crate::engine::AgenticEvent;
+use peko_engine::AgenticEvent;
 use crate::principal::agent_runner::{run_root_agent_prompt, run_root_agent_prompt_streaming};
 use crate::principal::context::PrincipalContext;
 use crate::principal::router::{

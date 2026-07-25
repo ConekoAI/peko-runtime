@@ -107,7 +107,7 @@ impl CapabilityDiff {
 /// first observation is always "no diff" — establishing the baseline so
 /// subsequent iterations can diff against it.
 ///
-/// Owned by [`crate::engine::AgenticLoop`] (root). Lifted here in Phase
+/// Owned by [`peko_engine::AgenticLoop`] (root). Lifted here in Phase
 /// 9b.N.5a because the loop is moving into `peko-engine` in 9b.N.5b.
 #[derive(Debug, Default)]
 pub struct CapabilityDiffTracker {

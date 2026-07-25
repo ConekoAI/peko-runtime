@@ -53,23 +53,9 @@
 // declared by `mod` below so the shim preserves every pre-Phase 9
 // import path. The `agentic_loop` is now lifted into `peko-engine`
 // (Phase 9b.N.5b.9); only the test module stays in root via
-// `agentic_loop_compat`.
-pub use peko_engine::{
-    agentic_loop, async_completion, async_inbox, build_async_completion_message, chunker,
-    compaction, default_process_stream, error, event_processor, events, execute_tool_via_core,
-    execute_tool_via_core_with_context, execution, funnel, iteration_state, parallel_gate,
-    parse_tool_calls_from_text, state, stream_buffer, stream_orchestrator, tool_executor,
-    tool_stream, AgentState, AgentView, AgenticError, AgenticEvent, AgenticLoop, AgenticResult,
-    AsyncInboxItem, AsyncInboxLike, BlockChunker, BreakPreference, CapabilityChange,
-    CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker, ChannelAction, ChannelOutput,
-    ChunkerConfig, CoalesceConfig, CoalescingChunker, CompactionConfig, CompactionEntry,
-    CompactionQuota, CompactionRequest, CompactionResponse, CompactionResponseResult,
-    CompactionResult, CompactionState, CompactorBackend, ContextUsageEstimate, DeliveryMode,
-    EventProcessor, EventStream, ExecutionMode, LifecyclePhase, OrchestratorConfig,
-    ProcessorConfig, SessionCore, SessionView, StateMachine, StreamBuffer, StreamOrchestrator,
-    StreamingConfig, StreamingToolCall, TaskId, TaskStatus, TaskSummary, ToolCall,
-    ToolCallParseError, ToolCallStreamParser, ToolExecutionResult, ToolExecutor,
-};
+// `agentic_loop_compat`. Consumers import types from
+// `peko_engine::*` directly — no transitive re-export through this
+// module.
 
 pub mod agentic_loop_compat;
 pub mod background_compactor_factory_compat;

@@ -38,7 +38,7 @@ use tracing::warn;
 
 use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
-use crate::engine::AgenticEvent;
+use peko_engine::AgenticEvent;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{PrincipalSendControlMode, RequestPacket, ResponsePacket};
