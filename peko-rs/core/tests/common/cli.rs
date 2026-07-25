@@ -171,7 +171,27 @@ impl PekoCli {
     /// Call [`Self::allow_real_llm_keys`] for tests that intentionally
     /// exercise real providers.
     pub fn cmd(&self) -> Command {
-        let bin = env!("CARGO_BIN_EXE_peko");
+        // Phase 0.Z-B: the `peko` `[[bin]]` now lives in the `peko-cli`
+        // satellite, not in `peko` itself. Cargo only sets
+        // `CARGO_BIN_EXE_<name>` for tests in the same package as the
+        // [[bin]], so when these integration tests run inside `peko`,
+        // that env var is unset. Fall back to locating the workspace
+        // build artifact. `make test-integration` pre-builds `peko-cli`
+        // explicitly; devs running `cargo test -p peko --tests` directly
+        // need `cargo build -p peko-cli --bin peko` first (cargo can't
+        // list peko-cli as a peko dev-dep — it'd be a cycle).
+        let bin = std::env::var("CARGO_BIN_EXE_peko").unwrap_or_else(|_| {
+            let manifest_dir = env!("CARGO_MANIFEST_DIR");
+            let workspace_root = std::path::Path::new(manifest_dir)
+                .parent()
+                .and_then(std::path::Path::parent)
+                .expect("CARGO_MANIFEST_DIR is peko-rs/core/, two parents up is the workspace root");
+            let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| workspace_root.join("target"));
+            let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+            target_dir.join(profile).join("peko").to_string_lossy().into_owned()
+        });
         let mut c = Command::new(bin);
         c.env("HOME", self.home.path())
             .env("USERPROFILE", self.home.path())

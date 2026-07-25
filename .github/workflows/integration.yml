@@ -28,7 +28,9 @@ on:
       # Phase 0.Z-D: `src/**` is a stale no-op after the src/ → peko-rs/core/src/
       # move. Kept alongside the new path for safety during partial reverts;
       # removed in the cleanup PR once master confirms src/-free.
+      # Phase 0.Z-B: `peko-rs/cli/**` triggers all tiers on CLI binary split.
       - 'src/**'
+      - 'peko-rs/cli/**'
       - 'peko-rs/core/src/**'
       - 'peko-rs/core/tests/**'
       - 'Cargo.toml'
@@ -43,6 +45,7 @@ on:
     branches: [main, master]
     paths:
       - 'src/**'
+      - 'peko-rs/cli/**'
       - 'peko-rs/core/src/**'
       - 'peko-rs/core/tests/**'
       - 'Cargo.toml'
@@ -94,7 +97,10 @@ jobs:
               # Phase 0.Z-D: src/ moved to peko-rs/core/src/. The legacy
               # `src/**` entry is kept as a no-op safety net; removed in
               # the cleanup PR once master confirms src/-free.
+              # Phase 0.Z-B: cli/ moved to peko-rs/cli/src/. CLI-only diffs
+              # must still trigger lint/unit-linux/integration-llm.
               - 'src/**'
+              - 'peko-rs/cli/**'
               - 'peko-rs/core/src/**'
             crates:
               # Phase 12b: any workspace-member Cargo.toml change can

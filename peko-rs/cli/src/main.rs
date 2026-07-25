@@ -1,10 +1,23 @@
 use clap::Parser;
 use clap_complete::generate;
-use peko_core::commands::{
-    auth, capability, config, credential, cron, daemon, ext, init_logging, interrupt, log, model,
-    principal, quota, registry, runtime, search, send, system, tunnel, update, vault, version, Cli,
-    Commands, GlobalPaths,
+
+/// `peko` runtime version, lifted from a crate root constant so the CLI can
+/// answer `peko version`, `peko update --check`, and the F33/F38 startup
+/// banner without plumbing `CARGO_PKG_VERSION` through `Cli`. Defined
+/// here because the cli crate owns the user-facing version surface.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+use crate::commands::{
+    auth, capability, config, credential, cron, daemon, ext, from_cli, init_logging, interrupt,
+    log, model, principal, quota, registry, runtime, search, send, system, tunnel, update, vault,
+    version, Cli, Commands, GlobalPaths,
 };
+
+// `peko-rs/cli/` is a binary-only crate (no `src/lib.rs`), so the
+// `commands/` module must be declared here in the binary entry point.
+// Phase 0.Z-B: this module used to live in `peko_core::commands` (root lib);
+// after the lift it lives in the cli crate itself.
+mod commands;
 
 /// Peko - Lightweight Multi-Agent Runtime
 #[tokio::main]
@@ -15,7 +28,7 @@ async fn main() {
     init_logging(cli.verbose, cli.quiet);
 
     // Set up global paths
-    let paths = GlobalPaths::from_cli(&cli);
+    let paths = from_cli(&cli);
 
     // Initialize global ExtensionCore with the appropriate async transport
     // BEFORE running any command that might create agents.

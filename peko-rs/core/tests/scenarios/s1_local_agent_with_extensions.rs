@@ -48,7 +48,7 @@
 //! ## The two structural facts this file relies on
 //!
 //! 1. **`peko principal create <name>` defaults the owner to
-//!    `user:default`** — see `src/commands/principal.rs::create_principal`.
+//!    `user:default`** — see `peko-rs/cli/src/commands/principal.rs::create_principal`.
 //!    The local CLI's `GlobalPaths::user()` defaults to `"default"`,
 //!    so the owner check in `PrincipalManager::receive` passes for
 //!    `peko send`. This differs from `s6`, which uses the local-socket

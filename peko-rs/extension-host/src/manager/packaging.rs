@@ -499,6 +499,36 @@ impl ExtensionUnpackager {
     }
 }
 
+/// Resolve an install path for the extension installer.
+///
+/// If `path` points at a `.ext` package, extract it into a fresh tempdir
+/// under `${TMPDIR}/PEKO_ext_install/<unix_secs>` and return the extracted
+/// directory. Otherwise return `path` unchanged.
+///
+/// Lifted from `peko-rs/core/src/commands/ext.rs::prepare_install_path`
+/// during Phase 0.Z-B — both the lib's IPC handler
+/// (`peko-rs/core/src/ipc/handlers/extension.rs`) and the CLI satellite
+/// (`peko-rs/cli/src/commands/ext.rs`) need it; placing it in
+/// `peko_extension_host` keeps `peko_core` from depending on the cli sat.
+pub fn prepare_install_path(path: &Path) -> anyhow::Result<PathBuf> {
+    if path.extension().map_or(false, |e| e == "ext") {
+        let temp_dir = std::env::temp_dir().join("PEKO_ext_install").join(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string(),
+        );
+        std::fs::create_dir_all(&temp_dir)?;
+        let extracted = ExtensionUnpackager::install(path, &temp_dir).map_err(|e| {
+            anyhow::anyhow!("Failed to extract .ext package '{}': {}", path.display(), e)
+        })?;
+        Ok(extracted)
+    } else {
+        Ok(path.to_path_buf())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

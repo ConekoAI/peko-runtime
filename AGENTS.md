@@ -185,6 +185,10 @@ contracts and binaries live under `peko-rs/. Final workspace members:
 ```text
 peko-rs/
 ├── chat-log/               # Append-only chat-log storage (peko-chat-log, Phase 5)
+├── cli/                    # CLI binary (`peko` bin, Phase 0.Z-B — extracted from `peko-rs/core/`)
+│   └── src/
+│       ├── commands/       # All `peko <subcommand>` handlers (lifted from root commands/)
+│       └── main.rs         # Binary entry point + `clap` parser
 ├── cron/                   # Cron scheduler + idle + event-trigger (peko-cron, Phase 14.b)
 │   ├── engine/             # Agentic loop core (peko-engine)
 ├── events/                 # Neutral agentic event contract (peko-events)
@@ -203,11 +207,10 @@ peko-rs/
 ├── subject/                # Canonical actor type (peko-subject, ADR-041)
 ├── tools-builtin/          # Concrete built-in tool implementations
 └── tools-core/             # Tool execution API (peko-tools-core, F34 ToolExposure)
-peko-rs/core/              # Root lib + CLI binary (Phase 0.Z-D — peko package, lib name peko_core)
+peko-rs/core/              # Root lib (Phase 0.Z-B — pure lib, no `[[bin]]`; CLI lifted to peko-rs/cli/)
 ├── src/
 │   ├── agents/             # Agent management (stateless manager, config, lifecycle, prompts)
 │   ├── auth/               # Authentication and authorization (principal, ownership, JWT, API keys)
-│   ├── commands/           # CLI command implementations
 │   ├── common/             # Shared services and core types (AgentService, config authority, vault, KV, types)
 │   ├── daemon/             # HTTP daemon (Axum-based), health, info endpoints, AppState composition root
 │   │   └── background_runtime/ # Generic process supervision (manager, supervisor, adapter traits)
@@ -239,8 +242,7 @@ peko-rs/core/              # Root lib + CLI binary (Phase 0.Z-D — peko package
 │   │   ├── core/           # Tool trait definitions
 │   │   └── registry/       # Tool factory and creation helpers
 │   ├── tunnel/             # Tunnel / network layer — Pekohub A2A protocol, dispatcher, known runtimes
-│   ├── main.rs             # CLI entry point (clap-based)
-│   └── lib.rs              # Library surface (public domains + re-exports)
+│   └── lib.rs              # Library surface (public domains + re-exports; no longer declares `commands`)
 └── tests/                  # Integration tests + scenarios (41 files incl. docker/, common/, scenarios/)
 ```
 
@@ -303,10 +305,10 @@ The workflow runs a path-aware, six-tier pipeline. Doc-only PRs (only
 
 | Tier | Trigger | Wall-clock (warm) | Make target |
 |---|---|---|---|
-| `smoke` | `peko-rs/core/src/**` or `peko-rs/core/tests/**` changed | < 6 min | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` |
-| `lint` | `peko-rs/core/src/**` changed | < 1 min | `bash scripts/check_module_boundaries.sh` |
+| `smoke` | `peko-rs/cli/**`, `peko-rs/core/src/**`, or `peko-rs/core/tests/**` changed (Phase 0.Z-B) | < 6 min | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` |
+| `lint` | `peko-rs/cli/**` or `peko-rs/core/src/**` changed (Phase 0.Z-B) | < 1 min | `bash scripts/check_module_boundaries.sh` |
 | `lint-workspace` | `peko-rs/**`, root `Cargo.toml`/`Cargo.lock`, or `scripts/check_workspace_deps.py` changed (Phase 12b) | < 5 s | `python3 scripts/check_workspace_deps.py` |
-| `unit-linux` | `peko-rs/core/src/**` or `peko-rs/core/tests/**` changed | ~3 min | `cargo test --lib` |
+| `unit-linux` | `peko-rs/cli/**`, `peko-rs/core/src/**`, or `peko-rs/core/tests/**` changed (Phase 0.Z-B) | ~3 min | `cargo test --lib` |
 | `unit-windows` | Windows-specific paths or `[windows]` keyword / schedule / manual | ~5 min | `cargo test --lib` |
 | `integration` | `peko-rs/core/tests/**`, `docker/**`, `Dockerfile*`, or workflow changed; or schedule / manual | ~10-15 min | `make docker-up` + `make test-integration` |
 | `integration-llm` | `peko-rs/core/src/**` or `peko-rs/core/tests/**` changed AND `[llm]` keyword / schedule / manual | ~5 min extra | `make test-integration-llm` |
@@ -501,7 +503,7 @@ cargo test --all-features
     - `agents` depends on `tunnel` (for the `AgentMessageService` trait used by `PrincipalSendTool`) and does **not** depend on `tunnel::principal_send_tool`'s concrete types.
     - `extensions::framework` does **not** depend on `agents`, `tunnel`, `daemon`, or `principal` (enforced by `check_module_boundaries.sh` Rules 5 and 6).
   - Cycles 4 (`tools::core ↔ extension::types`) and 5 (`tunnel ↔ agents`) from `PLAN.md` §2.5 are now actually broken (not reshuffled).
-  - `peko-rs/core/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `crate::registry::packaging::`, `crate::common::services::config_authority::`, `crate::identity::storage::`, `crate::session::jsonl::`, `crate::session::metadata_controller::`). `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
+  - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
 - **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.
 

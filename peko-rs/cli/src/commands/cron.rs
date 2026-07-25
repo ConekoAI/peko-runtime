@@ -6,7 +6,7 @@
 //! owner permissions.
 
 use crate::commands::GlobalPaths;
-use crate::ipc::{DaemonClient, ResponsePacket};
+use peko_core::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Subcommand;
@@ -227,7 +227,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to list jobs: {message}"))
                 }
-                other => Err(crate::ipc::unexpected_response(&other)),
+                other => Err(peko_core::ipc::unexpected_response(&other)),
             }
         }
 
@@ -293,7 +293,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to add job: {message}"))
                 }
-                other => Err(crate::ipc::unexpected_response(&other)),
+                other => Err(peko_core::ipc::unexpected_response(&other)),
             }
         }
 
@@ -346,7 +346,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to add job: {message}"))
                 }
-                other => Err(crate::ipc::unexpected_response(&other)),
+                other => Err(peko_core::ipc::unexpected_response(&other)),
             }
         }
 
@@ -407,7 +407,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to add job: {message}"))
                 }
-                other => Err(crate::ipc::unexpected_response(&other)),
+                other => Err(peko_core::ipc::unexpected_response(&other)),
             }
         }
 
@@ -426,7 +426,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to remove job: {message}"))
                 }
-                other => Err(crate::ipc::unexpected_response(&other)),
+                other => Err(peko_core::ipc::unexpected_response(&other)),
             }
         }
 
@@ -445,7 +445,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to run job: {message}"))
                 }
-                other => Err(crate::ipc::unexpected_response(&other)),
+                other => Err(peko_core::ipc::unexpected_response(&other)),
             }
         }
 
@@ -481,7 +481,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to get history: {message}"))
                 }
-                other => Err(crate::ipc::unexpected_response(&other)),
+                other => Err(peko_core::ipc::unexpected_response(&other)),
             }
         }
 
@@ -530,7 +530,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to add job: {message}"))
                 }
-                other => Err(crate::ipc::unexpected_response(&other)),
+                other => Err(peko_core::ipc::unexpected_response(&other)),
             }
         }
 
@@ -586,7 +586,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to add job: {message}"))
                 }
-                other => Err(crate::ipc::unexpected_response(&other)),
+                other => Err(peko_core::ipc::unexpected_response(&other)),
             }
         }
     }

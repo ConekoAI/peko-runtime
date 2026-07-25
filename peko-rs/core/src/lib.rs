@@ -284,8 +284,11 @@ pub mod tools;
 // CLI & Commands
 // ============================================================================
 
-// [kept] — CLI handlers. Stays pub after cleanup.
-pub mod commands;
+// [extract:phase-0Z-B] — CLI handlers moved to `peko-rs/cli/src/commands/`.
+// The `peko` binary now lives in the `peko-cli` satellite crate, mirroring
+// the `codex-rs/cli/` layout. The cli sat has no API surface that core
+// exposes (it imports from `peko_core` instead), so no backwards-compat
+// re-export is needed here.
 
 // ============================================================================
 // Utilities

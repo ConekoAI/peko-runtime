@@ -1,0 +1,77 @@
+[package]
+name = "peko-cli"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Peko CLI binary (Phase 0.Z-B — extracted from `peko-rs/core/`). Owns the on-disk `peko` binary and the `commands/` composition tree. Depends on the `peko_core` lib for the CLI composition surface (`Cli`/`Commands`/`GlobalPaths`/`init_logging`). The CLI is a sink; no other workspace crate depends on it."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+[[bin]]
+name = "peko"
+path = "src/main.rs"
+
+[dependencies]
+# Phase 0.Z-B: this crate owns the `peko` binary. `package = "peko"` is
+# required because core's `[package].name` is `"peko"` while `[lib].name`
+# is `"peko_core"` (Cargo matches dep names to `[lib].name` by default).
+peko_core = { package = "peko", path = "../core" }
+# Workspace deps referenced directly by CLI command files (the rest reach
+# the workspace through `peko_core::...` re-exports). Cargo dep keys use
+# underscores (`peko_auth`); package names use hyphens (`peko-auth`) and
+# resolve via the path.
+peko-auth = { path = "../auth" }
+peko-chat-log = { path = "../chat-log" }
+peko-cron = { path = "../cron" }
+peko-extension-api = { path = "../extension-api" }
+peko-extension-host = { path = "../extension-host", features = ["test-utils"] }
+peko-principal = { path = "../principal" }
+peko-providers = { path = "../providers" }
+peko-quota = { path = "../quota" }
+peko-identity = { path = "../identity" }
+peko-subject = { path = "../subject" }
+
+# External crates
+clap = { version = "4.4", features = ["derive", "env"] }
+clap_complete = "4.4"
+anyhow = "1.0"
+tokio = { version = "1.35", features = ["full", "net", "macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+toml_edit = "0.25.12"
+reqwest = { version = "0.11", features = ["json", "stream"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+secrecy = { version = "0.10", features = ["serde"] }
+uuid = { version = "1.7", features = ["v4", "v5", "serde"] }
+async-trait = "0.1"
+futures = "0.3"
+url = "2.5"
+urlencoding = "2.1"
+rpassword = "7.3"
+cron = "0.12"
+regex = "1.10"
+dirs = "5.0"
+rand = "0.8"
+hex = "0.4"
+walkdir = "2.5"
+flate2 = "1.0"
+tar = "0.4"
+aes-gcm = "0.10"
+argon2 = "0.5"
+hkdf = "0.12"
+sha2 = "0.10"
+thiserror = "1.0"
+libc = "0.2"
+glob = "0.3"
+hostname = "0.4"
+once_cell = "1.19"
+keyring = "2.3"
+
+[dev-dependencies]
+tempfile = "3.10"
+serial_test = "3.0"

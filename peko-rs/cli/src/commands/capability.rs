@@ -12,7 +12,7 @@
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::ipc::{DaemonClient, ResponsePacket};
+use peko_core::ipc::{DaemonClient, ResponsePacket};
 
 /// Subcommands for `peko capability`.
 #[derive(Subcommand)]
@@ -74,7 +74,7 @@ pub async fn handle_capability(command: CapabilityCommands, json: bool) -> Resul
                     }
                 }
                 ResponsePacket::Error { message, .. } => anyhow::bail!(message),
-                other => anyhow::bail!(crate::ipc::unexpected_response(&other)),
+                other => anyhow::bail!(peko_core::ipc::unexpected_response(&other)),
             }
         }
         CapabilityCommands::Revoke {
@@ -102,7 +102,7 @@ pub async fn handle_capability(command: CapabilityCommands, json: bool) -> Resul
                     }
                 }
                 ResponsePacket::Error { message, .. } => anyhow::bail!(message),
-                other => anyhow::bail!(crate::ipc::unexpected_response(&other)),
+                other => anyhow::bail!(peko_core::ipc::unexpected_response(&other)),
             }
         }
         CapabilityCommands::List { principal } => {
@@ -158,7 +158,7 @@ pub async fn handle_capability(command: CapabilityCommands, json: bool) -> Resul
                     }
                 }
                 ResponsePacket::Error { message, .. } => anyhow::bail!(message),
-                other => anyhow::bail!(crate::ipc::unexpected_response(&other)),
+                other => anyhow::bail!(peko_core::ipc::unexpected_response(&other)),
             }
         }
     }

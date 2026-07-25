@@ -4,7 +4,7 @@
 //! PekoHub tunnel connection.
 
 use crate::commands::GlobalPaths;
-use crate::tunnel::{load_pekohub_credential, TunnelClient};
+use peko_core::tunnel::{load_pekohub_credential, TunnelClient};
 use anyhow::Context;
 use clap::Subcommand;
 use std::path::PathBuf;
@@ -50,13 +50,13 @@ async fn handle_tunnel_setup(
     _json: bool,
     paths: &GlobalPaths,
 ) -> anyhow::Result<()> {
-    let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(&paths.config_dir);
-    let vault = crate::common::vault::Vault::load(paths.resolver().vault())
+    let cred_path = peko_core::tunnel::PekoHubCredential::path_for_config_dir(&paths.config_dir);
+    let vault = peko_core::common::vault::Vault::load(paths.resolver().vault())
         .context("Failed to load credential vault")?;
 
     // Check if credential already exists
     if cred_path.exists() {
-        let existing = crate::tunnel::PekoHubCredential::from_file(&cred_path)?;
+        let existing = peko_core::tunnel::PekoHubCredential::from_file(&cred_path)?;
         anyhow::bail!(
             "PekoHub credential already exists at: {}\n\
              Runtime ID: {}\n\
@@ -167,7 +167,7 @@ async fn handle_tunnel_setup(
     println!("   Private key stored securely in vault.");
 
     // Create credential (no raw private_key)
-    let credential = crate::tunnel::PekoHubCredential {
+    let credential = peko_core::tunnel::PekoHubCredential {
         url: hub_url.clone(),
         runtime_id: runtime_did.clone(),
         tls: None,
@@ -203,7 +203,7 @@ pub async fn handle_tunnel(
                 Some(c) => c,
                 None => {
                     let path = cred_path.map_or_else(
-                        crate::tunnel::PekoHubCredential::default_path,
+                        peko_core::tunnel::PekoHubCredential::default_path,
                         PathBuf::from,
                     );
                     anyhow::bail!(
@@ -220,7 +220,7 @@ pub async fn handle_tunnel(
 
             // Try to connect to the daemon and use its AppState for dispatch.
             // If the daemon is not running, fall back to a limited mode.
-            let daemon_running = crate::ipc::DaemonClient::connect().await.is_ok();
+            let daemon_running = peko_core::ipc::DaemonClient::connect().await.is_ok();
 
             if daemon_running {
                 println!("   Mode: daemon-integrated (full service dispatch)");
@@ -233,7 +233,7 @@ pub async fn handle_tunnel(
                 println!("   Warning: Chat requests will not be dispatched without the daemon.");
             }
 
-            let vault = crate::common::vault::Vault::load(paths.resolver().vault())
+            let vault = peko_core::common::vault::Vault::load(paths.resolver().vault())
                 .context("Failed to load credential vault")?;
             let mut client = TunnelClient::new(cred).with_vault(std::sync::Arc::new(vault));
             client.on_request(|msg, _handle| async move {
@@ -247,9 +247,9 @@ pub async fn handle_tunnel(
         }
         TunnelCommands::Stop => {
             // In daemon mode, stop the tunnel via IPC
-            match crate::ipc::DaemonClient::connect().await {
+            match peko_core::ipc::DaemonClient::connect().await {
                 Ok(client) => match client.tunnel_stop().await {
-                    Ok(crate::ipc::ResponsePacket::Done { success, .. }) => {
+                    Ok(peko_core::ipc::ResponsePacket::Done { success, .. }) => {
                         if success {
                             println!("🛑 Tunnel stopped.");
                         } else {
@@ -273,13 +273,13 @@ pub async fn handle_tunnel(
             Ok(())
         }
         TunnelCommands::Status { json: json_flag } => {
-            let has_cred = crate::tunnel::credential::has_pekohub_credential();
-            let cred_path = crate::tunnel::PekoHubCredential::default_path();
+            let has_cred = peko_core::tunnel::credential::has_pekohub_credential();
+            let cred_path = peko_core::tunnel::PekoHubCredential::default_path();
 
             // Try to check daemon tunnel status
-            match crate::ipc::DaemonClient::connect().await {
+            match peko_core::ipc::DaemonClient::connect().await {
                 Ok(client) => match client.tunnel_status().await {
-                    Ok(crate::ipc::ResponsePacket::TunnelStatus {
+                    Ok(peko_core::ipc::ResponsePacket::TunnelStatus {
                         configured,
                         daemon_running,
                         connected,
@@ -382,7 +382,7 @@ pub async fn handle_tunnel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::packet::{RequestPacket, ResponsePacket};
+    use peko_core::ipc::packet::{RequestPacket, ResponsePacket};
 
     #[test]
     fn test_tunnel_commands_enum() {

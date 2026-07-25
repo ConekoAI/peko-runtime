@@ -25,7 +25,7 @@
 //! ```
 
 use crate::commands::GlobalPaths;
-use crate::common::vault::{Credential, CredentialKind, Vault};
+use peko_core::common::vault::{Credential, CredentialKind, Vault};
 use anyhow::{Context, Result};
 use peko_providers::catalog::{ApiFormat, ModelCatalog, ModelConfig};
 use peko_providers::templates;
@@ -129,11 +129,11 @@ pub async fn execute(cmd: ModelCommands, paths: &GlobalPaths) -> Result<()> {
 /// start, dev workflow), in which case the next `peko daemon start`
 /// will pick up the new state from disk anyway.
 async fn notify_daemon_reload() {
-    let Ok(client) = crate::ipc::DaemonClient::connect().await else {
+    let Ok(client) = peko_core::ipc::DaemonClient::connect().await else {
         return;
     };
     match client.reload_providers().await {
-        Ok(crate::ipc::ResponsePacket::ModelReloaded {
+        Ok(peko_core::ipc::ResponsePacket::ModelReloaded {
             models_count,
             keys_count,
             ..
@@ -142,7 +142,7 @@ async fn notify_daemon_reload() {
                 println!("Daemon reloaded: {models_count} model(s), {keys_count} key(s).");
             }
         }
-        Ok(crate::ipc::ResponsePacket::Error { message, .. }) => {
+        Ok(peko_core::ipc::ResponsePacket::Error { message, .. }) => {
             eprintln!("Daemon reload returned error: {message}");
         }
         Ok(other) => {
@@ -448,7 +448,7 @@ async fn test_cmd(id: &str, paths: &GlobalPaths) -> Result<()> {
 mod tests {
     use super::*;
 
-    use crate::commands::Cli;
+    use crate::commands::{from_cli, Cli};
     use clap::Parser;
 
     /// Build a `GlobalPaths` rooted at a fresh tempdir, with a
@@ -477,7 +477,7 @@ mod tests {
             "model",
             "list",
         ]);
-        GlobalPaths::from_cli(&cli)
+        from_cli(&cli)
     }
 
     /// `peko model add` with no flags must NOT launch an interactive
@@ -584,7 +584,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(vault_passphrase)]
     async fn one_shot_add_writes_catalog_and_vault() {
-        use crate::common::vault::Vault;
+        use peko_core::common::vault::Vault;
         use peko_providers::catalog::ModelCatalog;
         use secrecy::{ExposeSecret, SecretString};
 

@@ -11,9 +11,9 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 
 use crate::commands::GlobalPaths;
-use crate::common::paths::PathResolver;
-use crate::ipc::{DaemonClient, ResponsePacket};
-use crate::principal::{
+use peko_core::common::paths::PathResolver;
+use peko_core::ipc::{DaemonClient, ResponsePacket};
+use peko_core::principal::{
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
     router::{ChannelContext, ChannelKind},
     PrincipalManager,
@@ -966,7 +966,7 @@ async fn load_principal(
     name: &str,
     manager: &PrincipalManager,
     paths: &GlobalPaths,
-) -> Result<Arc<crate::principal::Principal>> {
+) -> Result<Arc<peko_core::principal::Principal>> {
     if let Some(p) = manager.get_by_name(name).await {
         return Ok(p);
     }
@@ -1080,7 +1080,7 @@ impl PrincipalMemoryFactory for CliPrincipalMemoryFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{Cli, Commands};
+    use crate::commands::{from_cli, Cli, Commands};
     use clap::Parser;
     use peko_auth::Permission;
 
@@ -1321,7 +1321,7 @@ mod tests {
             "principal",
             "list",
         ]);
-        let paths = GlobalPaths::from_cli(&cli);
+        let paths = from_cli(&cli);
 
         // Empty catalog → any model id is rejected at creation, before
         // the workspace is written.

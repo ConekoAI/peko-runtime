@@ -7,8 +7,8 @@
 
 use crate::commands::mcp;
 use crate::commands::GlobalPaths;
-use crate::ipc::client_service::DaemonClientService;
-use crate::registry::client::ProgressEvent;
+use peko_core::ipc::client_service::DaemonClientService;
+use peko_core::registry::client::ProgressEvent;
 use clap::Subcommand;
 use peko_extension_host::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
 use peko_extension_host::services::{ConfigScope, ExtensionConfigService};
@@ -175,8 +175,8 @@ pub async fn handle_ext_command(
             r#type,
             json,
         } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionList {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::ExtensionList {
                 request_id: 1,
                 enabled_only,
                 ext_type: r#type,
@@ -184,7 +184,7 @@ pub async fn handle_ext_command(
             let response = client.request_response(packet).await?;
 
             match response {
-                crate::ipc::ResponsePacket::ExtensionList {
+                peko_core::ipc::ResponsePacket::ExtensionList {
                     extensions, total, ..
                 } => {
                     if json {
@@ -209,14 +209,14 @@ pub async fn handle_ext_command(
         }
 
         ExtCommands::Install { path, r#type: _ } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionInstall {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::ExtensionInstall {
                 request_id: 1,
                 path: path.to_string_lossy().to_string(),
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::ExtensionInstalled { id, message, .. } => {
+                peko_core::ipc::ResponsePacket::ExtensionInstalled { id, message, .. } => {
                     println!("{}", message);
                     println!("   ID: {id}");
                 }
@@ -226,14 +226,14 @@ pub async fn handle_ext_command(
         }
 
         ExtCommands::Uninstall { id } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionUninstall {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::ExtensionUninstall {
                 request_id: 1,
                 id: id.clone(),
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::ExtensionUninstalled { message, .. } => {
+                peko_core::ipc::ResponsePacket::ExtensionUninstalled { message, .. } => {
                     println!("{}", message);
                 }
                 _ => anyhow::bail!("Unexpected response"),
@@ -278,8 +278,8 @@ pub async fn handle_ext_command(
             verbose,
             semantic,
         } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionValidate {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::ExtensionValidate {
                 request_id: 1,
                 path: path.to_string_lossy().to_string(),
                 verbose,
@@ -287,13 +287,13 @@ pub async fn handle_ext_command(
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::ExtensionValidated {
+                peko_core::ipc::ResponsePacket::ExtensionValidated {
                     valid,
                     errors,
                     warnings,
                     ..
                 } => {
-                    let report = crate::extensions::validation::ValidationReport {
+                    let report = peko_core::extensions::validation::ValidationReport {
                         detected_type: "unknown".to_string(),
                         errors,
                         warnings,
@@ -309,14 +309,14 @@ pub async fn handle_ext_command(
         }
 
         ExtCommands::Debug { id } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionDebug {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::ExtensionDebug {
                 request_id: 1,
                 id: id.clone(),
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::ExtensionDebugInfo { info, .. } => {
+                peko_core::ipc::ResponsePacket::ExtensionDebugInfo { info, .. } => {
                     println!(
                         "Debug Information for Extension: {}",
                         info.get("id").and_then(|v| v.as_str()).unwrap_or(&id)
@@ -350,14 +350,14 @@ pub async fn handle_ext_command(
         }
 
         ExtCommands::Info { id } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionInfo {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::ExtensionInfo {
                 request_id: 1,
                 id: id.clone(),
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::ExtensionInfoResponse { info, .. } => {
+                peko_core::ipc::ResponsePacket::ExtensionInfoResponse { info, .. } => {
                     println!("Extension Details");
                     println!("=================");
                     println!("{}", serde_json::to_string_pretty(&info)?);
@@ -368,15 +368,15 @@ pub async fn handle_ext_command(
         }
 
         ExtCommands::Export { id, output } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionExport {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::ExtensionExport {
                 request_id: 1,
                 id: id.clone(),
                 output: output.clone(),
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::ExtensionExported { output, .. } => {
+                peko_core::ipc::ResponsePacket::ExtensionExported { output, .. } => {
                     println!("Exported extension '{}' to {}", id, output);
                     Ok(())
                 }
@@ -385,15 +385,15 @@ pub async fn handle_ext_command(
         }
 
         ExtCommands::Bundle { name, ids } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionBundle {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::ExtensionBundle {
                 request_id: 1,
                 name: name.clone(),
                 ids,
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::ExtensionBundled { count, .. } => {
+                peko_core::ipc::ResponsePacket::ExtensionBundled { count, .. } => {
                     println!("Created bundle '{}' with {} extension(s)", name, count);
                     Ok(())
                 }
@@ -490,7 +490,7 @@ pub async fn handle_ext_command(
 // --- Validation Report Rendering ---
 
 fn print_validation_report(
-    report: &crate::extensions::validation::ValidationReport,
+    report: &peko_core::extensions::validation::ValidationReport,
     verbose: bool,
 ) -> anyhow::Result<()> {
     if !verbose {
@@ -523,30 +523,9 @@ fn print_validation_report(
     Ok(())
 }
 
-// --- Install ---
-
-/// Extract a `.ext` package file to a temp directory if needed.
-/// Returns the path to use for installation (either the extracted dir or the original path).
-pub fn prepare_install_path(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
-    if path.extension().map_or(false, |e| e == "ext") {
-        let temp_dir = std::env::temp_dir().join("PEKO_ext_install").join(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                .to_string(),
-        );
-        std::fs::create_dir_all(&temp_dir)?;
-        let extracted =
-            peko_extension_host::manager::packaging::ExtensionUnpackager::install(path, &temp_dir)
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to extract .ext package '{}': {}", path.display(), e)
-                })?;
-        Ok(extracted)
-    } else {
-        Ok(path.to_path_buf())
-    }
-}
+// `prepare_install_path` now lives in `peko_extension_host::manager::packaging`
+// (Phase 0.Z-B). Both this CLI and the lib-side IPC handler in
+// `peko-rs/core/src/ipc/handlers/extension.rs` import it from there.
 
 // --- List ---
 // (handled via IPC in handle_ext_command)

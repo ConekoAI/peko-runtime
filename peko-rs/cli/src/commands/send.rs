@@ -11,8 +11,8 @@
 //!   peko send myprincipal "Hello" --model openai-gpt-4o
 
 use crate::commands::GlobalPaths;
-use crate::ipc::packet::PrincipalSendControlMode;
-use crate::ipc::{DaemonClient, ResponsePacket};
+use peko_core::ipc::packet::PrincipalSendControlMode;
+use peko_core::ipc::{DaemonClient, ResponsePacket};
 use anyhow::Result;
 use clap::Args;
 use peko_principal::runtime::OutputFormat;
@@ -100,7 +100,7 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
 /// closes the stream naturally (the loop will fall through with the
 /// "interrupted" error message).
 async fn process_response_stream(
-    mut stream: crate::ipc::PacketStream,
+    mut stream: peko_core::ipc::PacketStream,
     client: &DaemonClient,
     args: &SendArgs,
     _json: bool,
@@ -225,7 +225,7 @@ async fn process_response_stream(
 /// own `Done` with `error: Some("interrupted")` and close it). Returns
 /// the next packet or `None` when the stream is fully closed.
 async fn next_or_interrupt(
-    stream: &mut crate::ipc::PacketStream,
+    stream: &mut peko_core::ipc::PacketStream,
     ctrl_c_signal: &std::sync::Arc<tokio::sync::Notify>,
     interrupt_sent: &mut bool,
     client: &DaemonClient,

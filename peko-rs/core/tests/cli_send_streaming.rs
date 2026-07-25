@@ -5,7 +5,7 @@
 //! slower than the CLI's per-packet idle timeout dies with "Stream closed
 //! unexpectedly". `peko send` therefore issues `PrincipalSendStream`, whose
 //! `PrincipalSentChunk` deltas both stream to the terminal and keep the
-//! idle timer alive. See `src/commands/send.rs`.
+//! idle timer alive. See `peko-rs/cli/src/commands/send.rs`.
 //!
 //! Unlike `cli_send.rs`, this test needs no mock LLM and no real daemon: it
 //! binds a fake `UnixDatagram` "daemon" on the exact socket path the CLI
