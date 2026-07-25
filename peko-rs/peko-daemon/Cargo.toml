@@ -19,6 +19,8 @@ path = "src/main.rs"
 # `peko`). The lib's daemon internals (`background_runtime`,
 # `cron_engine`, `state`, `DaemonStatus`) stay `pub(crate)` — only
 # the entry surface is reachable.
-peko_core = { package = "peko", path = "../.." }
+# Phase 0.Z-D: root moved to peko-rs/core/. `package = "peko"` is still
+# required because Cargo matches dep names to `[lib].name` by default.
+peko_core = { package = "peko", path = "../core" }
 anyhow = "1.0"
 tokio = { version = "1.35", features = ["full", "net", "macros", "rt-multi-thread"] }

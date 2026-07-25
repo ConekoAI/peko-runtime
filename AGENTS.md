@@ -122,7 +122,7 @@ contracts and binaries live under `peko-rs/. Final workspace members:
   `post_tool_use`, `execute_tool_via_hook`) so `tool_executor.rs`
   could lift into `peko-engine`. The hook methods hide
   `HookPoint`/`HookInput` construction (still root-only) inside the
-  impl in `src/engine/extension_core_funnel_compat.rs`. The
+  impl in `peko-rs/core/src/engine/extension_core_funnel_compat.rs`. The
   `SessionView` trait (in `peko-engine`) plus the `SessionCore`
   marker use a blanket impl over `Arc<RwLock<T>>` so root's
   `impl SessionCore for crate::session::Session` makes
@@ -164,7 +164,7 @@ contracts and binaries live under `peko-rs/. Final workspace members:
   `ToolFunnel` gained `invoke_stop_hook` +
   `invoke_after_agent_hook` mirroring the pre/post tool-use
   pair so the lifted loop never imports `HookPoint` /
-  `HookInput` directly. The actual `src/engine/agentic_loop.rs`
+  `HookInput` directly. The actual `peko-rs/core/src/engine/agentic_loop.rs`
   lift is Phase 9b.N.5b.
 - `peko-quota` — per-principal token quota (F18/F19). `QuotaMeter`,
   `QuotaScope`, `QuotaState`, `QuotaConfig`, `QuotaError`.
@@ -186,12 +186,12 @@ contracts and binaries live under `peko-rs/. Final workspace members:
 peko-rs/
 ├── chat-log/               # Append-only chat-log storage (peko-chat-log, Phase 5)
 ├── cron/                   # Cron scheduler + idle + event-trigger (peko-cron, Phase 14.b)
-├── engine/                 # Agentic loop core (peko-engine)
+│   ├── engine/             # Agentic loop core (peko-engine)
 ├── events/                 # Neutral agentic event contract (peko-events)
 ├── extension-api/          # Framework API contracts (peko-extension-api)
 ├── extension-host/         # Framework host impl (peko-extension-host)
 ├── fs-persistence/         # File-lock + atomic append helpers (peko-fs-persistence, Phase 5)
-├── identity/               # DID identity + key storage (peko-identity, Phase 3)
+│   ├── identity/           # DID identity + key storage (peko-identity, Phase 3)
 ├── message/                # Neutral message contract (peko-message)
 ├── observability/          # Observability hub (peko-observability, Phase 14)
 ├── peko-daemon/            # Long-running daemon binary (peko-daemon)
@@ -199,47 +199,49 @@ peko-rs/
 ├── provider-api/           # Provider contract types (peko-provider-api)
 ├── protocol/               # IPC + tunnel wire-shape contracts (peko-protocol)
 ├── quota/                  # Per-principal token quota (peko-quota)
-├── session/                # Session persistence + InboxRegistry (peko-session, Phase 7)
+│   ├── session/            # Session persistence + InboxRegistry (peko-session, Phase 7)
 ├── subject/                # Canonical actor type (peko-subject, ADR-041)
 ├── tools-builtin/          # Concrete built-in tool implementations
 └── tools-core/             # Tool execution API (peko-tools-core, F34 ToolExposure)
-src/
-├── agents/                 # Agent management (stateless manager, config, lifecycle, prompts)
-├── auth/                   # Authentication and authorization (principal, ownership, JWT, API keys)
-├── commands/               # CLI command implementations
-├── common/                 # Shared services and core types (AgentService, config authority, vault, KV, types)
-├── daemon/                 # HTTP daemon (Axum-based), health, info endpoints, AppState composition root
-│   └── background_runtime/ # Generic process supervision (manager, supervisor, adapter traits)
-├── engine/                 # Core agentic loop execution engine
-├── extensions/             # Extension framework + type implementations
-│   ├── framework/          # Generic extension framework (ADR-017) — core, types, manager, async_exec, transport, services, protocols/shared
-│   ├── builtin/            # Built-in tool adapter
-│   ├── gateway/            # Gateway adapter, runtime, protocol
-│   ├── general/            # General extension adapter
-│   ├── mcp/                # MCP adapter, runtime, protocol
-│   ├── skill/              # Skill adapter
-│   └── universal/          # Universal tool adapter and protocol
-├── identity/               # DID identity system, ed25519 keys, key storage, runtime identity
-├── ipc/                    # Inter-process communication
-├── providers/              # LLM provider integrations (v3: catalog + resolver)
-│   ├── adapters/           # OpenAI / Anthropic / openai-compatible ApiAdapters
-│   ├── catalog.rs          # ProviderCatalog — runtime-owned, persisted to `~/.peko/providers.toml`
-│   ├── templates.rs        # Built-in preset templates with curated model lists
-│   ├── resolver.rs         # LlmResolver — precedence: override > session > agent > default > first
-│   └── core.rs             # Unified Provider type
-├── registry/               # Local packaging/export/import and remote registry push/pull
-│   ├── packaging/          # OCI-inspired .principal/.ext archive handling
-│   │                       # (.agent/.team archives were retired with
-│   │                       #  the principal-as-single-actor migration)
-│   └── client.rs           # HTTP registry client
-├── session/                # Session JSONL management, branching, indexing, compaction
-├── tools/                  # Built-in tools and tool factory
-│   ├── builtin/            # Built-in tool implementations
-│   ├── core/               # Tool trait definitions
-│   └── registry/           # Tool factory and creation helpers
-├── tunnel/                 # Tunnel / network layer — Pekohub A2A protocol, dispatcher, known runtimes
-├── main.rs                 # CLI entry point (clap-based)
-└── lib.rs                  # Library surface (public domains + re-exports)
+peko-rs/core/              # Root lib + CLI binary (Phase 0.Z-D — peko package, lib name peko_core)
+├── src/
+│   ├── agents/             # Agent management (stateless manager, config, lifecycle, prompts)
+│   ├── auth/               # Authentication and authorization (principal, ownership, JWT, API keys)
+│   ├── commands/           # CLI command implementations
+│   ├── common/             # Shared services and core types (AgentService, config authority, vault, KV, types)
+│   ├── daemon/             # HTTP daemon (Axum-based), health, info endpoints, AppState composition root
+│   │   └── background_runtime/ # Generic process supervision (manager, supervisor, adapter traits)
+│   ├── engine/             # Core agentic loop execution engine
+│   ├── extensions/         # Extension framework + type implementations
+│   │   ├── framework/      # Generic extension framework (ADR-017) — core, types, manager, async_exec, transport, services, protocols/shared
+│   │   ├── builtin/        # Built-in tool adapter
+│   │   ├── gateway/        # Gateway adapter, runtime, protocol
+│   │   ├── general/        # General extension adapter
+│   │   ├── mcp/            # MCP adapter, runtime, protocol
+│   │   ├── skill/          # Skill adapter
+│   │   └── universal/      # Universal tool adapter and protocol
+│   ├── identity/           # DID identity system, ed25519 keys, key storage, runtime identity
+│   ├── ipc/                # Inter-process communication
+│   ├── providers/          # LLM provider integrations (v3: catalog + resolver)
+│   │   ├── adapters/       # OpenAI / Anthropic / openai-compatible ApiAdapters
+│   │   ├── catalog.rs      # ProviderCatalog — runtime-owned, persisted to `~/.peko/providers.toml`
+│   │   ├── templates.rs    # Built-in preset templates with curated model lists
+│   │   ├── resolver.rs     # LlmResolver — precedence: override > session > agent > default > first
+│   │   └── core.rs         # Unified Provider type
+│   ├── registry/           # Local packaging/export/import and remote registry push/pull
+│   │   ├── packaging/      # OCI-inspired .principal/.ext archive handling
+│   │   │                   # (.agent/.team archives were retired with
+│   │   │                   #  the principal-as-single-actor migration)
+│   │   └── client.rs       # HTTP registry client
+│   ├── session/            # Session JSONL management, branching, indexing, compaction
+│   ├── tools/              # Built-in tools and tool factory
+│   │   ├── builtin/        # Built-in tool implementations
+│   │   ├── core/           # Tool trait definitions
+│   │   └── registry/       # Tool factory and creation helpers
+│   ├── tunnel/             # Tunnel / network layer — Pekohub A2A protocol, dispatcher, known runtimes
+│   ├── main.rs             # CLI entry point (clap-based)
+│   └── lib.rs              # Library surface (public domains + re-exports)
+└── tests/                  # Integration tests + scenarios (41 files incl. docker/, common/, scenarios/)
 ```
 
 ---
@@ -269,23 +271,27 @@ src/
 ## Testing Approach
 
 - **Unit tests** are co-located in `#[cfg(test)]` modules within source files.
-- **Integration tests** live in `tests/`; the legacy PowerShell `e2e_tests/` tree was renamed to `e2e_tests_archive/` and now serves as a fixture source for the new Rust integration tests.
+- **Integration tests** live in `peko-rs/core/tests/` (Phase 0.Z-D moved
+  `tests/` → `peko-rs/core/tests/`); the legacy PowerShell `e2e_tests/`
+  tree was renamed to `e2e_tests_archive/` and lives at
+  `peko-rs/core/e2e_tests_archive/` (a fixture source for the new
+  Rust integration tests).
 - **New CLI integration tests** (Phase B migration, then
   retargeted for the principal-as-single-actor model in the parity
   branch):
-  - `tests/cli_send.rs` — `peko send` (targets a Principal; mock LLM)
-  - `tests/cli_basics.rs` — Offline `peko principal`/`peko config`
-  - `tests/cli_extensions.rs`, `tests/cli_extensions_l3.rs` — Extension system
-  - `tests/cli_cron.rs` — `peko cron` create/list/delete (mock LLM)
-  - `tests/cli_subagent.rs` — `peko subagent` + `agent_spawn` (mock LLM)
-  - `tests/cli_tools.rs` — Built-in tools (Bash, Read, Write, …) (mock LLM)
-  - `tests/cli_providers.rs` — Real-LLM tier (minimax, kimi)
-  - `tests/cli_agent_signature.rs` — Principal packager signature
+  - `peko-rs/core/tests/cli_send.rs` — `peko send` (targets a Principal; mock LLM)
+  - `peko-rs/core/tests/cli_basics.rs` — Offline `peko principal`/`peko config`
+  - `peko-rs/core/tests/cli_extensions.rs`, `peko-rs/core/tests/cli_extensions_l3.rs` — Extension system
+  - `peko-rs/core/tests/cli_cron.rs` — `peko cron` create/list/delete (mock LLM)
+  - `peko-rs/core/tests/cli_subagent.rs` — `peko subagent` + `agent_spawn` (mock LLM)
+  - `peko-rs/core/tests/cli_tools.rs` — Built-in tools (Bash, Read, Write, …) (mock LLM)
+  - `peko-rs/core/tests/cli_providers.rs` — Real-LLM tier (minimax, kimi)
+  - `peko-rs/core/tests/cli_agent_signature.rs` — Principal packager signature
     verification (auto-discovered, run on demand via Make target)
-- **Scenario tests** live in `tests/scenarios/` (registered explicitly in `Cargo.toml`):
+- **Scenario tests** live in `peko-rs/core/tests/scenarios/` (registered explicitly in `peko-rs/core/Cargo.toml`):
   - `s1_local_agent_with_extensions` through `s6_principal_grant_revoke_roundtrip`
   - `tunnel_security` — Tunnel protocol security checks
-- **Fixtures** for scenario tests live in `e2e_tests_archive/` (legacy PowerShell e2e tree, kept as a fixture source).
+- **Fixtures** for scenario tests live in `peko-rs/core/e2e_tests_archive/` (legacy PowerShell e2e tree, kept as a fixture source).
 - **Benchmarks** live in `benches/`.
 - Tests cover critical paths: extension lifecycle, agent lifecycle, provider operations, session operations, tool operations.
 
@@ -297,13 +303,13 @@ The workflow runs a path-aware, six-tier pipeline. Doc-only PRs (only
 
 | Tier | Trigger | Wall-clock (warm) | Make target |
 |---|---|---|---|
-| `smoke` | `src/**` or `tests/**` changed | < 6 min | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` |
-| `lint` | `src/**` changed | < 1 min | `bash scripts/check_module_boundaries.sh` |
+| `smoke` | `peko-rs/core/src/**` or `peko-rs/core/tests/**` changed | < 6 min | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` |
+| `lint` | `peko-rs/core/src/**` changed | < 1 min | `bash scripts/check_module_boundaries.sh` |
 | `lint-workspace` | `peko-rs/**`, root `Cargo.toml`/`Cargo.lock`, or `scripts/check_workspace_deps.py` changed (Phase 12b) | < 5 s | `python3 scripts/check_workspace_deps.py` |
-| `unit-linux` | `src/**` or `tests/**` changed | ~3 min | `cargo test --lib` |
+| `unit-linux` | `peko-rs/core/src/**` or `peko-rs/core/tests/**` changed | ~3 min | `cargo test --lib` |
 | `unit-windows` | Windows-specific paths or `[windows]` keyword / schedule / manual | ~5 min | `cargo test --lib` |
-| `integration` | `tests/**`, `docker/**`, `Dockerfile*`, or workflow changed; or schedule / manual | ~10-15 min | `make docker-up` + `make test-integration` |
-| `integration-llm` | `src/**` or `tests/**` changed AND `[llm]` keyword / schedule / manual | ~5 min extra | `make test-integration-llm` |
+| `integration` | `peko-rs/core/tests/**`, `docker/**`, `Dockerfile*`, or workflow changed; or schedule / manual | ~10-15 min | `make docker-up` + `make test-integration` |
+| `integration-llm` | `peko-rs/core/src/**` or `peko-rs/core/tests/**` changed AND `[llm]` keyword / schedule / manual | ~5 min extra | `make test-integration-llm` |
 
 ### Cleanup phases (post-migration)
 
@@ -469,7 +475,7 @@ cargo test --all-features
 ## How to Add Features
 
 1. **Identify the domain** — Is this an agent feature? A tool? A provider? An extension?
-2. **Add code in the appropriate `src/<module>/`** — Follow existing module structure.
+2. **Add code in the appropriate `peko-rs/core/src/<module>/`** — Follow existing module structure.
 3. **Update tests** — Add unit tests in `#[cfg(test)]` and integration tests if needed.
 4. **Update documentation** — If the change affects public APIs, update `API_SURFACE.md` and `DATA_MODEL.md` as appropriate.
 5. **Run the full test suite** — `cargo test` and `cargo clippy` must pass.
@@ -484,9 +490,9 @@ cargo test --all-features
 - **Session durability:** JSONL is the source of truth; SQLite (`state.db`) is a rebuildable index.
 - **Credential isolation:** API keys are stored in the OS keychain, not in environment variables. The `Bash` tool inherits the runtime environment and does not scrub env vars; keep secrets out of `env` in agent configs.
 - **Module Boundaries (Issue 014 / Issue 015 / Issue 016 / Issue 020):**
-  - `src/extensions/framework/` contains the **generic extension framework** — core, types, manager, async_exec, transport, services, protocols/shared, and adapters. It has **zero dependencies** on concrete extension type implementations under `src/extensions/<type>/`.
-  - `src/extensions/<type>/` (builtin, gateway, general, mcp, skill, universal) contains **extension type implementations**. Each type lives in its own directory and should not import from sibling extension types.
-  - `src/extensions/framework/core/` has zero dependencies on `crate::extensions::<type>`, `crate::daemon`, or `crate::tools`.
+  - `peko-rs/core/src/extensions/framework/` contains the **generic extension framework** — core, types, manager, async_exec, transport, services, protocols/shared, and adapters. It has **zero dependencies** on concrete extension type implementations under `peko-rs/core/src/extensions/<type>/`.
+  - `peko-rs/core/src/extensions/<type>/` (builtin, gateway, general, mcp, skill, universal) contains **extension type implementations**. Each type lives in its own directory and should not import from sibling extension types.
+  - `peko-rs/core/src/extensions/framework/core/` has zero dependencies on `crate::extensions::<type>`, `crate::daemon`, or `crate::tools`.
   - **Execution primitives** (`ToolContext`, `ToolError`, `AbortSignal`, `ToolResult`, `ToolWithContext`, `ToolContextAdapter`, `ToolProgressEvent`) and the `ContextSource` trait live in `tools::core/exec.rs` and `tools::core/context_source.rs` (moved from `extensions::framework::types/` and `extensions::framework::protocols/shared/`). The blanket impl `impl<T: Tool> ToolWithContext for T` is in place now that the cycle is broken.
   - **Dependency direction:**
     - `extensions::framework` depends on `tools::core` (one-way, for `Tool`, `ToolContext`, `ContextSource`, and other execution primitives). It does **not** depend on `tools::builtin` or any concrete extension type.
@@ -495,7 +501,7 @@ cargo test --all-features
     - `agents` depends on `tunnel` (for the `AgentMessageService` trait used by `PrincipalSendTool`) and does **not** depend on `tunnel::principal_send_tool`'s concrete types.
     - `extensions::framework` does **not** depend on `agents`, `tunnel`, `daemon`, or `principal` (enforced by `check_module_boundaries.sh` Rules 5 and 6).
   - Cycles 4 (`tools::core ↔ extension::types`) and 5 (`tunnel ↔ agents`) from `PLAN.md` §2.5 are now actually broken (not reshuffled).
-  - `src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `crate::registry::packaging::`, `crate::common::services::config_authority::`, `crate::identity::storage::`, `crate::session::jsonl::`, `crate::session::metadata_controller::`). `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
+  - `peko-rs/core/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `crate::registry::packaging::`, `crate::common::services::config_authority::`, `crate::identity::storage::`, `crate::session::jsonl::`, `crate::session::metadata_controller::`). `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
 - **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.
 

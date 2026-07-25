@@ -4,7 +4,7 @@ name: Integration Tests
 #
 # Tier        Trigger                               Wall-clock (warm)  Notes
 # ──────────── ──────────────────────────────────── ─────────────────── ─────────────────────
-# lint         every PR that touches src/           < 1 min             scripts/check_*.sh
+# lint         every PR that touches peko-rs/core/src/  < 1 min       scripts/check_*.sh
 # unit-linux   every PR that triggers the workflow  ~3 min              cargo test --lib
 # unit-windows `[windows]` / nightly / manual       ~5 min              gated; expensive runner
 # integration  PR that touches integration paths    ~10-15 min          docker compose + PekoHub
@@ -15,7 +15,7 @@ name: Integration Tests
 #
 # The `changes` job uses dorny/paths-filter to decide per-job whether
 # Docker-backed integration is actually needed for the PR's diff. Pure
-# refactors (src/** only) skip the integration tier.
+# refactors (peko-rs/core/src/** only) skip the integration tier.
 #
 # MINIMAX_API_KEY is a repo secret read ONLY by integration-llm. The
 # integration job runs with the secret unset — that's how we guarantee
@@ -25,8 +25,12 @@ on:
   push:
     branches: [main, master]
     paths:
+      # Phase 0.Z-D: `src/**` is a stale no-op after the src/ → peko-rs/core/src/
+      # move. Kept alongside the new path for safety during partial reverts;
+      # removed in the cleanup PR once master confirms src/-free.
       - 'src/**'
-      - 'tests/**'
+      - 'peko-rs/core/src/**'
+      - 'peko-rs/core/tests/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Makefile'
@@ -39,7 +43,8 @@ on:
     branches: [main, master]
     paths:
       - 'src/**'
-      - 'tests/**'
+      - 'peko-rs/core/src/**'
+      - 'peko-rs/core/tests/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Makefile'
@@ -60,9 +65,9 @@ env:
 jobs:
   # ── Path-aware change detector ────────────────────────────────────────
   # Output keys:
-  #   src            — src/** changed
+  #   src            — src/** or peko-rs/core/src/** changed
   #   crates         — peko-rs/** or root Cargo.toml changed
-  #   tests          — tests/** changed
+  #   tests          — peko-rs/core/tests/** changed
   #   docker         — .github/docker/** changed
   #   dockerfile     — Dockerfile* / docker-compose*.yml changed
   #   workflow       — this file changed
@@ -86,7 +91,11 @@ jobs:
         with:
           filters: |
             src:
+              # Phase 0.Z-D: src/ moved to peko-rs/core/src/. The legacy
+              # `src/**` entry is kept as a no-op safety net; removed in
+              # the cleanup PR once master confirms src/-free.
               - 'src/**'
+              - 'peko-rs/core/src/**'
             crates:
               # Phase 12b: any workspace-member Cargo.toml change can
               # introduce a new forbidden crate-to-crate edge; the
@@ -97,19 +106,21 @@ jobs:
               - 'Cargo.lock'
               - 'scripts/check_workspace_deps.py'
             tests:
-              - 'tests/**'
+              # Phase 0.Z-D: tests/ moved to peko-rs/core/tests/.
+              - 'peko-rs/core/tests/**'
             docker:
               - '.github/docker/**'
             dockerfile:
               - 'Dockerfile*'
               - 'docker-compose*.yml'
-              - 'tests/docker/**'
+              - 'peko-rs/core/tests/docker/**'
             workflow:
               - '.github/workflows/integration.yml'
             windows_code:
-              - 'src/common/process/**'
-              - 'src/extensions/skill/adapter.rs'
-              - 'src/ipc/pipe_security.rs'
+              # Phase 0.Z-D: src/ → peko-rs/core/src/.
+              - 'peko-rs/core/src/common/process/**'
+              - 'peko-rs/core/src/extensions/skill/adapter.rs'
+              - 'peko-rs/core/src/ipc/pipe_security.rs'
               # Phase 10a moved fs/grep.rs into peko-rs/tools-builtin;
               # the new path is platform-neutral (uses the `regex`
               # crate, no libc/cfg gates) so the old `src/...` entry
@@ -120,15 +131,16 @@ jobs:
               # is now a 5-line re-export shim with no platform-specific
               # code, so the old entry would always be stale going forward.
               - 'peko-rs/tools-builtin/src/skill/body.rs'
-              - 'tests/common/cli.rs'
+              # Phase 0.Z-D: tests/common/cli.rs → peko-rs/core/tests/common/cli.rs
+              - 'peko-rs/core/tests/common/cli.rs'
 
   # ── Tier 0b: Lint — Issue-015 boundary rules, every PR ───────────────
   # HARD GATE. `scripts/check_module_boundaries.sh` enforces the three
-  # rules from Issue 015: framework code (`src/extension/`) must not
-  # depend on extension type implementations (`src/extensions/`),
-  # extension types must not depend on each other, and
-  # `src/extension/core/` must not depend on `daemon/` or `tools/`.
-  # Regressions trip this job and block the PR.
+  # rules from Issue 015: framework code (`peko-rs/core/src/extension/`)
+  # must not depend on extension type implementations
+  # (`peko-rs/core/src/extensions/`), extension types must not depend on
+  # each other, and `peko-rs/core/src/extension/core/` must not depend
+  # on `daemon/` or `tools/`. Regressions trip this job and block the PR.
   lint:
     name: Lint (module boundaries)
     runs-on: ubuntu-latest
@@ -212,9 +224,9 @@ jobs:
         run: cargo test --lib
 
   # ── Tier 1: PR gate — Docker + PekoHub + mock LLM ─────────────────────
-  # Path-aware gate: only run when src/, tests/, Cargo.*, Makefile, or
-  # Docker assets changed. Pure refactors (src/** only) skip this tier
-  # but still run lint + unit-linux.
+  # Path-aware gate: only run when peko-rs/core/tests/, peko-rs/core/src/,
+  # Cargo.*, Makefile, or Docker assets changed. Pure refactors
+  # (peko-rs/core/src/** only) skip this tier but still run lint + unit-linux.
   integration:
     name: Integration (mock LLM)
     runs-on: ubuntu-latest
@@ -234,7 +246,7 @@ jobs:
       - name: Checkout pekohub
         # Sibling checkout so docker-compose.integration.yml's
         # `context: ../../pekohub` resolves correctly from
-        # peko-runtime/tests/docker/.
+        # peko-runtime/peko-rs/core/tests/docker/.
         uses: actions/checkout@v4
         with:
           repository: ConekoAI/pekohub

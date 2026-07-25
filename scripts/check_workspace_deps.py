@@ -725,6 +725,27 @@ def _crate_name_for(cargo_toml_path: Path, fallback: str) -> str:
     return fallback
 
 
+def _has_package_section(cargo_toml: Path) -> bool:
+    """Return True iff ``cargo_toml`` contains a top-level ``[package]`` section.
+
+    Phase 0.Z-D made the root ``Cargo.toml`` workspace-only (no
+    ``[package]``). The walker therefore has to detect whether the root
+    is still a real member (legacy layout) or a thin workspace manifest
+    (post-0.Z-D layout) and skip it in the latter case.
+    """
+    try:
+        text = cargo_toml.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("#"):
+            continue
+        if stripped == "[package]":
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Walker
 # ---------------------------------------------------------------------------
@@ -733,14 +754,15 @@ def _crate_name_for(cargo_toml_path: Path, fallback: str) -> str:
 def discover_workspace_members(repo_root: Path) -> List[Tuple[str, Path]]:
     """Return ``[(crate_name, cargo_toml_path), ...]`` for every workspace member.
 
-    Walks ``peko-rs/*/Cargo.toml`` plus the root ``Cargo.toml``. The root
-    crate is keyed under the name declared in its ``[package].name``
-    (``peko`` today, per the per-phase protocol that keeps it as the
-    facade).
+    After Phase 0.Z-D the root ``Cargo.toml`` is workspace-only (no
+    ``[package]``); the canonical home for every crate — including
+    ``peko_core`` — is ``peko-rs/<name>/Cargo.toml``. The walker appends
+    the root only when it carries a ``[package]`` block, so it stays
+    compatible with both the pre-0.Z-D and post-0.Z-D layouts.
     """
     members: List[Tuple[str, Path]] = []
     root_cargo = repo_root / "Cargo.toml"
-    if root_cargo.exists():
+    if root_cargo.exists() and _has_package_section(root_cargo):
         members.append((_crate_name_for(root_cargo, "peko"), root_cargo))
     crates_dir = repo_root / "peko-rs"
     if not crates_dir.is_dir():
