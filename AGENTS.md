@@ -273,8 +273,9 @@ peko-rs/core/              # Root lib + CLI binary (Phase 0.Z-D — peko package
 - **Unit tests** are co-located in `#[cfg(test)]` modules within source files.
 - **Integration tests** live in `peko-rs/core/tests/` (Phase 0.Z-D moved
   `tests/` → `peko-rs/core/tests/`); the legacy PowerShell `e2e_tests/`
-  tree was renamed to `e2e_tests_archive/` and now serves as a fixture
-  source for the new Rust integration tests.
+  tree was renamed to `e2e_tests_archive/` and lives at
+  `peko-rs/core/e2e_tests_archive/` (a fixture source for the new
+  Rust integration tests).
 - **New CLI integration tests** (Phase B migration, then
   retargeted for the principal-as-single-actor model in the parity
   branch):
@@ -290,7 +291,7 @@ peko-rs/core/              # Root lib + CLI binary (Phase 0.Z-D — peko package
 - **Scenario tests** live in `peko-rs/core/tests/scenarios/` (registered explicitly in `peko-rs/core/Cargo.toml`):
   - `s1_local_agent_with_extensions` through `s6_principal_grant_revoke_roundtrip`
   - `tunnel_security` — Tunnel protocol security checks
-- **Fixtures** for scenario tests live in `e2e_tests_archive/` (legacy PowerShell e2e tree, kept as a fixture source).
+- **Fixtures** for scenario tests live in `peko-rs/core/e2e_tests_archive/` (legacy PowerShell e2e tree, kept as a fixture source).
 - **Benchmarks** live in `benches/`.
 - Tests cover critical paths: extension lifecycle, agent lifecycle, provider operations, session operations, tool operations.
 
