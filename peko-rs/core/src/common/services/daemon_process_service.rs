@@ -450,17 +450,16 @@ impl DaemonProcessService {
 
     /// Run the daemon in the current terminal (foreground mode).
     ///
-    /// Phase 12 foreground switch: prefers the standalone `peko-daemon`
-    /// binary artifact (next to `current_exe()`) when present, and falls
-    /// back to the legacy in-process `Daemon::new + Daemon::run` path
-    /// when it is not (older installs / dev trees that haven't built
-    /// the binary yet).
+    /// Spawns the standalone `peko-daemon` binary artifact (next to
+    /// `current_exe()`) and inherits its stdin/stdout/stderr so the
+    /// user sees the daemon's output inline. Blocks until the child
+    /// exits.
     ///
-    /// Stdin/stdout/stderr are inherited when launching the binary so
-    /// the user sees the daemon's output inline; the call blocks until
-    /// the child exits. The legacy in-process fallback runs
-    /// `Daemon::run().await` directly inside the CLI process — same
-    /// observable behaviour, no subprocess boundary.
+    /// Phase 0.Z-C: the legacy in-process `Daemon::new + Daemon::run`
+    /// fallback was deleted. `peko-daemon` is a workspace binary
+    /// (since Phase 0.Z-A), so every `peko` install can rebuild it
+    /// via `cargo build -p peko-daemon-bin --bin peko-daemon`. If the
+    /// candidate is genuinely missing, the function returns an error.
     ///
     /// # Arguments
     /// - `interval_secs` — cron poll interval
@@ -511,29 +510,20 @@ impl DaemonProcessService {
             return Ok(());
         }
 
-        // Fallback: in-process for older installs / dev trees without
-        // the `peko-daemon` binary. Same `DaemonConfig` the binary
-        // would build, same `Daemon::run` codepath.
-        use crate::daemon::{Daemon, DaemonConfig, LaunchMode};
-        let config = DaemonConfig {
-            cron_db_path: data_dir.join("cron.json"),
-            poll_interval: Duration::from_secs(interval_secs),
-            config_dir,
-            data_dir,
-            maintenance_interval: Duration::from_hours(1),
-            max_reconnect_attempts,
-            launch_mode: if sidecar_mode {
-                LaunchMode::Sidecar
-            } else {
-                LaunchMode::Headless
-            },
-        };
-
-        let daemon = Daemon::new(config)?;
-        if let Err(e) = Box::pin(daemon.run()).await {
-            eprintln!("Daemon error: {e}");
-        }
-        Ok(())
+        // Phase 0.Z-C: the in-process `Daemon::new + Daemon::run`
+        // fallback was deleted. `peko-daemon` is a workspace binary
+        // since Phase 0.Z-A, every `peko` install can rebuild it via
+        // `cargo build -p peko-daemon-bin`. If the candidate is
+        // genuinely missing (e.g. stripped release tarball), the
+        // user-facing error is clearer from the surface CLI than
+        // from a half-initialized in-process daemon.
+        anyhow::bail!(
+            "peko-daemon binary not found next to `{}`. Reinstall or run \
+             `cargo build -p peko-daemon-bin --bin peko-daemon` to build it.",
+            std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "<unknown>".to_string())
+        );
     }
 
     /// Resolve the standalone `peko-daemon` binary artifact next to the
@@ -916,16 +906,10 @@ mod tests {
         assert_eq!(status2.pid, Some(1234));
     }
 
-    /// `run_foreground` builds the same `DaemonConfig` shape the
-    /// `peko-daemon` binary would build from `interval` /
-    /// `max_reconnect_attempts` / `sidecar_mode` flags.
-    ///
-    /// We don't actually exec the daemon here — that would block the
-    /// test forever. Instead we verify the `peko_daemon_binary`
-    /// resolution at a known path so the subprocess branch would have
-    /// a candidate to launch (the test binary itself). The in-process
-    /// fallback is the only path the test binary actually exercises,
-    /// so this verifies the field plumbing by construction.
+    /// `run_foreground` now spawns the `peko-daemon` binary and
+    /// inherits its streams — there is no in-process codepath left to
+    /// verify. This test pins the config/data plumbing the binary
+    /// would inherit from the resolver.
     #[tokio::test]
     async fn test_run_foreground_resolves_config_paths() {
         let temp_dir = std::env::temp_dir().join(format!("PEKO_test_fg_{}", std::process::id()));
@@ -940,10 +924,8 @@ mod tests {
         let service = DaemonProcessService::new(resolver);
 
         // Sanity: the service reads the same config / data dirs the
-        // CLI passed in, regardless of which branch (binary or
-        // fallback) `run_foreground` takes. The
-        // `PEKO_CONFIG_DIR`/`PEKO_DATA_DIR` env vars are not set here,
-        // so the resolver returns the dirs we fed it.
+        // CLI passed in. The `PEKO_CONFIG_DIR`/`PEKO_DATA_DIR` env vars
+        // are not set here, so the resolver returns the dirs we fed it.
         assert_eq!(service.resolver.config_dir(), temp_dir);
         assert_eq!(service.resolver.data_dir(), temp_dir.join("data"));
 
