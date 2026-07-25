@@ -1,7 +1,7 @@
 //! Auth command - Manage runtime auth and registry login (ADR-034)
 
 use crate::commands::GlobalPaths;
-use crate::common::services::CredentialsService;
+use peko_core::common::services::CredentialsService;
 use anyhow::Result;
 use clap::Subcommand;
 
@@ -68,7 +68,7 @@ pub fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Resul
 /// Panics if called from within an async context (nested Runtime::block_on).
 /// This function is only called from synchronous CLI command dispatch.
 fn handle_api_key_command(cmd: ApiKeyCommands, paths: &GlobalPaths) -> Result<()> {
-    let resolver = crate::common::paths::PathResolver::with_dirs(
+    let resolver = peko_core::common::paths::PathResolver::with_dirs(
         paths.config_dir.clone(),
         paths.data_dir.clone(),
         paths.cache_dir.clone(),

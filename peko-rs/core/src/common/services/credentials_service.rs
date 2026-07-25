@@ -4,8 +4,8 @@
 //! registry token. Other callers should use `crate::common::vault::Vault`
 //! directly for provider API keys, identity keys, and tunnel keys.
 
-use crate::commands::GlobalPaths;
 use crate::common::vault::Vault;
+use crate::common::GlobalPaths;
 use anyhow::{Context, Result};
 
 /// Service for accessing the registry token stored in the vault.
@@ -70,8 +70,6 @@ impl CredentialsService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::Cli;
-    use clap::Parser;
 
     fn temp_paths() -> GlobalPaths {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,20 +88,7 @@ mod tests {
         let cache_dir = temp.join("cache");
 
         std::env::set_var("PEKO_MASTER_PASSPHRASE", "test-credentials-service");
-        let cli = Cli::parse_from([
-            "peko",
-            "--config-dir",
-            &config_dir.to_string_lossy(),
-            "--data-dir",
-            &data_dir.to_string_lossy(),
-            "--cache-dir",
-            &cache_dir.to_string_lossy(),
-            "--user",
-            "test",
-            "daemon",
-            "status",
-        ]);
-        GlobalPaths::from_cli(&cli)
+        GlobalPaths::new(config_dir, data_dir, cache_dir, "test".to_string())
     }
 
     #[test]

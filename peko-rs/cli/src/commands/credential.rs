@@ -1,7 +1,7 @@
 //! Credential management commands.
 //!
 //! These commands manage runtime secrets stored in the encrypted vault at
-//! `{config_dir}/vault.enc` (see `crate::common::vault`). The vault is a
+//! `{config_dir}/vault.enc` (see `peko_core::common::vault`). The vault is a
 //! generic namespace-keyed secret store; model API keys live under the
 //! `llm` namespace (see `peko model add --key`), but MCP servers, OAuth
 //! clients, registries, and arbitrary secrets can use any namespace.
@@ -23,7 +23,7 @@
 //! which pings the model's actual endpoint with the stored key.
 
 use crate::commands::GlobalPaths;
-use crate::common::vault::{Credential, CredentialFilter, CredentialKind, Vault};
+use peko_core::common::vault::{Credential, CredentialFilter, CredentialKind, Vault};
 use anyhow::{Context, Result};
 
 /// Credential commands
@@ -129,9 +129,9 @@ async fn set_cmd(
     match vault.set_credential(&credential) {
         Ok(()) => {}
         Err(e) => {
-            if e.downcast_ref::<crate::common::vault::VaultError>()
+            if e.downcast_ref::<peko_core::common::vault::VaultError>()
                 .is_some_and(|err| {
-                    matches!(err, crate::common::vault::VaultError::SystemCredential(_))
+                    matches!(err, peko_core::common::vault::VaultError::SystemCredential(_))
                 })
             {
                 anyhow::bail!(
@@ -183,9 +183,9 @@ async fn delete_cmd(vault: &Vault, id: &str) -> Result<()> {
             println!("No credential '{id}'.");
         }
         Err(e) => {
-            if e.downcast_ref::<crate::common::vault::VaultError>()
+            if e.downcast_ref::<peko_core::common::vault::VaultError>()
                 .is_some_and(|err| {
-                    matches!(err, crate::common::vault::VaultError::SystemCredential(_))
+                    matches!(err, peko_core::common::vault::VaultError::SystemCredential(_))
                 })
             {
                 anyhow::bail!(
@@ -255,7 +255,7 @@ async fn migrate_cmd(_vault: &Vault) -> Result<()> {
 /// connection failure (daemon may not be running; the next
 /// `peko daemon start` will pick up the new state from disk).
 async fn notify_daemon_reload() {
-    let Ok(client) = crate::ipc::DaemonClient::connect().await else {
+    let Ok(client) = peko_core::ipc::DaemonClient::connect().await else {
         return;
     };
     if let Err(e) = client.reload_providers().await {

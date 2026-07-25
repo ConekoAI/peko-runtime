@@ -6,7 +6,7 @@
 //! ADR-028: Top-Level Config CLI
 
 use crate::commands::GlobalPaths;
-use crate::common::config_path;
+use peko_core::common::config_path;
 use clap::Subcommand;
 use std::path::PathBuf;
 
@@ -275,24 +275,8 @@ mod tests {
         let config_dir = temp.path().join("config");
         let data_dir = temp.path().join("data");
         let cache_dir = temp.path().join("cache");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::create_dir_all(&data_dir).unwrap();
-        std::fs::create_dir_all(&cache_dir).unwrap();
 
-        let resolver = crate::common::paths::PathResolver::with_dirs(
-            config_dir.clone(),
-            data_dir.clone(),
-            cache_dir.clone(),
-        );
-
-        let paths = GlobalPaths {
-            config_dir: config_dir.clone(),
-            data_dir: data_dir.clone(),
-            cache_dir: cache_dir.clone(),
-            resolver: resolver.clone(),
-            services: crate::common::services::ServiceContainer::new(resolver),
-            user: "default".to_string(),
-        };
+        let paths = GlobalPaths::new(config_dir, data_dir, cache_dir, "default".to_string());
         (paths, temp)
     }
 

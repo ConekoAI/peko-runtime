@@ -108,6 +108,12 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-peko-daemon",
         "engine is library code; the daemon binary is a separate entry point.",
     ),
+    # Phase 0.Z-B: peko-engine must not depend on the peko-cli binary crate.
+    (
+        "peko-engine",
+        "peko-peko-cli",
+        "engine is library code; the CLI binary is a separate entry point.",
+    ),
     # peko-protocol is a wire-only contract
     (
         "peko-protocol",
@@ -164,6 +170,12 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-protocol",
         "peko-peko-daemon",
         "protocol is serde+serde_json only; the daemon is downstream.",
+    ),
+    # Phase 0.Z-B: protocol is serde+serde_json only.
+    (
+        "peko-protocol",
+        "peko-peko-cli",
+        "protocol is serde+serde_json only; the CLI is downstream.",
     ),
     # peko-subject is a pure value/type layer (Phase 3)
     (
@@ -529,6 +541,12 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-peko-daemon",
         "fs-persistence is leaf-utility; no peko-* deps allowed.",
     ),
+    # Phase 0.Z-B
+    (
+        "peko-fs-persistence",
+        "peko-peko-cli",
+        "fs-persistence is leaf-utility; no peko-* deps allowed.",
+    ),
     (
         "peko-fs-persistence",
         "peko",
@@ -598,6 +616,12 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     (
         "peko-chat-log",
         "peko-peko-daemon",
+        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    # Phase 0.Z-B
+    (
+        "peko-chat-log",
+        "peko-peko-cli",
         "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
     ),
     (

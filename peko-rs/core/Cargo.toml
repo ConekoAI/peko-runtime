@@ -18,6 +18,13 @@ repository = "https://github.com/ConekoAI/peko-runtime"
 # `peko-rs/core/src/`. The `package = "peko"` rename trick still
 # applies for satellites that depend on us (e.g. `peko-rs/peko-daemon`
 # declares `peko_core = { package = "peko", path = "../core" }`).
+#
+# Phase 0.Z-B: this crate is now a pure lib (no `[[bin]]`). The
+# `peko` binary lives in `peko-rs/cli/Cargo.toml` which depends on
+# this crate via `peko_core = { package = "peko", path = "../core" }`.
+# The CLI composition surface (`Cli`/`Commands`/`GlobalPaths`/
+# `init_logging`) is consumed directly from the cli sat — no re-export
+# needed here.
 [lib]
 name = "peko_core"
 path = "src/lib.rs"
@@ -196,10 +203,6 @@ toml = "0.8"
 reqwest = { version = "0.11", features = ["json", "stream"] }
 bytes = "1.5"
 
-# CLI
-clap = { version = "4.4", features = ["derive", "env"] }
-clap_complete = "4.4"
-
 # Crypto (ed25519)
 ed25519-dalek = "2.1"
 rand = "0.8"
@@ -318,10 +321,6 @@ tempfile = "3.10"
 serial_test = "3.0"
 rsa = "0.9"
 
-
-[[bin]]
-name = "peko"
-path = "src/main.rs"
 
 # Integration tests under tests/scenarios/ are nested in a subdir
 # (cargo's auto-discovery only picks up tests/*.rs directly). Each

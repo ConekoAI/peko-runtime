@@ -167,23 +167,28 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
-# Rule 4: src/commands/ should NOT import from low-level persistence/packaging
+# Rule 4: peko-rs/cli/src/commands/ should NOT import from low-level persistence/packaging
+# (Phase 0.Z-B: commands/ moved out of root `src/` into `peko-rs/cli/src/commands/`).
 # -----------------------------------------------------------------------------
 if [ "$RULE4_HARD_GATE" -eq 1 ]; then
-    echo "Rule 4: src/commands/ must NOT import from persistence/packaging modules (hard gate)"
+    echo "Rule 4: peko-rs/cli/src/commands/ must NOT import from persistence/packaging modules (hard gate)"
 else
-    echo "Rule 4: src/commands/ should NOT import from persistence/packaging modules (advisory)"
+    echo "Rule 4: peko-rs/cli/src/commands/ should NOT import from persistence/packaging modules (advisory)"
 fi
 echo ""
 
 # Patterns considered low-level persistence/packaging from the command layer.
 # The command layer should delegate to services instead.
+# Phase 0.Z-B: the `crate::` prefix in source paths now resolves to the
+# `peko-cli` crate, but core-internal modules (registry/packaging,
+# identity/storage, session/jsonl, session/metadata_controller) live in
+# the `peko_core` lib. The grep targets `peko_core::` for these.
 PERSISTENCE_PATTERNS=(
-    "crate::registry::packaging::"
-    "crate::common::services::config_authority::"
-    "crate::identity::storage::"
-    "crate::session::jsonl::"
-    "crate::session::metadata_controller::"
+    "peko_core::registry::packaging::"
+    "peko_core::common::services::config_authority::"
+    "peko_core::identity::storage::"
+    "peko_core::session::jsonl::"
+    "peko_core::session::metadata_controller::"
 )
 
 RULE4_FAILED=0
@@ -191,7 +196,7 @@ RULE4_FAILED=0
 for pattern in "${PERSISTENCE_PATTERNS[@]}"; do
     # Convert pattern prefix to a grep-safe regex fragment
     regex_pattern="^.*use ${pattern}"
-    VIOLATIONS_4=$(grep -rE "$regex_pattern" src/commands/ --include="*.rs" 2>/dev/null || true)
+    VIOLATIONS_4=$(grep -rE "$regex_pattern" peko-rs/cli/src/commands/ --include="*.rs" 2>/dev/null || true)
 
     if [ -n "$VIOLATIONS_4" ]; then
         if [ "$RULE4_FAILED" -eq 0 ]; then

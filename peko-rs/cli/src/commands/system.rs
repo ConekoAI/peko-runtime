@@ -40,9 +40,9 @@ pub enum SystemCommands {
 
 /// Helper: connect to daemon and send a request/response packet
 async fn ipc_request(
-    packet: crate::ipc::RequestPacket,
-) -> anyhow::Result<crate::ipc::ResponsePacket> {
-    let client = crate::ipc::DaemonClient::connect().await?;
+    packet: peko_core::ipc::RequestPacket,
+) -> anyhow::Result<peko_core::ipc::ResponsePacket> {
+    let client = peko_core::ipc::DaemonClient::connect().await?;
     client.request_response(packet).await
 }
 
@@ -54,10 +54,10 @@ pub async fn handle_system(
 ) -> anyhow::Result<()> {
     match cmd {
         SystemCommands::Status { resources } => {
-            let packet = crate::ipc::RequestPacket::SystemStatus { request_id: 1 };
+            let packet = peko_core::ipc::RequestPacket::SystemStatus { request_id: 1 };
             let response = ipc_request(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::SystemStatus {
+                peko_core::ipc::ResponsePacket::SystemStatus {
                     version,
                     uptime_secs,
                     degraded,
@@ -101,10 +101,10 @@ pub async fn handle_system(
             Ok(())
         }
         SystemCommands::Doctor { fix } => {
-            let packet = crate::ipc::RequestPacket::SystemDoctor { request_id: 1 };
+            let packet = peko_core::ipc::RequestPacket::SystemDoctor { request_id: 1 };
             let response = ipc_request(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::SystemDoctor {
+                peko_core::ipc::ResponsePacket::SystemDoctor {
                     checks,
                     passed,
                     failed,
@@ -161,13 +161,13 @@ pub async fn handle_system(
             } else {
                 Some("all".to_string())
             };
-            let packet = crate::ipc::RequestPacket::SystemClean {
+            let packet = peko_core::ipc::RequestPacket::SystemClean {
                 request_id: 1,
                 scope,
             };
             let response = ipc_request(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::SystemCleaned {
+                peko_core::ipc::ResponsePacket::SystemCleaned {
                     cleaned,
                     bytes_freed,
                     ..

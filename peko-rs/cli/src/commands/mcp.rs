@@ -9,8 +9,8 @@
 //!   peko ext mcp remove myremote
 
 use crate::commands::GlobalPaths;
-use crate::common::vault::Vault;
-use crate::extensions::mcp::protocol::{
+use peko_core::common::vault::Vault;
+use peko_core::extensions::mcp::protocol::{
     config::{McpAuthConfig, McpConfig, McpServerConfig, TransportType},
     oauth::OAuthFlow,
 };
@@ -339,11 +339,11 @@ fn parse_headers(raw: &[String]) -> Result<HashMap<String, String>> {
 
 /// Tell the running daemon to re-read `mcp.toml` and the vault.
 async fn notify_daemon_reload() {
-    let Ok(client) = crate::ipc::DaemonClient::connect().await else {
+    let Ok(client) = peko_core::ipc::DaemonClient::connect().await else {
         return;
     };
     match client.mcp_reload().await {
-        Ok(crate::ipc::ResponsePacket::McpReloaded { servers_count, .. }) => {
+        Ok(peko_core::ipc::ResponsePacket::McpReloaded { servers_count, .. }) => {
             tracing::info!("Daemon reloaded MCP config ({servers_count} servers)");
         }
         Ok(_) => {

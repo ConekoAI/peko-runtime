@@ -239,216 +239,30 @@ pub enum Commands {
     Version(version::VersionArgs),
 }
 
-/// Global paths helper
+
+// `GlobalPaths` lives in `peko_core::common::paths` (Phase 0.Z-B pre-flight)
+// so the core lib (specifically `credentials_service`) and the CLI satellite
+// can both reference it without a circular dep — `commands/` moves to the
+// `peko-cli` crate in Phase 0.Z-B but core can't depend on it. Re-export here
+// so the 21 command files that say `use crate::commands::GlobalPaths` keep
+// compiling unchanged.
+pub use peko_core::common::GlobalPaths;
+
+/// Build a [`GlobalPaths`] from a parsed [`Cli`] argument struct.
 ///
-/// This struct wraps the common `PathResolver` to provide CLI-specific
-/// path resolution. It delegates all path operations to the underlying
-/// `PathResolver` for consistency with the API.
-#[derive(Clone, Debug)]
-pub struct GlobalPaths {
-    pub config_dir: PathBuf,
-    pub data_dir: PathBuf,
-    pub cache_dir: PathBuf,
-    resolver: crate::common::paths::PathResolver,
-    services: crate::common::services::ServiceContainer,
-    user: String,
-}
-
-impl GlobalPaths {
-    /// Build paths from CLI arguments
-    ///
-    /// Path resolution order (highest to lowest precedence):
-    ///   1. Explicit `--config-dir` / `--data-dir` / `--cache-dir` CLI args
-    ///   2. The `PEKO_HOME` env var (delegated to `default_config_dir` /
-    ///      `default_data_dir` so this matches what the rest of the codebase
-    ///      — and external tools like the daemon's IPC layer — expect)
-    ///   3. The XDG defaults (`~/.peko` for config, `~/.local/share/peko`
-    ///      for data on Linux)
-    ///
-    /// Before this was fixed, the fallback was `dirs::home_dir()` directly,
-    /// which silently bypassed `PEKO_HOME` and made the daemon's
-    /// `data_dir` (used for `cron.json`, `announcements/`, agent state)
-    /// resolve to the host default even when callers set `PEKO_HOME` to
-    /// isolate the daemon in a tempdir. Caught by `tests/cli_cron.rs`'s
-    /// `cron_announce_writes_file_on_run` (announcement file was being
-    /// written to the host's `~/.local/share/peko/announcements/`, not
-    /// the test tempdir).
-    #[must_use]
-    pub fn from_cli(cli: &Cli) -> Self {
-        let config_dir = cli
-            .config_dir
-            .clone()
-            .unwrap_or_else(crate::common::paths::default_config_dir);
-
-        let data_dir = cli
-            .data_dir
-            .clone()
-            .unwrap_or_else(crate::common::paths::default_data_dir);
-
-        let cache_dir = cli
-            .cache_dir
-            .clone()
-            .unwrap_or_else(crate::common::paths::default_cache_dir);
-
-        // Ensure directories exist
-        let _ = std::fs::create_dir_all(&config_dir);
-        let _ = std::fs::create_dir_all(&data_dir);
-        let _ = std::fs::create_dir_all(&cache_dir);
-
-        let resolver = crate::common::paths::PathResolver::with_dirs(
-            config_dir.clone(),
-            data_dir.clone(),
-            cache_dir.clone(),
-        );
-
-        let services = crate::common::services::ServiceContainer::new(resolver.clone());
-
-        let user = cli.user.clone().unwrap_or_else(|| "local".to_string());
-
-        Self {
-            config_dir,
-            data_dir,
-            cache_dir,
-            resolver,
-            services,
-            user,
-        }
-    }
-
-    /// Get the underlying path resolver
-    #[must_use]
-    pub fn resolver(&self) -> &crate::common::paths::PathResolver {
-        &self.resolver
-    }
-
-    /// Get the service container
-    #[must_use]
-    pub fn services(&self) -> &crate::common::services::ServiceContainer {
-        &self.services
-    }
-
-    /// Get the top-level agents root directory
-    #[must_use]
-    pub fn agents_root_dir(&self) -> PathBuf {
-        self.resolver.agents_root_dir()
-    }
-
-    /// Get a specific agent's directory
-    #[must_use]
-    pub fn agent_dir(&self, agent: &str) -> PathBuf {
-        self.resolver.agent_dir(agent)
-    }
-
-    /// Get the principals configuration directory
-    #[must_use]
-    pub fn principals_root_dir(&self) -> PathBuf {
-        self.resolver.principals_root_dir()
-    }
-
-    /// Get a specific principal's directory
-    #[must_use]
-    pub fn principal_dir(&self, principal: &str) -> PathBuf {
-        self.resolver.principal_dir(principal)
-    }
-
-    /// Get principal config file path
-    #[must_use]
-    pub fn principal_config(&self, principal: &str) -> PathBuf {
-        self.resolver.principal_config(principal)
-    }
-
-    /// Get principal agent prompts directory
-    #[must_use]
-    pub fn principal_agents_dir(&self, principal: &str) -> PathBuf {
-        self.resolver.principal_agents_dir(principal)
-    }
-
-    /// Get principal memory directory
-    #[must_use]
-    pub fn principal_memory_dir(&self, principal: &str) -> PathBuf {
-        self.resolver.principal_memory_dir(principal)
-    }
-
-    /// Get principal sessions directory
-    #[must_use]
-    pub fn principal_sessions_dir(&self, principal: &str) -> PathBuf {
-        self.resolver.principal_sessions_dir(principal)
-    }
-
-    /// Get agent config file path
-    #[must_use]
-    pub fn agent_config(&self, name: &str) -> PathBuf {
-        self.resolver.agent_config(name)
-    }
-
-    /// Get agent sessions directory
-    #[must_use]
-    pub fn agent_sessions_dir(&self, name: &str) -> PathBuf {
-        self.resolver.agent_sessions_dir(name)
-    }
-
-    /// Get tools directory
-    #[must_use]
-    pub fn tools_dir(&self) -> PathBuf {
-        self.resolver.tools_dir()
-    }
-
-    /// Get MCP configuration file path
-    #[must_use]
-    pub fn mcp_config(&self) -> PathBuf {
-        self.resolver.mcp_config()
-    }
-
-    /// Get agent workspace directory
-    ///
-    /// Returns the path to an agent's workspace directory.
-    /// Format: `<data_dir>/workspaces/<agent>/personal`
-    ///
-    /// # Arguments
-    /// * `agent` - The agent name
-    #[must_use]
-    pub fn agent_workspace(&self, agent: &str) -> PathBuf {
-        self.resolver.agent_workspace(agent)
-    }
-
-    /// Get the user identifier for session isolation
-    #[must_use]
-    pub fn user(&self) -> &str {
-        &self.user
-    }
-
-    /// Load registry configuration from the config directory
-    ///
-    /// Reads `[registry]` section from `~/.peko/config.toml`,
-    /// falling back to defaults if the file or section doesn't exist.
-    #[must_use]
-    pub fn registry_config(&self) -> crate::registry::config::RegistryConfig {
-        crate::registry::config::load_from_config_dir(&self.config_dir)
-    }
-
-    /// Get the runtime directory
-    #[must_use]
-    pub fn runtime_dir(&self) -> PathBuf {
-        self.resolver.runtime_dir()
-    }
-
-    /// Get the runtime identity file path
-    #[must_use]
-    pub fn runtime_identity(&self) -> PathBuf {
-        self.resolver.runtime_identity()
-    }
-
-    /// Get the runtime metadata file path
-    #[must_use]
-    pub fn runtime_metadata(&self) -> PathBuf {
-        self.resolver.runtime_metadata()
-    }
-
-    /// Get the known runtimes file path
-    #[must_use]
-    pub fn known_runtimes(&self) -> PathBuf {
-        self.resolver.known_runtimes()
-    }
+/// Lives in the CLI crate (here in `commands/mod.rs`, then in
+/// `peko-rs/cli/src/commands/mod.rs` after Phase 0.Z-B) because it's the
+/// only caller that holds a `Cli`. Resolution order follows the docs on
+/// [`peko_core::common::GlobalPaths::new`].
+#[must_use]
+pub fn from_cli(cli: &Cli) -> GlobalPaths {
+    use peko_core::common::paths::{default_cache_dir, default_config_dir, default_data_dir};
+    GlobalPaths::new(
+        cli.config_dir.clone().unwrap_or_else(default_config_dir),
+        cli.data_dir.clone().unwrap_or_else(default_data_dir),
+        cli.cache_dir.clone().unwrap_or_else(default_cache_dir),
+        cli.user.clone().unwrap_or_else(|| "local".to_string()),
+    )
 }
 
 /// Initialize logging

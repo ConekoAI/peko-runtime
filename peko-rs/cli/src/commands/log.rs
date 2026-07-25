@@ -18,7 +18,7 @@
 //! from the principal's mutable session JSONL working memory.
 
 use crate::commands::GlobalPaths;
-use crate::ipc::{DaemonClient, ResponsePacket};
+use peko_core::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{Context, Result};
 use clap::Args;
 use peko_chat_log::ChatLogMessage;
@@ -131,7 +131,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
             ResponsePacket::Error { message, .. } => {
                 return Err(anyhow::anyhow!("peko log failed: {message}"));
             }
-            other => return Err(crate::ipc::unexpected_response(&other)),
+            other => return Err(peko_core::ipc::unexpected_response(&other)),
         }
     }
 

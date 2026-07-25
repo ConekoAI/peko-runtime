@@ -41,11 +41,11 @@ pub async fn handle_runtime(
 ) -> anyhow::Result<()> {
     match cmd {
         RuntimeCommands::Id => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeId { request_id: 1 };
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::RuntimeId { request_id: 1 };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::RuntimeId { did, .. } => {
+                peko_core::ipc::ResponsePacket::RuntimeId { did, .. } => {
                     if json {
                         println!("{}", serde_json::json!({"did": did}));
                     } else {
@@ -53,18 +53,18 @@ pub async fn handle_runtime(
                     }
                     Ok(())
                 }
-                crate::ipc::ResponsePacket::Error { message, .. } => {
+                peko_core::ipc::ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("{}", message)
                 }
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
         RuntimeCommands::Info => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeInfo { request_id: 1 };
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::RuntimeInfo { request_id: 1 };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::RuntimeInfo { metadata, .. } => {
+                peko_core::ipc::ResponsePacket::RuntimeInfo { metadata, .. } => {
                     if json {
                         println!("{}", serde_json::to_string_pretty(&metadata)?);
                     } else {
@@ -80,18 +80,18 @@ pub async fn handle_runtime(
                     }
                     Ok(())
                 }
-                crate::ipc::ResponsePacket::Error { message, .. } => {
+                peko_core::ipc::ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("{}", message)
                 }
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
         RuntimeCommands::List => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeList { request_id: 1 };
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::RuntimeList { request_id: 1 };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::RuntimeList { runtimes, .. } => {
+                peko_core::ipc::ResponsePacket::RuntimeList { runtimes, .. } => {
                     if json {
                         println!(
                             "{}",
@@ -117,22 +117,22 @@ pub async fn handle_runtime(
                     }
                     Ok(())
                 }
-                crate::ipc::ResponsePacket::Error { message, .. } => {
+                peko_core::ipc::ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("{}", message)
                 }
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
         RuntimeCommands::Register { runtime_id, name } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeRegister {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::RuntimeRegister {
                 request_id: 1,
                 runtime_id: runtime_id.clone(),
                 display_name: name,
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::Done { success, error, .. } => {
+                peko_core::ipc::ResponsePacket::Done { success, error, .. } => {
                     if success {
                         println!("✅ Registered runtime {}", runtime_id);
                         Ok(())
@@ -140,21 +140,21 @@ pub async fn handle_runtime(
                         anyhow::bail!("{}", error.unwrap_or_else(|| "Unknown error".to_string()))
                     }
                 }
-                crate::ipc::ResponsePacket::Error { message, .. } => {
+                peko_core::ipc::ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("{}", message)
                 }
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
         RuntimeCommands::Trust { runtime_id } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeTrust {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::RuntimeTrust {
                 request_id: 1,
                 runtime_id: runtime_id.clone(),
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::Done { success, error, .. } => {
+                peko_core::ipc::ResponsePacket::Done { success, error, .. } => {
                     if success {
                         println!("✅ Trusted runtime {}", runtime_id);
                         Ok(())
@@ -162,21 +162,21 @@ pub async fn handle_runtime(
                         anyhow::bail!("{}", error.unwrap_or_else(|| "Unknown error".to_string()))
                     }
                 }
-                crate::ipc::ResponsePacket::Error { message, .. } => {
+                peko_core::ipc::ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("{}", message)
                 }
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
         RuntimeCommands::Remove { runtime_id } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeRemove {
+            let client = peko_core::ipc::DaemonClient::connect().await?;
+            let packet = peko_core::ipc::RequestPacket::RuntimeRemove {
                 request_id: 1,
                 runtime_id: runtime_id.clone(),
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::Done { success, error, .. } => {
+                peko_core::ipc::ResponsePacket::Done { success, error, .. } => {
                     if success {
                         println!("✅ Removed runtime {}", runtime_id);
                         Ok(())
@@ -184,7 +184,7 @@ pub async fn handle_runtime(
                         anyhow::bail!("{}", error.unwrap_or_else(|| "Unknown error".to_string()))
                     }
                 }
-                crate::ipc::ResponsePacket::Error { message, .. } => {
+                peko_core::ipc::ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("{}", message)
                 }
                 _ => anyhow::bail!("Unexpected response"),

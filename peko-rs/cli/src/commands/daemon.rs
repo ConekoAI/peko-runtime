@@ -8,7 +8,7 @@
 //! All process lifecycle logic is delegated to `DaemonProcessService`.
 
 use crate::commands::GlobalPaths;
-use crate::common::services::DaemonProcessService;
+use peko_core::common::services::DaemonProcessService;
 use clap::Subcommand;
 
 /// Daemon management subcommands
@@ -128,7 +128,7 @@ pub async fn handle_daemon(
                 // It prefers the standalone `peko-daemon` binary
                 // (next to `current_exe()`) over re-constructing
                 // `Daemon` directly. The CLI no longer reaches into
-                // `crate::daemon` for the foreground path — daemon
+                // `peko_core::daemon` for the foreground path — daemon
                 // construction lives in `peko-daemon` (the binary) or
                 // the service's in-process fallback for installs that
                 // haven't built the binary yet.

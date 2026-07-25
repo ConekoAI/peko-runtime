@@ -243,7 +243,7 @@ fn install_local_skill_copy(cli: &PekoCli) {
 /// the test pekohub. The push (with the global `--json` flag) emits
 /// `{success, extension_id, registry_ref, manifest.{name,version,
 /// digest,kind,layers,total_size}}` per
-/// [`src/commands/ext.rs:973-988`](../../src/commands/ext.rs#L973-L988).
+/// [`peko-rs/cli/src/commands/ext.rs:973-988`](../../peko-rs/cli/src/commands/ext.rs#L973-L988).
 /// Asserts: push exits 0, the JSON parses, `success==true`,
 /// `registry_ref` matches the pushed ref, and `manifest.layers==1`
 /// (one config layer for the .ext payload).
@@ -285,7 +285,7 @@ async fn ext_push_succeeds_with_pekohub_test() {
     assert_ok(&out, &err, &status);
 
     // Push. The CLI's JSON output is controlled by the global --json
-    // flag (see `Cli` struct at [`src/commands/mod.rs:67-69`](../../src/commands/mod.rs#L67-L69))
+    // flag (see `Cli` struct at [`peko-rs/cli/src/commands/mod.rs:67-69`](../../peko-rs/cli/src/commands/mod.rs#L67-L69))
     // — `peko ext push` itself does not take a per-subcommand --json
     // flag (see its `Subcommand` def at ext.rs:154-162). So the
     // peko invocation here passes `--json` BEFORE the `ext` subcommand.
@@ -383,7 +383,7 @@ async fn ext_pull_round_trip_two_clis() {
     // `peko ext pull` writes a temp .ext and records the source in
     // the local manager's source map, but then installs via IPC —
     // the install half calls `DaemonClient::connect()` (see
-    // `src/commands/ext.rs:594`), so the collab daemon must be
+    // `peko-rs/cli/src/commands/ext.rs:594`), so the collab daemon must be
     // running BEFORE the pull. Spawn it here, before the pull.
     let _daemon = common::DaemonGuard::spawn(&collab);
 
@@ -396,9 +396,9 @@ async fn ext_pull_round_trip_two_clis() {
     // `peko ext pull --json` (despite its name) emits the IPC
     // install response, NOT the OCI pull manifest — the OCI
     // fetch is done in `handle_ext_pull_to_temp` (whose result
-    // is discarded with `_manifest` at src/commands/ext.rs:583),
+    // is discarded with `_manifest` at peko-rs/cli/src/commands/ext.rs:583),
     // and the printed JSON is the ExtensionInstalled response
-    // from the daemon (src/commands/ext.rs:601-605). The
+    // from the daemon (peko-rs/cli/src/commands/ext.rs:601-605). The
     // round-trip is still proven: `success==true` and `id` is
     // the pulled extension's id. We also assert the on-disk
     // ext-list JSON below, which DOES carry the manifest-derived
@@ -474,7 +474,7 @@ async fn ext_pull_round_trip_two_clis() {
 /// <wrapper_ref>`, the wrapper should be installed successfully
 /// and its `id` returned. The dependency-resolver is exercised
 /// at the OCI-fetch layer (see `handle_ext_pull_with_seen` at
-/// [`src/commands/ext.rs:1131-1375`](../../src/commands/ext.rs#L1131-L1375))
+/// [`peko-rs/cli/src/commands/ext.rs:1131-1375`](../../peko-rs/cli/src/commands/ext.rs#L1131-L1375))
 /// but its detailed `dependencies` array is NOT exposed in the
 /// printed `--json` output (which is the IPC install response,
 /// not the OCI pull manifest — see the matching comment in
@@ -560,7 +560,7 @@ Use the calculator.
     peko_login(&collab, &collab_key, &backend.url);
 
     // `peko ext pull` installs via IPC after the OCI fetch — the
-    // daemon must be running first (src/commands/ext.rs:594).
+    // daemon must be running first (peko-rs/cli/src/commands/ext.rs:594).
     let _daemon = common::DaemonGuard::spawn(&collab);
 
     let (out, err, status) = run(
@@ -588,7 +588,7 @@ Use the calculator.
 /// attempts `peko ext push` after installing the skill. The CLI
 /// must fail with an error that mentions "No registry
 /// authentication" — the exact string emitted by
-/// [`src/commands/ext.rs:258-263`](../../src/commands/ext.rs#L258-L263).
+/// [`peko-rs/cli/src/commands/ext.rs:258-263`](../../peko-rs/cli/src/commands/ext.rs#L258-L263).
 #[tokio::test]
 #[ignore = "requires PEKOHUB_URL + MOCK_LLM_URL + peko daemon"]
 async fn ext_push_without_login_fails() {

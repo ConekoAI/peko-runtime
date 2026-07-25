@@ -12,7 +12,7 @@
 //! - `peko quota reset <name>` — force a fresh window.
 
 use crate::commands::GlobalPaths;
-use crate::ipc::{DaemonClient, ResponsePacket};
+use peko_core::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Subcommand;
@@ -120,7 +120,7 @@ async fn status(name: String, is_peer: bool, json: bool) -> Result<()> {
         ResponsePacket::Error { message, .. } => {
             Err(anyhow::anyhow!("quota status failed: {message}"))
         }
-        other => Err(crate::ipc::unexpected_response(&other)),
+        other => Err(peko_core::ipc::unexpected_response(&other)),
     }
 }
 
@@ -144,7 +144,7 @@ async fn set(
         ResponsePacket::Error { message, .. } => {
             return Err(anyhow::anyhow!("quota status failed: {message}"));
         }
-        other => return Err(crate::ipc::unexpected_response(&other)),
+        other => return Err(peko_core::ipc::unexpected_response(&other)),
     };
 
     let new_config = if clear {
@@ -187,7 +187,7 @@ async fn set(
         ResponsePacket::Error { message, .. } => {
             Err(anyhow::anyhow!("quota set failed: {message}"))
         }
-        other => Err(crate::ipc::unexpected_response(&other)),
+        other => Err(peko_core::ipc::unexpected_response(&other)),
     }
 }
 
@@ -216,7 +216,7 @@ async fn reset(name: String, is_peer: bool, json: bool) -> Result<()> {
         ResponsePacket::Error { message, .. } => {
             Err(anyhow::anyhow!("quota reset failed: {message}"))
         }
-        other => Err(crate::ipc::unexpected_response(&other)),
+        other => Err(peko_core::ipc::unexpected_response(&other)),
     }
 }
 

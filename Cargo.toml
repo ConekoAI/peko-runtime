@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "peko-rs/auth",
     "peko-rs/chat-log",
+    "peko-rs/cli",
     "peko-rs/core",
     "peko-rs/cron",
     "peko-rs/engine",
@@ -49,6 +50,7 @@ members = [
 #   - peko-engine in peko-rs/core   (after Phase 17 moves agentic_loop tests)
 #
 # Phase 0.Z-D note: root Cargo.toml is workspace-only. The `peko` package
-# (lib `peko_core` + `peko` bin) lives in `peko-rs/core/Cargo.toml`.
+# (lib `peko_core`) lives in `peko-rs/core/Cargo.toml`. The `peko` bin
+# lives in `peko-rs/cli/Cargo.toml` (Phase 0.Z-B).
 # ---------------------------------------------------------------------------
 [workspace.metadata.cargo-shear]

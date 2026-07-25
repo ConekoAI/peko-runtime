@@ -38,7 +38,7 @@
 //! ## Three structural facts this file documents (not bugs, not changed)
 //!
 //! 1. **`--type` flag is ignored at the CLI level.** The PS scripts all pass
-//!    `--type mcp` / `--type universal-tool`, but [`src/commands/ext.rs:363`](src/commands/ext.rs#L363)
+//!    `--type mcp` / `--type universal-tool`, but [`peko-rs/cli/src/commands/ext.rs:363`](peko-rs/cli/src/commands/ext.rs#L363)
 //!    destructures `r#type: _`. The tests below still pass because Tier 2
 //!    detection from `manifest.yaml` is the production path; `--type` is the
 //!    user's escape hatch when the manifest is missing or wrong. The tests

@@ -169,7 +169,9 @@ impl RequestHandler for ExtensionHandler {
             RequestPacket::ExtensionInstall { request_id, path } => {
                 let store = self.host.extension_store();
                 let install_path =
-                    match crate::commands::ext::prepare_install_path(std::path::Path::new(&path)) {
+                    match peko_extension_host::manager::packaging::prepare_install_path(
+                        std::path::Path::new(&path),
+                    ) {
                         Ok(p) => p,
                         Err(e) => {
                             let response = ResponsePacket::Error {

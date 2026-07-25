@@ -1,7 +1,7 @@
 //! Vault management commands.
 //!
 //! These commands manage the encrypted vault at
-//! `{config_dir}/vault.enc` (see `crate::common::vault`) — in particular
+//! `{config_dir}/vault.enc` (see `peko_core::common::vault`) — in particular
 //! the on-disk unlock mode (keychain-backed DEK vs. passphrase-derived
 //! DEK). Provider API keys, registry tokens, identity private keys, and
 //! tunnel private keys all live inside this vault; the migrate command
@@ -23,7 +23,7 @@
 //! ```
 
 use crate::commands::GlobalPaths;
-use crate::common::vault::{UnlockMethod, UnlockMethodOverride, Vault};
+use peko_core::common::vault::{UnlockMethod, UnlockMethodOverride, Vault};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use secrecy::SecretString;
@@ -93,7 +93,7 @@ async fn migrate_cmd(paths: &GlobalPaths, target: UnlockMethod, skip_confirm: bo
     // construction time and is not mutable via `reload()`; flipping
     // the on-disk mode out from under it leaves the daemon unable to
     // decrypt the new envelope.
-    if let Ok(client) = crate::ipc::DaemonClient::connect().await {
+    if let Ok(client) = peko_core::ipc::DaemonClient::connect().await {
         let _ = client;
         anyhow::bail!(
             "refusing to migrate while a peko daemon is running; \
@@ -164,7 +164,7 @@ async fn migrate_cmd(paths: &GlobalPaths, target: UnlockMethod, skip_confirm: bo
 /// Read the passphrase to use for the migration. Prefers
 /// `PEKO_MASTER_PASSPHRASE` from the env; falls back to a hidden prompt.
 fn read_passphrase_for_migrate() -> Result<SecretString> {
-    if let Ok(pw) = std::env::var(crate::common::vault::MASTER_PASSPHRASE_ENV) {
+    if let Ok(pw) = std::env::var(peko_core::common::vault::MASTER_PASSPHRASE_ENV) {
         if !pw.is_empty() {
             return Ok(SecretString::new(pw.into()));
         }
