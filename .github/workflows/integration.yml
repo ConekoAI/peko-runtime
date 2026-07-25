@@ -29,8 +29,13 @@ on:
       # move. Kept alongside the new path for safety during partial reverts;
       # removed in the cleanup PR once master confirms src/-free.
       # Phase 0.Z-B: `peko-rs/cli/**` triggers all tiers on CLI binary split.
+      # 2026-07-25: `peko-rs/core/Cargo.toml` + `peko-rs/*/Cargo.toml`
+      # added so feature/feature-flag changes (e.g. the Win32_Storage_FileSystem
+      # surface bug fix in PR #304) don't silently skip CI the same way
+      # the original windows-sys dep declaration did.
       - 'src/**'
       - 'peko-rs/cli/**'
+      - 'peko-rs/*/Cargo.toml'
       - 'peko-rs/core/src/**'
       - 'peko-rs/core/tests/**'
       - 'Cargo.toml'
@@ -46,6 +51,7 @@ on:
     paths:
       - 'src/**'
       - 'peko-rs/cli/**'
+      - 'peko-rs/*/Cargo.toml'
       - 'peko-rs/core/src/**'
       - 'peko-rs/core/tests/**'
       - 'Cargo.toml'

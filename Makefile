@@ -129,6 +129,17 @@ test-integration: docker-up
 	# peko_core). Pre-build here so peko-rs/core/tests/common/cli.rs's
 	# CARGO_BIN_EXE_peko fallback resolves to a real binary.
 	cargo build -p peko-cli --bin peko
+	# Phase 12 (PR #264): `peko-daemon` was lifted into
+	# peko-rs/peko-daemon/. cli_cron (and any test that spawns `peko
+	# daemon start --foreground`) resolves the daemon via
+	# `DaemonProcessService::peko_daemon_binary()`, which looks for a
+	# `peko-daemon` sibling of the CLI binary. Without this pre-build,
+	# the rust-cache restore of an older `target/debug/peko-daemon` is
+	# the only thing keeping the daemon around — and that restore is
+	# invalidated whenever Cargo.lock changes (e.g. cargo-machete dead
+	# deps removal), which silently breaks every test that uses
+	# CronDaemonGuard until the cache catches up.
+	cargo build -p peko-daemon --bin peko-daemon
 	@env -u MINIMAX_API_KEY \
 	    PEKOHUB_URL=$(PEKOHUB_URL) \
 	    MOCK_LLM_URL=$(MOCK_LLM_URL) \
@@ -151,8 +162,10 @@ test-integration: docker-up
 # an unset KIMI_API_KEY will then promote it back to a live run.
 
 test-integration-llm: docker-up
-	# See test-integration for the rationale (Phase 0.Z-B pre-build).
+	# See test-integration for the rationale (Phase 0.Z-B pre-build +
+	# Phase 12 pre-build).
 	cargo build -p peko-cli --bin peko
+	cargo build -p peko-daemon --bin peko-daemon
 	@if [ -z "$$MINIMAX_API_KEY" ]; then \
 	    echo "ERROR: MINIMAX_API_KEY must be set for test-integration-llm"; exit 1; \
 	fi
