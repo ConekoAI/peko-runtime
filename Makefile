@@ -22,7 +22,8 @@
         test-mock-llm-sequence \
         ci
 
-# All integration test crates (live in tests/*.rs and tests/scenarios/*.rs).
+# All integration test crates (live in peko-rs/core/tests/*.rs and
+# peko-rs/core/tests/scenarios/*.rs after Phase 0.Z-D moved tests/).
 # Kept in sync with `cargo metadata` (targets of kind = ["test"]); the
 # Principal migration dropped the cli_compaction / cli_a2a /
 # s3_agent_registry_roundtrip suites, and the parity branch added
@@ -107,10 +108,10 @@ docker-build:
 	    -f .github/docker/mock-llm/Dockerfile .github/docker/mock-llm
 
 docker-up: docker-build
-	docker compose -f tests/docker/docker-compose.integration.yml up -d
+	docker compose -f peko-rs/core/tests/docker/docker-compose.integration.yml up -d
 
 docker-down:
-	docker compose -f tests/docker/docker-compose.integration.yml down -v
+	docker compose -f peko-rs/core/tests/docker/docker-compose.integration.yml down -v
 
 # ── Tier 1: PR gate — Docker + PekoHub + mock LLM ────────────────────────
 # MINIMAX_API_KEY is unset so a leaking env doesn't silently switch the
@@ -133,7 +134,7 @@ test-integration: docker-up
 
 # ── Tier 2: nightly + [llm] commit tag — adds real-LLM tests ─────────────
 # MOCK_LLM_URL is unset so the dual-mode rule in the inline
-# `daemon::e2e_tests::tunnel_e2e` (`src/daemon/e2e_tests/tunnel_e2e.rs`,
+# `daemon::e2e_tests::tunnel_e2e` (`peko-rs/core/src/daemon/e2e_tests/tunnel_e2e.rs`,
 # the `seed_mock_provider_catalog` vs `seed_minimax_catalog_entry`
 # branch) falls through to the real provider.
 #
@@ -267,10 +268,11 @@ test-cli-providers: docker-up
 	    cargo test --test cli_providers -- --include-ignored
 
 # ── Phase D — user-journey scenarios (mock-LLM tier) ──────────────────────
-# The D1-D4 scenarios live under tests/scenarios/. Each `sN_*.rs` file
-# is its own integration test binary (registered via [[test]] entries
-# in Cargo.toml — cargo's auto-discovery only finds tests/*.rs directly,
-# not nested subdirs). The mock LLM provides the chat payload; what
+# The D1-D4 scenarios live under peko-rs/core/tests/scenarios/. Each
+# `sN_*.rs` file is its own integration test binary (registered via
+# [[test]] entries in peko-rs/core/Cargo.toml — cargo's auto-discovery
+# only finds tests/*.rs directly, not nested subdirs). The mock LLM
+# provides the chat payload; what
 # we test is the runtime↔registry↔tunnel↔PekoHub-relay orchestration
 # plumbing, not LLM decision-making.
 
