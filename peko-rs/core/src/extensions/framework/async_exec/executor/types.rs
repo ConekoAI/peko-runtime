@@ -3,25 +3,24 @@
 //! Phase 7 split this module in two:
 //!
 //! - `AsyncTaskStatus` and `AsyncTaskId` are **framework contracts**
-//!   (they tag the `HookOutput::TaskStatus` variant) and now live in
+//!   (they tag the `HookOutput::TaskStatus` variant) and live in
 //!   the `peko-extension-api` workspace crate. The shim re-exports
 //!   them from there so existing
-//!   `peko::extensions::framework::async_exec::executor::AsyncTaskStatus`
+//!   `peko_extension_host::async_exec::executor::AsyncTaskStatus`
 //!   paths keep resolving unchanged.
 //! - `AsyncTaskResult`, `AsyncTaskReceipt`, `AsyncResultDeliveryMode`,
 //!   `AsyncToolConfig`, `WaitResult`, `DeliveryTarget`, and
 //!   `SessionMessageType` are **executor-internal** types that depend
 //!   on `peko-tools-core::ToolResult` and other host-only deps. They
-//!   stay in the framework host; Phase 8 may move the entire executor
+//!   live in the framework host; Phase 8b moved the entire executor
 //!   to `peko-extension-host`.
 
 use peko_tools_core::ToolResult;
 use serde::{Deserialize, Serialize};
 
-// Re-export the framework-contract types from peko-extension-api. The
-// parent `executor/mod.rs` re-exports these via `pub use types::{...}`.
-// Cannot convert to plain `use` without breaking the parent's re-export
-// chain — Rust requires leaf `pub use` for grandparent re-exports.
+// Re-export the framework-contract types that moved to peko-extension-api
+// in Phase 7. The contract types live next to the `HookOutput::TaskStatus`
+// variant; the executor imports them from there.
 pub use peko_extension_api::async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
 
 /// Receipt returned to agent when spawning an async task

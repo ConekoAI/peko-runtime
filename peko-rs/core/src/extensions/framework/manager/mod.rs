@@ -1,18 +1,13 @@
-//! Extension manager backend modules
+//! Extension manager backend modules (Phase 8b + Phase 8c.1.D.4).
 //!
 //! The runtime-wide extension lifecycle is owned by
-//! [`peko_extension_host::store::ExtensionStore`] (still in root).
-//! This module hosts:
+//! [`crate::store::ExtensionStore`] (still in root). This module hosts
+//! the backend helpers that the store uses internally:
 //!
-//! - `discovery` (re-exported from `peko_extension_host`): directory scanning
-//!   and extension detection — lifted in Phase 8b; kept here as a shim for
-//!   backwards compat (the host itself doesn't depend on root-only
-//!   `ExtensionStore::with_storage_dir`).
-//!
-//! `packaging` and `storage` were deleted from root in Phase 8c.2 — they
-//! live in `peko_extension_host::manager::{packaging,storage}`.
+//! - `discovery`: directory scanning and extension detection
+//! - `storage`: on-disk persistence for installed extensions
+//! - `packaging`: `.ext` package export/import (Phase 8c.1.D.4 lift)
 
-pub mod discovery {
-    //! Re-export of host-side discovery helpers (Phase 8b.2).
-    pub use peko_extension_host::manager::discovery::{discovery_paths, DiscoveredExtension};
-}
+pub mod discovery;
+pub mod packaging;
+pub mod storage;

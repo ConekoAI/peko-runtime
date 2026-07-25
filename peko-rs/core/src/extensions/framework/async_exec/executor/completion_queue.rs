@@ -19,7 +19,7 @@
 //!    in `src/engine/async_completion_compat.rs` that just re-exposed
 //!    root's field-identical copy as an `AsyncCompletionLike` (the
 //!    canonical `peko_extension_host::CompletionEvent` already
-//!    implements it in `peko-rs/engine/src/async_completion.rs:43`).
+//!    implements it in `crates/engine/src/async_completion.rs:43`).
 //!
 //! Phase 2 deletes both shims. The types are now single-sourced in
 //! `peko_extension_host`. Root re-exports them through this module so
@@ -43,11 +43,12 @@
 
 use std::sync::Arc;
 
-// Re-export the canonical types from `peko_extension_host`. The parent
-// `executor/mod.rs` re-exports these via `pub use completion_queue::{...}`.
-// Cannot convert to plain `use` without breaking the parent's re-export
-// chain — Rust requires leaf `pub use` for grandparent re-exports.
-pub use peko_extension_host::{CompletionEvent, InboxItem, SessionInbox, SteeringMessage};
+// Re-export the canonical types from this crate's `crate::inbox`
+// module. Phase 8b lifts the executor into `peko-extension-host`,
+// so these types are now intra-crate re-exports — root retains
+// compat shims under `crate::extensions::framework::async_exec::executor`
+// until the framework tree is fully deleted.
+pub use crate::inbox::{CompletionEvent, InboxItem, SessionInbox, SteeringMessage};
 
 /// Convenience alias preserved from the pre-Phase-2 root type:
 ///
@@ -64,41 +65,11 @@ pub type SharedSessionInbox = Arc<SessionInbox>;
 
 #[cfg(test)]
 mod tests {
-    //! Tests run against `peko_extension_host::SessionInbox` directly
-    //! — there is no separate root type to test. The duplication that
-    //! existed before Phase 2 is gone, so the test suite is now
-    //! hosted on the canonical type in `peko-extension-host` (see
-    //! `peko-rs/extension-host/src/inbox.rs`).
-    //!
-    //! This module exists to pin the root re-exports and the
-    //! `SharedSessionInbox` alias so that any accidental decoupling
-    //! between the root path and the canonical home surfaces here as
-    //! a compile error rather than a runtime type confusion.
+    //! Verify the `SharedSessionInbox` alias still constructs from
+    //! the canonical `inbox::SessionInbox`. The type-id assertions
+    //! from the pre-Phase-8b root shim no longer apply because this
+    //! module now lives in the same crate as `crate::inbox::*`.
     use super::*;
-
-    #[test]
-    fn re_exports_resolve_to_peko_extension_host() {
-        // Type-level assertion: the root type IS the host type.
-        // `std::ptr::eq` is not valid for types, so we go through
-        // `type_id` which is the canonical "same type" check Rust
-        // exposes.
-        assert_eq!(
-            std::any::TypeId::of::<CompletionEvent>(),
-            std::any::TypeId::of::<peko_extension_host::CompletionEvent>(),
-        );
-        assert_eq!(
-            std::any::TypeId::of::<SteeringMessage>(),
-            std::any::TypeId::of::<peko_extension_host::SteeringMessage>(),
-        );
-        assert_eq!(
-            std::any::TypeId::of::<InboxItem>(),
-            std::any::TypeId::of::<peko_extension_host::InboxItem>(),
-        );
-        assert_eq!(
-            std::any::TypeId::of::<SessionInbox>(),
-            std::any::TypeId::of::<peko_extension_host::SessionInbox>(),
-        );
-    }
 
     #[test]
     fn shared_session_inbox_is_arc_of_session_inbox() {
