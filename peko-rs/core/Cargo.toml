@@ -261,11 +261,15 @@ webpki-roots = "0.26"
 # `Win32_Security_Authorization` : ConvertStringSecurityDescriptorToSecurityDescriptorW
 # `Win32_Foundation`             : CloseHandle, GetLastError, LocalFree (already present)
 # `Win32_System_Threading`, `Win32_System_JobObjects` : Job Objects (src/common/process/job_object.rs)
+# `Win32_System_Pipes`           : CreateNamedPipeW (src/ipc/server.rs)
+#   ...which also requires `Win32_Storage_FileSystem` (FILE_FLAGS_AND_ATTRIBUTES
+#   is its `dwopenmode` parameter, see windows-sys 0.52 src/Windows/Win32/System/Pipes/mod.rs).
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
+    "Win32_Storage_FileSystem",
     "Win32_Security",
     "Win32_Security_Authorization",
 ] }
