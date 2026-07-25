@@ -134,4 +134,4 @@ impl DefaultPrincipalRouterFactory {
 }
 
 /// Re-export concrete factory types for ergonomics.
-pub use peko_principal::memory::DefaultPrincipalMemory;
+use peko_principal::memory::DefaultPrincipalMemory;

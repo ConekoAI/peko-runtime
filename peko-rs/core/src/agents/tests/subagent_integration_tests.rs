@@ -8,7 +8,7 @@
 //! - List functionality
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::agents::subagent_types::SubagentStatus;
+use peko_extension_host::async_exec::executor::AsyncTaskStatus;
 use crate::common::paths::PathResolver;
 use peko_auth::Subject;
 use peko_extension_host::async_exec::executor::{
@@ -1083,7 +1083,7 @@ async fn test_executor_cancel() {
     let registry_guard = registry.read().await;
     let entry = registry_guard.get(&run_id).unwrap();
     assert!(
-        matches!(entry.status, SubagentStatus::Cancelled),
+        matches!(entry.status, AsyncTaskStatus::Cancelled),
         "Status should be Cancelled after cancel(), got: {:?}",
         entry.status
     );

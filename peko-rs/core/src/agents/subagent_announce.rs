@@ -3,7 +3,8 @@
 //! Handles announcing subagent results back to parent sessions.
 //! When a subagent completes, its result is added as a message to the parent's base session.
 
-use crate::agents::subagent_types::{SubagentRunView, SubagentStatus};
+use crate::agents::subagent_types::SubagentRunView;
+use peko_extension_host::async_exec::executor::AsyncTaskStatus as SubagentStatus;
 
 /// Format a subagent result as an announcement message
 #[must_use]
@@ -118,7 +119,8 @@ Remember: You are running as a subagent (depth {depth}/{max_depth}). Results aut
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
+    use crate::agents::subagent_types::SubagentRunView;
+use peko_extension_host::async_exec::executor::{AsyncTaskStatus as SubagentStatus, SubagentResult};
     use chrono::Utc;
 
     fn make_test_view(status: SubagentStatus, result: Option<SubagentResult>) -> SubagentRunView {

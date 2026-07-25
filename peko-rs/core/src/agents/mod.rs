@@ -43,14 +43,5 @@ pub mod subagent_types;
 // Re-export typed spawn error
 pub use subagent_error::SpawnError;
 
-// Async tool framework (re-exported from extensions::async_exec)
-pub use peko_extension_host::async_exec::executor::{
-    AsyncExecutor, AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent,
-    AsyncTaskEventBus, AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskResult, AsyncTaskStatus,
-    AsyncToolConfig, CallbackDelivery, ChannelDelivery, DeliveryTarget, QueueDelivery,
-    ResultDelivery, SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
-    WaitResult,
-};
-
 #[cfg(test)]
 mod tests;

@@ -29,7 +29,8 @@ use tracing::{error, info, warn};
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
 use crate::agents::subagent_error::SpawnError;
-use crate::agents::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
+use crate::agents::subagent_types::SubagentRunView;
+use peko_extension_host::async_exec::executor::{AsyncTaskStatus as SubagentStatus, SubagentResult};
 use crate::extensions::framework::types::Capabilities;
 use peko_auth::Subject;
 use peko_extension_host::async_exec::executor::{

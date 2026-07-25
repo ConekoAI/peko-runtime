@@ -33,9 +33,9 @@ use tracing::{debug, info, instrument, warn};
 
 // `PrincipalMessageRequest`/`PrincipalMessageResponse` and the
 // `PrincipalMessageService` trait live in
-// `common::types::principal_message`. No local aliases — use the
+// `peko_extension_host::principal_message`. No local aliases — use the
 // canonical names directly.
-pub use peko_extension_host::principal_message::ToolCallInfo;
+use peko_extension_host::principal_message::ToolCallInfo;
 
 /// Execution request for stateless agent
 #[derive(Debug, Clone)]

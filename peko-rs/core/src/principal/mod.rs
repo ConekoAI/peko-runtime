@@ -27,8 +27,8 @@ pub mod slash;
 pub use agent_runner::build_agent_config;
 pub use context::PrincipalContext;
 pub use factory::{
-    DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
-    PrincipalMemoryFactory, PrincipalRouterFactory,
+    DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalMemoryFactory,
+    PrincipalRouterFactory,
 };
 pub use manager::{PrincipalManager, PrincipalManagerError};
 pub use router::{
