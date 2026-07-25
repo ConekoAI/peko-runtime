@@ -279,7 +279,7 @@ impl Daemon {
             peko_extension_host::async_exec::executor::AsyncExecutor::new()
                 .with_inbox_registry(app_state.inbox_registry.clone()),
         );
-        let cron_extension_core = crate::extensions::framework::core::global_core()
+        let cron_extension_core = peko_extension_host::core::global_core()
             .map(|arc| std::sync::Arc::downgrade(&arc))
             .unwrap_or_else(std::sync::Weak::new);
 

@@ -1041,7 +1041,7 @@ impl RequestHandler for PrincipalHandler {
                     governance: PrincipalGovernanceConfig::default(),
                     memory: PrincipalMemoryConfig::default(),
                     routing: PrincipalRoutingConfig::default(),
-                    capabilities: crate::extensions::framework::types::Capabilities::starter_bundle(
+                    capabilities: peko_extension_host::types::Capabilities::starter_bundle(
                     ),
                     exposure: Exposure::Private,
                     status: None,

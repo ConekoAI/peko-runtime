@@ -1,7 +1,7 @@
 //! Extension manager backend modules
 //!
 //! The runtime-wide extension lifecycle is owned by
-//! [`crate::extensions::framework::store::ExtensionStore`] (still in root).
+//! [`peko_extension_host::store::ExtensionStore`] (still in root).
 //! This module hosts:
 //!
 //! - `discovery` (re-exported from `peko_extension_host`): directory scanning

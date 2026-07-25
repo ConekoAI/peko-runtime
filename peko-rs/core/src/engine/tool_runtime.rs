@@ -15,7 +15,7 @@
 
 use crate::common::paths::PathResolver;
 use crate::extensions::builtin::BuiltinToolAdapter;
-use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
+use peko_extension_host::core::{ExtensionCore, ExtensionServices};
 use crate::tools::builtin::BashTool;
 use anyhow::Result;
 use peko_tools_builtin::{
@@ -256,7 +256,7 @@ impl ToolRuntime {
     /// `ExtensionCore` and `ToolRuntime` is process-scoped, so
     /// `PrincipalId::system()` is the right scope here.
     #[must_use]
-    pub async fn list_tools(&self) -> Vec<crate::extensions::framework::types::ToolMetadata> {
+    pub async fn list_tools(&self) -> Vec<peko_extension_host::types::ToolMetadata> {
         self.extension_core
             .list_tools(peko_subject::PrincipalId::system())
             .await

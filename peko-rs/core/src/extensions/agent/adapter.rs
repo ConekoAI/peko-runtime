@@ -25,10 +25,10 @@
 
 use crate::extensions::framework::adapters::parsing;
 use crate::extensions::framework::adapters::{ExtensionTypeAdapter, ManifestFormat};
-use crate::extensions::framework::core::{
+use peko_extension_host::core::{
     HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
 };
-use crate::extensions::framework::types::{
+use peko_extension_host::types::{
     ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
 };
 use anyhow::{Context, Result};
@@ -222,7 +222,7 @@ impl ExtensionTypeAdapter for AgentAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::framework::ExtensionManifest> {
+    ) -> anyhow::Result<peko_extension_host::ExtensionManifest> {
         let (agent_frontmatter, _): (AgentFrontmatter, _) =
             parsing::parse_yaml_frontmatter_typed(content)
                 .with_context(|| format!("Failed to parse AGENT.md frontmatter in {path:?}"))?;
@@ -316,7 +316,7 @@ impl HookHandler for AgentPromptHandler {
         // Filter at handle-time using the principal's capability grants and
         // active extension snapshot carried in `ctx.state["tool_context"]`.
         let runtime_ctx = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context");
+            .get_state::<peko_extension_host::types::ToolRuntimeContext>("tool_context");
 
         let enabled = runtime_ctx.map_or(false, |rtc| {
             if let Some(ref active) = rtc.active_extensions {
@@ -375,7 +375,7 @@ pub fn load_agents_from_directory(path: &Path) -> Vec<DiscoveredAgent> {
 
 /// Register agents with an `ExtensionCore`
 pub async fn register_agents_with_core(
-    core: &crate::extensions::framework::ExtensionCore,
+    core: &peko_extension_host::ExtensionCore,
     agents: Vec<DiscoveredAgent>,
 ) -> Result<Vec<HookId>> {
     let mut hook_ids = Vec::new();
@@ -416,7 +416,7 @@ pub async fn register_agents_with_core(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::core::ExtensionServices;
+    use peko_extension_host::core::ExtensionServices;
     use tempfile::TempDir;
 
     fn create_test_agent(dir: &Path, name: &str, description: &str) -> PathBuf {
@@ -569,7 +569,7 @@ color: '#ff0000'
         create_test_agent(temp.path(), "agent1", "First agent");
         create_test_agent(temp.path(), "agent2", "Second agent");
 
-        let core = crate::extensions::framework::ExtensionCore::new();
+        let core = peko_extension_host::ExtensionCore::new();
         let agents = load_agents_from_directory(temp.path());
 
         assert_eq!(agents.len(), 2);
@@ -597,13 +597,13 @@ color: '#ff0000'
                 section: "agents".to_string(),
                 priority: AGENT_HOOK_PRIORITY,
             },
-            crate::extensions::framework::HookInput::Unit,
+            peko_extension_host::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
 
         ctx.set_state(
             "tool_context",
-            crate::extensions::framework::types::ToolRuntimeContext::new()
+            peko_extension_host::types::ToolRuntimeContext::new()
                 .with_principal_id("test-handler")
                 .with_capabilities(["agent:math"]),
         );
@@ -651,14 +651,14 @@ color: '#ff0000'
                 section: "agents".to_string(),
                 priority: AGENT_HOOK_PRIORITY,
             },
-            crate::extensions::framework::HookInput::Unit,
+            peko_extension_host::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
 
         // Allowlist contains the canonical id, not the human-readable name.
         ctx.set_state(
             "tool_context",
-            crate::extensions::framework::types::ToolRuntimeContext::new()
+            peko_extension_host::types::ToolRuntimeContext::new()
                 .with_principal_id("test-canonical")
                 .with_capabilities(["agent:senior-developer"]),
         );
@@ -691,13 +691,13 @@ color: '#ff0000'
                 section: "agents".to_string(),
                 priority: AGENT_HOOK_PRIORITY,
             },
-            crate::extensions::framework::HookInput::Unit,
+            peko_extension_host::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
 
         ctx.set_state(
             "tool_context",
-            crate::extensions::framework::types::ToolRuntimeContext::new()
+            peko_extension_host::types::ToolRuntimeContext::new()
                 .with_principal_id("test-filter")
                 .with_capabilities(["agent:other"]),
         );
@@ -727,7 +727,7 @@ color: '#ff0000'
                 section: "agents".to_string(),
                 priority: AGENT_HOOK_PRIORITY,
             },
-            crate::extensions::framework::HookInput::Unit,
+            peko_extension_host::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
 

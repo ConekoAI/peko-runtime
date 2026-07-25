@@ -40,8 +40,8 @@
 //! let cancelled = adapter.cancel("my_tool", &receipt.task_id).await?;
 //! ```
 
-use crate::extensions::framework::core::{ExtensionCore, HookPointBuilder};
-use crate::extensions::framework::types::{AsyncReceipt, HookInput, HookOutput, HookResult};
+use peko_extension_host::core::{ExtensionCore, HookPointBuilder};
+use peko_extension_host::types::{AsyncReceipt, HookInput, HookOutput, HookResult};
 use anyhow::{anyhow, Result};
 use peko_extension_host::async_exec::executor::{
     AsyncExecutor, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, WaitResult,
@@ -426,10 +426,10 @@ impl std::fmt::Debug for ExtensionAsyncAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::core::context::HookContext;
-    use crate::extensions::framework::core::handler::HookHandler;
-    use crate::extensions::framework::core::HookPoint;
-    use crate::extensions::framework::ExtensionId;
+    use peko_extension_host::core::context::HookContext;
+    use peko_extension_host::core::handler::HookHandler;
+    use peko_extension_host::core::HookPoint;
+    use peko_extension_host::ExtensionId;
     use async_trait::async_trait;
 
     /// Mock async handler for testing

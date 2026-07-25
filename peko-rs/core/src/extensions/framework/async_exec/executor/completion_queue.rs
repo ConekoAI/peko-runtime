@@ -43,9 +43,10 @@
 
 use std::sync::Arc;
 
-// Re-export the canonical types from `peko_extension_host`. These are
-// the single source of truth — root no longer carries its own
-// field-identical copies.
+// Re-export the canonical types from `peko_extension_host`. The parent
+// `executor/mod.rs` re-exports these via `pub use completion_queue::{...}`.
+// Cannot convert to plain `use` without breaking the parent's re-export
+// chain — Rust requires leaf `pub use` for grandparent re-exports.
 pub use peko_extension_host::{CompletionEvent, InboxItem, SessionInbox, SteeringMessage};
 
 /// Convenience alias preserved from the pre-Phase-2 root type:

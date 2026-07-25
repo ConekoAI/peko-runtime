@@ -5,7 +5,7 @@
 //! lifecycle and shutdown.
 
 use crate::common::json_utils::json_subset;
-use crate::extensions::framework::core::ExtensionCore;
+use peko_extension_host::core::ExtensionCore;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::router::{ChannelContext, ChannelKind};
 use anyhow::Result;
@@ -630,7 +630,7 @@ mod tests {
     use super::*;
     use crate::common::paths::PathResolver;
     use crate::engine::tool_runtime::ToolRuntime;
-    use crate::extensions::framework::core::init_global_core;
+    use peko_extension_host::core::init_global_core;
     use crate::principal::{
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalManager,
     };

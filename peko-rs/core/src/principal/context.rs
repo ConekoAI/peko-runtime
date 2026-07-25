@@ -24,7 +24,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::extensions::agent::{register_agents_with_core, AgentAdapter};
 use crate::extensions::builtin::BuiltinToolAdapter;
-use crate::extensions::framework::core::{global_core, ExtensionCore};
+use peko_extension_host::core::{global_core, ExtensionCore};
 use crate::principal::router::AgentPromptSummary;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 use peko_observability::Observability;
@@ -413,8 +413,8 @@ mod tests {
         // valid state in our process-shared design), accept that too —
         // the singleton semantics are still proven because `core()`
         // returns the daemon-global, not a fresh instance.
-        let our_core = Arc::new(crate::extensions::framework::ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(Arc::clone(&our_core));
+        let our_core = Arc::new(peko_extension_host::ExtensionCore::new());
+        peko_extension_host::core::init_global_core(Arc::clone(&our_core));
 
         let ctx = PrincipalContext::new(
             dir.path().to_path_buf(),
@@ -431,7 +431,7 @@ mod tests {
         );
 
         let returned = ctx.core().await;
-        let global = crate::extensions::framework::core::global_core()
+        let global = peko_extension_host::core::global_core()
             .expect("we just initialized the global");
         assert!(
             Arc::ptr_eq(&returned, &global),

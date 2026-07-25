@@ -583,7 +583,7 @@ impl AppState {
         // For tests, always create a fresh core to avoid shared mutable state
         // between concurrent tests.
         let global_core = if for_test {
-            use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
+            use peko_extension_host::core::{ExtensionCore, ExtensionServices};
             use peko_extension_host::transport::async_router::AsyncExecutionRouter;
             use peko_extension_host::transport::async_transport::create_local_transport;
             let router = AsyncExecutionRouter::with_transport(create_local_transport());
@@ -592,11 +592,11 @@ impl AppState {
                 Arc::clone(&principal_service_dyn),
             );
             Arc::new(ExtensionCore::with_services(Arc::new(services)))
-        } else if let Some(existing) = crate::extensions::framework::core::global_core() {
+        } else if let Some(existing) = peko_extension_host::core::global_core() {
             tracing::info!("Reusing global ExtensionCore initialized by main.rs");
             existing
         } else {
-            use crate::extensions::framework::core::{
+            use peko_extension_host::core::{
                 init_global_core, ExtensionCore, ExtensionServices,
             };
             use peko_extension_host::transport::async_router::AsyncExecutionRouter;
@@ -1992,8 +1992,8 @@ mod tests {
     async fn test_agent_init_preserves_pre_registered_tools() {
         use crate::agents::agent_config::AgentConfig;
         use crate::agents::Agent;
-        use crate::extensions::framework::core::init_global_core;
-        use crate::extensions::framework::{HookInput, HookPoint};
+        use peko_extension_host::core::init_global_core;
+        use peko_extension_host::{HookInput, HookPoint};
 
         let state = create_test_state().await;
         let global_core = state.tool_runtime.extension_core().clone();
@@ -2016,7 +2016,7 @@ mod tests {
 
         // Tools should still be available after agent init
         let core = agent.extension_core();
-        let tools: Vec<crate::extensions::framework::types::ToolMetadata> =
+        let tools: Vec<peko_extension_host::types::ToolMetadata> =
             core.list_tools(peko_subject::PrincipalId::system()).await;
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         assert!(

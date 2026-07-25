@@ -5,7 +5,7 @@
 
 use crate::common::paths::PathResolver;
 use crate::extensions::framework::store::ExtensionStore;
-use crate::extensions::framework::types::ExtensionId;
+use peko_extension_host::types::ExtensionId;
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;

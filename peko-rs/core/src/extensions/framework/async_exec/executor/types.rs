@@ -18,9 +18,10 @@
 use peko_tools_core::ToolResult;
 use serde::{Deserialize, Serialize};
 
-// Re-export the framework-contract types that moved to peko-extension-api
-// in Phase 7. The contract types live next to the `HookOutput::TaskStatus`
-// variant; the executor imports them from there.
+// Re-export the framework-contract types from peko-extension-api. The
+// parent `executor/mod.rs` re-exports these via `pub use types::{...}`.
+// Cannot convert to plain `use` without breaking the parent's re-export
+// chain — Rust requires leaf `pub use` for grandparent re-exports.
 pub use peko_extension_api::async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
 
 /// Receipt returned to agent when spawning an async task

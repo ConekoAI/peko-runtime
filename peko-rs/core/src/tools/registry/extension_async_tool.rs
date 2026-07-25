@@ -103,7 +103,7 @@ impl Tool for ExtensionAsyncTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::ExtensionCore;
+    use peko_extension_host::ExtensionCore;
     use std::sync::Arc;
 
     #[test]

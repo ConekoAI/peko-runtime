@@ -47,7 +47,7 @@ use peko_extension_api::session::SessionSnapshot;
 
 /// The engine-facing surface of root's `ExtensionCore`.
 ///
-/// Implemented by root's `crate::extensions::framework::core::ExtensionCore`
+/// Implemented by root's `peko_extension_host::core::ExtensionCore`
 /// via `src/engine/extension_core_funnel_compat.rs`. The trait is
 /// object-safe because `async-trait` is used in production via
 /// `#[async_trait]` — see F37's `ExtensionCore::execute_tool_via_hook`

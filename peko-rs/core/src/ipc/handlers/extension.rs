@@ -28,7 +28,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::extensions::framework::store::ExtensionStore;
-use crate::extensions::framework::types::ExtensionId;
+use peko_extension_host::types::ExtensionId;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;

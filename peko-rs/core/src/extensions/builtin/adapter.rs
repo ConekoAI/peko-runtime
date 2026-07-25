@@ -11,9 +11,9 @@
 //! BuiltinToolAdapter::register_tool(&core, bash).await?;
 //! ```
 
-use crate::extensions::framework::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
-use crate::extensions::framework::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
-use crate::extensions::framework::HookResult;
+use peko_extension_host::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
+use peko_extension_host::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
+use peko_extension_host::HookResult;
 use anyhow::Result;
 use async_trait::async_trait;
 use peko_subject::PrincipalId;
@@ -413,7 +413,7 @@ impl HookHandler for BuiltinExecuteHandler {
         let exec_config = peko_extension_host::ToolExecConfig::with_schema(self.tool.parameters());
 
         let runtime_ctx = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            .get_state::<peko_extension_host::types::ToolRuntimeContext>("tool_context")
             .cloned()
             .unwrap_or_default();
 
@@ -655,16 +655,16 @@ mod tests {
     /// `AsyncExecutionRouter` impl is what production callers use, and it
     /// handles schema validation, preprocessor, and exec-fn dispatch the
     /// same way it always has.
-    fn make_test_core() -> Arc<crate::extensions::framework::core::ExtensionCore> {
+    fn make_test_core() -> Arc<peko_extension_host::core::ExtensionCore> {
         let router =
             peko_extension_host::transport::async_router::AsyncExecutionRouter::with_transport(
                 peko_extension_host::transport::async_transport::create_local_transport(),
             );
-        let services = crate::extensions::framework::core::ExtensionServices::with_async_router(
+        let services = peko_extension_host::core::ExtensionServices::with_async_router(
             Arc::new(router),
         );
         Arc::new(
-            crate::extensions::framework::core::ExtensionCore::with_services(Arc::new(services)),
+            peko_extension_host::core::ExtensionCore::with_services(Arc::new(services)),
         )
     }
 
@@ -796,8 +796,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_after_completion_does_not_emit_spurious_notice() {
-        use crate::extensions::framework::core::{HookContext, HookPoint};
-        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use peko_extension_host::core::{HookContext, HookPoint};
+        use peko_extension_host::types::{HookInput, ToolRuntimeContext};
         use std::time::Duration;
 
         let core = make_test_core();
@@ -852,8 +852,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_before_completion_emits_minimal_notice_for_soft_tool() {
-        use crate::extensions::framework::core::{HookContext, HookPoint};
-        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use peko_extension_host::core::{HookContext, HookPoint};
+        use peko_extension_host::types::{HookInput, ToolRuntimeContext};
         use std::time::Duration;
 
         struct SlowMockTool;
@@ -928,8 +928,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_fires_custom_on_interrupt_when_tool_opts_in() {
-        use crate::extensions::framework::core::{HookContext, HookPoint};
-        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use peko_extension_host::core::{HookContext, HookPoint};
+        use peko_extension_host::types::{HookInput, ToolRuntimeContext};
         use peko_tools_core::{ToolContext, ToolInterruptNotice};
         use std::time::Duration;
 
@@ -1030,8 +1030,8 @@ mod tests {
     /// was synthesized.
     #[tokio::test]
     async fn on_interrupt_performs_actual_cleanup_of_tool_state() {
-        use crate::extensions::framework::core::{HookContext, HookPoint};
-        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use peko_extension_host::core::{HookContext, HookPoint};
+        use peko_extension_host::types::{HookInput, ToolRuntimeContext};
         use peko_tools_core::{ToolContext, ToolInterruptNotice};
         use std::sync::Mutex as StdMutex;
         use std::time::Duration;
@@ -1178,8 +1178,8 @@ mod tests {
     /// a `HookResult::Error` carrying the validation message instead.
     #[tokio::test]
     async fn dispatch_short_circuits_when_args_violate_declared_schema() {
-        use crate::extensions::framework::core::{HookContext, HookPoint};
-        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use peko_extension_host::core::{HookContext, HookPoint};
+        use peko_extension_host::types::{HookInput, ToolRuntimeContext};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         struct RequiredFieldTool {
@@ -1276,8 +1276,8 @@ mod tests {
     /// accidentally reject legitimate calls.
     #[tokio::test]
     async fn dispatch_passes_when_args_satisfy_declared_schema() {
-        use crate::extensions::framework::core::{HookContext, HookPoint};
-        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use peko_extension_host::core::{HookContext, HookPoint};
+        use peko_extension_host::types::{HookInput, ToolRuntimeContext};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         struct RequiredFieldTool {

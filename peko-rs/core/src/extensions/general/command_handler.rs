@@ -9,10 +9,10 @@
 //! `hooks/session-start` prints JSON containing `additionalContext`, which is
 //! then injected into the system prompt via `{{session_context}}`.
 
-use crate::extensions::framework::core::{
+use peko_extension_host::core::{
     context::HookContext, handler::HookHandler, hook_points::HookPoint,
 };
-use crate::extensions::framework::types::{HookInput, HookOutput, HookResult};
+use peko_extension_host::types::{HookInput, HookOutput, HookResult};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -136,7 +136,7 @@ impl CommandHookHandler {
 
         // Principal id from tool context state if available.
         if let Some(tc) =
-            ctx.get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            ctx.get_state::<peko_extension_host::types::ToolRuntimeContext>("tool_context")
         {
             if let Some(pid) = &tc.principal_id {
                 env.insert("PEKO_PRINCIPAL_ID".to_string(), pid.clone());
@@ -351,8 +351,8 @@ mod tests {
     #[cfg(unix)]
     mod unix {
         use super::*;
-        use crate::extensions::framework::core::ExtensionServices;
-        use crate::extensions::framework::types::SessionSnapshot;
+        use peko_extension_host::core::ExtensionServices;
+        use peko_extension_host::types::SessionSnapshot;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
         use std::sync::Arc;

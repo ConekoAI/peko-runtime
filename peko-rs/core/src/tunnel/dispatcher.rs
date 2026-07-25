@@ -1444,7 +1444,7 @@ impl TunnelDispatcher {
 mod tests {
     use super::*;
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
-    use crate::extensions::framework::types::Capabilities;
+    use peko_extension_host::types::Capabilities;
     use crate::tunnel::protocol::{InstanceExposure, InstanceType};
     use peko_auth::{Permission, PermissionGrant, Subject};
     use peko_principal::config::{

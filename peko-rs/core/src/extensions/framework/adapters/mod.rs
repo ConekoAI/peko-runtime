@@ -5,7 +5,7 @@
 //! `crate::extensions::<type>::adapter`, not here.
 
 /// Re-export from core for convenience
-pub use crate::extensions::framework::core::HookBinding;
+pub use peko_extension_host::core::HookBinding;
 
 /// Adapter trait definition
 ///
@@ -21,13 +21,13 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
     /// Resolve hook bindings for a manifest
     fn resolve_hooks(
         &self,
-        manifest: &crate::extensions::framework::types::ExtensionManifest,
+        manifest: &peko_extension_host::types::ExtensionManifest,
     ) -> Vec<HookBinding>;
 
     /// Initialize the extension
     async fn initialize(
         &self,
-        _manifest: &crate::extensions::framework::types::ExtensionManifest,
+        _manifest: &peko_extension_host::types::ExtensionManifest,
     ) -> anyhow::Result<ExtensionState> {
         Ok(ExtensionState::Unit)
     }
@@ -45,8 +45,8 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
     /// Register tools provided by this extension with the unified registry.
     async fn register_tools(
         &self,
-        _core: &crate::extensions::framework::core::ExtensionCore,
-        _manifest: &crate::extensions::framework::types::ExtensionManifest,
+        _core: &peko_extension_host::core::ExtensionCore,
+        _manifest: &peko_extension_host::types::ExtensionManifest,
         _principal_id: &peko_subject::PrincipalId,
     ) -> anyhow::Result<usize> {
         Ok(0)
@@ -57,7 +57,7 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
         &self,
         path: &std::path::Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::framework::types::ExtensionManifest> {
+    ) -> anyhow::Result<peko_extension_host::types::ExtensionManifest> {
         use anyhow::Context;
 
         match self.manifest_format() {
@@ -80,7 +80,7 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
 fn parse_yaml_frontmatter_markdown(
     path: &std::path::Path,
     content: &str,
-) -> anyhow::Result<crate::extensions::framework::types::ExtensionManifest> {
+) -> anyhow::Result<peko_extension_host::types::ExtensionManifest> {
     use anyhow::Context;
 
     let mut lines = content.lines().peekable();
@@ -107,7 +107,7 @@ fn parse_yaml_frontmatter_markdown(
 
     let frontmatter = frontmatter_lines.join("\n");
 
-    let mut manifest: crate::extensions::framework::types::ExtensionManifest =
+    let mut manifest: peko_extension_host::types::ExtensionManifest =
         serde_yaml::from_str(&frontmatter)
             .with_context(|| format!("Failed to parse YAML frontmatter in {path:?}"))?;
 
@@ -125,7 +125,7 @@ fn parse_yaml_frontmatter_markdown(
 fn parse_pure_yaml_manifest(
     path: &std::path::Path,
     content: &str,
-) -> anyhow::Result<crate::extensions::framework::types::ExtensionManifest> {
+) -> anyhow::Result<peko_extension_host::types::ExtensionManifest> {
     use anyhow::Context;
 
     let yaml: serde_yaml::Value = serde_yaml::from_str(content)
@@ -289,10 +289,10 @@ pub mod parsing {
         yaml: &serde_yaml::Value,
         extension_type: &str,
         path: &Path,
-    ) -> Result<crate::extensions::framework::types::ExtensionManifest> {
-        use crate::extensions::framework::types::ExtensionDependency;
+    ) -> Result<peko_extension_host::types::ExtensionManifest> {
+        use peko_extension_host::types::ExtensionDependency;
         let (id, name, version, description) = extract_extension_fields(yaml)?;
-        let mut manifest = crate::extensions::framework::types::ExtensionManifest::new(
+        let mut manifest = peko_extension_host::types::ExtensionManifest::new(
             &id,
             extension_type,
             &name,
@@ -344,10 +344,10 @@ pub mod parsing {
         toml: &toml::Value,
         extension_type: &str,
         path: &Path,
-    ) -> Result<crate::extensions::framework::types::ExtensionManifest> {
-        use crate::extensions::framework::types::ExtensionDependency;
+    ) -> Result<peko_extension_host::types::ExtensionManifest> {
+        use peko_extension_host::types::ExtensionDependency;
         let (id, name, version, description) = extract_extension_fields_toml(toml)?;
-        let mut manifest = crate::extensions::framework::types::ExtensionManifest::new(
+        let mut manifest = peko_extension_host::types::ExtensionManifest::new(
             &id,
             extension_type,
             &name,

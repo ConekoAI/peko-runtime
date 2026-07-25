@@ -9,7 +9,7 @@ use super::task_file::{TaskFileRecord, TaskFileWriter};
 use super::types::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget, WaitResult,
 };
-use crate::extensions::framework::core::ExtensionCore;
+use peko_extension_host::core::ExtensionCore;
 use peko_extension_host::SessionInbox;
 use peko_session::InboxRegistry;
 
@@ -427,7 +427,7 @@ impl AsyncExecutor {
                 if let Some(target) = steer_target {
                     let label = config_for_spawn.label.clone().unwrap_or_default();
                     let text =
-                        crate::extensions::framework::async_exec::steer::format_cron_steer_message(
+                        peko_extension_host::async_exec::steer::format_cron_steer_message(
                             &label,
                             &task_id_clone,
                             &tool_name,

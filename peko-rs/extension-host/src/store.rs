@@ -13,7 +13,7 @@
 //! (`get_extension`, `resolve_tool_name`, `install`); future phases
 //! will add more as the framework is split further.
 //!
-//! [`ExtensionStore`]: crate::extensions::framework::store::ExtensionStore (root)
+//! [`ExtensionStore`]: peko_extension_host::store::ExtensionStore (root)
 //! [`VaultAccess`]: crate::vault::VaultAccess
 
 use anyhow::Result;

@@ -101,7 +101,7 @@ peko-providers = { path = "../providers" }
 # transport, store, manager, scaffold) stays in the root package —
 # Phase 8 will move that into `peko-extension-host`. Depends on
 # peko-message, peko-tools-core, peko-provider-api; the root
-# re-exports through `crate::extensions::framework::types::*` for
+# re-exports through `peko_extension_host::types::*` for
 # backwards compatibility.
 peko-extension-api = { path = "../extension-api" }
 # Workspace member providing the extension framework host
@@ -111,7 +111,7 @@ peko-extension-api = { path = "../extension-api" }
 # SimpleRegistry/SharedRegistry utilities. Depends only on
 # peko-extension-api + peko-message + peko-tools-core + peko-provider-api
 # + peko-subject. The root re-exports through
-# `crate::extensions::framework::*` for backwards compatibility.
+# `peko_extension_host::*` for backwards compatibility.
 peko-extension-host = { path = "../extension-host", features = ["test-utils"] }
 # Workspace member providing the IPC + tunnel wire-shape contracts
 # (Phase 11a) — owns the auth envelope (`AuthCredential`,

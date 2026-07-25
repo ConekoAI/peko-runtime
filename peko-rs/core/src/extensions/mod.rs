@@ -103,7 +103,7 @@ impl BuiltInAdapters {
             Box::new(universal::adapter::UniversalToolAdapter::new()),
             Box::new(mcp::adapter::McpAdapter::with_default_manager()),
             Box::new(gateway::adapter::GatewayAdapter::new(Arc::new(
-                crate::extensions::framework::core::ExtensionCore::new(),
+                peko_extension_host::core::ExtensionCore::new(),
             ))),
             Box::new(general::adapter::GeneralExtensionAdapter::new()),
         ]

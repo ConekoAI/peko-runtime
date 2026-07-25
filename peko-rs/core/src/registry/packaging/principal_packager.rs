@@ -3,7 +3,7 @@
 //! Exports Principals to `.principal` files (tar.gz archives with manifest).
 
 use crate::extensions::framework::store::ExtensionStore;
-use crate::extensions::framework::types::ExtensionId;
+use peko_extension_host::types::ExtensionId;
 use crate::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
 use crate::registry::packaging::types::{compute_digest, ExtensionRef, Layer, LayerType};
 use anyhow::Context;

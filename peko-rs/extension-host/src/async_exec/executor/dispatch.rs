@@ -3,7 +3,7 @@
 //!
 //! F38 introduces a typed `ToolDispatchContext` that consolidates the 11
 //! fields the F37 canonical funnel
-//! ([`ExtensionCore::execute_tool_via_hook`](crate::extensions::framework::core::ExtensionCore::execute_tool_via_hook))
+//! ([`ExtensionCore::execute_tool_via_hook`](peko_extension_host::core::ExtensionCore::execute_tool_via_hook))
 //! requires. Bundling them means callers don't have to thread 11 named
 //! parameters at each call site; the executor owns closure construction
 //! internally so the funnel is mandatory.

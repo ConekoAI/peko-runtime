@@ -24,10 +24,10 @@
 //! registry; this adapter only supplies the execution handler.
 
 use crate::extensions::framework::adapters::{ExtensionTypeAdapter, ManifestFormat};
-use crate::extensions::framework::core::{
+use peko_extension_host::core::{
     ExtensionCore, HookBinding, HookContext, HookHandler, HookPoint, ToolMetadata, ToolSource,
 };
-use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookResult};
+use peko_extension_host::types::{ExtensionId, ExtensionManifest, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use peko_subject::PrincipalId;
@@ -284,7 +284,7 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
         &self,
         path: &std::path::Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::framework::ExtensionManifest> {
+    ) -> anyhow::Result<peko_extension_host::ExtensionManifest> {
         use anyhow::Context;
 
         // Parse as unified YAML manifest
@@ -362,7 +362,7 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
 
     async fn register_tools(
         &self,
-        core: &crate::extensions::framework::core::ExtensionCore,
+        core: &peko_extension_host::core::ExtensionCore,
         manifest: &ExtensionManifest,
         principal_id: &PrincipalId,
     ) -> Result<usize> {
@@ -452,7 +452,7 @@ pub async fn load_tools_from_directory(path: &Path) -> Vec<DiscoveredUniversalTo
 
 /// Load and register universal tools with an ExtensionCore
 pub async fn load_and_register_tools(
-    core: &crate::extensions::framework::ExtensionCore,
+    core: &peko_extension_host::ExtensionCore,
     tools_dir: impl AsRef<Path>,
     principal_id: &PrincipalId,
 ) -> Result<usize> {
@@ -537,7 +537,7 @@ mod tests {
         create_test_tool(temp.path(), "tool1", "First tool");
         create_test_tool(temp.path(), "tool2", "Second tool");
 
-        let core = crate::extensions::framework::ExtensionCore::new();
+        let core = peko_extension_host::ExtensionCore::new();
         let adapter = UniversalToolAdapter::new();
         let tools = adapter.discover_tools(temp.path()).await;
 
@@ -567,7 +567,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         create_test_tool(temp.path(), "tool1", "First tool");
 
-        let core = crate::extensions::framework::ExtensionCore::new();
+        let core = peko_extension_host::ExtensionCore::new();
         let count = load_and_register_tools(&core, temp.path(), PrincipalId::system())
             .await
             .unwrap();

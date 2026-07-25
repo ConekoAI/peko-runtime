@@ -89,7 +89,7 @@ pub struct AgenticLoop {
     system_prompt: String,
     /// Extension core for skill loading, tool registration, and hook
     /// firing. Phase 9b.N.5b.4 switched the field from the concrete
-    /// root `Arc<crate::extensions::framework::ExtensionCore>` to
+    /// root `Arc<peko_extension_host::ExtensionCore>` to
     /// `Arc<dyn ToolFunnel>` — the trait port the renderer, tool
     /// executor, and compaction orchestrator all use. The renderer
     /// (now in `peko_engine::prompt::renderer`) calls

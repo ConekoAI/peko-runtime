@@ -10,9 +10,10 @@ use crate::common::types::extension::{
 };
 use crate::common::vault::Vault;
 use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
-use crate::extensions::framework::core::global_core;
-use crate::extensions::framework::store::{DependencyStatus, ExtensionStore};
-use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
+use peko_extension_host::core::global_core;
+use peko_extension_host::store::DependencyStatus;
+use crate::extensions::framework::store::ExtensionStore;
+use peko_extension_host::types::{ExtensionId, ExtensionManifest};
 use crate::extensions::gateway::GatewayAdapter;
 use crate::extensions::general::GeneralExtensionAdapter;
 use crate::extensions::mcp::McpAdapter;

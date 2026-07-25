@@ -11,10 +11,10 @@
 //! agents and built-ins.
 
 use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter};
-use crate::extensions::framework::core::ExtensionCore;
-pub use peko_extension_host::manager::storage::ExtensionStorage;
+use peko_extension_host::core::ExtensionCore;
+use peko_extension_host::manager::storage::ExtensionStorage;
 
-use crate::extensions::framework::types::HookId;
+use peko_extension_host::types::HookId;
 use anyhow::{Context, Result};
 use peko_extension_host::manager::discovery::{discovery_paths, DiscoveredExtension};
 use std::collections::{HashMap, HashSet};
@@ -24,11 +24,10 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 // Phase 8c.1.D.2: data types now live in `peko_extension_host::store`
-// (the trait port's home). Re-export so the historical
-// `crate::extensions::framework::store::LoadedExtension` path keeps
-// resolving for callers (e.g., packaging, IPC handlers, principal).
+// (the trait port's home). Internal-only — callers reach for these
+// directly via the host crate's path.
 use peko_extension_api::{ExtensionId, ExtensionManifest};
-pub use peko_extension_host::store::{
+use peko_extension_host::store::{
     BundleMetadata, DependencyResolution, DependencyStatus, ExtensionBundle,
     ExtensionStore as ExtensionStoreTrait, GlobalExtensionItem, LoadReport, LoadedExtension,
     ToolResolution,
@@ -247,7 +246,7 @@ impl ExtensionStore {
 
         for binding in bindings {
             let handler = binding.handler_factory.create(manifest.clone());
-            let handler_arc: Arc<dyn crate::extensions::framework::core::HookHandler> =
+            let handler_arc: Arc<dyn peko_extension_host::core::HookHandler> =
                 handler.into();
             let registration = self
                 .core
@@ -903,7 +902,7 @@ impl Default for ExtensionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::types::ExtensionDependency;
+    use peko_extension_host::types::ExtensionDependency;
     use tempfile::TempDir;
 
     #[test]

@@ -24,8 +24,8 @@
 
 use crate::extensions::framework::adapters::parsing;
 use crate::extensions::framework::adapters::{ExtensionTypeAdapter, ManifestFormat};
-use crate::extensions::framework::core::HookBinding;
-use crate::extensions::framework::types::ExtensionManifest;
+use peko_extension_host::core::HookBinding;
+use peko_extension_host::types::ExtensionManifest;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -156,7 +156,7 @@ impl ExtensionTypeAdapter for SlashAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::framework::ExtensionManifest> {
+    ) -> anyhow::Result<peko_extension_host::ExtensionManifest> {
         let (command_frontmatter, _): (SlashFrontmatter, _) =
             parsing::parse_yaml_frontmatter_typed(content)
                 .with_context(|| format!("Failed to parse COMMAND.md frontmatter in {path:?}"))?;
@@ -221,9 +221,9 @@ pub fn load_commands_from_directory(path: &Path) -> Vec<DiscoveredCommand> {
 
 /// Register slash commands with an `ExtensionCore`
 pub async fn register_commands_with_core(
-    _core: &crate::extensions::framework::ExtensionCore,
+    _core: &peko_extension_host::ExtensionCore,
     _commands: Vec<DiscoveredCommand>,
-) -> Result<Vec<crate::extensions::framework::types::HookId>> {
+) -> Result<Vec<peko_extension_host::types::HookId>> {
     // Slash commands are user-invoked and do not register hooks in v0.
     Ok(Vec::new())
 }

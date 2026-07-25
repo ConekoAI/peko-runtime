@@ -602,25 +602,25 @@ impl StatelessAgentService {
         let prompt = match agent
             .extension_core()
             .invoke_hook(
-                crate::extensions::framework::core::HookPoint::ChannelInput,
-                crate::extensions::framework::types::HookInput::Unit,
+                peko_extension_host::core::HookPoint::ChannelInput,
+                peko_extension_host::types::HookInput::Unit,
             )
             .await
         {
-            crate::extensions::framework::types::HookResult::Continue(
-                crate::extensions::framework::types::HookOutput::Text(transformed),
+            peko_extension_host::types::HookResult::Continue(
+                peko_extension_host::types::HookOutput::Text(transformed),
             )
-            | crate::extensions::framework::types::HookResult::Replace(
-                crate::extensions::framework::types::HookOutput::Text(transformed),
+            | peko_extension_host::types::HookResult::Replace(
+                peko_extension_host::types::HookOutput::Text(transformed),
             ) => {
                 debug!("ChannelInput hook transformed prompt");
                 transformed
             }
-            crate::extensions::framework::types::HookResult::Continue(
-                crate::extensions::framework::types::HookOutput::Json(json),
+            peko_extension_host::types::HookResult::Continue(
+                peko_extension_host::types::HookOutput::Json(json),
             )
-            | crate::extensions::framework::types::HookResult::Replace(
-                crate::extensions::framework::types::HookOutput::Json(json),
+            | peko_extension_host::types::HookResult::Replace(
+                peko_extension_host::types::HookOutput::Json(json),
             ) => {
                 // If the hook returns JSON with a "message" or "prompt" field, use it
                 if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
@@ -717,25 +717,25 @@ impl StatelessAgentService {
         let final_response = match agent
             .extension_core()
             .invoke_hook(
-                crate::extensions::framework::core::HookPoint::ChannelOutput,
-                crate::extensions::framework::types::HookInput::Unit,
+                peko_extension_host::core::HookPoint::ChannelOutput,
+                peko_extension_host::types::HookInput::Unit,
             )
             .await
         {
-            crate::extensions::framework::types::HookResult::Continue(
-                crate::extensions::framework::types::HookOutput::Text(transformed),
+            peko_extension_host::types::HookResult::Continue(
+                peko_extension_host::types::HookOutput::Text(transformed),
             )
-            | crate::extensions::framework::types::HookResult::Replace(
-                crate::extensions::framework::types::HookOutput::Text(transformed),
+            | peko_extension_host::types::HookResult::Replace(
+                peko_extension_host::types::HookOutput::Text(transformed),
             ) => {
                 debug!("ChannelOutput hook transformed response");
                 transformed
             }
-            crate::extensions::framework::types::HookResult::Continue(
-                crate::extensions::framework::types::HookOutput::Json(json),
+            peko_extension_host::types::HookResult::Continue(
+                peko_extension_host::types::HookOutput::Json(json),
             )
-            | crate::extensions::framework::types::HookResult::Replace(
-                crate::extensions::framework::types::HookOutput::Json(json),
+            | peko_extension_host::types::HookResult::Replace(
+                peko_extension_host::types::HookOutput::Json(json),
             ) => {
                 if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
                     debug!("ChannelOutput hook transformed response from JSON");
@@ -891,25 +891,25 @@ impl StatelessAgentService {
         let prompt = match agent
             .extension_core()
             .invoke_hook(
-                crate::extensions::framework::core::HookPoint::ChannelInput,
-                crate::extensions::framework::types::HookInput::Unit,
+                peko_extension_host::core::HookPoint::ChannelInput,
+                peko_extension_host::types::HookInput::Unit,
             )
             .await
         {
-            crate::extensions::framework::types::HookResult::Continue(
-                crate::extensions::framework::types::HookOutput::Text(transformed),
+            peko_extension_host::types::HookResult::Continue(
+                peko_extension_host::types::HookOutput::Text(transformed),
             )
-            | crate::extensions::framework::types::HookResult::Replace(
-                crate::extensions::framework::types::HookOutput::Text(transformed),
+            | peko_extension_host::types::HookResult::Replace(
+                peko_extension_host::types::HookOutput::Text(transformed),
             ) => {
                 debug!("ChannelInput hook transformed prompt (streaming)");
                 transformed
             }
-            crate::extensions::framework::types::HookResult::Continue(
-                crate::extensions::framework::types::HookOutput::Json(json),
+            peko_extension_host::types::HookResult::Continue(
+                peko_extension_host::types::HookOutput::Json(json),
             )
-            | crate::extensions::framework::types::HookResult::Replace(
-                crate::extensions::framework::types::HookOutput::Json(json),
+            | peko_extension_host::types::HookResult::Replace(
+                peko_extension_host::types::HookOutput::Json(json),
             ) => {
                 if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
                     debug!("ChannelInput hook transformed prompt from JSON (streaming)");
@@ -996,8 +996,8 @@ impl StatelessAgentService {
             // The hook can still perform side effects (logging, metrics, etc.)
             let channel_output_result = extension_core
                 .invoke_hook(
-                    crate::extensions::framework::core::HookPoint::ChannelOutput,
-                    crate::extensions::framework::types::HookInput::Unit,
+                    peko_extension_host::core::HookPoint::ChannelOutput,
+                    peko_extension_host::types::HookInput::Unit,
                 )
                 .await;
             debug!(

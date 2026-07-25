@@ -998,7 +998,7 @@ mod tests {
     use peko_auth::{Permission, PermissionGrant, Subject};
 
     use crate::engine::tool_runtime::ToolRuntime;
-    use crate::extensions::framework::core::init_global_core;
+    use peko_extension_host::core::init_global_core;
     use crate::principal::{
         router::{ChannelContext, ChannelKind},
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,

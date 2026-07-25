@@ -145,7 +145,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         // If no snapshot is registered (standalone / test path),
         // fail-open to preserve existing behavior.
         if let Some(caps) = self.executor.principal_capabilities() {
-            let required = crate::extensions::framework::types::Capability::new(format!(
+            let required = peko_extension_host::types::Capability::new(format!(
                 "agent:{subagent_type}"
             ));
             caps.is_granted(&required)

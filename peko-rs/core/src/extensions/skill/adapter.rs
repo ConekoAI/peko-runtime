@@ -27,11 +27,11 @@
 use crate::extensions::framework::adapters::parsing;
 use crate::extensions::framework::adapters::{ExtensionTypeAdapter, ManifestFormat};
 #[cfg(test)]
-use crate::extensions::framework::core::ExtensionServices;
-use crate::extensions::framework::core::{
+use peko_extension_host::core::ExtensionServices;
+use peko_extension_host::core::{
     HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
 };
-use crate::extensions::framework::types::{
+use peko_extension_host::types::{
     ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
 };
 use anyhow::{Context, Result};
@@ -177,7 +177,7 @@ impl ExtensionTypeAdapter for SkillAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::framework::ExtensionManifest> {
+    ) -> anyhow::Result<peko_extension_host::ExtensionManifest> {
         // Use shared parsing utility
         let (skill_frontmatter, _): (SkillFrontmatter, _) =
             parsing::parse_yaml_frontmatter_typed(content)
@@ -282,7 +282,7 @@ impl HookHandler for SkillPromptHandler {
         // Filter at handle-time using the principal's capability grants and
         // active extension snapshot carried in `ctx.state["tool_context"]`.
         let runtime_ctx = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context");
+            .get_state::<peko_extension_host::types::ToolRuntimeContext>("tool_context");
 
         let enabled = runtime_ctx.map_or(false, |rtc| {
             if let Some(ref active) = rtc.active_extensions {
@@ -382,7 +382,7 @@ pub fn load_skills_from_directory(path: &Path) -> Vec<DiscoveredSkill> {
 
 /// Register skills with an `ExtensionCore`
 pub async fn register_skills_with_core(
-    core: &crate::extensions::framework::ExtensionCore,
+    core: &peko_extension_host::ExtensionCore,
     skills: Vec<DiscoveredSkill>,
 ) -> Result<Vec<HookId>> {
     let mut hook_ids = Vec::new();
@@ -569,13 +569,13 @@ This is the body content.
                 section: "skills".to_string(),
                 priority: 100,
             },
-            crate::extensions::framework::HookInput::Unit,
+            peko_extension_host::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
 
         ctx.set_state(
             "tool_context",
-            crate::extensions::framework::types::ToolRuntimeContext::new()
+            peko_extension_host::types::ToolRuntimeContext::new()
                 .with_principal_id("test-handler")
                 .with_capabilities(["skill:docker"]),
         );
@@ -602,13 +602,13 @@ This is the body content.
                 section: "skills".to_string(),
                 priority: 100,
             },
-            crate::extensions::framework::HookInput::Unit,
+            peko_extension_host::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
 
         ctx.set_state(
             "tool_context",
-            crate::extensions::framework::types::ToolRuntimeContext::new()
+            peko_extension_host::types::ToolRuntimeContext::new()
                 .with_principal_id("test-filter")
                 .with_capabilities(["skill:other"]),
         );
@@ -633,7 +633,7 @@ This is the body content.
                 section: "skills".to_string(),
                 priority: 100,
             },
-            crate::extensions::framework::HookInput::Unit,
+            peko_extension_host::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
 
@@ -651,7 +651,7 @@ This is the body content.
         create_test_skill(temp.path(), "skill1", "First skill");
         create_test_skill(temp.path(), "skill2", "Second skill");
 
-        let core = crate::extensions::framework::ExtensionCore::new();
+        let core = peko_extension_host::ExtensionCore::new();
         let skills = load_skills_from_directory(temp.path());
 
         assert_eq!(skills.len(), 2);

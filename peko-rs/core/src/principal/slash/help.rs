@@ -2,7 +2,7 @@
 //! dispatcher.
 
 use crate::extensions::framework::store::ExtensionStore;
-use crate::extensions::framework::types::{Capabilities, Capability};
+use peko_extension_host::types::{Capabilities, Capability};
 use crate::ipc::packet::ExtensionSummary;
 use crate::principal::Principal;
 use anyhow::Result;
