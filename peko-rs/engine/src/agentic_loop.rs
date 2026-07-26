@@ -22,8 +22,8 @@ use futures::StreamExt;
 use peko_extension_api::ToolFunnel;
 use peko_message::{ContentBlock, LlmMessage};
 use peko_provider_api::{
-    clamp_openai_prompt_cache_key, CacheRetention, ChatOptions, MessageRole, StopReason,
-    TokenUsage, ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS,
+    clamp_openai_prompt_cache_key, BodyStringClassifier, CacheRetention, ChatOptions, MessageRole,
+    RetryClassifier, StopReason, TokenUsage, ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS,
 };
 use peko_quota::QuotaScope;
 use std::sync::Arc;
@@ -133,6 +133,22 @@ pub struct AgenticLoop {
     /// save/restore shape). Default 3 (matches codex); set to 0
     /// via `with_stream_max_retries(0)` to disable.
     stream_max_retries: u32,
+    /// F40: classifier used to map an `anyhow::Error` returned from
+    /// the provider into a [`RetryClassification`] variant. The
+    /// retry sites pattern-match on the variant to decide whether to
+    /// retry (and what delay to wait) vs. surface a terminal
+    /// `usage_limit_reached` / `insufficient_quota` / etc. without
+    /// burning the budget. Default [`BodyStringClassifier`]; per-
+    /// adapter overrides come via
+    /// [`AgenticLoopBuilder::with_retry_classifier`].
+    retry_classifier: Arc<dyn RetryClassifier>,
+    /// F40: shared retry budget that the start-stream and mid-stream
+    /// retry sites draw from. Constructed in `AgenticLoop::new` with
+    /// a single counter covering both sites within one iteration.
+    /// When the counter reaches zero, both sites stop retrying and
+    /// the loop surfaces [`AgenticError::RetryLimit`] with the
+    /// configured ceiling.
+    shared_budget: Arc<peko_providers::transport::SharedRetryBudget>,
     /// Per-session queue of completed async tasks, drained at the start
     /// of `run_inner` iteration. Surfaced to the LLM as a
     /// synthetic user-role message containing all queued completions.
@@ -249,6 +265,23 @@ impl AgenticLoop {
             // F31b: default to 3 streaming retries per iteration,
             // matching the HTTP-layer `RetryPolicy::default()`.
             stream_max_retries: 3,
+            // F40: default to the substring-scan classifier. Per-
+            // adapter overrides via `with_retry_classifier`.
+            retry_classifier: Arc::new(BodyStringClassifier),
+            // F40: budget covers both retry sites within one loop
+            // iteration. The ceiling is `stream_max_retries + 2` to
+            // allow the start-stream retry to share budget with the
+            // mid-stream retry while preserving the pre-F40
+            // "minimum viable" headroom. F40b: the factory
+            // constant moved into `ProviderRetryConfig::default()`
+            // (PR #3 Phase 2B); `default_max_attempts` reads from
+            // the same source so the engine budget agrees with the
+            // transport budget when both are used standalone (and
+            // when callers pass the same `Arc<SharedRetryBudget>`
+            // to both layers via the shared-budget builders).
+            shared_budget: peko_providers::transport::SharedRetryBudget::arc(
+                peko_providers::factory::default_max_attempts(),
+            ),
             resolved_model_id,
             // F23: cache-stable prefix starts un-rendered. The first
             // iteration of `run_inner_with_meter` triggers
@@ -341,6 +374,71 @@ impl AgenticLoop {
     pub fn with_stream_max_retries(mut self, max: u32) -> Self {
         self.stream_max_retries = max;
         self
+    }
+
+    /// F40: replace the default [`BodyStringClassifier`] with a
+    /// custom [`RetryClassifier`] impl. The wiring path lets future
+    /// per-adapter classifiers (Responses-API error codes, Anthropic
+    /// unified headers, etc.) plug in without changing call sites.
+    /// The agentic loop's retry sites read this on every error to
+    /// decide between retry-with-delay vs. terminal surface.
+    #[must_use]
+    pub fn with_retry_classifier(mut self, classifier: Arc<dyn RetryClassifier>) -> Self {
+        self.retry_classifier = classifier;
+        self
+    }
+
+    /// F40: replace the default shared retry budget with a custom
+    /// `Arc<SharedRetryBudget>` carrying an `Arc`-shared counter
+    /// across the start-stream AND mid-stream retry sites within an
+    /// iteration. When the counter reaches zero the loop surfaces
+    /// [`AgenticError::RetryLimit { attempts, max_attempts, cause }`]
+    /// and the consumer can pattern-match on the typed error instead
+    /// of string-parsing.
+    #[must_use]
+    pub fn with_shared_budget(
+        mut self,
+        budget: Arc<peko_providers::transport::SharedRetryBudget>,
+    ) -> Self {
+        self.shared_budget = budget;
+        self
+    }
+
+    /// Map a retry-exhausted error onto a typed `AgenticError::RetryLimit`.
+    ///
+    /// Called by both the start-stream (`'stream_retry`) and mid-stream
+    /// (`'inner_stream`) sites once the local attempt counter, the
+    /// classification gate, and the shared budget all refuse to
+    /// retry. When the original classification was transient (the
+    /// audit's primary exhausted-budget path), the function wraps the
+    /// error into `AgenticError::RetryLimit { attempts, max_attempts,
+    /// cause }` so callers can `downcast` instead of string-parsing.
+    /// When the classification was terminal (`AuthFailure`,
+    /// `InvalidRequest`, `QuotaExceeded`, `UsageLimitReached`, etc.)
+    /// the original error is returned unchanged — terminal errors are
+    /// already structured, wrapping them in `RetryLimit` would
+    /// obscure the actionable variant.
+    fn classify_loop_error(
+        err: anyhow::Error,
+        classification: peko_provider_api::RetryClassification,
+        attempts: u32,
+        max_attempts: u32,
+    ) -> anyhow::Error {
+        if classification.is_retryable() {
+            // The site saw a transient error but ran out of budget /
+            // local attempts. Surface typed `RetryLimit`.
+            crate::AgenticError::RetryLimit {
+                attempts,
+                max_attempts,
+                cause: err.to_string(),
+            }
+            .into()
+        } else {
+            // Terminal classification: preserve the original error
+            // so callers see the actionable variant (e.g. AuthFailure
+            // / InvalidRequest / QuotaExceeded).
+            err
+        }
     }
 
     /// Set the soft-interrupt cancel token. When set, the loop checks
@@ -1344,6 +1442,13 @@ impl AgenticLoop {
             // the initial `stream_with_eviction` call (which can fail
             // before any event is emitted) and a mid-stream `Err` from
             // the byte stream fall through the same retry path below.
+            //
+            // F40: classify via `self.retry_classifier.classify(&e)`,
+            // draw from `self.shared_budget` (single counter covers
+            // both sites within this iteration), and surface
+            // `AgenticError::RetryLimit { attempts, max_attempts, cause }`
+            // on exhaustion so callers can downcast instead of
+            // string-parsing.
             let mut stream_attempt: u32 = 0;
             let mut stream = 'stream_retry: loop {
                 match self
@@ -1352,17 +1457,18 @@ impl AgenticLoop {
                 {
                     Ok(s) => break 'stream_retry s,
                     Err(e) => {
-                        // F31b: retry the start-stream call when the
-                        // error is transient. `stream_with_eviction`
-                        // already handles `ContextWindowExceeded` by
-                        // dropping the oldest message and re-issuing;
-                        // any other retryable error reaches this branch
-                        // and is re-attempted against the same `messages`
-                        // snapshot.
-                        if stream_attempt < self.stream_max_retries
-                            && peko_provider_api::RetryableError::is_retryable(&e)
-                        {
-                            let retry_after = peko_provider_api::RetryableError::retry_after(&e);
+                        let classification =
+                            self.retry_classifier.classify(&e);
+                        let is_transient = classification.is_retryable();
+                        let within_local_budget =
+                            stream_attempt < self.stream_max_retries;
+                        let shared_budget_ok = self.shared_budget.try_consume();
+                        let should_retry =
+                            is_transient && within_local_budget && shared_budget_ok;
+                        if should_retry {
+                            let retry_after = classification.retry_after().or_else(|| {
+                                self.retry_classifier.retry_after(&e)
+                            });
                             let max_delay = std::time::Duration::from_secs(30);
                             let delay =
                                 retry_after.map(|d| d.min(max_delay)).unwrap_or_else(|| {
@@ -1377,28 +1483,39 @@ impl AgenticLoop {
                                 run_id: run_id.clone(),
                                 iteration,
                                 attempt: stream_attempt,
-                                max_attempts: self.stream_max_retries,
+                                max_attempts: self.shared_budget.max_attempts(),
                                 retry_after,
                                 delay,
                                 reason: reason_truncated,
                             });
                             info!(
-                                "Stream-start retry {}/{} after {:?} (reason: {})",
+                                "Stream-start retry {}/{} after {:?} (classification: {:?}, reason: {})",
                                 stream_attempt + 1,
-                                self.stream_max_retries,
+                                self.shared_budget.max_attempts(),
                                 delay,
+                                classification,
                                 e
                             );
                             tokio::time::sleep(delay).await;
                             stream_attempt += 1;
                             continue 'stream_retry;
                         }
+                        // F40: classify terminal exhaustion
                         on_event(AgenticEvent::Lifecycle {
                             run_id: run_id.clone(),
                             phase: LifecyclePhase::Error,
                             error: Some(e.to_string()),
                         });
-                        return Err(e);
+                        // Surface typed `RetryLimit` when the
+                        // classification was transient + budget
+                        // exhausted (the audit's main path); surface
+                        // the original error otherwise.
+                        return Err(Self::classify_loop_error(
+                            e,
+                            classification,
+                            stream_attempt,
+                            self.shared_budget.max_attempts(),
+                        ));
                     }
                 }
             };
@@ -1526,20 +1643,41 @@ impl AgenticLoop {
                                 }
                             }
                             Err(e) => {
-                                // F31b: mid-stream retry budget. The
-                                // `RetryableError::is_retryable()` impl
+                                // F40: mid-stream retry budget. The
+                                // `self.retry_classifier.classify(&e)`
+                                // returns a `RetryClassification` that
                                 // covers HTTP 429/500/502/503/504/529,
                                 // network timeouts, connection resets,
-                                // and refused connections. `400`/`413`
-                                // are explicitly NOT retryable here —
-                                // those surface as `ContextWindowExceeded`
+                                // and refused connections via the
+                                // substring-scan path. Terminal
+                                // classifications (`UsageLimitReached`,
+                                // `QuotaExceeded`, `AuthFailure`,
+                                // `InvalidRequest`) short-circuit
+                                // immediately. `400`/`413` are
+                                // explicitly NOT retryable here — those
+                                // surface as `ContextWindowExceeded`
                                 // through `stream_with_eviction` (F22),
                                 // not at this layer.
-                                if stream_attempt < self.stream_max_retries
-                                    && peko_provider_api::RetryableError::is_retryable(&e)
-                                {
-                                    let retry_after =
-                                        peko_provider_api::RetryableError::retry_after(&e);
+                                //
+                                // Both mid-stream and start-stream
+                                // sites draw from `self.shared_budget`
+                                // so the total worst case is one
+                                // ceiling, not stacked transport+engine
+                                // ceilings.
+                                let classification =
+                                    self.retry_classifier.classify(&e);
+                                let is_transient = classification.is_retryable();
+                                let within_local_budget =
+                                    stream_attempt < self.stream_max_retries;
+                                let shared_budget_ok =
+                                    self.shared_budget.try_consume();
+                                let should_retry = is_transient
+                                    && within_local_budget
+                                    && shared_budget_ok;
+                                if should_retry {
+                                    let retry_after = classification
+                                        .retry_after()
+                                        .or_else(|| self.retry_classifier.retry_after(&e));
                                     let max_delay = std::time::Duration::from_secs(30);
                                     let delay = retry_after
                                         .map(|d| d.min(max_delay))
@@ -1555,16 +1693,17 @@ impl AgenticLoop {
                                         run_id: run_id.clone(),
                                         iteration,
                                         attempt: stream_attempt,
-                                        max_attempts: self.stream_max_retries,
+                                        max_attempts: self.shared_budget.max_attempts(),
                                         retry_after,
                                         delay,
                                         reason: reason_truncated,
                                     });
                                     info!(
-                                        "Mid-stream retry {}/{} after {:?} (reason: {})",
+                                        "Mid-stream retry {}/{} after {:?} (classification: {:?}, reason: {})",
                                         stream_attempt + 1,
-                                        self.stream_max_retries,
+                                        self.shared_budget.max_attempts(),
                                         delay,
+                                        classification,
                                         e
                                     );
                                     tokio::time::sleep(delay).await;
@@ -1586,12 +1725,19 @@ impl AgenticLoop {
                                             continue 'inner_stream;
                                         }
                                         Err(reissue_err) => {
+                                            let reissue_classification =
+                                                self.retry_classifier.classify(&reissue_err);
                                             on_event(AgenticEvent::Lifecycle {
                                                 run_id: run_id.clone(),
                                                 phase: LifecyclePhase::Error,
                                                 error: Some(reissue_err.to_string()),
                                             });
-                                            return Err(reissue_err);
+                                            return Err(Self::classify_loop_error(
+                                                reissue_err,
+                                                reissue_classification,
+                                                stream_attempt,
+                                                self.shared_budget.max_attempts(),
+                                            ));
                                         }
                                     }
                                 }
@@ -1600,7 +1746,12 @@ impl AgenticLoop {
                                     phase: LifecyclePhase::Error,
                                     error: Some(e.to_string()),
                                 });
-                                return Err(e);
+                                return Err(Self::classify_loop_error(
+                                    e,
+                                    classification,
+                                    stream_attempt,
+                                    self.shared_budget.max_attempts(),
+                                ));
                             }
                         }
                     }

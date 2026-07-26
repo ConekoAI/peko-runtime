@@ -8,5 +8,5 @@ pub mod retry;
 pub mod sse;
 
 pub use client::{AuthConfig, HttpClient};
-pub use retry::{RetryExecutor, RetryPolicy, RetryableError};
+pub use retry::{RetryExecutor, RetryPolicy, RetryableError, SharedRetryBudget};
 pub use sse::SseParser;
