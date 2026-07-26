@@ -101,8 +101,38 @@ async fn main() -> Result<()> {
     eprintln!("   Config dir: {}", config.config_dir.display());
     eprintln!("   Data dir: {}", config.data_dir.display());
 
+    // Initialize tracing so `tracing::warn!`/`info!`/`debug!` calls
+    // inside the daemon process surface. The CLI's `init_logging`
+    // mirrors this contract for its own process. Without this init,
+    // dispatcher warnings (e.g. "Principal execution failed for ...")
+    // are silently dropped. Honor RUST_LOG via `EnvFilter`; default
+    // to `info` so a bare `peko daemon start` shows the
+    // startup banner + lifecycle warnings.
+    init_tracing();
+
     let daemon = Daemon::new(config)?;
     Box::pin(daemon.run()).await
+}
+
+/// Wire `tracing-subscriber` to stderr with an `EnvFilter` that
+/// honors `RUST_LOG`. Called once from `main`; subsequent calls are
+/// no-ops because the global subscriber is set after the first `.init()`.
+///
+/// `fmt()` defaults to `io::stdout` for the writer. When the daemon is
+/// background-spawned by the CLI, fd 1 is redirected to `/dev/null`
+/// (only the banner and `peko-daemon` startup line reach the
+/// console) and fd 2 is redirected to `<config_dir>/logs/daemon.log`.
+/// Pinning the writer to `stderr` ensures INFO/DEBUG events land in
+/// the log file; the default would silently drop them.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // `try_init` (not `init`) so re-spawns under the supervisor don't
+    // panic if the previous attempt already installed a subscriber.
+    let _ = fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 fn print_help() {
