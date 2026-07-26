@@ -343,10 +343,16 @@ fn strip_schema_combinators(value: &serde_json::Value) -> serde_json::Value {
 ///
 /// `Auto`/`None` round-trip verbatim from `ToolChoice::Auto`/`None`.
 fn tool_choice_anthropic(choice: &ToolChoice) -> serde_json::Value {
+    // Anthropic's documented shape is the object form
+    // `{"type": "auto"|"any"|"tool", ...}`. We previously emitted bare
+    // strings ("auto"/"none"/"any"); Anthropic tolerates those, but
+    // third-party anthropic-compat endpoints (e.g. MiniMax) reject the
+    // bare strings with `invalid_request_error: invalid params`.
+    // Always emit the object form for forward-compat.
     match choice {
-        ToolChoice::Auto => json!("auto"),
-        ToolChoice::None => json!("none"),
-        ToolChoice::Required => json!("any"),
+        ToolChoice::Auto => json!({"type": "auto"}),
+        ToolChoice::None => json!({"type": "none"}),
+        ToolChoice::Required => json!({"type": "any"}),
         ToolChoice::Forced(name) => json!({
             "type": "tool",
             "name": name,
@@ -1641,10 +1647,10 @@ mod tests {
                 false,
             )
             .unwrap();
-        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["tool_choice"], json!({"type": "auto"}));
     }
 
-    /// `ToolChoice::Required` maps to Anthropic's `"any"` (different
+    /// `ToolChoice::Required` maps to Anthropic's `{"type": "any"}` (different
     /// from OpenAI's `"required"` — Anthropic's wire vocabulary
     /// borrows the natural-language form).
     #[test]
@@ -1668,7 +1674,7 @@ mod tests {
                 false,
             )
             .unwrap();
-        assert_eq!(body["tool_choice"], "any");
+        assert_eq!(body["tool_choice"], json!({"type": "any"}));
     }
 
     /// `ToolChoice::Forced("Read")` emits Anthropic's
@@ -1739,7 +1745,7 @@ mod tests {
             "Anthropic must not emit service_tier"
         );
         // tool_choice is honored.
-        assert_eq!(body["tool_choice"], "any");
+        assert_eq!(body["tool_choice"], json!({"type": "any"}));
     }
 
     // ---------- F27: betas + beta_api + thinking_keep ----------
