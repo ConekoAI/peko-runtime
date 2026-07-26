@@ -1294,11 +1294,57 @@ async fn handle_principal_send_control(
             cancel.cancel();
             (true, None)
         }
-        (Some((_cancel, peer, _name)), PrincipalSendControlMode::Steer { text }) => {
-            let session_id = root_session_id(&peer);
-            let inbox = host.inbox_registry().get_or_create(&session_id).await;
-            inbox.push(SteeringMessage::new(text).into()).await;
-            (true, None)
+        (Some((_cancel, peer, principal_name)), PrincipalSendControlMode::Steer { text }) => {
+            // Gap-3: persist the steered turn to the runtime-owned chat
+            // log before queuing it. The agentic loop's skip-user-add
+            // path assumes the IPC handler has already recorded the
+            // user turn (see `agentic_loop.rs:604-613` and
+            // `agent.rs:1310-1318`); the legacy `stateless_service`
+            // path did so via `session.add_user`, but the principal
+            // control path never did. Without this, a steered message
+            // can affect the model's response yet never appear in
+            // `peko log` or the desktop chat history — the same blind
+            // spot that made `peko log` empty before the recent
+            // chat-log persistence fix.
+            //
+            // Fail-closed: if the principal has been removed between
+            // the run starting and the Steer arriving, or if the chat
+            // log write fails (disk full, shard locked), the steering
+            // push is rejected so the client can react. The inbox
+            // push is also skipped — silently accepting a message
+            // whose persistence we couldn't honour would be a
+            // silent-data-loss bug.
+            let principal = host.principal_manager().get_by_name(&principal_name).await;
+            let channel = ChannelContext {
+                kind: ChannelKind::Cli,
+                // The Steer path is the per-session serial-queue
+                // continuation of a streamed conversation; flag it as
+                // streaming for parity with the predecessor's channel.
+                streaming: true,
+            };
+            match principal {
+                Some(p) => {
+                    if let Err(e) = host
+                        .principal_manager()
+                        .record_chat_input(&p, &peer, &text, &channel)
+                        .await
+                    {
+                        (false, Some(format!("Failed to persist steered chat input: {e}")))
+                    } else {
+                        let session_id = root_session_id(&peer);
+                        let inbox =
+                            host.inbox_registry().get_or_create(&session_id).await;
+                        inbox.push(SteeringMessage::new(text).into()).await;
+                        (true, None)
+                    }
+                }
+                None => (
+                    false,
+                    Some(format!(
+                        "Principal '{principal_name}' no longer registered; cannot persist steered input"
+                    )),
+                ),
+            }
         }
         (None, _) => (
             false,
@@ -1451,7 +1497,7 @@ async fn run_principal_send(
             peer.clone(),
             message.clone(),
             channel,
-            override_model,
+            override_model.clone(),
         )
         .await
     {
@@ -1468,6 +1514,53 @@ async fn run_principal_send(
                 error: Some(e.to_string()),
             };
             send_response(sink, done).await?;
+            return Ok(());
+        }
+    };
+
+    // Per-session run permit. The principal IPC must honor the same
+    // serial-queue contract as `PrincipalManager::receive_streaming`:
+    // only one root-agent run may be active per (peer, session) at a
+    // time. If a run is already in flight, the message is queued as a
+    // `SteeringMessage` and the caller gets a "Queued…" response — the
+    // existing `PrincipalSendControl::Steer` IPC will inject it at the
+    // next iteration boundary of the in-flight run. The input was
+    // already persisted above via `record_chat_input`, so consumer
+    // chat history stays consistent regardless of which branch we
+    // take. Without this guard, two concurrent `principal_send*`
+    // calls for the same peer would spawn two parallel root-agent
+    // runs over the same session and any steered push keyed by that
+    // session-id would be drained by whichever loop ran first.
+    let session_id = root_session_id(&peer);
+    let _permit_guard = match host.inbox_registry().try_acquire_run(&session_id).await {
+        Some(g) => g,
+        None => {
+            let inbox = host.inbox_registry().get_or_create(&session_id).await;
+            inbox
+                .push(SteeringMessage::new(message.clone()).into())
+                .await;
+            let queued = format!("Queued for root agent session {session_id}.");
+            host.principal_manager()
+                .record_chat_response(&principal, &peer, &queued)
+                .await;
+            let final_packet = match response_kind {
+                PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
+                    request_id,
+                    content: queued.clone(),
+                },
+                PrincipalSendResponseKind::OneShot => ResponsePacket::PrincipalSent {
+                    request_id,
+                    content: queued,
+                },
+            };
+            send_response(sink, final_packet).await?;
+            let done = ResponsePacket::Done {
+                request_id,
+                success: true,
+                error: None,
+            };
+            send_response(sink, done).await?;
+            host.record_principal_activity(&name).await;
             return Ok(());
         }
     };
@@ -1514,9 +1607,13 @@ async fn run_principal_send(
 
     // Run the root agent in a background task. When the task completes,
     // the event_tx is dropped, closing the channel and signalling the
-    // handler to flush.
+    // handler to flush. The `_permit_guard` is moved into the spawn
+    // scope so its `Drop` runs only when the agentic loop completes
+    // — releasing the per-session run permit back to the registry.
     let router = Arc::clone(&principal.router);
+    let permit_for_task = _permit_guard;
     let root_agent_handle = tokio::spawn(async move {
+        let _permit_held = permit_for_task;
         let result = router
             .route_streaming(router_ctx, Box::new(on_event), Some(cancel))
             .await;
@@ -1587,6 +1684,35 @@ async fn run_principal_send(
             };
             send_response(sink, done).await?;
             host.record_principal_activity(&name).await;
+
+            // Gap-2: drain any steering messages that arrived during the
+            // final-iteration drain and start a successor run for each.
+            // The agentic loop only drains the inbox at the top of every
+            // iteration, so a `Steer` push that races with the final
+            // answer was acknowledged (`Done { success: true }`) but
+            // never consumed. Without this handoff, the message would
+            // silently sit in the daemon's per-session inbox until the
+            // next unrelated run touches the same session.
+            //
+            // `peek_inbox` is non-lazy-creating: if no entry exists for
+            // this session yet, the predecessor never inserted one and
+            // there is nothing to drain. This is the desired behaviour
+            // — a Steer push that arrived before the predecessor's
+            // first drain would already have been consumed by the
+            // loop.
+            let pending_steering = drain_pending_steering(host, &session_id).await;
+            for msg in pending_steering {
+                run_steering_successor(
+                    host,
+                    sink,
+                    request_id,
+                    &principal,
+                    peer.clone(),
+                    msg,
+                    override_model.clone(),
+                )
+                .await?;
+            }
         }
         Err(e) => {
             let message = e.to_string();
@@ -1604,6 +1730,157 @@ async fn run_principal_send(
         }
     }
     Ok(())
+}
+
+/// Drain any steering messages queued in the session's inbox. Only
+/// `AsyncInboxItem::Steering` items are returned; completion envelopes
+/// are filtered out (the IPC path never enqueues them, but the inbox
+/// is shared with the async-task executor).
+async fn drain_pending_steering(
+    host: &dyn PrincipalHost,
+    session_id: &str,
+) -> Vec<SteeringMessage> {
+    use peko_extension_api::AsyncInboxItem;
+    let Some(inbox) = host.inbox_registry().peek_inbox(session_id).await else {
+        return Vec::new();
+    };
+    let items = inbox.drain_all().await;
+    items
+        .into_iter()
+        .filter_map(|item| match item {
+            AsyncInboxItem::Steering(env) => Some(SteeringMessage {
+                id: env.id,
+                content: env.content,
+                queued_at: env.queued_at,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Run a successor agent for a steering message that landed during the
+/// predecessor's final-iteration drain. Emits one
+/// `PrincipalSentSuccessor` packet per successor content. The steered
+/// user turn was already persisted by `handle_principal_send_control`
+/// (or by Gap-1's queued branch), so we skip the input persistence
+/// here and only record the principal's response.
+async fn run_steering_successor(
+    host: &dyn PrincipalHost,
+    sink: &dyn ResponseSink,
+    predecessor_request_id: u64,
+    principal: &Arc<Principal>,
+    peer: Subject,
+    steering: SteeringMessage,
+    override_model: Option<String>,
+) -> anyhow::Result<()> {
+    let session_id = root_session_id(&peer);
+    // The predecessor's `_permit_guard` was dropped when its spawned
+    // task completed, so the per-session permit is now free. We
+    // re-acquire it to keep the same serial-queue contract as the
+    // initial run. A second `principal_send*` for the same peer
+    // arriving during this successor run queues behind us.
+    let _permit_guard = match host.inbox_registry().try_acquire_run(&session_id).await {
+        Some(g) => g,
+        None => {
+            // Should not happen — the predecessor's permit is
+            // released. Surfacing a soft error is safer than a panic.
+            let error = ResponsePacket::Error {
+                request_id: predecessor_request_id,
+                message: format!(
+                    "could not re-acquire run permit for successor of {session_id}"
+                ),
+            };
+            send_response(sink, error).await?;
+            return Ok(());
+        }
+    };
+
+    let channel = ChannelContext {
+        kind: ChannelKind::Cli,
+        // The successor run is the per-session serial-queue continuation
+        // of a streamed conversation; flag it as streaming for parity
+        // with the predecessor's channel even though it emits only one
+        // `PrincipalSentSuccessor` (no chunks).
+        streaming: true,
+    };
+
+    let successor_id = next_successor_request_id();
+
+    let router_ctx = match host
+        .principal_manager()
+        .build_router_context(
+            principal,
+            peer.clone(),
+            steering.content.clone(),
+            channel,
+            override_model,
+        )
+        .await
+    {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            let error = ResponsePacket::Error {
+                request_id: predecessor_request_id,
+                message: format!("Failed to build successor router context: {e}"),
+            };
+            send_response(sink, error).await?;
+            return Ok(());
+        }
+    };
+
+    let decision = match principal
+        .router
+        .route_streaming(
+            router_ctx,
+            Box::new(|_event: AgenticEvent| {}),
+            None,
+        )
+        .await
+    {
+        Ok(d) => d,
+        Err(e) => {
+            let error = ResponsePacket::Error {
+                request_id: predecessor_request_id,
+                message: format!("Successor run failed: {e}"),
+            };
+            send_response(sink, error).await?;
+            return Ok(());
+        }
+    };
+
+    let content = match decision {
+        RouteDecision::Respond { response } => response,
+    };
+
+    host.principal_manager()
+        .record_chat_response(principal, &peer, &content)
+        .await;
+
+    let packet = ResponsePacket::PrincipalSentSuccessor {
+        predecessor_request_id,
+        request_id: successor_id,
+        content,
+    };
+    send_response(sink, packet).await?;
+    Ok(())
+}
+
+/// Mint a fresh synthetic `request_id` for a successor run. Successor
+/// runs are introduced when steering messages arrive during the
+/// final-iteration drain (Gap-2); they are not registered in the
+/// `streaming_runs` registry and never see a `PrincipalSendControl`
+/// IPC — the id is purely for client-side correlation. Salted with
+/// a process-local offset so they cannot collide with client-minted
+/// ids even on a busy daemon.
+fn next_successor_request_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // 2^63 is the boundary between user-minted (random u64) and
+    // successor-minted ids. Clients in practice use small random ids;
+    // the high bit is a safe differentiator.
+    const SUCCESSOR_BASE: u64 = 1u64 << 63;
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    SUCCESSOR_BASE.wrapping_add(n)
 }
 
 /// Resolve a Principal by name, loading it from disk if it has not yet

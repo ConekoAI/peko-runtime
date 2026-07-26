@@ -1587,4 +1587,181 @@ mod tests {
 
         assert!(ctx.override_model.is_none());
     }
+
+    // ===================================================================
+    // Gap-1: parallel `receive_streaming` calls for the same peer must
+    // serialize — the first call acquires the per-session run permit,
+    // the rest queue as SteeringMessages. Mirrors the existing
+    // `concurrent_same_peer_messages_are_queued` test (line 1291) for
+    // the streaming variant.
+    // ===================================================================
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn concurrent_same_peer_streaming_receives_are_queued() {
+        let (_temp, manager, adapter, id) = setup().await;
+        let messages = 4;
+        for i in 0..messages {
+            adapter.queue_text(format!("streaming {i}"));
+        }
+
+        let peer = Subject::User("streaming-peer".to_string());
+        let mut handles = Vec::with_capacity(messages as usize);
+        for i in 0..messages {
+            let manager = Arc::clone(&manager);
+            let id = id.clone();
+            let peer = peer.clone();
+            let handle = tokio::spawn(async move {
+                manager
+                    .receive_streaming(
+                        id,
+                        peer,
+                        format!("hello {i}"),
+                        cli_channel(),
+                        Box::new(|_event| {}),
+                        None,
+                    )
+                    .await
+            });
+            handles.push(handle);
+        }
+
+        let results = futures::future::join_all(handles).await;
+        let ok_count = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(
+            ok_count, messages as usize,
+            "all concurrent streaming receives should complete"
+        );
+
+        let responses: Vec<PrincipalResponse> = results
+            .into_iter()
+            .map(|r| {
+                r.expect("task should not panic")
+                    .expect("receive_streaming should succeed")
+            })
+            .collect();
+
+        let answered = responses
+            .iter()
+            .filter(|r| !r.content.starts_with("Queued for root agent session"))
+            .count();
+        assert_eq!(
+            answered, 1,
+            "only one root-agent run should be active for the same peer at a time"
+        );
+
+        let queued = responses
+            .iter()
+            .filter(|r| r.content.starts_with("Queued for root agent session"))
+            .count();
+        assert_eq!(
+            queued,
+            messages - 1,
+            "all other concurrent sends should be queued as steering"
+        );
+
+        // Exactly one LLM call when the first run completes — the other
+        // messages are queued as steering for the next iteration.
+        let recorded = adapter.recorded_requests();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "predecessor's LLM call should be the only one recorded"
+        );
+    }
+
+    // ===================================================================
+    // Gap-3: a `SteeringMessage` arriving via `PrincipalSendControl::Steer`
+    // must be persisted to the runtime-owned chat log so the user sees
+    // their own message in `peko log` and the desktop chat history.
+    // The handler calls `record_chat_input` (the `pub(crate)` wrapper)
+    // before pushing the inbox item — this test verifies the wrapper
+    // persists correctly when the steering channel context is used.
+    // ===================================================================
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn steering_message_persists_to_chat_log() {
+        use peko_chat_log::{ChatLogStore, ChatThreadKey};
+
+        let temp = TempDir::new().expect("temp dir");
+        std::env::set_var("PEKO_HOME", temp.path());
+        peko_identity::init_test_env();
+
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+
+        let workspace = temp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let catalog_path = temp.path().join("models.toml");
+        let (resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+
+        // Pre-attach the chat log store to the manager so the gap-3
+        // fix's `record_chat_input` call has somewhere to write.
+        let chat_log_dir = temp.path().join("chat_log");
+        let store = Arc::new(ChatLogStore::new(chat_log_dir));
+        let manager = PrincipalManager::with_path_resolver(
+            workspace,
+            path_resolver,
+            Arc::new(DefaultPrincipalMemoryFactory),
+            Arc::new(DefaultPrincipalRouterFactory),
+        )
+        .with_resolver(resolver)
+        .with_chat_log_store(store.clone());
+        let principal = create_test_principal(&manager, "stressy").await;
+        let id = principal.id.clone();
+
+        // Mimic the gap-3 persistence path: `handle_principal_send_control`
+        // looks up the principal by name, then calls `record_chat_input`
+        // with a CLI channel and `streaming: true` (the values the
+        // handler builds for the Steer branch).
+        let peer = Subject::User("alice".to_string());
+        let steered_text = "wait, do this instead";
+        let channel = ChannelContext {
+            kind: ChannelKind::Cli,
+            streaming: true,
+        };
+
+        manager
+            .record_chat_input(&principal, &peer, steered_text, &channel)
+            .await
+            .expect("record_chat_input should succeed");
+
+        // Read the chat log back and verify the steered turn is there.
+        let key = ChatThreadKey::new(principal.did().await, peer.clone());
+        let page = store
+            .read_page(&key, None, 100, None)
+            .await
+            .expect("read_page should succeed");
+        assert_eq!(
+            page.messages.len(),
+            1,
+            "exactly one message should have been persisted"
+        );
+        let persisted = &page.messages[0];
+        assert_eq!(
+            persisted.text, steered_text,
+            "persisted message should contain the steered text"
+        );
+        assert_eq!(
+            persisted.sender, peer,
+            "persisted message should be from the user peer"
+        );
+
+        // The principal name lookup the gap-3 handler uses must work.
+        let resolved = manager.get_by_name("stressy").await;
+        assert!(
+            resolved.is_some(),
+            "principal should be resolvable by name from the Steer handler"
+        );
+
+        // Sanity: the principal id round-trips.
+        let _ = id;
+    }
 }
