@@ -17,6 +17,14 @@ pub struct PekoConfig {
     /// Session compaction configuration
     #[serde(default)]
     pub compaction: CompactionConfig,
+    /// F40b / PR #3 Phase 2B: provider-level configuration. The
+    /// `[provider]` block in `config.example.toml` carries the
+    /// default provider / model for the daemon, plus an optional
+    /// `[provider.retry]` sub-block that overrides the
+    /// factory-default retry knobs (`max_retries`, `retry_delay_ms`,
+    /// `retry_jitter`).
+    #[serde(default)]
+    pub provider: ProviderConfig,
 }
 
 impl Default for PekoConfig {
@@ -27,6 +35,7 @@ impl Default for PekoConfig {
             network: NetworkConfig::default(),
             logging: LogConfig::default(),
             compaction: CompactionConfig::default(),
+            provider: ProviderConfig::default(),
         }
     }
 }
@@ -230,6 +239,54 @@ impl PekoConfig {
 // need `CompactionConfig` should import it directly from `peko_session::compaction`.
 use peko_session::compaction::CompactionConfig;
 
+// ============================================================================
+// Provider Configuration (F40b / PR #3 Phase 2B)
+// ============================================================================
+
+/// Provider-level configuration block in `PekoConfig`. The
+/// corresponding `[provider]` table in `config.example.toml` carries
+/// the default provider type (`type = "anthropic"`) and model
+/// (`model = "claude-3-5-haiku-latest"`) the daemon should boot with,
+/// plus an optional `[provider.retry]` sub-table that overrides the
+/// factory-default transport retry knobs.
+///
+/// Both `provider_type` and `model` are optional in the struct so
+/// callers that don't want the daemon to auto-bootstrap a provider
+/// (e.g. dev environments that build providers lazily from the
+/// catalog) can leave them unset. The retry block is mandatory in
+/// shape but each field has its own default — a missing
+/// `[provider.retry]` table still parses, falling back to
+/// `ProviderRetryConfig::default()`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderConfig {
+    /// Wire-format provider id (e.g. `anthropic`, `openai`,
+    /// `ollama`). Optional; when absent the daemon does not pick a
+    /// default provider on boot.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none", default)]
+    pub provider_type: Option<String>,
+    /// Default model id surfaced through `Provider::model_id()` when
+    /// no explicit id is passed per-request. Optional.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model: Option<String>,
+    /// Per-call retry knobs. Defaults to the F40 factory constants
+    /// (`max_retries=5`, `retry_delay_ms=1000`, `retry_jitter=0.1`,
+    /// `max_attempts=8`). All fields are individually optional so a
+    /// partial table is accepted — callers that only want to bump
+    /// `max_retries` leave the rest at the default.
+    #[serde(default)]
+    pub retry: peko_provider_api::ProviderRetryConfig,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            provider_type: None,
+            model: None,
+            retry: peko_provider_api::ProviderRetryConfig::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +396,154 @@ mod tests {
         let config = PekoConfig::default();
         assert!(config.compaction.enabled);
         assert_eq!(config.compaction.auto_threshold_percent, 85);
+    }
+
+    // -------- F40b / PR #3 Phase 2B: ProviderConfig / ProviderRetryConfig --------
+
+    #[test]
+    fn test_provider_config_defaults() {
+        let pc = ProviderConfig::default();
+        assert!(pc.provider_type.is_none());
+        assert!(pc.model.is_none());
+        // Retry block is mandatory in shape; defaults mirror the F40 factory constants.
+        assert_eq!(pc.retry, peko_provider_api::ProviderRetryConfig::default());
+        assert_eq!(pc.retry.max_retries, 5);
+        assert_eq!(pc.retry.retry_delay_ms, 1000);
+        assert_eq!(pc.retry.retry_max_delay_ms, 30_000);
+        assert_eq!(pc.retry.retry_jitter, Some(0.1));
+        assert_eq!(pc.retry.max_attempts, 8);
+    }
+
+    /// F40b: missing `[provider]` table in a `PekoConfig` TOML
+    /// falls back to `ProviderConfig::default()` rather than failing
+    /// the parse — every field is `Option` or has a `#[serde(default)]`
+    /// attribute.
+    #[test]
+    fn test_peko_config_provider_block_is_optional() {
+        let cfg: PekoConfig = toml::from_str(
+            r#"
+                app_name = "peko"
+                [storage]
+                storage_type = "sqlite"
+                database_path = "/tmp/peko.db"
+                keys_path = "/tmp/keys"
+                memory_path = "/tmp/memory.db"
+                [network]
+                bind_address = "127.0.0.1"
+                port = 8080
+                tls_enabled = false
+                cors_origins = ["*"]
+                request_timeout_seconds = 30
+                max_body_size_mb = 10
+                [logging]
+                level = "info"
+                format = "pretty"
+                log_stdout = true
+            "#,
+        )
+        .expect("PekoConfig without [provider] must parse");
+        assert_eq!(cfg.provider, ProviderConfig::default());
+        assert!(cfg.provider.provider_type.is_none());
+        assert_eq!(cfg.provider.retry.max_retries, 5);
+    }
+
+    /// F40b: a partial `[provider.retry]` block (only one field set)
+    /// is accepted — every field carries its own `#[serde(default)]`
+    /// helper so callers can bump one knob without restating the
+    /// others.
+    #[test]
+    fn test_provider_retry_partial_block_parses() {
+        let parsed: peko_provider_api::ProviderRetryConfig =
+            toml::from_str("max_retries = 8\n")
+                .expect("partial retry block must parse");
+        assert_eq!(parsed.max_retries, 8);
+        // Unset fields fall back to defaults.
+        assert_eq!(parsed.retry_delay_ms, 1000);
+        assert_eq!(parsed.retry_jitter, Some(0.1));
+        assert_eq!(parsed.max_attempts, 8);
+    }
+
+    /// F40b: jitter validation rejects out-of-range values so a
+    /// typo'd `[provider.retry] retry_jitter = 2.0` doesn't quietly
+    /// double every backoff (a 200% jitter band would mean a 3x
+    /// wait on every attempt and balloon LLM call latency).
+    #[test]
+    fn test_provider_retry_jitter_validation_rejects_out_of_range() {
+        let mut cfg = peko_provider_api::ProviderRetryConfig::default();
+        cfg.retry_jitter = Some(1.5);
+        assert!(cfg.validate().is_err(), "jitter >= 1.0 must be rejected");
+        cfg.retry_jitter = Some(-0.01);
+        assert!(cfg.validate().is_err(), "negative jitter must be rejected");
+        // 0.0 is allowed (disables jitter explicitly).
+        cfg.retry_jitter = Some(0.0);
+        assert!(cfg.validate().is_ok(), "jitter=0.0 is valid");
+        cfg.retry_jitter = Some(0.99);
+        assert!(
+            cfg.validate().is_ok(),
+            "jitter in [0.0, 1.0) must be accepted"
+        );
+    }
+
+    /// F40b: `max_retries > max_attempts` is rejected because the
+    /// transport layer would burn through the shared budget before
+    /// the engine mid-stream retry site ever sees a turn.
+    #[test]
+    fn test_provider_retry_validation_max_retries_exceeds_max_attempts() {
+        let mut cfg = peko_provider_api::ProviderRetryConfig::default();
+        cfg.max_retries = 10;
+        cfg.max_attempts = 4;
+        let err = cfg
+            .validate()
+            .expect_err("max_retries > max_attempts must fail");
+        assert!(
+            err.to_string().contains("max_retries"),
+            "error must name the failing field: {err}"
+        );
+    }
+
+    /// F40b: zero `retry_delay_ms` is rejected (would tight-loop on
+    /// every transient 5xx); cap smaller than seed is also rejected
+    /// (the cap cannot constrain something that hasn't grown yet).
+    #[test]
+    fn test_provider_retry_validation_zero_delay_and_cap_too_small() {
+        let mut cfg = peko_provider_api::ProviderRetryConfig::default();
+        cfg.retry_delay_ms = 0;
+        assert!(
+            cfg.validate().is_err(),
+            "zero delay must be rejected"
+        );
+        cfg.retry_delay_ms = 1000;
+        cfg.retry_max_delay_ms = 500;
+        assert!(
+            cfg.validate().is_err(),
+            "cap smaller than seed must be rejected"
+        );
+    }
+
+    /// F40b: round-trip through TOML preserves every field so a
+    /// daemon that writes its config back on save (e.g. the
+    /// `peko config edit` CLI) doesn't silently drop new knobs.
+    #[test]
+    fn test_provider_retry_toml_roundtrip() {
+        let original = peko_provider_api::ProviderRetryConfig {
+            max_retries: 7,
+            retry_delay_ms: 250,
+            retry_max_delay_ms: 15_000,
+            retry_jitter: Some(0.25),
+            max_attempts: 12,
+        };
+        original.validate().expect("non-default values must validate");
+        let serialized = toml::to_string(&original).unwrap();
+        let parsed: peko_provider_api::ProviderRetryConfig =
+            toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_PEKO_config_carries_provider_block() {
+        let cfg = PekoConfig::default();
+        // Smoke test: every PekoConfig exposes the new field.
+        let _: &ProviderConfig = &cfg.provider;
     }
 }

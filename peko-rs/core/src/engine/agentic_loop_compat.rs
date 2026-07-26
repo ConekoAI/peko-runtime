@@ -425,7 +425,16 @@ mod tests {
         ),
         peko_engine::CompactionConfig::default(),
     )
-    .await;
+    .await
+        // RT-004 exercises the "permanent error" contract: the
+        // loop must surface the original error verbatim, emit a
+        // `Lifecycle::Error`, and not panic. To assert that, the
+        // test must NOT retry — otherwise the F40 body-classifier
+        // (which deliberately retries on `rate limit`) would burn
+        // the only queued error and surface "Mock adapter
+        // response queue empty" instead.
+        .with_stream_max_retries(0)
+        .with_shared_budget(peko_providers::transport::SharedRetryBudget::arc(0));
 
         let session = test_session("rt004-agent", temp_dir.path()).await;
         let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -802,6 +811,10 @@ mod tests {
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
         // Default retry budget is 3 — two failures + one success fits.
+        // F40: explicitly wire a 3-permit shared budget so the test
+        // contract stays local to the configured ceiling (the
+        // default `PROVIDER_MAX_ATTEMPTS=8` would otherwise widen
+        // `max_attempts` to 8 in the emitted `Retry` events).
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -814,7 +827,8 @@ mod tests {
         peko_engine::CompactionConfig::default(),
     )
         .await
-        .with_stream_max_retries(3);
+        .with_stream_max_retries(3)
+        .with_shared_budget(peko_providers::transport::SharedRetryBudget::arc(3));
 
         let session = test_session("rt007-agent", temp_dir.path()).await;
         let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -3855,5 +3869,276 @@ mod tests {
         let _ = core
             .unregister_tool(&tool_name, peko_subject::PrincipalId::system())
             .await;
+    }
+
+    // ===================================================================
+    // RT-009: F40 — terminal classification (`AuthFailure`) MUST NOT
+    // retry. When the provider returns a 401, the loop surfaces the
+    // error immediately without consuming any retry budget. Pre-F40
+    // the substring classifier also short-circuited 401s, so this is
+    // a no-regression test that the new typed classifier preserves
+    // the same observable behavior.
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_rt009_auth_failure_does_not_retry() {
+        peko_identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_error("HTTP error 401: invalid api key");
+        // Belt-and-suspenders: never let the test hang on a missing
+        // queue entry.
+        mock.queue_text("should not reach here");
+
+        let config = test_agent_config("rt009-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await
+        // Generous retry budget — must NOT be consumed by a 401.
+        .with_stream_max_retries(10)
+        .with_shared_budget(peko_providers::transport::SharedRetryBudget::arc(10));
+
+        let session = test_session("rt009-agent", temp_dir.path()).await;
+        let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let result = loop_
+            .run_with_resume(
+                "Auth check",
+                Vec::new(),
+                move |event| {
+                    events_clone.lock().unwrap().push(event);
+                },
+                &session,
+                None,
+            )
+            .await;
+
+        // The call must fail without retrying.
+        assert!(
+            result.is_err(),
+            "401 should surface as an error, got {:?}",
+            result.ok()
+        );
+        assert_eq!(
+            mock.recorded_requests().len(),
+            1,
+            "401 is terminal — must NOT trigger a retry, got {} recorded calls",
+            mock.recorded_requests().len()
+        );
+        let emitted = events.lock().unwrap();
+        let retries: usize = emitted
+            .iter()
+            .filter(|e| matches!(e, AgenticEvent::Retry { .. }))
+            .count();
+        assert_eq!(retries, 0, "Zero Retry events expected for terminal 401");
+    }
+
+    // ===================================================================
+    // RT-010: F40 — once the shared retry budget is exhausted, the
+    // returned error must downcast to `AgenticError::RetryLimit`
+    // carrying `(attempts, max_attempts, cause)`. This is the typed
+    // lift of F31b's string-parse surface; callers no longer need to
+    // grep the error message for "exhausted" or count `Retry` events
+    // to know the budget tripped.
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_rt010_shared_budget_exhaustion_surfaces_typed_retry_limit() {
+        use peko_engine::AgenticError;
+
+        peko_identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        // Three transient errors — budget is 2, so the third attempt
+        // must surface `RetryLimit` after the second try_consume
+        // returns false.
+        mock.queue_error("connection refused");
+        mock.queue_error("connection reset by peer");
+        mock.queue_error("connection refused");
+        mock.queue_text("unreachable");
+
+        let config = test_agent_config("rt010-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await
+        .with_stream_max_retries(5)
+        .with_shared_budget(peko_providers::transport::SharedRetryBudget::arc(2));
+
+        let session = test_session("rt010-agent", temp_dir.path()).await;
+        let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let result = loop_
+            .run_with_resume(
+                "Trigger budget exhaustion",
+                Vec::new(),
+                move |event| {
+                    events_clone.lock().unwrap().push(event);
+                },
+                &session,
+                None,
+            )
+            .await;
+
+        let err = result.expect_err("expected budget exhaustion to fail");
+        // The any::Error downcast chain: `AgenticError::RetryLimit`
+        // implements `std::error::Error` via `thiserror`, so
+        // `downcast_ref::<AgenticError>()` on the error chain should
+        // land on it (or the wrapped one).
+        let ae = err
+            .downcast_ref::<AgenticError>()
+            .or_else(|| {
+                err.chain().find_map(|c| c.downcast_ref::<AgenticError>())
+            })
+            .unwrap_or_else(|| {
+                panic!("expected AgenticError in error chain, got: {err:?}")
+            });
+        let (attempts, max_attempts, cause) = ae
+            .as_retry_limit()
+            .expect("expected AgenticError::RetryLimit variant");
+        assert_eq!(max_attempts, 2, "budget ceiling should propagate");
+        // Two `try_consume` permits used (one per attempted retry).
+        // The actual call count is attempts+1 because the first call
+        // is the pre-budget attempt; the budget gates the retries.
+        assert_eq!(attempts, 2, "expected exactly 2 retry attempts before exhaustion");
+        assert!(
+            cause.contains("connection"),
+            "cause should preserve the upstream message, got: {cause}"
+        );
+
+        // Verify exactly two Retry events fired before the
+        // exhaustion event (the audit's contract).
+        let emitted = events.lock().unwrap();
+        let retries: Vec<&AgenticEvent> = emitted
+            .iter()
+            .filter(|e| matches!(e, AgenticEvent::Retry { .. }))
+            .collect();
+        assert_eq!(
+            retries.len(),
+            2,
+            "expected 2 Retry events before exhaustion, got {}",
+            retries.len()
+        );
+    }
+
+    // ===================================================================
+    // RT-011: F40 — `with_retry_classifier` lets callers install a
+    // custom classifier that short-circuits specific body substrings
+    // to terminal. The audit's main motivation: providers that emit
+    // non-standard error codes (`api_key_invalid`,
+    // `account_deactivated`) should bypass the generic 4xx retry path.
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_rt011_custom_classifier_trips_terminal_on_specific_substring() {
+        use std::sync::Arc as StdArc;
+        // A trivial classifier that short-circuits any error
+        // mentioning `account_deactivated` to terminal, but retries
+        // generic 5xx substrings as transient. Other patterns fall
+        // back to `BodyStringClassifier` semantics by virtue of the
+        // `is_retryable()` method delegating to `RetryableError`.
+        struct AccountDeactivatedClassifier;
+
+        impl peko_provider_api::RetryClassifier for AccountDeactivatedClassifier {
+            fn classify(&self, err: &anyhow::Error) -> peko_provider_api::RetryClassification {
+                let msg = err.to_string();
+                if msg.contains("account_deactivated") {
+                    // Force terminal so the loop refuses to retry
+                    // even though the substring would otherwise be
+                    // classified as Transient by the default impl.
+                    return peko_provider_api::RetryClassification::AuthFailure;
+                }
+                peko_provider_api::BodyStringClassifier.classify(err)
+            }
+        }
+
+        peko_identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        // The custom classifier must reject "account_deactivated"
+        // before any retry is attempted.
+        mock.queue_error("HTTP error 403: account_deactivated");
+        mock.queue_text("unreachable");
+
+        let config = test_agent_config("rt011-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await
+        .with_stream_max_retries(10)
+        .with_retry_classifier(StdArc::new(AccountDeactivatedClassifier));
+
+        let session = test_session("rt011-agent", temp_dir.path()).await;
+        let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let result = loop_
+            .run_with_resume(
+                "Trigger account-deactivated",
+                Vec::new(),
+                move |event| {
+                    events_clone.lock().unwrap().push(event);
+                },
+                &session,
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "account_deactivated should be terminal, got {:?}",
+            result.ok()
+        );
+        assert_eq!(
+            mock.recorded_requests().len(),
+            1,
+            "custom classifier MUST short-circuit the retry; got {} recorded calls",
+            mock.recorded_requests().len()
+        );
+        let emitted = events.lock().unwrap();
+        let retries: usize = emitted
+            .iter()
+            .filter(|e| matches!(e, AgenticEvent::Retry { .. }))
+            .count();
+        assert_eq!(
+            retries, 0,
+            "zero Retry events expected when custom classifier trips terminal"
+        );
     }
 }

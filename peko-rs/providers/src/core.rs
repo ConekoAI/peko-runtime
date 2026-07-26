@@ -51,6 +51,12 @@ pub struct ProviderRuntimeOptions {
     /// the provider supports; `None` disables cache markers and
     /// session-affinity fields entirely.
     pub cache_retention: CacheRetention,
+    /// F40: jitter fraction applied to the computed backoff
+    /// (`[1-jitter, 1+jitter]` uniform band). `None` keeps the
+    /// pre-F40 deterministic behavior; `Some(0.1)` matches codex's
+    /// ±10% default. The factory wires `Some(crate::factory::PROVIDER_JITTER)`
+    /// into every provider it constructs.
+    pub retry_jitter: Option<f64>,
 }
 
 impl Default for ProviderRuntimeOptions {
@@ -64,6 +70,7 @@ impl Default for ProviderRuntimeOptions {
             extra_headers: Vec::new(),
             session_id: None,
             cache_retention: CacheRetention::Default,
+            retry_jitter: None,
         }
     }
 }
@@ -164,12 +171,29 @@ impl Provider {
             )?;
 
             // Wire retry policy from the runtime options.
-            if let Some(retry_policy) = crate::transport::RetryPolicy::from_config(
+            if let Some(mut retry_policy) = crate::transport::RetryPolicy::from_config(
                 options.max_retries,
                 options.retry_delay_ms,
             ) {
+                // F40: apply the configured jitter band (defaults to
+                // the pre-F40 deterministic behavior when `None`).
+                if let Some(jitter) = options.retry_jitter {
+                    retry_policy = retry_policy.with_jitter(jitter);
+                }
                 client = client.with_retry_policy(retry_policy);
             }
+
+            // F40a: install the adapter's rate-limit parser so the
+            // `HttpClient` captures a `RateLimitSnapshot` on every
+            // non-success response. The default `None` keeps the
+            // pre-F40a path (no parser, no snapshot). Anthropic →
+            // `AnthropicRateLimitParser`; OpenAI Chat Completions
+            // and OpenAI Responses → `OpenAiRateLimitParser`;
+            // OpenAI-compatible proxies → `StandardRateLimitParser`.
+            if let Some(parser) = adapter.rate_limit_parser() {
+                client = client.with_rate_limit_parser(parser);
+            }
+
             client
         };
 

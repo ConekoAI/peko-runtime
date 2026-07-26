@@ -50,6 +50,10 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 thiserror = "1.0"
 secrecy = "0.10"
+# F40: retry-policy jitter relies on `rand::random::<f64>()` for the
+# ±jitter band — small dep, only used in `RetryPolicy::delay_for_attempt`.
+# Matches codex's choice (`codex-client/src/retry.rs:42-47`).
+rand = "0.8"
 
 # Logging.
 tracing = "0.1"

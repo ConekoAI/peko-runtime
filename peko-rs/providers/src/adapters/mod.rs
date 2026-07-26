@@ -235,6 +235,38 @@ pub trait ApiAdapter: Send + Sync {
     fn supports_prompt_cache_control(&self) -> bool {
         true
     }
+
+    /// F40a: rate-limit parser the `HttpClient` runs over every
+    /// non-success response to extract structured snapshot metadata
+    /// (`RateLimitSnapshot`) before falling back to substring scan of
+    /// the error message. Default is `None` — adapters that don't
+    /// want snapshot capture stay on the pre-F40a path. Anthropic
+    /// returns `Some(Arc::new(AnthropicRateLimitParser))`; the two
+    /// OpenAI-format adapters return `Some(Arc::new(OpenAiRateLimitParser))`;
+    /// OpenAI-compatible proxies return the `StandardRateLimitParser`
+    /// union so they get whichever family the upstream actually emits.
+    ///
+    /// `peko_provider_api` is HTTP-free, so the trait returns an
+    /// `Arc<dyn RateLimitParser>` rather than a closure over the
+    /// adapter's `reqwest::HeaderMap`. The transport layer translates
+    /// `reqwest::HeaderMap` into `Vec<HeaderEntry>` before calling.
+    fn rate_limit_parser(&self) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
+        None
+    }
+
+    /// F40a: classifier for retry-eligibility of a non-success
+    /// response. Lets adapters tag vendor-specific terminal errors
+    /// (e.g. Anthropic's "usage limit reached") that the generic
+    /// body-string classifier would otherwise retry forever. Default
+    /// is `None` so `HttpClient` falls back to
+    /// [`peko_provider_api::BodyStringClassifier`]. Returned as
+    /// `Arc<dyn RetryClassifier>` so callers can stash it in the
+    /// shared budget without an extra allocation per call.
+    fn wire_classifier(
+        &self,
+    ) -> Option<std::sync::Arc<dyn peko_provider_api::RetryClassifier>> {
+        None
+    }
 }
 
 /// Helper function to convert unified `MessageRole` to string
@@ -383,6 +415,28 @@ impl ApiAdapter for AnyAdapter {
             Self::Anthropic(a) => a.supports_prompt_cache_control(),
             Self::OpenAiCompatible(a) => a.supports_prompt_cache_control(),
             Self::Mock(a) => a.supports_prompt_cache_control(),
+        }
+    }
+
+    fn rate_limit_parser(
+        &self,
+    ) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
+        match self {
+            Self::OpenAi(a) => a.rate_limit_parser(),
+            Self::OpenAiResponses(a) => a.rate_limit_parser(),
+            Self::Anthropic(a) => a.rate_limit_parser(),
+            Self::OpenAiCompatible(a) => a.rate_limit_parser(),
+            Self::Mock(a) => a.rate_limit_parser(),
+        }
+    }
+
+    fn wire_classifier(&self) -> Option<std::sync::Arc<dyn peko_provider_api::RetryClassifier>> {
+        match self {
+            Self::OpenAi(a) => a.wire_classifier(),
+            Self::OpenAiResponses(a) => a.wire_classifier(),
+            Self::Anthropic(a) => a.wire_classifier(),
+            Self::OpenAiCompatible(a) => a.wire_classifier(),
+            Self::Mock(a) => a.wire_classifier(),
         }
     }
 }

@@ -272,6 +272,18 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
         true
     }
 
+    /// F40a: the OpenAI Responses endpoint emits the same
+    /// `x-ratelimit-*-*` family as Chat Completions (counters, not
+    /// the Anthropic `anthropic-ratelimit-*` family). Use the
+    /// OpenAI parser; the `StandardRateLimitParser` would also
+    /// work but adds the Anthropic scan path on every 429 for no
+    /// signal — the cheaper, deterministic choice wins here.
+    fn rate_limit_parser(
+        &self,
+    ) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
+        Some(std::sync::Arc::new(peko_provider_api::OpenAiRateLimitParser))
+    }
+
     fn build_request(
         &self,
         model_id: &str,
@@ -959,6 +971,18 @@ mod tests {
     use peko_message::{ContentBlock, MessageRole};
     use peko_provider_api::ServiceTier;
     use peko_provider_api::{LlmMessage, ThinkingEffort};
+
+    /// F40a: the OpenAI Responses adapter surfaces the same
+    /// OpenAI-family parser as Chat Completions. Pinning the kind
+    /// here protects against an accidental swap to the Standard
+    /// union parser (which would add the Anthropic scan arm for no
+    /// signal).
+    #[test]
+    fn adapter_installs_openai_rate_limit_parser() {
+        let adapter = OpenAiResponsesAdapter::new();
+        let parser = adapter.rate_limit_parser().expect("OpenAI Responses must surface a parser");
+        assert_eq!(parser.kind(), peko_provider_api::RateLimitKind::OpenAi);
+    }
 
     fn user_msg(text: &str) -> LlmMessage {
         LlmMessage {
