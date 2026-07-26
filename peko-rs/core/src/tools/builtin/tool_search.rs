@@ -216,7 +216,7 @@ mod tests {
         let handler = Arc::new(NoopHandler);
         let ext_id = crate::extensions::framework::types::ExtensionId::new("test:tool_search");
         let _ = core
-            .register_tool(meta, handler, &ext_id, &PrincipalId::system())
+            .register_tool(meta, handler, &ext_id, PrincipalId::system())
             .await
             .expect("register test tool");
     }

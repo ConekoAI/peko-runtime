@@ -23,8 +23,8 @@
 //! which pings the model's actual endpoint with the stored key.
 
 use crate::commands::GlobalPaths;
-use peko_core::common::vault::{Credential, CredentialFilter, CredentialKind, Vault};
 use anyhow::{Context, Result};
+use peko_core::common::vault::{Credential, CredentialFilter, CredentialKind, Vault};
 
 /// Credential commands
 #[derive(clap::Subcommand)]
@@ -131,7 +131,10 @@ async fn set_cmd(
         Err(e) => {
             if e.downcast_ref::<peko_core::common::vault::VaultError>()
                 .is_some_and(|err| {
-                    matches!(err, peko_core::common::vault::VaultError::SystemCredential(_))
+                    matches!(
+                        err,
+                        peko_core::common::vault::VaultError::SystemCredential(_)
+                    )
                 })
             {
                 anyhow::bail!(
@@ -185,7 +188,10 @@ async fn delete_cmd(vault: &Vault, id: &str) -> Result<()> {
         Err(e) => {
             if e.downcast_ref::<peko_core::common::vault::VaultError>()
                 .is_some_and(|err| {
-                    matches!(err, peko_core::common::vault::VaultError::SystemCredential(_))
+                    matches!(
+                        err,
+                        peko_core::common::vault::VaultError::SystemCredential(_)
+                    )
                 })
             {
                 anyhow::bail!(

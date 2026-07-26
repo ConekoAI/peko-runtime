@@ -30,6 +30,11 @@
 //!   `anyhow::Error` for F22's front-evict + retry path.
 //!   See `context_window_error.rs`.
 
+// Doc-formatting lints: the trait docs use aligned multi-line list
+// continuations for readability; suppress the cosmetic nags.
+#![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::doc_lazy_continuation)]
+
 pub mod cache_retention;
 pub mod context_window_error;
 pub mod credentials;

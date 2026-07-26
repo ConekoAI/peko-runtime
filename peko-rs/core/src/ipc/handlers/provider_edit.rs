@@ -273,7 +273,7 @@ mod tests {
                 RequestPacket::ModelUpdate {
                     request_id: 81,
                     args: ModelUpdateArgs {
-                        id: "".to_string(),
+                        id: String::new(),
                         ..Default::default()
                     },
                 },

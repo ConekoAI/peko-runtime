@@ -6,8 +6,8 @@
 //! ADR-028: Top-Level Config CLI
 
 use crate::commands::GlobalPaths;
-use peko_core::common::config_path;
 use clap::Subcommand;
+use peko_core::common::config_path;
 use std::path::PathBuf;
 
 /// Configuration management subcommands

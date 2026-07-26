@@ -885,7 +885,7 @@ impl Session {
         }
 
         // Sort by modification time (newest first)
-        sessions.sort_by(|a, b| b.1.cmp(&a.1));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.1));
         Ok(sessions)
     }
 }

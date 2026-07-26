@@ -132,6 +132,3 @@ impl DefaultPrincipalRouterFactory {
         super::routers::default_root_prompt()
     }
 }
-
-/// Re-export concrete factory types for ergonomics.
-use crate::principal::memory::DefaultPrincipalMemory;

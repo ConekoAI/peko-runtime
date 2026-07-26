@@ -1,9 +1,9 @@
 //! Auth command - Manage runtime auth and registry login (ADR-034)
 
 use crate::commands::GlobalPaths;
-use peko_core::common::services::CredentialsService;
 use anyhow::Result;
 use clap::Subcommand;
+use peko_core::common::services::CredentialsService;
 
 /// Auth subcommands
 #[derive(Subcommand)]

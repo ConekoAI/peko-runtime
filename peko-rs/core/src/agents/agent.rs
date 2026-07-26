@@ -3,13 +3,13 @@
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
-use peko_engine::state::StateMachine;
-use peko_engine::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::tools::builtin::DynamicSessionKeyProvider;
 use anyhow::{Context, Result};
 use peko_auth::Subject;
+use peko_engine::state::StateMachine;
+use peko_engine::AgentState;
 use peko_identity::{did::DIDScope, storage::KeyStorage, Identity};
 use peko_session::manager::{ResolvedSession, SessionManager};
 use peko_session::types::ChannelType;
@@ -152,7 +152,6 @@ impl Agent {
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
     /// Extension tools (Universal and MCP) are registered via `ExtensionStore` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
-        use crate::tools::builtin::AgentTool;
         use crate::tools::builtin::SessionTool;
         use peko_tools_core::Tool;
 
@@ -213,10 +212,18 @@ impl Agent {
                 let runtime = std::sync::Arc::new(
                     crate::session::todo_runtime_impl::TodoStorageRuntime::new(todo_storage),
                 );
-                tools.push(Arc::new(crate::tools::builtin::TaskCreateTool::new(runtime.clone())));
-                tools.push(Arc::new(crate::tools::builtin::TaskGetTool::new(runtime.clone())));
-                tools.push(Arc::new(crate::tools::builtin::TaskListTool::new(runtime.clone())));
-                tools.push(Arc::new(crate::tools::builtin::TaskUpdateTool::new(runtime)));
+                tools.push(Arc::new(crate::tools::builtin::TaskCreateTool::new(
+                    runtime.clone(),
+                )));
+                tools.push(Arc::new(crate::tools::builtin::TaskGetTool::new(
+                    runtime.clone(),
+                )));
+                tools.push(Arc::new(crate::tools::builtin::TaskListTool::new(
+                    runtime.clone(),
+                )));
+                tools.push(Arc::new(crate::tools::builtin::TaskUpdateTool::new(
+                    runtime,
+                )));
             } else {
                 tracing::warn!(
                     "Session storage directory not available for agent '{}'; Task* tools will not be registered",
@@ -730,11 +737,11 @@ impl Agent {
         self
     }
 
-    /// F19: removed `with_quota_meter` and `quota_meter()` from Agent.
-    /// Quota is opened via `QuotaScope::with` at the engine loop
-    /// entrypoint. The agent no longer carries a meter field; the
-    /// principal's meter is fetched from `Principal.quota_meter`
-    /// directly by the run entrypoint.
+    // F19: removed `with_quota_meter` and `quota_meter()` from Agent.
+    // Quota is opened via `QuotaScope::with` at the engine loop
+    // entrypoint. The agent no longer carries a meter field; the
+    // principal's meter is fetched from `Principal.quota_meter`
+    // directly by the run entrypoint.
 
     /// Snapshot of the spawning principal's workspace path, if any.
     ///
@@ -1404,7 +1411,8 @@ impl Agent {
             Arc::clone(reg)
         } else {
             Arc::new(peko_session::InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(),
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
             ))
         };
         let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());

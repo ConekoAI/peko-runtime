@@ -284,7 +284,7 @@ impl SessionMessage {
         // remains the on-disk source of truth — this method only
         // populates the in-memory `LlmMessage.usage` field.
         if let RoleMetadata::Assistant { usage, .. } = &self.role_metadata {
-            msg = msg.with_usage(Some(usage.clone()));
+            msg = msg.with_usage(Some(*usage));
         }
         msg
     }
@@ -379,7 +379,7 @@ mod tests {
             }],
             "openai",
             "gpt-4",
-            usage.clone(),
+            usage,
         );
         let chat = msg.to_llm_message();
         assert_eq!(chat.role, MessageRole::Assistant);

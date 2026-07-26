@@ -4,9 +4,9 @@
 //! PekoHub tunnel connection.
 
 use crate::commands::GlobalPaths;
-use peko_core::tunnel::{load_pekohub_credential, TunnelClient};
 use anyhow::Context;
 use clap::Subcommand;
+use peko_core::tunnel::{load_pekohub_credential, TunnelClient};
 use std::path::PathBuf;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};

@@ -51,6 +51,12 @@ pub struct ToolExecutor {
     parallel_gate: ParallelGate,
 }
 
+impl Default for ToolExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolExecutor {
     /// Create a new `ToolExecutor` with a fresh [`ParallelGate`].
     /// Use this in tests and for one-shot invocations.

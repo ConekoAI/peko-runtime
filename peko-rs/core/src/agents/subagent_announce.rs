@@ -120,7 +120,9 @@ Remember: You are running as a subagent (depth {depth}/{max_depth}). Results aut
 mod tests {
     use super::*;
     use crate::agents::subagent_types::SubagentRunView;
-use crate::extensions::framework::async_exec::executor::{AsyncTaskStatus as SubagentStatus, SubagentResult};
+    use crate::extensions::framework::async_exec::executor::{
+        AsyncTaskStatus as SubagentStatus, SubagentResult,
+    };
     use chrono::Utc;
 
     fn make_test_view(status: SubagentStatus, result: Option<SubagentResult>) -> SubagentRunView {

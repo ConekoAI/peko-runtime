@@ -462,7 +462,7 @@ fn find_last_assistant_usage(messages: &[LlmMessage]) -> Option<(peko_message::T
         .enumerate()
         .rev()
         .find(|(_, m)| m.role == peko_message::MessageRole::Assistant && m.usage.is_some())
-        .map(|(i, m)| (m.usage.clone().unwrap(), i))
+        .map(|(i, m)| (m.usage.unwrap(), i))
 }
 
 /// Detailed token usage estimate with breakdown (F21 hybrid estimator).
@@ -476,6 +476,7 @@ fn find_last_assistant_usage(messages: &[LlmMessage]) -> Option<(peko_message::T
 /// want a local typed return rather than threading the `compaction`
 /// re-export through the orchestrator's private helpers.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // written for F17 inspection; readers added in F30+
 struct ContextUsageEstimate {
     /// Total estimated tokens
     pub tokens: usize,

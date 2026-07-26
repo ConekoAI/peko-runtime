@@ -174,73 +174,6 @@ pub trait TodoRuntime: Send + Sync {
 /// `Task*Tool` constructor.
 pub type SharedTodoRuntime = Arc<dyn TodoRuntime>;
 
-// ─── JSON-roundtrip pin ────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    //! Pin the JSON wire shape against the root-side mirror.
-    //!
-    //! Root's `src/session/todos.rs` re-exports `Todo` and `TodoStatus`
-    //! from this module, so deserializing a value through both paths
-    //! and asserting equality proves the wire shapes still match.
-    use super::*;
-
-    #[test]
-    fn todo_status_roundtrip() {
-        let cases = vec![
-            TodoStatus::Pending,
-            TodoStatus::InProgress,
-            TodoStatus::Completed,
-        ];
-        for s in cases {
-            let json = serde_json::to_string(&s).unwrap();
-            let back: TodoStatus = serde_json::from_str(&json).unwrap();
-            assert_eq!(s, back);
-        }
-    }
-
-    #[test]
-    fn todo_roundtrip() {
-        let todo = Todo {
-            task_id: "todo:abc123".into(),
-            subject: "Fix bug".into(),
-            description: Some("Long description".into()),
-            active_form: Some("Fixing bug".into()),
-            status: TodoStatus::InProgress,
-            owner: Some("claude".into()),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-        let json = serde_json::to_value(&todo).unwrap();
-        assert_eq!(json["taskId"], "todo:abc123");
-        assert_eq!(json["activeForm"], "Fixing bug");
-        assert_eq!(json["status"], "in_progress");
-        let back: Todo = serde_json::from_value(json).unwrap();
-        assert_eq!(back.task_id, todo.task_id);
-        assert_eq!(back.status, todo.status);
-        assert_eq!(back.active_form, todo.active_form);
-    }
-
-    #[test]
-    fn todo_serialisation_skips_none_fields() {
-        let todo = Todo {
-            task_id: "todo:abc".into(),
-            subject: "x".into(),
-            description: None,
-            active_form: None,
-            status: TodoStatus::Pending,
-            owner: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-        let json = serde_json::to_value(&todo).unwrap();
-        let obj = json.as_object().unwrap();
-        assert!(!obj.contains_key("description"));
-        assert!(!obj.contains_key("activeForm"));
-        assert!(!obj.contains_key("owner"));
-    }
-}
-
 // ─── Test fixture ──────────────────────────────────────────────────
 
 /// In-memory [`TodoRuntime`] for tests. Mirrors the production
@@ -361,5 +294,72 @@ impl TodoRuntime for TestTodoRuntime {
             }
         }
         Ok(None)
+    }
+}
+
+// ─── JSON-roundtrip pin ────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    //! Pin the JSON wire shape against the root-side mirror.
+    //!
+    //! Root's `src/session/todos.rs` re-exports `Todo` and `TodoStatus`
+    //! from this module, so deserializing a value through both paths
+    //! and asserting equality proves the wire shapes still match.
+    use super::*;
+
+    #[test]
+    fn todo_status_roundtrip() {
+        let cases = vec![
+            TodoStatus::Pending,
+            TodoStatus::InProgress,
+            TodoStatus::Completed,
+        ];
+        for s in cases {
+            let json = serde_json::to_string(&s).unwrap();
+            let back: TodoStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(s, back);
+        }
+    }
+
+    #[test]
+    fn todo_roundtrip() {
+        let todo = Todo {
+            task_id: "todo:abc123".into(),
+            subject: "Fix bug".into(),
+            description: Some("Long description".into()),
+            active_form: Some("Fixing bug".into()),
+            status: TodoStatus::InProgress,
+            owner: Some("claude".into()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&todo).unwrap();
+        assert_eq!(json["taskId"], "todo:abc123");
+        assert_eq!(json["activeForm"], "Fixing bug");
+        assert_eq!(json["status"], "in_progress");
+        let back: Todo = serde_json::from_value(json).unwrap();
+        assert_eq!(back.task_id, todo.task_id);
+        assert_eq!(back.status, todo.status);
+        assert_eq!(back.active_form, todo.active_form);
+    }
+
+    #[test]
+    fn todo_serialisation_skips_none_fields() {
+        let todo = Todo {
+            task_id: "todo:abc".into(),
+            subject: "x".into(),
+            description: None,
+            active_form: None,
+            status: TodoStatus::Pending,
+            owner: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&todo).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("description"));
+        assert!(!obj.contains_key("activeForm"));
+        assert!(!obj.contains_key("owner"));
     }
 }

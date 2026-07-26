@@ -318,12 +318,18 @@ pub fn create_transport_with(client: Arc<dyn DaemonTransport>) -> Arc<dyn AsyncT
 /// Uses a shared registry from the global cache so the `task` tool
 /// can find async tasks created by the router.
 pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {
-    let registry = crate::extensions::framework::async_exec::executor::get_or_create_registry_for_agent("_global");
+    let registry =
+        crate::extensions::framework::async_exec::executor::get_or_create_registry_for_agent(
+            "_global",
+        );
     let queue_manager = Arc::new(tokio::sync::RwLock::new(
         crate::extensions::framework::async_exec::executor::AsyncResultQueueManager::new(),
     ));
     let executor =
-        crate::extensions::framework::async_exec::executor::AsyncExecutor::with_registries(registry, queue_manager);
+        crate::extensions::framework::async_exec::executor::AsyncExecutor::with_registries(
+            registry,
+            queue_manager,
+        );
     Arc::new(LocalAsyncTransport::from_executor(executor))
 }
 

@@ -752,7 +752,7 @@ mod tests {
         let config = test_agent_config("rt006-default-agent");
         let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(
+        let _loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
         extension_core,
@@ -1404,9 +1404,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_e2e_async_completion_reaches_llm_real() {
-        use chrono::Utc;
         use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
-        use crate::extensions::framework::async_exec::executor::{AsyncTaskStatus, CompletionEvent};
+        use crate::extensions::framework::async_exec::executor::{
+            AsyncTaskStatus, CompletionEvent,
+        };
+        use chrono::Utc;
         use peko_message::{ContentBlock as CB, LlmMessage, MessageRole};
 
         peko_identity::init_test_env();
@@ -1421,8 +1423,9 @@ mod tests {
 
         // Build the queue the same way `Agent::build_agentic_loop` does:
         // shared between the executor and the agentic loop.
-        let queue: SharedSessionInbox =
-            std::sync::Arc::new(crate::extensions::framework::async_exec::executor::SessionInbox::new());
+        let queue: SharedSessionInbox = std::sync::Arc::new(
+            crate::extensions::framework::async_exec::executor::SessionInbox::new(),
+        );
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -1586,17 +1589,21 @@ mod tests {
         let session_id = session.id().await;
 
         queue.push(SteeringMessage::new("actually do X instead"));
-        queue.push(crate::extensions::framework::async_exec::executor::CompletionEvent {
-            task_id: "shell:steer-test".to_string(),
-            tool_name: "shell".to_string(),
-            result: serde_json::json!({"exit_code": 0}),
-            status: AsyncTaskStatus::Completed {
-                result: peko_tools_core::ToolResult::success(serde_json::json!({"exit_code": 0})),
+        queue.push(
+            crate::extensions::framework::async_exec::executor::CompletionEvent {
+                task_id: "shell:steer-test".to_string(),
+                tool_name: "shell".to_string(),
+                result: serde_json::json!({"exit_code": 0}),
+                status: AsyncTaskStatus::Completed {
+                    result: peko_tools_core::ToolResult::success(
+                        serde_json::json!({"exit_code": 0}),
+                    ),
+                },
+                completed_at: chrono::Utc::now(),
+                output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
+                parent_session_key: session_id.clone(),
             },
-            completed_at: chrono::Utc::now(),
-            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
-            parent_session_key: session_id.clone(),
-        });
+        );
 
         let result = loop_
             .run_with_resume("Trigger steering drain", Vec::new(), |_| {}, &session, None)
@@ -2370,7 +2377,7 @@ mod tests {
         config.prompt = Some("runtime: {{runtime}}".into());
 
         let agent = Arc::new(Agent::new_for_test(config, &temp).await.unwrap());
-        let expected = provider.model_id().to_string();
+        let expected = provider.model_id().clone();
         let loop_ = AgenticLoop::new(
         Arc::clone(&agent) as Arc<dyn AgentView>,
         Arc::clone(&provider),
@@ -2463,8 +2470,7 @@ mod tests {
         // Pin the render: `## Iteration budget` + `Iteration 3 of 10`
         // shows up in the Markdown body the loop would pass to the
         // LLM.
-        let renderer =
-            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Iteration budget"));
         assert!(rendered.contains("Iteration 3 of 10"));
@@ -2524,8 +2530,7 @@ mod tests {
         assert_eq!(qs.request_limit, Some(10));
         assert_eq!(qs.request_count, 0);
 
-        let renderer =
-            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Quota status (current window)"));
         assert!(rendered.contains("Requests:"));
@@ -2574,8 +2579,7 @@ mod tests {
         let ctx = loop_.build_turn_context(1, &[]);
         assert!(ctx.soft_cancel_pending);
 
-        let renderer =
-            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Cancellation requested"));
     }
@@ -2590,8 +2594,8 @@ mod tests {
         // to `build_turn_context`. We exercise the tracker directly
         // (same code path the loop uses) plus a render of the diff
         // the loop would surface.
-        use peko_engine::prompt::context::CapabilityDiffTracker;
         use crate::extensions::framework::types::{Capabilities, Capability};
+        use peko_engine::prompt::context::CapabilityDiffTracker;
         peko_identity::init_test_env();
         ensure_global_core();
 
@@ -2664,8 +2668,7 @@ mod tests {
             capability_diff: Some(diff),
             tool_definitions: vec![],
         };
-        let renderer =
-            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx2).await;
         assert!(rendered.contains("## Capability changes since last turn"));
         assert!(rendered.contains("Granted:"));
@@ -2678,8 +2681,8 @@ mod tests {
         // Phase 3: mirror of the grant test — when the grant set
         // shrinks between iterations, the diff surfaces the revoked
         // capability under `Revoked:`.
-        use peko_engine::prompt::context::CapabilityDiffTracker;
         use crate::extensions::framework::types::{Capabilities, Capability};
+        use peko_engine::prompt::context::CapabilityDiffTracker;
         peko_identity::init_test_env();
         ensure_global_core();
 
@@ -2740,8 +2743,7 @@ mod tests {
             capability_diff: Some(diff),
             tool_definitions: vec![],
         };
-        let renderer =
-            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("Revoked:"));
         assert!(rendered.contains("- tool:Write"));
@@ -2815,8 +2817,7 @@ mod tests {
         // Iteration 1: render with the v1 body.
         let ctx1 = loop_.build_turn_context(1, &[]);
         assert_eq!(ctx1.body, "v1: You are {{agent_name}}.");
-        let renderer =
-            peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered1 = renderer.render_for_iteration(&ctx1).await;
         assert!(
             rendered1.starts_with("v1: You are phase4-rebuild-v1."),
@@ -2982,11 +2983,11 @@ mod tests {
 
         let log_snapshot = log.lock().unwrap().clone();
         assert!(
-            log_snapshot.iter().any(|l| *l == "pre_tool_use"),
+            log_snapshot.contains(&"pre_tool_use"),
             "PreToolUse must fire; got log: {log_snapshot:?}"
         );
         assert!(
-            log_snapshot.iter().any(|l| *l == "post_tool_use"),
+            log_snapshot.contains(&"post_tool_use"),
             "PostToolUse must fire; got log: {log_snapshot:?}"
         );
         let pre_idx = log_snapshot
@@ -3695,7 +3696,7 @@ mod tests {
             meta,
             Arc::new(F35NoopHandler),
             &ExtensionId::new(format!("test:f35:{name_prefix}")),
-            &peko_subject::PrincipalId::system(),
+            peko_subject::PrincipalId::system(),
         )
         .await
         .expect("register f35 test tool");
@@ -3761,7 +3762,7 @@ mod tests {
         // Teardown: remove the system-registered tool so subsequent
         // tests see a clean core.
         let _ = core
-            .unregister_tool(&tool_name, &peko_subject::PrincipalId::system())
+            .unregister_tool(&tool_name, peko_subject::PrincipalId::system())
             .await;
     }
 
@@ -3806,7 +3807,7 @@ mod tests {
 
         // Teardown.
         let _ = core
-            .unregister_tool(&tool_name, &peko_subject::PrincipalId::system())
+            .unregister_tool(&tool_name, peko_subject::PrincipalId::system())
             .await;
     }
 
@@ -3852,7 +3853,7 @@ mod tests {
 
         // Teardown.
         let _ = core
-            .unregister_tool(&tool_name, &peko_subject::PrincipalId::system())
+            .unregister_tool(&tool_name, peko_subject::PrincipalId::system())
             .await;
     }
 }

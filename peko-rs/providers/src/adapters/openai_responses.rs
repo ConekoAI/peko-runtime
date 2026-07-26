@@ -793,6 +793,7 @@ struct ResponsesIncompleteDetails {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Default)]
 enum ResponsesOutputItem {
     Message {
         #[serde(default)]
@@ -825,13 +826,8 @@ enum ResponsesOutputItem {
         summary: Vec<Value>,
     },
     #[serde(other)]
+    #[default]
     Unknown,
-}
-
-impl Default for ResponsesOutputItem {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Convert a possibly-negative i64 token count into a u64. OpenAI
@@ -859,11 +855,8 @@ fn split_data_url(url: &str) -> (Option<String>, String) {
         // Malformed data URL — fall through to a URL passthrough
         // rather than dropping the image silently.
     }
-    let mime = if url.starts_with("data:image/") {
-        "image/png".to_string()
-    } else {
-        "image/png".to_string()
-    };
+    // Default MIME for non-data-URL image references.
+    let mime = "image/png".to_string();
     (None, mime)
 }
 

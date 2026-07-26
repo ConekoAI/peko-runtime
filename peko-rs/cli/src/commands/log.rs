@@ -18,10 +18,10 @@
 //! from the principal's mutable session JSONL working memory.
 
 use crate::commands::GlobalPaths;
-use peko_core::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{Context, Result};
 use clap::Args;
 use peko_chat_log::ChatLogMessage;
+use peko_core::ipc::{DaemonClient, ResponsePacket};
 use std::str::FromStr;
 
 /// `peko log [OPTIONS] <PRINCIPAL>`

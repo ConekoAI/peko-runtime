@@ -14,7 +14,10 @@ use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl, SessionService};
 use crate::common::types::config::PekoConfig;
 use crate::engine::tool_runtime::ToolRuntime;
+use crate::extensions::framework::async_exec::executor::AsyncExecutor;
+use crate::extensions::framework::inbox::SessionInbox;
 use crate::extensions::framework::store::ExtensionStore;
+use crate::principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 use crate::principal::{
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
     slash::SlashDispatcher,
@@ -22,10 +25,7 @@ use crate::principal::{
 };
 use crate::registry::{load_from_workspace, RegistryConfig};
 use peko_cron::IdleDetector;
-use crate::extensions::framework::async_exec::executor::AsyncExecutor;
-use crate::extensions::framework::inbox::SessionInbox;
 use peko_observability::Observability;
-use crate::principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 use peko_session::InboxRegistry;
 use secrecy::SecretString;
 use std::collections::HashMap;
@@ -706,9 +706,9 @@ impl AppState {
                 e
             );
         }
-        let extension_services = Arc::new(crate::extensions::framework::services::Services::with_core(
-            Arc::clone(&global_core),
-        ));
+        let extension_services = Arc::new(
+            crate::extensions::framework::services::Services::with_core(Arc::clone(&global_core)),
+        );
 
         // Observability hub is constructed early so it can be shared with the
         // PrincipalManager and threaded through to subagent spawn audit events.
@@ -775,8 +775,11 @@ impl AppState {
         // a separate dependency.
         let (principal_manager, peer_registry) = {
             let root = path_resolver.peers_root_dir();
-            match crate::principal::peer::PeerRegistry::load_or_init(root.clone(), chrono::Utc::now())
-                .await
+            match crate::principal::peer::PeerRegistry::load_or_init(
+                root.clone(),
+                chrono::Utc::now(),
+            )
+            .await
             {
                 Ok(reg) => {
                     let mgr = principal_manager.with_peer_registry(Arc::clone(&reg));
@@ -1866,269 +1869,6 @@ impl Default for DaemonConfigSnapshot {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    async fn create_test_state() -> AppState {
-        let temp_dir = TempDir::new().unwrap();
-        let data_dir = temp_dir.path().to_path_buf();
-        let cache_dir = data_dir.join("cache");
-        AppState::build_for_test(
-            temp_dir.path().to_path_buf(),
-            "127.0.0.1".to_string(),
-            11435,
-            DaemonConfigSnapshot::default(),
-            data_dir.clone(),
-            data_dir,
-            cache_dir,
-        )
-        .await
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn test_uptime_tracking() {
-        let state = create_test_state().await;
-
-        // Initial uptime should be very small
-        let uptime1 = state.uptime_seconds();
-        assert_eq!(uptime1, 0);
-
-        // Wait a bit and check uptime increased
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        let uptime2 = state.uptime_seconds();
-        // uptime_seconds() returns u64, so it's always >= 0.
-        // We just verify it doesn't panic and is reasonable.
-        let _ = uptime2;
-    }
-
-    #[tokio::test]
-    async fn test_degraded_state() {
-        let state = create_test_state().await;
-
-        assert!(!state.is_degraded().await);
-
-        state.mark_degraded().await;
-        assert!(state.is_degraded().await);
-
-        state.mark_healthy().await;
-        assert!(!state.is_degraded().await);
-    }
-
-    #[tokio::test]
-    async fn test_instance_count_starts_at_zero() {
-        // `instance_count()` is live (read by `ipc/server.rs:1480` for the
-        // SystemStatus response). The corresponding setter was removed
-        // — it had no production callers, only this test — so the only
-        // meaningful invariant we can assert is the initial value.
-        let state = create_test_state().await;
-        assert_eq!(state.instance_count().await, 0);
-    }
-
-    #[tokio::test]
-    async fn test_stateless_components() {
-        let state = create_test_state().await;
-
-        // Initially no agents registered
-        assert_eq!(state.agent_count().await.unwrap(), 0);
-
-        // Initially no active executions
-        assert_eq!(state.active_execution_count().await, 0);
-    }
-
-    #[tokio::test]
-    async fn test_appstate_has_registered_tools() {
-        let state = create_test_state().await;
-
-        // ToolRuntime should have registered built-in tools
-        let tool_runtime = state.tool_runtime.clone();
-        assert!(
-            tool_runtime.has_tool("Bash").await,
-            "Bash tool not registered"
-        );
-        assert!(
-            tool_runtime.has_tool("Read").await,
-            "Read tool not registered"
-        );
-        assert!(
-            tool_runtime.has_tool("Write").await,
-            "Write tool not registered"
-        );
-        assert!(
-            tool_runtime.has_tool("Glob").await,
-            "Glob tool not registered"
-        );
-        assert!(
-            tool_runtime.has_tool("Grep").await,
-            "Grep tool not registered"
-        );
-        assert!(
-            tool_runtime.has_tool("Edit").await,
-            "Edit tool not registered"
-        );
-        // `AsyncSpawn` and `AsyncOutput` are registered per-agent (not
-        // globally on the daemon's ToolRuntime) — see `Agent::build_agentic_loop`
-        // and `BuiltinToolAdapter::register_async_spawn_tool`. Asserting they
-        // are missing here pins the contract.
-
-        // ExtensionCore should list the tools
-        let core = tool_runtime.extension_core();
-        let tools = core.list_tools(peko_subject::PrincipalId::system()).await;
-        assert!(!tools.is_empty(), "No tools in ExtensionCore");
-
-        let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-        assert!(tool_names.contains(&"Bash".to_string()));
-        assert!(tool_names.contains(&"Grep".to_string()));
-
-        // Tool definitions should be available for LLM API
-        let defs = core.list_tool_definitions().await;
-        assert!(!defs.is_empty(), "No tool definitions available");
-    }
-
-    #[tokio::test]
-    #[serial_test::serial(core)]
-    async fn test_agent_init_preserves_pre_registered_tools() {
-        use crate::agents::agent_config::AgentConfig;
-        use crate::agents::Agent;
-        use crate::extensions::framework::core::init_global_core;
-        use crate::extensions::framework::types::HookInput;
-        use crate::extensions::framework::core::HookPoint;
-
-        let state = create_test_state().await;
-        let global_core = state.tool_runtime.extension_core().clone();
-
-        // Simulate what Agent::new() does
-        init_global_core(global_core.clone());
-
-        let config = AgentConfig {
-            name: "test-agent".to_string(),
-            ..Default::default()
-        };
-
-        let agent = Agent::new(config).await.expect("Failed to create agent");
-
-        // init_builtins_async should find pre-registered tools
-        agent
-            .init_builtins_async()
-            .await
-            .expect("Failed to init builtins");
-
-        // Tools should still be available after agent init
-        let core = agent.extension_core();
-        let tools: Vec<crate::extensions::framework::types::ToolMetadata> =
-            core.list_tools(peko_subject::PrincipalId::system()).await;
-        let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-        assert!(
-            tool_names.contains(&"Bash".to_string()),
-            "Bash missing after agent init"
-        );
-        assert!(
-            tool_names.contains(&"Grep".to_string()),
-            "Grep missing after agent init"
-        );
-
-        // Prompt section should return tool descriptions
-        let prompt: Option<String> = core
-            .invoke_hook_text(
-                HookPoint::PromptSystemSection {
-                    section: "tools".to_string(),
-                    priority: 100,
-                },
-                HookInput::Unit,
-            )
-            .await;
-        assert!(prompt.is_some(), "Prompt section returned None");
-        let prompt_text = prompt.unwrap();
-        assert!(!prompt_text.is_empty(), "Prompt section is empty");
-        assert!(prompt_text.contains("Bash"), "Prompt doesn't mention Bash");
-        assert!(prompt_text.contains("Grep"), "Prompt doesn't mention Grep");
-    }
-
-    // ── Issue #8: tunnel health surface tests ─────────────────────
-
-    #[tokio::test]
-    async fn test_tunnel_health_disabled_when_no_credential() {
-        // With no PekoHub credential on disk and the daemon never told to
-        // start the tunnel, `tunnel_health()` should report `Disabled`.
-        let state = create_test_state().await;
-        let health = state.tunnel_health().await;
-        assert_eq!(health, TunnelHealth::Disabled);
-        assert_eq!(health.state_str(), "disabled");
-        assert_eq!(health.reconnect_attempts(), 0);
-        assert_eq!(health.last_error(), None);
-    }
-
-    #[tokio::test]
-    async fn test_tunnel_health_degraded_after_cap() {
-        // Simulate the tunnel client hitting the reconnect cap without
-        // spinning up a real WebSocket: directly set the tracking fields
-        // (including `tunnel_degraded`) and verify `tunnel_health()`.
-        let state = create_test_state().await;
-
-        *state.tunnel_attempts.write().await = 50;
-        *state.tunnel_last_error.write().await = Some("tunnel reconnect cap reached".to_string());
-        *state.tunnel_degraded.write().await = true;
-
-        let health = state.tunnel_health().await;
-        match &health {
-            TunnelHealth::Degraded {
-                attempts,
-                last_error,
-            } => {
-                assert_eq!(*attempts, 50);
-                assert!(last_error.contains("cap"));
-            }
-            other => panic!("expected Degraded, got {other:?}"),
-        }
-        assert_eq!(health.state_str(), "degraded");
-        assert_eq!(health.reconnect_attempts(), 50);
-    }
-
-    #[tokio::test]
-    async fn test_tunnel_health_disconnected_transient() {
-        // When the daemon is not degraded but we've recorded a failed
-        // attempt, `tunnel_health()` reports Disconnected (transient
-        // retry state, attempts < cap).
-        let state = create_test_state().await;
-        *state.tunnel_attempts.write().await = 3;
-        *state.tunnel_last_error.write().await = Some("connection refused".to_string());
-
-        let health = state.tunnel_health().await;
-        match &health {
-            TunnelHealth::Disconnected {
-                attempts,
-                last_error,
-            } => {
-                assert_eq!(*attempts, 3);
-                assert_eq!(last_error.as_deref(), Some("connection refused"));
-            }
-            other => panic!("expected Disconnected, got {other:?}"),
-        }
-        assert_eq!(health.state_str(), "disconnected");
-        assert_eq!(health.reconnect_attempts(), 3);
-        assert_eq!(health.last_error(), Some("connection refused"));
-    }
-
-    #[tokio::test]
-    async fn test_stop_tunnel_clears_degraded_and_errors() {
-        // After `stop_tunnel()` the daemon should no longer be degraded
-        // (operator explicitly disabled it), and attempts/last_error
-        // should be reset so `tunnel_health()` reports Disabled.
-        let state = create_test_state().await;
-        state.mark_degraded().await;
-        *state.tunnel_attempts.write().await = 50;
-        *state.tunnel_last_error.write().await = Some("boom".to_string());
-
-        state.stop_tunnel().await;
-
-        assert!(!state.is_degraded().await);
-        assert_eq!(state.tunnel_attempts().await, 0);
-        assert_eq!(state.tunnel_last_error().await, None);
-    }
-}
-
 // F5: AppState is the only type that knows both `daemon` and `tunnel`, so it
 // implements the tunnel's narrow host port here. The dispatcher holds an
 // `Arc<dyn TunnelHost>` and never names `AppState` (boundary rule 9).
@@ -2980,5 +2720,268 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
 
     async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {
         AppState::tunnel_dispatcher(self).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn create_test_state() -> AppState {
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path().to_path_buf();
+        let cache_dir = data_dir.join("cache");
+        AppState::build_for_test(
+            temp_dir.path().to_path_buf(),
+            "127.0.0.1".to_string(),
+            11435,
+            DaemonConfigSnapshot::default(),
+            data_dir.clone(),
+            data_dir,
+            cache_dir,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_uptime_tracking() {
+        let state = create_test_state().await;
+
+        // Initial uptime should be very small
+        let uptime1 = state.uptime_seconds();
+        assert_eq!(uptime1, 0);
+
+        // Wait a bit and check uptime increased
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let uptime2 = state.uptime_seconds();
+        // uptime_seconds() returns u64, so it's always >= 0.
+        // We just verify it doesn't panic and is reasonable.
+        let _ = uptime2;
+    }
+
+    #[tokio::test]
+    async fn test_degraded_state() {
+        let state = create_test_state().await;
+
+        assert!(!state.is_degraded().await);
+
+        state.mark_degraded().await;
+        assert!(state.is_degraded().await);
+
+        state.mark_healthy().await;
+        assert!(!state.is_degraded().await);
+    }
+
+    #[tokio::test]
+    async fn test_instance_count_starts_at_zero() {
+        // `instance_count()` is live (read by `ipc/server.rs:1480` for the
+        // SystemStatus response). The corresponding setter was removed
+        // — it had no production callers, only this test — so the only
+        // meaningful invariant we can assert is the initial value.
+        let state = create_test_state().await;
+        assert_eq!(state.instance_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_stateless_components() {
+        let state = create_test_state().await;
+
+        // Initially no agents registered
+        assert_eq!(state.agent_count().await.unwrap(), 0);
+
+        // Initially no active executions
+        assert_eq!(state.active_execution_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_appstate_has_registered_tools() {
+        let state = create_test_state().await;
+
+        // ToolRuntime should have registered built-in tools
+        let tool_runtime = state.tool_runtime.clone();
+        assert!(
+            tool_runtime.has_tool("Bash").await,
+            "Bash tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("Read").await,
+            "Read tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("Write").await,
+            "Write tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("Glob").await,
+            "Glob tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("Grep").await,
+            "Grep tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("Edit").await,
+            "Edit tool not registered"
+        );
+        // `AsyncSpawn` and `AsyncOutput` are registered per-agent (not
+        // globally on the daemon's ToolRuntime) — see `Agent::build_agentic_loop`
+        // and `BuiltinToolAdapter::register_async_spawn_tool`. Asserting they
+        // are missing here pins the contract.
+
+        // ExtensionCore should list the tools
+        let core = tool_runtime.extension_core();
+        let tools = core.list_tools(peko_subject::PrincipalId::system()).await;
+        assert!(!tools.is_empty(), "No tools in ExtensionCore");
+
+        let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        assert!(tool_names.contains(&"Bash".to_string()));
+        assert!(tool_names.contains(&"Grep".to_string()));
+
+        // Tool definitions should be available for LLM API
+        let defs = core.list_tool_definitions().await;
+        assert!(!defs.is_empty(), "No tool definitions available");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_agent_init_preserves_pre_registered_tools() {
+        use crate::agents::agent_config::AgentConfig;
+        use crate::agents::Agent;
+        use crate::extensions::framework::core::init_global_core;
+        use crate::extensions::framework::core::HookPoint;
+        use crate::extensions::framework::types::HookInput;
+
+        let state = create_test_state().await;
+        let global_core = state.tool_runtime.extension_core().clone();
+
+        // Simulate what Agent::new() does
+        init_global_core(global_core.clone());
+
+        let config = AgentConfig {
+            name: "test-agent".to_string(),
+            ..Default::default()
+        };
+
+        let agent = Agent::new(config).await.expect("Failed to create agent");
+
+        // init_builtins_async should find pre-registered tools
+        agent
+            .init_builtins_async()
+            .await
+            .expect("Failed to init builtins");
+
+        // Tools should still be available after agent init
+        let core = agent.extension_core();
+        let tools: Vec<crate::extensions::framework::types::ToolMetadata> =
+            core.list_tools(peko_subject::PrincipalId::system()).await;
+        let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        assert!(
+            tool_names.contains(&"Bash".to_string()),
+            "Bash missing after agent init"
+        );
+        assert!(
+            tool_names.contains(&"Grep".to_string()),
+            "Grep missing after agent init"
+        );
+
+        // Prompt section should return tool descriptions
+        let prompt: Option<String> = core
+            .invoke_hook_text(
+                HookPoint::PromptSystemSection {
+                    section: "tools".to_string(),
+                    priority: 100,
+                },
+                HookInput::Unit,
+            )
+            .await;
+        assert!(prompt.is_some(), "Prompt section returned None");
+        let prompt_text = prompt.unwrap();
+        assert!(!prompt_text.is_empty(), "Prompt section is empty");
+        assert!(prompt_text.contains("Bash"), "Prompt doesn't mention Bash");
+        assert!(prompt_text.contains("Grep"), "Prompt doesn't mention Grep");
+    }
+
+    // ── Issue #8: tunnel health surface tests ─────────────────────
+
+    #[tokio::test]
+    async fn test_tunnel_health_disabled_when_no_credential() {
+        // With no PekoHub credential on disk and the daemon never told to
+        // start the tunnel, `tunnel_health()` should report `Disabled`.
+        let state = create_test_state().await;
+        let health = state.tunnel_health().await;
+        assert_eq!(health, TunnelHealth::Disabled);
+        assert_eq!(health.state_str(), "disabled");
+        assert_eq!(health.reconnect_attempts(), 0);
+        assert_eq!(health.last_error(), None);
+    }
+
+    #[tokio::test]
+    async fn test_tunnel_health_degraded_after_cap() {
+        // Simulate the tunnel client hitting the reconnect cap without
+        // spinning up a real WebSocket: directly set the tracking fields
+        // (including `tunnel_degraded`) and verify `tunnel_health()`.
+        let state = create_test_state().await;
+
+        *state.tunnel_attempts.write().await = 50;
+        *state.tunnel_last_error.write().await = Some("tunnel reconnect cap reached".to_string());
+        *state.tunnel_degraded.write().await = true;
+
+        let health = state.tunnel_health().await;
+        match &health {
+            TunnelHealth::Degraded {
+                attempts,
+                last_error,
+            } => {
+                assert_eq!(*attempts, 50);
+                assert!(last_error.contains("cap"));
+            }
+            other => panic!("expected Degraded, got {other:?}"),
+        }
+        assert_eq!(health.state_str(), "degraded");
+        assert_eq!(health.reconnect_attempts(), 50);
+    }
+
+    #[tokio::test]
+    async fn test_tunnel_health_disconnected_transient() {
+        // When the daemon is not degraded but we've recorded a failed
+        // attempt, `tunnel_health()` reports Disconnected (transient
+        // retry state, attempts < cap).
+        let state = create_test_state().await;
+        *state.tunnel_attempts.write().await = 3;
+        *state.tunnel_last_error.write().await = Some("connection refused".to_string());
+
+        let health = state.tunnel_health().await;
+        match &health {
+            TunnelHealth::Disconnected {
+                attempts,
+                last_error,
+            } => {
+                assert_eq!(*attempts, 3);
+                assert_eq!(last_error.as_deref(), Some("connection refused"));
+            }
+            other => panic!("expected Disconnected, got {other:?}"),
+        }
+        assert_eq!(health.state_str(), "disconnected");
+        assert_eq!(health.reconnect_attempts(), 3);
+        assert_eq!(health.last_error(), Some("connection refused"));
+    }
+
+    #[tokio::test]
+    async fn test_stop_tunnel_clears_degraded_and_errors() {
+        // After `stop_tunnel()` the daemon should no longer be degraded
+        // (operator explicitly disabled it), and attempts/last_error
+        // should be reset so `tunnel_health()` reports Disabled.
+        let state = create_test_state().await;
+        state.mark_degraded().await;
+        *state.tunnel_attempts.write().await = 50;
+        *state.tunnel_last_error.write().await = Some("boom".to_string());
+
+        state.stop_tunnel().await;
+
+        assert!(!state.is_degraded().await);
+        assert_eq!(state.tunnel_attempts().await, 0);
+        assert_eq!(state.tunnel_last_error().await, None);
     }
 }

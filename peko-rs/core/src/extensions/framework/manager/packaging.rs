@@ -8,9 +8,13 @@
 //! `&ExtensionStore` concrete) lets the runtime pass in a root-side store
 //! that implements the [`crate::extensions::framework::store::ExtensionStore`] trait port.
 
-use crate::extensions::framework::store_trait::{ExtensionStore, LoadedExtension};
+use crate::extensions::framework::store_trait::ExtensionStore;
+#[cfg(test)]
+use crate::extensions::framework::store_trait::LoadedExtension;
 use anyhow::Context;
-use peko_extension_api::{ExtensionId, ExtensionManifest};
+use peko_extension_api::ExtensionId;
+#[cfg(test)]
+use peko_extension_api::ExtensionManifest;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};

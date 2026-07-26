@@ -12,8 +12,8 @@
 //! ```
 
 use crate::extensions::framework::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
-use crate::extensions::framework::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
 use crate::extensions::framework::types::HookResult;
+use crate::extensions::framework::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
 use anyhow::Result;
 use async_trait::async_trait;
 use peko_subject::PrincipalId;
@@ -195,7 +195,9 @@ impl BuiltinToolAdapter {
         config: &BuiltinToolRegistrarConfig,
     ) -> Result<()> {
         use crate::tools::builtin::BashTool;
-        use crate::tools::builtin::{EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool};
+        use crate::tools::builtin::{
+            EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool,
+        };
         use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
 
         let disabled_set: HashSet<String> = config
@@ -408,7 +410,9 @@ impl HookHandler for BuiltinExecuteHandler {
         let tool_name_for_ctx = tool_name.clone();
         let tool_name_for_notice = tool_name.clone();
 
-        let exec_config = crate::extensions::framework::transport::ToolExecConfig::with_schema(self.tool.parameters());
+        let exec_config = crate::extensions::framework::transport::ToolExecConfig::with_schema(
+            self.tool.parameters(),
+        );
 
         let runtime_ctx = ctx
             .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")

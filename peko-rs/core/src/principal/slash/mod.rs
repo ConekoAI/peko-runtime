@@ -6,10 +6,10 @@
 pub mod extension_row;
 pub mod help;
 
-use crate::extensions::framework::store::ExtensionStore;
-use crate::principal::Principal;
 use crate::extensions::framework::services::Services as ExtensionServices;
+use crate::extensions::framework::store::ExtensionStore;
 use crate::principal::runtime::OutputFormat;
+use crate::principal::Principal;
 use std::sync::Arc;
 
 /// Result of handling a slash command.

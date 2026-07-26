@@ -9,13 +9,13 @@
 //!   peko ext mcp remove myremote
 
 use crate::commands::GlobalPaths;
+use anyhow::{Context, Result};
+use clap::Subcommand;
 use peko_core::common::vault::Vault;
 use peko_core::extensions::mcp::protocol::{
     config::{McpAuthConfig, McpConfig, McpServerConfig, TransportType},
     oauth::OAuthFlow,
 };
-use anyhow::{Context, Result};
-use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -170,7 +170,8 @@ async fn add_cmd(
         max_restarts: 0,
         init_timeout_secs: 30,
         tool_timeout_secs: 60,
-        reserved_parameters: peko_core::extensions::framework::services::ReservedParamsConfig::new(),
+        reserved_parameters: peko_core::extensions::framework::services::ReservedParamsConfig::new(
+        ),
         bundle: false,
         bundled_path: None,
         auth,
@@ -319,7 +320,7 @@ async fn save_mcp_config(path: PathBuf, config: &McpConfig) -> Result<()> {
     }
     let content = config
         .to_toml()
-        .with_context(|| format!("Failed to serialize MCP config to TOML"))?;
+        .with_context(|| "Failed to serialize MCP config to TOML".to_string())?;
     tokio::fs::write(&path, content)
         .await
         .with_context(|| format!("Failed to write MCP config to {path:?}"))?;

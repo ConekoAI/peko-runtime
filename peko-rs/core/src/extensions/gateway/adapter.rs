@@ -43,8 +43,8 @@
 //!     topic: "instance.*"
 //! ```
 
-use crate::extensions::framework::core::HookBinding;
 use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter};
+use crate::extensions::framework::core::HookBinding;
 use crate::extensions::framework::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
 use crate::extensions::framework::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
 use anyhow::{Context, Result};

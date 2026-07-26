@@ -39,11 +39,9 @@
 //! fields the orchestrator already has in scope (or a typed payload
 //! from `peko-extension-api::hook_io`).
 
-use anyhow::Result;
-use crate::hook_io::{
-    CompactionPreparationPayload, CompactionResultPayload, HookDecision,
-};
+use crate::hook_io::{CompactionPreparationPayload, CompactionResultPayload, HookDecision};
 use crate::session::SessionSnapshot;
+use anyhow::Result;
 
 /// The engine-facing surface of root's `ExtensionCore`.
 ///

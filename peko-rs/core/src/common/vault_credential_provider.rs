@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
 use secrecy::SecretString;
 
 use peko_provider_api::credentials::{

@@ -53,6 +53,10 @@
 //! is established one file at a time so each residual coupling can be
 //! lifted incrementally with its own narrow PR.
 
+// Noise lints, consistent with the root crate's curated allow-list.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::should_implement_trait)]
+
 pub mod agent_view;
 pub mod agentic_loop;
 pub mod async_completion;

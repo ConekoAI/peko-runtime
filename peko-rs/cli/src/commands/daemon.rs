@@ -8,8 +8,8 @@
 //! All process lifecycle logic is delegated to `DaemonProcessService`.
 
 use crate::commands::GlobalPaths;
-use peko_core::common::services::DaemonProcessService;
 use clap::Subcommand;
+use peko_core::common::services::DaemonProcessService;
 
 /// Daemon management subcommands
 ///

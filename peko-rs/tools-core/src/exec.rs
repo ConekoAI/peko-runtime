@@ -65,9 +65,10 @@ impl From<anyhow::Error> for ToolError {
         let msg = e.to_string();
         if msg.contains("aborted") {
             ToolError::Aborted
-        } else if msg.contains("timeout") {
-            ToolError::Other(msg) // Timeout has its own variant, but parse from string if needed
         } else {
+            // Note: `ToolError::Timeout` carries a `Duration` that isn't
+            // recoverable from a stringified error, so timeouts surface as
+            // `Other` here.
             ToolError::Other(msg)
         }
     }
@@ -436,11 +437,7 @@ impl ToolContext {
         }
 
         if let Some(ref tx) = self.event_tx {
-            let percent = if total > 0 {
-                Some((current * 100 / total) as u8)
-            } else {
-                None
-            };
+            let percent = (current * 100).checked_div(total).map(|p| p as u8);
 
             let output = message.unwrap_or_else(|| format!("Progress: {current}/{total}"));
 

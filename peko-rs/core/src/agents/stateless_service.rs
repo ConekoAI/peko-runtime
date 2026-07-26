@@ -15,8 +15,8 @@
 use crate::agents::Agent;
 use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
-use peko_engine::AgenticEvent;
 use peko_auth::Subject;
+use peko_engine::AgenticEvent;
 use peko_message::LlmMessage;
 use peko_providers::TokenUsage;
 use peko_session::manager::SessionManager;
@@ -227,7 +227,9 @@ pub struct StatelessAgentService {
 // breaking the cycle that would otherwise form via the concrete-type
 // dependency.
 #[async_trait::async_trait]
-impl crate::extensions::framework::principal_message::PrincipalMessageService for StatelessAgentService {
+impl crate::extensions::framework::principal_message::PrincipalMessageService
+    for StatelessAgentService
+{
     async fn execute_message(
         &self,
         req: crate::extensions::framework::principal_message::PrincipalMessageRequest,
@@ -1217,12 +1219,13 @@ mod tests {
 
     #[test]
     fn test_message_request_builder() {
-        let request = crate::extensions::framework::principal_message::PrincipalMessageRequest::new(
-            "my-agent", "Hello",
-        )
-        .with_session("sess_123")
-        .with_new_session(false)
-        .with_timeout(60);
+        let request =
+            crate::extensions::framework::principal_message::PrincipalMessageRequest::new(
+                "my-agent", "Hello",
+            )
+            .with_session("sess_123")
+            .with_new_session(false)
+            .with_timeout(60);
 
         assert_eq!(request.agent_name, "my-agent");
         assert_eq!(request.message, "Hello");
@@ -1248,14 +1251,18 @@ mod tests {
     fn test_message_request_with_session_opt() {
         // Test with Some
         let request1 =
-            crate::extensions::framework::principal_message::PrincipalMessageRequest::new("agent", "hi")
-                .with_session_opt(Some("session-id".to_string()));
+            crate::extensions::framework::principal_message::PrincipalMessageRequest::new(
+                "agent", "hi",
+            )
+            .with_session_opt(Some("session-id".to_string()));
         assert_eq!(request1.session_id, Some("session-id".to_string()));
 
         // Test with None
         let request2 =
-            crate::extensions::framework::principal_message::PrincipalMessageRequest::new("agent", "hi")
-                .with_session_opt(None);
+            crate::extensions::framework::principal_message::PrincipalMessageRequest::new(
+                "agent", "hi",
+            )
+            .with_session_opt(None);
         assert_eq!(request2.session_id, None);
     }
 
@@ -1265,19 +1272,22 @@ mod tests {
 
     #[test]
     fn test_message_request_caller_agent_opt_filters_empty() {
-        let req1 =
-            crate::extensions::framework::principal_message::PrincipalMessageRequest::new("agent", "hi")
-                .with_caller_agent_opt(Some("researcher".to_string()));
+        let req1 = crate::extensions::framework::principal_message::PrincipalMessageRequest::new(
+            "agent", "hi",
+        )
+        .with_caller_agent_opt(Some("researcher".to_string()));
         assert_eq!(req1.caller_agent, Some("researcher".to_string()));
 
-        let req2 =
-            crate::extensions::framework::principal_message::PrincipalMessageRequest::new("agent", "hi")
-                .with_caller_agent_opt(Some(String::new()));
+        let req2 = crate::extensions::framework::principal_message::PrincipalMessageRequest::new(
+            "agent", "hi",
+        )
+        .with_caller_agent_opt(Some(String::new()));
         assert_eq!(req2.caller_agent, None);
 
-        let req3 =
-            crate::extensions::framework::principal_message::PrincipalMessageRequest::new("agent", "hi")
-                .with_caller_agent_opt(None);
+        let req3 = crate::extensions::framework::principal_message::PrincipalMessageRequest::new(
+            "agent", "hi",
+        )
+        .with_caller_agent_opt(None);
         assert_eq!(req3.caller_agent, None);
     }
 

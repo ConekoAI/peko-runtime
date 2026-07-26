@@ -15,10 +15,10 @@
 //! `peko send --stream` at start (and shown in `peko log` events).
 
 use crate::commands::GlobalPaths;
-use peko_core::ipc::packet::PrincipalSendControlMode;
-use peko_core::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{bail, Result};
 use clap::Args;
+use peko_core::ipc::packet::PrincipalSendControlMode;
+use peko_core::ipc::{DaemonClient, ResponsePacket};
 
 /// Soft-interrupt or steer a running `peko send --stream` run.
 #[derive(Args, Clone, Debug)]

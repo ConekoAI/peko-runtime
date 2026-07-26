@@ -161,15 +161,11 @@ impl KeyStorage {
 
         // Try keychain first (unless we're in a test with a fallback passphrase)
         let keychain = KeychainStorage::new();
-        let key_storage = if self.test_passphrase.is_some() {
+        let key_storage = if let Some(test_passphrase) = self.test_passphrase.as_ref() {
             // Test mode: always use encrypted file fallback for determinism
             let enc_path = self.encrypted_key_path(&identity.did);
-            EncryptedKeyStorage::store_key(
-                &enc_path,
-                &export.private_key,
-                self.test_passphrase.as_ref().unwrap(),
-            )
-            .context("Failed to store key in encrypted file (test fallback)")?
+            EncryptedKeyStorage::store_key(&enc_path, &export.private_key, test_passphrase)
+                .context("Failed to store key in encrypted file (test fallback)")?
         } else if keychain.is_available() {
             keychain
                 .store_key(&identity.did, &export.private_key)
@@ -292,14 +288,10 @@ impl KeyStorage {
 
         // Test mode: always use encrypted file fallback for determinism
         let keychain = KeychainStorage::new();
-        let key_storage = if self.test_passphrase.is_some() {
+        let key_storage = if let Some(test_passphrase) = self.test_passphrase.as_ref() {
             let enc_path = self.encrypted_key_path(&did);
-            EncryptedKeyStorage::store_key(
-                &enc_path,
-                &legacy.private_key,
-                self.test_passphrase.as_ref().unwrap(),
-            )
-            .context("Failed to migrate key to encrypted file")?
+            EncryptedKeyStorage::store_key(&enc_path, &legacy.private_key, test_passphrase)
+                .context("Failed to migrate key to encrypted file")?
         } else if keychain.is_available() {
             keychain
                 .store_key(&did, &legacy.private_key)

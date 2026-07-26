@@ -30,17 +30,18 @@ pub mod routers;
 pub mod runtime;
 pub mod slash;
 
-pub use agent_runner::build_agent_config;
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
+pub use agent_runner::build_agent_config;
 pub use capability_evaluator::CapabilityEvaluator;
 pub use config::{
-    ArtifactKind, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier,
-    PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
-    PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig, Status,
-    TtlPolicy, TransportPreference,
+    ArtifactKind, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig,
+    PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
+    PrincipalMemoryConfig, PrincipalRoutingConfig, Status, TransportPreference, TtlPolicy,
 };
 pub use context::PrincipalContext;
-pub use extension_store::{capability_kind_for_extension_type, ExtensionCatalog, ExtensionCatalogItem};
+pub use extension_store::{
+    capability_kind_for_extension_type, ExtensionCatalog, ExtensionCatalogItem,
+};
 pub use factory::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalMemoryFactory,
     PrincipalRouterFactory,

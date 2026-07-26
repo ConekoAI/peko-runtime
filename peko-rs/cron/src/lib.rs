@@ -56,8 +56,8 @@ use tracing::info;
 // IPC handlers) imports from `peko_cron::*` directly.
 #[allow(unused_imports)]
 pub use tools::{
-    build_send_job, build_spawn_tool_job, calculate_next_run, global_runtime,
-    normalize_cron_expr, render_job_list, resolve_delete_after_run, resolve_label, resolve_prompt,
+    build_send_job, build_spawn_tool_job, calculate_next_run, global_runtime, normalize_cron_expr,
+    render_job_list, resolve_delete_after_run, resolve_label, resolve_prompt,
     resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool, CronJob,
     CronJobAction, CronListTool, CronRuntime, DeliveryMode, ScheduleKind,
 };
@@ -218,7 +218,7 @@ impl CronScheduler {
         } else {
             db.jobs.into_iter().filter(|j| j.enabled).collect()
         };
-        jobs.sort_by(|a, b| a.next_run.cmp(&b.next_run));
+        jobs.sort_by_key(|a| a.next_run);
         Ok(jobs)
     }
 
@@ -241,7 +241,7 @@ impl CronScheduler {
             .into_iter()
             .filter(|j| j.enabled && j.next_run <= now)
             .collect();
-        jobs.sort_by(|a, b| a.next_run.cmp(&b.next_run));
+        jobs.sort_by_key(|a| a.next_run);
         Ok(jobs)
     }
 
@@ -328,7 +328,7 @@ impl CronScheduler {
         // Keep only the last 1000 runs to prevent unbounded growth
         const MAX_RUNS: usize = 1000;
         if db.runs.len() > MAX_RUNS {
-            db.runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+            db.runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
             db.runs.truncate(MAX_RUNS);
         }
         self.write_db(&db)?;
@@ -339,7 +339,7 @@ impl CronScheduler {
     pub fn get_run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>> {
         let db = self.read_db()?;
         let mut runs: Vec<CronRun> = db.runs.into_iter().filter(|r| r.job_id == job_id).collect();
-        runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
         runs.truncate(limit);
         Ok(runs)
     }
@@ -416,7 +416,7 @@ impl CronScheduler {
             .into_iter()
             .filter(|j| j.enabled && j.next_run <= now && j.last_run.is_none())
             .collect();
-        jobs.sort_by(|a, b| a.next_run.cmp(&b.next_run));
+        jobs.sort_by_key(|a| a.next_run);
         Ok(jobs)
     }
 

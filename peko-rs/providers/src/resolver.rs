@@ -459,11 +459,13 @@ impl peko_provider_api::credentials::CredentialProvider for NoopCredentialProvid
 /// `resolve_api_key` to return a known material without depending on
 /// root's `Vault` type. Holds the material in a `SecretString` so the
 /// resolver sees it through the trait just like a vault-backed impl.
+#[allow(dead_code)]
 struct StaticCredentialProvider {
     credential_id: String,
     material: secrecy::SecretString,
 }
 
+#[allow(dead_code)]
 impl StaticCredentialProvider {
     fn new(credential_id: String, material: secrecy::SecretString) -> Self {
         Self {

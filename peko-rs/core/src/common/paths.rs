@@ -778,11 +778,8 @@ impl GlobalPaths {
         let _ = std::fs::create_dir_all(&data_dir);
         let _ = std::fs::create_dir_all(&cache_dir);
 
-        let resolver = PathResolver::with_dirs(
-            config_dir.clone(),
-            data_dir.clone(),
-            cache_dir.clone(),
-        );
+        let resolver =
+            PathResolver::with_dirs(config_dir.clone(), data_dir.clone(), cache_dir.clone());
 
         let services = crate::common::services::ServiceContainer::new(resolver.clone());
 

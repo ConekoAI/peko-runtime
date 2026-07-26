@@ -64,7 +64,6 @@ pub use tool_funnel::ToolFunnel;
 // Phase F2 foldback: `default_data_dir` + `default_agent_workspace`
 // moved here so `peko_engine::AgenticLoop` reaches them without
 // depending on root.
-pub use paths::{default_agent_workspace, default_data_dir};
 pub use async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
 pub use async_types::AsyncReceipt;
 pub use capabilities::{ActiveExtensionSet, Capabilities, Capability};
@@ -73,6 +72,7 @@ pub use hook_io::{
     HookInput, HookOutput, HookResult,
 };
 pub use manifest::{ExtensionDependency, ExtensionManifest};
+pub use paths::{default_agent_workspace, default_data_dir};
 pub use reserved_params::{ConfigFormat, ParamSource, ReservedParamsConfig, ReservedParamsService};
 pub use session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};
 pub use subagent::SpawnCleanupPolicy;

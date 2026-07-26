@@ -25,8 +25,8 @@
 //! ```
 
 use crate::commands::GlobalPaths;
-use peko_core::common::vault::{Credential, CredentialKind, Vault};
 use anyhow::{Context, Result};
+use peko_core::common::vault::{Credential, CredentialKind, Vault};
 use peko_providers::catalog::{ApiFormat, ModelCatalog, ModelConfig};
 use peko_providers::templates;
 

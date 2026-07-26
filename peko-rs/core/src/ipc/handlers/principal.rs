@@ -38,7 +38,6 @@ use tracing::warn;
 
 use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
-use peko_engine::AgenticEvent;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{PrincipalSendControlMode, RequestPacket, ResponsePacket};
@@ -57,6 +56,7 @@ use peko_auth::ownership::{
 };
 use peko_auth::Subject;
 use peko_chat_log::{ChatLogPage, ChatThreadKey};
+use peko_engine::AgenticEvent;
 
 use peko_extension_api::SteeringMessage;
 

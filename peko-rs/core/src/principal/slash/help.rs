@@ -1,14 +1,14 @@
 //! Built-in `/help` slash command renderer for the daemon-side slash
 //! dispatcher.
 
+use crate::extensions::framework::services::Services as ExtensionServices;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::{Capabilities, Capability};
 use crate::ipc::packet::ExtensionSummary;
-use crate::principal::Principal;
-use anyhow::Result;
-use crate::extensions::framework::services::Services as ExtensionServices;
 use crate::principal::config::PrincipalConfig;
 use crate::principal::runtime::OutputFormat;
+use crate::principal::Principal;
+use anyhow::Result;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

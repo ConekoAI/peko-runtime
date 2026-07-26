@@ -401,8 +401,9 @@ impl HookHandler for UniversalToolExecuteHandler {
         let manifest_path = self.manifest_path.clone();
         let executable = self.executable.clone();
 
-        let exec_config =
-            crate::extensions::framework::transport::ToolExecConfig::with_schema(self.full_schema.clone());
+        let exec_config = crate::extensions::framework::transport::ToolExecConfig::with_schema(
+            self.full_schema.clone(),
+        );
 
         ctx.services
             .async_router()

@@ -5,7 +5,9 @@ use serde_json::json;
 
 use peko_tools_core::traits::Tool;
 
-use crate::tools::builtin::async_control::{build_status_response, AsyncTaskHelper, SharedAsyncRuntime};
+use crate::tools::builtin::async_control::{
+    build_status_response, AsyncTaskHelper, SharedAsyncRuntime,
+};
 
 /// Query the status of an async task.
 pub struct AsyncStatusTool {

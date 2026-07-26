@@ -19,7 +19,9 @@
 //! `Arc<RwLock<HashMap<K, V>>>` patterns.
 
 use crate::extensions::framework::registry::SharedRegistry;
-use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, Capability, ExtensionId, HookId};
+use crate::extensions::framework::types::{
+    ActiveExtensionSet, Capabilities, Capability, ExtensionId, HookId,
+};
 use anyhow::Result;
 use peko_subject::PrincipalId;
 use std::collections::HashMap;

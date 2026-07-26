@@ -34,7 +34,9 @@
 //! the API's `AsyncInboxItem` envelopes happen at the
 //! `AsyncInboxLike` trait impl boundary.
 
-use peko_extension_api::{AsyncInboxItem, AsyncInboxLike, CompletionEvent, InboxItem, SteeringMessage};
+use peko_extension_api::{
+    AsyncInboxItem, AsyncInboxLike, CompletionEvent, InboxItem, SteeringMessage,
+};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};

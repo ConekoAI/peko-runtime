@@ -840,7 +840,7 @@ mod tests {
             cache_read_input_tokens: Some(4096),
             reasoning_output_tokens: Some(200),
         };
-        let json = serde_json::to_value(&usage).unwrap();
+        let json = serde_json::to_value(usage).unwrap();
         assert_eq!(json["input"], 1000);
         assert_eq!(json["cache_read_input_tokens"], 4096);
         let parsed: TokenUsage = serde_json::from_value(json).unwrap();
@@ -857,7 +857,7 @@ mod tests {
             total: 150,
             ..Default::default()
         };
-        let json = serde_json::to_value(&usage).unwrap();
+        let json = serde_json::to_value(usage).unwrap();
         let obj = json.as_object().unwrap();
         assert!(!obj.contains_key("cache_creation_input_tokens"));
         assert!(!obj.contains_key("cache_read_input_tokens"));
@@ -877,7 +877,7 @@ mod tests {
             cache_read_input_tokens: Some(4096),
             ..Default::default()
         };
-        let msg = LlmMessage::assistant("hello").with_usage(usage.clone());
+        let msg = LlmMessage::assistant("hello").with_usage(usage);
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["usage"]["input"], 1200);
         assert_eq!(json["usage"]["cache_read_input_tokens"], 4096);

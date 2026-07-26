@@ -8,10 +8,10 @@
 //!   peko search info acme/researcher
 
 use crate::commands::GlobalPaths;
-use peko_core::common::services::CredentialsService;
-use peko_core::registry::config::RegistryConfig;
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use peko_core::common::services::CredentialsService;
+use peko_core::registry::config::RegistryConfig;
 use serde::{Deserialize, Serialize};
 
 /// Search subcommands

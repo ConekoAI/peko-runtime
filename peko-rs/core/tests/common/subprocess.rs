@@ -134,7 +134,7 @@ fn run_wait_with_timeout(
                     let _ = p.read_to_end(&mut stderr);
                 }
                 let out = Output {
-                    status: status.clone(),
+                    status,
                     stdout: stdout.clone(),
                     stderr: stderr.clone(),
                 };

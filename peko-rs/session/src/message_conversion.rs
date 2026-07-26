@@ -16,8 +16,6 @@
 //! - **DRY**: Single source of truth for all message format conversions
 
 use crate::events::SessionEvent;
-#[cfg(test)]
-use crate::events::SessionMessage;
 use crate::jsonl::NormalizedEntry;
 use peko_message::ContentBlock;
 use peko_message::{LlmMessage, MessageRole};

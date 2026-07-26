@@ -6,17 +6,17 @@ use tokio::sync::RwLock;
 
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::Agent;
-use peko_engine::AgenticEvent;
 use crate::principal::context::{install_agent_catalog, PrincipalContext};
 use crate::principal::router::AgentPromptSummary;
-use crate::tools::builtin::{AgentTool, DynamicSessionKeyProvider};
+use crate::tools::builtin::DynamicSessionKeyProvider;
 use peko_auth::Subject;
+use peko_engine::AgenticEvent;
 use peko_message::LlmMessage;
 use peko_session::manager::SessionManager;
 use peko_session::SessionCreateOptions;
 
-use peko_extension_api::Capabilities;
 use crate::principal::agent_prompt::AgentPrompt;
+use peko_extension_api::Capabilities;
 
 /// Build an `AgentConfig` from a thin Markdown prompt + the Principal's
 /// allowed extensions.

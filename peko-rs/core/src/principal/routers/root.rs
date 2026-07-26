@@ -15,15 +15,15 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 
-use peko_engine::AgenticEvent;
+use crate::principal::agent_prompt::{parse_agent_prompt, AgentPrompt};
 use crate::principal::agent_runner::{run_root_agent_prompt, run_root_agent_prompt_streaming};
 use crate::principal::context::PrincipalContext;
+use crate::principal::memory::{PrincipalMemory, SessionArtifact};
 use crate::principal::router::{
     recalled_context_messages, AgentPromptSummary, PrincipalRouter, RouteDecision, RouterContext,
     RouterError,
 };
-use crate::principal::agent_prompt::{parse_agent_prompt, AgentPrompt};
-use crate::principal::memory::{PrincipalMemory, SessionArtifact};
+use peko_engine::AgenticEvent;
 // F19: removed `use peko_quota::QuotaMeter;` — the router no
 // longer carries a quota meter field.
 use peko_providers::LlmResolver;

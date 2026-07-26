@@ -362,7 +362,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_status_defaults_to_current() {
-        let mut cache = SessionCache::new("current-session");
+        let cache = SessionCache::new("current-session");
 
         let status = SessionStatusResult {
             session_id: "current123".to_string(),

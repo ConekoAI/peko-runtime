@@ -17,12 +17,17 @@ use async_trait::async_trait;
 use peko_tools_core::{Tool, ToolContext};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(test)]
 use std::sync::Arc;
 
 use crate::tools::builtin::messaging::dto::{ExecutionConfig, SpawnCleanupPolicy, SpawnError};
+#[cfg(test)]
+use crate::tools::builtin::messaging::subagent_runtime::SubagentRuntime;
 use crate::tools::builtin::messaging::subagent_runtime::{
-    SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest, SubagentRuntime,
+    SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest,
 };
 
 /// Maximum allowed spawn depth (safety limit)
@@ -488,7 +493,7 @@ Examples:
         };
 
         // Resolve subagent_type to a concrete agent config and apply model override.
-        let subagent_config = self
+        let _subagent_config = self
             .resolve_subagent_config(&args.subagent_type, args.model.as_deref())
             .await?;
 
@@ -550,7 +555,7 @@ Examples:
             ));
         };
 
-        let subagent_config = self
+        let _subagent_config = self
             .resolve_subagent_config(&args.subagent_type, args.model.as_deref())
             .await?;
 

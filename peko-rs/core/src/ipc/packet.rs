@@ -17,8 +17,8 @@ use std::path::PathBuf;
 // PrincipalSendControlMode}` paths and does not yet depend on `peko-protocol`.
 // `MAX_PACKET_SIZE` is internal-use only (the in-tree `if json.len() >
 // MAX_PACKET_SIZE` checks at packet serialize time).
-pub use peko_protocol::ipc::{AuthCredential, AuthHeader, PrincipalSendControlMode};
 use peko_protocol::ipc::MAX_PACKET_SIZE;
+pub use peko_protocol::ipc::{AuthCredential, AuthHeader, PrincipalSendControlMode};
 
 /// Authenticated request envelope (ADR-034).
 ///

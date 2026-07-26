@@ -14,9 +14,9 @@ use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapte
 use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::manager::storage::ExtensionStorage;
 
+use crate::extensions::framework::manager::discovery::{discovery_paths, DiscoveredExtension};
 use crate::extensions::framework::types::HookId;
 use anyhow::{Context, Result};
-use crate::extensions::framework::manager::discovery::{discovery_paths, DiscoveredExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,12 +26,12 @@ use tracing::{debug, info, warn};
 // Phase 8c.1.D.2: data types now live in `peko_extension_host::store`
 // (the trait port's home). Internal-only — callers reach for these
 // directly via the host crate's path.
-use peko_extension_api::{ExtensionId, ExtensionManifest};
 use crate::extensions::framework::store_trait::{
     BundleMetadata, DependencyResolution, DependencyStatus, ExtensionBundle,
     ExtensionStore as ExtensionStoreTrait, GlobalExtensionItem, LoadReport, LoadedExtension,
     ToolResolution,
 };
+use peko_extension_api::{ExtensionId, ExtensionManifest};
 
 /// Extension Store - Central, process-wide owner of extension runtime state.
 #[derive(Debug, Clone)]
@@ -478,7 +478,8 @@ impl ExtensionStore {
             .remove(id)
             .context(format!("Extension '{id}' not found"))?;
 
-        crate::extensions::framework::skill_catalog::SkillCatalog::global().unregister_by_extension(id);
+        crate::extensions::framework::skill_catalog::SkillCatalog::global()
+            .unregister_by_extension(id);
 
         for hook_id in &loaded_ext.hook_ids {
             if let Err(e) = self.core.unregister_hook(hook_id).await {

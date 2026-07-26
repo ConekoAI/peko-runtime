@@ -19,7 +19,9 @@
 
 use std::sync::Arc;
 
-use crate::extensions::framework::transport::async_transport::{create_transport_with, AsyncTaskTransport};
+use crate::extensions::framework::transport::async_transport::{
+    create_transport_with, AsyncTaskTransport,
+};
 use crate::extensions::framework::transport::DaemonTransport;
 
 use crate::ipc::client::DaemonClient;

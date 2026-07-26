@@ -19,8 +19,12 @@ use crate::extensions::framework::async_exec::executor::{
     AsyncResultDeliveryMode, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget,
 };
 use crate::extensions::framework::core::context::HookContext;
-use crate::extensions::framework::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};
-use crate::extensions::framework::transport::async_transport::{AsyncTaskTransport, LocalAsyncTransport};
+use crate::extensions::framework::services::tool_execution::{
+    ToolExecutionConfig, ToolExecutionService,
+};
+use crate::extensions::framework::transport::async_transport::{
+    AsyncTaskTransport, LocalAsyncTransport,
+};
 use crate::extensions::framework::types::{HookOutput, HookResult};
 use anyhow::{anyhow, Result};
 use futures::future::BoxFuture;
@@ -107,7 +111,9 @@ impl AsyncExecutionRouter {
 
     /// Create with a shared local async executor (for sharing registries across routers)
     #[must_use]
-    pub fn with_executor(async_executor: crate::extensions::framework::async_exec::executor::AsyncExecutor) -> Self {
+    pub fn with_executor(
+        async_executor: crate::extensions::framework::async_exec::executor::AsyncExecutor,
+    ) -> Self {
         Self {
             default_tool_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(async_executor)),
@@ -453,7 +459,9 @@ impl AsyncExecutionRouter {
         let exec_service = std::sync::Arc::new(ToolExecutionService::new());
 
         // 5. Build execution context
-        let tool_ctx = match ctx.get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context") {
+        let tool_ctx = match ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+        {
             Some(tc) => ToolExecutionContext::new(
                 tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
                 tc.session_id
@@ -542,6 +550,91 @@ impl ToolExecutionContext {
     pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
         self.workspace = workspace.into();
         self
+    }
+}
+
+// ============================================================================
+// Phase 8a trait-port impl
+// ============================================================================
+
+/// Impl of [`peko_extension_host::AsyncExecutionRouter`] for the root
+/// concrete `AsyncExecutionRouter`.
+///
+/// `ExtensionServices::async_router` (now in `peko_extension_host`)
+/// stores an `Arc<dyn AsyncExecutionRouter>`. The concrete router
+/// stays in root until Phase 8b lifts the transport subtree; until
+/// then, root provides the trait impl and root callers wrap their
+/// router in `Arc::new(...) as Arc<dyn _>` at construction time.
+///
+/// The bridge closures convert the trait port's boxed
+/// `PreprocessorFn` / `ExecFn` into the generic `F` / `P` shapes the
+/// root's existing generic [`AsyncExecutionRouter::execute_from_hook`]
+/// accepts. `BoxFuture<'static, _>` already satisfies the
+/// `Future<Output = _> + Send + 'static` bound, so the bridge is
+/// transparent.
+#[async_trait::async_trait]
+impl crate::extensions::framework::transport::AsyncExecutionRouter for AsyncExecutionRouter {
+    async fn execute_from_hook(
+        &self,
+        ctx: &HookContext,
+        tool_name: &str,
+        exec_config: &crate::extensions::framework::transport::ToolExecConfig,
+        preprocessor: Option<crate::extensions::framework::transport::PreprocessorFn>,
+        exec_fn: crate::extensions::framework::transport::ExecFn,
+    ) -> HookResult {
+        // Rebuild a root-side ToolExecutionConfig. The trait-port
+        // `ToolExecConfig` holds a `peko_extension_api::ReservedParamsConfig`,
+        // which is the same type root's `services::ToolExecutionConfig`
+        // expects, so this is just a struct-field copy.
+        let local_exec_config = ToolExecutionConfig {
+            full_schema: exec_config.full_schema.clone(),
+            reserved_params: exec_config.reserved_params.clone(),
+        };
+
+        // Bridge: convert `Option<Box<dyn Fn + Send + Sync>>` into
+        // `Option<impl Fn(&mut Value, Option<&str>) + Send>`. Root's
+        // generic P bound only requires `Send`; Sync is a strict
+        // subset that satisfies it.
+        //
+        // The bridge takes `preprocessor` by reference so the closure
+        // is `Fn` (not `FnOnce`); `Option::as_ref()` gives `Option<&Box<...>>`.
+        let preprocessor_bridge = move |params: &mut Value, workspace: Option<&str>| {
+            if let Some(p) = preprocessor.as_ref() {
+                p(params, workspace);
+            }
+        };
+
+        // Bridge: convert `Box<dyn FnOnce(Value) -> BoxFuture<_, _>>`
+        // into a closure whose return type satisfies `Fut: Future +
+        // Send + 'static`. `BoxFuture` already derefs to
+        // `Pin<Box<dyn Future + Send>>` which is itself a valid
+        // `Future + Send + 'static`.
+        let exec_fn_bridge = move |v: Value| -> BoxFuture<'static, Result<Value>> { exec_fn(v) };
+
+        // `route()` requires `&ToolExecutionService`; root's body
+        // ignores it (the `_exec_service` underscore prefix confirms
+        // this), so we pass a temporary.
+        let _dummy_exec_service = ToolExecutionService::new();
+
+        // Delegate to the existing generic `execute_from_hook`. That
+        // method performs tool-call extraction, tool-name match,
+        // F32b JSON-Schema validation, preprocessor invocation, and
+        // route dispatch — all the work the trait port needs.
+        self.execute_from_hook(
+            ctx,
+            tool_name,
+            &local_exec_config,
+            Some(preprocessor_bridge),
+            exec_fn_bridge,
+        )
+        .await
+    }
+
+    async fn wait_for_all_tasks(&self, timeout: Duration) {
+        // Delegate to the existing concrete method (defined earlier
+        // in this file). It sleeps up to `timeout` for the local
+        // transport and returns immediately for the HTTP transport.
+        AsyncExecutionRouter::wait_for_all_tasks(self, timeout).await;
     }
 }
 
@@ -755,13 +848,15 @@ mod tests {
             _workspace: std::path::PathBuf,
             _config: crate::extensions::framework::async_exec::executor::AsyncToolConfig,
         ) -> Result<crate::extensions::framework::async_exec::executor::AsyncTaskReceipt> {
-            Ok(crate::extensions::framework::async_exec::executor::AsyncTaskReceipt {
-                task_id,
-                status: AsyncTaskStatus::Running,
-                estimated_duration_secs: None,
-                task_file: None,
-                params: None,
-            })
+            Ok(
+                crate::extensions::framework::async_exec::executor::AsyncTaskReceipt {
+                    task_id,
+                    status: AsyncTaskStatus::Running,
+                    estimated_duration_secs: None,
+                    task_file: None,
+                    params: None,
+                },
+            )
         }
 
         async fn get_status(
@@ -813,90 +908,5 @@ mod tests {
         assert_eq!(value["status"], "running");
         assert_eq!(value["reason"], "timeout");
         assert!(value.get("task_id").is_some());
-    }
-}
-
-// ============================================================================
-// Phase 8a trait-port impl
-// ============================================================================
-
-/// Impl of [`peko_extension_host::AsyncExecutionRouter`] for the root
-/// concrete `AsyncExecutionRouter`.
-///
-/// `ExtensionServices::async_router` (now in `peko_extension_host`)
-/// stores an `Arc<dyn AsyncExecutionRouter>`. The concrete router
-/// stays in root until Phase 8b lifts the transport subtree; until
-/// then, root provides the trait impl and root callers wrap their
-/// router in `Arc::new(...) as Arc<dyn _>` at construction time.
-///
-/// The bridge closures convert the trait port's boxed
-/// `PreprocessorFn` / `ExecFn` into the generic `F` / `P` shapes the
-/// root's existing generic [`AsyncExecutionRouter::execute_from_hook`]
-/// accepts. `BoxFuture<'static, _>` already satisfies the
-/// `Future<Output = _> + Send + 'static` bound, so the bridge is
-/// transparent.
-#[async_trait::async_trait]
-impl crate::extensions::framework::transport::AsyncExecutionRouter for AsyncExecutionRouter {
-    async fn execute_from_hook(
-        &self,
-        ctx: &HookContext,
-        tool_name: &str,
-        exec_config: &crate::extensions::framework::transport::ToolExecConfig,
-        preprocessor: Option<crate::extensions::framework::transport::PreprocessorFn>,
-        exec_fn: crate::extensions::framework::transport::ExecFn,
-    ) -> HookResult {
-        // Rebuild a root-side ToolExecutionConfig. The trait-port
-        // `ToolExecConfig` holds a `peko_extension_api::ReservedParamsConfig`,
-        // which is the same type root's `services::ToolExecutionConfig`
-        // expects, so this is just a struct-field copy.
-        let local_exec_config = ToolExecutionConfig {
-            full_schema: exec_config.full_schema.clone(),
-            reserved_params: exec_config.reserved_params.clone(),
-        };
-
-        // Bridge: convert `Option<Box<dyn Fn + Send + Sync>>` into
-        // `Option<impl Fn(&mut Value, Option<&str>) + Send>`. Root's
-        // generic P bound only requires `Send`; Sync is a strict
-        // subset that satisfies it.
-        //
-        // The bridge takes `preprocessor` by reference so the closure
-        // is `Fn` (not `FnOnce`); `Option::as_ref()` gives `Option<&Box<...>>`.
-        let preprocessor_bridge = move |params: &mut Value, workspace: Option<&str>| {
-            if let Some(p) = preprocessor.as_ref() {
-                p(params, workspace);
-            }
-        };
-
-        // Bridge: convert `Box<dyn FnOnce(Value) -> BoxFuture<_, _>>`
-        // into a closure whose return type satisfies `Fut: Future +
-        // Send + 'static`. `BoxFuture` already derefs to
-        // `Pin<Box<dyn Future + Send>>` which is itself a valid
-        // `Future + Send + 'static`.
-        let exec_fn_bridge = move |v: Value| -> BoxFuture<'static, Result<Value>> { exec_fn(v) };
-
-        // `route()` requires `&ToolExecutionService`; root's body
-        // ignores it (the `_exec_service` underscore prefix confirms
-        // this), so we pass a temporary.
-        let dummy_exec_service = ToolExecutionService::new();
-
-        // Delegate to the existing generic `execute_from_hook`. That
-        // method performs tool-call extraction, tool-name match,
-        // F32b JSON-Schema validation, preprocessor invocation, and
-        // route dispatch — all the work the trait port needs.
-        self.execute_from_hook(
-            ctx,
-            tool_name,
-            &local_exec_config,
-            Some(preprocessor_bridge),
-            exec_fn_bridge,
-        )
-        .await
-    }
-
-    async fn wait_for_all_tasks(&self, timeout: Duration) {
-        // Delegate to the existing concrete method (defined earlier
-        // in this file). It sleeps up to `timeout` for the local
-        // transport and returns immediately for the HTTP transport.
-        AsyncExecutionRouter::wait_for_all_tasks(self, timeout).await;
     }
 }

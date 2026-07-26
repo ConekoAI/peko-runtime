@@ -37,10 +37,12 @@ pub const CLI_TIMEOUT_SECS: u64 = 60;
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "token")]
+#[derive(Default)]
 pub enum AuthCredential {
     /// Local trust — no token provided.
     /// Allowed only for Unix-socket or localhost-UDP connections.
     #[serde(rename = "none")]
+    #[default]
     None,
     /// pekohub-issued JWT (short-lived).
     #[serde(rename = "jwt")]
@@ -48,12 +50,6 @@ pub enum AuthCredential {
     /// Long-lived programmatic key.
     #[serde(rename = "api_key")]
     ApiKey(String),
-}
-
-impl Default for AuthCredential {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Mode for a `PrincipalSendControl` request.

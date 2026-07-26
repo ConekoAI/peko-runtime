@@ -31,7 +31,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::tools::builtin::messaging::dto::{AgentConfig, ExecutionConfig, SpawnCleanupPolicy, SubagentRunView};
+use crate::tools::builtin::messaging::dto::{
+    AgentConfig, ExecutionConfig, SpawnCleanupPolicy, SubagentRunView,
+};
 
 /// Runtime port the `AgentTool` uses to talk to the subagent executor.
 ///

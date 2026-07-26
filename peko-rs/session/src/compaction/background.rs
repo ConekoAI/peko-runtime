@@ -469,6 +469,39 @@ async fn process_compaction_request_with_config(
     Ok(())
 }
 
+// ============================================================================
+// Phase 7: lifted impl — `BackgroundCompactor` now lives in this crate so
+// the trait impl can sit alongside it. Pre-Phase-7 this was the
+// `src/engine/compaction_backend_compat.rs` orphan-rule workaround.
+// ============================================================================
+
+#[async_trait::async_trait]
+impl crate::compaction::CompactorBackend for BackgroundCompactor {
+    async fn should_request(
+        &self,
+        estimated_tokens: usize,
+        context_window: usize,
+        config: &crate::compaction::types::CompactionConfig,
+    ) -> bool {
+        BackgroundCompactor::should_request(self, estimated_tokens, context_window, config).await
+    }
+
+    async fn request(
+        &self,
+        request: crate::compaction::types::CompactionRequest,
+    ) -> anyhow::Result<tokio::sync::oneshot::Receiver<crate::compaction::types::CompactionResponse>>
+    {
+        // Forward the public-shape fields directly to
+        // `BackgroundCompactor::request_compaction`, which creates its
+        // own `(response_tx, response_rx)` oneshot pair and returns the
+        // receiver. The trait port deliberately omits `response_tx` so
+        // the lifted orchestrator doesn't have to construct a sender it
+        // never uses.
+        BackgroundCompactor::request_compaction(self, request.messages, request.previous_summary)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,38 +552,5 @@ mod tests {
             ..CompactionConfig::default()
         };
         assert!(!should_auto_compact(1_000_000, 128_000, &config));
-    }
-}
-
-// ============================================================================
-// Phase 7: lifted impl — `BackgroundCompactor` now lives in this crate so
-// the trait impl can sit alongside it. Pre-Phase-7 this was the
-// `src/engine/compaction_backend_compat.rs` orphan-rule workaround.
-// ============================================================================
-
-#[async_trait::async_trait]
-impl crate::compaction::CompactorBackend for BackgroundCompactor {
-    async fn should_request(
-        &self,
-        estimated_tokens: usize,
-        context_window: usize,
-        config: &crate::compaction::types::CompactionConfig,
-    ) -> bool {
-        BackgroundCompactor::should_request(self, estimated_tokens, context_window, config).await
-    }
-
-    async fn request(
-        &self,
-        request: crate::compaction::types::CompactionRequest,
-    ) -> anyhow::Result<tokio::sync::oneshot::Receiver<crate::compaction::types::CompactionResponse>>
-    {
-        // Forward the public-shape fields directly to
-        // `BackgroundCompactor::request_compaction`, which creates its
-        // own `(response_tx, response_rx)` oneshot pair and returns the
-        // receiver. The trait port deliberately omits `response_tx` so
-        // the lifted orchestrator doesn't have to construct a sender it
-        // never uses.
-        BackgroundCompactor::request_compaction(self, request.messages, request.previous_summary)
-            .await
     }
 }

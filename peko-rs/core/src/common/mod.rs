@@ -21,5 +21,7 @@ pub mod vault_secret_store;
 
 // Re-export commonly used items
 pub use identifiers::{parse_agent_name, validate_agent_name, IdentifierError, ValidationError};
-pub use paths::{default_cache_dir, default_config_dir, default_data_dir, GlobalPaths, PathResolver};
+pub use paths::{
+    default_cache_dir, default_config_dir, default_data_dir, GlobalPaths, PathResolver,
+};
 pub use time::{format_timestamp, format_timestamp_ms, format_timestamp_rfc3339};
