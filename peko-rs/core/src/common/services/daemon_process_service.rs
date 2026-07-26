@@ -418,12 +418,22 @@ impl DaemonProcessService {
         cmd.env("PEKO_CONFIG_DIR", &config_dir)
             .env("PEKO_DATA_DIR", &data_dir)
             .stdout(std::process::Stdio::null())
-            // Stderr is intentionally NOT piped here. The CLI path doesn't
-            // care about PEKO_VERSION (it can be queried via
-            // `peko daemon status`). `peko-desktop`'s SidecarSupervisor
-            // spawns the daemon via Tauri's Command::new_sidecar in its own
-            // process and pipes stderr there.
-            .stderr(std::process::Stdio::null())
+            // Redirect stderr to `<config_dir>/logs/daemon.log` so the
+            // dispatcher warnings + tracing output the daemon process
+            // emits (see `peko-daemon/src/main.rs::init_tracing`) are
+            // inspectable after a background `peko daemon start`,
+            // without forcing the user into `--foreground`. The file
+            // is truncated on each start; a startup banner line is
+            // prepended so the rotation boundary is visible. If the
+            // log can't be opened (e.g. permissions), fall back to
+            // `/dev/null` rather than failing the spawn — the daemon
+            // is still functional, just untraceable.
+            //
+            // `peko-desktop`'s SidecarSupervisor spawns the daemon via
+            // Tauri's `Command::new_sidecar` in its own process and
+            // pipes stderr there, so this redirect only affects the
+            // CLI's background-spawn path.
+            .stderr(Self::open_daemon_log_stdio(&config_dir))
             .kill_on_drop(false);
 
         let mut child = cmd.spawn()?;
@@ -555,6 +565,56 @@ impl DaemonProcessService {
             "peko-daemon"
         };
         current_exe.with_file_name(daemon_name)
+    }
+
+    /// Resolve the `Stdio` descriptor for the daemon process's stderr in
+    /// the CLI background-spawn path. Tries to open
+    /// `<config_dir>/logs/daemon.log` (creating the directory if
+    /// needed) so dispatcher warnings and `tracing` output from the
+    /// daemon process are inspectable after a background `peko daemon
+    /// start`. The file is truncated on each start; a startup banner
+    /// line records the rotation boundary.
+    ///
+    /// On any open failure (missing dir, permission denied, etc) we
+    /// fall back to `/dev/null` so the spawn still succeeds — the
+    /// daemon is functional but its stderr is dropped. The fallback is
+    /// silent because the failure is recoverable and the user can
+    /// still attach `--foreground` for debugging.
+    pub(crate) fn open_daemon_log_stdio(config_dir: &std::path::Path) -> std::process::Stdio {
+        let log_dir = config_dir.join("logs");
+        if let Err(e) = std::fs::create_dir_all(&log_dir) {
+            tracing::debug!(
+                "could not create daemon log dir {}: {e}; falling back to /dev/null",
+                log_dir.display()
+            );
+            return std::process::Stdio::null();
+        }
+        let log_path = log_dir.join("daemon.log");
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&log_path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                let banner = format!(
+                    "== peko-daemon started at {} ==\n",
+                    chrono::Utc::now().to_rfc3339()
+                );
+                let _ = file.write_all(banner.as_bytes());
+                let _ = file.flush();
+                let stdio: std::process::Stdio = file.into();
+                stdio
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "could not open daemon log {}: {e}; falling back to /dev/null",
+                    log_path.display()
+                );
+                std::process::Stdio::null()
+            }
+        }
     }
 
     /// Wait for the daemon to become ready via IPC ping
