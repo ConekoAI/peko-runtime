@@ -8,6 +8,21 @@ type = "ollama"
 model = "llama2"
 # api_key = "${secret:OPENAI_API_KEY}"  # For OpenAI
 
+# ============================================
+# PROVIDER RETRY BEHAVIOR (F40b / PR #3)
+# ============================================
+# Override the per-call retry knobs. Defaults shown below match the
+# factory constants; remove the `[provider.retry]` block entirely to
+# inherit those defaults. Every field is independently optional,
+# so a partial block (e.g. bumping only `max_retries`) is accepted.
+
+# [provider.retry]
+# max_retries = 5              # Transport-level retries for transient errors
+# retry_delay_ms = 1000        # Initial backoff (doubles per attempt)
+# retry_max_delay_ms = 30000   # Cap on the exponential backoff
+# retry_jitter = 0.1           # ±10% uniform spread; omit or set to 0 to disable
+# max_attempts = 8             # Total transport+engine attempts (shared budget)
+
 [memory]
 type = "sqlite"
 path = "~/.local/share/peko/memory.db"

@@ -542,8 +542,20 @@ impl AppState {
                     &vault,
                 )),
             );
+        // F40b / PR #3 Phase 2B: thread the daemon's `[provider.retry]`
+        // config block into the resolver so every provider the daemon
+        // builds inherits the same per-retry knobs. The config has
+        // already been validated by `load_peko_config`; if validation
+        // had failed, we would have fallen back to defaults here too,
+        // so re-validation at the resolver layer is just defensive
+        // and surfaces any future regression in load-time sanitization.
+        let retry_config = peko_config.provider.retry.clone();
         let mut resolver_builder = peko_providers::LlmResolver::new(catalog, secrets)
-            .with_credential_provider(credential_provider);
+            .with_credential_provider(credential_provider)
+            .with_retry_config(retry_config)
+            .map_err(|e| {
+                anyhow::anyhow!("resolver retry-config wiring failed: {e}")
+            })?;
         if std::env::var_os("PEKO_TEST_RESOLVER_BOOTSTRAP").is_some() {
             resolver_builder = resolver_builder.with_env_bootstrap();
         }
@@ -1817,11 +1829,31 @@ fn load_runtime_signing_key(
 
 /// Load `peko.toml` from the config directory, falling back to defaults
 /// if the file does not exist or cannot be parsed.
+///
+/// F40b: also validates the `[provider.retry]` block — invalid jitter
+/// fractions, zero delay, or `max_retries > max_attempts` surface as
+/// a config error so the daemon fails loudly at boot rather than
+/// silently running with bad values for the lifetime of the process.
+/// The validation message is logged at `warn` and the retry block
+/// is replaced with `ProviderRetryConfig::default()` so the daemon
+/// still boots in a degraded-but-functional state (matches the
+/// pre-F40b behavior of swallowing unknown file errors).
 fn load_peko_config(config_dir: &Path) -> PekoConfig {
     let path = config_dir.join("peko.toml");
     if path.exists() {
         match PekoConfig::from_file(&path) {
-            Ok(cfg) => return cfg,
+            Ok(cfg) => {
+                if let Err(e) = cfg.provider.retry.validate() {
+                    tracing::warn!(
+                        "Invalid [provider.retry] in {}: {e}; falling back to defaults",
+                        path.display()
+                    );
+                    let mut sanitized = cfg;
+                    sanitized.provider.retry = Default::default();
+                    return sanitized;
+                }
+                return cfg;
+            }
             Err(e) => {
                 tracing::warn!(
                     "Failed to load {}: {e}; using default configuration",

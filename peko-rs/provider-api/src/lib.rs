@@ -39,6 +39,9 @@ pub mod cache_retention;
 pub mod context_window_error;
 pub mod credentials;
 pub mod prompt_cache;
+pub mod rate_limit;
+pub mod retry_after;
+pub mod retry_config;
 pub mod retryable_error;
 pub mod traits;
 
@@ -54,7 +57,19 @@ pub use cache_retention::CacheRetention;
 pub use context_window_error::is_context_window_exceeded;
 pub use credentials::{CredentialError, CredentialMaterial, CredentialProvider, RotationEntry};
 pub use prompt_cache::clamp_openai_prompt_cache_key;
-pub use retryable_error::RetryableError;
+pub use rate_limit::{
+    AnthropicRateLimitParser, HeaderEntry, OpenAiRateLimitParser, RateLimitKind,
+    RateLimitParser, RateLimitSnapshot, StandardRateLimitParser, format_snapshot,
+    header_value, parse_snapshot_metadata,
+};
+pub use retry_config::ProviderRetryConfig;
+pub use retry_after::{
+    extract_body_delay, format_retry_after_token, parse_retry_after_header,
+};
+pub use retryable_error::{
+    BodyStringClassifier, RetryClassification, RetryClassifier, RetryableError,
+    default_classifier,
+};
 pub use traits::{
     BlockType, ChatOptions, ChatResponse, ContentBlockId, ContentDelta, DeferredToolsMode,
     ProviderCompat, ServiceTier, StopReason, StreamEvent, ThinkingEffort, ThinkingFormat,

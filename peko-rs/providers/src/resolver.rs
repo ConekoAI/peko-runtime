@@ -79,6 +79,13 @@ pub struct LlmResolver {
     secrets: Arc<dyn SecretStore>,
     credentials: Option<Arc<dyn CredentialProvider>>,
     bootstrap_env_keys: bool,
+    /// F40b / PR #3 Phase 2B: provider-side retry knobs sourced
+    /// from the `[provider.retry]` block of `PekoConfig`. Defaults
+    /// to `ProviderRetryConfig::default()` (5 retries, 1s backoff,
+    /// ±10% jitter) for callers that don't override. Threaded into
+    /// `create_provider_for_model` so every provider inherits the
+    /// same retry surface — no more hard-coded factory constants.
+    retry_config: peko_provider_api::ProviderRetryConfig,
     /// Test-only mock adapter. Set by [`LlmResolver::mock`] so the
     /// resolver returns a `MockAdapter`-backed `Provider` for the
     /// `"mock"` catalog model. Always `None` in production builds
@@ -97,6 +104,7 @@ impl LlmResolver {
             secrets,
             credentials: None,
             bootstrap_env_keys: false,
+            retry_config: peko_provider_api::ProviderRetryConfig::default(),
             mock_adapter: None,
         }
     }
@@ -118,6 +126,33 @@ impl LlmResolver {
     pub fn with_env_bootstrap(mut self) -> Self {
         self.bootstrap_env_keys = true;
         self
+    }
+
+    /// F40b: override the per-resolver retry config. Defaults to
+    /// `ProviderRetryConfig::default()` (set by `LlmResolver::new`).
+    /// Callers boot this with `PekoConfig::provider.retry` so a
+    /// single config-edit changes retry behavior for every provider
+    /// the resolver builds.
+    ///
+    /// Validates the config before installing it; bad values
+    /// surface as `Result::Err` rather than silent runtime failures
+    /// weeks later when an unexpected backoff catches the engine
+    /// mid-iteration.
+    pub fn with_retry_config(
+        mut self,
+        retry: peko_provider_api::ProviderRetryConfig,
+    ) -> anyhow::Result<Self> {
+        retry.validate()?;
+        self.retry_config = retry;
+        Ok(self)
+    }
+
+    /// F40b accessor: clone the active retry config. Useful for
+    /// telemetry surfaces that want to report the configured
+    /// ceiling alongside the live attempt count.
+    #[must_use]
+    pub fn retry_config(&self) -> &peko_provider_api::ProviderRetryConfig {
+        &self.retry_config
     }
 
     /// Build a mock-backed resolver for tests.
@@ -169,6 +204,7 @@ impl LlmResolver {
             secrets,
             credentials: Some(Arc::new(NoopCredentialProvider)),
             bootstrap_env_keys: false,
+            retry_config: peko_provider_api::ProviderRetryConfig::default(),
             mock_adapter: Some(adapter.clone()),
         });
         (resolver, adapter)
@@ -232,13 +268,13 @@ impl LlmResolver {
             if let Some(ref adapter) = self.mock_adapter {
                 Self::build_mock_provider(adapter.clone(), config)?
             } else {
-                create_provider_for_model(config, "mock-key")?
+                create_provider_for_model(config, "mock-key", &self.retry_config)?
             }
         } else {
             let api_key = self
                 .resolve_api_key(config)
                 .with_context(|| format!("no API key available for model '{}'", config.id))?;
-            create_provider_for_model(config, api_key.expose_secret())?
+            create_provider_for_model(config, api_key.expose_secret(), &self.retry_config)?
         };
 
         Ok(provider)
