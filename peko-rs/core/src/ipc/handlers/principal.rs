@@ -1415,6 +1415,28 @@ async fn run_principal_send(
         streaming: matches!(response_kind, PrincipalSendResponseKind::Streaming),
     };
 
+    // The streaming handler drives the router directly rather than calling
+    // `PrincipalManager::receive_streaming`; keep the durable consumer-facing
+    // chat log on the same path as the non-streaming entry point.
+    if let Err(e) = host
+        .principal_manager()
+        .record_chat_input(&principal, &peer, &message, &channel)
+        .await
+    {
+        let response = ResponsePacket::Error {
+            request_id,
+            message: format!("Failed to persist chat input: {e}"),
+        };
+        send_response(sink, response).await?;
+        let done = ResponsePacket::Done {
+            request_id,
+            success: false,
+            error: Some(e.to_string()),
+        };
+        send_response(sink, done).await?;
+        return Ok(());
+    }
+
     // Construct the RouterContext the root router expects.
     // Audit H1: the streaming path now uses the same
     // `PrincipalManager::build_router_context` helper as the legacy
@@ -1544,6 +1566,9 @@ async fn run_principal_send(
             let content = match decision {
                 RouteDecision::Respond { response } => response,
             };
+            host.principal_manager()
+                .record_chat_response(&principal, &peer, &content)
+                .await;
             let final_packet = match response_kind {
                 PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
                     request_id,

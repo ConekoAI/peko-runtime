@@ -901,6 +901,29 @@ fn is_peer_chat_channel(kind: &crate::principal::router::ChannelKind) -> bool {
 }
 
 impl PrincipalManager {
+    /// Persist a peer-chat input for callers that drive the router directly,
+    /// such as the IPC streaming handler.
+    pub(crate) async fn record_chat_input(
+        &self,
+        principal: &Arc<Principal>,
+        peer: &Subject,
+        message: &str,
+        channel: &ChannelContext,
+    ) -> Result<(), PrincipalManagerError> {
+        self.record_input(principal, peer, message, channel).await
+    }
+
+    /// Persist a principal response for callers that drive the router
+    /// directly, such as the IPC streaming handler.
+    pub(crate) async fn record_chat_response(
+        &self,
+        principal: &Arc<Principal>,
+        peer: &Subject,
+        response: &str,
+    ) {
+        self.record_response(principal, peer, response).await
+    }
+
     /// Persist a peer chat-channel input to the chat-log shard for
     /// `(principal_did, peer)`. Skipped silently for non-chat channels
     /// and when no chat-log store is attached (tests / non-daemon).
