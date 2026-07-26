@@ -3,9 +3,9 @@
 //! Provides `peko registry set-default`, `get-default`, and `list`.
 
 use crate::commands::GlobalPaths;
-use peko_core::registry::config::load_from_config_dir;
 use anyhow::Result;
 use clap::Subcommand;
+use peko_core::registry::config::load_from_config_dir;
 
 /// Registry management subcommands
 #[derive(Subcommand)]

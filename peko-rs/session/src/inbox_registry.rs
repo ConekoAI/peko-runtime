@@ -210,6 +210,7 @@ mod tests {
         Arc::new(|| Arc::new(TestInbox::default()) as Arc<dyn AsyncInboxLike>)
     }
 
+    #[allow(dead_code)]
     fn make_event(task_id: &str, session: &str) -> AsyncInboxItem {
         AsyncInboxItem::Completion(peko_extension_api::CompletionEnvelope {
             task_id: task_id.to_string(),

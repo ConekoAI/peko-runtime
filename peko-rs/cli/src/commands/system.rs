@@ -150,17 +150,13 @@ pub async fn handle_system(
             }
         }
         SystemCommands::Clean { tools, logs, all } => {
-            let scope = if all {
-                Some("all".to_string())
-            } else if tools && logs {
-                Some("all".to_string())
-            } else if tools {
-                Some("tools".to_string())
-            } else if logs {
-                Some("logs".to_string())
+            let scope = Some(if tools && !logs && !all {
+                "tools".to_string()
+            } else if logs && !tools && !all {
+                "logs".to_string()
             } else {
-                Some("all".to_string())
-            };
+                "all".to_string()
+            });
             let packet = peko_core::ipc::RequestPacket::SystemClean {
                 request_id: 1,
                 scope,

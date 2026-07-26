@@ -2,9 +2,11 @@
 //!
 //! End-to-end: install → export → install from `.ext`
 
+use peko_core::extensions::framework::manager::packaging::{
+    ExtensionPackager, ExtensionUnpackager,
+};
 use peko_core::extensions::framework::store::ExtensionStore;
 use peko_core::extensions::framework::types::ExtensionId;
-use peko_core::extensions::framework::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
 use peko_subject::PrincipalId;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -217,9 +219,10 @@ archive_format = "tar"
     );
 }
 
+use peko_core::extensions::framework::core::HookPoint;
+use peko_core::extensions::framework::types::{HookInput, HookOutput, HookResult};
 use peko_core::extensions::skill::SkillAdapter;
 use peko_core::extensions::universal::UniversalToolAdapter;
-use peko_core::extensions::framework::types::{HookInput, HookOutput, HookResult}; use peko_core::extensions::framework::core::HookPoint;
 
 fn create_test_tool_extension(temp: &TempDir, id: &str) -> PathBuf {
     let ext_dir = temp.path().join(id);
@@ -266,7 +269,7 @@ async fn test_extension_install_tool_registration_and_invocation() {
     let core = store.core_arc();
 
     // 3. Verify the tool is listed
-    let tools = core.list_tools(&PrincipalId::system()).await;
+    let tools = core.list_tools(PrincipalId::system()).await;
     let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
     assert!(
         tool_names.contains(&"test-echo".to_string()),

@@ -12,7 +12,6 @@
 //! `peko-rs/extension-host/src/transport.rs`); the impl is here because
 //! `DaemonClient` is a root-only type.
 
-use futures::StreamExt;
 use crate::extensions::framework::async_exec::executor::{AsyncTaskId, AsyncTaskReceipt};
 use crate::extensions::framework::transport::DaemonTransport;
 use std::path::PathBuf;

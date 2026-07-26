@@ -76,7 +76,9 @@ impl AsyncExecutor {
     /// a registry with the rest of the daemon (the common case).
     #[must_use]
     pub fn new() -> Self {
-        let task_file_writer = crate::extensions::framework::paths::default_data_dir().join("async_tasks").into();
+        let task_file_writer = crate::extensions::framework::paths::default_data_dir()
+            .join("async_tasks")
+            .into();
         Self {
             registry: Arc::new(RwLock::new(AsyncTaskRegistry::new())),
             queue_manager: Arc::new(RwLock::new(AsyncResultQueueManager::new())),
@@ -93,7 +95,9 @@ impl AsyncExecutor {
         registry: SharedAsyncTaskRegistry,
         queue_manager: SharedAsyncResultQueueManager,
     ) -> Self {
-        let task_file_writer = crate::extensions::framework::paths::default_data_dir().join("async_tasks").into();
+        let task_file_writer = crate::extensions::framework::paths::default_data_dir()
+            .join("async_tasks")
+            .into();
         Self {
             registry,
             queue_manager,
@@ -422,12 +426,13 @@ impl AsyncExecutor {
                     .unwrap_or_else(|| std::path::PathBuf::from(""));
                 if let Some(target) = steer_target {
                     let label = config_for_spawn.label.clone().unwrap_or_default();
-                    let text = crate::extensions::framework::async_exec::steer::format_cron_steer_message(
-                        &label,
-                        &task_id_clone,
-                        &tool_name,
-                        &status,
-                    );
+                    let text =
+                        crate::extensions::framework::async_exec::steer::format_cron_steer_message(
+                            &label,
+                            &task_id_clone,
+                            &tool_name,
+                            &status,
+                        );
                     let inbox = inbox_registry.get_or_create(&target).await;
                     inbox
                         .push(InboxItem::Steering(SteeringMessage::new(text)).into())
@@ -1112,6 +1117,7 @@ mod dispatch_tool_tests {
     /// `execute_tool_via_core_with_context` tests; this stub verifies
     /// the wiring at the `AsyncExecutor` layer.)
     struct AbortableStubTool {
+        #[allow(dead_code)] // read path covered by direct handle-level tests
         aborted: Arc<AtomicBool>,
     }
 

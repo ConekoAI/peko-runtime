@@ -3,12 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 
-use peko_extension_api::Capabilities;
-use peko_message::LlmMessage;
-use peko_observability::Observability;
 use crate::principal::config::{
     PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
 };
+use peko_extension_api::Capabilities;
+use peko_message::LlmMessage;
+use peko_observability::Observability;
 use peko_session::InboxRegistry;
 
 /// A routing decision emitted by a `PrincipalRouter`.

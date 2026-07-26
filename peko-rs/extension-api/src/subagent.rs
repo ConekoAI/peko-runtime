@@ -34,6 +34,7 @@ impl SpawnCleanupPolicy {
 
     /// Parse from string.
     #[must_use]
+    #[allow(clippy::should_implement_trait)] // returns Option, not Result
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "keep" => Some(SpawnCleanupPolicy::Keep),

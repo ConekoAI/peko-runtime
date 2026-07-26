@@ -23,9 +23,9 @@
 //! ```
 
 use crate::commands::GlobalPaths;
-use peko_core::common::vault::{UnlockMethod, UnlockMethodOverride, Vault};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
+use peko_core::common::vault::{UnlockMethod, UnlockMethodOverride, Vault};
 use secrecy::SecretString;
 
 /// Vault management subcommands.

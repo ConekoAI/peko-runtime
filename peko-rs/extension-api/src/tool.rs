@@ -43,10 +43,10 @@ impl ToolSource {
     }
 }
 
-/// `ToolExposure` migrated to `peko-tools-core` in Phase 5 and is re-exported
-/// here for the framework's own construction sites. The enum and its
-/// `visible_in_prompt_section` / `visible_in_native_catalog` predicates live in
-/// `peko_tools_core::ToolExposure`.
+// `ToolExposure` migrated to `peko-tools-core` in Phase 5 and is re-exported
+// here for the framework's own construction sites. The enum and its
+// `visible_in_prompt_section` / `visible_in_native_catalog` predicates live in
+// `peko_tools_core::ToolExposure`.
 
 /// Metadata for a registered tool
 #[derive(Debug, Clone, Serialize, Deserialize)]

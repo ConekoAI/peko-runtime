@@ -608,7 +608,7 @@ impl SessionIndex {
         let sessions = self.load_sessions().await?;
         let mut entries: Vec<_> = sessions.values().cloned().collect();
         // Sort by updated_at descending (most recent first)
-        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.updated_at));
         Ok(entries)
     }
 
@@ -621,7 +621,7 @@ impl SessionIndex {
             .cloned()
             .collect();
         // Sort by updated_at descending
-        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.updated_at));
         Ok(entries)
     }
 

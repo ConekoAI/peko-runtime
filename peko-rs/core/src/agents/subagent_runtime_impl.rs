@@ -31,12 +31,12 @@ use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
 use crate::common::identifiers::parse_agent_name;
 use crate::common::paths::PathResolver;
-use anyhow::Context;
 use crate::extensions::framework::subagent::SpawnCleanupPolicy;
 use crate::tools::builtin::messaging::{
     AgentConfig as BuiltinAgentConfig, SpawnAuditEvent, SpawnRequest, SubagentRunView,
     SubagentRuntime,
 };
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -119,6 +119,7 @@ impl SubagentExecutorRuntime {
     /// Bridge from root's `AgentConfig` to the built-in's
     /// `BuiltinAgentConfig`. We carry both types across the port
     /// boundary; the built-in sees the projected shape only.
+    #[allow(dead_code)]
     fn project_agent_config(config: &AgentConfig) -> BuiltinAgentConfig {
         BuiltinAgentConfig {
             name: config.name.clone(),
@@ -290,6 +291,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
 
 // A thin Markdown prompt file with an optional YAML frontmatter.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // path kept for upcoming F-series prompt-parser move
 struct AgentPrompt {
     name: String,
     path: PathBuf,

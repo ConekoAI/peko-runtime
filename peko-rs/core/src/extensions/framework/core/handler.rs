@@ -104,5 +104,8 @@ where
 #[async_trait]
 pub trait HookHandlerFactory: Send + Sync + fmt::Debug {
     /// Create a handler instance
-    fn create(&self, manifest: crate::extensions::framework::types::ExtensionManifest) -> Box<dyn HookHandler>;
+    fn create(
+        &self,
+        manifest: crate::extensions::framework::types::ExtensionManifest,
+    ) -> Box<dyn HookHandler>;
 }

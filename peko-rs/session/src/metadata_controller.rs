@@ -449,7 +449,7 @@ impl MetadataController {
         }
 
         // Sort by updated_at descending (most recent first)
-        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.updated_at));
         Ok(entries)
     }
 

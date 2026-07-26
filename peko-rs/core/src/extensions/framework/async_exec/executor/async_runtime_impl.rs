@@ -40,13 +40,13 @@ use super::dispatch::ToolDispatchContext;
 use super::executor::AsyncExecutor;
 use super::types::AsyncToolConfig;
 use crate::extensions::framework::core::ExtensionCore;
-use anyhow::{anyhow, Result};
-use async_trait::async_trait;
-use peko_subject::PrincipalId;
 use crate::tools::builtin::async_control::{
     AsyncRuntime, CancelResult as PortCancelResult, SharedAsyncRuntime, SpawnReceipt, SpawnRequest,
     TaskView, WaitResult,
 };
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+use peko_subject::PrincipalId;
 // Phase 8c.1.A: gated on `test-utils` so external root tests can construct
 // `TestAsyncRuntime` via the host's `test-utils` feature flag.
 #[cfg(any(test, feature = "test-utils"))]

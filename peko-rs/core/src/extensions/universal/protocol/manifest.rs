@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 // Internal use — types reachable directly via crate::extensions::framework::services::*.
-use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
+#[cfg(test)]
+use crate::extensions::framework::services::ParamSource;
+use crate::extensions::framework::services::ReservedParamsConfig;
 
 /// Tool manifest with reserved parameter support
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -11,20 +11,20 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 
 use crate::commands::GlobalPaths;
+use peko_auth::{subject_from_string_with_default_user, Subject};
 use peko_core::common::paths::PathResolver;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
-use peko_core::principal::{
-    factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
-    router::{ChannelContext, ChannelKind},
-    PrincipalManager,
-};
-use peko_auth::{subject_from_string_with_default_user, Subject};
-use peko_extension_api::Capabilities;
 use peko_core::principal::config::{
     PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
     PrincipalMemoryConfig, PrincipalRoutingConfig,
 };
 use peko_core::principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
+use peko_core::principal::{
+    factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
+    router::{ChannelContext, ChannelKind},
+    PrincipalManager,
+};
+use peko_extension_api::Capabilities;
 
 /// Subcommands for `peko principal`.
 #[derive(Subcommand)]

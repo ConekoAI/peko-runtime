@@ -4,10 +4,10 @@
 //! `AsyncTaskEntry` data model. No registry storage uses these types
 //! directly — they are read-only projections constructed on demand.
 
-use chrono::{DateTime, Utc};
 use crate::extensions::framework::async_exec::executor::{
     AsyncTaskEntry, AsyncTaskStatus, SubagentResult, TaskMetadata,
 };
+use chrono::{DateTime, Utc};
 use peko_session::types::SpawnCleanupPolicy;
 
 /// A read-only view of an async task entry, projected into the

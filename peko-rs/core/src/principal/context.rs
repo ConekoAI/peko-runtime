@@ -25,10 +25,10 @@ use std::sync::{Arc, OnceLock};
 use crate::extensions::agent::{register_agents_with_core, AgentAdapter};
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
+use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 use peko_observability::Observability;
-use crate::principal::memory::PrincipalMemory;
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_subject::PrincipalId;
@@ -155,9 +155,9 @@ impl PrincipalContext {
         &self.principal_id
     }
 
-    /// F19: removed `quota_meter()` accessor. The engine loop fetches
-    /// the principal's meter directly from `Principal.quota_meter`
-    /// at run entrypoint.
+    // F19: removed `quota_meter()` accessor. The engine loop fetches
+    // the principal's meter directly from `Principal.quota_meter`
+    // at run entrypoint.
 
     /// Get the principal's human-readable name.
     ///
@@ -384,8 +384,8 @@ pub(crate) async fn install_agent_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_extension_api::Capabilities;
     use crate::principal::memory::DefaultPrincipalMemory;
+    use peko_extension_api::Capabilities;
     use peko_subject::PrincipalId;
     use serial_test::serial;
     use std::sync::Arc;
@@ -420,7 +420,8 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(),
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
@@ -452,7 +453,8 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(),
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
@@ -489,7 +491,8 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(),
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),

@@ -17,9 +17,9 @@
 
 use std::sync::Arc;
 
+use crate::tools::builtin::tasks::{Todo, TodoRuntime, TodoStatus};
 use async_trait::async_trait;
 use peko_session::TodoStorage;
-use crate::tools::builtin::tasks::{Todo, TodoRuntime, TodoStatus};
 
 /// Adapter that exposes [`TodoStorage`] through the [`TodoRuntime`]
 /// port trait. Clone is cheap: the underlying [`TodoStorage`] is a

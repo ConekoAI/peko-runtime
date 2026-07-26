@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use peko_tools_core::traits::Tool;
 
-use crate::tools::builtin::async_control::{build_output_response, AsyncTaskHelper, SharedAsyncRuntime};
+use crate::tools::builtin::async_control::{
+    build_output_response, AsyncTaskHelper, SharedAsyncRuntime,
+};
 
 /// Read the output of an async task.
 pub struct AsyncOutputTool {

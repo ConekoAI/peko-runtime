@@ -1843,6 +1843,7 @@ impl Vault {
     // SecretStore trait integration
     // ------------------------------------------------------------------
 
+    #[allow(dead_code)]
     fn validate_account(
         account: &str,
     ) -> Result<(), peko_providers::secret_store::SecretStoreError> {

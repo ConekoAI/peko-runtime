@@ -240,6 +240,55 @@ fn default_max_router_iterations() -> usize {
     5
 }
 
+// ---------------------------------------------------------------------------
+// `PrincipalResourceView` impl for `PrincipalConfig`
+// ---------------------------------------------------------------------------
+
+/// `PrincipalConfig` exposes the four fields
+/// `auth::ownership::principal_resource` needs to build an
+/// `auth::Resource::Principal` value.
+///
+/// ## Why a trait port and not a direct function in principal
+///
+/// The original code had `auth::ownership::principal_resource(name,
+/// &PrincipalConfig)` taking the principal concrete type. That
+/// creates a `peko-auth ↔ peko-principal` cycle when both become
+/// workspace crates. The trait port in `peko-auth::host` flips the
+/// direction — auth declares the contract, principal implements it
+/// here.
+///
+/// ## Orphan rule note
+///
+/// This impl lives in `peko-principal` (not root) because both
+/// `PrincipalResourceView` and `PrincipalConfig` are foreign types
+/// from root's perspective. The trait is local to `peko_auth`, the
+/// type is local to `peko_principal`, so the impl belongs here.
+///
+/// Note: this is the *opposite* direction from the `peko-auth →
+/// peko-principal` import that used to live in
+/// `auth::ownership::Resource::Principal`'s `exposure` field. The
+/// `Exposure` enum used to live in `crate::principal::config` and
+/// was imported by auth. To break the cycle, `Exposure` was lifted
+/// into `peko-auth` (its natural home as part of `Resource`), and
+/// `PrincipalConfig.exposure` is now typed as `peko_auth::Exposure`.
+impl PrincipalResourceView for PrincipalConfig {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn owner(&self) -> &peko_auth::Subject {
+        &self.owner
+    }
+
+    fn permissions(&self) -> &[peko_auth::PermissionGrant] {
+        &self.permissions
+    }
+
+    fn exposure(&self) -> peko_auth::Exposure {
+        self.exposure
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,54 +484,5 @@ mod tests {
             .capabilities
             .is_granted(&"agent:agency-agents/writer".into()));
         assert!(!cfg.capabilities.is_granted(&"agent:other/writer".into()));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// `PrincipalResourceView` impl for `PrincipalConfig`
-// ---------------------------------------------------------------------------
-
-/// `PrincipalConfig` exposes the four fields
-/// `auth::ownership::principal_resource` needs to build an
-/// `auth::Resource::Principal` value.
-///
-/// ## Why a trait port and not a direct function in principal
-///
-/// The original code had `auth::ownership::principal_resource(name,
-/// &PrincipalConfig)` taking the principal concrete type. That
-/// creates a `peko-auth ↔ peko-principal` cycle when both become
-/// workspace crates. The trait port in `peko-auth::host` flips the
-/// direction — auth declares the contract, principal implements it
-/// here.
-///
-/// ## Orphan rule note
-///
-/// This impl lives in `peko-principal` (not root) because both
-/// `PrincipalResourceView` and `PrincipalConfig` are foreign types
-/// from root's perspective. The trait is local to `peko_auth`, the
-/// type is local to `peko_principal`, so the impl belongs here.
-///
-/// Note: this is the *opposite* direction from the `peko-auth →
-/// peko-principal` import that used to live in
-/// `auth::ownership::Resource::Principal`'s `exposure` field. The
-/// `Exposure` enum used to live in `crate::principal::config` and
-/// was imported by auth. To break the cycle, `Exposure` was lifted
-/// into `peko-auth` (its natural home as part of `Resource`), and
-/// `PrincipalConfig.exposure` is now typed as `peko_auth::Exposure`.
-impl PrincipalResourceView for PrincipalConfig {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn owner(&self) -> &peko_auth::Subject {
-        &self.owner
-    }
-
-    fn permissions(&self) -> &[peko_auth::PermissionGrant] {
-        &self.permissions
-    }
-
-    fn exposure(&self) -> peko_auth::Exposure {
-        self.exposure
     }
 }

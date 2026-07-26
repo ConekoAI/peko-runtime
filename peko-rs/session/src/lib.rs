@@ -26,6 +26,11 @@
 //! `peko-engine` re-exports the data types + trait port + eviction
 //! helper from this crate so pre-Phase-7 import paths keep compiling.
 
+// Noise lints, consistent with the root crate's curated allow-list.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::should_implement_trait)]
+#![allow(clippy::doc_overindented_list_items)]
+
 // Convenience re-exports for test modules that do `use crate::*;`.
 // Production callers should prefer the canonical paths
 // (`peko_session::events::SessionEvent`, etc.).

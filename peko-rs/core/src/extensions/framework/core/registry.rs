@@ -775,7 +775,11 @@ impl ExtensionCore {
         let mut scored: Vec<_> = deferred
             .iter()
             .map(|m| {
-                let s = crate::extensions::framework::core::scoring::score(query, &m.name, &m.description);
+                let s = crate::extensions::framework::core::scoring::score(
+                    query,
+                    &m.name,
+                    &m.description,
+                );
                 (m, s)
             })
             .filter(|(_, s)| *s > 0)

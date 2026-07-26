@@ -119,8 +119,8 @@ impl ToolExecConfig {
         full_schema: Value,
     ) -> Self {
         Self {
-            reserved_params,
             full_schema,
+            reserved_params,
         }
     }
 

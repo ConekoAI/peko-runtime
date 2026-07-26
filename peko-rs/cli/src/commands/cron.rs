@@ -6,10 +6,10 @@
 //! owner permissions.
 
 use crate::commands::GlobalPaths;
-use peko_core::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Subcommand;
+use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_cron::{CronJob, CronJobAction, DeliveryMode, ScheduleKind};
 use std::str::FromStr;
 use uuid::Uuid;
@@ -545,7 +545,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
         } => {
             let client = connect_daemon().await?;
 
-            let filter_val = filter.map(|f| serde_json::from_str(&f).ok()).flatten();
+            let filter_val = filter.and_then(|f| serde_json::from_str(&f).ok());
 
             let delivery = if announce {
                 DeliveryMode::Announce {

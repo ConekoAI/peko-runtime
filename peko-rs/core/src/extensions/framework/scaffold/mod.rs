@@ -107,12 +107,18 @@ impl ScaffoldEngine {
         if options.bare_mcp {
             std::fs::write(
                 output.join("server.json"),
-                format!("{{\"name\": \"{}\", \"description\": \"{}\"}}\n", options.id, options.description),
+                format!(
+                    "{{\"name\": \"{}\", \"description\": \"{}\"}}\n",
+                    options.id, options.description
+                ),
             )?;
         } else {
             std::fs::write(
                 output.join("manifest.yaml"),
-                format!("id: {}\nname: {}\ndescription: {}\nextension_type: \"mcp\"\n", options.id, options.name, options.description),
+                format!(
+                    "id: {}\nname: {}\ndescription: {}\nextension_type: \"mcp\"\n",
+                    options.id, options.name, options.description
+                ),
             )?;
         }
         std::fs::write(output.join("README.md"), format!("# {}\n", options.name))?;
@@ -130,10 +136,7 @@ impl ScaffoldEngine {
             format!("id: {}\nextension_type: \"universal-tool\"\n", options.id),
         )?;
         let handler_file = format!("handler.{}", options.lang.handler_extension());
-        std::fs::write(
-            output.join(&handler_file),
-            format!("# {}\n", options.name),
-        )?;
+        std::fs::write(output.join(&handler_file), format!("# {}\n", options.name))?;
         std::fs::write(output.join("README.md"), format!("# {}\n", options.name))?;
         std::fs::write(output.join(".gitignore"), "*.pyc\n__pycache__\n")?;
         Ok(output.to_path_buf())

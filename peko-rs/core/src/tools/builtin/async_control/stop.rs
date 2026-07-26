@@ -5,7 +5,9 @@ use serde_json::json;
 
 use peko_tools_core::traits::Tool;
 
-use crate::tools::builtin::async_control::{build_cancel_response, AsyncTaskHelper, SharedAsyncRuntime};
+use crate::tools::builtin::async_control::{
+    build_cancel_response, AsyncTaskHelper, SharedAsyncRuntime,
+};
 
 /// Cancel an async task.
 pub struct AsyncStopTool {

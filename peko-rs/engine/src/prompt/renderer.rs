@@ -723,7 +723,7 @@ mod tests {
     }
 
     fn empty_funnel() -> Arc<dyn ToolFunnel> {
-        Arc::new(EmptyExtensionCore::default())
+        Arc::new(EmptyExtensionCore)
     }
 
     fn empty_ctx() -> TurnPromptContext {

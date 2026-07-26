@@ -5,6 +5,9 @@
 //! lifecycle and shutdown.
 
 use crate::common::json_utils::json_subset;
+use crate::extensions::framework::async_exec::executor::{
+    AsyncExecutor, AsyncTaskStatus, AsyncToolConfig,
+};
 use crate::extensions::framework::core::ExtensionCore;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::router::{ChannelContext, ChannelKind};
@@ -13,7 +16,6 @@ use chrono::Utc;
 use peko_auth::caller::CallerContext;
 use peko_cron::events::SystemEvent;
 use peko_cron::{CronJob, CronJobAction, CronRun, CronScheduler, DeliveryMode, IdleDetector};
-use crate::extensions::framework::async_exec::executor::{AsyncExecutor, AsyncTaskStatus, AsyncToolConfig};
 use peko_observability::Observability;
 use peko_tools_core::ToolResult;
 use std::sync::{Arc, Weak};
@@ -454,12 +456,13 @@ impl CronEngine {
         // CancellationToken into `run_spawn_tool_job` and switch to
         // `dispatch_tool_with_signal`. The funnel is mandatory now,
         // which is the F38 invariant we care about.
-        let context = crate::extensions::framework::async_exec::executor::ToolDispatchContext::builder(
-            tool_name.clone(),
-            tool_params.clone(),
-            principal_root_session_key.clone(),
-        )
-        .for_principal(snapshot_principal_id, snapshot_capabilities);
+        let context =
+            crate::extensions::framework::async_exec::executor::ToolDispatchContext::builder(
+                tool_name.clone(),
+                tool_params.clone(),
+                principal_root_session_key.clone(),
+            )
+            .for_principal(snapshot_principal_id, snapshot_capabilities);
 
         let receipt = executor.dispatch_tool(&core, context, config).await?;
 
@@ -631,6 +634,10 @@ mod tests {
     use crate::common::paths::PathResolver;
     use crate::engine::tool_runtime::ToolRuntime;
     use crate::extensions::framework::core::init_global_core;
+    use crate::principal::config::{
+        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
+        PrincipalMemoryConfig, PrincipalRoutingConfig,
+    };
     use crate::principal::{
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalManager,
     };
@@ -638,10 +645,6 @@ mod tests {
     use peko_auth::Exposure;
     use peko_auth::{Permission, PermissionGrant};
     use peko_extension_api::Capabilities;
-    use crate::principal::config::{
-        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-        PrincipalMemoryConfig, PrincipalRoutingConfig,
-    };
     use peko_providers::mock::MockAdapter;
     use peko_providers::resolver::LlmResolver;
     use peko_subject::Subject;
@@ -872,13 +875,14 @@ mod tests {
         // Build a CronEngine with an executor whose registry holds a
         // terminal entry for `shell:abc`.
         let async_executor = Arc::new(AsyncExecutor::new());
-        let mut entry = crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
-            "shell:abc".to_string(),
-            "Bash".to_string(),
-            serde_json::json!({"command": "echo done"}),
-            "session_worker_1".to_string(),
-            AsyncToolConfig::default(),
-        );
+        let mut entry =
+            crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
+                "shell:abc".to_string(),
+                "Bash".to_string(),
+                serde_json::json!({"command": "echo done"}),
+                "session_worker_1".to_string(),
+                AsyncToolConfig::default(),
+            );
         entry.set_result(serde_json::json!("done"));
         async_executor.registry().write().await.register(entry);
         // Mark the entry as Completed so reconcile treats it as terminal.

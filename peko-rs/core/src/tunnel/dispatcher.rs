@@ -721,8 +721,7 @@ impl TunnelDispatcher {
 
         // Bounded channel: a slow tunnel back-pressures the root agent
         // (events drop on `try_send` failure rather than growing memory).
-        let (event_tx, mut event_rx) =
-            tokio::sync::mpsc::channel::<peko_engine::AgenticEvent>(256);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<peko_engine::AgenticEvent>(256);
         let on_event: Box<dyn Fn(peko_engine::AgenticEvent) + Send + Sync> =
             Box::new(move |event| {
                 let _ = event_tx.try_send(event);
@@ -1445,12 +1444,12 @@ mod tests {
     use super::*;
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
     use crate::extensions::framework::types::Capabilities;
-    use crate::tunnel::protocol::{InstanceExposure, InstanceType};
-    use peko_auth::{Permission, PermissionGrant, Subject};
     use crate::principal::config::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
+    use crate::tunnel::protocol::{InstanceExposure, InstanceType};
+    use peko_auth::{Permission, PermissionGrant, Subject};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 

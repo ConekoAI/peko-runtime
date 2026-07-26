@@ -22,7 +22,9 @@ pub use crate::extensions::framework::transport::async_router::ToolExecutionCont
 
 use crate::extensions::framework::core::BuiltinExtensionInfo;
 use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
-use crate::extensions::framework::transport::async_transport::{create_local_transport, AsyncTaskTransport};
+use crate::extensions::framework::transport::async_transport::{
+    create_local_transport, AsyncTaskTransport,
+};
 use std::sync::Arc;
 
 /// Container for all extension services

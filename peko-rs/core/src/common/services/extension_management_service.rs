@@ -11,8 +11,9 @@ use crate::common::types::extension::{
 use crate::common::vault::Vault;
 use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
 use crate::extensions::framework::core::global_core;
-use crate::extensions::framework::store_trait::DependencyStatus;
+use crate::extensions::framework::manager::packaging::ExtensionPackager;
 use crate::extensions::framework::store::ExtensionStore;
+use crate::extensions::framework::store_trait::DependencyStatus;
 use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
 use crate::extensions::gateway::GatewayAdapter;
 use crate::extensions::general::GeneralExtensionAdapter;
@@ -26,7 +27,6 @@ use crate::registry::manifest::RegistryManifest;
 use crate::registry::packaging::types::{compute_digest, ImageDigest, Layer, LayerType};
 use crate::registry::AgentRegistry;
 use anyhow::{Context, Result};
-use crate::extensions::framework::manager::packaging::ExtensionPackager;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 

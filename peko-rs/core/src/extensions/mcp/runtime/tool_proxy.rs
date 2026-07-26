@@ -3,14 +3,14 @@
 //! Adapts MCP tools to Peko's Tool trait, allowing MCP tools to be used
 //! seamlessly by the agent system.
 
+use crate::extensions::framework::protocols::shared::proxy_utils::{
+    estimate_tool_duration, execute_with_context_handling,
+};
 use crate::extensions::mcp::protocol::{
     manager::McpManager,
     types::{CallToolResult, Tool as McpTool, ToolResultContent},
 };
 use async_trait::async_trait;
-use crate::extensions::framework::protocols::shared::proxy_utils::{
-    estimate_tool_duration, execute_with_context_handling,
-};
 use peko_tools_core::{Tool, ToolContext};
 use serde_json::json;
 use std::sync::Arc;

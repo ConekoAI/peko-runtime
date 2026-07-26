@@ -1001,8 +1001,8 @@ mod buffer_tests {
                 fd,
                 libc::SOL_SOCKET,
                 libc::SO_SNDBUF,
-                &mut value as *mut _ as *mut libc::c_void,
-                &mut len,
+                (&raw mut value).cast::<libc::c_void>(),
+                &raw mut len,
             )
         };
         assert_eq!(

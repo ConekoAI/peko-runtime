@@ -13,16 +13,16 @@ use super::{
 use crate::common::paths::PathResolver;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::store::ExtensionStore;
+use crate::principal::agent_prompt::load_agent_prompt;
+use crate::principal::runtime::OutputFormat;
+use crate::principal::AgentPrompt;
+use crate::principal::PrincipalConfig;
 use peko_auth::ownership::{check_permission, Permission, Resource};
 use peko_auth::Subject;
 use peko_extension_api::SteeringMessage;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
 use peko_observability::Observability;
-use crate::principal::agent_prompt::load_agent_prompt;
-use crate::principal::runtime::OutputFormat;
-use crate::principal::AgentPrompt;
-use crate::principal::PrincipalConfig;
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_subject::PrincipalDID;
@@ -124,7 +124,8 @@ impl PrincipalManager {
             router_factory,
             resolver: None,
             inbox_registry: Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(),
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
             )),
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
             slash_dispatcher: Arc::new(RwLock::new(None)),
@@ -1003,11 +1004,11 @@ mod tests {
         router::{ChannelContext, ChannelKind},
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     };
-    use peko_extension_api::Capabilities;
     use crate::principal::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
+    use peko_extension_api::Capabilities;
     use peko_providers::{LlmResolver, MockAdapter};
     use std::sync::Arc;
     use tempfile::TempDir;

@@ -11,10 +11,10 @@
 //!   peko send myprincipal "Hello" --model openai-gpt-4o
 
 use crate::commands::GlobalPaths;
-use peko_core::ipc::packet::PrincipalSendControlMode;
-use peko_core::ipc::{DaemonClient, ResponsePacket};
 use anyhow::Result;
 use clap::Args;
+use peko_core::ipc::packet::PrincipalSendControlMode;
+use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_core::principal::runtime::OutputFormat;
 use std::io::Write;
 use tracing::info;

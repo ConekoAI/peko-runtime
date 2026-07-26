@@ -49,12 +49,14 @@ fn classify_http_error(
     anyhow::anyhow!(msg)
 }
 
-/// Returns `true` if `e` represents an HTTP 400/413 context-window overflow.
-///
-/// Re-exported from `peko_provider_api::is_context_window_exceeded`
-/// (Phase 9b.N.5b.5). See `crates/provider-api/src/context_window_error.rs`
-/// for the docstring — it covers the matching rules, the F22 front-evict
-/// + retry consumer, and the inline-substring rationale.
+// Re-exported from `peko_provider_api::is_context_window_exceeded`
+// (Phase 9b.N.5b.5). See `crates/provider-api/src/context_window_error.rs`
+// for the docstring — it covers the matching rules, the F22 front-evict
+// + retry consumer, and the inline-substring rationale.
+// Re-exported from `peko_provider_api::is_context_window_exceeded`
+// (Phase 9b.N.5b.5). See `crates/provider-api/src/context_window_error.rs`
+// for the matching rules, the F22 front-evict + retry consumer, and the
+// inline-substring rationale.
 
 /// Parse the `Retry-After` response header (seconds form only).
 ///

@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 // Internal use — types reachable directly via crate::extensions::framework::services::*.
-use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
+#[cfg(test)]
+use crate::extensions::framework::services::ParamSource;
+use crate::extensions::framework::services::ReservedParamsConfig;
 
 /// Transport type for MCP connections
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

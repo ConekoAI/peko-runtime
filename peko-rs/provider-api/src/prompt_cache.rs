@@ -33,13 +33,8 @@ pub fn clamp_openai_prompt_cache_key(session_id: &str) -> String {
     }
 
     let mut out = String::with_capacity(64 * 4); // worst case: 4 bytes per codepoint
-    let mut count = 0usize;
-    for ch in session_id.chars() {
-        if count == 64 {
-            break;
-        }
+    for ch in session_id.chars().take(64) {
         out.push(ch);
-        count += 1;
     }
     out
 }
@@ -69,7 +64,7 @@ mod tests {
     #[test]
     fn test_clamp_does_not_split_multi_byte_characters() {
         // 80 codepoints, all multi-byte (`é` = 2 UTF-8 bytes).
-        let long: String = std::iter::repeat('é').take(80).collect();
+        let long: String = std::iter::repeat_n('é', 80).collect();
         let clamped = clamp_openai_prompt_cache_key(&long);
         assert_eq!(clamped.chars().count(), 64);
         // Every retained codepoint is `é` — none were split mid-codepoint.

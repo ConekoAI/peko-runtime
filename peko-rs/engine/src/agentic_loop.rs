@@ -13,21 +13,19 @@
 
 use crate::synthetic_stream::synthesize_stream_from_blocking;
 use crate::{
-    load_principal_memory, AgentView, AgenticError, AgenticEvent, AsyncInboxItem, AsyncInboxLike,
-    BackgroundCompactorFactory, CapabilityDiffTracker, CompactionConfig, IterationBudgetState,
-    LifecyclePhase, OrchestratorConfig, PromptRenderer, ProviderView, QuotaStateView, SessionView,
-    StackedMeteredProvider, StreamOrchestrator, TurnPromptContext,
+    AgentView, AgenticEvent, AsyncInboxItem, AsyncInboxLike, BackgroundCompactorFactory,
+    CapabilityDiffTracker, CompactionConfig, LifecyclePhase, OrchestratorConfig, PromptRenderer,
+    ProviderView, SessionView, StackedMeteredProvider, StreamOrchestrator, TurnPromptContext,
 };
 use anyhow::Result;
 use futures::StreamExt;
 use peko_extension_api::ToolFunnel;
 use peko_message::{ContentBlock, LlmMessage};
 use peko_provider_api::{
-    clamp_openai_prompt_cache_key, CacheRetention, ChatOptions, MessageRole, RetryableError,
-    StopReason, TokenUsage, ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS,
+    clamp_openai_prompt_cache_key, CacheRetention, ChatOptions, MessageRole, StopReason,
+    TokenUsage, ToolDefinition, DEFAULT_MAX_OUTPUT_TOKENS,
 };
 use peko_quota::QuotaScope;
-use peko_tools_core::HOOK_TIMEOUT;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -1429,6 +1427,8 @@ impl AgenticLoop {
             // arm of the inner `stream.next()` loop shares the same
             // budget counter as the start-stream retry above — both are
             // scoped to this iteration.
+            // (labeled loop retained for the `continue 'inner_stream` below)
+            #[allow(clippy::while_let_loop)]
             'inner_stream: loop {
                 match stream.next().await {
                     Some(result) => {
@@ -1614,11 +1614,8 @@ impl AgenticLoop {
             let final_events = orchestrator.finalize();
             for event in final_events {
                 // Also track text accumulation from final events (e.g., AssistantText in FinalOnly mode)
-                match &event {
-                    AgenticEvent::AssistantText { text, .. } => {
-                        accumulated_text.push_str(text);
-                    }
-                    _ => {}
+                if let AgenticEvent::AssistantText { text, .. } = &event {
+                    accumulated_text.push_str(text);
                 }
                 on_event(event);
             }
@@ -1670,7 +1667,7 @@ impl AgenticLoop {
                         content: assistant_content,
                         ..Default::default()
                     }
-                    .with_usage(iteration_usage.clone()),
+                    .with_usage(iteration_usage),
                 );
 
                 // Add to session
@@ -1723,7 +1720,7 @@ impl AgenticLoop {
                             content_blocks,
                             Some(tool_call_blocks),
                             thinking_block,
-                            Some(iteration_usage.clone()),
+                            Some(iteration_usage),
                         )
                         .await?;
                 }
@@ -1853,11 +1850,7 @@ impl AgenticLoop {
             // forward-compatibility with future callers that surface
             // `peko_message::ToolCallInfo` instead.
             session
-                .add_assistant(
-                    accumulated_text.clone(),
-                    None,
-                    Some(iteration_usage.clone()),
-                )
+                .add_assistant(accumulated_text.clone(), None, Some(iteration_usage))
                 .await?;
 
             // Note: We don't emit AssistantText here because the content has already
@@ -2042,7 +2035,7 @@ impl AgenticLoop {
                 // `QuotaStateView` takes a `SystemTime` (renderer
                 // formats ISO 8601 from epoch secs). `From` is identity
                 // on the underlying instant so the conversion is lossless.
-                window_end: chrono::DateTime::<chrono::Utc>::from(snapshot.window_end).into(),
+                window_end: snapshot.window_end.into(),
                 input_limit: config.input_tokens,
                 output_limit: config.output_tokens,
                 request_limit: config.request_count,

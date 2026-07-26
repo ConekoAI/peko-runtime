@@ -31,6 +31,7 @@ pub struct DaemonCronAdapter {
 
 impl DaemonCronAdapter {
     /// Build an adapter over an already-connected `DaemonClient`.
+    #[allow(dead_code)]
     pub fn new(client: Arc<DaemonClient>) -> Self {
         Self { client }
     }

@@ -14,6 +14,7 @@ use std::sync::Arc;
 ///
 /// This provides access to shared services like logging, configuration,
 /// and other cross-cutting concerns.
+#[allow(dead_code)] // tool_execution + reserved_params stay until 8c services/ lifts
 pub struct ExtensionServices {
     /// Configuration service
     config: ExtensionConfig,
@@ -51,8 +52,9 @@ pub struct ExtensionServices {
     /// Implements principal-to-principal message dispatch
     /// ([`crate::extensions::framework::principal_message::PrincipalMessageService`]).
     /// Held as a trait object to avoid a framework → agents dependency.
-    principal_message_service:
-        std::sync::RwLock<Option<Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>>>,
+    principal_message_service: std::sync::RwLock<
+        Option<Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>>,
+    >,
 
     /// Cross-runtime a2a dispatch context (issue #29). Set by the
     /// daemon-state after the tunnel client is built and the
@@ -114,7 +116,9 @@ impl ExtensionServices {
     #[must_use]
     pub fn with_async_router_and_principal_message_service(
         async_router: Arc<dyn AsyncExecutionRouter>,
-        principal_message_service: Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>,
+        principal_message_service: Arc<
+            dyn crate::extensions::framework::principal_message::PrincipalMessageService,
+        >,
     ) -> Self {
         let s = Self::with_async_router(async_router);
         s.set_principal_message_service(principal_message_service);
@@ -177,7 +181,8 @@ impl ExtensionServices {
     #[must_use]
     pub fn principal_message_service(
         &self,
-    ) -> Option<Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>> {
+    ) -> Option<Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>>
+    {
         self.principal_message_service
             .read()
             .ok()
@@ -343,31 +348,6 @@ impl TelemetryService {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extension_config() {
-        let config = ExtensionConfig::new();
-        assert_eq!(config.max_hook_duration_ms, 5000);
-        assert!(!config.enable_tracing);
-    }
-
-    #[test]
-    fn test_telemetry_service() {
-        let telemetry = TelemetryService::new();
-        let point = HookPoint::ToolRegister;
-        let hook_id = HookId::new();
-
-        telemetry.record_hook_invocation(&hook_id, &point, 100);
-        telemetry.record_hook_invocation(&hook_id, &point, 200);
-
-        assert_eq!(telemetry.get_invocation_count(&point), 2);
-        assert_eq!(telemetry.get_average_execution_time(&point), 150);
-    }
-}
-
 /// Synchronous-local [`AsyncExecutionRouter`] used as the default router by
 /// [`ExtensionServices::new`].
 ///
@@ -398,7 +378,7 @@ impl AsyncExecutionRouter for NoopAsyncExecutionRouter {
         // Pull the (name, params, workspace) triple out of the tool-call
         // input. If the input isn't a ToolCall (e.g. a prompt-section
         // hook mistakenly routed here), fall back to PassThrough.
-        let (called_tool_name, mut params, workspace) = match ctx.as_tool_call() {
+        let (_called_tool_name, mut params, workspace) = match ctx.as_tool_call() {
             Some((name, params, ws)) => (name.to_string(), params.clone(), ws.map(str::to_string)),
             None => return crate::extensions::framework::types::HookResult::PassThrough,
         };
@@ -422,7 +402,9 @@ impl AsyncExecutionRouter for NoopAsyncExecutionRouter {
         // adapter-supplied wrapper around `tool.execute_with_context(...)`;
         // running it here yields the tool's JSON output (or an error).
         match exec_fn(params).await {
-            Ok(value) => crate::extensions::framework::types::HookResult::Continue(crate::extensions::framework::types::HookOutput::Json(value)),
+            Ok(value) => crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Json(value),
+            ),
             Err(e) => crate::extensions::framework::types::HookResult::Error(e),
         }
     }
@@ -454,5 +436,30 @@ fn validate_tool_args(
             .collect::<Vec<_>>()
             .join("; ");
         Err(format!("{tool_name} args failed schema: {joined}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extension_config() {
+        let config = ExtensionConfig::new();
+        assert_eq!(config.max_hook_duration_ms, 5000);
+        assert!(!config.enable_tracing);
+    }
+
+    #[test]
+    fn test_telemetry_service() {
+        let telemetry = TelemetryService::new();
+        let point = HookPoint::ToolRegister;
+        let hook_id = HookId::new();
+
+        telemetry.record_hook_invocation(&hook_id, &point, 100);
+        telemetry.record_hook_invocation(&hook_id, &point, 200);
+
+        assert_eq!(telemetry.get_invocation_count(&point), 2);
+        assert_eq!(telemetry.get_average_execution_time(&point), 150);
     }
 }

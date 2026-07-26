@@ -18,6 +18,7 @@
 
 use crate::common::vault::Vault;
 use crate::daemon::background_runtime::{BackgroundRuntimeManager, RuntimeState};
+use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
 use crate::extensions::mcp::protocol::{
     client::{ClientError, McpClient, ServerRequestHandler},
     config::{McpConfig, McpServerConfig, TransportType},
@@ -26,7 +27,6 @@ use crate::extensions::mcp::protocol::{
     types::{GetPromptResult, Prompt, Resource, ResourceContents, Tool},
 };
 use crate::extensions::mcp::runtime::adapter::{McpClientRegistry, McpRuntimeAdapter};
-use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -261,7 +261,7 @@ impl McpManager {
         reserved: &ReservedParamsConfig,
     ) -> Result<()> {
         let Some(vault) = &self.vault else {
-            for (name, source) in reserved.params.iter() {
+            for (name, source) in &reserved.params {
                 if matches!(source, ParamSource::Vault { .. }) {
                     return Err(ManagerError::Config(format!(
                         "MCP server '{server_name}' reserved param '{name}' uses source = \"vault\" but no vault is available"
@@ -271,7 +271,7 @@ impl McpManager {
             return Ok(());
         };
 
-        for (name, source) in reserved.params.iter() {
+        for (name, source) in &reserved.params {
             if let ParamSource::Vault {
                 namespace,
                 name: param_name,

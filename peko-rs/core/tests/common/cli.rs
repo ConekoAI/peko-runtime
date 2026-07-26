@@ -185,12 +185,22 @@ impl PekoCli {
             let workspace_root = std::path::Path::new(manifest_dir)
                 .parent()
                 .and_then(std::path::Path::parent)
-                .expect("CARGO_MANIFEST_DIR is peko-rs/core/, two parents up is the workspace root");
+                .expect(
+                    "CARGO_MANIFEST_DIR is peko-rs/core/, two parents up is the workspace root",
+                );
             let target_dir = std::env::var_os("CARGO_TARGET_DIR")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| workspace_root.join("target"));
-            let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-            target_dir.join(profile).join("peko").to_string_lossy().into_owned()
+            let profile = if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            };
+            target_dir
+                .join(profile)
+                .join("peko")
+                .to_string_lossy()
+                .into_owned()
         });
         let mut c = Command::new(bin);
         c.env("HOME", self.home.path())

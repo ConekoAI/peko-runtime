@@ -95,8 +95,10 @@ impl EventProcessor {
     /// Create a processor for a specific agent
     #[must_use]
     pub fn for_agent(agent_name: impl Into<String>) -> Self {
-        let mut config = ProcessorConfig::default();
-        config.agent_name = agent_name.into();
+        let config = ProcessorConfig {
+            agent_name: agent_name.into(),
+            ..Default::default()
+        };
         Self::with_config(config)
     }
 
@@ -172,16 +174,15 @@ impl EventProcessor {
                             self.state.has_started_turn = false;
                         }
                     }
-                    LifecyclePhase::Interrupted => {
+                    LifecyclePhase::Interrupted
                         // Soft-interrupt is terminal — close the turn
                         // like a normal end. The reason (if any) flows
                         // through the Lifecycle event itself; the
                         // channel doesn't need a distinct action.
-                        if self.state.has_started_turn {
+                        if self.state.has_started_turn => {
                             actions.push(ChannelAction::EndTurn);
                             self.state.has_started_turn = false;
                         }
-                    }
                     _ => {}
                 }
             }

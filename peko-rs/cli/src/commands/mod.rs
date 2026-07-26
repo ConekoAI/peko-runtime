@@ -239,7 +239,6 @@ pub enum Commands {
     Version(version::VersionArgs),
 }
 
-
 // `GlobalPaths` lives in `peko_core::common::paths` (Phase 0.Z-B pre-flight)
 // so the core lib (specifically `credentials_service`) and the CLI satellite
 // can both reference it without a circular dep — `commands/` moves to the
