@@ -196,7 +196,15 @@ impl PrincipalRouter for RootRouter {
             &principal_ctx,
         )
         .await
-        .map_err(|e| RouterError::AgentFailed(e.to_string()))?;
+        // Use `{e:?}` (Debug) rather than `{e}` (Display) so the full
+        // anyhow chain — including the `Caused by:` chain — reaches
+        // the CLI. `Display` (`e.to_string()`) joins all contexts
+        // with ": " but does NOT render the underlying source
+        // separately, which collapses a chain like
+        // `[root agent execution failed → No provider configured]`
+        // down to a single segment when an empty `Display` is in the
+        // middle. Debug keeps the multi-line structure intact.
+        .map_err(|e| RouterError::AgentFailed(format!("{e:?}")))?;
 
         // Record the root-agent session artifact so future messages
         // from this peer can recall it as prior context.
@@ -239,7 +247,10 @@ impl PrincipalRouter for RootRouter {
             cancel,
         )
         .await
-        .map_err(|e| RouterError::AgentFailed(e.to_string()))?;
+        // Use `{e:?}` (Debug) rather than `{e}` (Display) so the full
+        // anyhow chain — including the `Caused by:` chain — reaches
+        // the CLI. See the matching note in `route()` above.
+        .map_err(|e| RouterError::AgentFailed(format!("{e:?}")))?;
 
         // Record the root-agent session artifact so future messages
         // from this peer can recall it as prior context.

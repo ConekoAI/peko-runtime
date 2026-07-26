@@ -2437,6 +2437,8 @@ dependencies = [
  "anyhow",
  "peko",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
