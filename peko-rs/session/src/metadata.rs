@@ -115,10 +115,10 @@ impl SessionMetadata {
 
     /// Convert to `SessionEntry` for index storage
     #[must_use]
-    pub fn to_entry(self) -> SessionEntry {
+    pub fn to_entry(&self) -> SessionEntry {
         SessionEntry {
-            session_id: self.session_id,
-            agent_name: self.agent_name,
+            session_id: self.session_id.clone(),
+            agent_name: self.agent_name.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
             message_count: self.message_count,
@@ -127,12 +127,12 @@ impl SessionMetadata {
             total_input_tokens: self.total_input_tokens,
             total_output_tokens: self.total_output_tokens,
             model_context_limit: self.model_context_limit,
-            transcript_file: self.transcript_file,
-            title: self.title,
-            parent_session_id: self.parent_session_id,
-            trigger: self.trigger,
-            peer_type: self.peer_type,
-            peer_id: self.peer_id,
+            transcript_file: self.transcript_file.clone(),
+            title: self.title.clone(),
+            parent_session_id: self.parent_session_id.clone(),
+            trigger: self.trigger.clone(),
+            peer_type: self.peer_type.clone(),
+            peer_id: self.peer_id.clone(),
         }
     }
 
