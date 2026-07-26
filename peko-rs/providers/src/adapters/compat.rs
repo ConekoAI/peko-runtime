@@ -92,6 +92,18 @@ impl super::ApiAdapter for OpenAiCompatibleAdapter {
         &self.base_url
     }
 
+    /// F40a: OpenAI-compatible proxies vary in which header family
+    /// they forward (some proxy OpenAI verbatim, some proxy Claude,
+    /// some implement a custom scheme). Use the union parser so we
+    /// capture whichever family the upstream actually emits; the
+    /// unused-family scan is cheap (a few header lookups) and
+    /// deterministic.
+    fn rate_limit_parser(
+        &self,
+    ) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
+        Some(std::sync::Arc::new(peko_provider_api::StandardRateLimitParser))
+    }
+
     fn build_request(
         &self,
         model_id: &str,

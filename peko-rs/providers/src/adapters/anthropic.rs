@@ -373,6 +373,17 @@ impl super::ApiAdapter for AnthropicAdapter {
         true
     }
 
+    /// F40a: Anthropic emits `anthropic-ratelimit-*-remaining`,
+    /// `anthropic-ratelimit-{requests,tokens}-reset` (delta-seconds),
+    /// and `Retry-After`. The Anthropic parser converts the reset
+    /// delta to an absolute `SystemTime` so callers can show "next
+    /// available at HH:MM:SS" rather than a relative wait.
+    fn rate_limit_parser(
+        &self,
+    ) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
+        Some(std::sync::Arc::new(peko_provider_api::AnthropicRateLimitParser))
+    }
+
     fn build_request(
         &self,
         model_id: &str,
@@ -1040,6 +1051,18 @@ mod tests {
         assert_eq!(adapter.name(), "anthropic");
         assert_eq!(adapter.name(), "anthropic");
         assert_eq!(adapter.base_url(), "https://api.anthropic.com");
+    }
+
+    /// F40a: the Anthropic adapter must surface its
+    /// `AnthropicRateLimitParser` so `HttpClient` captures the
+    /// `anthropic-ratelimit-*-*` family on every non-success
+    /// response. Pinning `kind()` here prevents an accidental
+    /// swap to the Standard/OpenAI parser.
+    #[test]
+    fn adapter_installs_anthropic_rate_limit_parser() {
+        let adapter = AnthropicAdapter::new();
+        let parser = adapter.rate_limit_parser().expect("Anthropic must surface a parser");
+        assert_eq!(parser.kind(), peko_provider_api::RateLimitKind::Anthropic);
     }
 
     #[test]
