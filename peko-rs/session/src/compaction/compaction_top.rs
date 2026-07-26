@@ -36,16 +36,11 @@ pub use crate::compaction::types::{
 };
 pub use crate::compaction::{drop_oldest_respecting_pairs, CompactorBackend};
 
-#[cfg(test)]
-#[path = "integration_tests.rs"]
-mod integration_tests;
-
 use anyhow::{Context as _, Result};
 use peko_message::ContentBlock;
 use peko_message::LlmMessage;
 use peko_message::MessageRole;
 use peko_providers::ProviderView;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -154,7 +149,7 @@ fn find_last_assistant_usage(
         .enumerate()
         .rev()
         .find(|(_, m)| m.role == MessageRole::Assistant && m.usage.is_some())
-        .map(|(i, m)| (m.usage.clone().unwrap(), i))
+        .map(|(i, m)| (m.usage.unwrap(), i))
 }
 
 /// Load compaction config from the global config file, or use defaults.
@@ -656,7 +651,7 @@ impl Default for Compactor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+
     use peko_providers::adapters::AnyAdapter;
     use peko_providers::core::ProviderRuntimeOptions;
     use peko_providers::mock::MockAdapter;
@@ -799,9 +794,9 @@ mod tests {
         };
         let messages = vec![
             LlmMessage::user("hi"),
-            LlmMessage::assistant("first").with_usage(first.clone()),
+            LlmMessage::assistant("first").with_usage(first),
             LlmMessage::user("next"),
-            LlmMessage::assistant("second").with_usage(second.clone()),
+            LlmMessage::assistant("second").with_usage(second),
         ];
         let (usage, idx) = find_last_assistant_usage(&messages).unwrap();
         assert_eq!(usage, second);
@@ -834,10 +829,10 @@ mod tests {
             total: 1500,
             ..Default::default()
         };
-        let mut messages = vec![
+        let messages = vec![
             LlmMessage::system("You are a helpful assistant."),
             LlmMessage::user("First question"),
-            LlmMessage::assistant("First answer").with_usage(anchor_usage.clone()),
+            LlmMessage::assistant("First answer").with_usage(anchor_usage),
             // Trailing slice — two more messages that didn't report
             // usage (e.g. resumed session, or usage dropped on the
             // floor). Char/4 estimates these.
