@@ -1415,6 +1415,26 @@ pub enum ResponsePacket {
     #[serde(rename = "principal_sent_done")]
     PrincipalSentDone { request_id: u64, content: String },
 
+    /// Successor packet emitted when a steering message was queued
+    /// during the final-iteration drain of `PrincipalSendStream` and
+    /// the predecessor's run has now completed. The runtime drained
+    /// the pending steering, started a fresh run for it, and is now
+    /// delivering the answer. `predecessor_request_id` is the
+    /// original `request_id` of the streamed send; `request_id` is the
+    /// fresh id of the successor run (returned so the client can
+    /// correlate if it wants to steer the new run). Multiple
+    /// `PrincipalSentSuccessor` packets may follow the predecessor's
+    /// `PrincipalSentDone`; each carries the full content of one
+    /// drained steering item. The original `Done { request_id:
+    /// predecessor_request_id, success: true }` closes the original
+    /// stream after the successors have been delivered.
+    #[serde(rename = "principal_sent_successor")]
+    PrincipalSentSuccessor {
+        predecessor_request_id: u64,
+        request_id: u64,
+        content: String,
+    },
+
     /// Response to a `PrincipalLog` request. Returns one bounded page of
     /// the runtime-owned chat log for `(principal_did, peer)` —
     /// `messages` ordered oldest-to-newest, `next_cursor` opaque
@@ -1996,6 +2016,7 @@ impl ResponsePacket {
             | Self::PrincipalSent { request_id, .. }
             | Self::PrincipalSentChunk { request_id, .. }
             | Self::PrincipalSentDone { request_id, .. }
+            | Self::PrincipalSentSuccessor { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
@@ -2079,6 +2100,7 @@ impl ResponsePacket {
             Self::PrincipalSent { .. } => "PrincipalSent",
             Self::PrincipalSentChunk { .. } => "PrincipalSentChunk",
             Self::PrincipalSentDone { .. } => "PrincipalSentDone",
+            Self::PrincipalSentSuccessor { .. } => "PrincipalSentSuccessor",
             Self::PrincipalLog { .. } => "PrincipalLog",
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
