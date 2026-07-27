@@ -114,6 +114,22 @@ impl TunnelHandle {
     pub fn send_stream_end(&self, request_id: String) -> anyhow::Result<()> {
         self.send(TunnelMessage::StreamEnd { request_id })
     }
+
+    /// Send a per-iteration boundary marker on the streaming channel.
+    /// PekoHub re-projects this into an SSE `event: iteration` line so
+    /// web chat can break assistant text into one bubble per
+    /// agentic iteration and show a "thinking" indicator while
+    /// awaiting the next iteration's first token.
+    pub fn send_stream_iteration(
+        &self,
+        request_id: String,
+        iteration: u32,
+    ) -> anyhow::Result<()> {
+        self.send(TunnelMessage::StreamIteration {
+            request_id,
+            iteration,
+        })
+    }
 }
 
 /// Shared state for the tunnel client
@@ -634,6 +650,7 @@ impl TunnelClient {
             | TunnelMessage::ProxiedResponse { .. }
             | TunnelMessage::StreamChunk { .. }
             | TunnelMessage::StreamEnd { .. }
+            | TunnelMessage::StreamIteration { .. }
             | TunnelMessage::InstanceAnnounce { .. }
             | TunnelMessage::InstanceHeartbeat { .. }
             | TunnelMessage::InstanceDeregister { .. }

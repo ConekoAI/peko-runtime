@@ -240,6 +240,20 @@ pub enum TunnelMessage {
     #[serde(rename = "stream_end", rename_all = "camelCase")]
     StreamEnd { request_id: String },
 
+    /// Per-iteration boundary marker on the streaming channel.
+    ///
+    /// Pushed just before the first `StreamChunk` of each new
+    /// agentic loop iteration so the hub can break assistant text
+    /// into one bubble per iteration and render a "thinking"
+    /// indicator between iterations. Mirrors the IPC
+    /// `PrincipalSentIteration` packet's wire shape; iteration is
+    /// 1-based and per `request_id`.
+    #[serde(rename = "stream_iteration", rename_all = "camelCase")]
+    StreamIteration {
+        request_id: String,
+        iteration: u32,
+    },
+
     // --- Instance lifecycle ---
     /// Instance announcement
     #[serde(rename = "instance_announce")]
@@ -894,6 +908,42 @@ mod tests {
                 assert_eq!(payload, vec![0xde, 0xad, 0xbe, 0xef]);
             }
             other => panic!("Expected AgentToAgentResponse, got: {other:?}"),
+        }
+    }
+
+    /// StreamIteration pin: round-trip the new variant with the
+    /// snake_case tag and camelCase fields. PekoHub forwards these
+    /// frames unchanged and re-projects them into the SSE
+    /// `event: iteration` channel, so any wire-shape change here
+    /// would silently break the hub-side relay and the SPA's
+    /// iteration-bubble UX.
+    #[test]
+    fn test_stream_iteration_roundtrip() {
+        let msg = TunnelMessage::StreamIteration {
+            request_id: "req-stream-1".to_string(),
+            iteration: 3,
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+        assert!(
+            json.contains("\"stream_iteration\""),
+            "tag must be snake_case `stream_iteration`, got: {json}"
+        );
+        assert!(
+            json.contains("\"requestId\""),
+            "field requestId must be camelCase, got: {json}"
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::StreamIteration {
+                request_id,
+                iteration,
+            } => {
+                assert_eq!(request_id, "req-stream-1");
+                assert_eq!(iteration, 3);
+            }
+            other => panic!("Expected StreamIteration, got: {other:?}"),
         }
     }
 }

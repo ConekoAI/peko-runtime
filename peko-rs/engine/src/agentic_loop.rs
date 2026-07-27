@@ -1295,6 +1295,25 @@ impl AgenticLoop {
                 error: None,
             });
 
+            // Iteration boundary marker (1-based) for downstream
+            // consumers that need to break the assistant text into
+            // one bubble per agentic iteration. The IPC path tracks
+            // this independently from `Lifecycle{Running}` (see
+            // `core/src/ipc/handlers/principal.rs`); the tunnel
+            // path now consumes it directly so `pekohub` web chat
+            // can render an iteration-bubble UI matching the
+            // desktop's. ADR-042 keeps tool-call / thinking /
+            // retry detail out of this event so the relay is
+            // session-internal-lightweight.
+            //
+            // `iteration` was incremented at the top of this loop
+            // turn (`iteration += 1` near line 1027), so the first
+            // LLM call emits `iteration: 1` here.
+            on_event(AgenticEvent::IterationBoundary {
+                run_id: run_id.clone(),
+                iteration: iteration as u32,
+            });
+
             // Chat options
             //
             // F23: thread `session_id` and the adapter's prompt-cache
