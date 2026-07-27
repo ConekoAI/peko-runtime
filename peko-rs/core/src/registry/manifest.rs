@@ -127,6 +127,31 @@ pub struct RegistryManifest {
     /// `push → pull → import` cycle.
     #[serde(skip)]
     pub signatures: Option<Signatures>,
+
+    // --- PekoHub-side identity annotations (audit section 7) ---
+    //
+    // The runtime already gates the inner `principal.name` and
+    // `extension.id` against `validate_agent_name` upstream, but
+    // PekoHub's PUT /v2/.../manifests handler cannot see the
+    // TOML config blob without a TOML parser. These two fields
+    // carry the names through the OCI annotations namespace so
+    // PekoHub's `PrincipalName` / `ExtensionManifest.shape.id` Zod
+    // schemas can validate them at push time and reject
+    // 400 on a path-traversal spelling before the row lands in
+    // the DB.
+    //
+    // Note: `org.peko.name` already carries the package name
+    // (the principal's display name) for pull-side round-trip;
+    // `dev.pekohub.principalName` is a separate channel because
+    // PekoHub's existing read path treats the `dev.pekohub.*`
+    // namespace as authoritative for bundle-side metadata.
+    /// Principal name (== `manifest.principal.name` for `.principal`).
+    #[serde(skip)]
+    pub principal_name: Option<String>,
+
+    /// Extension id (== `manifest.extension.id` for `.ext`).
+    #[serde(skip)]
+    pub extension_id: Option<String>,
 }
 
 fn default_kind() -> String {
@@ -167,6 +192,8 @@ impl RegistryManifest {
             required_mcp_servers: None,
             extensions: Vec::new(),
             signatures: None,
+            principal_name: None,
+            extension_id: None,
         }
     }
 
@@ -295,6 +322,30 @@ impl RegistryManifest {
     #[must_use]
     pub fn with_required_mcp_servers(mut self, required_mcp_servers: impl Into<String>) -> Self {
         self.required_mcp_servers = Some(required_mcp_servers.into());
+        self
+    }
+
+    /// Set the principal name (carried as `dev.pekohub.principalName`).
+    ///
+    /// Mirrors the inner `manifest.principal.name` so PekoHub's PUT
+    /// handler can validate against its `PrincipalName` Zod schema
+    /// without parsing the TOML config blob (audit section 7,
+    /// follow-up to PR #241).
+    #[must_use]
+    pub fn with_principal_name(mut self, name: impl Into<String>) -> Self {
+        self.principal_name = Some(name.into());
+        self
+    }
+
+    /// Set the extension id (carried as `dev.pekohub.extensionId`).
+    ///
+    /// Mirrors the inner `manifest.extension.id` so PekoHub's PUT
+    /// handler can validate against its `ExtensionManifest.shape.id`
+    /// regex without parsing the TOML config blob (audit section 7,
+    /// follow-up to PR #241).
+    #[must_use]
+    pub fn with_extension_id(mut self, id: impl Into<String>) -> Self {
+        self.extension_id = Some(id.into());
         self
     }
 
@@ -456,6 +507,28 @@ impl RegistryManifest {
             }
         }
 
+        // PekoHub-side identity annotations (audit section 7). These
+        // mirror the inner config-blob's `principal.name` and
+        // `extension.id` so PekoHub's PUT /v2/.../manifests handler
+        // can validate them against `validate_agent_name`-equivalent
+        // Zod schemas without parsing the TOML config blob.
+        if let Some(v) = &self.principal_name {
+            if !v.is_empty() {
+                map.insert(
+                    "dev.pekohub.principalName".to_string(),
+                    serde_json::Value::String(v.clone()),
+                );
+            }
+        }
+        if let Some(v) = &self.extension_id {
+            if !v.is_empty() {
+                map.insert(
+                    "dev.pekohub.extensionId".to_string(),
+                    serde_json::Value::String(v.clone()),
+                );
+            }
+        }
+
         if map.is_empty() {
             None
         } else {
@@ -580,6 +653,20 @@ impl RegistryManifest {
                         self.signatures = Some(parsed);
                     }
                 }
+            }
+
+            // PekoHub-side identity annotations (audit section 7).
+            if let Some(v) = map
+                .get("dev.pekohub.principalName")
+                .and_then(|v| v.as_str())
+            {
+                self.principal_name = Some(v.to_string());
+            }
+            if let Some(v) = map
+                .get("dev.pekohub.extensionId")
+                .and_then(|v| v.as_str())
+            {
+                self.extension_id = Some(v.to_string());
             }
         }
     }

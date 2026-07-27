@@ -384,6 +384,15 @@ impl ExtensionUnpackager {
         let manifest = Self::parse_manifest(&files)?;
         Self::validate_checksums(&manifest, &files)?;
 
+        // Reject path-traversal spellings in the embedded extension id
+        // before it flows into `target_dir.join(&id)` (runtime PR #241
+        // parity). The runtime-side `validate_agent_name` is the SoT;
+        // `.ext` imports that pass it can still be `..` segments if we
+        // skip this check.
+        crate::common::identifiers::validate_agent_name(&manifest.extension.id).map_err(
+            |e| anyhow::anyhow!("[unsafe_extension_id] {}: {e}", manifest.extension.id),
+        )?;
+
         // Determine target extension directory
         let ext_dir = target_dir.join(&manifest.extension.id);
 

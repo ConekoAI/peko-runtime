@@ -502,6 +502,7 @@ impl RegistryClient {
         let mut manifest = RegistryManifest::new(name, version)
             .with_kind("principal")
             .with_ref(remote_ref)
+            .with_principal_name(name)
             .with_config(
                 config_digest.clone(),
                 config_size,
