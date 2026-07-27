@@ -1624,16 +1624,41 @@ async fn run_principal_send(
     // client; for `OneShot` we discard the events and rely on the final
     // `PrincipalSent { content }` to carry the answer. Either way, a
     // sink-write error aborts the root agent task and returns early.
+    //
+    // We also forward a content-free `PrincipalSentIteration` marker on
+    // every observed `Lifecycle{Running}` event so the desktop frontend
+    // can break chat bubbles at agentic-iteration boundaries (text
+    // emitted before a tool call and text emitted after it come from
+    // different LLM turns). Tool-call / thinking / retry / usage events
+    // stay backend-only and are dropped — the bubble break is driven
+    // solely by the iteration counter, not by re-emitting those events.
+    let mut iteration: u32 = 0;
     while let Some(event) = event_rx.recv().await {
-        let delta = match event {
-            AgenticEvent::AssistantDelta { text, .. } => text,
-            AgenticEvent::AssistantText { text, .. } => text,
-            _ => continue,
+        // (packet, debug label) — the label is captured up front so the
+        // error log below can refer to it after `packet` has been moved
+        // into `send_response`.
+        let (packet, packet_label) = match event {
+            AgenticEvent::Lifecycle {
+                phase: peko_engine::LifecyclePhase::Running,
+                ..
+            } => {
+                iteration += 1;
+                (
+                    ResponsePacket::PrincipalSentIteration { request_id, iteration },
+                    "PrincipalSentIteration",
+                )
+            }
+            AgenticEvent::AssistantDelta { text, .. } | AgenticEvent::AssistantText { text, .. } => {
+                (
+                    ResponsePacket::PrincipalSentChunk { request_id, delta: text },
+                    "PrincipalSentChunk",
+                )
+            }
+            _ => continue, // tool/thinking/retry/usage stay backend-only
         };
         if matches!(response_kind, PrincipalSendResponseKind::Streaming) {
-            let packet = ResponsePacket::PrincipalSentChunk { request_id, delta };
             if let Err(e) = send_response(sink, packet).await {
-                tracing::warn!("failed to send PrincipalSentChunk: {e}; aborting stream");
+                tracing::warn!("failed to send {packet_label}: {e}; aborting stream");
                 root_agent_handle.abort();
                 let done = ResponsePacket::Done {
                     request_id,
@@ -1644,8 +1669,8 @@ async fn run_principal_send(
                 return Ok(());
             }
         }
-        // For OneShot we drop `delta` — the client expects one final
-        // packet with the full answer, not deltas.
+        // For OneShot we drop the chunk/iteration packet — the client
+        // expects one final packet with the full answer, not deltas.
     }
 
     // The channel closed because the root agent task dropped

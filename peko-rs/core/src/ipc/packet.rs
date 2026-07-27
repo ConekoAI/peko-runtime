@@ -1408,6 +1408,18 @@ pub enum ResponsePacket {
     #[serde(rename = "principal_sent_chunk")]
     PrincipalSentChunk { request_id: u64, delta: String },
 
+    /// Content-free agentic-iteration boundary marker for a
+    /// `PrincipalSendStream` response. Emitted once at the start of each
+    /// agentic loop iteration (when the runtime observes a
+    /// `Lifecycle{Running}` event). Clients use it to break assistant
+    /// text into one bubble per iteration and to show a "working"
+    /// indicator while awaiting the next iteration's first token
+    /// (e.g. during a tool call between iterations). `iteration` is
+    /// 1-based. Tool-call / thinking detail is intentionally NOT sent —
+    /// it stays backend-only in the session log.
+    #[serde(rename = "principal_sent_iteration")]
+    PrincipalSentIteration { request_id: u64, iteration: u32 },
+
     /// Final packet of a `PrincipalSendStream` response. Carries the
     /// full final answer (same content the non-streaming `PrincipalSent`
     /// would have returned) so the frontend can confirm the response
@@ -2015,6 +2027,7 @@ impl ResponsePacket {
             | Self::AuthStatus { request_id, .. }
             | Self::PrincipalSent { request_id, .. }
             | Self::PrincipalSentChunk { request_id, .. }
+            | Self::PrincipalSentIteration { request_id, .. }
             | Self::PrincipalSentDone { request_id, .. }
             | Self::PrincipalSentSuccessor { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
@@ -2099,6 +2112,7 @@ impl ResponsePacket {
             Self::AuthStatus { .. } => "AuthStatus",
             Self::PrincipalSent { .. } => "PrincipalSent",
             Self::PrincipalSentChunk { .. } => "PrincipalSentChunk",
+            Self::PrincipalSentIteration { .. } => "PrincipalSentIteration",
             Self::PrincipalSentDone { .. } => "PrincipalSentDone",
             Self::PrincipalSentSuccessor { .. } => "PrincipalSentSuccessor",
             Self::PrincipalLog { .. } => "PrincipalLog",
@@ -4659,6 +4673,30 @@ mod tests {
         }
         let raw = String::from_utf8(bytes).unwrap();
         assert!(raw.contains("\"type\":\"principal_sent_chunk\""));
+    }
+
+    /// Content-free iteration boundary marker used by clients to break
+    /// assistant text into one bubble per agentic iteration.
+    #[test]
+    fn test_principal_sent_iteration_roundtrip() {
+        let resp = ResponsePacket::PrincipalSentIteration {
+            request_id: 5100,
+            iteration: 3,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalSentIteration {
+                request_id,
+                iteration,
+            } => {
+                assert_eq!(request_id, 5100);
+                assert_eq!(iteration, 3);
+            }
+            _ => panic!("Wrong variant"),
+        }
+        let raw = String::from_utf8(bytes).unwrap();
+        assert!(raw.contains("\"type\":\"principal_sent_iteration\""));
     }
 
     /// Final streaming packet carries the full final answer (same
