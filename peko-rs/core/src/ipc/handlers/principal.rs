@@ -493,6 +493,23 @@ impl RequestHandler for PrincipalHandler {
                 confirmed,
                 selected_capabilities,
             } => {
+                // The `name` field is the caller's chosen rename for an
+                // imported principal; it flows into filesystem paths
+                // downstream. Reject path-traversal spellings early so we
+                // never touch the filesystem with bad input. The unpackager
+                // re-validates for defense in depth (and also covers the
+                // manifest-declared principal name).
+                if let Some(ref proposed) = name {
+                    use crate::common::identifiers::validate_agent_name;
+                    if let Err(e) = validate_agent_name(proposed) {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("[unsafe_name] invalid principal name: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                }
                 if !confirmed {
                     let response = ResponsePacket::Error {
                         request_id,
@@ -612,6 +629,24 @@ impl RequestHandler for PrincipalHandler {
                 registry_host,
                 registry_token,
             } => {
+                // The caller-supplied `name` is the local rename for the
+                // pulled principal; it flows into filesystem paths
+                // downstream via `import_principal_package`. Reject
+                // path-traversal spellings early so we never touch the
+                // filesystem with bad input. The unpackager re-validates
+                // for defense in depth (it also covers the manifest's own
+                // `principal.name`).
+                if let Some(ref proposed) = name {
+                    use crate::common::identifiers::validate_agent_name;
+                    if let Err(e) = validate_agent_name(proposed) {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("[unsafe_name] invalid principal name: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                }
                 if !confirmed {
                     let response = ResponsePacket::Error {
                         request_id,
@@ -659,6 +694,18 @@ impl RequestHandler for PrincipalHandler {
                 permission,
                 ..
             } => {
+                // Validate name at the IPC boundary so a hostile caller can't
+                // reach `update_config(&name, …)` with a path-traversal spelling.
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
                 let subject = match take_resolved(request_id, sink).await {
                     Ok(s) => s,
                     Err(()) => return Ok(()),
@@ -739,6 +786,18 @@ impl RequestHandler for PrincipalHandler {
                 permission,
                 ..
             } => {
+                // Validate name at the IPC boundary so a hostile caller can't
+                // reach `update_config(&name, …)` with a path-traversal spelling.
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
                 let subject = match take_resolved(request_id, sink).await {
                     Ok(s) => s,
                     Err(()) => return Ok(()),
@@ -811,6 +870,19 @@ impl RequestHandler for PrincipalHandler {
             }
 
             RequestPacket::PrincipalPermissions { request_id, name } => {
+                // Validate name at the IPC boundary for consistency with the
+                // other principal-name arms. Read-only, but still flows into
+                // `load_principal(host, &name)`.
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
                 let principal = match load_principal(host, &name).await {
                     Some(p) => p,
                     None => {
@@ -852,6 +924,20 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 status,
             } => {
+                // Validate name at the IPC boundary so a hostile caller can't
+                // reach `principal_manager().update_config(&name, …)` with a
+                // path-traversal spelling. The manager joins `name` into
+                // `config_dir/principals/<name>/principal.toml`.
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
                 use crate::principal::config::Status;
                 let status_enum = match status.as_str() {
                     "online" => Status::Online,
@@ -911,6 +997,19 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 exposure,
             } => {
+                // Validate name at the IPC boundary so a hostile caller can't
+                // reach `principal_manager().update_config(&name, …)` with a
+                // path-traversal spelling.
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
                 use peko_auth::Exposure;
                 let exposure_enum = match exposure.as_str() {
                     "unexposed" => Exposure::Unexposed,
@@ -1083,6 +1182,19 @@ impl RequestHandler for PrincipalHandler {
                 exposure,
                 preferred_model_id,
             } => {
+                // Validate name at the IPC boundary so a hostile caller can't
+                // reach `load_principal(host, &name)` / `update_config(&name, …)`
+                // with a path-traversal spelling.
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
                 use crate::principal::config::{Exposure, Status};
 
                 let principal = match load_principal(host, &name).await {
@@ -1203,6 +1315,19 @@ impl RequestHandler for PrincipalHandler {
             }
 
             RequestPacket::PrincipalRemove { request_id, name } => {
+                // Validate name before `load_principal` and `manager.remove`.
+                // `remove` joins `name` into `config_dir/principals/<name>/`
+                // and deletes that subtree; an unsafe name would let a hostile
+                // caller delete paths outside the principals directory.
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
                 let principal = match load_principal(host, &name).await {
                     Some(p) => p,
                     None => {

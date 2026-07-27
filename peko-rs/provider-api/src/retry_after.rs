@@ -64,10 +64,7 @@ pub fn parse_retry_after_header(value: &str, now: SystemTime) -> Option<Duration
 /// Compute the positive `Duration` between `now` and `target`. Returns
 /// `None` if the target is in the past or the clock skew makes the
 /// delta unrepresentable (`Duration` can't go negative).
-fn delta_from_now(
-    target: chrono::DateTime<chrono::Utc>,
-    now: SystemTime,
-) -> Option<Duration> {
+fn delta_from_now(target: chrono::DateTime<chrono::Utc>, now: SystemTime) -> Option<Duration> {
     let target_systime: SystemTime = target.into();
     match target_systime.duration_since(now) {
         // OK case
@@ -290,10 +287,7 @@ mod tests {
             extract_body_delay("Quota exceeded. Try again in 2 minutes."),
             Some(Duration::from_secs(120))
         );
-        assert_eq!(
-            extract_body_delay("1 min."),
-            Some(Duration::from_secs(60))
-        );
+        assert_eq!(extract_body_delay("1 min."), Some(Duration::from_secs(60)));
     }
 
     #[test]

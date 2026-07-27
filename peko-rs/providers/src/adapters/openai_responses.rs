@@ -278,10 +278,10 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
     /// OpenAI parser; the `StandardRateLimitParser` would also
     /// work but adds the Anthropic scan path on every 429 for no
     /// signal — the cheaper, deterministic choice wins here.
-    fn rate_limit_parser(
-        &self,
-    ) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
-        Some(std::sync::Arc::new(peko_provider_api::OpenAiRateLimitParser))
+    fn rate_limit_parser(&self) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
+        Some(std::sync::Arc::new(
+            peko_provider_api::OpenAiRateLimitParser,
+        ))
     }
 
     fn build_request(
@@ -980,7 +980,9 @@ mod tests {
     #[test]
     fn adapter_installs_openai_rate_limit_parser() {
         let adapter = OpenAiResponsesAdapter::new();
-        let parser = adapter.rate_limit_parser().expect("OpenAI Responses must surface a parser");
+        let parser = adapter
+            .rate_limit_parser()
+            .expect("OpenAI Responses must surface a parser");
         assert_eq!(parser.kind(), peko_provider_api::RateLimitKind::OpenAi);
     }
 

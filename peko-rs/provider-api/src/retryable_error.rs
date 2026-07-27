@@ -317,11 +317,7 @@ impl RetryClassification {
         }
         if contains_any(
             msg,
-            &[
-                "insufficient_quota",
-                "quota_exceeded",
-                "billing_hard_limit",
-            ],
+            &["insufficient_quota", "quota_exceeded", "billing_hard_limit"],
         ) {
             return Self::QuotaExceeded;
         }
@@ -382,12 +378,7 @@ impl RetryClassification {
         // connection-level, not throttle-level).
         if contains_any(
             msg,
-            &[
-                "timeout",
-                "connection reset",
-                "refused",
-                "connection error",
-            ],
+            &["timeout", "connection reset", "refused", "connection error"],
         ) {
             return Self::Transient { retry_after: None };
         }
@@ -572,8 +563,7 @@ mod classification_tests {
 
     #[test]
     fn retry_after_absent_string_returns_none() {
-        let hint = BodyStringClassifier
-            .retry_after(&anyhow::anyhow!("HTTP error 429: no hint"));
+        let hint = BodyStringClassifier.retry_after(&anyhow::anyhow!("HTTP error 429: no hint"));
         assert_eq!(hint, None);
     }
 

@@ -292,8 +292,7 @@ impl RetryExecutor {
                 }
                 Err(e) => {
                     let classification = classifier.classify(&e);
-                    let local_budget_ok =
-                        attempt < policy.max_retries;
+                    let local_budget_ok = attempt < policy.max_retries;
                     let shared_budget_ok = match budget {
                         Some(b) => b.try_consume(),
                         None => true,

@@ -190,7 +190,10 @@ mod tests {
         let provider = create_provider_for_model(&config, "sk-test", &retry).unwrap();
         let opts = provider.options();
         assert_eq!(opts.max_retries, 9, "max_retries override must propagate");
-        assert_eq!(opts.retry_delay_ms, 250, "retry_delay_ms override must propagate");
+        assert_eq!(
+            opts.retry_delay_ms, 250,
+            "retry_delay_ms override must propagate"
+        );
         assert_eq!(
             opts.retry_jitter,
             Some(0.25),

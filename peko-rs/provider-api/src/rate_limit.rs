@@ -119,7 +119,12 @@ pub trait RateLimitParser: Send + Sync {
     /// (e.g. body-only error). Implementations should be tolerant:
     /// missing or malformed fields drop the field, they do NOT
     /// surface a hard error.
-    fn parse(&self, headers: &[HeaderEntry], body: &str, now: SystemTime) -> Option<RateLimitSnapshot>;
+    fn parse(
+        &self,
+        headers: &[HeaderEntry],
+        body: &str,
+        now: SystemTime,
+    ) -> Option<RateLimitSnapshot>;
 }
 
 /// OpenAI parser — covers `x-ratelimit-*` family (requests / tokens,
@@ -480,7 +485,10 @@ mod tests {
     #[test]
     fn header_value_is_case_insensitive() {
         let h = vec![header("X-RateLimit-Remaining-Requests", "5")];
-        assert_eq!(header_value(&h, "x-ratelimit-remaining-requests"), Some("5"));
+        assert_eq!(
+            header_value(&h, "x-ratelimit-remaining-requests"),
+            Some("5")
+        );
         assert_eq!(
             header_value(&h, "X-RATELIMIT-REMAINING-REQUESTS"),
             Some("5")

@@ -119,9 +119,7 @@ impl ProviderRetryConfig {
         }
         if let Some(j) = self.retry_jitter {
             if !(0.0..1.0).contains(&j) {
-                anyhow::bail!(
-                    "provider.retry: retry_jitter ({j}) must be in [0.0, 1.0)"
-                );
+                anyhow::bail!("provider.retry: retry_jitter ({j}) must be in [0.0, 1.0)");
             }
         }
         if self.retry_delay_ms == 0 {
@@ -206,10 +204,7 @@ mod tests {
     fn zero_delay_and_cap_smaller_than_seed_rejected() {
         let mut cfg = ProviderRetryConfig::default();
         cfg.retry_delay_ms = 0;
-        assert!(
-            cfg.validate().is_err(),
-            "zero delay must be rejected"
-        );
+        assert!(cfg.validate().is_err(), "zero delay must be rejected");
         cfg.retry_delay_ms = 1000;
         cfg.retry_max_delay_ms = 500;
         assert!(
@@ -230,7 +225,9 @@ mod tests {
             retry_jitter: Some(0.25),
             max_attempts: 12,
         };
-        original.validate().expect("non-default values must validate");
+        original
+            .validate()
+            .expect("non-default values must validate");
         let serialized = toml::to_string(&original).unwrap();
         let parsed: ProviderRetryConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed, original);

@@ -357,6 +357,19 @@ impl RequestHandler for ExtensionHandler {
                 name,
                 ids,
             } => {
+                // Validate the bundle's display name at the IPC boundary so
+                // the bundle label can't smuggle a path-traversal spelling
+                // into the store / registry payload.
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid bundle name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
                 let store = self.host.extension_store();
                 let ext_ids: Vec<_> = ids.iter().map(ExtensionId::new).collect();
                 match store.create_bundle(ext_ids, &name).await {
