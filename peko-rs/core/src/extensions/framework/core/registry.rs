@@ -532,7 +532,11 @@ impl ExtensionCore {
         hook_ids.push(exec_hook_id);
 
         // ── 2. Prompt section hook (auto-generated) ─────────────────────────────
-        let prompt_handler = Arc::new(AutoPromptHandler::from_metadata(&metadata, priority));
+        let prompt_handler = Arc::new(AutoPromptHandler::from_metadata(
+            &metadata,
+            extension_id.clone(),
+            priority,
+        ));
         let prompt_point = prompt_handler.hook_point();
         let prompt_reg = self
             .register_hook(prompt_point, prompt_handler, extension_id)

@@ -15,7 +15,7 @@
 //!
 //! | Port method                                | Executor entry point                                                                                              |
 //! |--------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
-//! | [`is_subagent_enabled`]                    | `principal_capabilities` snapshot → `Capability::is_granted("agent:<name>")`; fail-open when no snapshot registered |
+//! | [`is_subagent_enabled`]                    | `principal_capabilities` snapshot → `Capability::is_granted("agent:<name>")`; fail-closed when no snapshot is registered |
 //! | [`resolve_agent_config`]                   | workspace `<ws>/agents/<n>/AGENT.md` (dir) or `<ws>/agents/<n>.md` (flat), then global `agents/<n>/config.toml`    |
 //! | [`audit_spawn`]                            | `observability.audit("SubagentSpawn", ...)` — no-op when no hub is attached                                        |
 //! | [`execute_and_wait`]                       | `SubagentExecutor::execute_and_wait` — returns the projected `SubagentRunView`                                     |
@@ -141,18 +141,14 @@ impl SubagentExecutorRuntime {
 impl SubagentRuntime for SubagentExecutorRuntime {
     fn is_subagent_enabled(&self, subagent_type: &str) -> bool {
         // ADR-019/Track B: enforce the per-principal agent capability
-        // before loading any on-disk config. If the executor carries a
-        // capability snapshot, the requested subagent must be granted.
-        // If no snapshot is registered (standalone / test path),
-        // fail-open to preserve existing behavior.
-        if let Some(caps) = self.executor.principal_capabilities() {
+        // before loading any on-disk config. Missing authorization context
+        // is denied, matching the canonical tool-execution funnel.
+        self.executor.principal_capabilities().is_some_and(|caps| {
             let required = crate::extensions::framework::types::Capability::new(format!(
                 "agent:{subagent_type}"
             ));
             caps.is_granted(&required)
-        } else {
-            true
-        }
+        })
     }
 
     async fn resolve_agent_config(

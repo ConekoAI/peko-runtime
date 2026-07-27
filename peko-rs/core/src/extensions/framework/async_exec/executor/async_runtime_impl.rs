@@ -68,6 +68,9 @@ pub struct AsyncExecutorRuntime {
     principal_id: PrincipalId,
     /// F37: snapshot of the spawning principal's capability grants.
     capabilities: Arc<Vec<String>>,
+    /// Snapshot of the spawning principal's active extensions. Extension-owned
+    /// tools must remain inside this scope when dispatched asynchronously.
+    active_extensions: Arc<Vec<String>>,
 }
 
 impl AsyncExecutorRuntime {
@@ -79,6 +82,7 @@ impl AsyncExecutorRuntime {
         agent_id: Option<String>,
         principal_id: PrincipalId,
         capabilities: Arc<Vec<String>>,
+        active_extensions: Arc<Vec<String>>,
     ) -> Self {
         Self {
             executor,
@@ -86,6 +90,7 @@ impl AsyncExecutorRuntime {
             agent_id,
             principal_id,
             capabilities,
+            active_extensions,
         }
     }
 
@@ -149,7 +154,8 @@ impl AsyncRuntime for AsyncExecutorRuntime {
         // principal's grants.
         let context =
             ToolDispatchContext::builder(request.tool_name, request.params, session_key.clone())
-                .for_principal(self.principal_id.0.clone(), (*self.capabilities).clone());
+                .for_principal(self.principal_id.0.clone(), (*self.capabilities).clone())
+                .with_active_extensions((*self.active_extensions).clone());
 
         // F38: `dispatch_tool` internally calls
         // `dispatch_tool_with_signal(core, ctx, config, None)`. No

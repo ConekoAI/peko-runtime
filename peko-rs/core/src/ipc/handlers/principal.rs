@@ -1644,16 +1644,21 @@ async fn run_principal_send(
             } => {
                 iteration += 1;
                 (
-                    ResponsePacket::PrincipalSentIteration { request_id, iteration },
+                    ResponsePacket::PrincipalSentIteration {
+                        request_id,
+                        iteration,
+                    },
                     "PrincipalSentIteration",
                 )
             }
-            AgenticEvent::AssistantDelta { text, .. } | AgenticEvent::AssistantText { text, .. } => {
-                (
-                    ResponsePacket::PrincipalSentChunk { request_id, delta: text },
-                    "PrincipalSentChunk",
-                )
-            }
+            AgenticEvent::AssistantDelta { text, .. }
+            | AgenticEvent::AssistantText { text, .. } => (
+                ResponsePacket::PrincipalSentChunk {
+                    request_id,
+                    delta: text,
+                },
+                "PrincipalSentChunk",
+            ),
             _ => continue, // tool/thinking/retry/usage stay backend-only
         };
         if matches!(response_kind, PrincipalSendResponseKind::Streaming) {
@@ -1811,9 +1816,7 @@ async fn run_steering_successor(
             // released. Surfacing a soft error is safer than a panic.
             let error = ResponsePacket::Error {
                 request_id: predecessor_request_id,
-                message: format!(
-                    "could not re-acquire run permit for successor of {session_id}"
-                ),
+                message: format!("could not re-acquire run permit for successor of {session_id}"),
             };
             send_response(sink, error).await?;
             return Ok(());
@@ -1855,11 +1858,7 @@ async fn run_steering_successor(
 
     let decision = match principal
         .router
-        .route_streaming(
-            router_ctx,
-            Box::new(|_event: AgenticEvent| {}),
-            None,
-        )
+        .route_streaming(router_ctx, Box::new(|_event: AgenticEvent| {}), None)
         .await
     {
         Ok(d) => d,

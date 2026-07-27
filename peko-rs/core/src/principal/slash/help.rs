@@ -23,14 +23,10 @@ pub async fn handle_help(
     extension_services: &Arc<ExtensionServices>,
     format: OutputFormat,
 ) -> Result<String> {
-    // Reload config from disk so /help reflects recent edits (e.g. a user
-    // adding an extension to the allowlist while the daemon is running).
-    // If the on-disk file is missing or corrupt, fall back to the cached
-    // in-memory config rather than failing the slash command.
-    let config = match reload_config(principal).await {
-        Some(cfg) => cfg,
-        None => principal.config.read().await.clone(),
-    };
+    // Render from the manager-owned in-memory config: this is the same state
+    // used to build runtime capability snapshots and avoids presenting a
+    // different authorization view after an out-of-band file edit.
+    let config = principal.config.read().await.clone();
     let allowed = &config.capabilities;
     let extensions = list_enabled_extensions(extension_store, extension_services).await?;
     let filtered: Vec<&ExtensionSummary> = extensions
@@ -255,15 +251,6 @@ fn pluralize(word: &str) -> String {
     } else {
         format!("{word}s")
     }
-}
-
-/// Reload the Principal's config from its on-disk `principal.toml`, if
-/// possible. Returns `None` when the file cannot be read or parsed so the
-/// caller can fall back to the in-memory copy.
-async fn reload_config(principal: &Principal) -> Option<PrincipalConfig> {
-    let path = principal.workspace_path.join("principal.toml");
-    let raw = tokio::fs::read_to_string(&path).await.ok()?;
-    toml::from_str::<PrincipalConfig>(&raw).ok()
 }
 
 #[cfg(test)]

@@ -553,9 +553,7 @@ impl AppState {
         let mut resolver_builder = peko_providers::LlmResolver::new(catalog, secrets)
             .with_credential_provider(credential_provider)
             .with_retry_config(retry_config)
-            .map_err(|e| {
-                anyhow::anyhow!("resolver retry-config wiring failed: {e}")
-            })?;
+            .map_err(|e| anyhow::anyhow!("resolver retry-config wiring failed: {e}"))?;
         if std::env::var_os("PEKO_TEST_RESOLVER_BOOTSTRAP").is_some() {
             resolver_builder = resolver_builder.with_env_bootstrap();
         }
@@ -2918,14 +2916,20 @@ mod tests {
             "Grep missing after agent init"
         );
 
-        // Prompt section should return tool descriptions
+        // Prompt section should return tool descriptions. Use the
+        // principal-aware seed helper so the auto-prompt handler observes a
+        // granting capability snapshot for built-in tools.
         let prompt: Option<String> = core
-            .invoke_hook_text(
+            .invoke_hook_text_with_principal(
                 HookPoint::PromptSystemSection {
                     section: "tools".to_string(),
                     priority: 100,
                 },
                 HookInput::Unit,
+                Some("test-principal"),
+                Some(vec!["tool:*".to_string()]),
+                None,
+                None,
             )
             .await;
         assert!(prompt.is_some(), "Prompt section returned None");

@@ -131,14 +131,43 @@ impl RequestHandler for CapabilityHandler {
             } => {
                 let cap = peko_extension_api::Capability::new(capability);
                 let pm = self.host.principal_manager().clone();
+
+                // Capture whether the principal's grants currently satisfy
+                // `cap` (literal or wildcard). We use this to surface
+                // `removed: bool` on the response: a true revoke changed
+                // the principal's effective authority; a no-op revoke did
+                // not. Without this distinction the CLI/desktop can't
+                // tell "✅ revoked" from "✅ nothing to revoke".
+                let covered_before = match pm.get_by_name(&principal).await {
+                    Some(p) => {
+                        let cfg = p.config.read().await;
+                        cfg.capabilities.is_granted(&cap)
+                    }
+                    None => false,
+                };
+
                 let result = pm
                     .update_config(&principal, |config| {
-                        config.capabilities.remove(&cap);
+                        // Drop the literal grant if present and any
+                        // wildcard grant whose prefix matches `cap`. Both
+                        // are what `is_granted` would have consulted
+                        // before the mutation.
+                        config
+                            .capabilities
+                            .retain(|g| g.as_str() != cap.as_str() && !g.matches(&cap));
                     })
                     .await;
 
                 match result {
                     Ok(_) => {
+                        let still_covered = match pm.get_by_name(&principal).await {
+                            Some(p) => {
+                                let cfg = p.config.read().await;
+                                cfg.capabilities.is_granted(&cap)
+                            }
+                            None => false,
+                        };
+                        let removed = covered_before && !still_covered;
                         let response = ResponsePacket::CapabilityRevoked {
                             request_id,
                             capability: cap.to_string(),
@@ -146,6 +175,7 @@ impl RequestHandler for CapabilityHandler {
                                 "Capability '{}' revoked from principal '{}'",
                                 cap, principal
                             ),
+                            removed,
                         };
                         send_response(sink, response).await?;
                     }
@@ -179,6 +209,12 @@ impl RequestHandler for CapabilityHandler {
 
                         let detected = catalog.detected_capabilities();
                         let active = catalog.active_capabilities(&capabilities);
+                        let active_extensions: Vec<String> = catalog
+                            .items()
+                            .iter()
+                            .filter(|i| i.enabled)
+                            .map(|i| i.id.clone())
+                            .collect();
 
                         let response = ResponsePacket::CapabilityList {
                             request_id,
@@ -186,6 +222,7 @@ impl RequestHandler for CapabilityHandler {
                             granted,
                             detected,
                             active,
+                            active_extensions,
                         };
                         send_response(sink, response).await?;
                     }
