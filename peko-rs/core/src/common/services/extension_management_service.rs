@@ -157,6 +157,7 @@ impl ExtensionManagementService {
                 .with_ref(registry_ref)
                 .with_bundle_type("extension")
                 .with_extension_type(&ext.extension_type)
+                .with_extension_id(&ext.manifest.id.0)
                 .with_description(&ext.manifest.description)
                 .with_config(layer_digest.clone(), data.len() as u64, None::<String>);
         manifest.add_layer(Layer::new(
