@@ -454,8 +454,7 @@ mod tests {
     #[test]
     fn test_provider_retry_partial_block_parses() {
         let parsed: peko_provider_api::ProviderRetryConfig =
-            toml::from_str("max_retries = 8\n")
-                .expect("partial retry block must parse");
+            toml::from_str("max_retries = 8\n").expect("partial retry block must parse");
         assert_eq!(parsed.max_retries, 8);
         // Unset fields fall back to defaults.
         assert_eq!(parsed.retry_delay_ms, 1000);
@@ -508,10 +507,7 @@ mod tests {
     fn test_provider_retry_validation_zero_delay_and_cap_too_small() {
         let mut cfg = peko_provider_api::ProviderRetryConfig::default();
         cfg.retry_delay_ms = 0;
-        assert!(
-            cfg.validate().is_err(),
-            "zero delay must be rejected"
-        );
+        assert!(cfg.validate().is_err(), "zero delay must be rejected");
         cfg.retry_delay_ms = 1000;
         cfg.retry_max_delay_ms = 500;
         assert!(
@@ -532,10 +528,11 @@ mod tests {
             retry_jitter: Some(0.25),
             max_attempts: 12,
         };
-        original.validate().expect("non-default values must validate");
+        original
+            .validate()
+            .expect("non-default values must validate");
         let serialized = toml::to_string(&original).unwrap();
-        let parsed: peko_provider_api::ProviderRetryConfig =
-            toml::from_str(&serialized).unwrap();
+        let parsed: peko_provider_api::ProviderRetryConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed, original);
     }
 

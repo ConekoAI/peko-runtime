@@ -1457,18 +1457,15 @@ impl AgenticLoop {
                 {
                     Ok(s) => break 'stream_retry s,
                     Err(e) => {
-                        let classification =
-                            self.retry_classifier.classify(&e);
+                        let classification = self.retry_classifier.classify(&e);
                         let is_transient = classification.is_retryable();
-                        let within_local_budget =
-                            stream_attempt < self.stream_max_retries;
+                        let within_local_budget = stream_attempt < self.stream_max_retries;
                         let shared_budget_ok = self.shared_budget.try_consume();
-                        let should_retry =
-                            is_transient && within_local_budget && shared_budget_ok;
+                        let should_retry = is_transient && within_local_budget && shared_budget_ok;
                         if should_retry {
-                            let retry_after = classification.retry_after().or_else(|| {
-                                self.retry_classifier.retry_after(&e)
-                            });
+                            let retry_after = classification
+                                .retry_after()
+                                .or_else(|| self.retry_classifier.retry_after(&e));
                             let max_delay = std::time::Duration::from_secs(30);
                             let delay =
                                 retry_after.map(|d| d.min(max_delay)).unwrap_or_else(|| {
@@ -1664,16 +1661,12 @@ impl AgenticLoop {
                                 // so the total worst case is one
                                 // ceiling, not stacked transport+engine
                                 // ceilings.
-                                let classification =
-                                    self.retry_classifier.classify(&e);
+                                let classification = self.retry_classifier.classify(&e);
                                 let is_transient = classification.is_retryable();
-                                let within_local_budget =
-                                    stream_attempt < self.stream_max_retries;
-                                let shared_budget_ok =
-                                    self.shared_budget.try_consume();
-                                let should_retry = is_transient
-                                    && within_local_budget
-                                    && shared_budget_ok;
+                                let within_local_budget = stream_attempt < self.stream_max_retries;
+                                let shared_budget_ok = self.shared_budget.try_consume();
+                                let should_retry =
+                                    is_transient && within_local_budget && shared_budget_ok;
                                 if should_retry {
                                     let retry_after = classification
                                         .retry_after()

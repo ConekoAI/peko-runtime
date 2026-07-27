@@ -136,10 +136,10 @@ impl super::ApiAdapter for OpenAiAdapter {
     /// `x-ratelimit-*-requests` and `x-ratelimit-*-tokens` on both
     /// successful and 429 responses. The OpenAI parser reads all
     /// four counters and the body-delay fallback.
-    fn rate_limit_parser(
-        &self,
-    ) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
-        Some(std::sync::Arc::new(peko_provider_api::OpenAiRateLimitParser))
+    fn rate_limit_parser(&self) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
+        Some(std::sync::Arc::new(
+            peko_provider_api::OpenAiRateLimitParser,
+        ))
     }
 
     fn build_request(
@@ -783,7 +783,9 @@ mod tests {
     #[test]
     fn adapter_installs_openai_rate_limit_parser() {
         let adapter = OpenAiAdapter::new();
-        let parser = adapter.rate_limit_parser().expect("OpenAI must surface a parser");
+        let parser = adapter
+            .rate_limit_parser()
+            .expect("OpenAI must surface a parser");
         assert_eq!(parser.kind(), peko_provider_api::RateLimitKind::OpenAi);
     }
 

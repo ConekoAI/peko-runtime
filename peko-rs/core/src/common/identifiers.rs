@@ -55,6 +55,14 @@ pub fn validate_agent_name(name: &str) -> Result<(), ValidationError> {
         return Err(ValidationError::TooLong(64));
     }
 
+    // Reject path-traversal spellings. The per-char alphanumeric check below
+    // happens to reject `.` and therefore incidentally rejects `..`, but
+    // spelling out the rule keeps the contract auditable and survives any
+    // future relaxation of the per-char check.
+    if name == ".." || name == "." || name.contains("..") {
+        return Err(ValidationError::ContainsDotDot);
+    }
+
     // Check for path separators
     if name.contains('/') || name.contains('\\') {
         return Err(ValidationError::ContainsPathSeparators);
@@ -92,6 +100,9 @@ pub enum ValidationError {
 
     #[error("name contains invalid character: '{0}'")]
     InvalidCharacter(char),
+
+    #[error("name contains reserved '..' segment")]
+    ContainsDotDot,
 }
 
 #[cfg(test)]
@@ -144,6 +155,21 @@ mod tests {
                 parse_agent_name("my/agent@bad").unwrap_err(),
                 IdentifierError::InvalidAgentName(_)
             ));
+        }
+
+        #[test]
+        fn test_dotdot_rejected() {
+            // `..` and embedded `..` both fail; this pins the explicit
+            // path-traversal rule so future per-char tweaks don't regress.
+            for bad in ["..", ".", "foo..bar", "a..b", "my.."] {
+                assert!(
+                    matches!(
+                        parse_agent_name(bad).unwrap_err(),
+                        IdentifierError::InvalidAgentName(_)
+                    ),
+                    "expected '{bad}' to be rejected"
+                );
+            }
         }
     }
 }

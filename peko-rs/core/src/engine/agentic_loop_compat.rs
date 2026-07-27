@@ -4012,12 +4012,8 @@ mod tests {
         // land on it (or the wrapped one).
         let ae = err
             .downcast_ref::<AgenticError>()
-            .or_else(|| {
-                err.chain().find_map(|c| c.downcast_ref::<AgenticError>())
-            })
-            .unwrap_or_else(|| {
-                panic!("expected AgenticError in error chain, got: {err:?}")
-            });
+            .or_else(|| err.chain().find_map(|c| c.downcast_ref::<AgenticError>()))
+            .unwrap_or_else(|| panic!("expected AgenticError in error chain, got: {err:?}"));
         let (attempts, max_attempts, cause) = ae
             .as_retry_limit()
             .expect("expected AgenticError::RetryLimit variant");
@@ -4025,7 +4021,10 @@ mod tests {
         // Two `try_consume` permits used (one per attempted retry).
         // The actual call count is attempts+1 because the first call
         // is the pre-budget attempt; the budget gates the retries.
-        assert_eq!(attempts, 2, "expected exactly 2 retry attempts before exhaustion");
+        assert_eq!(
+            attempts, 2,
+            "expected exactly 2 retry attempts before exhaustion"
+        );
         assert!(
             cause.contains("connection"),
             "cause should preserve the upstream message, got: {cause}"

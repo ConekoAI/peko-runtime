@@ -98,10 +98,10 @@ impl super::ApiAdapter for OpenAiCompatibleAdapter {
     /// capture whichever family the upstream actually emits; the
     /// unused-family scan is cheap (a few header lookups) and
     /// deterministic.
-    fn rate_limit_parser(
-        &self,
-    ) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
-        Some(std::sync::Arc::new(peko_provider_api::StandardRateLimitParser))
+    fn rate_limit_parser(&self) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
+        Some(std::sync::Arc::new(
+            peko_provider_api::StandardRateLimitParser,
+        ))
     }
 
     fn build_request(

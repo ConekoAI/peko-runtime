@@ -8,6 +8,7 @@ use crate::extensions::framework::manager::packaging::ExtensionUnpackager;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
 use crate::principal::config::PrincipalConfig;
+use crate::registry::packaging::path_safety::safe_join;
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
@@ -196,6 +197,24 @@ impl PrincipalUnpackager {
             .clone()
             .unwrap_or_else(|| manifest.principal.name.clone());
 
+        // Defense in depth: even though IPC handlers validate `name` early,
+        // re-check here because anything reaching this point flows into
+        // filesystem paths. Rejects `..`, `/`, `\`, leading/trailing `-`,
+        // non-alnum, etc. (also see the explicit `..` rule introduced in
+        // `common::identifiers::validate_agent_name`).
+        crate::common::identifiers::validate_agent_name(&name)
+            .map_err(|e| anyhow::anyhow!("[unsafe_name] {e}"))?;
+
+        // Embedded extension ids flow into `temp_dir/{id}.ext` paths during
+        // `import_extensions` (called separately by the IPC handler).
+        // Validate them here too so a caller that reaches this method
+        // directly — bypassing the IPC layer — also catches adversarial
+        // ids before any temp-dir collision can occur.
+        for ext_ref in &manifest.extensions {
+            crate::common::identifiers::validate_agent_name(&ext_ref.id)
+                .map_err(|e| anyhow::anyhow!("[unsafe_extension_id] {}: {e}", ext_ref.id))?;
+        }
+
         let identity = self
             .import_identity(&files, &manifest, &options, &name)
             .await?;
@@ -350,7 +369,7 @@ impl PrincipalUnpackager {
         for (path, content) in files {
             if path.starts_with("agents/") {
                 let file_name = path.strip_prefix("agents/").unwrap_or(path);
-                let dest_path = agents_dir.join(file_name);
+                let dest_path = safe_join(&agents_dir, file_name)?;
                 if let Some(parent) = dest_path.parent() {
                     tokio::fs::create_dir_all(parent).await?;
                 }
@@ -374,7 +393,7 @@ impl PrincipalUnpackager {
         for (path, content) in files {
             if path.starts_with("memory/") {
                 let file_name = path.strip_prefix("memory/").unwrap_or(path);
-                let dest_path = memory_dir.join(file_name);
+                let dest_path = safe_join(&memory_dir, file_name)?;
                 if let Some(parent) = dest_path.parent() {
                     tokio::fs::create_dir_all(parent).await?;
                 }
@@ -399,7 +418,7 @@ impl PrincipalUnpackager {
         for (path, content) in files {
             if path.starts_with("sessions/") {
                 let file_name = path.strip_prefix("sessions/").unwrap_or(path);
-                let dest_path = sessions_dir.join(file_name);
+                let dest_path = safe_join(&sessions_dir, file_name)?;
                 if let Some(parent) = dest_path.parent() {
                     tokio::fs::create_dir_all(parent).await?;
                 }
@@ -431,6 +450,12 @@ impl PrincipalUnpackager {
         std::fs::create_dir_all(&temp_dir)?;
 
         for ext_ref in &manifest.extensions {
+            // `ext_ref.id` flows into `temp_dir.join("{id}.ext")` and
+            // `temp_dir.join("extract-{id}")` below; reject path-traversal
+            // spellings at the source.
+            crate::common::identifiers::validate_agent_name(&ext_ref.id)
+                .map_err(|e| anyhow::anyhow!("[unsafe_extension_id] {}: {e}", ext_ref.id))?;
+
             let archive_path = format!("extensions/{}.ext", ext_ref.id);
             let bytes = match files.get(&archive_path) {
                 Some(b) => b,
@@ -486,6 +511,16 @@ impl PrincipalUnpackager {
         let mut warnings = Vec::new();
 
         for ext_ref in &manifest.extensions {
+            // Reject path-traversal spellings in the embedded extension id
+            // before formatting any path-like string from it.
+            if let Err(e) = crate::common::identifiers::validate_agent_name(&ext_ref.id) {
+                warnings.push(format!(
+                    "Unsafe extension id '{}' in manifest: {e}",
+                    ext_ref.id
+                ));
+                continue;
+            }
+
             let archive_path = format!("extensions/{}.ext", ext_ref.id);
             let bytes = match files.get(&archive_path) {
                 Some(b) => b,

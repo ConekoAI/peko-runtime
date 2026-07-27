@@ -262,9 +262,7 @@ pub trait ApiAdapter: Send + Sync {
     /// [`peko_provider_api::BodyStringClassifier`]. Returned as
     /// `Arc<dyn RetryClassifier>` so callers can stash it in the
     /// shared budget without an extra allocation per call.
-    fn wire_classifier(
-        &self,
-    ) -> Option<std::sync::Arc<dyn peko_provider_api::RetryClassifier>> {
+    fn wire_classifier(&self) -> Option<std::sync::Arc<dyn peko_provider_api::RetryClassifier>> {
         None
     }
 }
@@ -418,9 +416,7 @@ impl ApiAdapter for AnyAdapter {
         }
     }
 
-    fn rate_limit_parser(
-        &self,
-    ) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
+    fn rate_limit_parser(&self) -> Option<std::sync::Arc<dyn peko_provider_api::RateLimitParser>> {
         match self {
             Self::OpenAi(a) => a.rate_limit_parser(),
             Self::OpenAiResponses(a) => a.rate_limit_parser(),

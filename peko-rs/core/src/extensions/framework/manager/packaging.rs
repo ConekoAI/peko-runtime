@@ -11,6 +11,7 @@
 use crate::extensions::framework::store_trait::ExtensionStore;
 #[cfg(test)]
 use crate::extensions::framework::store_trait::LoadedExtension;
+use crate::registry::packaging::path_safety::safe_join;
 use anyhow::Context;
 use peko_extension_api::ExtensionId;
 #[cfg(test)]
@@ -425,7 +426,11 @@ impl ExtensionUnpackager {
         // Extract extension files
         for (path, content) in &files {
             if let Some(ext_path) = path.strip_prefix("extension/") {
-                let target_path = ext_dir.join(ext_path);
+                // Funnel every archive-entry write through `safe_join` so
+                // a `..` segment in the entry path can't escape `ext_dir`.
+                let target_path = safe_join(&ext_dir, ext_path).map_err(|e| {
+                    anyhow::anyhow!("[unsafe_path] {}: {e}", path)
+                })?;
                 if let Some(parent) = target_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }

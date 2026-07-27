@@ -234,18 +234,57 @@ async fn run_import(
 }
 
 fn write_tar_gz(path: &Path, files: &HashMap<String, Vec<u8>>) -> std::io::Result<()> {
+    // Write the tar archive by hand so that malicious entry paths (`..`,
+    // absolute paths) can be encoded. The upstream `tar::Header::set_path`
+    // helper hard-rejects `..` at construction time, and the 0.4.44 release
+    // does not expose `set_path_raw`. Constructing the 512-byte header
+    // directly is the only way to put a path-traversal payload on the wire
+    // for negative tests.
     let file = std::fs::File::create(path)?;
-    let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
-    let mut tar = tar::Builder::new(enc);
+    let mut gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut buffer: Vec<u8> = Vec::new();
+
     for (name, content) in files {
-        let mut header = tar::Header::new_gnu();
-        header.set_path(name)?;
-        header.set_size(content.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar.append(&header, content.as_slice())?;
+        // 512-byte ustar header.
+        let mut header = [0u8; 512];
+        // name[0..100]
+        let name_bytes = name.as_bytes();
+        let n = name_bytes.len().min(100);
+        header[..n].copy_from_slice(&name_bytes[..n]);
+        // mode[100..108] — "0000644\0"
+        header[100..107].copy_from_slice(b"0000644");
+        header[107] = 0;
+        // uid[108..116], gid[116..124] — "0000000\0" (left as zeros; checksums
+        // don't validate them)
+        // size[124..136] — octal string
+        let size_str = format!("{:011o}\0", content.len());
+        header[124..136].copy_from_slice(size_str.as_bytes());
+        // mtime[136..148] — "00000000000\0"
+        // cksum[148..156] — fill with spaces first, then compute.
+        header[148..156].copy_from_slice(b"        ");
+        // typeflag[156] — '0' = regular file
+        header[156] = b'0';
+        // magic[257..263] + version[263..265] — identifies this as ustar so
+        // tar's reader uses ustar interpretation.
+        header[257..263].copy_from_slice(b"ustar\0");
+        header[263..265].copy_from_slice(b"00");
+        // Compute checksum: sum of all bytes (with cksum field as 8 spaces).
+        let sum: u32 = header.iter().map(|&b| b as u32).sum();
+        let cksum_str = format!("{:06o}\0 ", sum);
+        header[148..156].copy_from_slice(cksum_str.as_bytes());
+
+        buffer.extend_from_slice(&header);
+        buffer.extend_from_slice(content);
+        // Pad to 512-byte boundary.
+        let pad = (512 - (content.len() % 512)) % 512;
+        buffer.resize(buffer.len() + pad, 0);
     }
-    tar.finish()?;
+    // End-of-archive: two 512-byte blocks of zeros.
+    buffer.resize(buffer.len() + 1024, 0);
+
+    use std::io::Write;
+    gz.write_all(&buffer)?;
+    gz.finish()?;
     Ok(())
 }
 
@@ -715,4 +754,261 @@ fn build_signed_manifest_pinned(
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());
     manifest.signatures.algorithm = "ed25519".to_string();
     manifest.to_toml().unwrap().into_bytes()
+}
+
+// ── Path-traversal & unsafe-name safety tests ───────────────────────
+//
+// These tests pin the new defenses in `principal_unpackager.rs`:
+//   - `safe_join` rejects `..`, absolute paths, NUL bytes, empty rel
+//   - `validate_agent_name` rejects `..`, `/`, `\`, leading/trailing `-`
+//   - extension ids from `manifest.extensions[].id` flow through
+//     `temp_dir/{id}.ext` and are likewise checked.
+//
+// Each test crafts a tarball (signed where needed so signature verification
+// doesn't shadow the safety gate) and asserts the import fails with the
+// stable `[unsafe_*]` error code.
+
+/// Build a `PrincipalManifest` whose principal name is set to `name`,
+/// re-signed by `signer`. Use this when the test needs a different
+/// principal name from "sig-test" but still wants a passing signature.
+fn build_signed_manifest_with_name(
+    signer: &KeyPair,
+    name: &str,
+    did: &str,
+    did_json: &[u8],
+    config_bytes: &[u8],
+    keys_bytes: &[u8],
+) -> Vec<u8> {
+    let mut manifest = PrincipalManifest::new(name, "1.0.0", did);
+    manifest.principal.description = Some("safety-test-fixture".to_string());
+    manifest.add_file("identity/did.json", did_json);
+    manifest.add_file("config/principal.toml", config_bytes);
+    manifest.add_file("identity/keys.enc", keys_bytes);
+
+    let manifest_for_signing = PrincipalManifest {
+        signatures: peko_core::registry::packaging::manifest::Signatures {
+            manifest: String::new(),
+            algorithm: "ed25519".to_string(),
+        },
+        ..manifest.clone()
+    };
+    let signed_bytes = manifest_for_signing.to_toml().unwrap().into_bytes();
+    let signature = signer.sign(&signed_bytes);
+    manifest.signatures.manifest =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());
+    manifest.signatures.algorithm = "ed25519".to_string();
+    manifest.to_toml().unwrap().into_bytes()
+}
+
+fn assert_error_code(err: anyhow::Error, code: &str, test: &str) {
+    let msg = err.to_string();
+    assert!(
+        msg.contains(code),
+        "[{test}] expected error containing {code:?}, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn unsafe_new_name_rejected() {
+    let (signer, did_doc, did) = fresh_identity();
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
+    let manifest_bytes = build_signed_manifest(
+        &signer,
+        "sig-test",
+        &did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
+    let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
+
+    let opts = PrincipalImportOptions {
+        new_name: Some("../escape".to_string()),
+        rotate_keys: false,
+        import_sessions: false,
+        allow_unsigned: false,
+        force: true,
+        trust_store: None,
+        trust_policy: TrustPolicy::AllowUntrusted,
+        selected_capabilities: Vec::new(),
+    };
+    let err = run_import(&files, opts).await.expect_err("unsafe new_name should fail");
+    assert_error_code(err, "[unsafe_name]", "unsafe_new_name_rejected");
+}
+
+#[tokio::test]
+async fn unsafe_principal_name_rejected() {
+    let (signer, did_doc, did) = fresh_identity();
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
+    let manifest_bytes = build_signed_manifest_with_name(
+        &signer,
+        "../escape",
+        &did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
+    let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
+
+    let opts = PrincipalImportOptions {
+        new_name: None,
+        rotate_keys: false,
+        import_sessions: false,
+        allow_unsigned: false,
+        force: true,
+        trust_store: None,
+        trust_policy: TrustPolicy::AllowUntrusted,
+        selected_capabilities: Vec::new(),
+    };
+    let err = run_import(&files, opts)
+        .await
+        .expect_err("manifest name with '..' should fail");
+    assert_error_code(err, "[unsafe_name]", "unsafe_principal_name_rejected");
+}
+
+#[tokio::test]
+async fn unsafe_agent_entry_path_rejected() {
+    let (signer, did_doc, did) = fresh_identity();
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
+    let manifest_bytes = build_signed_manifest(
+        &signer,
+        "sig-test",
+        &did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
+    let mut files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
+    // A malicious entry that traverses out of `agents/` after the prefix
+    // is stripped. The unpackager's `safe_join` rejects this before write.
+    files.insert("agents/../escape.md".to_string(), b"pwned".to_vec());
+
+    let opts = PrincipalImportOptions {
+        new_name: None,
+        rotate_keys: false,
+        import_sessions: false,
+        allow_unsigned: false,
+        force: true,
+        trust_store: None,
+        trust_policy: TrustPolicy::AllowUntrusted,
+        selected_capabilities: Vec::new(),
+    };
+    let err = run_import(&files, opts)
+        .await
+        .expect_err("unsafe agents/ traversal should fail");
+    assert_error_code(err, "[unsafe_path]", "unsafe_agent_entry_path_rejected");
+}
+
+#[tokio::test]
+async fn unsafe_memory_entry_path_rejected() {
+    let (signer, did_doc, did) = fresh_identity();
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
+    let manifest_bytes = build_signed_manifest(
+        &signer,
+        "sig-test",
+        &did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
+    let mut files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
+    files.insert(
+        "memory/../../../escape.mem".to_string(),
+        b"pwned".to_vec(),
+    );
+
+    let opts = PrincipalImportOptions {
+        new_name: None,
+        rotate_keys: false,
+        import_sessions: false,
+        allow_unsigned: false,
+        force: true,
+        trust_store: None,
+        trust_policy: TrustPolicy::AllowUntrusted,
+        selected_capabilities: Vec::new(),
+    };
+    let err = run_import(&files, opts)
+        .await
+        .expect_err("unsafe memory/ traversal should fail");
+    assert_error_code(err, "[unsafe_path]", "unsafe_memory_entry_path_rejected");
+}
+
+#[tokio::test]
+async fn unsafe_sessions_entry_path_rejected() {
+    let (signer, did_doc, did) = fresh_identity();
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
+    let manifest_bytes = build_signed_manifest(
+        &signer,
+        "sig-test",
+        &did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
+    let mut files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
+    files.insert("sessions/../../../escape.jsonl".to_string(), b"pwned".to_vec());
+
+    let opts = PrincipalImportOptions {
+        new_name: None,
+        rotate_keys: false,
+        import_sessions: true,
+        allow_unsigned: false,
+        force: true,
+        trust_store: None,
+        trust_policy: TrustPolicy::AllowUntrusted,
+        selected_capabilities: Vec::new(),
+    };
+    let err = run_import(&files, opts)
+        .await
+        .expect_err("unsafe sessions/ traversal should fail");
+    assert_error_code(err, "[unsafe_path]", "unsafe_sessions_entry_path_rejected");
+}
+
+#[tokio::test]
+async fn unsafe_extension_id_rejected() {
+    let (signer, did_doc, did) = fresh_identity();
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
+    let mut manifest = PrincipalManifest::new("sig-test", "1.0.0", &did);
+    manifest.principal.description = Some("safety-test-fixture".to_string());
+    manifest.add_file("identity/did.json", &did_json);
+    manifest.add_file("config/principal.toml", &config_bytes);
+    manifest.add_file("identity/keys.enc", &keys_bytes);
+    manifest.extensions = vec![peko_core::registry::packaging::ExtensionRef {
+        id: "../escape".to_string(),
+        registry_ref: "pekohub.com/ext/escape".to_string(),
+    }];
+
+    let manifest_for_signing = PrincipalManifest {
+        signatures: peko_core::registry::packaging::manifest::Signatures {
+            manifest: String::new(),
+            algorithm: "ed25519".to_string(),
+        },
+        ..manifest.clone()
+    };
+    let signed_bytes = manifest_for_signing.to_toml().unwrap().into_bytes();
+    let signature = signer.sign(&signed_bytes);
+    manifest.signatures.manifest =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());
+    manifest.signatures.algorithm = "ed25519".to_string();
+    let manifest_bytes = manifest.to_toml().unwrap().into_bytes();
+
+    let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
+    // Do NOT add `extensions/../escape.ext` — the unsafe_extension_id check
+    // fires before any path construction, and we want to exercise the name
+    // gate specifically.
+
+    let opts = PrincipalImportOptions {
+        new_name: None,
+        rotate_keys: false,
+        import_sessions: false,
+        allow_unsigned: false,
+        force: true,
+        trust_store: None,
+        trust_policy: TrustPolicy::AllowUntrusted,
+        selected_capabilities: Vec::new(),
+    };
+    let err = run_import(&files, opts)
+        .await
+        .expect_err("unsafe extension id should fail");
+    assert_error_code(err, "[unsafe_extension_id]", "unsafe_extension_id_rejected");
 }

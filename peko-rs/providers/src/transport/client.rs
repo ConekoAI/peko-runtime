@@ -229,7 +229,10 @@ impl HttpClient {
     /// worry about concurrent updates.
     #[must_use]
     pub fn last_rate_limit_snapshot(&self) -> Option<peko_provider_api::RateLimitSnapshot> {
-        self.last_snapshot.lock().ok().and_then(|guard| guard.clone())
+        self.last_snapshot
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
     }
 
     /// F40a: process a non-success `reqwest::Response` — pull the
@@ -240,19 +243,14 @@ impl HttpClient {
     ///
     /// Centralized so `post_json` / `post_stream` / `get` stay short
     /// and the snapshot-capture policy is uniform across the three.
-    async fn process_failed_response(
-        &self,
-        response: reqwest::Response,
-    ) -> anyhow::Error {
+    async fn process_failed_response(&self, response: reqwest::Response) -> anyhow::Error {
         let status_u16 = response.status().as_u16();
         // Collect headers up-front so we can both parse the snapshot
         // and feed them to a future rate-limit-parser enhancement.
         let header_entries: Vec<peko_provider_api::HeaderEntry> = response
             .headers()
             .iter()
-            .map(|(k, v)| {
-                peko_provider_api::HeaderEntry::new(k.as_str(), v.to_str().unwrap_or(""))
-            })
+            .map(|(k, v)| peko_provider_api::HeaderEntry::new(k.as_str(), v.to_str().unwrap_or("")))
             .collect();
         let retry_after = response
             .headers()
@@ -356,14 +354,16 @@ impl HttpClient {
         };
 
         match &self.retry_policy {
-            Some(policy) => RetryExecutor::execute_with_classifier_and_budget(
-                policy,
-                &format!("POST {path}"),
-                self.shared_budget.as_deref(),
-                &peko_provider_api::BodyStringClassifier,
-                operation,
-            )
-            .await,
+            Some(policy) => {
+                RetryExecutor::execute_with_classifier_and_budget(
+                    policy,
+                    &format!("POST {path}"),
+                    self.shared_budget.as_deref(),
+                    &peko_provider_api::BodyStringClassifier,
+                    operation,
+                )
+                .await
+            }
             None => operation().await,
         }
     }
@@ -405,14 +405,16 @@ impl HttpClient {
 
         // Retry the initial request if configured
         let response = match &self.retry_policy {
-            Some(policy) => RetryExecutor::execute_with_classifier_and_budget(
-                policy,
-                &format!("POST {path}"),
-                self.shared_budget.as_deref(),
-                &peko_provider_api::BodyStringClassifier,
-                operation,
-            )
-            .await?,
+            Some(policy) => {
+                RetryExecutor::execute_with_classifier_and_budget(
+                    policy,
+                    &format!("POST {path}"),
+                    self.shared_budget.as_deref(),
+                    &peko_provider_api::BodyStringClassifier,
+                    operation,
+                )
+                .await?
+            }
             None => operation().await?,
         };
 
@@ -444,14 +446,16 @@ impl HttpClient {
         };
 
         match &self.retry_policy {
-            Some(policy) => RetryExecutor::execute_with_classifier_and_budget(
-                policy,
-                &format!("GET {path}"),
-                self.shared_budget.as_deref(),
-                &peko_provider_api::BodyStringClassifier,
-                operation,
-            )
-            .await,
+            Some(policy) => {
+                RetryExecutor::execute_with_classifier_and_budget(
+                    policy,
+                    &format!("GET {path}"),
+                    self.shared_budget.as_deref(),
+                    &peko_provider_api::BodyStringClassifier,
+                    operation,
+                )
+                .await
+            }
             None => operation().await,
         }
     }
@@ -516,7 +520,10 @@ mod tests {
         );
         let msg = err.to_string();
         assert!(msg.contains("retry_after=3s"), "msg: {msg}");
-        assert!(!msg.contains("rate_limit_"), "msg should not embed snapshot tokens: {msg}");
+        assert!(
+            !msg.contains("rate_limit_"),
+            "msg should not embed snapshot tokens: {msg}"
+        );
     }
 
     /// F40a: `parse_retry_after_header` accepts integer-seconds form
