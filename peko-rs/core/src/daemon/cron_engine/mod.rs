@@ -411,26 +411,20 @@ impl CronEngine {
             let config = principal.config.read().await;
             config.owner.clone()
         };
-        // F37: snapshot the principal's capability grants AND name at
-        // fire time. The factory closure calls
-        // `core.execute_tool_via_hook(...)`, which fires the capability
-        // gate at `registry.rs:260-277` against these snapshotted
-        // grants. Pre-F37, `tool.execute(...)` was called directly via
-        // `core.get_tool(name)`, bypassing the gate. The cron engine
-        // is the highest-trust caller — a scheduled job is the
-        // principal's explicit authorization — so snapshot-at-fire is
-        // correct (no revocation concerns between fire and tool
-        // dispatch).
-        let (snapshot_capabilities, snapshot_principal_id) = {
+        // Snapshot the principal's grants at fire time, then derive active
+        // extensions from that same snapshot. Both values flow through the
+        // canonical tool funnel so extension ownership requirements cannot be
+        // bypassed by scheduled execution.
+        let (snapshot_capabilities, snapshot_principal_id, capabilities) = {
             let config = principal.config.read().await;
-            let caps: Vec<String> = config
-                .capabilities
-                .grants
-                .iter()
-                .map(|c| c.0.clone())
-                .collect();
-            (caps, config.name.clone())
+            let capabilities = config.capabilities.clone();
+            let caps = capabilities.grants.iter().map(|c| c.0.clone()).collect();
+            (caps, config.name.clone(), capabilities)
         };
+        let snapshot_active_extensions = pm
+            .active_extensions_for(&principal, &capabilities)
+            .await
+            .to_vec();
         let principal_root_session_key = format!("root:{owner}");
 
         let wake = wake_on_completion.unwrap_or(false);
@@ -462,7 +456,8 @@ impl CronEngine {
                 tool_params.clone(),
                 principal_root_session_key.clone(),
             )
-            .for_principal(snapshot_principal_id, snapshot_capabilities);
+            .for_principal(snapshot_principal_id, snapshot_capabilities)
+            .with_active_extensions(snapshot_active_extensions);
 
         let receipt = executor.dispatch_tool(&core, context, config).await?;
 

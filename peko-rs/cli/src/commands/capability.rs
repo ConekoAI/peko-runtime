@@ -86,6 +86,7 @@ pub async fn handle_capability(command: CapabilityCommands, json: bool) -> Resul
                 ResponsePacket::CapabilityRevoked {
                     capability,
                     message,
+                    removed,
                     ..
                 } => {
                     if json {
@@ -95,10 +96,13 @@ pub async fn handle_capability(command: CapabilityCommands, json: bool) -> Resul
                                 "capability": capability,
                                 "principal": principal,
                                 "message": message,
+                                "removed": removed,
                             })
                         );
-                    } else {
+                    } else if removed {
                         println!("✅ {message}");
+                    } else {
+                        println!("ℹ️  Nothing to revoke: '{capability}' is not currently granted to '{principal}'");
                     }
                 }
                 ResponsePacket::Error { message, .. } => anyhow::bail!(message),
@@ -112,6 +116,7 @@ pub async fn handle_capability(command: CapabilityCommands, json: bool) -> Resul
                     granted,
                     detected,
                     active,
+                    active_extensions,
                     ..
                 } => {
                     if json {
@@ -122,6 +127,7 @@ pub async fn handle_capability(command: CapabilityCommands, json: bool) -> Resul
                                 "granted": granted,
                                 "detected": detected,
                                 "active": active,
+                                "active_extensions": active_extensions,
                             })
                         );
                     } else {
@@ -153,6 +159,14 @@ pub async fn handle_capability(command: CapabilityCommands, json: bool) -> Resul
                         } else {
                             for cap in &active {
                                 println!("  {cap}");
+                            }
+                        }
+                        println!("\nActive extensions:");
+                        if active_extensions.is_empty() {
+                            println!("  (none)");
+                        } else {
+                            for id in &active_extensions {
+                                println!("  {id}");
                             }
                         }
                     }

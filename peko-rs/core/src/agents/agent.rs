@@ -1442,6 +1442,12 @@ impl Agent {
                     .map(|caps| caps.grants.iter().map(|c| c.0.clone()).collect())
                     .unwrap_or_default(),
             );
+            let snapshot_active_extensions: Arc<Vec<String>> = Arc::new(
+                self.principal_active_extensions
+                    .as_ref()
+                    .map(|active| active.to_vec())
+                    .unwrap_or_default(),
+            );
             // Phase 10c: `AsyncExecutorRuntime` is the framework-host
             // adapter that implements `crate::tools::builtin::async_control::AsyncRuntime`.
             // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ExtensionCore>` +
@@ -1455,6 +1461,7 @@ impl Agent {
                     Some(self.identity.did.clone()),
                     self.principal_id.clone(),
                     snapshot_capabilities,
+                    snapshot_active_extensions,
                 ),
             );
             let runtime_handle = runtime.as_shared();

@@ -11,9 +11,8 @@
 //! ## Methods
 //!
 //! - [`is_subagent_enabled`](SubagentRuntime::is_subagent_enabled) — capability
-//!   gate. Returns `true` when the per-principal capability snapshot
-//!   grants `agent:<name>` (or when no snapshot is registered — the
-//!   fail-open standalone/test path).
+//!   gate. Returns `true` only when the per-principal capability snapshot
+//!   grants `agent:<name>`; missing authorization context is denied.
 //! - [`resolve_agent_config`](SubagentRuntime::resolve_agent_config) —
 //!   disk lookup. Workspace-scoped first
 //!   (`<workspace>/agents/<name>/AGENT.md` or `<workspace>/agents/<name>.md`),
@@ -46,13 +45,9 @@ use crate::tools::builtin::messaging::dto::{
 pub trait SubagentRuntime: Send + Sync {
     /// Capability check.
     ///
-    /// Returns `true` when:
-    /// - the executor has no principal capability snapshot registered
-    ///   (standalone / test path — fail-open per existing behavior), or
-    /// - the snapshot grants `agent:<subagent_type>`.
-    ///
-    /// Returns `false` when the snapshot is registered and does not
-    /// grant the requested subagent.
+    /// Returns `true` only when the registered principal capability snapshot
+    /// grants `agent:<subagent_type>`. Missing context and missing grants are
+    /// both denied.
     fn is_subagent_enabled(&self, subagent_type: &str) -> bool;
 
     /// Resolve a subagent config from disk.

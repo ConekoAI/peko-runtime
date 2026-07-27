@@ -212,10 +212,8 @@ impl AgentTool {
         model_override: Option<&str>,
     ) -> anyhow::Result<crate::tools::builtin::messaging::dto::AgentConfig> {
         // ADR-019/Track B: enforce the per-principal agent capability before
-        // loading any on-disk config. If the runtime's underlying executor
-        // carries a capability snapshot, the requested subagent must be
-        // granted. If no snapshot is registered (standalone / test path),
-        // fail-open to preserve existing behavior.
+        // loading any on-disk config. Missing authorization context and missing
+        // grants are both denied.
         if !self.runtime.is_subagent_enabled(subagent_type) {
             anyhow::bail!(
                 "Subagent '{subagent_type}' is not enabled for this principal. \
@@ -689,9 +687,8 @@ impl SubagentRuntime for TestSubagentRuntime {
             .inner
             .lock()
             .expect("TestSubagentRuntime mutex poisoned");
-        // Fail-open when no grants registered (standalone/test path).
         if state.grants.is_empty() {
-            return true;
+            return false;
         }
         let required = format!("agent:{subagent_type}");
         state.grants.iter().any(|g| g == &required)
@@ -821,7 +818,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_state_registry_unregistered_principal_is_fail_open() {
+    async fn test_agent_state_registry_unregistered_principal_is_fail_closed() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.register_agent(
             "writer",
@@ -835,13 +832,9 @@ mod tests {
             Some(PathBuf::from("/tmp/nonexistent")),
         );
 
-        // No grants registered; standalone/test path should fail-open.
+        // No grants registered: missing authorization context is denied.
         let result = tool.resolve_subagent_config("writer", None).await;
-        assert!(
-            result.is_ok(),
-            "unregistered principal should fail-open: {:?}",
-            result.err()
-        );
+        assert!(result.is_err(), "unregistered principal should fail closed");
     }
 
     #[tokio::test]

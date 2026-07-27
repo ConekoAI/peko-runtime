@@ -576,6 +576,25 @@ impl PrincipalManager {
         (Arc::clone(&self.inbox_registry), lock)
     }
 
+    /// Recompute the principal's active extension set for a capability
+    /// snapshot against the current global extension inventory.
+    pub(crate) async fn active_extensions_for(
+        &self,
+        principal: &Principal,
+        capabilities: &peko_extension_api::Capabilities,
+    ) -> peko_extension_api::ActiveExtensionSet {
+        let global_items = match self.extension_store.as_ref() {
+            Some(store) => store.global_items().await,
+            None => Vec::new(),
+        };
+        crate::principal::extension_store::ExtensionCatalog::build(
+            capabilities,
+            &principal.agent_prompts,
+            &global_items,
+        )
+        .active_extensions()
+    }
+
     /// Build the `RouterContext` for a message arriving at a Principal
     /// boundary. This is the single point of truth for permission checks,
     /// session recall, and the principal's per-message view of its

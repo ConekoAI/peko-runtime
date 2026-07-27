@@ -325,6 +325,10 @@ name = "s6_principal_grant_revoke_roundtrip"
 path = "tests/scenarios/s6_principal_grant_revoke_roundtrip.rs"
 
 [[test]]
+name = "s7_capability_grant_revoke_list_e2e"
+path = "tests/scenarios/s7_capability_grant_revoke_list_e2e.rs"
+
+[[test]]
 name = "tunnel_security"
 path = "tests/tunnel_security.rs"
 

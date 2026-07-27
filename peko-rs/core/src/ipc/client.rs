@@ -809,6 +809,76 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
+    /// List all loaded Principals.
+    pub async fn principal_list(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalList { request_id };
+        self.request_response(packet).await
+    }
+
+    /// Look up a single Principal by name.
+    pub async fn principal_get(&self, name: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalGet {
+            request_id,
+            name: name.into(),
+        };
+        self.request_response(packet).await
+    }
+
+    /// Create a new Principal on disk + in-memory manager.
+    pub async fn principal_create(
+        &self,
+        name: impl Into<String>,
+        description: Option<String>,
+        model_id: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalCreate {
+            request_id,
+            name: name.into(),
+            description,
+            model_id: model_id.into(),
+        };
+        self.request_response(packet).await
+    }
+
+    /// Update an existing Principal's mutable config. All fields
+    /// except `name` are optional; omitted fields keep their current
+    /// values.
+    pub async fn principal_update(
+        &self,
+        name: impl Into<String>,
+        description: Option<String>,
+        status: Option<String>,
+        exposure: Option<String>,
+        preferred_model_id: Option<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalUpdate {
+            request_id,
+            name: name.into(),
+            description,
+            status,
+            exposure,
+            preferred_model_id,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Remove a Principal and delete its workspace/data.
+    pub async fn principal_remove(
+        &self,
+        name: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalRemove {
+            request_id,
+            name: name.into(),
+        };
+        self.request_response(packet).await
+    }
+
     // ------------------------------------------------------------------
     // Quota management (F18)
     // ------------------------------------------------------------------
