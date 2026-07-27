@@ -745,9 +745,27 @@ impl TunnelDispatcher {
         });
 
         // Forward each token delta as a raw-text `StreamChunk`.
+        // Forward each per-iteration boundary as a typed
+        // `StreamIteration` so pekohub can project it into an SSE
+        // `event: iteration` for web-chat iteration bubbles.
         let mut seq: u32 = 0;
         let mut streamed_any = false;
         while let Some(event) = event_rx.recv().await {
+            // Iteration boundary is a content-free marker — emit it
+            // BEFORE the chunk but don't break the chunk loop; the
+            // hub re-projects to an SSE event line.
+            if let peko_engine::AgenticEvent::IterationBoundary { iteration, .. } = event {
+                if let Err(e) = handle.send_stream_iteration(request_id.clone(), iteration) {
+                    warn!(
+                        "Failed to send stream iteration marker; aborting stream: {}",
+                        e
+                    );
+                    recv_handle.abort();
+                    let _ = handle.send_stream_end(request_id);
+                    return Ok(());
+                }
+                continue;
+            }
             let delta = match event {
                 peko_engine::AgenticEvent::AssistantDelta { text, .. } => text,
                 peko_engine::AgenticEvent::AssistantText { text, .. } => text,

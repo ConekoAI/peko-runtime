@@ -71,6 +71,26 @@ pub enum AgenticEvent {
         error: Option<String>,
     },
 
+    /// Agentic iteration boundary marker. Emitted once at the start
+    /// of each agentic loop iteration (1-based), before the model
+    /// call. Mirrors the IPC `PrincipalSentIteration` packet's
+    /// shape so the desktop's iteration-bubble UX and any future
+    /// tunnel-side consumer (e.g. pekohub web chat SSE) can break
+    /// assistant text into one bubble per iteration and show a
+    /// "thinking" indicator while awaiting the next iteration's
+    /// first token.
+    ///
+    /// Carrier is intentionally minimal — no tool-call or thinking
+    /// detail — to keep the relay cheap and to stay consistent with
+    /// the desktop's projection (which deliberately suppresses
+    /// session internals; see ADR-042).
+    IterationBoundary {
+        /// Run identifier
+        run_id: RunId,
+        /// 1-based iteration index (first iteration of a run is `1`)
+        iteration: u32,
+    },
+
     /// F31b: mid-stream retry attempt. Emitted when the agentic loop
     /// catches a retryable error (transient 5xx, timeout, network
     /// reset) from the LLM provider's byte stream and is about to
@@ -280,6 +300,7 @@ impl AgenticEvent {
     pub fn run_id(&self) -> &str {
         match self {
             AgenticEvent::Lifecycle { run_id, .. } => run_id,
+            AgenticEvent::IterationBoundary { run_id, .. } => run_id,
             AgenticEvent::Retry { run_id, .. } => run_id,
             AgenticEvent::AssistantText { run_id, .. } => run_id,
             AgenticEvent::Thinking { run_id, .. } => run_id,
@@ -340,6 +361,20 @@ mod tests {
         };
         assert!(end_event.is_end());
         assert!(!end_event.is_error());
+    }
+
+    #[test]
+    fn test_iteration_boundary_event() {
+        // 1-based; first iteration is `1`.
+        let event = AgenticEvent::IterationBoundary {
+            run_id: "run_xyz".to_string(),
+            iteration: 1,
+        };
+        assert_eq!(event.run_id(), "run_xyz");
+        match event {
+            AgenticEvent::IterationBoundary { iteration, .. } => assert_eq!(iteration, 1),
+            _ => panic!("Expected IterationBoundary event"),
+        }
     }
 
     #[test]
