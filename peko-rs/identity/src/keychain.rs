@@ -41,7 +41,10 @@ pub struct KeychainStorage {
 }
 
 impl KeychainStorage {
-    pub const DEFAULT_SERVICE: &'static str = "peko-runtime";
+    /// Canonical keychain service name across the workspace. Renamed
+    /// from `"peko-runtime"` (D5) so all crates + the desktop app use
+    /// a single OS-keyring namespace.
+    pub const DEFAULT_SERVICE: &'static str = "peko";
 
     /// Create a new keychain storage with the default service name
     pub fn new() -> Self {
@@ -307,7 +310,7 @@ mod tests {
     #[test]
     fn test_key_storage_ref_serialization() {
         let keychain_ref = KeyStorageRef::Keychain {
-            service: "peko-runtime".to_string(),
+            service: KeychainStorage::DEFAULT_SERVICE.to_string(),
             account: "did:key:z6Mk...".to_string(),
         };
 
@@ -316,7 +319,7 @@ mod tests {
 
         match deserialized {
             KeyStorageRef::Keychain { service, account } => {
-                assert_eq!(service, "peko-runtime");
+                assert_eq!(service, "peko");
                 assert_eq!(account, "did:key:z6Mk...");
             }
             other => panic!("Expected Keychain, got: {:?}", other),
@@ -404,5 +407,17 @@ mod tests {
     fn test_keychain_storage_default_service() {
         let storage = KeychainStorage::new();
         assert_eq!(storage.service_name, KeychainStorage::DEFAULT_SERVICE);
+    }
+
+    /// D5: pin the canonical service name across the workspace. The
+    /// `"peko-runtime"` literal must NOT reappear here — every crate
+    /// (identity, desktop vault) uses a single OS-keyring namespace
+    /// keyed by `"peko"` so the same key entry is visible from any
+    /// runtime process.
+    #[test]
+    fn test_default_service_is_canonical_peko() {
+        assert_eq!(KeychainStorage::DEFAULT_SERVICE, "peko");
+        // Hard guard against the old literal ever creeping back in.
+        assert_ne!(KeychainStorage::DEFAULT_SERVICE, "peko-runtime");
     }
 }
