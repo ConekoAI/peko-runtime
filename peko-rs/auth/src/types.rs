@@ -9,7 +9,8 @@ use std::path::PathBuf;
 pub struct ApiKeyEntry {
     /// Key ID (prefix: pkr_ + first 8 chars of the key)
     pub id: String,
-    /// SHA-256 hash of the full key, prefixed with "sha256:"
+    /// Argon2id PHC string of the full key (`$argon2id$v=19$m=...,t=...,p=...$<salt>$<hash>`).
+    /// Verify via [`crate::api_key::verify_password_hash`].
     pub hash: String,
     /// Human-readable name
     pub name: String,

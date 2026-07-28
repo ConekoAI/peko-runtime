@@ -4,9 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
+use argon2::password_hash::rand_core::OsRng;
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::Argon2;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::RngCore;
-use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 use super::types::{ApiKeyEntry, ApiKeyScope, ApiKeysFile};
@@ -75,7 +77,15 @@ impl ApiKeyStore {
             &full_key[API_KEY_PREFIX.len()..API_KEY_PREFIX.len() + 8]
         );
 
-        let hash = format!("sha256:{:x}", Sha256::digest(full_key.as_bytes()));
+        // Argon2id PHC string. Salt is freshly generated via OsRng so each
+        // key has a unique salt (default Argon2id params: m=19456 KiB,
+        // t=2, p=1). The PHC form is self-describing, so verify_key
+        // recovers params from the stored hash.
+        let salt = SaltString::generate(&mut OsRng);
+        let hash = Argon2::default()
+            .hash_password(full_key.as_bytes(), &salt)
+            .map_err(|e| anyhow::anyhow!("argon2 hash_password failed: {e}"))?
+            .to_string();
 
         let entry = ApiKeyEntry {
             id: key_id.clone(),
@@ -136,19 +146,27 @@ impl ApiKeyStore {
             return None;
         }
 
-        let hash = format!("sha256:{:x}", Sha256::digest(key.as_bytes()));
         let file = self.inner.read().await;
 
+        // Iterate every enabled key and let argon2's PHC parser recover
+        // the stored params from `e.hash`. verify_password is
+        // constant-time over the parsed hash and runs in O(memory_cost)
+        // per candidate. With a small key inventory this is fine; if
+        // the runtime ever ships with thousands of keys, gate this
+        // with a prefix-lookup index on `e.id`.
         file.keys
             .iter()
             .find(|e| {
                 if !e.enabled {
                     return false;
                 }
-                // Constant-time comparison would be ideal, but for a local
-                // runtime with a small number of keys this is acceptable.
-                // We use a simple byte-by-byte comparison.
-                constant_time_eq(&e.hash, &hash)
+                let parsed = match PasswordHash::new(&e.hash) {
+                    Ok(p) => p,
+                    Err(_) => return false,
+                };
+                Argon2::default()
+                    .verify_password(key.as_bytes(), &parsed)
+                    .is_ok()
             })
             .cloned()
     }
@@ -184,24 +202,6 @@ impl ApiKeyStore {
             key.to_string()
         }
     }
-}
-
-/// Constant-time equality for hash comparison.
-///
-/// Uses `subtle` crate if available; falls back to a manual
-/// byte-by-byte XOR-and-OR implementation that should resist
-/// timing side-channels for the lengths compared.
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-    if a_bytes.len() != b_bytes.len() {
-        return false;
-    }
-    let mut result = 0u8;
-    for i in 0..a_bytes.len() {
-        result |= a_bytes[i] ^ b_bytes[i];
-    }
-    result == 0
 }
 
 /// API key verifier — thin wrapper around ApiKeyStore
@@ -294,6 +294,73 @@ mod tests {
             ApiKeyStore::extract_key_id("pkr_aB3dEf9GhI2jK4lM5nO6pQ7rS8tU0vW1xY2zA3bC4dE"),
             "pkr_aB3dEf9G"
         );
+    }
+
+    /// API key hashes must be Argon2id PHC strings, not bare SHA-256 hex
+    /// digests. This pins R3 (argon2 migration): if anyone reintroduces a
+    /// `sha256:` prefix, this assertion catches it.
+    #[tokio::test]
+    async fn test_hash_is_argon2id_phc() {
+        let store = temp_store();
+        let (full_key, _key_id) = store
+            .create_key("Argon2 Shape".to_string(), vec![ApiKeyScope::Read])
+            .await
+            .unwrap();
+        let entry = store.verify_key(&full_key).await.expect("fresh key verifies");
+        assert!(
+            entry.hash.starts_with("$argon2id$"),
+            "expected argon2id PHC string, got: {}",
+            entry.hash
+        );
+        assert!(entry.hash.contains("$v=19$"), "PHC string missing v=19");
+        assert!(!entry.hash.starts_with("sha256:"));
+    }
+
+    /// Verify a tampered PHC string (last char flipped) rejects the key.
+    /// Catches "hash stored but verify short-circuited" regressions.
+    #[tokio::test]
+    async fn test_tampered_hash_rejects() {
+        let store = temp_store();
+        let (full_key, key_id) = store
+            .create_key("Tamper".to_string(), vec![ApiKeyScope::Read])
+            .await
+            .unwrap();
+
+        // Mutate the stored hash so PHC parse fails or verify fails.
+        let mut file = store.inner.write().await;
+        let entry = file
+            .keys
+            .iter_mut()
+            .find(|k| k.id == key_id)
+            .expect("just-created key");
+        // Flip a character near the end of the hash (within the
+        // base64-encoded output section).
+        let last_char = entry.hash.chars().last().unwrap();
+        let replacement = if last_char == 'A' { 'B' } else { 'A' };
+        entry.hash.pop();
+        entry.hash.push(replacement);
+        drop(file);
+
+        assert!(store.verify_key(&full_key).await.is_none());
+    }
+
+    /// Different keys must produce different PHC strings (salt uniqueness
+    /// is enforced by SaltString::generate(OsRng), so two created keys
+    /// cannot share a stored hash).
+    #[tokio::test]
+    async fn test_two_keys_have_distinct_hashes() {
+        let store = temp_store();
+        let (_k1, _) = store
+            .create_key("K1".to_string(), vec![ApiKeyScope::Read])
+            .await
+            .unwrap();
+        let (_k2, _) = store
+            .create_key("K2".to_string(), vec![ApiKeyScope::Read])
+            .await
+            .unwrap();
+        let keys = store.list_keys().await;
+        assert_eq!(keys.len(), 2);
+        assert_ne!(keys[0].hash, keys[1].hash);
     }
 
     /// Critical path: full API key lifecycle — create → verify → use in CallerContext → permission check
