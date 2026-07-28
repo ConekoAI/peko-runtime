@@ -69,15 +69,19 @@ impl std::error::Error for BridgeCallerError {}
 /// the header while the JWT proves a different one, which is a tamper
 /// attempt worth surfacing.
 ///
-/// Falls back to the unverified `x-pekohub-user-id` header only when no
-/// JWT is present (back-compat with deployments that haven't enabled
-/// pekohub JWT validation yet).
+/// When no JWT is present:
+/// - If a `JwtValidator` is configured, the request is rejected with
+///   [`BridgeCallerError::NoCaller`]. The unverified `x-pekohub-user-id`
+///   header is **never** trusted once JWT validation is enabled — that
+///   would be a downgrade attack where any caller can claim any user
+///   simply by omitting the `Authorization` header.
+/// - If no validator is configured (test/disabled mode), falls back to
+///   the unverified header for backward compatibility with local tests.
 ///
 /// If a JWT is present but validation fails, or if no validator is
-/// configured, the function returns [`BridgeCallerError::InvalidJwt`] so
-/// the request can be rejected instead of silently trusting a tampered
-/// token. If no JWT and no header are present, returns
-/// [`BridgeCallerError::NoCaller`].
+/// configured for a JWT-present request, the function returns
+/// [`BridgeCallerError::InvalidJwt`] so the request can be rejected
+/// instead of silently trusting a tampered token.
 pub(crate) async fn resolve_bridge_caller(
     bridge_payload: &serde_json::Value,
     jwt_validator: Option<&peko_auth::jwt::JwtValidator>,
@@ -114,8 +118,14 @@ pub(crate) async fn resolve_bridge_caller(
         return Err(BridgeCallerError::InvalidJwt);
     }
 
-    // 2. Fall back to the unverified hub-asserted header only when no JWT was present.
-    header_user(bridge_payload).ok_or(BridgeCallerError::NoCaller)
+    // 2. No JWT was present. When JWT validation is enabled, reject
+    //    the request — the unverified header is not a substitute for a
+    //    signed token. The header-only fallback is preserved only for
+    //    test/disabled mode (jwt_validator.is_none()).
+    match jwt_validator {
+        Some(_) => Err(BridgeCallerError::NoCaller),
+        None => header_user(bridge_payload).ok_or(BridgeCallerError::NoCaller),
+    }
 }
 
 /// Pull the unverified `x-pekohub-user-id` header out of the bridge payload.
@@ -1792,19 +1802,34 @@ mod tests {
         );
     }
 
-    /// Header-only (no JWT) → uses the hub header (unverified). This is
-    /// the back-compat path for deployments that haven't enabled
-    /// pekohub JWT validation yet.
+    /// Header-only (no JWT) → rejected when a JWT validator is
+    /// configured. The unverified `x-pekohub-user-id` header is never
+    /// trusted once JWT validation is enabled — that would let any
+    /// caller impersonate any user simply by omitting the
+    /// `Authorization` header.
     #[tokio::test]
-    async fn resolve_bridge_caller_uses_header_when_no_jwt() {
+    async fn resolve_bridge_caller_rejects_header_only_when_validator_configured() {
         let (validator, _signing_key) = ed25519_validator();
         let payload = serde_json::json!({
             "headers": {"x-pekohub-user-id": "user-hub"},
         });
         assert_eq!(
-            resolve_bridge_caller(&payload, Some(&validator))
-                .await
-                .unwrap(),
+            resolve_bridge_caller(&payload, Some(&validator)).await,
+            Err(BridgeCallerError::NoCaller)
+        );
+    }
+
+    /// Header-only (no JWT) → uses the hub header (unverified) only in
+    /// the back-compat path where no `JwtValidator` is configured. This
+    /// keeps local tests / disabled mode working without weakening the
+    /// production path.
+    #[tokio::test]
+    async fn resolve_bridge_caller_uses_header_when_no_validator_and_no_jwt() {
+        let payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": "user-hub"},
+        });
+        assert_eq!(
+            resolve_bridge_caller(&payload, None).await.unwrap(),
             "user-hub"
         );
     }
