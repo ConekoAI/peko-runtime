@@ -33,11 +33,18 @@ on:
       # added so feature/feature-flag changes (e.g. the Win32_Storage_FileSystem
       # surface bug fix in PR #304) don't silently skip CI the same way
       # the original windows-sys dep declaration did.
+      # 2026-07-28: `peko-rs/auth/**` + `peko-rs/identity/**` + `peko-rs/subject/**`
+      # added so satellite-crate source-only changes (e.g. R5 typed
+      # ApiKey subject projection) trigger CI. The same issue exists for
+      # any peko-rs/*/src/ change that doesn't touch Cargo.toml.
       - 'src/**'
       - 'peko-rs/cli/**'
       - 'peko-rs/*/Cargo.toml'
       - 'peko-rs/core/src/**'
       - 'peko-rs/core/tests/**'
+      - 'peko-rs/auth/**'
+      - 'peko-rs/identity/**'
+      - 'peko-rs/subject/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Makefile'
@@ -54,6 +61,9 @@ on:
       - 'peko-rs/*/Cargo.toml'
       - 'peko-rs/core/src/**'
       - 'peko-rs/core/tests/**'
+      - 'peko-rs/auth/**'
+      - 'peko-rs/identity/**'
+      - 'peko-rs/subject/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Makefile'
@@ -105,9 +115,16 @@ jobs:
               # the cleanup PR once master confirms src/-free.
               # Phase 0.Z-B: cli/ moved to peko-rs/cli/src/. CLI-only diffs
               # must still trigger lint/unit-linux/integration-llm.
+              # 2026-07-28: peko-rs/auth/** + peko-rs/identity/** +
+              # peko-rs/subject/** added so satellite-crate source-only
+              # changes (e.g. R5 typed ApiKey subject projection) reach
+              # the unit-test tier. Workflow-level paths also need this.
               - 'src/**'
               - 'peko-rs/cli/**'
               - 'peko-rs/core/src/**'
+              - 'peko-rs/auth/**'
+              - 'peko-rs/identity/**'
+              - 'peko-rs/subject/**'
             crates:
               # Phase 12b: any workspace-member Cargo.toml change can
               # introduce a new forbidden crate-to-crate edge; the
