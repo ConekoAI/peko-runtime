@@ -1716,6 +1716,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": sub,
+            "jti": format!("test-jti-{sub}"),
             "aud": "did:key:z6MkTestRuntime",
             "exp": chrono::Utc::now().timestamp() + 3600,
         });
