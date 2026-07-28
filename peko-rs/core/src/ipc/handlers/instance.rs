@@ -141,11 +141,12 @@ impl RequestHandler for InstanceHandler {
                     "unexposed" => crate::tunnel::protocol::InstanceExposure::Unexposed,
                     "private" => crate::tunnel::protocol::InstanceExposure::Private,
                     "public" => crate::tunnel::protocol::InstanceExposure::Public,
+                    "unlisted" => crate::tunnel::protocol::InstanceExposure::Unlisted,
                     other => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!(
-                                "Invalid exposure '{other}'. Expected: unexposed, private, public"
+                                "Invalid exposure '{other}'. Expected: unexposed, private, public, unlisted"
                             ),
                         };
                         send_response(sink, response).await?;

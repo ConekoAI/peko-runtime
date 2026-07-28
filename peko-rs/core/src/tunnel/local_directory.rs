@@ -70,6 +70,7 @@ impl AgentDirectory for LocalFirstAgentDirectory {
 fn map_instance_exposure(exposure: peko_auth::Exposure) -> ResolvedExposure {
     match exposure {
         peko_auth::Exposure::Public => ResolvedExposure::Public,
+        peko_auth::Exposure::Unlisted => ResolvedExposure::Unlisted,
         peko_auth::Exposure::Private => ResolvedExposure::Private,
         peko_auth::Exposure::Unexposed => ResolvedExposure::Unexposed,
     }

@@ -1429,7 +1429,12 @@ impl TunnelDispatcher {
         drop(state);
 
         match instance_state.exposure {
-            InstanceExposure::Public => Ok(()),
+            // Public + Unlisted are both world-chat-table via the public
+            // URL; PekoHub filters discovery strictly to `exposure =
+            // public`. PR #11 introduces invite tokens for scoped
+            // access — until then, Unlisted == Public at the runtime
+            // ACL level.
+            InstanceExposure::Public | InstanceExposure::Unlisted => Ok(()),
             InstanceExposure::Unexposed => {
                 anyhow::bail!("Agent is not exposed")
             }
@@ -2175,6 +2180,36 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Instance state not yet available"));
+    }
+
+    // PR #2: `Unlisted` is reachable via the public URL with no
+    // invite-token check until PR #11 narrows it. Behavior at the
+    // runtime ACL level matches `Public`.
+    #[tokio::test]
+    async fn test_check_request_allowed_unlisted_allows_any_request() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+
+        let instance_id = dispatcher.instance_id("unlisted-agent");
+        {
+            let mut state = dispatcher.state.write().await;
+            state.instance_state.insert(
+                instance_id,
+                InstanceState {
+                    exposure: InstanceExposure::Unlisted,
+                    allowed_principals: vec![],
+                    status: InstanceStatus::Online,
+                },
+            );
+        }
+
+        // No invite header, no user id — same shape as anonymous
+        // public chat reaching the runtime through the hub.
+        let bridge_payload = serde_json::json!({"headers": {}});
+        let result = dispatcher
+            .check_request_allowed("unlisted-agent", &bridge_payload)
+            .await;
+        assert!(result.is_ok());
     }
 
     // -- Issue #29 (Slice C): inbound AgentToAgentRequest + Response -----

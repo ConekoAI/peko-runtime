@@ -79,11 +79,23 @@ pub trait RuntimePaths: Send + Sync + 'static {
 /// The wire shape is unchanged: `snake_case` serde with
 /// `private` / `public` / `unexposed` variants. Persisted
 /// `principal.toml` files keep loading without migration.
+///
+/// Variants:
+/// - `Unexposed`: not visible to anyone; no chat access (default).
+/// - `Private`: owner + explicitly-typed subjects in
+///   `PrincipalConfig.permissions` only.
+/// - `Public`: world-readable + world-listable in
+///   `GET /v1/discovery/*` on PekoHub.
+/// - `Unlisted`: world-chat-table via direct URL, but excluded from
+///   discovery. The default for share-link use cases — share-with-URL
+///   without world-listing. Token-based access (PR #11) extends
+///   `Unlisted` and `Private` with scoped invite tokens.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Exposure {
     Private,
     Public,
+    Unlisted,
     #[default]
     Unexposed,
 }
@@ -93,6 +105,7 @@ impl std::fmt::Display for Exposure {
         let s = match self {
             Self::Private => "private",
             Self::Public => "public",
+            Self::Unlisted => "unlisted",
             Self::Unexposed => "unexposed",
         };
         f.write_str(s)
@@ -193,6 +206,10 @@ mod tests {
             serde_json::to_string(&Exposure::Unexposed).unwrap(),
             "\"unexposed\""
         );
+        assert_eq!(
+            serde_json::to_string(&Exposure::Unlisted).unwrap(),
+            "\"unlisted\""
+        );
     }
 
     #[test]
@@ -205,6 +222,18 @@ mod tests {
             serde_json::from_str::<Exposure>("\"public\"").unwrap(),
             Exposure::Public
         );
+        assert_eq!(
+            serde_json::from_str::<Exposure>("\"unlisted\"").unwrap(),
+            Exposure::Unlisted
+        );
+    }
+
+    #[test]
+    fn exposure_display_matches_wire_format() {
+        assert_eq!(Exposure::Private.to_string(), "private");
+        assert_eq!(Exposure::Public.to_string(), "public");
+        assert_eq!(Exposure::Unlisted.to_string(), "unlisted");
+        assert_eq!(Exposure::Unexposed.to_string(), "unexposed");
     }
 
     #[test]

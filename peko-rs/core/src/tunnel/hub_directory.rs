@@ -90,6 +90,7 @@ pub struct AgentResolution {
 pub enum ResolvedExposure {
     Public,
     Private,
+    Unlisted,
     Unexposed,
 }
 
@@ -487,15 +488,17 @@ mod tests {
         }
     }
 
-    /// Each exposure value (`public` / `private` / `unexposed`)
-    /// decodes to the right variant. Pekohub returns these in the
-    /// `exposure` field; the outbound a2a path branches on them.
+    /// Each exposure value (`public` / `private` / `unexposed` /
+    /// `unlisted`) decodes to the right variant. Pekohub returns
+    /// these in the `exposure` field; the outbound a2a path branches
+    /// on them.
     #[test]
     fn test_resolved_exposure_decodes_each_variant() {
         for (json, expected) in [
             ("\"public\"", ResolvedExposure::Public),
             ("\"private\"", ResolvedExposure::Private),
             ("\"unexposed\"", ResolvedExposure::Unexposed),
+            ("\"unlisted\"", ResolvedExposure::Unlisted),
         ] {
             let decoded: ResolvedExposure = serde_json::from_str(json).unwrap();
             assert_eq!(decoded, expected);

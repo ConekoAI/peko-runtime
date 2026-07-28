@@ -1015,11 +1015,12 @@ impl RequestHandler for PrincipalHandler {
                     "unexposed" => Exposure::Unexposed,
                     "private" => Exposure::Private,
                     "public" => Exposure::Public,
+                    "unlisted" => Exposure::Unlisted,
                     other => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!(
-                                "Invalid exposure '{other}'. Expected: unexposed, private, public"
+                                "Invalid exposure '{other}'. Expected: unexposed, private, public, unlisted"
                             ),
                         };
                         send_response(sink, response).await?;
@@ -1252,11 +1253,12 @@ impl RequestHandler for PrincipalHandler {
                         "unexposed" => Some(Exposure::Unexposed),
                         "private" => Some(Exposure::Private),
                         "public" => Some(Exposure::Public),
+                        "unlisted" => Some(Exposure::Unlisted),
                         other => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!(
-                                    "Invalid exposure '{other}'. Expected: unexposed, private, public"
+                                    "Invalid exposure '{other}'. Expected: unexposed, private, public, unlisted"
                                 ),
                             };
                             send_response(sink, response).await?;

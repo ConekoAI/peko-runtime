@@ -19,11 +19,17 @@ pub enum InstanceStatus {
 }
 
 /// Exposure level of an instance.
+///
+/// Mirrors `peko_auth::Exposure` on the wire. See that enum's doc
+/// comment for the semantics of each variant. The two enums are
+/// kept separate so the persisted schema can stay in `peko-auth`
+/// (a leaf crate) without dragging wire-format concerns in.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceExposure {
     Private,
     Public,
+    Unlisted,
     #[default]
     Unexposed,
 }
@@ -46,6 +52,7 @@ impl From<peko_auth::Exposure> for InstanceExposure {
         match e {
             peko_auth::Exposure::Private => Self::Private,
             peko_auth::Exposure::Public => Self::Public,
+            peko_auth::Exposure::Unlisted => Self::Unlisted,
             peko_auth::Exposure::Unexposed => Self::Unexposed,
         }
     }
