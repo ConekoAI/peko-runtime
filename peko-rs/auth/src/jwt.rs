@@ -44,6 +44,16 @@ struct JwtHeader {
 struct JwtClaims {
     iss: String,
     sub: String,
+    /// JWT ID — required so the validator can check the revocation
+    /// list. Tokens missing `jti` are rejected (see
+    /// [`JwtError::MissingJti`]) so every accepted token has an
+    /// identifier that can be revoked individually.
+    ///
+    /// `#[serde(default)]` so a missing claim deserializes to `""`,
+    /// which the validator then surfaces as `MissingJti` rather than
+    /// as a generic `InvalidFormat`.
+    #[serde(default)]
+    jti: String,
     aud: String,
     #[serde(default)]
     name: Option<String>,
@@ -54,6 +64,98 @@ struct JwtClaims {
     exp: i64,
     #[serde(default)]
     iat: Option<i64>,
+}
+
+/// A revoked JWT, tracked until the token's natural expiry. Once
+/// `exp` passes, the entry is pruned by [`RevocationSet::prune`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokedJwt {
+    pub jti: String,
+    pub exp: i64,
+}
+
+/// In-memory JWT revocation list.
+///
+/// Backed by a `HashMap<jti, exp>` so revocation is O(1) and pruning
+/// is bounded by the number of unrevoked-but-expired entries. Revoked
+/// entries are kept until the token's natural expiry so a token that
+/// is revoked mid-life is still rejected; once `exp` passes, the
+/// entry is no longer useful (the token would have been rejected for
+/// `Expired` anyway) and can be pruned.
+#[derive(Clone, Debug, Default)]
+pub struct RevocationSet {
+    by_jti: HashMap<String, i64>,
+}
+
+impl RevocationSet {
+    /// Construct an empty revocation set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Construct from a persisted list of revoked JWTs (typically
+    /// loaded from disk at startup).
+    #[must_use]
+    pub fn from_entries(entries: Vec<RevokedJwt>) -> Self {
+        let mut set = Self::default();
+        for entry in entries {
+            set.by_jti.insert(entry.jti, entry.exp);
+        }
+        set
+    }
+
+    /// Snapshot the current set as a persistable list.
+    #[must_use]
+    pub fn entries(&self) -> Vec<RevokedJwt> {
+        self.by_jti
+            .iter()
+            .map(|(jti, exp)| RevokedJwt {
+                jti: jti.clone(),
+                exp: *exp,
+            })
+            .collect()
+    }
+
+    /// Add a `jti` to the revocation list. Replaces any prior entry
+    /// for the same `jti`. No-op if `jti` is empty.
+    pub fn revoke(&mut self, jti: String, exp: i64) {
+        if jti.is_empty() {
+            return;
+        }
+        self.by_jti.insert(jti, exp);
+    }
+
+    /// Returns true if `jti` is currently revoked (i.e., present and
+    /// not yet past its `exp`).
+    #[must_use]
+    pub fn is_revoked(&self, jti: &str) -> bool {
+        match self.by_jti.get(jti) {
+            Some(exp) => *exp >= chrono::Utc::now().timestamp(),
+            None => false,
+        }
+    }
+
+    /// Drop entries whose token has already expired (no longer useful).
+    /// Returns the number of entries pruned.
+    pub fn prune(&mut self) -> usize {
+        let now = chrono::Utc::now().timestamp();
+        let before = self.by_jti.len();
+        self.by_jti.retain(|_, exp| *exp >= now);
+        before - self.by_jti.len()
+    }
+
+    /// Number of revoked JTIs currently tracked.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.by_jti.len()
+    }
+
+    /// Whether the revocation set is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_jti.is_empty()
+    }
 }
 
 /// JWKS response structure
@@ -173,6 +275,9 @@ pub struct JwtValidator {
     trusted_issuers: Vec<String>,
     runtime_did: String,
     cache: Arc<tokio::sync::RwLock<JwksCache>>,
+    /// Revocation list. Tokens whose `jti` appears here (and whose
+    /// `exp` has not yet passed) are rejected with [`JwtError::Revoked`].
+    revocations: Arc<tokio::sync::RwLock<RevocationSet>>,
 }
 
 /// Errors during JWT validation
@@ -185,6 +290,11 @@ pub enum JwtError {
     InvalidIssuer,
     UnsupportedAlgorithm,
     KeyNotFound,
+    /// Token did not include a `jti` claim. Every accepted token must
+    /// carry a unique identifier so it can be revoked individually.
+    MissingJti,
+    /// Token's `jti` was found in the revocation list.
+    Revoked,
 }
 
 impl std::fmt::Display for JwtError {
@@ -197,6 +307,8 @@ impl std::fmt::Display for JwtError {
             Self::InvalidIssuer => write!(f, "Invalid JWT issuer"),
             Self::UnsupportedAlgorithm => write!(f, "Unsupported JWT algorithm"),
             Self::KeyNotFound => write!(f, "JWKS key not found"),
+            Self::MissingJti => write!(f, "JWT is missing required `jti` claim"),
+            Self::Revoked => write!(f, "JWT has been revoked"),
         }
     }
 }
@@ -228,14 +340,15 @@ impl JwtValidator {
             trusted_issuers,
             runtime_did,
             cache: Arc::new(tokio::sync::RwLock::new(JwksCache::new(url, 300))), // 5 min TTL
+            revocations: Arc::new(tokio::sync::RwLock::new(RevocationSet::new())),
         }
     }
 
-    /// Create a validator with a pre-populated JWKS. Public so that
-    /// integration tests in sibling workspace crates (e.g.
-    /// `peko_tunnel::dispatcher::tests`) can wire a real
-    /// `JwtValidator` against a static JWKS without standing up
-    /// a mock HTTP server. Production callers should use
+    /// Create a validator with a pre-populated JWKS and revocation
+    /// set. Public so that integration tests in sibling workspace
+    /// crates (e.g. `peko_tunnel::dispatcher::tests`) can wire a real
+    /// `JwtValidator` against a static JWKS without standing up a
+    /// mock HTTP server. Production callers should use
     /// [`JwtValidator::new`] and let the validator fetch JWKS from
     /// the configured URL.
     pub fn with_jwks(
@@ -250,7 +363,48 @@ impl JwtValidator {
                 "http://test/.well-known/jwks.json".to_string(),
                 jwks,
             ))),
+            revocations: Arc::new(tokio::sync::RwLock::new(RevocationSet::new())),
         }
+    }
+
+    /// Revoke a JWT by its `jti`. The token is rejected on every
+    /// subsequent validation until its `exp` passes, at which point
+    /// [`RevocationSet::prune`] drops the entry.
+    ///
+    /// No-op if `jti` is empty or `exp` is in the past.
+    pub async fn revoke(&self, jti: String, exp: i64) {
+        if jti.is_empty() {
+            return;
+        }
+        let mut set = self.revocations.write().await;
+        set.revoke(jti, exp);
+    }
+
+    /// Snapshot the current revocation list for persistence.
+    pub async fn revocation_entries(&self) -> Vec<RevokedJwt> {
+        let set = self.revocations.read().await;
+        set.entries()
+    }
+
+    /// Replace the revocation set wholesale. Used at startup to load
+    /// persisted entries from disk.
+    pub async fn load_revocations(&self, entries: Vec<RevokedJwt>) {
+        let mut set = self.revocations.write().await;
+        *set = RevocationSet::from_entries(entries);
+    }
+
+    /// Drop entries whose token has already expired. Returns the
+    /// number of entries pruned.
+    pub async fn prune_revocations(&self) -> usize {
+        let mut set = self.revocations.write().await;
+        set.prune()
+    }
+
+    /// Check whether a given `jti` is currently revoked. Useful for
+    /// diagnostics and tests.
+    pub async fn is_revoked(&self, jti: &str) -> bool {
+        let set = self.revocations.read().await;
+        set.is_revoked(jti)
     }
 
     /// Validate a JWT token asynchronously.
@@ -299,6 +453,25 @@ impl JwtValidator {
         // Validate issuer
         if !self.trusted_issuers.contains(&claims.iss) {
             return Err(JwtError::InvalidIssuer);
+        }
+
+        // Require `jti` so every accepted token carries a unique
+        // identifier that can be revoked individually. Tokens without
+        // `jti` are rejected before signature verification so an
+        // attacker can't probe for jti-less tokens.
+        if claims.jti.is_empty() {
+            return Err(JwtError::MissingJti);
+        }
+
+        // Check the revocation list. A revoked `jti` is rejected
+        // before signature verification to short-circuit the path —
+        // we don't want to spend CPU verifying a token that's already
+        // been revoked anyway.
+        {
+            let revocations = self.revocations.read().await;
+            if revocations.is_revoked(&claims.jti) {
+                return Err(JwtError::Revoked);
+            }
         }
 
         // Verify signature
@@ -476,6 +649,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": "user123",
+            "jti": "test-jti-1",
             "aud": "did:key:z6MkTestRuntime",
             "exp": chrono::Utc::now().timestamp() + 3600,
             "name": "Test User",
@@ -528,6 +702,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": "user123",
+            "jti": "test-jti-2",
             "aud": "did:key:z6MkTestRuntime",
             "exp": chrono::Utc::now().timestamp() + 3600,
         });
@@ -569,6 +744,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": "user123",
+            "jti": "test-jti-3",
             "aud": "did:key:z6MkTestRuntime",
             "exp": 1000,
             "iat": 500,
@@ -597,6 +773,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": "user123",
+            "jti": "test-jti-4",
             "aud": "wrong-audience",
             "exp": now,
         })
@@ -624,6 +801,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "evil-issuer",
             "sub": "user123",
+            "jti": "test-jti-5",
             "aud": "did:key:z6MkTestRuntime",
             "exp": now,
         })
@@ -651,6 +829,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": "user123",
+            "jti": "test-jti-6",
             "aud": "did:key:z6MkTestRuntime",
             "exp": now,
         })
@@ -701,6 +880,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": "user456",
+            "jti": "test-jti-7",
             "aud": "did:key:z6MkTestRuntime",
             "exp": chrono::Utc::now().timestamp() + 3600,
         });
@@ -752,6 +932,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": "user456",
+            "jti": "test-jti-8",
             "aud": "did:key:z6MkTestRuntime",
             "exp": chrono::Utc::now().timestamp() + 3600,
         });
@@ -794,6 +975,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": "user123",
+            "jti": "test-jti-9",
             "aud": "did:key:z6MkTestRuntime",
             "exp": chrono::Utc::now().timestamp() + 3600,
         })
@@ -887,6 +1069,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": "fetched-user",
+            "jti": "test-jti-10",
             "aud": "did:key:z6MkTestRuntime",
             "exp": chrono::Utc::now().timestamp() + 3600,
         });
@@ -909,6 +1092,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": "pekohub",
             "sub": "user123",
+            "jti": "test-jti-11",
             "aud": "did:key:z6MkTestRuntime",
             "exp": chrono::Utc::now().timestamp() + 3600,
         })
@@ -921,5 +1105,213 @@ mod tests {
 
         let result = validator.validate(&token).await;
         assert_eq!(result.unwrap_err(), JwtError::KeyNotFound);
+    }
+
+    // ─── Revocation tests ────────────────────────────────────────────────────
+    use rand::Rng;
+
+    /// Unit tests on `RevocationSet` itself — no validator / JWKS
+    /// needed. Mirrors the public surface of the type.
+    #[test]
+    fn revocation_set_add_and_check() {
+        let mut set = RevocationSet::new();
+        let exp = chrono::Utc::now().timestamp() + 3600;
+        set.revoke("jti-a".into(), exp);
+        assert!(set.is_revoked("jti-a"));
+        assert!(!set.is_revoked("jti-b"));
+        assert_eq!(set.len(), 1);
+        assert!(!set.is_empty());
+    }
+
+    #[test]
+    fn revocation_set_empty_jti_is_ignored() {
+        let mut set = RevocationSet::new();
+        set.revoke("".into(), chrono::Utc::now().timestamp() + 3600);
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn revocation_set_past_exp_is_treated_as_unrevoked() {
+        let mut set = RevocationSet::new();
+        // exp in the past — entry should be inserted but is_revoked
+        // returns false because the token would have been rejected as
+        // Expired anyway.
+        set.revoke("jti-old".into(), chrono::Utc::now().timestamp() - 60);
+        assert!(!set.is_revoked("jti-old"));
+    }
+
+    #[test]
+    fn revocation_set_prune_drops_past_exp() {
+        let mut set = RevocationSet::new();
+        let now = chrono::Utc::now().timestamp();
+        set.revoke("jti-fresh".into(), now + 3600);
+        set.revoke("jti-stale".into(), now - 60);
+        assert_eq!(set.len(), 2);
+        let pruned = set.prune();
+        assert_eq!(pruned, 1);
+        assert_eq!(set.len(), 1);
+        assert!(set.is_revoked("jti-fresh"));
+    }
+
+    #[test]
+    fn revocation_set_from_entries_round_trip() {
+        let entries = vec![
+            RevokedJwt {
+                jti: "a".into(),
+                exp: chrono::Utc::now().timestamp() + 60,
+            },
+            RevokedJwt {
+                jti: "b".into(),
+                exp: chrono::Utc::now().timestamp() + 120,
+            },
+        ];
+        let set = RevocationSet::from_entries(entries.clone());
+        let mut out = set.entries();
+        out.sort_by(|x, y| x.jti.cmp(&y.jti));
+        let mut want = entries;
+        want.sort_by(|x, y| x.jti.cmp(&y.jti));
+        assert_eq!(out, want);
+    }
+
+    /// End-to-end: a valid token whose `jti` has been added to the
+    /// revocation list is rejected with [`JwtError::Revoked`] before
+    /// signature verification is attempted.
+    #[tokio::test]
+    async fn validate_rejects_revoked_token() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill(&mut bytes);
+        let signing_key = SigningKey::from_bytes(&bytes);
+        let verifying_key = signing_key.verifying_key();
+
+        let x = URL_SAFE_NO_PAD.encode(verifying_key.to_bytes());
+        let jwks = JwksResponse {
+            keys: vec![JwkEntry {
+                kty: "OKP".to_string(),
+                kid: Some("test-key".to_string()),
+                n: None,
+                e: None,
+                x: Some(x),
+                crv: Some("Ed25519".to_string()),
+                extra: HashMap::new(),
+            }],
+        };
+        let validator = JwtValidator::with_jwks(
+            vec!["pekohub".to_string()],
+            "did:key:z6MkTestRuntime".to_string(),
+            jwks,
+        );
+
+        // Mint a valid token, then revoke its jti.
+        let header = serde_json::json!({"alg": "EdDSA", "typ": "JWT", "kid": "test-key"});
+        let claims = serde_json::json!({
+            "iss": "pekohub",
+            "sub": "user-jti",
+            "jti": "doomed-jti",
+            "aud": "did:key:z6MkTestRuntime",
+            "exp": chrono::Utc::now().timestamp() + 3600,
+        });
+        let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
+        let claims_b64 = URL_SAFE_NO_PAD.encode(claims.to_string());
+        let message = format!("{header_b64}.{claims_b64}");
+        let signature = signing_key.sign(message.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+        let token = format!("{message}.{sig_b64}");
+
+        // Pre-revocation: token is valid.
+        assert!(validator.validate(&token).await.is_ok());
+
+        validator
+            .revoke("doomed-jti".into(), chrono::Utc::now().timestamp() + 3600)
+            .await;
+
+        // Post-revocation: rejected.
+        assert_eq!(validator.validate(&token).await, Err(JwtError::Revoked));
+    }
+
+    /// Token missing the `jti` claim is rejected with
+    /// [`JwtError::MissingJti`]. We don't accept jti-less tokens
+    /// because they cannot be revoked individually.
+    #[tokio::test]
+    async fn validate_rejects_token_without_jti() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill(&mut bytes);
+        let signing_key = SigningKey::from_bytes(&bytes);
+        let verifying_key = signing_key.verifying_key();
+
+        let x = URL_SAFE_NO_PAD.encode(verifying_key.to_bytes());
+        let jwks = JwksResponse {
+            keys: vec![JwkEntry {
+                kty: "OKP".to_string(),
+                kid: Some("test-key".to_string()),
+                n: None,
+                e: None,
+                x: Some(x),
+                crv: Some("Ed25519".to_string()),
+                extra: HashMap::new(),
+            }],
+        };
+        let validator = JwtValidator::with_jwks(
+            vec!["pekohub".to_string()],
+            "did:key:z6MkTestRuntime".to_string(),
+            jwks,
+        );
+
+        // Mint a token WITHOUT `jti`.
+        let header = serde_json::json!({"alg": "EdDSA", "typ": "JWT", "kid": "test-key"});
+        let claims = serde_json::json!({
+            "iss": "pekohub",
+            "sub": "user-nojti",
+            "aud": "did:key:z6MkTestRuntime",
+            "exp": chrono::Utc::now().timestamp() + 3600,
+        });
+        let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
+        let claims_b64 = URL_SAFE_NO_PAD.encode(claims.to_string());
+        let message = format!("{header_b64}.{claims_b64}");
+        let signature = signing_key.sign(message.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+        let token = format!("{message}.{sig_b64}");
+
+        assert_eq!(
+            validator.validate(&token).await,
+            Err(JwtError::MissingJti)
+        );
+    }
+
+    /// `prune_revocations` drops entries whose `exp` has passed —
+    /// useful at startup to bound memory after a long uptime.
+    #[tokio::test]
+    async fn validator_prune_drops_stale_revocations() {
+        let validator = JwtValidator::with_jwks(
+            vec!["pekohub".to_string()],
+            "did:key:z6MkTestRuntime".to_string(),
+            JwksResponse { keys: vec![] },
+        );
+
+        let now = chrono::Utc::now().timestamp();
+        validator.load_revocations(vec![
+            RevokedJwt {
+                jti: "fresh".into(),
+                exp: now + 3600,
+            },
+            RevokedJwt {
+                jti: "stale".into(),
+                exp: now - 60,
+            },
+        ]).await;
+
+        assert_eq!(validator.revocation_entries().await.len(), 2);
+        let pruned = validator.prune_revocations().await;
+        assert_eq!(pruned, 1);
+        let remaining: Vec<String> = validator
+            .revocation_entries()
+            .await
+            .into_iter()
+            .map(|e| e.jti)
+            .collect();
+        assert_eq!(remaining, vec!["fresh".to_string()]);
     }
 }

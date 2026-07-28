@@ -89,8 +89,21 @@ pub struct PrincipalConfig {
 
     /// Explicit permission grants on this Principal.
     ///
-    /// These are ownership-style grants used by the auth layer for
-    /// cross-runtime `principal_send`, distinct from extension capabilities.
+    /// **Authoritative ACL for this runtime (R4).** These
+    /// `PermissionGrant` entries are the source of truth for who may
+    /// invoke `principal_send` on this Principal and what they may do;
+    /// the auth layer (`peko-auth::ownership`) consults this list
+    /// first and rejects anything not granted here. PekoHub's
+    /// `instances.allowedPrincipals` JSONB column is being dropped
+    /// (H4) and the hub-side mirror is NOT pushed down — PekoHub only
+    /// knows who may see the instance in the directory, but the
+    /// runtime's policy decides who can actually invoke it. Do not
+    /// introduce any IPC path that overwrites this list from a
+    /// hub-provided value.
+    ///
+    /// Distinct from `capabilities` (above), which lists the
+    /// tools/extensions the Principal itself may use; `permissions`
+    /// is the inbound ACL.
     #[serde(default)]
     pub permissions: Vec<PermissionGrant>,
 
@@ -484,5 +497,104 @@ mod tests {
             .capabilities
             .is_granted(&"agent:agency-agents/writer".into()));
         assert!(!cfg.capabilities.is_granted(&"agent:other/writer".into()));
+    }
+
+    /// R4: the inbound ACL contract.
+    ///
+    /// `PrincipalResourceView::permissions()` must surface the
+    /// `permissions` Vec verbatim — auth's `check_permission` reads
+    /// exactly this view, so any drift between the on-disk field
+    /// and the surfaced slice breaks the inbound ACL silently. Pin
+    /// both directions here:
+    ///
+    /// - An empty `permissions` list means nobody other than the
+    ///   owner can invoke the Principal (no implicit grants from
+    ///   PekoHub, no Public wildcard by default).
+    /// - A `Public` grant opens the Principal to every caller.
+    /// - A grant scoped to a specific Subject opens only that
+    ///   Subject.
+    ///
+    /// Combined with the auth-side tests in
+    /// `peko-auth::ownership::tests::test_principal_resource_permission_checks`,
+    /// this locks the runtime ↔ auth contract.
+    #[test]
+    fn principal_config_permissions_surfaces_through_view() {
+        use peko_auth::Subject;
+
+        let alice = Subject::User("user:alice".to_string());
+        let bob = Subject::User("user:bob".to_string());
+
+        // Empty permissions: only owner has access.
+        let cfg = PrincipalConfig {
+            name: "lockdown".into(),
+            did: None,
+            owner: alice.clone(),
+            identity: Default::default(),
+            intent: Default::default(),
+            governance: Default::default(),
+            memory: Default::default(),
+            routing: Default::default(),
+            capabilities: Default::default(),
+            exposure: Default::default(),
+            status: None,
+            permissions: Vec::new(),
+            preferred_model_id: None,
+            transport_preference: Default::default(),
+            quota: None,
+        };
+        let view: &dyn peko_auth::host::PrincipalResourceView = &cfg;
+        assert_eq!(view.permissions().len(), 0);
+        assert_eq!(view.owner(), &alice);
+
+        // Single Public grant: every caller authorized.
+        let cfg = PrincipalConfig {
+            permissions: vec![peko_auth::PermissionGrant {
+                subject: Subject::Public,
+                permission: peko_auth::Permission::Chat,
+                granted_at: "2026-01-01T00:00:00Z".to_string(),
+                granted_by: alice.clone(),
+            }],
+            ..make_test_config("public", alice.clone())
+        };
+        let view: &dyn peko_auth::host::PrincipalResourceView = &cfg;
+        assert_eq!(view.permissions().len(), 1);
+        assert_eq!(view.permissions()[0].subject, Subject::Public);
+
+        // Scoped grant: only Bob gets Chat; other subjects don't.
+        let cfg = PrincipalConfig {
+            permissions: vec![peko_auth::PermissionGrant {
+                subject: bob.clone(),
+                permission: peko_auth::Permission::Chat,
+                granted_at: "2026-01-01T00:00:00Z".to_string(),
+                granted_by: alice.clone(),
+            }],
+            ..make_test_config("scoped", alice.clone())
+        };
+        let view: &dyn peko_auth::host::PrincipalResourceView = &cfg;
+        assert_eq!(view.permissions().len(), 1);
+        assert_eq!(view.permissions()[0].subject, bob);
+    }
+
+    /// Build a PrincipalConfig with the given name + owner and
+    /// everything else defaulted. Helper for the permissions-view
+    /// test so we don't repeat 12-field literals.
+    fn make_test_config(name: &str, owner: peko_auth::Subject) -> PrincipalConfig {
+        PrincipalConfig {
+            name: name.to_string(),
+            did: None,
+            owner,
+            identity: Default::default(),
+            intent: Default::default(),
+            governance: Default::default(),
+            memory: Default::default(),
+            routing: Default::default(),
+            capabilities: Default::default(),
+            exposure: Default::default(),
+            status: None,
+            permissions: Vec::new(),
+            preferred_model_id: None,
+            transport_preference: Default::default(),
+            quota: None,
+        }
     }
 }
