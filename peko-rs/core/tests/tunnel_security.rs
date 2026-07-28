@@ -17,7 +17,7 @@ use secrecy::SecretString;
 
 use peko_core::common::vault::Vault;
 use peko_core::tunnel::PekoHubCredential;
-use peko_identity::keychain::{EncryptedKeyStorage, KeyStorageRef};
+use peko_identity::keychain::{EncryptedKeyStorage, KeyStorageRef, KeychainStorage};
 use peko_identity::storage::KeyStorage;
 use peko_identity::{DIDScope, Identity};
 
@@ -192,7 +192,7 @@ fn test_headless_store_without_passphrase_fails() {
 #[test]
 fn test_keychain_storage_ref_serialization() {
     let keychain_ref = KeyStorageRef::Keychain {
-        service: "peko-runtime".to_string(),
+        service: peko_identity::KeychainStorage::DEFAULT_SERVICE.to_string(),
         account: "did:key:z6MkTest".to_string(),
     };
 
@@ -201,7 +201,7 @@ fn test_keychain_storage_ref_serialization() {
 
     match deserialized {
         KeyStorageRef::Keychain { service, account } => {
-            assert_eq!(service, "peko-runtime");
+            assert_eq!(service, "peko");
             assert_eq!(account, "did:key:z6MkTest");
         }
         other => panic!("Expected Keychain, got: {:?}", other),
