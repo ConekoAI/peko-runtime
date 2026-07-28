@@ -15,12 +15,14 @@ pub fn generate_jwt(user_id: i64, namespace: &str) -> String {
     struct Claims {
         sub: String,
         namespace: String,
+        jti: String,
         iat: u64,
     }
 
     let claims = Claims {
         sub: user_id.to_string(),
         namespace: namespace.to_string(),
+        jti: format!("test-jti-{}-{}", user_id, namespace),
         iat: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
