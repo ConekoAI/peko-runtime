@@ -56,6 +56,21 @@ pub(crate) trait ExtensionHost: Send + Sync {
             "ExtensionHost::authority must be implemented; production hosts override this"
         )
     }
+
+    /// **Phase C.** Build a per-call authority that projects this
+    /// handler's caller subject. Handlers MUST call this instead of
+    /// [`authority`](Self::authority) when they intend to write — the
+    /// returned authority is the only one entitled to clear the
+    /// Shared-write actor gate (peer-as-User on Shared, peer-as-Public
+    /// on Local). The default impl is `unimplemented!()` because
+    /// `ExtensionHost` doesn't expose `path_resolver()`; production
+    /// hosts that override `authority()` should also override
+    /// `authority_for()` to project the caller's subject.
+    fn authority_for(&self, _caller: &CallerContext) -> crate::common::authority::RuntimeAuthority {
+        unimplemented!(
+            "ExtensionHost::authority_for must be implemented; production hosts override this"
+        )
+    }
 }
 
 /// `extension` domain request handler. Constructed with an
@@ -177,6 +192,12 @@ impl RequestHandler for ExtensionHandler {
             }
 
             RequestPacket::ExtensionInstall { request_id, path } => {
+                // TODO(phase-c): gate on
+                // `RuntimeAuthority::runtime_extensions_root_write(Some(&caps))`
+                // once the caller's capability snapshot is threaded
+                // into this handler. The on-disk extensions root is
+                // Runtime-tier; the required capability is
+                // `runtime:write_extensions`.
                 let store = self.host.extension_store();
                 let install_path =
                     match crate::extensions::framework::manager::packaging::prepare_install_path(
@@ -214,6 +235,10 @@ impl RequestHandler for ExtensionHandler {
             }
 
             RequestPacket::ExtensionUninstall { request_id, id } => {
+                // TODO(phase-c): gate on
+                // `RuntimeAuthority::runtime_extensions_root_write(Some(&caps))`
+                // (Runtime-tier; required cap
+                // `runtime:write_extensions`).
                 let store = self.host.extension_store();
                 let ext_id = ExtensionId::new(&id);
 
@@ -367,6 +392,10 @@ impl RequestHandler for ExtensionHandler {
                 name,
                 ids,
             } => {
+                // TODO(phase-c): gate on
+                // `RuntimeAuthority::runtime_extensions_root_write(Some(&caps))`
+                // (Runtime-tier; required cap
+                // `runtime:write_extensions`).
                 // Validate the bundle's display name at the IPC boundary so
                 // the bundle label can't smuggle a path-traversal spelling
                 // into the store / registry payload.

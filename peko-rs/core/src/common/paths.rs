@@ -958,6 +958,118 @@ mod tests {
             PathBuf::from("/data/workspaces/alice/personal")
         );
     }
+
+    // ====================================================================================
+    // Phase A three-tier storage layout tests
+    //
+    // PR 3: previously the only paths.rs tests covered the legacy
+    // `agents/`, `sessions/`, and `workspaces/` accessors. The
+    // principal-scoped `Local`/`Shared`/`Runtime` layouts had no
+    // coverage. These tests pin the field presence and root splits
+    // so a future refactor can't silently move a subdirectory
+    // between tiers.
+    // ====================================================================================
+
+    #[test]
+    fn three_tier_principal_layout_local_field_presence() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        let layout = resolver.principal_layout("alice");
+        let local = layout.local;
+        // Local root lives under `<data_dir>/principals/<name>/local/`.
+        assert!(local.root.ends_with("principals/alice/local"));
+        assert!(local.sessions_dir.ends_with("alice/local/sessions"));
+        assert!(local.memory_index.ends_with("alice/local/memory_index.json"));
+        assert!(local.cron_dir.ends_with("alice/local/cron"));
+        assert!(local.cron_schedule.ends_with("alice/local/cron/schedule.toml"));
+        assert!(local.cron_history.ends_with("alice/local/cron/history.log"));
+        assert!(local.cache_dir.ends_with("alice/local/cache"));
+        assert!(local.locks_dir.ends_with("alice/local/locks"));
+    }
+
+    #[test]
+    fn three_tier_principal_layout_shared_field_presence() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        let layout = resolver.principal_layout("alice");
+        let shared = layout.shared;
+        // Shared root lives under `<config_dir>/principals/<name>/`.
+        assert!(shared.root.ends_with("principals/alice"));
+        assert!(shared.config_file.ends_with("principals/alice/principal.toml"));
+        assert!(shared.agents_dir.ends_with("principals/alice/agents"));
+        assert!(shared.identity_file.ends_with("principals/alice/identity.json"));
+        assert!(shared.memory_snapshots_dir
+            .ends_with("principals/alice/memory/snapshots"));
+        assert!(shared.mcps_dir.ends_with("principals/alice/mcps"));
+    }
+
+    #[test]
+    fn three_tier_principal_layout_local_and_shared_roots_disjoint() {
+        // The Local and Shared roots MUST live on different filesystem
+        // hierarchies — Local is per-host per-uid (data_dir) while
+        // Shared is per-principal-portable (config_dir). A future
+        // refactor that moves one of these would break the
+        // Local/Shared tier split; this test pins the contract.
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        let layout = resolver.principal_layout("alice");
+        assert!(layout.local.root.starts_with("/data/"));
+        assert!(layout.shared.root.starts_with("/config/"));
+        assert_ne!(layout.local.root, layout.shared.root);
+    }
+
+    #[test]
+    fn three_tier_runtime_layout_field_presence() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        let runtime = resolver.runtime_layout();
+        // Runtime root lives under `<data_dir>/runtime/`.
+        assert!(runtime.runtime_dir.ends_with("/data/runtime"));
+        assert!(runtime
+            .extensions_root
+            .ends_with("/data/runtime/extensions"));
+        assert!(runtime.mcps_root.ends_with("/data/runtime/mcps"));
+        assert!(runtime.registry_root.ends_with("/data/runtime/registry"));
+        assert!(runtime.locks_dir.ends_with("/data/runtime/locks"));
+        assert!(runtime.principals_root.ends_with("/config/principals"));
+    }
+
+    #[test]
+    fn three_tier_runtime_extensions_root_accessor_matches_layout() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        let via_accessor = resolver.extensions_root();
+        let via_layout = resolver.runtime_layout().extensions_root;
+        assert_eq!(via_accessor, via_layout);
+    }
+
+    #[test]
+    fn three_tier_principals_root_under_config_dir() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        assert_eq!(
+            resolver.principals_root_dir(),
+            PathBuf::from("/config/principals")
+        );
+    }
 }
 
 // =============================================================================

@@ -4,6 +4,7 @@
 //! delivery, and audit logging. Keeps the daemon's main loop focused on
 //! lifecycle and shutdown.
 
+use crate::common::authority::{RuntimeAuthority, TierPath};
 use crate::common::json_utils::json_subset;
 use crate::common::paths::PathResolver;
 use crate::extensions::framework::async_exec::executor::{
@@ -50,6 +51,14 @@ pub struct CronEngine {
     /// through `PrincipalManager::get` before touching the file.
     schedulers: Arc<Mutex<HashMap<PrincipalId, Arc<CronScheduler>>>>,
     path_resolver: PathResolver,
+    /// **Phase C.** Engine-internal `RuntimeAuthority` for the
+    /// `local_cron_schedule_runtime` / `local_cron_history_runtime`
+    /// accessors. The engine writes cron files on behalf of the
+    /// principal owner (not a peer session), so the capability gate is
+    /// intentionally bypassed — the principal's `[[permissions]]` ACL is
+    /// the only gate at this layer. Built once at construction via
+    /// `RuntimeAuthority::for_runtime(...)`.
+    authority: Arc<RuntimeAuthority>,
     idle_detector: Arc<IdleDetector>,
     observability: Arc<Observability>,
     principal_manager: Option<Arc<PrincipalManager>>,
@@ -87,7 +96,8 @@ impl CronEngine {
     ) -> Self {
         Self {
             schedulers: Arc::new(Mutex::new(HashMap::new())),
-            path_resolver,
+            path_resolver: path_resolver.clone(),
+            authority: Arc::new(RuntimeAuthority::for_runtime(path_resolver)),
             idle_detector,
             observability,
             principal_manager,
@@ -121,13 +131,22 @@ impl CronEngine {
         if let Some(existing) = map.get(principal_id) {
             return Ok(existing.clone());
         }
+        // Resolve DID → name via the manager-aware helper (which also
+        // falls back to a disk scan). Then hand the resolved name to the
+        // engine-internal authority accessor — Phase C bypasses the
+        // capability gate because the engine writes on behalf of the
+        // principal owner (Subject::Public), not on behalf of a peer.
+        // The principal's `[[permissions]]` ACL is the only gate at this
+        // layer.
         let principal_name = self
             .principal_name_for(principal_id)
             .await
-            .ok_or_else(|| {
-                anyhow::anyhow!("principal '{principal_id}' not found on disk")
-            })?;
-        let path = self.path_resolver.cron_schedule(&principal_name);
+            .ok_or_else(|| anyhow::anyhow!("principal '{principal_id}' not found on disk"))?;
+        let path = self
+            .authority
+            .local_cron_schedule_runtime_for_name(&principal_name)
+            .map_err(|e| anyhow::anyhow!("cron path for {principal_id}: {e}"))?
+            .to_path_buf();
         let scheduler = Arc::new(
             CronScheduler::new(&path)
                 .map_err(|e| anyhow::anyhow!("cron scheduler init for {principal_id}: {e}"))?,
@@ -184,17 +203,13 @@ impl CronEngine {
                 let id = PrincipalId::from_did(&p.did().await);
                 match self.scheduler_for(&id).await {
                     Ok(s) => out.push((id, s)),
-                    Err(e) => warn!(
-                        "Skipping principal '{id}' in cron poll: {e}"
-                    ),
+                    Err(e) => warn!("Skipping principal '{id}' in cron poll: {e}"),
                 }
             }
             out
         } else {
             let map = self.schedulers.lock().await;
-            map.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
+            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
         }
     }
 
@@ -262,11 +277,7 @@ impl CronEngine {
                     .principal_name_for(&job.principal_id)
                     .await
                     .unwrap_or_else(|| job.principal_id.0.clone());
-                if self
-                    .idle_detector
-                    .is_idle(&principal_name, *minutes)
-                    .await
-                {
+                if self.idle_detector.is_idle(&principal_name, *minutes).await {
                     info!(
                         "⏸️  Principal '{}' idle for {} minutes, executing job '{}'",
                         principal_name, minutes, job.name
@@ -323,10 +334,7 @@ impl CronEngine {
                 if *once {
                     let scheduler = self.scheduler_for(&job.principal_id).await?;
                     if let Err(e) = scheduler.set_job_enabled(&job.id, false) {
-                        warn!(
-                            "Failed to disable one-time job {}: {}",
-                            job.id, e
-                        );
+                        warn!("Failed to disable one-time job {}: {}", job.id, e);
                     } else {
                         info!("🔄 Disabled one-time event job: {}", job.name);
                     }
@@ -455,9 +463,7 @@ impl CronEngine {
 
         let principal = resolve_principal(&pm, &job.principal_id)
             .await
-            .ok_or_else(|| {
-                anyhow::anyhow!("Principal '{}' not loaded", job.principal_id.0)
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("Principal '{}' not loaded", job.principal_id.0))?;
 
         let peer = {
             let config = principal.config.read().await;
@@ -678,12 +684,7 @@ impl CronEngine {
             // the finalize + last_status writes land on the right
             // schedule file.
             let scheduler = self.scheduler_for(&principal_id).await?;
-            if scheduler.finalize_run(
-                &run.id,
-                &cron_status,
-                output.clone(),
-                error.clone(),
-            )? {
+            if scheduler.finalize_run(&run.id, &cron_status, output.clone(), error.clone())? {
                 finalized += 1;
                 scheduler.set_job_last_status(&run.job_id, &cron_status)?;
                 info!(
@@ -743,7 +744,11 @@ impl CronEngine {
         // Phase A.5; for now route through the typed resolver to
         // get on the right bucket without re-introducing a hard
         // join.
-        let announcements_dir = self.path_resolver.runtime_layout().runtime_dir.join("announcements");
+        let announcements_dir = self
+            .path_resolver
+            .runtime_layout()
+            .runtime_dir
+            .join("announcements");
         std::fs::create_dir_all(&announcements_dir)?;
 
         let file_name = format!("{}_{}.json", job.id, Utc::now().timestamp());
@@ -993,9 +998,7 @@ mod tests {
         // Schedule file lives at the typed per-principal path
         // (`<resolver>.cron_schedule("crony")`), not the legacy
         // `<tmp>/cron.json`.
-        let scheduler = Arc::new(
-            CronScheduler::new(resolver.cron_schedule("crony")).unwrap(),
-        );
+        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
         let engine = CronEngine::new(
             resolver,
             idle,
@@ -1060,9 +1063,7 @@ mod tests {
             tmp.path().join("data"),
             tmp.path().join("cache"),
         );
-        let scheduler = Arc::new(
-            CronScheduler::new(cron_resolver.cron_schedule("crony")).unwrap(),
-        );
+        let scheduler = Arc::new(CronScheduler::new(cron_resolver.cron_schedule("crony")).unwrap());
 
         // Seed a SpawnTool job and a corresponding "running" run row.
         let job = CronJob {
@@ -1143,7 +1144,9 @@ mod tests {
         // Phase A: the engine no longer holds a single global
         // scheduler; install the test's scheduler into the engine's
         // per-principal cache so the reconciler can find it.
-        engine.install_scheduler_for_test(&PrincipalId("crony".into()), scheduler.clone()).await;
+        engine
+            .install_scheduler_for_test(&PrincipalId("crony".into()), scheduler.clone())
+            .await;
 
         let n = engine.reconcile_running_runs().await.unwrap();
         assert_eq!(n, 1, "expected exactly one finalized run");
@@ -1185,9 +1188,7 @@ mod tests {
             tmp.path().join("data"),
             tmp.path().join("cache"),
         );
-        let scheduler = Arc::new(
-            CronScheduler::new(cron_resolver.cron_schedule("crony")).unwrap(),
-        );
+        let scheduler = Arc::new(CronScheduler::new(cron_resolver.cron_schedule("crony")).unwrap());
 
         let job = CronJob {
             id: "job-vanished".to_string(),
@@ -1247,7 +1248,9 @@ mod tests {
         // Phase A: the engine no longer holds a single global
         // scheduler; install the test's scheduler into the engine's
         // per-principal cache so the reconciler can find it.
-        engine.install_scheduler_for_test(&PrincipalId("crony".into()), scheduler.clone()).await;
+        engine
+            .install_scheduler_for_test(&PrincipalId("crony".into()), scheduler.clone())
+            .await;
 
         let n = engine.reconcile_running_runs().await.unwrap();
         assert_eq!(n, 1);
