@@ -184,8 +184,8 @@ impl RequestHandler for CronHandler {
                 let pm = self.host.principal_manager();
                 let principal =
                     crate::daemon::cron_engine::resolve_principal(pm, &job.principal_id).await;
-                let (principal_name, principal_id, caps) = match principal {
-                    Some(p) => (p.name().await, p.id.clone(), p.capabilities().await),
+                let (principal_name, caps) = match principal {
+                    Some(p) => (p.name().await, p.capabilities().await),
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
@@ -200,12 +200,17 @@ impl RequestHandler for CronHandler {
                 // capabilities must include `principal:write_cron`
                 // before the scheduler writes to its per-principal
                 // schedule file. Actor + tier gate fires inside
-                // `local_cron_schedule_write` via
-                // `authority_for(caller)`.
+                // `local_cron_schedule_write_for_name` via
+                // `authority_for(caller)`. Name-keyed variant is
+                // required (the ID-keyed variant fails with
+                // `UnknownPrincipal` because the in-memory `PrincipalId`
+                // is `prin_<uuid>` while the on-disk `did` is
+                // `did:peko:public:<uuid>` — see the `_for_name`
+                // docstring).
                 if let Err(e) = self
                     .host
                     .authority_for(caller)
-                    .local_cron_schedule_write(&principal_id, Some(&caps))
+                    .local_cron_schedule_write_for_name(&principal_name, Some(&caps))
                 {
                     warn!("CronAdd capability denied: {e}");
                     let response = ResponsePacket::Error {
