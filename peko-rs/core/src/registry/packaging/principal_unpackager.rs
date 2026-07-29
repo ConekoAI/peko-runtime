@@ -477,6 +477,12 @@ impl PrincipalUnpackager {
             std::fs::write(installed_path.join(".source"), &ext_ref.registry_ref)
                 .with_context(|| format!("Failed to write .source for {}", ext_ref.id))?;
 
+            // TODO(phase-c): gate on
+            // `RuntimeAuthority::runtime_extensions_root_write(Some(&caps))`
+            // once the embedded-extension-install path threads a
+            // caller capability snapshot through `unpack_principal`.
+            // The runtime extensions root is Runtime-tier; required
+            // cap is `runtime:write_extensions`.
             let id = store.install(&installed_path).await.with_context(|| {
                 format!("Failed to load extension {} after extract", ext_ref.id)
             })?;

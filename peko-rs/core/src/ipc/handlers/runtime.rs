@@ -70,8 +70,20 @@ pub(crate) trait RuntimeHost: Send + Sync {
     /// ports. Production hosts override this.
     fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
         // …
+        unimplemented!("RuntimeHost::authority must be implemented; production hosts override this")
+    }
+
+    /// **Phase C.** Build a per-call authority that projects this
+    /// handler's caller subject. The runtime handler doesn't currently
+    /// write tier-typed paths, but the accessor is here for parity
+    /// with the rest of the trait ports. The default impl is
+    /// `unimplemented!()` because `RuntimeHost` doesn't expose
+    /// `path_resolver()`; production hosts that override `authority()`
+    /// should also override `authority_for()` to project the caller's
+    /// subject.
+    fn authority_for(&self, _caller: &CallerContext) -> crate::common::authority::RuntimeAuthority {
         unimplemented!(
-            "RuntimeHost::authority must be implemented; production hosts override this"
+            "RuntimeHost::authority_for must be implemented; production hosts override this"
         )
     }
 }

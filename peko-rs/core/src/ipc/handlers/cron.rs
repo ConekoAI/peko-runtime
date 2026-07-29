@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::common::paths::PathResolver;
@@ -60,8 +61,22 @@ pub(crate) trait CronHost: Send + Sync {
     /// that haven't been refactored get a runtime-only authority.
     fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
         // …
-        unimplemented!(
-            "CronHost::authority must be implemented; production hosts override this"
+        unimplemented!("CronHost::authority must be implemented; production hosts override this")
+    }
+
+    /// **Phase C.** Build a per-call authority that projects this
+    /// handler's caller subject. Handlers MUST call this instead of
+    /// [`authority`](Self::authority) when they intend to write — the
+    /// returned authority is the only one entitled to clear the
+    /// Shared-write actor gate (peer-as-User on Shared, peer-as-Public
+    /// on Local). The default impl constructs the authority from the
+    /// caller's subject via `RuntimeAuthority::for_caller`; production
+    /// hosts inherit this default because `for_caller` already accepts
+    /// any verified `Subject`.
+    fn authority_for(&self, caller: &CallerContext) -> crate::common::authority::RuntimeAuthority {
+        crate::common::authority::RuntimeAuthority::for_caller(
+            self.path_resolver(),
+            caller.subject().clone(),
         )
     }
 }
@@ -98,7 +113,7 @@ impl RequestHandler for CronHandler {
     async fn handle(
         &self,
         request: RequestPacket,
-        _caller: &CallerContext,
+        caller: &CallerContext,
         sink: &dyn ResponseSink,
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
@@ -169,26 +184,40 @@ impl RequestHandler for CronHandler {
                 let pm = self.host.principal_manager();
                 let principal =
                     crate::daemon::cron_engine::resolve_principal(pm, &job.principal_id).await;
-                let principal_name = match principal {
-                    Some(p) => p.name().await,
+                let (principal_name, principal_id, caps) = match principal {
+                    Some(p) => (p.name().await, p.id.clone(), p.capabilities().await),
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!(
-                                "Principal '{}' is not loaded",
-                                job.principal_id.0
-                            ),
+                            message: format!("Principal '{}' is not loaded", job.principal_id.0),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
                     }
                 };
 
-                // Phase A: per-principal cron schedule file.
-                let cron_db = self
+                // Phase C: WriteSide gate. The principal's own
+                // capabilities must include `principal:write_cron`
+                // before the scheduler writes to its per-principal
+                // schedule file. Actor + tier gate fires inside
+                // `local_cron_schedule_write` via
+                // `authority_for(caller)`.
+                if let Err(e) = self
                     .host
-                    .path_resolver()
-                    .cron_schedule(&principal_name);
+                    .authority_for(caller)
+                    .local_cron_schedule_write(&principal_id, Some(&caps))
+                {
+                    warn!("CronAdd capability denied: {e}");
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[permission_denied] {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
+                // Phase A: per-principal cron schedule file.
+                let cron_db = self.host.path_resolver().cron_schedule(&principal_name);
                 match CronScheduler::new(&cron_db) {
                     Ok(scheduler) => match scheduler.add_job(&job) {
                         Ok(()) => {
@@ -224,41 +253,38 @@ impl RequestHandler for CronHandler {
                     .resolve_principal_for_job(&job_id, self.host.path_resolver())
                     .await
                 {
-                    Ok((principal_name, cron_db)) => {
-                        match CronScheduler::new(&cron_db) {
-                            Ok(scheduler) => match scheduler.delete_job(&job_id) {
-                                Ok(true) => {
-                                    let response =
-                                        ResponsePacket::CronRemoved { request_id, job_id };
-                                    send_response(sink, response).await?;
-                                }
-                                Ok(false) => {
-                                    let response = ResponsePacket::Error {
-                                        request_id,
-                                        message: format!(
-                                            "Job {job_id} not found under principal \
-                                             {principal_name}"
-                                        ),
-                                    };
-                                    send_response(sink, response).await?;
-                                }
-                                Err(e) => {
-                                    let response = ResponsePacket::Error {
-                                        request_id,
-                                        message: format!("Failed to remove job: {e}"),
-                                    };
-                                    send_response(sink, response).await?;
-                                }
-                            },
-                            Err(e) => {
+                    Ok((principal_name, cron_db)) => match CronScheduler::new(&cron_db) {
+                        Ok(scheduler) => match scheduler.delete_job(&job_id) {
+                            Ok(true) => {
+                                let response = ResponsePacket::CronRemoved { request_id, job_id };
+                                send_response(sink, response).await?;
+                            }
+                            Ok(false) => {
                                 let response = ResponsePacket::Error {
                                     request_id,
-                                    message: format!("Cron DB error: {e}"),
+                                    message: format!(
+                                        "Job {job_id} not found under principal \
+                                             {principal_name}"
+                                    ),
                                 };
                                 send_response(sink, response).await?;
                             }
+                            Err(e) => {
+                                let response = ResponsePacket::Error {
+                                    request_id,
+                                    message: format!("Failed to remove job: {e}"),
+                                };
+                                send_response(sink, response).await?;
+                            }
+                        },
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Cron DB error: {e}"),
+                            };
+                            send_response(sink, response).await?;
                         }
-                    }
+                    },
                     Err(message) => {
                         let response = ResponsePacket::Error {
                             request_id,
@@ -275,53 +301,51 @@ impl RequestHandler for CronHandler {
                     .resolve_principal_for_job(&job_id, self.host.path_resolver())
                     .await
                 {
-                    Ok((_principal_name, cron_db)) => {
-                        match CronScheduler::new(&cron_db) {
-                            Ok(scheduler) => match scheduler.get_job(&job_id) {
-                                Ok(Some(_job)) => {
-                                    let now = Utc::now();
-                                    if let Err(e) =
-                                        scheduler.update_job_after_run(&job_id, "triggered", now)
-                                    {
-                                        let response = ResponsePacket::Error {
-                                            request_id,
-                                            message: format!("Failed to trigger job: {e}"),
-                                        };
-                                        send_response(sink, response).await?;
-                                    } else {
-                                        let run_id = Uuid::new_v4().to_string();
-                                        let response = ResponsePacket::CronRunStarted {
-                                            request_id,
-                                            job_id,
-                                            run_id,
-                                        };
-                                        send_response(sink, response).await?;
-                                    }
-                                }
-                                Ok(None) => {
+                    Ok((_principal_name, cron_db)) => match CronScheduler::new(&cron_db) {
+                        Ok(scheduler) => match scheduler.get_job(&job_id) {
+                            Ok(Some(_job)) => {
+                                let now = Utc::now();
+                                if let Err(e) =
+                                    scheduler.update_job_after_run(&job_id, "triggered", now)
+                                {
                                     let response = ResponsePacket::Error {
                                         request_id,
-                                        message: format!("Job {job_id} not found"),
+                                        message: format!("Failed to trigger job: {e}"),
+                                    };
+                                    send_response(sink, response).await?;
+                                } else {
+                                    let run_id = Uuid::new_v4().to_string();
+                                    let response = ResponsePacket::CronRunStarted {
+                                        request_id,
+                                        job_id,
+                                        run_id,
                                     };
                                     send_response(sink, response).await?;
                                 }
-                                Err(e) => {
-                                    let response = ResponsePacket::Error {
-                                        request_id,
-                                        message: format!("Failed to get job: {e}"),
-                                    };
-                                    send_response(sink, response).await?;
-                                }
-                            },
-                            Err(e) => {
+                            }
+                            Ok(None) => {
                                 let response = ResponsePacket::Error {
                                     request_id,
-                                    message: format!("Cron DB error: {e}"),
+                                    message: format!("Job {job_id} not found"),
                                 };
                                 send_response(sink, response).await?;
                             }
+                            Err(e) => {
+                                let response = ResponsePacket::Error {
+                                    request_id,
+                                    message: format!("Failed to get job: {e}"),
+                                };
+                                send_response(sink, response).await?;
+                            }
+                        },
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Cron DB error: {e}"),
+                            };
+                            send_response(sink, response).await?;
                         }
-                    }
+                    },
                     Err(message) => {
                         let response = ResponsePacket::Error {
                             request_id,

@@ -191,6 +191,16 @@ impl Capabilities {
     ///
     /// This grants the built-in tools and agents needed for basic operation
     /// without handing over unrestricted authority.
+    ///
+    /// **Phase C:** the bundle also carries the write-side capability
+    /// prefixes consumed by `peko_core::common::authority::RuntimeAuthority`'s
+    /// `_write` accessors — `principal:write_config`, `principal:write_agents`,
+    /// and `principal:write_cron` — so a freshly created Principal can write
+    /// to its own `principal.toml`, agents dir, and cron schedule without
+    /// a separate grant step. Pre-Phase-C on-disk principals that lack
+    /// these grants will surface `AuthorityError::CapabilityDenied` on their
+    /// first write; that's a one-time user-visible bootstrap (prelaunch,
+    /// no backward compat).
     #[must_use]
     pub fn starter_bundle() -> Self {
         Self::with_grants([
@@ -205,6 +215,9 @@ impl Capabilities {
             "tool:TaskList",
             "tool:TaskGet",
             "tool:TaskUpdate",
+            "principal:write_config",
+            "principal:write_agents",
+            "principal:write_cron",
         ])
     }
 }

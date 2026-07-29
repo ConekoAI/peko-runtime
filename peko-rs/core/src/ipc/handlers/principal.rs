@@ -245,6 +245,22 @@ pub(crate) trait PrincipalHost: Send + Sync {
             "PrincipalHost::authority must be implemented; production hosts override this"
         )
     }
+
+    /// **Phase C.** Build a per-call authority that projects this
+    /// handler's caller subject. Handlers MUST call this instead of
+    /// [`authority`](Self::authority) when they intend to write — the
+    /// returned authority is the only one entitled to clear the
+    /// Shared-write actor gate (peer-as-User on Shared, peer-as-Public
+    /// on Local). The default impl constructs the authority from the
+    /// caller's subject via `RuntimeAuthority::for_caller`; production
+    /// hosts inherit this default because `for_caller` already accepts
+    /// any verified `Subject`.
+    fn authority_for(&self, caller: &CallerContext) -> crate::common::authority::RuntimeAuthority {
+        crate::common::authority::RuntimeAuthority::for_caller(
+            self.path_resolver(),
+            caller.subject().clone(),
+        )
+    }
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────
@@ -778,7 +794,27 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
+                // Phase C: WriteSide gate. The capabilities on the
+                // principal's own config must include
+                // `principal:write_config` before we touch shared
+                // state — `update_config` rewrites `principal.toml`.
+                // Actor + tier gate already fired inside
+                // `shared_config_write` via `for_caller(caller)` in
+                // `authority_for`.
+                let caps = config.capabilities.clone();
                 drop(config);
+                if let Err(e) = host
+                    .authority_for(caller)
+                    .shared_config_write_for_name(&name, Some(&caps))
+                {
+                    warn!("PrincipalGrantPermission capability denied: {e}");
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[permission_denied] {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
 
                 let grant = PermissionGrant {
                     subject: subject.clone(),
@@ -997,6 +1033,37 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
+                // Phase C: WriteSide gate. The principal's own
+                // capabilities must include `principal:write_config`
+                // before we let `update_config` rewrite
+                // `principal.toml`. Load the principal just to read
+                // its capabilities — `update_config` will validate
+                // ownership again on its own path.
+                let principal_for_gate = match load_principal(host, &name).await {
+                    Some(p) => p,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal '{}' not found", name),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                let caps = principal_for_gate.capabilities().await;
+                if let Err(e) = host
+                    .authority_for(caller)
+                    .shared_config_write_for_name(&name, Some(&caps))
+                {
+                    warn!("PrincipalSetStatus capability denied: {e}");
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[permission_denied] {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
                 match host
                     .principal_manager()
                     .update_config(&name, |config| {
@@ -1068,6 +1135,35 @@ impl RequestHandler for PrincipalHandler {
                         return Ok(());
                     }
                 };
+
+                // Phase C: WriteSide gate. Capabilities on the
+                // principal's own config must include
+                // `principal:write_config` before `update_config`
+                // rewrites `principal.toml`.
+                let principal_for_gate = match load_principal(host, &name).await {
+                    Some(p) => p,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal '{}' not found", name),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                let caps = principal_for_gate.capabilities().await;
+                if let Err(e) = host
+                    .authority_for(caller)
+                    .shared_config_write_for_name(&name, Some(&caps))
+                {
+                    warn!("PrincipalSetExposure capability denied: {e}");
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[permission_denied] {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
 
                 match host
                     .principal_manager()
@@ -1172,8 +1268,7 @@ impl RequestHandler for PrincipalHandler {
                 // that, the daemon should refuse and the CLI should
                 // prompt the user to re-mint.
                 let bounded_ttl = ttl_secs.min(30 * 24 * 60 * 60);
-                let exp = chrono::Utc::now()
-                    + chrono::Duration::seconds(bounded_ttl as i64);
+                let exp = chrono::Utc::now() + chrono::Duration::seconds(bounded_ttl as i64);
 
                 let claims = crate::tunnel::InviteClaims {
                     principal_did,
@@ -1320,7 +1415,36 @@ impl RequestHandler for PrincipalHandler {
                 // Shared-layout path. Use the resolver so we agree
                 // with `PrincipalManager::create` and the IPC
                 // `load_principal` helper on the exact same path.
-                let agents_dir = host.path_resolver().principal_layout(&name).shared.agents_dir;
+                let agents_dir = host
+                    .path_resolver()
+                    .principal_layout(&name)
+                    .shared
+                    .agents_dir;
+                // Phase C: WriteSide gate. The fresh principal's
+                // `starter_bundle()` capabilities already include
+                // `principal:write_agents` (see
+                // `Capabilities::starter_bundle`), so this gate
+                // passes for any caller with a Shared-tier
+                // entitlement (User or Principal) when the bundle
+                // hasn't been mutated. The principal doesn't exist
+                // yet — we use the name-keyed variant
+                // `shared_agents_dir_write_for_name` because the
+                // `PrincipalId` is generated inside
+                // `PrincipalManager::create`.
+                let capabilities =
+                    crate::extensions::framework::types::Capabilities::starter_bundle();
+                if let Err(e) = host
+                    .authority_for(caller)
+                    .shared_agents_dir_write_for_name(&name, Some(&capabilities))
+                {
+                    warn!("PrincipalCreate capability denied: {e}");
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[permission_denied] {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
                 if let Err(e) = tokio::fs::create_dir_all(&agents_dir).await {
                     let response = ResponsePacket::Error {
                         request_id,
@@ -1363,8 +1487,7 @@ impl RequestHandler for PrincipalHandler {
                     governance: PrincipalGovernanceConfig::default(),
                     memory: PrincipalMemoryConfig::default(),
                     routing: PrincipalRoutingConfig::default(),
-                    capabilities: crate::extensions::framework::types::Capabilities::starter_bundle(
-                    ),
+                    capabilities: capabilities.clone(),
                     exposure: Exposure::Private,
                     status: None,
                     permissions: Vec::new(),
@@ -1446,7 +1569,26 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
+                // Phase C: WriteSide gate. The principal's own
+                // capabilities must include `principal:write_config`
+                // before we let `update_config` rewrite
+                // `principal.toml`. The check sits below the
+                // `Permission::ManageSettings` PekoHub ACL check —
+                // both layers must pass.
+                let caps = config.capabilities.clone();
                 drop(config);
+                if let Err(e) = host
+                    .authority_for(caller)
+                    .shared_config_write_for_name(&name, Some(&caps))
+                {
+                    warn!("PrincipalUpdate capability denied: {e}");
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[permission_denied] {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
 
                 // Validate supplied enum strings before touching config.
                 let status_enum = match status {
@@ -2318,11 +2460,11 @@ async fn build_principal_packager(
         .ok_or_else(|| anyhow::anyhow!("Principal '{}' has no identity DID", name))?;
 
     // Phase A: every packager path is read from the typed layout.
-// `agents_dir` is the Shared tier; `sessions_dir` is the Local
-// tier. The legacy `memory_dir` knob is gone — sessions are
-// exported from `local.sessions_dir` directly, and the principal's
-// memory index (`local.memory_index`) is not part of the
-// portable bundle.
+    // `agents_dir` is the Shared tier; `sessions_dir` is the Local
+    // tier. The legacy `memory_dir` knob is gone — sessions are
+    // exported from `local.sessions_dir` directly, and the principal's
+    // memory index (`local.memory_index`) is not part of the
+    // portable bundle.
     let resolver = host.path_resolver();
     let layout = resolver.principal_layout(name);
     let identity = load_principal_identity(&resolver, name, &did).await?;

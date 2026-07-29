@@ -56,6 +56,21 @@ pub(crate) trait ExtRuntimeHost: Send + Sync {
             "ExtRuntimeHost::authority must be implemented; production hosts override this"
         )
     }
+
+    /// **Phase C.** Build a per-call authority that projects this
+    /// handler's caller subject. Handlers MUST call this instead of
+    /// [`authority`](Self::authority) when they intend to write — the
+    /// returned authority is the only one entitled to clear the
+    /// Shared-write actor gate (peer-as-User on Shared, peer-as-Public
+    /// on Local). The default impl is `unimplemented!()` because
+    /// `ExtRuntimeHost` doesn't expose `path_resolver()`; production
+    /// hosts that override `authority()` should also override
+    /// `authority_for()` to project the caller's subject.
+    fn authority_for(&self, _caller: &CallerContext) -> crate::common::authority::RuntimeAuthority {
+        unimplemented!(
+            "ExtRuntimeHost::authority_for must be implemented; production hosts override this"
+        )
+    }
 }
 
 /// `ext_runtime` domain request handler. Constructed with an
