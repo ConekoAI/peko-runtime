@@ -86,11 +86,12 @@ use std::time::Duration;
 // ---------------------------------------------------------------------------
 
 /// Directory under the test's isolated `HOME` where `peko ext install`
-/// copies extension files. Confirmed by reading the daemon's
-/// `ExtensionStorage` config: `paths.data_dir.join("extensions")`, where
+/// copies extension files. Phase A moved extensions under the
+/// **Runtime tier**: `paths.runtime_layout().extensions_root` resolves
+/// to `<data_dir>/runtime/extensions`, where
 /// `data_dir = <PEKO_HOME>/data` per [`src/common/paths.rs:65-70`](src/common/paths.rs#L65-L70).
 fn ext_install_dir(cli: &PekoCli, ext_id: &str) -> PathBuf {
-    cli.peko_dir().join("data").join("extensions").join(ext_id)
+    cli.peko_dir().join("data").join("runtime").join("extensions").join(ext_id)
 }
 
 /// Absolute path to a fixture directory, relative to the crate root.
