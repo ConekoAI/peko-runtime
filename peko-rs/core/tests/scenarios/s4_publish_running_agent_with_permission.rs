@@ -169,8 +169,7 @@ async fn mint_api_key(
 /// pekohub (see
 /// [`src/tunnel/dispatcher.rs:297-323`](../../src/tunnel/dispatcher.rs#L297-L323)).
 ///
-/// Mirrors the pattern in `tests/scenarios/s5_live_permit_propagation.rs`
-/// and `tests/scenarios/s6_principal_grant_revoke_roundtrip.rs` —
+/// Mirrors the pattern in `tests/scenarios/s6_principal_grant_revoke_roundtrip.rs` —
 /// `peko principal create` scaffolds the workspace + identity, then we
 /// patch `principal.toml` for the per-test exposure + grant.
 ///

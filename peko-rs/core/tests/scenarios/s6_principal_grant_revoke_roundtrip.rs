@@ -29,8 +29,12 @@
 //! # Why this test does not need PekoHub
 //!
 //! The assertions are on the on-disk `permissions` array, which is the
-//! source of truth for the local config. PekoHub-side ACL derivation is
-//! covered by `s5_live_permit_propagation.rs`.
+//! source of truth for the local config. PekoHub-side ACL derivation
+//! previously lived in `s5_live_permit_propagation.rs`; that scenario
+//! was removed (2026-07-29) because pekohub post-#19 dropped the
+//! `allowedUsers` allow-list semantics — the runtime's
+//! `PrincipalConfig.permissions` is now the canonical ACL surface,
+//! exercised by the on-disk assertions in this file.
 
 #[path = "../common/mod.rs"]
 mod common;
