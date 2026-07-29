@@ -74,23 +74,57 @@ pub struct SignedFields<'a> {
 /// for an a2a request. See module docs for the byte layout.
 #[must_use]
 pub fn canonical_pre_image(fields: SignedFields<'_>) -> Vec<u8> {
-    // Tight capacity hint: 1 domain + 4 required, each with a 4-byte
-    // length prefix. Slightly over-allocates rather than reallocates.
-    let estimated = A2A_SIGNATURE_DOMAIN.len()
-        + fields.request_id.len()
-        + fields.caller_runtime_id.len()
-        + fields.caller_principal_did.len()
-        + fields.target_principal_did.len()
-        + fields.message.len()
-        + (4 * 5); // length prefixes (domain + 4 required)
+    build_pre_image(
+        A2A_SIGNATURE_DOMAIN,
+        &[
+            ("request_id", fields.request_id.as_bytes()),
+            (
+                "caller_runtime_id",
+                fields.caller_runtime_id.as_bytes(),
+            ),
+            (
+                "caller_principal_did",
+                fields.caller_principal_did.as_bytes(),
+            ),
+            (
+                "target_principal_did",
+                fields.target_principal_did.as_bytes(),
+            ),
+            ("message", fields.message.as_bytes()),
+        ],
+    )
+}
+
+/// Generic length-prefixed pre-image builder shared by every signed
+/// envelope kind (issue #29 a2a, and PR #11 invite tokens).
+///
+/// Each field is preceded by its big-endian `u32` byte length, so
+/// unambiguous parsing is guaranteed even if a field contains
+/// arbitrary bytes (including null and `\n`). The leading `domain`
+/// field is the domain-separation tag — embedding it as the first
+/// length-prefixed entry makes it impossible for a signature over
+/// one envelope kind to also validate against another kind (or
+/// against a future envelope kind) even if someone manages to
+/// construct a colliding suffix.
+///
+/// Field order is **part of the contract**. The signer and the
+/// verifier must build the `fields` slice in the same order; the
+/// resulting bytes are sensitive to permutation. Embedded in the
+/// hub-side spec — change it and you break every token the runtime
+/// has ever issued.
+#[must_use]
+pub fn build_pre_image(domain: &str, fields: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut estimated = domain.len() + 4; // domain + its length prefix
+    for (k, v) in fields {
+        estimated += k.len() + v.len() + 8; // name + value + 2 length prefixes
+    }
     let mut out = Vec::with_capacity(estimated);
 
-    push_lp(&mut out, A2A_SIGNATURE_DOMAIN);
-    push_lp(&mut out, fields.request_id);
-    push_lp(&mut out, fields.caller_runtime_id);
-    push_lp(&mut out, fields.caller_principal_did);
-    push_lp(&mut out, fields.target_principal_did);
-    push_lp(&mut out, fields.message);
+    push_lp(&mut out, domain);
+    for (k, v) in fields {
+        push_lp(&mut out, k);
+        push_lp_bytes(&mut out, v);
+    }
     out
 }
 
@@ -103,9 +137,19 @@ fn push_lp(out: &mut Vec<u8>, s: &str) {
     // unrepresentable on any platform we target, but be explicit so a
     // future 128-bit platform doesn't silently truncate.
     let len =
-        u32::try_from(s.len()).expect("a2a signed field exceeds u32::MAX bytes; rejected upstream");
+        u32::try_from(s.len()).expect("signed field exceeds u32::MAX bytes; rejected upstream");
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(s.as_bytes());
+}
+
+/// Append a length-prefixed byte slice. Mirrors [`push_lp`] but for
+/// arbitrary bytes (invite tokens carry a JSON body that may include
+/// non-UTF-8 sequences after base64-decoding some fields).
+fn push_lp_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    let len = u32::try_from(bytes.len())
+        .expect("signed field exceeds u32::MAX bytes; rejected upstream");
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(bytes);
 }
 
 /// Sign the canonical pre-image of `fields` with `signing_key` and
@@ -117,8 +161,17 @@ fn push_lp(out: &mut Vec<u8>, s: &str) {
 /// (see [crate::tunnel::client] auth path).
 #[must_use]
 pub fn sign_request(signing_key: &SigningKey, fields: SignedFields<'_>) -> String {
-    let pre_image = canonical_pre_image(fields);
-    let sig: Signature = signing_key.sign(&pre_image);
+    sign_pre_image(signing_key, &canonical_pre_image(fields))
+}
+
+/// Sign an arbitrary pre-image (the inner format is the caller's
+/// concern — see [`build_pre_image`]). Used by
+/// [`crate::tunnel::invite_token::mint_token`] and any future
+/// signed-envelope kind that wants to share the same base64url-no-pad
+/// wire encoding.
+#[must_use]
+pub fn sign_pre_image(signing_key: &SigningKey, pre_image: &[u8]) -> String {
+    let sig: Signature = signing_key.sign(pre_image);
     URL_SAFE_NO_PAD.encode(sig.to_bytes())
 }
 
@@ -138,17 +191,28 @@ pub fn verify_request(
     fields: SignedFields<'_>,
     signature_b64url: &str,
 ) -> Result<()> {
+    verify_pre_image(verifying_key, &canonical_pre_image(fields), signature_b64url)
+        .context("a2a signature did not verify against the canonical pre-image")
+}
+
+/// Verify an arbitrary pre-image. Counterpart of [`sign_pre_image`];
+/// the resulting `Result` is prefixed with the inner message; the
+/// `context` is added by the caller (the a2a wrapper adds the
+/// "a2a signature did not verify..." prefix; invite tokens add their
+/// own).
+pub fn verify_pre_image(
+    verifying_key: &VerifyingKey,
+    pre_image: &[u8],
+    signature_b64url: &str,
+) -> Result<()> {
     let sig_bytes = URL_SAFE_NO_PAD
         .decode(signature_b64url)
-        .context("a2a signature is not valid base64url-no-pad")?;
+        .context("signature is not valid base64url-no-pad")?;
     let sig_arr: [u8; 64] = sig_bytes
         .try_into()
-        .map_err(|v: Vec<u8>| anyhow!("a2a signature length is {} bytes; expected 64", v.len()))?;
+        .map_err(|v: Vec<u8>| anyhow!("signature length is {} bytes; expected 64", v.len()))?;
     let signature = Signature::from_bytes(&sig_arr);
-    let pre_image = canonical_pre_image(fields);
-    verifying_key
-        .verify(&pre_image, &signature)
-        .context("a2a signature did not verify against the canonical pre-image")
+    verifying_key.verify(pre_image, &signature).map_err(|e| e.into())
 }
 
 #[cfg(test)]
@@ -334,9 +398,12 @@ mod tests {
         // Not base64url at all.
         let err = verify_request(&kp.verifying_key, sample_fields(), "not%%base64!!")
             .expect_err("non-base64url signature must error");
+        // Walk the error chain — the inner context lives one
+        // level down (inside `verify_pre_image`) and is
+        // shadowed by the outer a2a wrapper context.
         assert!(
-            err.to_string().contains("base64url"),
-            "error must mention base64url; got: {err}"
+            err.chain().any(|e| e.to_string().contains("base64url")),
+            "error chain must mention base64url; got: {err}"
         );
 
         // Valid base64url but wrong length (e.g. 16 bytes instead of 64).
@@ -344,8 +411,8 @@ mod tests {
         let err = verify_request(&kp.verifying_key, sample_fields(), &short_sig)
             .expect_err("wrong-length signature must error");
         assert!(
-            err.to_string().contains("length"),
-            "error must mention length; got: {err}"
+            err.chain().any(|e| e.to_string().contains("length")),
+            "error chain must mention length; got: {err}"
         );
     }
 }

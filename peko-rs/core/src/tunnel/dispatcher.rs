@@ -1428,6 +1428,61 @@ impl TunnelDispatcher {
         };
         drop(state);
 
+        // PR #11: an invite token bypasses the exposure-based ACL
+        // when a token is present and valid. The token MUST be
+        // signed by THIS runtime's signing key (so a token minted
+        // by runtime A cannot be used to chat with a principal on
+        // runtime B), and its `principal_name` MUST match the
+        // requested agent — even if the signature is valid, a
+        // token for the wrong principal is rejected.
+        if let Some(token) = bridge_payload
+            .get("headers")
+            .and_then(|h| h.get("x-pekohub-invite-token"))
+            .and_then(|v| v.as_str())
+        {
+            match super::invite_token::verify_token(
+                &self.host.runtime_verifying_key(),
+                token,
+                chrono::Utc::now(),
+            ) {
+                Ok(claims) => {
+                    if claims.principal_name != agent_name {
+                        warn!(
+                            agent_name,
+                            token_principal = claims.principal_name.as_str(),
+                            "Invite token rejected: principal name mismatch"
+                        );
+                        // Fall through to the exposure-based ACL
+                        // instead of returning early — the token
+                        // may be invalid for THIS principal but the
+                        // exposure ACL may still allow it (e.g. the
+                        // instance is Public anyway).
+                    } else if self
+                        .host
+                        .invite_revocation_set()
+                        .is_revoked(&claims.jti)
+                        .await
+                    {
+                        warn!(
+                            agent_name,
+                            jti = %claims.jti,
+                            "Invite token rejected: revoked by principal owner"
+                        );
+                    } else {
+                        debug!(
+                            agent_name,
+                            jti = %claims.jti,
+                            "Invite token accepted; bypassing exposure ACL"
+                        );
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    warn!(agent_name, error = %e, "Invite token rejected; falling through to exposure ACL");
+                }
+            }
+        }
+
         match instance_state.exposure {
             // Public + Unlisted are both world-chat-table via the public
             // URL; PekoHub filters discovery strictly to `exposure =

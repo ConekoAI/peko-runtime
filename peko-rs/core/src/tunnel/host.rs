@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::a2a_pending::PendingA2aResponses;
+use super::invite_token::InviteRevocationSet;
 use super::TunnelHandle;
 use crate::principal::PrincipalManager;
 use peko_auth::jwt::JwtValidator;
@@ -51,4 +52,16 @@ pub trait TunnelHost: Send + Sync {
     /// every inbound message, so the `CrossRuntimeA2aCtx` always sends on the
     /// freshest handle.
     fn tunnel_handle_slot(&self) -> Arc<RwLock<Option<TunnelHandle>>>;
+
+    /// Runtime's ed25519 verifying key, derived from the same
+    /// `runtime_signing_key` that mints invite tokens (PR #11). The
+    /// dispatcher verifies inbound invite-token claims against this
+    /// key. Returned as a `VerifyingKey` (cheap to clone) so the
+    /// trait stays object-safe.
+    fn runtime_verifying_key(&self) -> ed25519_dalek::VerifyingKey;
+
+    /// In-memory revocation set for invite tokens. The dispatcher
+    /// checks this alongside signature/expiry/principal-name before
+    /// allowing a token to bypass the exposure-based ACL.
+    fn invite_revocation_set(&self) -> Arc<InviteRevocationSet>;
 }

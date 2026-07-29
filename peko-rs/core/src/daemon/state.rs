@@ -155,6 +155,15 @@ pub(crate) struct AppState {
     /// client, direct connection manager, and direct server.
     pub runtime_signing_key: Arc<ed25519_dalek::SigningKey>,
 
+    /// In-memory revocation set for invite tokens (PR #11). The
+    /// dispatcher's `check_request_allowed` consults this set before
+    /// falling back to the Exposure-based ACL. The verifying key for
+    /// minting/verifying tokens is derived from `runtime_signing_key`
+    /// on demand; only the revocation set needs to live on
+    /// `AppState` so multiple dispatchers (and the IPC mint/revoke
+    /// handler) share the same view.
+    pub invite_revocation_set: Arc<crate::tunnel::InviteRevocationSet>,
+
     /// Loaded peko configuration (network.direct used by direct transport).
     pub peko_config: PekoConfig,
 
@@ -503,6 +512,7 @@ impl AppState {
         let runtime_signing_key = load_runtime_signing_key(&runtime_identity, &vault)?;
         let peko_config = load_peko_config(&config_dir);
         let pending_a2a_responses = Arc::new(crate::tunnel::PendingA2aResponses::new());
+        let invite_revocation_set = Arc::new(crate::tunnel::InviteRevocationSet::new());
         let streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
         let direct_manager = Arc::new(crate::tunnel::direct::DirectConnectionManager::new(
@@ -879,6 +889,7 @@ impl AppState {
             inner: Arc::new(RwLock::new(AppStateInner::default())),
             runtime_identity,
             runtime_signing_key,
+            invite_revocation_set,
             peko_config,
             direct_manager,
             direct_bound_addr: Arc::new(RwLock::new(None)),
@@ -1934,6 +1945,14 @@ impl crate::tunnel::TunnelHost for AppState {
     fn tunnel_handle_slot(&self) -> Arc<RwLock<Option<crate::tunnel::TunnelHandle>>> {
         self.tunnel_handle_slot.clone()
     }
+
+    fn runtime_verifying_key(&self) -> ed25519_dalek::VerifyingKey {
+        self.runtime_signing_key.verifying_key()
+    }
+
+    fn invite_revocation_set(&self) -> Arc<crate::tunnel::InviteRevocationSet> {
+        Arc::clone(&self.invite_revocation_set)
+    }
 }
 
 /// F7 first narrow handle: the port the `system` IPC domain handler uses
@@ -2750,6 +2769,24 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
 
     async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {
         AppState::tunnel_dispatcher(self).await
+    }
+
+    fn runtime_signing_key(&self) -> Arc<ed25519_dalek::SigningKey> {
+        Arc::clone(&self.runtime_signing_key)
+    }
+
+    fn invite_revocation_set(&self) -> Arc<crate::tunnel::InviteRevocationSet> {
+        Arc::clone(&self.invite_revocation_set)
+    }
+
+    fn pekohub_base_url(&self) -> String {
+        // PekoConfig has no `tunnel` field today; the public hub URL
+        // is operator-supplied via the `PEKOHUB_BASE_URL` env var.
+        std::env::var("PEKOHUB_BASE_URL")
+            .ok()
+            .map(|s| s.trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "https://pekohub.org".to_string())
     }
 }
 

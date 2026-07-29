@@ -206,6 +206,25 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// `PrincipalSetStatus` / `PrincipalSetExposure` /
     /// `PrincipalGrant*` / `PrincipalRevoke*` propagation to the hub.
     async fn tunnel_dispatcher(&self) -> Option<TunnelDispatcher>;
+
+    /// PR #11: ed25519 signing key used to mint invite tokens. The
+    /// minted token encodes the principal's `claims` plus a
+    /// signature produced with this key; the dispatcher's
+    /// `check_request_allowed` verifies the signature with the
+    /// matching `VerifyingKey` on inbound proxied requests.
+    fn runtime_signing_key(&self) -> Arc<ed25519_dalek::SigningKey>;
+
+    /// PR #11: shared in-memory revocation set. The mint and revoke
+    /// handlers both write to it; the dispatcher reads from it on
+    /// every inbound proxied request.
+    fn invite_revocation_set(&self) -> Arc<crate::tunnel::InviteRevocationSet>;
+
+    /// PR #11: pekohub base URL (e.g. `https://hub.example.com`).
+    /// The mint handler embeds the URL into the response so the
+    /// CLI / desktop can hand the recipient a ready-to-paste share
+    /// link. Falls back to the `PEKOHUB_BASE_URL` env var or
+    /// `https://pekohub.org` if the runtime has no configured hub.
+    fn pekohub_base_url(&self) -> String;
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────
@@ -249,6 +268,8 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalPermissions { .. }
                 | RequestPacket::PrincipalSetStatus { .. }
                 | RequestPacket::PrincipalSetExposure { .. }
+                | RequestPacket::PrincipalMintInvite { .. }
+                | RequestPacket::PrincipalRevokeInvite { .. }
                 | RequestPacket::PrincipalCreate { .. }
                 | RequestPacket::PrincipalUpdate { .. }
                 | RequestPacket::PrincipalRemove { .. }
@@ -1062,6 +1083,183 @@ impl RequestHandler for PrincipalHandler {
                         send_response(sink, response).await?;
                     }
                 }
+            }
+
+            RequestPacket::PrincipalMintInvite {
+                request_id,
+                name,
+                scope,
+                ttl_secs,
+            } => {
+                // PR #11: mint a signed invite token against this
+                // runtime's `runtime_signing_key`. The caller must hold
+                // ManageSettings on the resource (same authorization
+                // as PrincipalGrantPermission — minting a token is a
+                // privileged operation, not a public chat action).
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
+                let principal = match load_principal(host, &name).await {
+                    Some(p) => p,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal '{}' not found", name),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+
+                let caller_subject = caller.subject();
+                let config = principal.config.read().await;
+                let resource = principal_resource(&*config);
+                if let Err(denied) =
+                    check_permission(&resource, Permission::ManageSettings, &caller_subject)
+                {
+                    warn!("PrincipalMintInvite denied: {}", denied);
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: denied.to_string(),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
+                // Pull the principal's stable DID from the config so
+                // the verifier can disambiguate by DID as well as
+                // name. Falls back to the runtime's display name
+                // when the principal hasn't been assigned a DID yet
+                // (the runtime derives one lazily on first announce).
+                let principal_did = config
+                    .did
+                    .as_ref()
+                    .map(|d| d.to_string())
+                    .unwrap_or_else(|| name.clone());
+
+                let owner_subject = config.owner.clone();
+                drop(config);
+
+                // Bound the TTL so a caller can't mint a token that
+                // lives forever. 30 days is the upper limit — beyond
+                // that, the daemon should refuse and the CLI should
+                // prompt the user to re-mint.
+                let bounded_ttl = ttl_secs.min(30 * 24 * 60 * 60);
+                let exp = chrono::Utc::now()
+                    + chrono::Duration::seconds(bounded_ttl as i64);
+
+                let claims = crate::tunnel::InviteClaims {
+                    principal_did,
+                    principal_name: name.clone(),
+                    owner_subject,
+                    scope: scope.clone(),
+                    exp,
+                    jti: uuid::Uuid::new_v4(),
+                };
+
+                let minted =
+                    crate::tunnel::invite_token::mint_token(&host.runtime_signing_key(), &claims);
+
+                // Forward the share URL through the pekohub
+                // base URL — the CLI / desktop renders the URL
+                // directly. The token itself is embedded in the
+                // query string so the recipient can paste the
+                // whole thing into a browser.
+                let url = format!(
+                    "{}/p/{}/{}?token={}",
+                    host.pekohub_base_url(),
+                    crate::tunnel::did_key::verifying_key_to_did_key(
+                        &host.runtime_signing_key().verifying_key(),
+                    ),
+                    name,
+                    minted.token,
+                );
+
+                let response = ResponsePacket::PrincipalInviteMinted {
+                    request_id,
+                    name,
+                    token: minted.token,
+                    url,
+                    claims: minted.claims,
+                };
+                send_response(sink, response).await?;
+            }
+
+            RequestPacket::PrincipalRevokeInvite {
+                request_id,
+                name,
+                jti,
+            } => {
+                // PR #11: revoke a previously-minted invite token.
+                // The caller must hold ManageSettings (same as
+                // mint). The `jti` is the UUID string from the
+                // MintedInvite.claims.jti. Idempotent — revoking an
+                // unknown `jti` succeeds and removes nothing.
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
+                let principal = match load_principal(host, &name).await {
+                    Some(p) => p,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal '{}' not found", name),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+
+                let caller_subject = caller.subject();
+                let config = principal.config.read().await;
+                let resource = principal_resource(&*config);
+                if let Err(denied) =
+                    check_permission(&resource, Permission::ManageSettings, &caller_subject)
+                {
+                    warn!("PrincipalRevokeInvite denied: {}", denied);
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: denied.to_string(),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+                drop(config);
+
+                let parsed_jti = match uuid::Uuid::parse_str(&jti) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Invalid jti (expected UUID): {e}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+
+                host.invite_revocation_set().revoke(parsed_jti).await;
+
+                let response = ResponsePacket::PrincipalInviteRevoked {
+                    request_id,
+                    name,
+                    jti,
+                };
+                send_response(sink, response).await?;
             }
 
             RequestPacket::PrincipalCreate {

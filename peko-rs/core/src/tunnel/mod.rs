@@ -15,6 +15,7 @@ pub mod direct;
 pub mod dispatcher;
 pub mod host;
 pub mod hub_directory;
+pub mod invite_token;
 pub mod known_runtimes;
 pub mod local_directory;
 pub mod principal_send_tool;
@@ -34,6 +35,10 @@ pub use dispatcher::TunnelDispatcher;
 pub use host::TunnelHost;
 pub use hub_directory::{
     AgentDirectory, AgentResolution, DirectoryError, HubAgentDirectoryClient, ResolvedExposure,
+};
+pub use invite_token::{
+    InviteClaims, InviteRevocationSet, InviteTokenError, MintedInvite, INVITE_TOKEN_DOMAIN,
+    MAX_REVOKED_JTIS,
 };
 pub use local_directory::LocalFirstAgentDirectory;
 pub use principal_send_tool::{PrincipalSendArgs, PrincipalSendResult, PrincipalSendTool};

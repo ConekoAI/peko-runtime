@@ -809,6 +809,41 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
+    /// Mint a signed invite token for a Principal. Owner-only
+    /// (requires `Permission::ManageSettings` on the principal).
+    /// `ttl_secs` is bounded to 30 days by the daemon.
+    pub async fn principal_mint_invite(
+        &self,
+        name: impl Into<String>,
+        scope: Vec<peko_auth::ownership::Permission>,
+        ttl_secs: u64,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalMintInvite {
+            request_id,
+            name: name.into(),
+            scope,
+            ttl_secs,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Revoke a previously minted invite token. Owner-only.
+    /// `jti` is the UUID printed in the mint response.
+    pub async fn principal_revoke_invite(
+        &self,
+        name: impl Into<String>,
+        jti: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalRevokeInvite {
+            request_id,
+            name: name.into(),
+            jti: jti.into(),
+        };
+        self.request_response(packet).await
+    }
+
     /// List all loaded Principals.
     pub async fn principal_list(&self) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();

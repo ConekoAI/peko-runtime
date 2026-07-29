@@ -185,6 +185,32 @@ pub enum PrincipalCommands {
         name: String,
     },
 
+    /// Mint a signed invite link for a Principal (share with one friend)
+    Invite {
+        /// Principal name
+        name: String,
+
+        /// Comma-separated permissions to grant via the invite
+        /// (e.g. `chat`). Defaults to `chat` when omitted.
+        #[arg(long, value_name = "SCOPE", value_delimiter = ',')]
+        scope: Vec<String>,
+
+        /// Time-to-live, parsed as a duration string (e.g. `7d`, `24h`,
+        /// `30m`). Defaults to `7d`. Hard-capped at 30 days by the
+        /// daemon.
+        #[arg(long, value_name = "TTL", default_value = "7d")]
+        ttl: String,
+    },
+
+    /// Revoke a previously minted invite token
+    RevokeInvite {
+        /// Principal name
+        name: String,
+
+        /// The `jti` (UUID) printed by `peko principal invite`
+        jti: String,
+    },
+
     /// Manage agents (prompts) inside a Principal
     #[command(subcommand)]
     Agent(PrincipalAgentCommands),
@@ -272,6 +298,10 @@ pub async fn handle_principal(
             permission,
         } => revoke_permission(&name, &subject, &permission).await,
         PrincipalCommands::Permissions { name } => list_permissions(&name).await,
+        PrincipalCommands::Invite { name, scope, ttl } => {
+            mint_invite(&name, scope, &ttl).await
+        }
+        PrincipalCommands::RevokeInvite { name, jti } => revoke_invite(&name, &jti).await,
         PrincipalCommands::Agent(PrincipalAgentCommands::List { name }) => {
             list_principal_agents(&name, paths).await
         }
@@ -911,6 +941,115 @@ async fn list_permissions(name: &str) -> Result<()> {
         }
         ResponsePacket::Error { message, .. } => {
             anyhow::bail!("Failed to list permissions: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+/// Parse a human-friendly duration string (`30m`, `24h`, `7d`) into
+/// seconds. Used by `peko principal invite --ttl <value>`. Bare
+/// integers are treated as seconds.
+fn parse_ttl_duration(s: &str) -> Result<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        anyhow::bail!("TTL cannot be empty");
+    }
+    let (num, unit) = if let Some(rest) = s.strip_suffix('d') {
+        (rest, 'd')
+    } else if let Some(rest) = s.strip_suffix('h') {
+        (rest, 'h')
+    } else if let Some(rest) = s.strip_suffix('m') {
+        (rest, 'm')
+    } else if let Some(rest) = s.strip_suffix('s') {
+        (rest, 's')
+    } else {
+        (s, 's')
+    };
+    let n: u64 = num.parse().map_err(|_| anyhow::anyhow!("Invalid TTL: {s:?}"))?;
+    let secs = match unit {
+        's' => n,
+        'm' => n.checked_mul(60).ok_or_else(|| anyhow::anyhow!("TTL overflow: {s:?}"))?,
+        'h' => n
+            .checked_mul(60 * 60)
+            .ok_or_else(|| anyhow::anyhow!("TTL overflow: {s:?}"))?,
+        'd' => n
+            .checked_mul(24 * 60 * 60)
+            .ok_or_else(|| anyhow::anyhow!("TTL overflow: {s:?}"))?,
+        _ => unreachable!(),
+    };
+    Ok(secs)
+}
+
+async fn mint_invite(name: &str, scope: Vec<String>, ttl: &str) -> Result<()> {
+    // Default to `chat` when the caller doesn't pass `--scope` so a
+    // bare `peko principal invite alice` still produces a usable link.
+    let scope_strs: Vec<String> = if scope.is_empty() {
+        vec!["chat".to_string()]
+    } else {
+        scope
+    };
+    let permissions: Vec<peko_auth::Permission> = scope_strs
+        .iter()
+        .map(|s| parse_permission(s))
+        .collect::<Result<_>>()?;
+    let ttl_secs = parse_ttl_duration(ttl)?;
+
+    let client = DaemonClient::connect().await?;
+    let response = client
+        .principal_mint_invite(name, permissions, ttl_secs)
+        .await?;
+
+    match response {
+        ResponsePacket::PrincipalInviteMinted {
+            name,
+            token,
+            url,
+            claims,
+            ..
+        } => {
+            println!("Minted invite for principal '{name}'");
+            println!("  jti:  {}", claims.jti);
+            println!("  exp:  {} ({}s from now)", claims.exp, claims.exp.timestamp() - chrono::Utc::now().timestamp());
+            println!("  scope: {:?}", claims.scope);
+            println!();
+            println!("Share this URL with one friend:");
+            println!("  {url}");
+            // The token itself is also printed so the owner can use
+            // it in scripts / curl examples. Anyone holding the
+            // token can chat until the owner revokes it.
+            println!();
+            println!("Token only:");
+            println!("  {token}");
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to mint invite: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+async fn revoke_invite(name: &str, jti: &str) -> Result<()> {
+    // Reject obviously bad JTIs client-side so the user gets a clean
+    // error instead of a daemon roundtrip.
+    if uuid::Uuid::parse_str(jti).is_err() {
+        anyhow::bail!("Invalid jti: {jti:?} (expected a UUID)");
+    }
+
+    let client = DaemonClient::connect().await?;
+    let response = client.principal_revoke_invite(name, jti).await?;
+
+    match response {
+        ResponsePacket::PrincipalInviteRevoked { name, jti, .. } => {
+            println!("Revoked invite {jti} on principal '{name}'.");
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to revoke invite: {message}");
         }
         other => {
             anyhow::bail!("Unexpected response from daemon: {other:?}");

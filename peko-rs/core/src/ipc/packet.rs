@@ -739,6 +739,27 @@ pub enum RequestPacket {
 
     #[serde(rename = "principal_permissions")]
     PrincipalPermissions { request_id: u64, name: String },
+
+    /// PR #11: mint an invite token for this principal. The caller
+    /// supplies the desired `scope` (one or more `Permission` values)
+    /// and the TTL in seconds. The runtime returns the encoded token
+    /// plus its claims so the CLI/desktop can render the share URL.
+    #[serde(rename = "principal_mint_invite")]
+    PrincipalMintInvite {
+        request_id: u64,
+        name: String,
+        scope: Vec<peko_auth::ownership::Permission>,
+        ttl_secs: u64,
+    },
+
+    /// PR #11: revoke an invite token by `jti`. Idempotent — revoking
+    /// an unknown `jti` is a no-op (returns success).
+    #[serde(rename = "principal_revoke_invite")]
+    PrincipalRevokeInvite {
+        request_id: u64,
+        name: String,
+        jti: String,
+    },
 }
 
 impl RequestPacket {
@@ -824,6 +845,8 @@ impl RequestPacket {
             | Self::PrincipalSetStatus { request_id, .. }
             | Self::PrincipalSetExposure { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
+            | Self::PrincipalMintInvite { request_id, .. }
+            | Self::PrincipalRevokeInvite { request_id, .. }
             | Self::PrincipalSendControl { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
@@ -1587,6 +1610,30 @@ pub enum ResponsePacket {
         name: String,
         exposure: String,
     },
+
+    /// PR #11: result of `PrincipalMintInvite`. Returns the wire
+    /// token (claims + signature), the structured claims, and the
+    /// share URL the caller can hand to the recipient. The CLI
+    /// prints just the URL; the desktop renders it as a copy-paste
+    /// box plus a Burn button.
+    #[serde(rename = "principal_invite_minted")]
+    PrincipalInviteMinted {
+        request_id: u64,
+        name: String,
+        token: String,
+        url: String,
+        claims: crate::tunnel::InviteClaims,
+    },
+
+    /// PR #11: result of `PrincipalRevokeInvite`. Confirms the
+    /// `jti` was added to the in-memory revocation set; the next
+    /// inbound request presenting that token will be rejected.
+    #[serde(rename = "principal_invite_revoked")]
+    PrincipalInviteRevoked {
+        request_id: u64,
+        name: String,
+        jti: String,
+    },
     // (Session-inbox steering variants — MessageQueued, PendingMessages,
     // MessageCancelled, SteeringMessageSummary — were retired under
     // ADR-042. External steering of an in-flight session is no longer
@@ -2062,7 +2109,9 @@ impl ResponsePacket {
             | Self::PrincipalExposureUpdated { request_id, .. }
             | Self::TunnelStatus { request_id, .. }
             | Self::Status { request_id, .. }
-            | Self::QuotaStatus { request_id, .. } => *request_id,
+            | Self::QuotaStatus { request_id, .. }
+            | Self::PrincipalInviteMinted { request_id, .. }
+            | Self::PrincipalInviteRevoked { request_id, .. } => *request_id,
         }
     }
 
@@ -2148,6 +2197,8 @@ impl ResponsePacket {
             Self::TunnelStatus { .. } => "TunnelStatus",
             Self::Status { .. } => "Status",
             Self::QuotaStatus { .. } => "QuotaStatus",
+            Self::PrincipalInviteMinted { .. } => "PrincipalInviteMinted",
+            Self::PrincipalInviteRevoked { .. } => "PrincipalInviteRevoked",
         }
     }
 
