@@ -68,7 +68,11 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
         workspace_path: &std::path::Path,
         resolver: Option<Arc<LlmResolver>>,
     ) -> Arc<dyn super::router::PrincipalRouter> {
-        let prompt = Self::resolve_root_agent_prompt(config, workspace_path);
+        // Phase A: derive the typed agents dir from the Shared
+        // tier root (the `workspace_path` parameter is the
+        // Shared root under Phase A).
+        let agents_dir = workspace_path.join("agents");
+        let prompt = Self::resolve_root_agent_prompt(config, &agents_dir);
         // Phase 4b: copy the principal's stable DID into the router
         // so `principal_send` is registered on this Principal's
         // agents. The runtime_id is left as `None`; the daemon-state
@@ -93,9 +97,13 @@ impl DefaultPrincipalRouterFactory {
     /// Resolve the principal's root agent prompt body.
     ///
     /// See [`DefaultPrincipalRouterFactory`] for the resolution order.
+    ///
+    /// **Phase A.** Callers pass the typed `SharedLayout::agents_dir`
+    /// directly rather than the Shared root + a hand-rolled
+    /// `"agents"` suffix.
     pub fn resolve_root_agent_prompt(
         config: &PrincipalConfig,
-        workspace_path: &std::path::Path,
+        agents_dir: &std::path::Path,
     ) -> crate::principal::agent_prompt::AgentPrompt {
         // 1. Explicit override from principal.toml.
         if let Some(ref path) = config.routing.root_prompt {
@@ -112,8 +120,8 @@ impl DefaultPrincipalRouterFactory {
         //    can put the file at either `agents/root/AGENT.md` or flat
         //    `agents/root.md`.
         let workspace_candidates = [
-            workspace_path.join("agents").join("root").join("AGENT.md"),
-            workspace_path.join("agents").join("root.md"),
+            agents_dir.join("root").join("AGENT.md"),
+            agents_dir.join("root.md"),
         ];
         for candidate in &workspace_candidates {
             if candidate.exists() {

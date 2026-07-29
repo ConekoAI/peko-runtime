@@ -12,6 +12,7 @@ use clap::Subcommand;
 
 use crate::commands::GlobalPaths;
 use peko_auth::{subject_from_string_with_default_user, Subject};
+use peko_core::common::authority::TierPath;
 use peko_core::common::paths::PathResolver;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_core::principal::config::{
@@ -333,8 +334,15 @@ async fn create_principal(name: &str, model_id: &str, paths: &GlobalPaths) -> Re
     // Prepare the workspace and default agent prompt before registering the
     // Principal, because `PrincipalManager::create` loads and validates the
     // agent prompts immediately.
-    let workspace_path = paths.principal_dir(name);
-    let agents_dir = workspace_path.join("agents");
+    //
+    // Phase B: agents live in the Shared tier
+    // (`{config_dir}/principals/{name}/agents/`). The CLI resolves
+    // via the typed `SharedLayout` — the `RuntimeAuthority` accessor
+    // requires a `PrincipalId`, but at create time the principal
+    // doesn't exist yet, so we use the resolver directly. The CLI
+    // operates from `Subject::User`, which is entitled to write its
+    // own principal's shared state.
+    let agents_dir = paths.resolver().principal_layout(name).shared.agents_dir;
     tokio::fs::create_dir_all(&agents_dir).await?;
     let prompt_path = agents_dir.join("primary.md");
     let prompt_body = default_agent_prompt(name);
@@ -1058,7 +1066,13 @@ async fn revoke_invite(name: &str, jti: &str) -> Result<()> {
 }
 
 async fn list_principal_agents(name: &str, paths: &GlobalPaths) -> Result<()> {
-    let agents_dir = paths.principal_agents_dir(name);
+    let agents_dir = paths
+        .authority()
+        .shared_agents_dir(&paths.principal_id_for(name).ok_or_else(|| {
+            anyhow::anyhow!("principal '{name}' not found")
+        })?)
+        .map_err(|e| anyhow::anyhow!("authority error: {e}"))?
+        .into_path_buf();
     if !agents_dir.exists() {
         println!("No agents found for principal '{name}'.");
         return Ok(());
@@ -1082,7 +1096,13 @@ async fn list_principal_agents(name: &str, paths: &GlobalPaths) -> Result<()> {
 }
 
 async fn show_principal_agent(name: &str, agent: &str, paths: &GlobalPaths) -> Result<()> {
-    let agents_dir = paths.principal_agents_dir(name);
+    let agents_dir = paths
+        .authority()
+        .shared_agents_dir(&paths.principal_id_for(name).ok_or_else(|| {
+            anyhow::anyhow!("principal '{name}' not found")
+        })?)
+        .map_err(|e| anyhow::anyhow!("authority error: {e}"))?
+        .into_path_buf();
     let mut candidates = vec![agents_dir.join(format!("{agent}.md"))];
     if !agent.ends_with(".md") {
         candidates.push(agents_dir.join(format!("{agent}.toml")));
@@ -1110,7 +1130,13 @@ async fn load_principal(
         return Ok(p);
     }
 
-    let config_path = paths.principal_config(name);
+    let config_path = paths
+        .authority()
+        .shared_config(&paths.principal_id_for(name).ok_or_else(|| {
+            anyhow::anyhow!("principal '{name}' not found")
+        })?)
+        .map_err(|e| anyhow::anyhow!("authority error: {e}"))?
+        .into_path_buf();
     if !config_path.exists() {
         anyhow::bail!("principal '{name}' not found");
     }
@@ -1132,10 +1158,9 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
     );
 
     PrincipalManager::with_path_resolver(
-        root,
-        resolver,
+        resolver.clone(),
         Arc::new(CliPrincipalMemoryFactory {
-            data_dir: paths.data_dir.clone(),
+            resolver,
         }),
         Arc::new(DefaultPrincipalRouterFactory),
     )
@@ -1191,10 +1216,15 @@ fn default_agent_prompt(name: &str) -> String {
     )
 }
 
-/// Memory factory that places Principal memory under the data directory,
-/// outside the config directory where `principal.toml` lives.
+/// Memory factory that places Principal memory under the Local tier root.
+///
+/// **Phase A.** Memory now lives at `{data_dir}/principals/{name}/local/`
+/// (Local tier), not `{data_dir}/principals/{name}/memory/`. The factory
+/// takes a `PathResolver` so the runtime writer and the IPC resolver agree
+/// on the same path — the previous hand-rolled join caused silent
+/// session-export loss.
 struct CliPrincipalMemoryFactory {
-    data_dir: PathBuf,
+    resolver: peko_core::common::paths::PathResolver,
 }
 
 #[async_trait::async_trait]
@@ -1208,9 +1238,9 @@ impl PrincipalMemoryFactory for CliPrincipalMemoryFactory {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        let memory_dir = self.data_dir.join("principals").join(name).join("memory");
-        let _ = tokio::fs::create_dir_all(&memory_dir).await;
-        let memory = DefaultPrincipalMemory::new(memory_dir);
+        let local_root = self.resolver.principal_layout(&name).local.root;
+        let _ = tokio::fs::create_dir_all(&local_root).await;
+        let memory = DefaultPrincipalMemory::new(local_root);
         let _ = tokio::fs::create_dir_all(memory.sessions_dir()).await;
         Arc::new(memory)
     }

@@ -237,7 +237,10 @@ impl PrincipalUnpackager {
         }
 
         self.import_agents(&files, &name).await?;
-        self.import_memory(&files, &name).await?;
+        // Phase A: the legacy `import_memory` is gone. Memory
+        // snapshots are not part of the portable bundle; sessions
+        // are the only Local-tier artifact that flows in.
+        // (see [`Self::import_sessions`].)
 
         if options.import_sessions {
             self.import_sessions(&files, &name).await?;
@@ -295,10 +298,19 @@ impl PrincipalUnpackager {
             .ok_or_else(|| anyhow::anyhow!("Missing identity/did.json"))?;
         let did_doc: peko_identity::DIDDocument = serde_json::from_slice(did_doc_bytes)?;
 
-        let identity_dir = self
-            .data_dir
-            .join("principals")
-            .join(principal_name)
+        // Phase A: identity lives in the Shared tier so it ships
+        // in the portable bundle. The directory holds the
+        // `identity.json` (public DID) and `keys.enc` (private key
+        // export); `KeyStorage::with_path` expects the directory.
+        let resolver = PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.data_dir.clone(),
+        );
+        let identity_dir = resolver
+            .principal_layout(principal_name)
+            .shared
+            .root
             .join("identity");
 
         if options.rotate_keys {
@@ -360,11 +372,15 @@ impl PrincipalUnpackager {
         files: &HashMap<String, Vec<u8>>,
         principal_name: &str,
     ) -> anyhow::Result<()> {
-        let agents_dir = self
-            .config_dir
-            .join("principals")
-            .join(principal_name)
-            .join("agents");
+        // Phase A: agents live under the Shared tier
+        // (`{config_dir}/principals/{name}/agents/`) so they ship in
+        // the principal bundle.
+        let resolver = PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.data_dir.clone(),
+        );
+        let agents_dir = resolver.principal_layout(principal_name).shared.agents_dir;
 
         for (path, content) in files {
             if path.starts_with("agents/") {
@@ -379,41 +395,21 @@ impl PrincipalUnpackager {
         Ok(())
     }
 
-    async fn import_memory(
-        &self,
-        files: &HashMap<String, Vec<u8>>,
-        principal_name: &str,
-    ) -> anyhow::Result<()> {
-        let memory_dir = self
-            .data_dir
-            .join("principals")
-            .join(principal_name)
-            .join("memory");
-
-        for (path, content) in files {
-            if path.starts_with("memory/") {
-                let file_name = path.strip_prefix("memory/").unwrap_or(path);
-                let dest_path = safe_join(&memory_dir, file_name)?;
-                if let Some(parent) = dest_path.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
-                tokio::fs::write(dest_path, content).await?;
-            }
-        }
-        Ok(())
-    }
-
     async fn import_sessions(
         &self,
         files: &HashMap<String, Vec<u8>>,
         principal_name: &str,
     ) -> anyhow::Result<()> {
-        let sessions_dir = self
-            .data_dir
-            .join("principals")
-            .join(principal_name)
-            .join("memory")
-            .join("sessions");
+        // Phase A: sessions live under the Local tier
+        // (`{data_dir}/principals/{name}/local/sessions/`); the
+        // older `{data_dir}/principals/{name}/memory/sessions/` path
+        // is no longer touched.
+        let resolver = PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.data_dir.clone(),
+        );
+        let sessions_dir = resolver.principal_layout(principal_name).local.sessions_dir;
 
         for (path, content) in files {
             if path.starts_with("sessions/") {
@@ -900,7 +896,7 @@ mod tests {
         assert_eq!(result.did, original_did);
         assert!(result.config_path.exists());
 
-        // Agent prompt restored.
+        // Agent prompt restored (Shared tier).
         let agent_path = config_dir
             .join("principals")
             .join("importme")
@@ -908,8 +904,10 @@ mod tests {
             .join("planner.md");
         assert!(agent_path.exists(), "agent prompt restored");
 
-        // Identity persisted under data_dir.
-        let identity_dir = data_dir
+        // Identity persisted (Shared tier — Phase A moved it out of
+        // `data_dir/principals/{name}/identity/` so it ships in the
+        // portable bundle).
+        let identity_dir = config_dir
             .join("principals")
             .join("importme")
             .join("identity");

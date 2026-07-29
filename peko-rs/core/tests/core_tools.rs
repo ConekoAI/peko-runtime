@@ -11,7 +11,12 @@ mod common;
 #[test]
 fn core_tools_harness_compiles() {
     let manifest_dir = std::env!("CARGO_MANIFEST_DIR");
-    let catalog = std::path::Path::new(manifest_dir).join("docs/architecture/builtin-tools.md");
+    // Phase 0.Z-D moved tests from the workspace root into
+    // `peko-rs/core/tests`, but the architecture docs live one
+    // level above at the repo root (`docs/architecture/`).
+    // Walk up three segments and rejoin from the workspace root.
+    let catalog = std::path::Path::new(manifest_dir)
+        .join("../../docs/architecture/builtin-tools.md");
     assert!(catalog.exists(), "built-in tools catalog should exist");
 }
 

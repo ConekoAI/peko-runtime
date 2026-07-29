@@ -55,6 +55,22 @@ pub(crate) struct AppState {
     /// Cache directory path
     pub cache_dir: PathBuf,
 
+    /// Typed path resolver (Phase A). Every code path that needs
+    /// per-tier roots (`extensions_root`, `mcps_root`, etc.) reaches
+    /// them through this resolver instead of hand-rolled
+    /// `data_dir.join("…")` joins. The legacy `data_dir` field is
+    /// retained for back-compat with callers that haven't migrated.
+    pub path_resolver: crate::common::paths::PathResolver,
+
+    /// **Phase B.** Tier-typed authority that hands out
+    /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. Constructed
+    /// once at daemon startup with `Subject::Public` (the daemon
+    /// itself is the actor); IPC handlers that act on behalf of a
+    /// caller layer a second authority with `Subject::Principal` via
+    /// the trait-port `authority()` accessor. See
+    /// `peko_core::common::authority` for the type-level tier gate.
+    pub authority: Arc<crate::common::authority::RuntimeAuthority>,
+
     /// Port the server is listening on
     pub port: u16,
 
@@ -689,7 +705,7 @@ impl AppState {
         // ADR-030: Initialize the global ExtensionStore for IPC extension operations
         let extension_store = Arc::new(
             ExtensionStore::with_core(Arc::clone(&global_core))
-                .with_storage_dir(data_dir.join("extensions")),
+                .with_storage_dir(path_resolver.extensions_root()),
         );
 
         // Register adapters (same as CLI create_manager_with_adapters)
@@ -754,10 +770,9 @@ impl AppState {
             let root = path_resolver.principals_root_dir();
             let _ = std::fs::create_dir_all(&root);
             let manager = PrincipalManager::with_path_resolver(
-                root.clone(),
                 path_resolver.clone(),
                 Arc::new(DaemonPrincipalMemoryFactory {
-                    data_dir: data_dir.clone(),
+                    resolver: path_resolver.clone(),
                 }),
                 Arc::new(DefaultPrincipalRouterFactory),
             )
@@ -862,6 +877,16 @@ impl AppState {
             config_dir,
             data_dir,
             cache_dir,
+            // Phase A: carry the typed resolver forward so starters
+            // and IPC handlers can reach `extensions_root()`,
+            // `principal_layout(name).local.root`, etc. without
+            // re-deriving them from `data_dir`.
+            path_resolver: path_resolver.clone(),
+            // **Phase B.** Authority gated by `Subject::Public` — the
+            // daemon itself is the actor. IPC handlers that act on
+            // behalf of a caller wrap this with `Subject::Principal`
+            // for tier-specific reads.
+            authority: Arc::new(crate::common::authority::RuntimeAuthority::for_runtime(path_resolver)),
             port,
             host,
             config,
@@ -1215,6 +1240,9 @@ impl AppState {
             gateway_router: Arc::clone(&self.gateway_router),
             mcp_client_registry: Arc::clone(&self.mcp_client_registry),
             data_dir: self.data_dir.clone(),
+            // Phase A: hand the typed resolver through so starters
+            // can reach `extensions_root()`, `mcps_root()`, etc.
+            path_resolver: self.path_resolver.clone(),
             vault: Some(Arc::clone(&self.vault)),
             resolver: Some(Arc::clone(&self.resolver)),
         }
@@ -1874,10 +1902,16 @@ fn load_peko_config(config_dir: &Path) -> PekoConfig {
     PekoConfig::default()
 }
 
-/// Memory factory that places Principal memory under the data directory,
-/// outside the config directory where `principal.toml` lives.
+/// Memory factory that places Principal memory under the Local tier root.
+///
+/// **Phase A.** Memory now lives at `{data_dir}/principals/{name}/local/`
+/// (Local tier), not `{data_dir}/principals/{name}/memory/` (the old
+/// on-disk layout). The factory takes a `PathResolver` so the runtime
+/// writer and the IPC resolver agree on the same path — the previous
+/// hand-rolled `data_dir.join("principals").join(name).join("memory")`
+/// join was the root cause of the silent session-export loss.
 struct DaemonPrincipalMemoryFactory {
-    data_dir: PathBuf,
+    resolver: crate::common::paths::PathResolver,
 }
 
 #[async_trait::async_trait]
@@ -1891,9 +1925,9 @@ impl PrincipalMemoryFactory for DaemonPrincipalMemoryFactory {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        let memory_dir = self.data_dir.join("principals").join(name).join("memory");
-        let _ = tokio::fs::create_dir_all(&memory_dir).await;
-        let memory = DefaultPrincipalMemory::new(memory_dir);
+        let local_root = self.resolver.principal_layout(&name).local.root;
+        let _ = tokio::fs::create_dir_all(&local_root).await;
+        let memory = DefaultPrincipalMemory::new(local_root);
         let _ = tokio::fs::create_dir_all(memory.sessions_dir()).await;
         Arc::new(memory)
     }
@@ -2079,21 +2113,45 @@ impl crate::ipc::handlers::ext_runtime::ExtRuntimeHost for AppState {
     fn background_runtime_manager(&self) -> &Arc<BackgroundRuntimeManager> {
         AppState::background_runtime_manager(self)
     }
+
+    /// Phase B: tier-typed authority mirror. The ext_runtime
+    /// handler doesn't currently use tier-typed paths but the
+    /// accessor is here for parity with the rest of the trait
+    /// ports.
+    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
+        &self.authority
+    }
 }
 
 /// F7 eighth narrow handle: the port the `cron` IPC domain handler uses
-/// to read the data dir (cron DB lives at `<data_dir>/cron.json`) and
-/// the principal manager (used to validate `job.principal_name`
-/// resolves before adding a job). Trait lives in
-/// `ipc::handlers::cron`. Both methods are sync (cheap reference /
-/// `PathBuf` clone), so the trait is object-safe without `async_trait`.
+/// to read the typed path resolver (cron files now live at
+/// `{data_dir}/principals/{name}/local/cron/schedule.toml`) and the
+/// principal manager (used to validate `job.principal_name` resolves
+/// before adding a job, and to enumerate loaded principals for
+/// cross-principal operations). Trait lives in `ipc::handlers::cron`.
+/// Both methods are sync (cheap reference / `PathResolver` clone), so
+/// the trait is object-safe without `async_trait`.
 impl crate::ipc::handlers::cron::CronHost for AppState {
-    fn data_dir(&self) -> std::path::PathBuf {
-        self.data_dir.clone()
+    fn path_resolver(&self) -> crate::common::paths::PathResolver {
+        // Phase A: hand the typed resolver through to the cron
+        // handler so it can derive each principal's
+        // `cron_schedule(name)` path without re-walking
+        // `data_dir.join("principals").join(name)`.
+        self.path_resolver.clone()
     }
 
     fn principal_manager(&self) -> &Arc<PrincipalManager> {
         AppState::principal_manager(self)
+    }
+
+    /// Phase B: hand the tier-typed authority through to the cron
+    /// handler. The cron engine resolves Local-tier paths (the
+    /// per-principal `schedule.toml` / `history.log`) through this
+    /// authority; the actor is the daemon (`Subject::Public`), which
+    /// is allowed to grant `LocalPath` (see
+    /// `common::authority::RuntimeAuthority::local`).
+    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
+        &self.authority
     }
 }
 
@@ -2145,6 +2203,13 @@ impl crate::ipc::handlers::runtime::RuntimeHost for AppState {
     fn cache_dir(&self) -> std::path::PathBuf {
         self.cache_dir.clone()
     }
+
+    /// Phase B: tier-typed authority mirror. The runtime handler
+    /// doesn't currently use tier-typed paths but the accessor is
+    /// here for parity with the rest of the trait ports.
+    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
+        &self.authority
+    }
 }
 
 /// F7 fourth narrow handle: the port the `tunnel` IPC domain handler uses
@@ -2178,6 +2243,13 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
 impl crate::ipc::handlers::extension::ExtensionHost for AppState {
     fn extension_store(&self) -> &Arc<ExtensionStore> {
         AppState::extension_store(self)
+    }
+
+    /// Phase B: hand the tier-typed authority through to the
+    /// extension handler. Runtime-tier reads (`extensions_root`)
+    /// pass through this accessor; the actor is the daemon.
+    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
+        &self.authority
     }
 }
 
@@ -2755,6 +2827,14 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
         self.config_dir.clone()
     }
 
+    fn path_resolver(&self) -> crate::common::paths::PathResolver {
+        // Phase A: hand the typed resolver through so the IPC
+        // handlers can reach `principal_layout(name).shared.agents_dir`
+        // and friends without re-deriving them from
+        // `config_dir()` / `data_dir()`.
+        self.path_resolver.clone()
+    }
+
     fn data_dir(&self) -> std::path::PathBuf {
         self.data_dir.clone()
     }
@@ -2787,6 +2867,15 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
             .map(|s| s.trim_end_matches('/').to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "https://pekohub.org".to_string())
+    }
+
+    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
+        // Production `AppState` was constructed with
+        // `RuntimeAuthority::for_runtime(...)` so its actor is
+        // `Subject::Public`. The IPC admission layer is responsible
+        // for projecting a caller subject into the per-tier read
+        // paths the handler actually invokes.
+        &self.authority
     }
 }
 

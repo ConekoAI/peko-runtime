@@ -77,8 +77,10 @@ impl Tool for CronListTool {
         params: serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
-        let principal_name = ctx
-            .principal_name
+        // **Phase B.** Filter by the principal's stable DID rather than
+        // its display name — matches `CronJob::principal_id`.
+        let principal_id = ctx
+            .principal_id
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("CronList requires a Principal context"))?
             .clone();
@@ -93,7 +95,7 @@ impl Tool for CronListTool {
         let jobs = runtime.list_jobs().await?;
         let filtered: Vec<_> = jobs
             .into_iter()
-            .filter(|j| j.principal_name == principal_name)
+            .filter(|j| j.principal_id.0 == principal_id)
             .collect();
         Ok(render_job_list(filtered))
     }

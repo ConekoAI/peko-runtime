@@ -46,6 +46,16 @@ pub(crate) trait ExtensionHost: Send + Sync {
     /// info / bundle). The handler reloads it on every `ExtensionList`
     /// to stay in sync with CLI-side writes (see module docs).
     fn extension_store(&self) -> &Arc<ExtensionStore>;
+
+    /// **Phase B.** Tier-typed authority that hands out
+    /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. Production
+    /// hosts override this.
+    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
+        // …
+        unimplemented!(
+            "ExtensionHost::authority must be implemented; production hosts override this"
+        )
+    }
 }
 
 /// `extension` domain request handler. Constructed with an

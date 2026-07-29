@@ -322,7 +322,7 @@ impl Agent {
                 self.config.name
             );
         } else {
-            let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
+            let extensions_dir = crate::common::paths::PathResolver::new().extensions_root();
             tracing::info!(
                 "Checking for Universal Tools in extensions directory: {}",
                 extensions_dir.display()

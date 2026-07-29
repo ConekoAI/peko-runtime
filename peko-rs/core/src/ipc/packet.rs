@@ -8,6 +8,7 @@
 //! Larger payloads are chunked at the application layer.
 
 use crate::principal::runtime::OutputFormat;
+use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -2424,7 +2425,7 @@ mod tests {
             id: "job-1".to_string(),
             name: "Test Job".to_string(),
             schedule: peko_cron::ScheduleKind::Every { every_ms: 60000 },
-            principal_name: "test-principal".to_string(),
+            principal_id: PrincipalId("test-principal".to_string()),
             action: peko_cron::CronJobAction::Send {
                 message: "Hello cron".to_string(),
             },
@@ -2516,7 +2517,7 @@ mod tests {
             id: "job-1".to_string(),
             name: "Test Job".to_string(),
             schedule: peko_cron::ScheduleKind::Every { every_ms: 60000 },
-            principal_name: "test-principal".to_string(),
+            principal_id: PrincipalId("test-principal".to_string()),
             action: peko_cron::CronJobAction::Send {
                 message: "Hello cron".to_string(),
             },
@@ -2645,7 +2646,7 @@ mod tests {
                 id: "j".to_string(),
                 name: "n".to_string(),
                 schedule: peko_cron::ScheduleKind::Every { every_ms: 1000 },
-                principal_name: "test-principal".to_string(),
+                principal_id: PrincipalId("test-principal".to_string()),
                 action: peko_cron::CronJobAction::Send {
                     message: "m".to_string(),
                 },

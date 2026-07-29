@@ -36,6 +36,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
@@ -174,8 +175,17 @@ impl CronJobAction {
 pub struct CronJob {
     pub id: String,
     pub name: String,
-    #[serde(rename = "principal")]
-    pub principal_name: String,
+    /// **Phase B.** The principal this job belongs to, keyed by stable
+    /// `PrincipalId` (DID) rather than the legacy `principal_name:
+    /// String`. The on-disk filename is still derived from the principal
+    /// name (see [`crate::CronScheduler::new`]) so schedule files written
+    /// before this rename round-trip through the name; the engine-level
+    /// keying and the wire shape carry the DID instead.
+    ///
+    /// Prelaunch — no compat shim for the legacy `principal: String`
+    /// field. Schedule files written before Phase B must be re-created.
+    #[serde(rename = "principal_id")]
+    pub principal_id: PrincipalId,
     pub schedule: ScheduleKind,
     #[serde(flatten)]
     pub action: CronJobAction,
@@ -265,7 +275,7 @@ pub fn normalize_cron_expr(expr: &str) -> String {
 pub fn build_send_job(
     id: String,
     name: String,
-    principal_name: String,
+    principal_id: PrincipalId,
     schedule: ScheduleKind,
     message: String,
     delivery: DeliveryMode,
@@ -275,7 +285,7 @@ pub fn build_send_job(
     CronJob {
         id,
         name,
-        principal_name,
+        principal_id,
         schedule,
         action: CronJobAction::Send { message },
         delivery,
@@ -294,7 +304,7 @@ pub fn build_send_job(
 pub fn build_spawn_tool_job(
     id: String,
     name: String,
-    principal_name: String,
+    principal_id: PrincipalId,
     schedule: ScheduleKind,
     tool_name: String,
     tool_params: serde_json::Value,
@@ -308,7 +318,7 @@ pub fn build_spawn_tool_job(
     CronJob {
         id,
         name,
-        principal_name,
+        principal_id,
         schedule,
         action: CronJobAction::SpawnTool {
             tool_name,
@@ -484,7 +494,7 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
             let mut obj = serde_json::json!({
                 "job_id": j.id,
                 "label": j.name,
-                "principal": j.principal_name,
+                "principal": j.principal_id.0,
                 "sub_command": sub_command,
                 "action": j.action.kind_label(),
                 "status": status,
@@ -632,7 +642,7 @@ mod tests {
         let job = CronJob {
             id: "test-1".into(),
             name: "test".into(),
-            principal_name: "alice".into(),
+            principal_id: PrincipalId("alice".into()),
             schedule: ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::SpawnTool {
                 tool_name: "Read".into(),

@@ -138,16 +138,12 @@ pub struct ToolFactoryConfig {
     pub enable_async_tools: bool,
     /// Enable planning todo tools
     pub enable_task_tools: bool,
-    /// Path to cron database (defaults to `workspace_dir/cron.json`)
-    pub cron_db_path: Option<PathBuf>,
     /// MCP configuration
     pub mcp: McpFactoryConfig,
     /// List of disabled tool names (e.g., ["Bash", "CronCreate"])
     pub disabled_tools: Vec<String>,
     /// Instance ID for cron persistence
     pub instance_id: Option<String>,
-    /// Path to custom tools directory (defaults to `workspace_dir/tools/`)
-    pub custom_tools_dir: Option<PathBuf>,
     /// Enable custom tools from `tools/` directory
     pub enable_custom_tools: bool,
 }
@@ -163,11 +159,9 @@ impl Default for ToolFactoryConfig {
             enable_cron: true,
             enable_async_tools: true,
             enable_task_tools: true,
-            cron_db_path: None,
             mcp: McpFactoryConfig::default(),
             disabled_tools: Vec::new(),
             instance_id: None,
-            custom_tools_dir: None,
             enable_custom_tools: true,
         }
     }

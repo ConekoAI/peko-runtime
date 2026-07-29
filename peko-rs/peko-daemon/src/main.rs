@@ -84,7 +84,10 @@ async fn main() -> Result<()> {
     let data_dir = resolver.data_dir().to_path_buf();
 
     let config = DaemonConfig {
-        cron_db_path: data_dir.join("cron.json"),
+        // Phase A: cron state is per-principal — no top-level
+        // `cron_db_path`. The cron engine reads
+        // `<resolver>.cron_schedule(name)` for each loaded
+        // principal.
         poll_interval: Duration::from_secs(interval_secs),
         config_dir: config_dir.clone(),
         data_dir: data_dir.clone(),

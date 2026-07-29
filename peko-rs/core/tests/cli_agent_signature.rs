@@ -899,39 +899,12 @@ async fn unsafe_agent_entry_path_rejected() {
     assert_error_code(err, "[unsafe_path]", "unsafe_agent_entry_path_rejected");
 }
 
-#[tokio::test]
-async fn unsafe_memory_entry_path_rejected() {
-    let (signer, did_doc, did) = fresh_identity();
-    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
-    let manifest_bytes = build_signed_manifest(
-        &signer,
-        "sig-test",
-        &did,
-        &did_json,
-        &config_bytes,
-        &keys_bytes,
-    );
-    let mut files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
-    files.insert(
-        "memory/../../../escape.mem".to_string(),
-        b"pwned".to_vec(),
-    );
-
-    let opts = PrincipalImportOptions {
-        new_name: None,
-        rotate_keys: false,
-        import_sessions: false,
-        allow_unsigned: false,
-        force: true,
-        trust_store: None,
-        trust_policy: TrustPolicy::AllowUntrusted,
-        selected_capabilities: Vec::new(),
-    };
-    let err = run_import(&files, opts)
-        .await
-        .expect_err("unsafe memory/ traversal should fail");
-    assert_error_code(err, "[unsafe_path]", "unsafe_memory_entry_path_rejected");
-}
+// Phase A: removed `unsafe_memory_entry_path_rejected`.
+// The memory layer is no longer part of the portable bundle (memory
+// snapshots are runtime state, not principal capability); the
+// unpackager no longer imports a `memory/` prefix at all. The
+// `unsafe_sessions_entry_path_rejected` test below continues to
+// pin path-traversal safety on the Local-tier path that replaced it.
 
 #[tokio::test]
 async fn unsafe_sessions_entry_path_rejected() {

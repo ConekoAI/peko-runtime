@@ -39,7 +39,8 @@ impl ExtensionRuntimeStarter for GatewayRuntimeStarter {
     }
 
     async fn start(&self, extension_id: &str, ctx: &StarterContext) -> anyhow::Result<()> {
-        let ext_dir = ctx.data_dir.join("extensions").join(extension_id);
+        // Phase A: extensions live under the Runtime tier root.
+        let ext_dir = ctx.path_resolver.extensions_root().join(extension_id);
         let manifest_path = ext_dir.join("manifest.yaml");
 
         let content = tokio::fs::read_to_string(&manifest_path)

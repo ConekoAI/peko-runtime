@@ -261,9 +261,14 @@ impl PrincipalContext {
             Arc::new(ExtensionCore::new())
         });
         if !core.universal_extensions_loaded() {
+            // Phase A: derive the typed agents dir from the
+            // principal's Shared layout. `self.workspace_path` is
+            // the Shared tier root, so the agents dir is exactly
+            // `workspace_path.join("agents")`.
+            let agents_dir = self.workspace_path.join("agents");
             if let Err(e) = install_principal_tool_bag(
                 Arc::clone(&core),
-                &self.workspace_path,
+                &agents_dir,
                 &self.principal_id,
             )
             .await
@@ -305,9 +310,12 @@ impl PrincipalContext {
 /// registered. The `agent_catalog` tool is *not* installed here — it
 /// is the only per-call tool and the runner installs it via
 /// [`install_agent_catalog`] on each message.
+/// Phase A: caller passes the typed `SharedLayout::agents_dir`
+/// directly so the hand-rolled `workspace_path.join("agents")`
+/// join inside this function is gone.
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
-    workspace_path: &Path,
+    agents_dir: &Path,
     principal_id: &peko_subject::PrincipalId,
 ) -> anyhow::Result<()> {
     // Built-in tools.
@@ -334,11 +342,10 @@ async fn install_principal_tool_bag(
         tracing::warn!("SkillTool registration failed during core build: {e}");
     }
 
-    // Discover and register the principal's `<workspace>/agents/`.
-    let agents_dir = workspace_path.join("agents");
+    // Phase A: caller passes the typed `agents_dir` directly.
     if agents_dir.exists() {
         let adapter = AgentAdapter::new();
-        let discovered = adapter.discover_agents(&agents_dir);
+        let discovered = adapter.discover_agents(agents_dir);
         if let Err(e) = register_agents_with_core(&core, discovered).await {
             tracing::warn!("register_agents_with_core failed during core build: {e}");
         }

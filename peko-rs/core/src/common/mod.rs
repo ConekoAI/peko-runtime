@@ -3,6 +3,7 @@
 //! This module provides shared functionality used by both CLI and API components,
 //! ensuring consistency in path resolution, configuration handling, etc.
 
+pub mod authority;
 pub mod config_path;
 pub mod identifiers;
 pub mod json_utils;
@@ -25,3 +26,4 @@ pub use paths::{
     default_cache_dir, default_config_dir, default_data_dir, GlobalPaths, PathResolver,
 };
 pub use time::{format_timestamp, format_timestamp_ms, format_timestamp_rfc3339};
+pub use authority::{AuthorityError, LocalPath, RuntimeAuthority, RuntimePath, SharedPath, Tier, TierPath};

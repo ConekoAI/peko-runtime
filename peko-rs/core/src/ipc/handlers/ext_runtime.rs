@@ -46,6 +46,16 @@ pub(crate) trait ExtRuntimeHost: Send + Sync {
     /// Background runtime manager used to read live runtime state for
     /// `ExtStatus`.
     fn background_runtime_manager(&self) -> &Arc<BackgroundRuntimeManager>;
+
+    /// **Phase B.** Tier-typed authority that hands out
+    /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. Production
+    /// hosts override this.
+    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
+        // …
+        unimplemented!(
+            "ExtRuntimeHost::authority must be implemented; production hosts override this"
+        )
+    }
 }
 
 /// `ext_runtime` domain request handler. Constructed with an

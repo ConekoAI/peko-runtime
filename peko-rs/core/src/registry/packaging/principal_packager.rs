@@ -54,11 +54,19 @@ pub struct PrincipalRegistryDescriptor {
 }
 
 /// Packager for creating `.principal` packages.
+///
+/// **Phase A.** The legacy `with_memory_dir` knob is removed —
+/// there is no separate memory directory in the typed layout.
+/// Sessions live under the Local tier (`local/sessions/`) and the
+/// memory index (`local/memory_index.json`) is intentionally not
+/// part of the portable bundle (it's runtime state, not principal
+/// capability). Memory snapshots, when implemented, will live at
+/// `SharedLayout::memory_snapshots_dir`; that layer is deferred to
+/// Phase A.5.
 pub struct PrincipalPackager {
     config: PrincipalConfig,
     identity: Identity,
     agents_dir: Option<PathBuf>,
-    memory_dir: Option<PathBuf>,
     sessions_dir: Option<PathBuf>,
     extension_refs: Vec<ExtensionRef>,
     embedded_extensions: HashMap<String, Vec<u8>>,
@@ -71,7 +79,6 @@ impl PrincipalPackager {
             config,
             identity,
             agents_dir: None,
-            memory_dir: None,
             sessions_dir: None,
             extension_refs: Vec::new(),
             embedded_extensions: HashMap::new(),
@@ -81,12 +88,6 @@ impl PrincipalPackager {
     /// Set the agents (prompts) directory.
     pub fn with_agents_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.agents_dir = Some(dir.as_ref().to_path_buf());
-        self
-    }
-
-    /// Set the memory directory.
-    pub fn with_memory_dir(mut self, dir: impl AsRef<Path>) -> Self {
-        self.memory_dir = Some(dir.as_ref().to_path_buf());
         self
     }
 
@@ -291,9 +292,9 @@ impl PrincipalPackager {
         self.export_agents(&mut files, &mut manifest)
             .await
             .context("Failed to export agents")?;
-        self.export_memory(&mut files, &mut manifest)
-            .await
-            .context("Failed to export memory")?;
+        // Phase A: the legacy `export_memory` is gone. Sessions
+        // are the only Local-tier artifact in the portable bundle,
+        // and they live directly under `<local_root>/sessions/`.
 
         if options.include_sessions {
             self.export_sessions(&mut files, &mut manifest)
@@ -421,23 +422,6 @@ impl PrincipalPackager {
         if let Some(dir) = &self.agents_dir {
             if dir.exists() {
                 self.export_dir_recursive(dir, "agents", files, manifest)
-                    .await?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn export_memory(
-        &self,
-        files: &mut HashMap<String, Vec<u8>>,
-        manifest: &mut PrincipalManifest,
-    ) -> anyhow::Result<()> {
-        if let Some(dir) = &self.memory_dir {
-            if dir.exists() {
-                // Sessions live under `memory/sessions` on disk but are a
-                // separate package layer; skip them here so the memory
-                // layer stays free of (potentially large) session history.
-                self.export_dir_recursive_skipping(dir, "memory", &["sessions"], files, manifest)
                     .await?;
             }
         }

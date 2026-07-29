@@ -11,6 +11,7 @@ use chrono::Utc;
 use clap::Subcommand;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_cron::{CronJob, CronJobAction, DeliveryMode, ScheduleKind};
+use peko_subject::PrincipalId;
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -189,7 +190,7 @@ async fn connect_daemon() -> Result<DaemonClient> {
 }
 
 /// Handle cron commands
-pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) -> Result<()> {
+pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> Result<()> {
     match cmd {
         CronCommands::List {
             all,
@@ -216,7 +217,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                                 job.id,
                                 schedule,
                                 action_kind,
-                                job.principal_name,
+                                job.principal_id.0,
                                 job.next_run.to_rfc3339()
                             );
                             println!("     └─ {}", job.task_description());
@@ -265,10 +266,19 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             // Compute next run
             let next_run = peko_cron::calculate_next_run(&schedule_kind, Utc::now())?;
 
+            // **Phase B.** Resolve the principal name to its stable DID
+            // so `CronJob::principal_id` carries the identity the daemon
+            // will key its in-memory scheduler hash by. The CLI takes a
+            // name from `--principal` because that's what users type, but
+            // the wire shape uses the DID for rename-survivability.
+            let principal_id: PrincipalId = paths
+                .principal_id_for(&principal)
+                .ok_or_else(|| anyhow::anyhow!("Principal '{principal}' not found"))?;
+
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
                 name,
-                principal_name: principal.clone(),
+                principal_id,
                 schedule: schedule_kind,
                 action: CronJobAction::Send { message },
                 delivery,
@@ -319,10 +329,14 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 DeliveryMode::None
             };
 
+            let principal_id: PrincipalId = paths
+                .principal_id_for(&principal)
+                .ok_or_else(|| anyhow::anyhow!("Principal '{principal}' not found"))?;
+
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
                 name,
-                principal_name: principal.clone(),
+                principal_id,
                 schedule: ScheduleKind::At {
                     at: at_time.to_rfc3339(),
                 },
@@ -374,10 +388,14 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             };
             let next_run = peko_cron::calculate_next_run(&schedule_kind, Utc::now())?;
 
+            let principal_id: PrincipalId = paths
+                .principal_id_for(&principal)
+                .ok_or_else(|| anyhow::anyhow!("Principal '{principal}' not found"))?;
+
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
                 name,
-                principal_name: principal.clone(),
+                principal_id,
                 schedule: schedule_kind,
                 action: CronJobAction::Send { message },
                 delivery,
@@ -504,10 +522,14 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 DeliveryMode::None
             };
 
+            let principal_id: PrincipalId = paths
+                .principal_id_for(&principal)
+                .ok_or_else(|| anyhow::anyhow!("Principal '{principal}' not found"))?;
+
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
                 name,
-                principal_name: principal.clone(),
+                principal_id,
                 schedule: ScheduleKind::Idle { minutes },
                 action: CronJobAction::Send { message },
                 delivery,
@@ -557,10 +579,14 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 DeliveryMode::None
             };
 
+            let principal_id: PrincipalId = paths
+                .principal_id_for(&principal)
+                .ok_or_else(|| anyhow::anyhow!("Principal '{principal}' not found"))?;
+
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
                 name,
-                principal_name: principal.clone(),
+                principal_id,
                 schedule: ScheduleKind::Event {
                     event_type,
                     filter: filter_val,

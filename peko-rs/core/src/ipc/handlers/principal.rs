@@ -190,6 +190,11 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// for principal/identity paths.
     fn config_dir(&self) -> std::path::PathBuf;
 
+    /// Typed path resolver. **Phase A:** preferred over
+    /// `config_dir()` / `data_dir()` for any new code that needs to
+    /// reach per-tier roots.
+    fn path_resolver(&self) -> PathResolver;
+
     /// Daemon data dir.
     fn data_dir(&self) -> std::path::PathBuf;
 
@@ -225,6 +230,21 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// link. Falls back to the `PEKOHUB_BASE_URL` env var or
     /// `https://pekohub.org` if the runtime has no configured hub.
     fn pekohub_base_url(&self) -> String;
+
+    /// **Phase B.** Tier-typed authority that hands out
+    /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. Default
+    /// impl returns the runtime-public authority; IPC handlers that
+    /// act on behalf of a caller override with a per-subject variant.
+    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
+        // The default arm keeps the trait-port surface stable for
+        // test hosts that haven't been refactored to project a
+        // subject. Production hosts override this with the
+        // subject-specific authority the IPC admission layer
+        // resolves.
+        unimplemented!(
+            "PrincipalHost::authority must be implemented; production hosts override this"
+        )
+    }
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────
@@ -1295,8 +1315,12 @@ impl RequestHandler for PrincipalHandler {
                 //    are private to `commands::principal`; we inline
                 //    equivalent logic here (smallest diff) — see the
                 //    T-105 plan's verified-facts section.
-                let workspace_path = host.config_dir().join("principals").join(&name);
-                let agents_dir = workspace_path.join("agents");
+                //
+                // Phase A: the principal's agents dir is the typed
+                // Shared-layout path. Use the resolver so we agree
+                // with `PrincipalManager::create` and the IPC
+                // `load_principal` helper on the exact same path.
+                let agents_dir = host.path_resolver().principal_layout(&name).shared.agents_dir;
                 if let Err(e) = tokio::fs::create_dir_all(&agents_dir).await {
                     let response = ResponsePacket::Error {
                         request_id,
@@ -2240,8 +2264,11 @@ async fn load_principal(host: &dyn PrincipalHost, name: &str) -> Option<Arc<Prin
         return Some(principal);
     }
 
-    let resolver = PathResolver::with_dirs(host.config_dir(), host.data_dir(), host.cache_dir());
-    let config_path = resolver.principal_config(name);
+    // Phase A: prefer the typed resolver from the host so
+    // every call here agrees with the layout used by the
+    // daemon-side `PrincipalManager` and the IPC create path.
+    let resolver = host.path_resolver();
+    let config_path = resolver.principal_layout(name).shared.config_file;
     if config_path.exists() {
         if let Err(e) = manager.load(&config_path).await {
             warn!(
@@ -2263,7 +2290,7 @@ async fn load_principal_identity(
     name: &str,
     did: &str,
 ) -> anyhow::Result<peko_identity::Identity> {
-    let identity_dir = resolver.principal_identity_dir(name);
+    let identity_dir = resolver.principal_layout(name).shared.root.join("identity");
     let did = did.to_string();
     tokio::task::spawn_blocking(move || {
         let storage = peko_identity::storage::KeyStorage::with_path(identity_dir)?;
@@ -2290,13 +2317,19 @@ async fn build_principal_packager(
         .map(|d| d.0.clone())
         .ok_or_else(|| anyhow::anyhow!("Principal '{}' has no identity DID", name))?;
 
-    let resolver = PathResolver::with_dirs(host.config_dir(), host.data_dir(), host.cache_dir());
+    // Phase A: every packager path is read from the typed layout.
+// `agents_dir` is the Shared tier; `sessions_dir` is the Local
+// tier. The legacy `memory_dir` knob is gone — sessions are
+// exported from `local.sessions_dir` directly, and the principal's
+// memory index (`local.memory_index`) is not part of the
+// portable bundle.
+    let resolver = host.path_resolver();
+    let layout = resolver.principal_layout(name);
     let identity = load_principal_identity(&resolver, name, &did).await?;
 
     let packager = crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
-        .with_agents_dir(resolver.principal_agents_dir(name))
-        .with_memory_dir(resolver.principal_memory_dir(name))
-        .with_sessions_dir(resolver.principal_sessions_dir(name));
+        .with_agents_dir(&layout.shared.agents_dir)
+        .with_sessions_dir(&layout.local.sessions_dir);
 
     if with_extensions {
         let store = host.extension_store();
@@ -2457,7 +2490,7 @@ async fn import_principal_package(
 
     // Load the freshly imported principal into the in-memory manager.
     let resolver = PathResolver::with_dirs(host.config_dir(), host.data_dir(), host.cache_dir());
-    let config_path = resolver.principal_config(&result.name);
+    let config_path = resolver.principal_layout(&result.name).shared.config_file;
     if let Err(e) = host.principal_manager().load(&config_path).await {
         warn!(
             "Imported principal '{}' but failed to load it: {}",

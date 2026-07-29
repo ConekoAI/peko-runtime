@@ -639,7 +639,6 @@ mod tests {
         use crate::tunnel::known_runtimes::KnownRuntimes;
         let pending = Arc::new(PendingA2aResponses::new());
         let principal_manager = Arc::new(PrincipalManager::new(
-            std::env::temp_dir().join(format!("peko-principal-send-test-{}", uuid::Uuid::new_v4())),
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
         ));
@@ -786,10 +785,6 @@ mod tests {
         use crate::tunnel::known_runtimes::KnownRuntimes;
         let tunnel_handle = TunnelHandle::new(outbound_tx);
         let principal_manager = Arc::new(PrincipalManager::new(
-            std::env::temp_dir().join(format!(
-                "peko-principal-send-roundtrip-{}",
-                uuid::Uuid::new_v4()
-            )),
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
         ));
