@@ -161,8 +161,15 @@ impl RequestHandler for CronHandler {
                 // Phase B: jobs arrive keyed by the principal's stable
                 // DID. Resolve DID → display name for the on-disk
                 // schedule file and for the "not loaded" error.
+                //
+                // The manager's `principals` hash is keyed by the
+                // internal `PrincipalId::generate()`, NOT by the wire
+                // DID — use `resolve_principal` which tries both
+                // lookups (defined in `daemon/cron_engine`).
                 let pm = self.host.principal_manager();
-                let principal_name = match pm.get(job.principal_id.clone()).await {
+                let principal =
+                    crate::daemon::cron_engine::resolve_principal(pm, &job.principal_id).await;
+                let principal_name = match principal {
                     Some(p) => p.name().await,
                     None => {
                         let response = ResponsePacket::Error {

@@ -810,7 +810,14 @@ fn map_async_status(status: AsyncTaskStatus) -> (String, Option<String>, Option<
 /// `PrincipalManager::create` minted at construction time. In the
 /// freshly-created case those two strings differ; the DID lookup is
 /// what makes the wire identity work.
-async fn resolve_principal(
+/// Resolve a `Principal` by its `PrincipalId` (wire form).
+///
+/// The manager's `principals` hash is keyed by the internal
+/// `PrincipalId::generate()` — NOT by the DID that travels on the
+/// wire. Callers receiving a wire `PrincipalId` (from `CronJob`,
+/// `CronRemove`, etc.) must try both lookups. Public so the cron
+/// IPC handler can reuse this rather than duplicating the logic.
+pub(crate) async fn resolve_principal(
     pm: &PrincipalManager,
     principal_id: &PrincipalId,
 ) -> Option<Arc<crate::principal::Principal>> {
