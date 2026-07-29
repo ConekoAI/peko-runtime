@@ -67,7 +67,10 @@ async fn seed_runtime_for_test(backend_url: &str, did: &str) {
         .expect("Failed to create seed user");
     assert!(user_resp.status().is_success(), "Seed user creation failed");
     let user_body: serde_json::Value = user_resp.json().await.unwrap();
-    let user_id = user_body["id"].as_i64().expect("No user id") as i32;
+    let user_id = user_body["id"]
+        .as_str()
+        .expect("No user id (expected UUID string)")
+        .to_string();
 
     // Pre-seed the runtime. The endpoint is a plain INSERT so a
     // re-seed returns 500; we treat that as success.
@@ -305,7 +308,10 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
         .expect("Failed to create test user");
     assert!(user_resp.status().is_success(), "Test user creation failed");
     let user_body: serde_json::Value = user_resp.json().await.unwrap();
-    let user_id = user_body["id"].as_i64().expect("No user id") as i32;
+    let user_id = user_body["id"]
+        .as_str()
+        .expect("No user id (expected UUID string)")
+        .to_string();
 
     // Create runtime record for owner resolution
     let runtime_resp = client
@@ -324,7 +330,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
     );
 
     // Generate JWT for authenticated requests
-    let jwt_token = generate_jwt(user_id as i64, "tunneltestuser");
+    let jwt_token = generate_jwt(&user_id, "tunneltestuser");
     let auth_header = format!("Bearer {jwt_token}");
 
     let (mut write, read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;

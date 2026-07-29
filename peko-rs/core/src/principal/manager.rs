@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -56,7 +56,6 @@ pub enum PrincipalManagerError {
 pub struct PrincipalManager {
     principals: RwLock<HashMap<PrincipalId, Arc<Principal>>>,
     principals_by_name: RwLock<HashMap<String, PrincipalId>>,
-    workspace_root: PathBuf,
     path_resolver: PathResolver,
     memory_factory: Arc<dyn PrincipalMemoryFactory>,
     router_factory: Arc<dyn PrincipalRouterFactory>,
@@ -97,12 +96,10 @@ pub struct PrincipalManager {
 
 impl PrincipalManager {
     pub fn new(
-        workspace_root: PathBuf,
         memory_factory: Arc<dyn PrincipalMemoryFactory>,
         router_factory: Arc<dyn PrincipalRouterFactory>,
     ) -> Self {
         Self::with_path_resolver(
-            workspace_root,
             PathResolver::new(),
             memory_factory,
             router_factory,
@@ -110,7 +107,6 @@ impl PrincipalManager {
     }
 
     pub fn with_path_resolver(
-        workspace_root: PathBuf,
         path_resolver: PathResolver,
         memory_factory: Arc<dyn PrincipalMemoryFactory>,
         router_factory: Arc<dyn PrincipalRouterFactory>,
@@ -118,7 +114,6 @@ impl PrincipalManager {
         Self {
             principals: RwLock::new(HashMap::new()),
             principals_by_name: RwLock::new(HashMap::new()),
-            workspace_root,
             path_resolver,
             memory_factory,
             router_factory,
@@ -231,6 +226,13 @@ impl PrincipalManager {
 
     /// Create a new Principal from config, generate a real identity, and load
     /// its agent prompts.
+    ///
+    /// **Phase A.** The principal's `workspace_path` now points at the Shared
+    /// tier root (`{config_dir}/principals/{name}/`), not the Local data
+    /// dir. Local state (sessions, cron, quota meter state, caches) lives
+    /// under `…/{name}/local/` and is reachable through `self.resolver`.
+    /// Both tiers are created up front via `ensure_principal_dirs` so the
+    /// runtime never has to mkdir mid-write.
     pub async fn create(
         &self,
         config: PrincipalConfig,
@@ -244,18 +246,18 @@ impl PrincipalManager {
         }
 
         let id = PrincipalId::generate();
-        let workspace_path = self.workspace_root.join(&name);
-        tokio::fs::create_dir_all(&workspace_path).await?;
+        let layout = self.path_resolver.principal_layout(&name);
+        self.path_resolver.ensure_principal_dirs(&name)?;
 
         // Generate and persist a real DID identity for this Principal.
         let mut config = config;
         let identity = self.generate_identity(&name).await?;
         config.did = Some(PrincipalDID(identity.did));
 
-        // Persist principal.toml.
-        self.persist_config(&workspace_path, &config).await?;
+        // Persist principal.toml under the Shared root.
+        self.persist_config(&layout.shared.root, &config).await?;
 
-        let memory = self.memory_factory.create(&id, &workspace_path).await;
+        let memory = self.memory_factory.create(&id, &layout.local.root).await;
 
         // F18: build the quota meter first so the router can capture
         // the same Arc. The meter is built before the router because
@@ -263,8 +265,12 @@ impl PrincipalManager {
         // root router and the principal carry the same handle so an
         // `update_config` call that mutates `config.quota` only
         // needs to swap the meter on the principal.
+        //
+        // Phase A: quota state lives in the Local tier under `local/cron/`
+        // alongside the cron schedule — quota is per-principal runtime
+        // state, not part of the portable bundle.
         let quota_config = config.quota.clone().unwrap_or_default();
-        let quota_state_path = workspace_path.join("quota_state.json");
+        let quota_state_path = layout.local.cron_dir.join("quota_state.json");
         let quota_meter = peko_quota::QuotaMeter::load_or_init(
             quota_config,
             Some(quota_state_path),
@@ -279,17 +285,17 @@ impl PrincipalManager {
             .create(
                 &config,
                 memory.clone(),
-                &workspace_path,
+                &layout.shared.root,
                 self.resolver.clone(),
             )
             .await;
 
-        let agent_prompts = discover_agent_prompts(&workspace_path).await?;
+        let agent_prompts = discover_agent_prompts(&layout.shared.agents_dir).await?;
 
         let principal = Arc::new(Principal {
             id: id.clone(),
             config: RwLock::new(config),
-            workspace_path,
+            workspace_path: layout.shared.root.clone(),
             memory,
             router,
             agent_prompts,
@@ -334,8 +340,17 @@ impl PrincipalManager {
             .ok_or_else(|| PrincipalManagerError::Config("invalid config path".to_string()))?
             .to_path_buf();
 
+        // Phase A: derive the typed layout from the principal name
+        // (already known via `config.name`). `workspace_path` is the
+        // Shared tier root (parent of `principal.toml`); quota state
+        // lives in the Local tier under
+        // `<data_dir>/principals/{name}/local/cron/`.
+        let layout = self.path_resolver.principal_layout(&name);
+
         let id = PrincipalId::generate();
-        let memory = self.memory_factory.create(&id, &workspace_path).await;
+        // Phase A: memory factory takes the Local tier root, not
+        // the Shared root.
+        let memory = self.memory_factory.create(&id, &layout.local.root).await;
 
         // F19: build / restore the quota meter from disk so a daemon
         // restart preserves the principal's accumulated usage. The
@@ -343,7 +358,7 @@ impl PrincipalManager {
         // fetches it via `Principal.quota_meter` and opens
         // `QuotaScope::with` at run entrypoint.
         let quota_config = config.quota.clone().unwrap_or_default();
-        let quota_state_path = workspace_path.join("quota_state.json");
+        let quota_state_path = layout.local.cron_dir.join("quota_state.json");
         let quota_meter = peko_quota::QuotaMeter::load_or_init(
             quota_config,
             Some(quota_state_path),
@@ -362,7 +377,7 @@ impl PrincipalManager {
                 self.resolver.clone(),
             )
             .await;
-        let agent_prompts = discover_agent_prompts(&workspace_path).await?;
+        let agent_prompts = discover_agent_prompts(&layout.shared.agents_dir).await?;
 
         let principal = Arc::new(Principal {
             id: id.clone(),
@@ -412,6 +427,20 @@ impl PrincipalManager {
     }
 
     /// Remove a Principal by name, deleting its workspace, data, and identity.
+///
+/// **Phase A.** The removal walks the typed layout: Shared tier root first
+/// (`{config_dir}/principals/{name}/`) and then Local tier root
+/// (`{data_dir}/principals/{name}/local/`) — both via `PathResolver`. The
+/// previous hand-rolled `data_dir.join("principals").join(name)` join at
+/// line 466 missed the keychain identity cleanup and any cron file; the
+/// new layout makes ownership explicit at every path.
+///
+/// Note: this method does NOT remove the principal's cron file directly.
+/// The cron handler owns its per-principal `local/cron/schedule.toml` and
+/// `local/cron/history.log` — those are deleted by `delete_jobs_for_principal`
+/// when the caller invokes the cron IPC verb. Future Phase A.5 will wire
+/// that into `PrincipalManager::remove` so the cron tier is cleaned up in
+/// the same call.
     pub async fn remove(&self, name: &str) -> Result<(), PrincipalManagerError> {
         let id = {
             let by_name = self.principals_by_name.read().await;
@@ -426,7 +455,7 @@ impl PrincipalManager {
             .await
             .ok_or_else(|| PrincipalManagerError::NotFound(name.to_string()))?;
 
-        let workspace_path = principal.workspace_path.clone();
+        let layout = self.path_resolver.principal_layout(name);
         // Snapshot the principal's stable DID before we drop the
         // in-memory entries — `chat_log_store.remove_principal`
         // deletes the principal's shard directory keyed by that
@@ -442,21 +471,31 @@ impl PrincipalManager {
             self.session_creation_locks.write().await.remove(&id);
         }
 
-        // Best-effort cleanup of on-disk directories.
-        if workspace_path.exists() {
-            tokio::fs::remove_dir_all(&workspace_path)
+        // Phase A: remove both tier roots via the typed layout.
+        // Shared first (config), then Local (data). Errors here are
+        // surfaced rather than swallowed — silent retention would leak
+        // per-principal state the caller was promised to lose.
+        if layout.shared.root.exists() {
+            tokio::fs::remove_dir_all(&layout.shared.root)
                 .await
                 .map_err(|e| {
-                    tracing::warn!("failed to remove principal workspace {workspace_path:?}: {e}");
+                    tracing::warn!(
+                        "failed to remove principal shared root {:?}: {e}",
+                        layout.shared.root
+                    );
                     PrincipalManagerError::Io(e)
                 })?;
         }
-
-        let data_dir = self.path_resolver.data_dir().join("principals").join(name);
-        if data_dir.exists() {
-            if let Err(e) = tokio::fs::remove_dir_all(&data_dir).await {
-                tracing::warn!("failed to remove principal data dir {data_dir:?}: {e}");
-            }
+        if layout.local.root.exists() {
+            tokio::fs::remove_dir_all(&layout.local.root)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(
+                        "failed to remove principal local root {:?}: {e}",
+                        layout.local.root
+                    );
+                    PrincipalManagerError::Io(e)
+                })?;
         }
 
         // Delete this principal's chat-log shards. Only the
@@ -526,7 +565,7 @@ impl PrincipalManager {
         &self,
         name: &str,
     ) -> Result<peko_identity::Identity, PrincipalManagerError> {
-        let identity_dir = self.path_resolver.principal_identity_dir(name);
+        let identity_dir = self.path_resolver.principal_layout(name).shared.root.join("identity");
         tokio::fs::create_dir_all(&identity_dir).await?;
         let identity_dir = identity_dir.clone();
         let name = name.to_string();
@@ -1014,16 +1053,21 @@ impl PrincipalResponse {
     }
 }
 
+/// Discover agent prompts for a principal.
+///
+/// **Phase A.** The caller passes the typed `agents_dir` directly
+/// (i.e. `PathResolver::principal_layout(name).shared.agents_dir`)
+/// rather than the Shared tier root + a hand-rolled `"agents"`
+/// suffix. The legacy `workspace_path.join("agents")` join is gone
+/// from this function.
 async fn discover_agent_prompts(
-    workspace_path: &Path,
+    agents_dir: &Path,
 ) -> Result<HashMap<String, AgentPrompt>, PrincipalManagerError> {
     let mut prompts = HashMap::new();
 
-    // Discover AGENT.md extensions under <workspace>/agents/
-    let agents_dir = workspace_path.join("agents");
     if agents_dir.exists() {
         let adapter = AgentAdapter::new();
-        let discovered = adapter.discover_agents(&agents_dir);
+        let discovered = adapter.discover_agents(agents_dir);
         for d in discovered {
             let canonical_id = d.manifest.id.0.clone();
             let prompt = load_agent_prompt(&d.file_path)
@@ -1077,7 +1121,6 @@ mod tests {
         let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
         let manager = Arc::new(
             PrincipalManager::with_path_resolver(
-                workspace,
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
@@ -1098,7 +1141,11 @@ mod tests {
         name: &str,
         extra_agents: &[&str],
     ) -> Arc<Principal> {
-        let agents_dir = manager.workspace_root.join(name).join("agents");
+        let agents_dir = manager
+            .path_resolver
+            .principal_layout(name)
+            .shared
+            .agents_dir;
         tokio::fs::create_dir_all(&agents_dir).await.unwrap();
 
         let primary_body = format!(
@@ -1387,7 +1434,12 @@ mod tests {
             did.0
         );
 
-        let identity_dir = manager.path_resolver.principal_identity_dir("stressy");
+        let identity_dir = manager
+            .path_resolver
+            .principal_layout("stressy")
+            .shared
+            .root
+            .join("identity");
         assert!(identity_dir.exists(), "identity directory should exist");
     }
 
@@ -1726,7 +1778,6 @@ mod tests {
         let chat_log_dir = temp.path().join("chat_log");
         let store = Arc::new(ChatLogStore::new(chat_log_dir));
         let manager = PrincipalManager::with_path_resolver(
-            workspace,
             path_resolver,
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),

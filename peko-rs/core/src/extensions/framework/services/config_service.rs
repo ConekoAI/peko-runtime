@@ -28,15 +28,18 @@ pub struct ExtensionConfigData {
 }
 
 impl ExtensionConfigData {
-    fn config_path(data_dir: &Path, extension_id: &str) -> PathBuf {
-        data_dir
-            .join("extensions")
+    fn config_path(extensions_root: &Path, extension_id: &str) -> PathBuf {
+        // Phase A: caller passes the typed Runtime extensions root
+        // (`PathResolver::extensions_root()`), not a raw data dir.
+        // Configs are stored per-extension as
+        // `<extensions_root>/<extension_id>/config.toml`.
+        extensions_root
             .join(extension_id)
             .join("config.toml")
     }
 
-    fn load(data_dir: &Path, extension_id: &str) -> anyhow::Result<Self> {
-        let path = Self::config_path(data_dir, extension_id);
+    fn load(extensions_root: &Path, extension_id: &str) -> anyhow::Result<Self> {
+        let path = Self::config_path(extensions_root, extension_id);
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -45,8 +48,8 @@ impl ExtensionConfigData {
         Ok(config)
     }
 
-    fn save(&self, data_dir: &Path, extension_id: &str) -> anyhow::Result<()> {
-        let path = Self::config_path(data_dir, extension_id);
+    fn save(&self, extensions_root: &Path, extension_id: &str) -> anyhow::Result<()> {
+        let path = Self::config_path(extensions_root, extension_id);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -87,20 +90,24 @@ impl ExtensionConfigData {
 /// Service for managing extension configuration persistence
 #[derive(Debug, Clone)]
 pub struct ExtensionConfigService {
-    data_dir: PathBuf,
+    /// Runtime-tier extensions root: `{data_dir}/runtime/extensions`.
+    /// Per-extension configs are stored at
+    /// `<extensions_root>/<extension_id>/config.toml`.
+    extensions_root: PathBuf,
 }
 
 impl ExtensionConfigService {
-    /// Create a new config service with the given data directory
-    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
+    /// Create a new config service rooted at the runtime-tier
+    /// `extensions_root` (`PathResolver::extensions_root()`).
+    pub fn new(extensions_root: impl Into<PathBuf>) -> Self {
         Self {
-            data_dir: data_dir.into(),
+            extensions_root: extensions_root.into(),
         }
     }
 
     /// Load configuration for an extension
     pub fn load(&self, extension_id: &str) -> anyhow::Result<HashMap<String, serde_json::Value>> {
-        let data = ExtensionConfigData::load(&self.data_dir, extension_id)?;
+        let data = ExtensionConfigData::load(&self.extensions_root, extension_id)?;
         let mut result = data.global.clone();
         result.extend(data.agents.into_iter().flat_map(|(k, v)| {
             v.into_iter()
@@ -111,7 +118,7 @@ impl ExtensionConfigService {
 
     /// Save configuration for an extension
     pub fn save(&self, extension_id: &str, config: &ExtensionConfigData) -> anyhow::Result<()> {
-        config.save(&self.data_dir, extension_id)
+        config.save(&self.extensions_root, extension_id)
     }
 
     /// Set a configuration value at a specific scope
@@ -122,26 +129,26 @@ impl ExtensionConfigService {
         key: &str,
         value: serde_json::Value,
     ) -> anyhow::Result<()> {
-        let mut data = ExtensionConfigData::load(&self.data_dir, extension_id)?;
+        let mut data = ExtensionConfigData::load(&self.extensions_root, extension_id)?;
         let agent = match &scope {
             ConfigScope::Global => None,
             ConfigScope::Agent(a) => Some(a.as_str()),
         };
         data.set(agent, key.to_string(), value);
-        data.save(&self.data_dir, extension_id)
+        data.save(&self.extensions_root, extension_id)
     }
 
     /// Unset a configuration key at a specific scope
     ///
     /// Returns `true` if the key was found and removed.
     pub fn unset(&self, extension_id: &str, scope: ConfigScope, key: &str) -> anyhow::Result<bool> {
-        let mut data = ExtensionConfigData::load(&self.data_dir, extension_id)?;
+        let mut data = ExtensionConfigData::load(&self.extensions_root, extension_id)?;
         let agent = match &scope {
             ConfigScope::Global => None,
             ConfigScope::Agent(a) => Some(a.as_str()),
         };
         let removed = data.unset(agent, key);
-        data.save(&self.data_dir, extension_id)?;
+        data.save(&self.extensions_root, extension_id)?;
         Ok(removed)
     }
 
@@ -151,7 +158,7 @@ impl ExtensionConfigService {
         extension_id: &str,
         scope: ConfigScope,
     ) -> anyhow::Result<HashMap<String, serde_json::Value>> {
-        let data = ExtensionConfigData::load(&self.data_dir, extension_id)?;
+        let data = ExtensionConfigData::load(&self.extensions_root, extension_id)?;
         let agent = match &scope {
             ConfigScope::Global => None,
             ConfigScope::Agent(a) => Some(a.as_str()),
@@ -161,7 +168,7 @@ impl ExtensionConfigService {
 
     /// Get inherited global configuration
     pub fn global(&self, extension_id: &str) -> anyhow::Result<HashMap<String, serde_json::Value>> {
-        let data = ExtensionConfigData::load(&self.data_dir, extension_id)?;
+        let data = ExtensionConfigData::load(&self.extensions_root, extension_id)?;
         Ok(data.global.clone())
     }
 }

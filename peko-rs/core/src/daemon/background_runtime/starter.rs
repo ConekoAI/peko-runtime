@@ -11,6 +11,7 @@
 
 use super::manager::BackgroundRuntimeManager;
 use crate::agents::stateless_service::StatelessAgentService;
+use crate::common::paths::PathResolver;
 use crate::extensions::gateway::runtime::GatewayRouter;
 use crate::extensions::mcp::runtime::McpClientRegistry;
 use std::path::PathBuf;
@@ -29,8 +30,14 @@ pub struct StarterContext {
     pub gateway_router: Arc<GatewayRouter>,
     /// Shared MCP client registry
     pub mcp_client_registry: Arc<McpClientRegistry>,
-    /// Data directory where extensions are installed
+    /// Data directory where extensions are installed.
+    /// **Phase A:** retained for back-compat reads; new code should
+    /// reach typed paths via `path_resolver` (e.g.
+    /// `path_resolver.extensions_root()` for the Runtime extensions tier).
     pub data_dir: PathBuf,
+    /// Typed path resolver. **Phase A:** preferred over `data_dir` for
+    /// any new code that needs to construct per-tier paths.
+    pub path_resolver: PathResolver,
     /// Optional encrypted vault for OAuth tokens and credentials.
     pub vault: Option<Arc<crate::common::vault::Vault>>,
     /// Optional LLM resolver for extension hooks such as MCP sampling.
@@ -41,6 +48,7 @@ impl std::fmt::Debug for StarterContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StarterContext")
             .field("data_dir", &self.data_dir)
+            .field("path_resolver", &self.path_resolver)
             .field("has_vault", &self.vault.is_some())
             .field("has_resolver", &self.resolver.is_some())
             .finish_non_exhaustive()

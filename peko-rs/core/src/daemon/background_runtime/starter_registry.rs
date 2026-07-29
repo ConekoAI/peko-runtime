@@ -41,12 +41,13 @@ impl ExtensionRuntimeStarterRegistry {
 
     /// Start the background runtime for an extension.
     ///
-    /// 1. Reads the extension manifest from `data_dir/extensions/{extension_id}/manifest.yaml`
+    /// 1. Reads the extension manifest from
+    ///    `extensions_root/{extension_id}/manifest.yaml`
     /// 2. Extracts the `extension_type` field
     /// 3. Looks up the registered starter for that type
     /// 4. Delegates to `starter.start()`
     pub async fn start(&self, extension_id: &str, ctx: &StarterContext) -> anyhow::Result<()> {
-        let manifest = Self::read_manifest(extension_id, &ctx.data_dir).await?;
+        let manifest = Self::read_manifest(extension_id, &ctx.path_resolver).await?;
         let ext_type = manifest
             .get("extension_type")
             .and_then(|v| v.as_str())
@@ -136,9 +137,10 @@ impl ExtensionRuntimeStarterRegistry {
     /// `server.json`, synthesizes a minimal manifest with `extension_type: "mcp"`.
     async fn read_manifest(
         extension_id: &str,
-        data_dir: &std::path::Path,
+        path_resolver: &crate::common::paths::PathResolver,
     ) -> anyhow::Result<serde_yaml::Value> {
-        let ext_dir = data_dir.join("extensions").join(extension_id);
+        // Phase A: extensions live under the Runtime tier root.
+        let ext_dir = path_resolver.extensions_root().join(extension_id);
         let manifest_path = ext_dir.join("manifest.yaml");
 
         if manifest_path.exists() {

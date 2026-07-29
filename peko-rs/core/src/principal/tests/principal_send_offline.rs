@@ -117,7 +117,6 @@ async fn same_runtime_principal_send_short_circuits_offline() {
 
     let principal_manager = Arc::new(
         PrincipalManager::with_path_resolver(
-            workspace,
             path_resolver,
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),

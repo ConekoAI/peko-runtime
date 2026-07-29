@@ -67,16 +67,18 @@ impl SubagentExecutorRuntime {
         &self.executor
     }
 
-    /// Resolve an agent prompt from the workspace `<ws>/agents/<n>/`
-    /// directory.
+    /// Resolve an agent prompt from the principal's agents directory.
     ///
     /// Two on-disk shapes are supported:
-    /// - directory layout: `<workspace>/agents/<name>/AGENT.md`
-    /// - flat layout: `<workspace>/agents/<name>.md`
+    /// - directory layout: `<agents_dir>/<name>/AGENT.md`
+    /// - flat layout: `<agents_dir>/<name>.md`
+    ///
+    /// **Phase A.** Caller passes the typed
+    /// `SharedLayout::agents_dir` directly rather than the
+    /// workspace root + a hand-rolled `"agents"` join.
     ///
     /// Errors if neither exists.
-    fn resolve_principal_agent(name: &str, workspace: &Path) -> anyhow::Result<BuiltinAgentConfig> {
-        let agents_dir = workspace.join("agents");
+    fn resolve_principal_agent(name: &str, agents_dir: &Path) -> anyhow::Result<BuiltinAgentConfig> {
         let dir_layout = agents_dir.join(name).join("AGENT.md");
         let flat_layout = agents_dir.join(format!("{name}.md"));
 
@@ -160,12 +162,15 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         // Prefer a principal-scoped AGENT.md when a workspace is bound;
         // fall through to the global agents/ registry on miss.
         let config = if let Some(workspace) = workspace {
-            match Self::resolve_principal_agent(name, workspace) {
+            // Phase A: derive the typed agents dir from the
+            // Shared root.
+            let agents_dir = workspace.join("agents");
+            match Self::resolve_principal_agent(name, &agents_dir) {
                 Ok(config) => config,
                 Err(e) => {
                     tracing::debug!(
-                        "Principal agent '{name}' not found in workspace '{}': {e}; falling back to global agent",
-                        workspace.display()
+                        "Principal agent '{name}' not found in agents dir '{}': {e}; falling back to global agent",
+                        agents_dir.display()
                     );
                     Self::resolve_global_agent(name).await?
                 }

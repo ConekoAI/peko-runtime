@@ -83,7 +83,10 @@ async fn seed_runtime_for_test(backend_url: &str, did: &str) {
         .expect("Failed to create seed user");
     assert!(user_resp.status().is_success(), "Seed user creation failed");
     let user_body: serde_json::Value = user_resp.json().await.unwrap();
-    let user_id = user_body["id"].as_i64().expect("No user id") as i32;
+    let user_id = user_body["id"]
+        .as_str()
+        .expect("No user id (expected UUID string)")
+        .to_string();
 
     let resp = client
         .post(format!("{}/test/create-runtime", backend_url))

@@ -100,8 +100,10 @@ impl Tool for CronDeleteTool {
         params: serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
-        let principal_name = ctx
-            .principal_name
+        // **Phase B.** Match jobs by the principal's stable DID rather
+        // than its display name.
+        let principal_id = ctx
+            .principal_id
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("CronDelete requires a Principal context"))?
             .clone();
@@ -114,13 +116,13 @@ impl Tool for CronDeleteTool {
             .map_err(|e| anyhow::anyhow!("Invalid CronDelete arguments: {e}"))?;
 
         let job_id = if let Some(id) = args.id.filter(|s| !s.is_empty()) {
-            verify_id_belongs_to_principal(&*runtime, &id, &principal_name).await?;
+            verify_id_belongs_to_principal(&*runtime, &id, &principal_id).await?;
             id
         } else if let Some(job_id) = args.job_id.filter(|s| !s.is_empty()) {
-            verify_id_belongs_to_principal(&*runtime, &job_id, &principal_name).await?;
+            verify_id_belongs_to_principal(&*runtime, &job_id, &principal_id).await?;
             job_id
         } else if let Some(label) = args.label {
-            resolve_id_by_label(&*runtime, &label, &principal_name).await?
+            resolve_id_by_label(&*runtime, &label, &principal_id).await?
         } else {
             return Err(anyhow::anyhow!(
                 "Either id or label is required for CronDelete"
@@ -139,11 +141,11 @@ impl Tool for CronDeleteTool {
 async fn resolve_id_by_label(
     runtime: &dyn crate::tools::CronRuntime,
     label: &str,
-    principal_name: &str,
+    principal_id: &str,
 ) -> anyhow::Result<String> {
     let jobs = runtime.list_jobs().await?;
     jobs.into_iter()
-        .find(|j| j.name == label && j.principal_name == principal_name)
+        .find(|j| j.name == label && j.principal_id.0 == principal_id)
         .ok_or_else(|| anyhow::anyhow!("Job with label '{label}' not found"))
         .map(|j| j.id)
 }
@@ -152,17 +154,17 @@ async fn resolve_id_by_label(
 async fn verify_id_belongs_to_principal(
     runtime: &dyn crate::tools::CronRuntime,
     job_id: &str,
-    principal_name: &str,
+    principal_id: &str,
 ) -> anyhow::Result<()> {
     let jobs = runtime.list_jobs().await?;
     if jobs
         .into_iter()
-        .any(|j| j.id == job_id && j.principal_name == principal_name)
+        .any(|j| j.id == job_id && j.principal_id.0 == principal_id)
     {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
-            "Job '{job_id}' not found for Principal '{principal_name}'"
+            "Job '{job_id}' not found for Principal '{principal_id}'"
         ))
     }
 }

@@ -317,10 +317,6 @@ name = "s4_publish_running_agent_with_permission"
 path = "tests/scenarios/s4_publish_running_agent_with_permission.rs"
 
 [[test]]
-name = "s5_live_permit_propagation"
-path = "tests/scenarios/s5_live_permit_propagation.rs"
-
-[[test]]
 name = "s6_principal_grant_revoke_roundtrip"
 path = "tests/scenarios/s6_principal_grant_revoke_roundtrip.rs"
 

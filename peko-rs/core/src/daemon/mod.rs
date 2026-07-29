@@ -69,10 +69,14 @@ impl std::fmt::Display for LaunchMode {
 /// (`src/bin/peko-daemon.rs`) can construct a `DaemonConfig` from CLI
 /// flags and pass it to `Daemon::new`. Field visibility stays `pub` so
 /// the binary can populate the struct by-name.
+///
+/// **Phase A.** The legacy global `cron_db_path` field is removed —
+/// cron state now lives per-principal at
+/// `{data_dir}/principals/{name}/local/cron/schedule.toml`, derived
+/// from the typed path resolver the daemon carries. The cron engine
+/// opens a `CronScheduler` per loaded principal on demand.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
-    /// Database path for cron jobs
-    pub cron_db_path: PathBuf,
     /// Polling interval for checking due jobs
     pub poll_interval: Duration,
     /// Config directory for loading agents
@@ -98,7 +102,10 @@ impl Default for DaemonConfig {
         let data_dir = dirs::data_dir().map_or_else(|| config_dir.clone(), |d| d.join("peko"));
 
         Self {
-            cron_db_path: data_dir.join("cron.json"),
+            // Phase A: cron state is per-principal; no top-level
+            // `cron_db_path` is set on the config. The cron engine
+            // reads each principal's schedule via the typed
+            // `PathResolver`.
             poll_interval: Duration::from_secs(15),
             config_dir,
             data_dir,
@@ -151,11 +158,20 @@ impl Daemon {
             last_check: None,
         }));
 
+        // Phase A: the cron engine no longer opens a single global
+        // scheduler — it derives per-principal schedulers from the
+        // typed path resolver. The legacy `cron_db_path` field is
+        // gone from `DaemonConfig`.
+        let cron_path_resolver = crate::common::paths::PathResolver::with_dirs(
+            config.config_dir.clone(),
+            config.data_dir.clone(),
+            dirs::cache_dir().map_or_else(|| config.data_dir.join("cache"), |d| d.join("peko")),
+        );
+
         let cron_engine = CronEngine::new(
-            std::sync::Arc::new(peko_cron::CronScheduler::new(&config.cron_db_path)?),
+            cron_path_resolver,
             std::sync::Arc::new(peko_cron::IdleDetector::new()),
             std::sync::Arc::new(peko_observability::Observability::new("daemon")),
-            config.data_dir.clone(),
             None,
             // Placeholder executor for the un-wired constructor — the
             // daemon replaces this in `Daemon::run` with a real one
@@ -187,11 +203,16 @@ impl Daemon {
         }));
         let (event_tx, event_rx) = mpsc::channel(1024);
 
+        let cron_path_resolver = crate::common::paths::PathResolver::with_dirs(
+            config.config_dir.clone(),
+            config.data_dir.clone(),
+            dirs::cache_dir().map_or_else(|| config.data_dir.join("cache"), |d| d.join("peko")),
+        );
+
         let cron_engine = CronEngine::new(
-            std::sync::Arc::new(peko_cron::CronScheduler::new(&config.cron_db_path)?),
+            cron_path_resolver,
             std::sync::Arc::new(peko_cron::IdleDetector::new()),
             std::sync::Arc::new(peko_observability::Observability::new("daemon")),
-            config.data_dir.clone(),
             None,
             std::sync::Arc::new(
                 crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
@@ -240,7 +261,9 @@ impl Daemon {
         info!("🚀 peko daemon starting...");
         info!("   Config dir: {}", self.config.config_dir.display());
         info!("   Data dir: {}", self.config.data_dir.display());
-        info!("   Cron DB: {}", self.config.cron_db_path.display());
+        // Phase A: cron state is per-principal; no top-level
+        // "Cron DB" log line. Each principal's schedule file lives
+        // under `<data_dir>/principals/{name}/local/cron/`.
         info!("   Poll interval: {:?}", self.config.poll_interval);
         info!(
             "   Maintenance interval: {:?}",
@@ -289,11 +312,14 @@ impl Daemon {
 
         // Replace the placeholder cron engine with one wired to the real
         // PrincipalManager, shared idle detector, and cron-owned executor.
+        // Phase A: the cron engine takes the typed path resolver
+        // directly; no global `CronScheduler` is constructed here —
+        // the engine derives per-principal schedulers on demand.
+        let cron_path_resolver = app_state.path_resolver.clone();
         self.cron_engine = CronEngine::new(
-            Arc::new(peko_cron::CronScheduler::new(&self.config.cron_db_path)?),
+            cron_path_resolver,
             idle_detector,
             Arc::new(peko_observability::Observability::new("daemon")),
-            self.config.data_dir.clone(),
             Some(app_state.principal_manager().clone()),
             cron_async_executor,
             cron_extension_core,
@@ -554,7 +580,9 @@ mod tests {
     async fn test_daemon_creation() {
         let tmp = TempDir::new().unwrap();
         let config = DaemonConfig {
-            cron_db_path: tmp.path().join("cron.json"),
+            // Phase A: `cron_db_path` is gone; the cron engine
+            // derives per-principal paths from `config.data_dir` via
+            // the typed resolver.
             poll_interval: Duration::from_secs(1),
             config_dir: tmp.path().join("config"),
             data_dir: tmp.path().join("data"),

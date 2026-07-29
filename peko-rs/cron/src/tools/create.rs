@@ -216,8 +216,11 @@ impl Tool for CronCreateTool {
         params: serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
-        let principal_name = ctx
-            .principal_name
+        // **Phase B.** CronJob is keyed by the principal's stable DID,
+        // not its display name. The ToolContext exposes both; we use the
+        // DID so the schedule's identity survives renames.
+        let principal_id = ctx
+            .principal_id
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("CronCreate requires a Principal context"))?
             .clone();
@@ -285,7 +288,7 @@ impl Tool for CronCreateTool {
             build_spawn_tool_job(
                 job_id,
                 label,
-                principal_name,
+                peko_subject::PrincipalId(principal_id.clone()),
                 schedule,
                 tool_name,
                 final_params,
@@ -303,7 +306,7 @@ impl Tool for CronCreateTool {
             build_spawn_tool_job(
                 job_id,
                 label,
-                principal_name,
+                peko_subject::PrincipalId(principal_id.clone()),
                 schedule,
                 "Agent".to_string(),
                 serde_json::json!({ "prompt": prompt_text }),

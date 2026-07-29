@@ -251,10 +251,12 @@ fn ext_install_and_info_round_trip() {
         "info should report type=skill: {info_out}",
     );
 
-    // On-disk install dir has the SKILL.md.
+    // On-disk install dir has the SKILL.md. Phase A moved extensions
+    // under the Runtime tier at `<data_dir>/runtime/extensions/<id>`.
     let install_dir = cli
         .peko_dir()
         .join("data")
+        .join("runtime")
         .join("extensions")
         .join("calculator-skill");
     assert!(

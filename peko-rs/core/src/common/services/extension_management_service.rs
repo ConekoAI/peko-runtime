@@ -431,6 +431,11 @@ impl ExtensionManagementService {
     }
 
     fn extensions_dir(&self) -> PathBuf {
-        self.resolver.data_dir().join("extensions")
+        // Phase A: extensions live under the Runtime tier root
+        // (`{data_dir}/runtime/extensions`), not the bare data dir.
+        // Routing through `extensions_root` keeps all extension
+        // installations on the typed Runtime layout — registries,
+        // MCPs, locks, and principals all have their own typed roots.
+        self.resolver.extensions_root()
     }
 }

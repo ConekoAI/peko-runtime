@@ -28,6 +28,9 @@ async-trait = "0.1"
 # Tools generate CronJob ids + support timezone-aware schedules.
 uuid = { version = "1.7", features = ["v4"] }
 chrono-tz = "0.10"
+# Phase B: CronJob keyed by PrincipalId (DID) instead of principal name
+# string. Subject crate is the canonical home of `PrincipalId`.
+peko-subject = { path = "../subject" }
 
 [dev-dependencies]
 # Test helpers in `crates/cron/src/lib.rs:439-440`.

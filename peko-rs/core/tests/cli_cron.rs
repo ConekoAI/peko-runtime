@@ -310,10 +310,17 @@ fn cron_add_cron_expression_persists() {
             .starts_with("cron_"),
         "job id should start with cron_: {job:?}"
     );
-    assert_eq!(
-        job.get("principal").and_then(|p| p.as_str()),
-        Some(TEST_PRINCIPAL),
-        "job should target the test principal: {job:?}"
+    // Phase B: wire field is `principal_id` (the DID) instead of the
+    // legacy `principal: String` (the name). Just check it ends
+    // with our test principal's name — the DID has the form
+    // `did:peko:public:<name>:<hex>`.
+    let pid = job
+        .get("principal_id")
+        .and_then(|p| p.as_str())
+        .unwrap_or("");
+    assert!(
+        pid.contains(TEST_PRINCIPAL),
+        "principal_id should contain {TEST_PRINCIPAL}: got {pid:?}"
     );
 }
 
@@ -861,12 +868,14 @@ fn cron_announce_writes_file_on_run() {
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-announce-");
 
-    // Announcements land at `<data_dir>/announcements/<job_id>_<ts>.json`.
+    // Announcements land at `<data_dir>/runtime/announcements/<job_id>_<ts>.json`
+    // (Phase A: announcements live under the Runtime tier
+    // (`{data_dir}/runtime/announcements/`), not the bare data dir).
     // `PekoCli` sets `PEKO_HOME=peko_dir`, but `default_data_dir()` (in
     // `src/common/paths.rs:65`) appends `/data` to PEKO_HOME, so the
     // daemon's `data_dir` resolves to `<peko_dir>/data`, not `<peko_dir>`.
-    // Announcements therefore live at `<peko_dir>/data/announcements/`.
-    let announce_dir = cli.peko_dir().join("data").join("announcements");
+    // Announcements therefore live at `<peko_dir>/data/runtime/announcements/`.
+    let announce_dir = cli.peko_dir().join("data").join("runtime").join("announcements");
     // Clean any leftovers from a prior failed run.
     if announce_dir.exists() {
         let _ = std::fs::remove_dir_all(&announce_dir);

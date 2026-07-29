@@ -148,7 +148,7 @@ async fn create_test_user_with_id(
     client: &reqwest::Client,
     base_url: &str,
     namespace: &str,
-) -> (i64, String) {
+) -> (String, String) {
     common::create_test_user(client, base_url, namespace).await
 }
 
@@ -265,7 +265,7 @@ async fn ext_push_succeeds_with_pekohub_test() {
         .build()
         .unwrap();
     let (author_id, author_ns) = create_test_user_with_id(&client, &backend.url, "s2_author").await;
-    let author_jwt = common::generate_jwt(author_id, &author_ns);
+    let author_jwt = common::generate_jwt(&author_id, &author_ns);
     let author_key = mint_api_key(&client, &backend.url, &author_jwt, "s2-author-key").await;
 
     // Author side: log in to pekohub, install the skill, push.
@@ -355,10 +355,10 @@ async fn ext_pull_round_trip_two_clis() {
         .build()
         .unwrap();
     let (author_id, author_ns) = create_test_user_with_id(&client, &backend.url, "s2_author").await;
-    let author_jwt = common::generate_jwt(author_id, &author_ns);
+    let author_jwt = common::generate_jwt(&author_id, &author_ns);
     let author_key = mint_api_key(&client, &backend.url, &author_jwt, "s2-author-key").await;
     let (collab_id, collab_ns) = create_test_user_with_id(&client, &backend.url, "s2_collab").await;
-    let collab_jwt = common::generate_jwt(collab_id, &collab_ns);
+    let collab_jwt = common::generate_jwt(&collab_id, &collab_ns);
     let collab_key = mint_api_key(&client, &backend.url, &collab_jwt, "s2-collab-key").await;
 
     // ── Author side: install + push ──
@@ -498,10 +498,10 @@ async fn ext_pull_auto_resolves_dependencies() {
         .build()
         .unwrap();
     let (author_id, author_ns) = create_test_user_with_id(&client, &backend.url, "s2_author").await;
-    let author_jwt = common::generate_jwt(author_id, &author_ns);
+    let author_jwt = common::generate_jwt(&author_id, &author_ns);
     let author_key = mint_api_key(&client, &backend.url, &author_jwt, "s2-author-key").await;
     let (collab_id, collab_ns) = create_test_user_with_id(&client, &backend.url, "s2_collab").await;
-    let collab_jwt = common::generate_jwt(collab_id, &collab_ns);
+    let collab_jwt = common::generate_jwt(&collab_id, &collab_ns);
     let collab_key = mint_api_key(&client, &backend.url, &collab_jwt, "s2-collab-key").await;
 
     // ── Author: push calculator-skill ──

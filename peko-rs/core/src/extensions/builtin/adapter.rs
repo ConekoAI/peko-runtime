@@ -52,8 +52,6 @@ pub struct BuiltinToolRegistrarConfig {
     /// the prompt-token cost of always-on search. Per-agent override
     /// lives on [`AgentConfig::enable_tool_search`](crate::agents::AgentConfig::enable_tool_search).
     pub enable_tool_search: bool,
-    /// Path to cron database
-    pub cron_db_path: Option<PathBuf>,
     /// Instance ID for cron persistence
     pub instance_id: Option<String>,
     /// List of disabled tool names
@@ -72,7 +70,6 @@ impl Default for BuiltinToolRegistrarConfig {
             enable_async_tools: true,
             enable_task_tools: true,
             enable_tool_search: false,
-            cron_db_path: None,
             instance_id: None,
             disabled_tools: Vec::new(),
         }

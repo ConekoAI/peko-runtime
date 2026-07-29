@@ -31,6 +31,17 @@ impl PrincipalId {
         Self(format!("prin_{}", uuid::Uuid::new_v4().simple()))
     }
 
+    /// Construct from a `PrincipalDID`. Both newtypes wrap the same
+    /// canonical DID string — `PrincipalId` is the cron/agent identity
+    /// key, `PrincipalDID` is the actor wire key, but their contents
+    /// are interchangeable in practice (a single principal has one
+    /// stable DID for both surfaces). Use this when bridging
+    /// `Principal::did()` to a `CronJob::principal_id`.
+    #[must_use]
+    pub fn from_did(did: &PrincipalDID) -> Self {
+        Self(did.0.clone())
+    }
+
     /// Canonical "system" sentinel for tools registered once on the shared
     /// `ExtensionCore` (built-ins, universal extensions, MCP servers) and
     /// visible to every principal.

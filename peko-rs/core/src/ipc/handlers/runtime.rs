@@ -62,6 +62,18 @@ pub(crate) trait RuntimeHost: Send + Sync {
     /// Daemon cache dir, used to build a `PathResolver` for
     /// `KnownRuntimes::save`.
     fn cache_dir(&self) -> std::path::PathBuf;
+
+    /// **Phase B.** Tier-typed authority that hands out
+    /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. The runtime
+    /// handler doesn't currently need tier-typed paths, but the
+    /// accessor is here for parity with the rest of the trait
+    /// ports. Production hosts override this.
+    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
+        // …
+        unimplemented!(
+            "RuntimeHost::authority must be implemented; production hosts override this"
+        )
+    }
 }
 
 /// `runtime` domain request handler. Constructed with an

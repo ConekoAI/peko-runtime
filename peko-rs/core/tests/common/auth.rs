@@ -7,7 +7,7 @@
 pub const PEKOHUB_JWT_SECRET: &str = "test-secret-key-that-is-32-chars-long!!";
 
 /// Mint an HS256 JWT signed with the fixture's `JWT_SECRET`.
-pub fn generate_jwt(user_id: i64, namespace: &str) -> String {
+pub fn generate_jwt(user_id: &str, namespace: &str) -> String {
     use jsonwebtoken::{encode, EncodingKey, Header};
     use serde::Serialize;
 
@@ -46,13 +46,18 @@ pub fn generate_jwt(user_id: i64, namespace: &str) -> String {
 /// constraints. The `namespace` argument is preserved as a prefix
 /// for readable test logs / database inspection.
 ///
-/// Returns `(id, namespace)` — the database-assigned numeric id
+/// Returns `(id, namespace)` — the database-assigned UUID-string id
 /// (so the caller can mint a JWT with `sub == id` for the pekohub
 /// auth plugin's user lookup at
 /// `pekohub/backend/src/plugins/auth.ts:122`) and the actual
 /// namespace that was inserted (callers need it verbatim for
 /// pekohub push URLs — see
 /// `backend/src/routes/oci/manifests.ts:172`).
+///
+/// Pekohub migrated the `users.id` column from `BIGINT` to `UUID`;
+/// the fixture's `/test/create-user` response now returns
+/// `"id": "<uuid>"` instead of `"id": <integer>`. We propagate the
+/// string verbatim into `sub`.
 ///
 /// The fixture's error handler returns `{ error: error.message }`
 /// with no `message` field, so the status alone is opaque. We
@@ -64,7 +69,7 @@ pub async fn create_test_user(
     client: &reqwest::Client,
     base_url: &str,
     namespace: &str,
-) -> (i64, String) {
+) -> (String, String) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -91,7 +96,8 @@ pub async fn create_test_user(
     let v: serde_json::Value = serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("create-user response not JSON: {e}; body={body}"));
     let id = v["id"]
-        .as_i64()
-        .unwrap_or_else(|| panic!("create-user response missing `id`: {body}"));
+        .as_str()
+        .unwrap_or_else(|| panic!("create-user response missing string `id`: {body}"))
+        .to_string();
     (id, unique)
 }

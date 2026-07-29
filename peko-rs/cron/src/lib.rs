@@ -43,6 +43,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 #[allow(unused_imports)]
 use cron::Schedule;
+#[allow(unused_imports)]
+use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 #[allow(unused_imports)]
@@ -222,14 +224,19 @@ impl CronScheduler {
         Ok(jobs)
     }
 
-    /// List cron jobs for a specific Principal
+    /// List cron jobs for a specific Principal.
+    ///
+    /// **Phase B.** Filters by `PrincipalId` rather than the legacy
+    /// `principal_name: String`; the on-disk schedule file is one-per-
+    /// principal so the caller's already narrowed to a single principal's
+    /// file, but the field-level filter now matches the wire shape.
     pub fn list_jobs_for_principal(
         &self,
-        principal_name: &str,
+        principal_id: &peko_subject::PrincipalId,
         include_disabled: bool,
     ) -> Result<Vec<CronJob>> {
         let mut jobs = self.list_jobs(include_disabled)?;
-        jobs.retain(|j| j.principal_name == principal_name);
+        jobs.retain(|j| &j.principal_id == principal_id);
         Ok(jobs)
     }
 
@@ -455,7 +462,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             name: "Test Job".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
-            principal_name: "test-principal".to_string(),
+            principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test message".to_string(),
             },
@@ -487,7 +494,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             name: "Past Job".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
-            principal_name: "test-principal".to_string(),
+            principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
             },
@@ -505,7 +512,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             name: "Future Job".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
-            principal_name: "test-principal".to_string(),
+            principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
             },
@@ -540,7 +547,7 @@ mod tests {
             schedule: ScheduleKind::At {
                 at: (Utc::now() - chrono::Duration::hours(2)).to_rfc3339(),
             },
-            principal_name: "test-principal".to_string(),
+            principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
             },
@@ -562,7 +569,7 @@ mod tests {
             schedule: ScheduleKind::Every {
                 every_ms: 3_600_000,
             },
-            principal_name: "test-principal".to_string(),
+            principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
             },
@@ -592,7 +599,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             name: "Recurring".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
-            principal_name: "test-principal".to_string(),
+            principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
             },
@@ -648,7 +655,7 @@ mod tests {
             let job = CronJob {
                 id: "test-123".to_string(),
                 name: "Persisted Job".to_string(),
-                principal_name: "test-principal".to_string(),
+                principal_id: PrincipalId("prin_test_principal".to_string()),
                 schedule: ScheduleKind::Every { every_ms: 60000 },
                 action: CronJobAction::Send {
                     message: "Hello".to_string(),

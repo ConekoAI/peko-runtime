@@ -66,12 +66,20 @@ struct MemoryIndex {
 
 /// Default filesystem-backed memory implementation.
 ///
-/// Sessions are stored as JSONL under `<workspace>/memory/sessions/`.
-/// A `memory_index.json` file tracks session metadata for fast recall.
+/// **Phase A.** The constructor parameter is now the **Local tier root**
+/// (i.e. `{data_dir}/principals/{name}/local`) rather than the principal's
+/// workspace root. Sessions live at `<local_root>/sessions/` and the
+/// memory index at `<local_root>/memory_index.json`. Previously the
+/// runtime writer double-joined `memory/` here and the IPC
+/// `PathResolver::principal_sessions_dir` read from a different path
+/// — session exports were silently empty. The new layout has the runtime
+/// writer and the resolver agree on the same `<local_root>/sessions` path.
+///
 /// This is intentionally simple for the first slice; vector recall and
 /// consolidation are deferred.
 pub struct DefaultPrincipalMemory {
-    workspace_path: PathBuf,
+    /// Local tier root: `{data_dir}/principals/{name}/local`.
+    local_root: PathBuf,
     /// Serializes the `load_index → mutate → save_index` sequence in
     /// `record_session`. Without this, concurrent receives on the same
     /// principal race to overwrite each other's index appends — last
@@ -87,19 +95,26 @@ pub struct DefaultPrincipalMemory {
 }
 
 impl DefaultPrincipalMemory {
-    pub fn new(workspace_path: PathBuf) -> Self {
+    /// Construct a memory store rooted at `local_root`.
+    ///
+    /// `local_root` MUST be the Local tier directory returned by
+    /// `PathResolver::principal_layout(name).local.root`. The runtime
+    /// writer and the IPC resolver must agree on this path; passing a
+    /// different path re-introduces the pre-Phase A silent-session-loss
+    /// bug.
+    pub fn new(local_root: PathBuf) -> Self {
         Self {
-            workspace_path,
+            local_root,
             index_lock: Mutex::new(()),
         }
     }
 
-    fn memory_dir(&self) -> PathBuf {
-        self.workspace_path.join("memory")
-    }
-
+    /// Path to `memory_index.json` directly under the Local root.
+    ///
+    /// Previously `<workspace>/memory/memory_index.json`; now
+    /// `<local_root>/memory_index.json`.
     fn index_path(&self) -> PathBuf {
-        self.memory_dir().join("memory_index.json")
+        self.local_root.join("memory_index.json")
     }
 
     async fn load_index(&self) -> Result<MemoryIndex, MemoryError> {
@@ -185,6 +200,7 @@ impl PrincipalMemory for DefaultPrincipalMemory {
     }
 
     fn sessions_dir(&self) -> PathBuf {
-        self.memory_dir().join("sessions")
+        // Phase A: sessions live directly under the Local root.
+        self.local_root.join("sessions")
     }
 }

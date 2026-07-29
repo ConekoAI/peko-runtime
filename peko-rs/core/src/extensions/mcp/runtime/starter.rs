@@ -334,7 +334,11 @@ impl ExtensionRuntimeStarter for McpRuntimeStarter {
     }
 
     async fn start(&self, extension_id: &str, ctx: &StarterContext) -> anyhow::Result<()> {
-        let ext_dir = ctx.data_dir.join("extensions").join(extension_id);
+        // Phase A: extensions live under the Runtime tier root
+        // (`{data_dir}/runtime/extensions/<id>`), not the bare data
+        // dir. Routing through `path_resolver.extensions_root()`
+        // keeps every installer on the typed layout.
+        let ext_dir = ctx.path_resolver.extensions_root().join(extension_id);
 
         let configs = self.parse_server_configs(&ext_dir).await?;
 
@@ -353,7 +357,7 @@ impl ExtensionRuntimeStarter for McpRuntimeStarter {
     }
 
     async fn auto_start(&self, ctx: &StarterContext) -> anyhow::Result<Vec<String>> {
-        let extensions_dir = ctx.data_dir.join("extensions");
+        let extensions_dir = ctx.path_resolver.extensions_root();
         let mut started = Vec::new();
 
         if !extensions_dir.exists() {

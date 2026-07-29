@@ -32,8 +32,117 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use peko_session::safe_filename_component;
+
+// =========================================================================
+// Three-Tier Storage Layout (Phase A)
+//
+// Every byte on disk belongs to exactly one of three tiers. The layout
+// structs below group the typed paths so the tier boundary is visible at
+// the call site — a function taking `&LocalLayout` cannot accidentally be
+// passed a `&SharedLayout`.
+//
+// | Tier    | Owner    | On-disk root                              |
+// |---------|----------|-------------------------------------------|
+// | Local   | Principal| {data_dir}/principals/{name}/local/       |
+// | Shared  | Principal| {config_dir}/principals/{name}/           |
+// | Runtime | Runtime  | {data_dir}/runtime/                       |
+//
+// Local tier contents are runtime-only state — never packaged.
+// Shared tier contents are per-principal capability-bearing config — packaged.
+// Runtime tier contents are installed once for the runtime; principals
+// access them via capability grants recorded as LINKs in the bundle.
+// =========================================================================
+
+/// The storage tier a path belongs to.
+///
+/// `Serialize`/`Deserialize` are added so the layouts can be transported
+/// over IPC for Phase E's `principal_inspect` / `runtime_inspect` verbs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    /// Per-principal runtime state. Never packaged, never shared.
+    Local,
+    /// Per-principal capability-bearing config. Packaged into bundles.
+    Shared,
+    /// Runtime-wide state. Installed once; principals access via grants.
+    Runtime,
+}
+
+/// Typed paths under `{data_dir}/principals/{name}/local/`.
+///
+/// `root` is the canonical root; every other field is `root.join(...)`.
+/// Callers MUST go through `PathResolver::principal_layout(name).local`
+/// rather than hand-rolling `.join("local")`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LocalLayout {
+    /// `{data_dir}/principals/{name}/local`
+    pub root: PathBuf,
+    /// `…/local/sessions/` — append-only JSONL event log.
+    pub sessions_dir: PathBuf,
+    /// `…/local/memory_index.json` — session metadata index.
+    pub memory_index: PathBuf,
+    /// `…/local/cron/` — per-principal cron schedule + history.
+    pub cron_dir: PathBuf,
+    /// `…/local/cron/schedule.toml`
+    pub cron_schedule: PathBuf,
+    /// `…/local/cron/history.log`
+    pub cron_history: PathBuf,
+    /// `…/local/cache/` — tool scratch space.
+    pub cache_dir: PathBuf,
+    /// `…/local/locks/` — principal-scoped lock files.
+    pub locks_dir: PathBuf,
+}
+
+/// Typed paths under `{config_dir}/principals/{name}/`.
+///
+/// `root` is the canonical root; every other field is `root.join(...)`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SharedLayout {
+    /// `{config_dir}/principals/{name}`
+    pub root: PathBuf,
+    /// `…/principal.toml`
+    pub config_file: PathBuf,
+    /// `…/identity.json` (public DID). Private keys stay in keychain.
+    pub identity_file: PathBuf,
+    /// `…/agents/` — agent definitions.
+    pub agents_dir: PathBuf,
+    /// `…/memory/snapshots/` — optional portable memory snapshots.
+    pub memory_snapshots_dir: PathBuf,
+    /// `…/mcps/` — principal-owned MCP server configs.
+    pub mcps_dir: PathBuf,
+}
+
+/// All typed paths for a single principal. The `name` is stored so
+/// `PrincipalLayout` is self-describing (no need to thread the principal
+/// name alongside the layout when passing across boundaries).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PrincipalLayout {
+    pub name: String,
+    pub local: LocalLayout,
+    pub shared: SharedLayout,
+}
+
+/// Typed paths for the runtime-global bucket under `{data_dir}/runtime/`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeLayout {
+    pub config_dir: PathBuf,
+    pub data_dir: PathBuf,
+    /// `{data_dir}/runtime` — bucket root.
+    pub runtime_dir: PathBuf,
+    /// `{data_dir}/runtime/extensions` — one install per extension id.
+    pub extensions_root: PathBuf,
+    /// `{data_dir}/runtime/mcps` — one install per MCP server id.
+    pub mcps_root: PathBuf,
+    /// `{data_dir}/runtime/registry` — OCI layers + manifests cache.
+    pub registry_root: PathBuf,
+    /// `{data_dir}/runtime/locks` — runtime-wide lock files.
+    pub locks_dir: PathBuf,
+    /// `{config_dir}/principals` — convenience accessor for principal index.
+    pub principals_root: PathBuf,
+}
 
 /// Expand a leading `~` in a path string to the user's home directory.
 ///
@@ -189,34 +298,12 @@ impl PathResolver {
         self.config_dir.join("agents")
     }
 
-    /// Get a specific agent's directory
-    ///
-    /// Path: `{config_dir}/agents/{agent}`
-    #[must_use]
-    pub fn agent_dir(&self, agent: &str) -> PathBuf {
-        self.agents_root_dir().join(agent)
-    }
-
     /// Get the path to an agent's config file
     ///
     /// Path: `{config_dir}/agents/{agent}/config.toml`
     #[must_use]
     pub fn agent_config(&self, agent: &str) -> PathBuf {
-        self.agent_dir(agent).join("config.toml")
-    }
-
-    /// Get the path to an agent's memberships file
-    ///
-    /// Path: `{config_dir}/agents/{agent}/memberships.toml`
-    #[must_use]
-    pub fn agent_memberships(&self, agent: &str) -> PathBuf {
-        self.agent_dir(agent).join("memberships.toml")
-    }
-
-    /// Check if an agent exists
-    #[must_use]
-    pub fn agent_exists(&self, agent: &str) -> bool {
-        self.agent_config(agent).exists()
+        self.agents_root_dir().join(agent).join("config.toml")
     }
 
     /// Get the MCP configuration file path
@@ -267,58 +354,247 @@ impl PathResolver {
         self.peer_dir(peer_id).join("peer.toml")
     }
 
-    /// Get the path to a principal's config file
-    ///
-    /// Path: `{config_dir}/principals/{principal}/principal.toml`
-    #[must_use]
-    pub fn principal_config(&self, principal: &str) -> PathBuf {
-        self.principal_dir(principal).join("principal.toml")
-    }
-
-    /// Get the path to a principal's agent prompts directory
-    ///
-    /// Path: `{config_dir}/principals/{principal}/agents`
-    #[must_use]
-    pub fn principal_agents_dir(&self, principal: &str) -> PathBuf {
-        self.principal_dir(principal).join("agents")
-    }
-
-    /// Get a principal's memory directory
-    ///
-    /// Path: `{data_dir}/principals/{principal}/memory`
-    #[must_use]
-    pub fn principal_memory_dir(&self, principal: &str) -> PathBuf {
-        self.data_dir
-            .join("principals")
-            .join(principal)
-            .join("memory")
-    }
-
-    /// Get a principal's sessions directory
-    ///
-    /// Path: `{data_dir}/principals/{principal}/memory/sessions`
-    #[must_use]
-    pub fn principal_sessions_dir(&self, principal: &str) -> PathBuf {
-        self.principal_memory_dir(principal).join("sessions")
-    }
-
-    /// Get a principal's identity storage directory.
-    ///
-    /// Path: `{data_dir}/principals/{principal}/identity`
-    #[must_use]
-    pub fn principal_identity_dir(&self, principal: &str) -> PathBuf {
-        self.data_dir
-            .join("principals")
-            .join(principal)
-            .join("identity")
-    }
-
     /// Get the path to a principal's identity storage directory.
     ///
-    /// Alias for [`Self::principal_identity_dir`].
+    /// Returns the directory `{config_dir}/principals/{name}/identity/`.
+    /// Kept as a thin wrapper because some legacy code paths (Phase A
+    /// IPC handlers, manager internals) still reach for the bare path;
+    /// migrate them to `principal_layout(name).shared.root.join("identity")`
+    /// as you touch them.
     #[must_use]
     pub fn principal_identity_path(&self, principal: &str) -> PathBuf {
-        self.principal_identity_dir(principal)
+        self.principal_layout(principal).shared.root.join("identity")
+    }
+
+    // ========================================================================
+    // Phase A: Three-Tier Storage Layout — typed accessors
+    // ========================================================================
+
+    /// Resolve the full typed layout for a single principal.
+    ///
+    /// This is the canonical way to ask "where does X for principal Y live?"
+    /// after Phase A. The returned struct groups Local and Shared paths so
+    /// callers can pass `layout.local` or `layout.shared` to functions that
+    /// need a single tier's worth of paths.
+    ///
+    /// See [`PrincipalLayout`] for the field semantics.
+    #[must_use]
+    pub fn principal_layout(&self, principal: &str) -> PrincipalLayout {
+        let principals_root = self.principals_root_dir();
+        let data_root = self.data_dir.join("principals").join(principal);
+
+        let local_root = data_root.join("local");
+        let shared_root = principals_root.join(principal);
+
+        PrincipalLayout {
+            name: principal.to_string(),
+            local: LocalLayout {
+                root: local_root.clone(),
+                sessions_dir: local_root.join("sessions"),
+                memory_index: local_root.join("memory_index.json"),
+                cron_dir: local_root.join("cron"),
+                cron_schedule: local_root.join("cron").join("schedule.toml"),
+                cron_history: local_root.join("cron").join("history.log"),
+                cache_dir: local_root.join("cache"),
+                locks_dir: local_root.join("locks"),
+            },
+            shared: SharedLayout {
+                root: shared_root.clone(),
+                config_file: shared_root.join("principal.toml"),
+                identity_file: shared_root.join("identity.json"),
+                agents_dir: shared_root.join("agents"),
+                memory_snapshots_dir: shared_root.join("memory").join("snapshots"),
+                mcps_dir: shared_root.join("mcps"),
+            },
+        }
+    }
+
+    /// Resolve the typed layout for runtime-global state.
+    ///
+    /// Use this anywhere you need to compute a path under `{data_dir}/runtime/`
+    /// (extension install root, MCP server root, OCI registry cache,
+    /// runtime locks) so the layout is centralized.
+    #[must_use]
+    pub fn runtime_layout(&self) -> RuntimeLayout {
+        let runtime_dir = self.data_dir.join("runtime");
+        RuntimeLayout {
+            config_dir: self.config_dir.clone(),
+            data_dir: self.data_dir.clone(),
+            runtime_dir: runtime_dir.clone(),
+            extensions_root: runtime_dir.join("extensions"),
+            mcps_root: runtime_dir.join("mcps"),
+            registry_root: runtime_dir.join("registry"),
+            locks_dir: runtime_dir.join("locks"),
+            principals_root: self.principals_root_dir(),
+        }
+    }
+
+    /// Runtime-global extension install root.
+    ///
+    /// Path: `{data_dir}/runtime/extensions`
+    ///
+    /// Each extension id gets a subdirectory here. Use
+    /// `extensions_root().join(id)` for the per-extension dir.
+    #[must_use]
+    pub fn extensions_root(&self) -> PathBuf {
+        self.runtime_layout().extensions_root
+    }
+
+    /// Runtime-global MCP server install root.
+    ///
+    /// Path: `{data_dir}/runtime/mcps`
+    #[must_use]
+    pub fn mcps_root(&self) -> PathBuf {
+        self.runtime_layout().mcps_root
+    }
+
+    /// OCI registry cache root.
+    ///
+    /// Path: `{data_dir}/runtime/registry`
+    #[must_use]
+    pub fn registry_root(&self) -> PathBuf {
+        self.runtime_layout().registry_root
+    }
+
+    /// Runtime-wide lock directory.
+    ///
+    /// Path: `{data_dir}/runtime/locks`
+    #[must_use]
+    pub fn runtime_locks_dir(&self) -> PathBuf {
+        self.runtime_layout().locks_dir
+    }
+
+    /// Per-principal cron schedule file (Local tier).
+    ///
+    /// Path: `{data_dir}/principals/{principal}/local/cron/schedule.toml`
+    #[must_use]
+    pub fn cron_schedule(&self, principal: &str) -> PathBuf {
+        self.principal_layout(principal).local.cron_schedule
+    }
+
+    /// Resolve a `PrincipalId` (DID) to the on-disk principal name.
+    ///
+    /// Scans `{config_dir}/principals/` for `principal.toml` files whose
+    /// `did` field matches the given id. Returns `None` if no
+    /// `principal.toml` matches — including the case where the
+    /// directory is empty or missing (a freshly initialized runtime).
+    ///
+    /// **Phase B.** This is the DID → name lookup the tier-typed
+    /// authority needs to convert `PrincipalId` accessors into
+    /// `PathResolver::principal_layout(name)` calls. The scan is
+    /// best-effort and linear in the principal count, which is fine —
+    /// there are at most a few dozen principals on a typical install,
+    /// and the result is cached inside `RuntimeAuthority` once the
+    /// principal layout is materialised.
+    ///
+    /// The scan reads `principal.toml` as a generic `toml::Value` so
+    /// `paths.rs` does not need to depend on `crate::principal::config`
+    /// (which would create a cycle — `principal` depends on `common`).
+    #[must_use]
+    pub fn lookup_principal_name(&self, principal_id: &peko_subject::PrincipalId) -> Option<String> {
+        let principals_root = self.principals_root_dir();
+        let entries = std::fs::read_dir(&principals_root).ok()?;
+        let needle = principal_id.0.as_str();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let config_path = path.join("principal.toml");
+            let contents = match std::fs::read_to_string(&config_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let value: toml::Value = match contents.parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let did = value
+                .get("did")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if did == needle {
+                // The on-disk `name` field is the canonical name; fall
+                // back to the directory name if `name` is missing.
+                let name = value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        path.file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_string()
+                    });
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    /// Inverse of [`Self::lookup_principal_name`]: scan for the
+    /// `PrincipalId` whose `principal.toml` carries the given name.
+    ///
+    /// Used by CLI commands that take a principal *name* from `--principal`
+    /// but need to populate a wire-shape `PrincipalId`. Returns `None`
+    /// if the principal doesn't exist on disk. Cost is the same as the
+    /// DID scan: O(principals).
+    #[must_use]
+    pub fn lookup_principal_id_by_name(&self, principal_name: &str) -> Option<peko_subject::PrincipalId> {
+        let principals_root = self.principals_root_dir();
+        let entries = std::fs::read_dir(&principals_root).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let dir_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            // Match either by directory name (cheap) or by `name` field
+            // (authoritative when both are present).
+            if dir_name != principal_name {
+                let config_path = path.join("principal.toml");
+                let contents = match std::fs::read_to_string(&config_path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let value: toml::Value = match contents.parse() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let declared_name = value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if declared_name != principal_name {
+                    continue;
+                }
+            }
+            let config_path = path.join("principal.toml");
+            let contents = std::fs::read_to_string(&config_path).ok()?;
+            let value: toml::Value = contents.parse().ok()?;
+            let did = value.get("did").and_then(|v| v.as_str()).unwrap_or("");
+            return Some(peko_subject::PrincipalId(did.to_string()));
+        }
+        None
+    }
+
+    /// Per-principal cron history log (Local tier).
+    ///
+    /// Path: `{data_dir}/principals/{principal}/local/cron/history.log`
+    #[must_use]
+    pub fn cron_history(&self, principal: &str) -> PathBuf {
+        self.principal_layout(principal).local.cron_history
+    }
+
+    /// Per-principal cron directory (Local tier).
+    ///
+    /// Path: `{data_dir}/principals/{principal}/local/cron`
+    #[must_use]
+    pub fn principal_cron_dir(&self, principal: &str) -> PathBuf {
+        self.principal_layout(principal).local.cron_dir
     }
 
     /// Get the runtime directory
@@ -518,19 +794,41 @@ impl PathResolver {
     ///
     /// Creates directories if they don't exist. Returns Ok(()) if successful
     /// or if directories already exist.
+    ///
+    /// **Phase A.** Also creates the runtime-global bucket at
+    /// `{data_dir}/runtime/{extensions,mcps,registry,locks}` so daemon
+    /// startup is a no-op when the bucket is fresh.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.config_dir)?;
         std::fs::create_dir_all(&self.data_dir)?;
         std::fs::create_dir_all(&self.cache_dir)?;
         std::fs::create_dir_all(self.chat_logs_dir())?;
+        // Phase A: runtime-global bucket.
+        let runtime = self.runtime_layout();
+        std::fs::create_dir_all(&runtime.extensions_root)?;
+        std::fs::create_dir_all(&runtime.mcps_root)?;
+        std::fs::create_dir_all(&runtime.registry_root)?;
+        std::fs::create_dir_all(&runtime.locks_dir)?;
         Ok(())
     }
 
-    /// Ensure an agent's config directories exist
+    /// Ensure a principal's tier directories exist (Shared + Local).
     ///
-    /// Creates the agent's config directory at `{config_dir}/agents/{agent}`.
-    pub fn ensure_agent_config_dirs(&self, agent: &str) -> std::io::Result<()> {
-        std::fs::create_dir_all(self.agent_dir(agent))?;
+    /// Idempotent. Called from `PrincipalManager::create` so each new
+    /// principal starts with a fully-formed layout.
+    pub fn ensure_principal_dirs(&self, principal: &str) -> std::io::Result<()> {
+        let layout = self.principal_layout(principal);
+        // Shared tier.
+        std::fs::create_dir_all(&layout.shared.root)?;
+        std::fs::create_dir_all(&layout.shared.agents_dir)?;
+        std::fs::create_dir_all(&layout.shared.memory_snapshots_dir)?;
+        std::fs::create_dir_all(&layout.shared.mcps_dir)?;
+        // Local tier.
+        std::fs::create_dir_all(&layout.local.root)?;
+        std::fs::create_dir_all(&layout.local.sessions_dir)?;
+        std::fs::create_dir_all(&layout.local.cron_dir)?;
+        std::fs::create_dir_all(&layout.local.cache_dir)?;
+        std::fs::create_dir_all(&layout.local.locks_dir)?;
         Ok(())
     }
 
@@ -540,13 +838,6 @@ impl PathResolver {
     pub fn ensure_agent_data_dirs(&self, agent: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(self.agent_sessions_dir(agent))?;
         std::fs::create_dir_all(self.agent_workspace(agent))?;
-        Ok(())
-    }
-
-    /// Ensure all directories for an agent exist (both config and data)
-    pub fn ensure_agent_dirs(&self, agent: &str) -> std::io::Result<()> {
-        self.ensure_agent_config_dirs(agent)?;
-        self.ensure_agent_data_dirs(agent)?;
         Ok(())
     }
 }
@@ -630,18 +921,8 @@ mod tests {
         assert_eq!(resolver.agents_root_dir(), PathBuf::from("/config/agents"));
 
         assert_eq!(
-            resolver.agent_dir("alice"),
-            PathBuf::from("/config/agents/alice")
-        );
-
-        assert_eq!(
             resolver.agent_config("alice"),
             PathBuf::from("/config/agents/alice/config.toml")
-        );
-
-        assert_eq!(
-            resolver.agent_memberships("alice"),
-            PathBuf::from("/config/agents/alice/memberships.toml")
         );
     }
 
@@ -677,48 +958,6 @@ mod tests {
             PathBuf::from("/data/workspaces/alice/personal")
         );
     }
-
-    #[test]
-    fn test_ensure_agent_dirs() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_dir = temp_dir.path().join("config");
-        let data_dir = temp_dir.path().join("data");
-        let cache_dir = temp_dir.path().join("cache");
-
-        let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir.clone(), cache_dir);
-
-        resolver.ensure_agent_dirs("alice").unwrap();
-
-        assert!(config_dir.join("agents").join("alice").exists());
-        assert!(data_dir
-            .join("sessions")
-            .join("alice")
-            .join("personal")
-            .exists());
-        assert!(data_dir
-            .join("workspaces")
-            .join("alice")
-            .join("personal")
-            .exists());
-    }
-
-    #[test]
-    fn test_agent_exists() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_dir = temp_dir.path().join("config");
-        let data_dir = temp_dir.path().join("data");
-        let cache_dir = temp_dir.path().join("cache");
-
-        let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
-
-        // Create agent
-        let agent_dir = config_dir.join("agents").join("alice");
-        std::fs::create_dir_all(&agent_dir).unwrap();
-        std::fs::write(agent_dir.join("config.toml"), "").unwrap();
-
-        assert!(resolver.agent_exists("alice"));
-        assert!(!resolver.agent_exists("bob"));
-    }
 }
 
 // =============================================================================
@@ -741,6 +980,12 @@ pub struct GlobalPaths {
     resolver: PathResolver,
     services: crate::common::services::ServiceContainer,
     user: String,
+    /// **Phase B.** Tier-typed authority that hands out
+    /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. Mirrors
+    /// `AppState::authority` on the daemon side. CLI is its own
+    /// subject (`Subject::User(self.user.clone())`) so it cannot
+    /// obtain `LocalPath` for principals it doesn't own.
+    authority: Arc<crate::common::authority::RuntimeAuthority>,
 }
 
 impl GlobalPaths {
@@ -783,6 +1028,13 @@ impl GlobalPaths {
 
         let services = crate::common::services::ServiceContainer::new(resolver.clone());
 
+        let authority = Arc::new(
+            crate::common::authority::RuntimeAuthority::for_caller(
+                resolver.clone(),
+                peko_subject::Subject::User(user.clone()),
+            ),
+        );
+
         Self {
             config_dir,
             data_dir,
@@ -790,6 +1042,7 @@ impl GlobalPaths {
             resolver,
             services,
             user,
+            authority,
         }
     }
 
@@ -805,6 +1058,14 @@ impl GlobalPaths {
         &self.resolver
     }
 
+    /// Get the tier-typed authority (**Phase B**). The CLI builds
+    /// this once at startup with `Subject::User(...)` so a CLI
+    /// command never silently gets `LocalPath` access.
+    #[must_use]
+    pub fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
+        &self.authority
+    }
+
     /// Get the service container.
     #[must_use]
     pub fn services(&self) -> &crate::common::services::ServiceContainer {
@@ -817,46 +1078,10 @@ impl GlobalPaths {
         self.resolver.agents_root_dir()
     }
 
-    /// Get a specific agent's directory.
-    #[must_use]
-    pub fn agent_dir(&self, agent: &str) -> PathBuf {
-        self.resolver.agent_dir(agent)
-    }
-
     /// Get the principals configuration directory.
     #[must_use]
     pub fn principals_root_dir(&self) -> PathBuf {
         self.resolver.principals_root_dir()
-    }
-
-    /// Get a specific principal's directory.
-    #[must_use]
-    pub fn principal_dir(&self, principal: &str) -> PathBuf {
-        self.resolver.principal_dir(principal)
-    }
-
-    /// Get principal config file path.
-    #[must_use]
-    pub fn principal_config(&self, principal: &str) -> PathBuf {
-        self.resolver.principal_config(principal)
-    }
-
-    /// Get principal agent prompts directory.
-    #[must_use]
-    pub fn principal_agents_dir(&self, principal: &str) -> PathBuf {
-        self.resolver.principal_agents_dir(principal)
-    }
-
-    /// Get principal memory directory.
-    #[must_use]
-    pub fn principal_memory_dir(&self, principal: &str) -> PathBuf {
-        self.resolver.principal_memory_dir(principal)
-    }
-
-    /// Get principal sessions directory.
-    #[must_use]
-    pub fn principal_sessions_dir(&self, principal: &str) -> PathBuf {
-        self.resolver.principal_sessions_dir(principal)
     }
 
     /// Get agent config file path.
@@ -929,5 +1154,77 @@ impl GlobalPaths {
     #[must_use]
     pub fn known_runtimes(&self) -> PathBuf {
         self.resolver.known_runtimes()
+    }
+
+    // ========================================================================
+    // Phase A: Three-Tier Storage Layout — typed accessors (mirror)
+    // ========================================================================
+
+    /// Resolve the full typed layout for a principal.
+    #[must_use]
+    pub fn principal_layout(&self, principal: &str) -> PrincipalLayout {
+        self.resolver.principal_layout(principal)
+    }
+
+    /// Resolve the typed layout for runtime-global state.
+    #[must_use]
+    pub fn runtime_layout(&self) -> RuntimeLayout {
+        self.resolver.runtime_layout()
+    }
+
+    /// Runtime-global extension install root.
+    #[must_use]
+    pub fn extensions_root(&self) -> PathBuf {
+        self.resolver.extensions_root()
+    }
+
+    /// Runtime-global MCP server install root.
+    #[must_use]
+    pub fn mcps_root(&self) -> PathBuf {
+        self.resolver.mcps_root()
+    }
+
+    /// OCI registry cache root.
+    #[must_use]
+    pub fn registry_root(&self) -> PathBuf {
+        self.resolver.registry_root()
+    }
+
+    /// Runtime-wide lock directory.
+    #[must_use]
+    pub fn runtime_locks_dir(&self) -> PathBuf {
+        self.resolver.runtime_locks_dir()
+    }
+
+    /// Per-principal cron schedule file (Local tier).
+    #[must_use]
+    pub fn cron_schedule(&self, principal: &str) -> PathBuf {
+        self.resolver.cron_schedule(principal)
+    }
+
+    /// Per-principal cron history log (Local tier).
+    #[must_use]
+    pub fn cron_history(&self, principal: &str) -> PathBuf {
+        self.resolver.cron_history(principal)
+    }
+
+    /// Per-principal cron directory (Local tier).
+    #[must_use]
+    pub fn principal_cron_dir(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_cron_dir(principal)
+    }
+
+    /// Resolve a principal's `PrincipalId` (DID) from its on-disk
+    /// directory name.
+    ///
+    /// **Phase B.** CLI commands receive a principal *name* via `--principal`
+    /// but cron jobs are keyed by `PrincipalId` on the wire. This helper
+    /// scans `principals_root_dir` for `principal.toml` whose `[name]`
+    /// matches and returns the corresponding `PrincipalId`. Returns
+    /// `None` if the principal directory doesn't exist or has no DID
+    /// configured — callers should surface the error to the user.
+    #[must_use]
+    pub fn principal_id_for(&self, principal_name: &str) -> Option<peko_subject::PrincipalId> {
+        self.resolver.lookup_principal_id_by_name(principal_name)
     }
 }
