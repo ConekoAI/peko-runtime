@@ -203,13 +203,6 @@ pub enum AuthorityError {
     /// so writes require a per-resource grant.
     #[error("capability '{capability}' not granted for {tier:?} write")]
     CapabilityDenied { tier: Tier, capability: Capability },
-
-    /// The on-disk layout for the principal is missing required
-    /// directories. This indicates a half-installed principal and should
-    /// be propagated as a hard error rather than silently re-creating
-    /// state.
-    #[error("principal layout missing for {0}")]
-    LayoutMissing(PrincipalId),
 }
 
 impl RuntimeAuthority {
@@ -1000,5 +993,332 @@ mod tests {
             result,
             Err(AuthorityError::TierDenied { tier: Tier::Local })
         ));
+    }
+
+    // ---------------------------------------------------------------------
+    // PR 3: real-layout test fixture + comprehensive capability-gate
+    // coverage. PR 1 introduced `_for_name` accessors that bypass the
+    // `lookup_principal_name` disk scan; PR 3 fills the gap by writing a
+    // real `principals/<name>/principal.toml` to disk so the ID-keyed
+    // accessors can reach `Ok` and `CapabilityDenied{Shared/Local}`
+    // outcomes (the previous tests only ever hit `UnknownPrincipal`).
+    //
+    // Each `principal:write_*` capability gets a positive and negative
+    // test through both the ID-keyed and `_for_name` paths.
+    // ---------------------------------------------------------------------
+
+    /// Build a tempdir-backed `PathResolver` with a real
+    /// `principals/alice/principal.toml` on disk. The on-disk `did`
+    /// matches the returned `PrincipalId` so `lookup_principal_name`
+    /// succeeds. Returns `(TempDir, PathResolver, PrincipalId)` —
+    /// caller keeps the tempdir alive for the duration of the test.
+    fn with_real_principal() -> (tempfile::TempDir, PathResolver, PrincipalId) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // On-disk DID format mirrors what `peko_identity` produces;
+        // ID-keyed accessors scan for this string verbatim.
+        let did_str = "did:peko:public:alice-test-fixture";
+        let principal_dir = config_dir.join("principals").join("alice");
+        std::fs::create_dir_all(&principal_dir).unwrap();
+        std::fs::write(
+            principal_dir.join("principal.toml"),
+            format!("name = \"alice\"\ndid = \"{did_str}\"\n"),
+        )
+        .unwrap();
+
+        let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
+        let pid = PrincipalId(did_str.to_string());
+        (tmp, resolver, pid)
+    }
+
+    // ----- ID-keyed accessors with real layout -------------------------
+
+    #[test]
+    fn write_gate_shared_config_with_grant_succeeds() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::with_grants(["principal:write_config"]);
+        let result = authority.shared_config_write(&pid, Some(&caps));
+        assert!(result.is_ok());
+        assert!(result.unwrap().as_path().ends_with("alice/principal.toml"));
+    }
+
+    #[test]
+    fn write_gate_shared_config_without_grant_is_capability_denied() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::new();
+        let result = authority.shared_config_write(&pid, Some(&caps));
+        assert!(matches!(
+            result,
+            Err(AuthorityError::CapabilityDenied {
+                tier: Tier::Shared,
+                capability
+            }) if capability == Capability::new("principal:write_config")
+        ));
+    }
+
+    #[test]
+    fn write_gate_shared_agents_dir_with_grant_succeeds() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::with_grants(["principal:write_agents"]);
+        let result = authority.shared_agents_dir_write(&pid, Some(&caps));
+        assert!(result.is_ok());
+        assert!(result.unwrap().as_path().ends_with("alice/agents"));
+    }
+
+    #[test]
+    fn write_gate_shared_agents_dir_without_grant_is_capability_denied() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::new();
+        let result = authority.shared_agents_dir_write(&pid, Some(&caps));
+        assert!(matches!(
+            result,
+            Err(AuthorityError::CapabilityDenied {
+                tier: Tier::Shared,
+                capability
+            }) if capability == Capability::new("principal:write_agents")
+        ));
+    }
+
+    #[test]
+    fn write_gate_shared_identity_dir_with_grant_succeeds() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::with_grants(["principal:write_identity"]);
+        let result = authority.shared_identity_dir_write(&pid, Some(&caps));
+        assert!(result.is_ok());
+        assert!(result.unwrap().as_path().ends_with("alice/identity"));
+    }
+
+    #[test]
+    fn write_gate_shared_identity_dir_without_grant_is_capability_denied() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::new();
+        let result = authority.shared_identity_dir_write(&pid, Some(&caps));
+        assert!(matches!(
+            result,
+            Err(AuthorityError::CapabilityDenied {
+                tier: Tier::Shared,
+                capability
+            }) if capability == Capability::new("principal:write_identity")
+        ));
+    }
+
+    #[test]
+    fn write_gate_shared_mcps_dir_with_grant_succeeds() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::with_grants(["principal:write_mcps"]);
+        let result = authority.shared_mcps_dir_write(&pid, Some(&caps));
+        assert!(result.is_ok());
+        assert!(result.unwrap().as_path().ends_with("alice/mcps"));
+    }
+
+    #[test]
+    fn write_gate_shared_mcps_dir_without_grant_is_capability_denied() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::new();
+        let result = authority.shared_mcps_dir_write(&pid, Some(&caps));
+        assert!(matches!(
+            result,
+            Err(AuthorityError::CapabilityDenied {
+                tier: Tier::Shared,
+                capability
+            }) if capability == Capability::new("principal:write_mcps")
+        ));
+    }
+
+    #[test]
+    fn write_gate_local_cron_schedule_with_grant_succeeds() {
+        // Replaces the old `write_gate_accepts_satisfied_grant` for
+        // `local_cron_schedule_write`. Real layout lets us reach
+        // `Ok` instead of stopping at `UnknownPrincipal`.
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::with_grants(["principal:write_cron"]);
+        let result = authority.local_cron_schedule_write(&pid, Some(&caps));
+        assert!(result.is_ok());
+        assert!(result
+            .unwrap()
+            .as_path()
+            .ends_with("alice/local/cron/schedule.toml"));
+    }
+
+    #[test]
+    fn write_gate_local_cron_schedule_without_grant_is_capability_denied() {
+        // Replaces the old `write_gate_rejects_missing_grant` for
+        // `local_cron_schedule_write`. Real layout lets us reach
+        // `CapabilityDenied{Local}` instead of stopping at
+        // `UnknownPrincipal`.
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::new();
+        let result = authority.local_cron_schedule_write(&pid, Some(&caps));
+        assert!(matches!(
+            result,
+            Err(AuthorityError::CapabilityDenied {
+                tier: Tier::Local,
+                capability
+            }) if capability == Capability::new("principal:write_cron")
+        ));
+    }
+
+    #[test]
+    fn write_gate_local_cron_history_with_grant_succeeds() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::with_grants(["principal:write_cron_history"]);
+        let result = authority.local_cron_history_write(&pid, Some(&caps));
+        assert!(result.is_ok());
+        assert!(result
+            .unwrap()
+            .as_path()
+            .ends_with("alice/local/cron/history.log"));
+    }
+
+    #[test]
+    fn write_gate_local_cron_history_without_grant_is_capability_denied() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::new();
+        let result = authority.local_cron_history_write(&pid, Some(&caps));
+        assert!(matches!(
+            result,
+            Err(AuthorityError::CapabilityDenied {
+                tier: Tier::Local,
+                capability
+            }) if capability == Capability::new("principal:write_cron_history")
+        ));
+    }
+
+    // ----- _for_name accessors with real layout ------------------------
+
+    #[test]
+    fn write_gate_shared_config_for_name_with_grant_succeeds() {
+        let (_tmp, resolver, _pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::with_grants(["principal:write_config"]);
+        let result = authority.shared_config_write_for_name("alice", Some(&caps));
+        assert!(result.is_ok());
+        assert!(result.unwrap().as_path().ends_with("alice/principal.toml"));
+    }
+
+    #[test]
+    fn write_gate_shared_config_for_name_without_grant_is_capability_denied() {
+        let (_tmp, resolver, _pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::new();
+        let result = authority.shared_config_write_for_name("alice", Some(&caps));
+        assert!(matches!(
+            result,
+            Err(AuthorityError::CapabilityDenied {
+                tier: Tier::Shared,
+                capability
+            }) if capability == Capability::new("principal:write_config")
+        ));
+    }
+
+    #[test]
+    fn write_gate_shared_agents_dir_for_name_with_grant_succeeds() {
+        let (_tmp, resolver, _pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::with_grants(["principal:write_agents"]);
+        let result = authority.shared_agents_dir_write_for_name("alice", Some(&caps));
+        assert!(result.is_ok());
+        assert!(result.unwrap().as_path().ends_with("alice/agents"));
+    }
+
+    #[test]
+    fn write_gate_shared_agents_dir_for_name_without_grant_is_capability_denied() {
+        let (_tmp, resolver, _pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::new();
+        let result = authority.shared_agents_dir_write_for_name("alice", Some(&caps));
+        assert!(matches!(
+            result,
+            Err(AuthorityError::CapabilityDenied {
+                tier: Tier::Shared,
+                capability
+            }) if capability == Capability::new("principal:write_agents")
+        ));
+    }
+
+    #[test]
+    fn write_gate_shared_identity_dir_for_name_with_grant_succeeds() {
+        let (_tmp, resolver, _pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::with_grants(["principal:write_identity"]);
+        let result = authority.shared_identity_dir_write_for_name("alice", Some(&caps));
+        assert!(result.is_ok());
+        assert!(result.unwrap().as_path().ends_with("alice/identity"));
+    }
+
+    #[test]
+    fn write_gate_shared_identity_dir_for_name_without_grant_is_capability_denied() {
+        let (_tmp, resolver, _pid) = with_real_principal();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::new();
+        let result = authority.shared_identity_dir_write_for_name("alice", Some(&caps));
+        assert!(matches!(
+            result,
+            Err(AuthorityError::CapabilityDenied {
+                tier: Tier::Shared,
+                capability
+            }) if capability == Capability::new("principal:write_identity")
+        ));
+    }
+
+    /// `_for_name` variants intentionally skip the existence check that
+    /// `lookup_principal_name` performs for ID-keyed accessors. The
+    /// design choice: name-keyed accessors are only ever called from
+    /// IPC handlers that have already validated the principal exists
+    /// (via `resolve_principal` or similar). The path computation is
+    /// pure (no I/O), so an unknown name produces a path under a
+    /// non-existent directory — the *caller* of the gate is
+    /// responsible for ensuring the principal exists before
+    /// exercising the path. This test pins the fail-open behavior so
+    /// future refactors don't quietly change it.
+    #[test]
+    fn write_gate_for_name_with_unknown_name_still_yields_path() {
+        let resolver = test_resolver();
+        let did = peko_subject::PrincipalDID("prin_alice".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
+        let caps = Capabilities::with_grants(["principal:write_agents"]);
+        // "ghost" is not on disk and the resolver has no layout for
+        // it — but the gate fires only on the actor and capability
+        // tier; the path is constructed regardless.
+        let result = authority.shared_agents_dir_write_for_name("ghost", Some(&caps));
+        assert!(result.is_ok());
+        let path = result.unwrap().into_path_buf();
+        assert!(path.ends_with("ghost/agents"));
     }
 }
