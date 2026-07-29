@@ -288,7 +288,7 @@ async fn register_runtime_with_pekohub(
     client: &reqwest::Client,
     backend_url: &str,
     did: &str,
-    owner_user_id: i64,
+    owner_user_id: &str,
 ) {
     let resp = client
         .post(format!("{backend_url}/test/create-runtime"))
@@ -394,7 +394,7 @@ async fn post_chat(
 /// `Authorization: Bearer <jwt>` path). Used so the pekohub
 /// `authenticate` plugin can look up the user by `decoded.sub` (see
 /// `pekohub/backend/src/plugins/auth.ts:122`).
-fn jwt_for_user(user_id: i64, namespace: &str) -> String {
+fn jwt_for_user(user_id: &str, namespace: &str) -> String {
     generate_jwt(user_id, namespace)
 }
 
@@ -429,14 +429,14 @@ async fn permit_owner_can_chat() {
 
     // 1. Create owner user in pekohub.
     let (owner_id, owner_ns) = create_test_user(&client, &backend.url, "s4_owner_a").await;
-    let owner_jwt = jwt_for_user(owner_id, &owner_ns);
+    let owner_jwt = jwt_for_user(&owner_id, &owner_ns);
     let owner_key = mint_api_key(&client, &backend.url, &owner_jwt, "s4-owner-key").await;
 
     // 2. Generate runtime identity (DID + signing key).
     let (did, signing_key) = generate_runtime_identity();
 
     // 3. Register the runtime with pekohub, owned by `owner_id`.
-    register_runtime_with_pekohub(&client, &backend.url, &did, owner_id).await;
+    register_runtime_with_pekohub(&client, &backend.url, &did, &owner_id).await;
 
     // 4. Set up the per-CLI HOME: write principal config + pekohub.toml.
     let cli = PekoCli::new();
@@ -515,20 +515,20 @@ async fn permit_granted_user_chats_ungranted_forbidden() {
 
     // 1. Create three users: owner + granted + ungranted.
     let (owner_id, owner_ns) = create_test_user(&client, &backend.url, "s4_owner_b").await;
-    let owner_jwt = jwt_for_user(owner_id, &owner_ns);
+    let owner_jwt = jwt_for_user(&owner_id, &owner_ns);
 
     let (granted_id, granted_ns) = create_test_user(&client, &backend.url, "s4_granted").await;
-    let granted_jwt = jwt_for_user(granted_id, &granted_ns);
+    let granted_jwt = jwt_for_user(&granted_id, &granted_ns);
 
     let (ungranted_id, ungranted_ns) =
         create_test_user(&client, &backend.url, "s4_ungranted").await;
-    let ungranted_jwt = jwt_for_user(ungranted_id, &ungranted_ns);
+    let ungranted_jwt = jwt_for_user(&ungranted_id, &ungranted_ns);
 
     // 2. Generate runtime identity.
     let (did, signing_key) = generate_runtime_identity();
 
     // 3. Register the runtime with pekohub.
-    register_runtime_with_pekohub(&client, &backend.url, &did, owner_id).await;
+    register_runtime_with_pekohub(&client, &backend.url, &did, &owner_id).await;
 
     // 4. Set up the per-CLI HOME: principal config pre-seeds the
     //    granted user in `[[permissions]]`; the ungranted user is NOT
@@ -611,10 +611,10 @@ async fn no_auth_returns_401() {
         .unwrap();
 
     let (owner_id, owner_ns) = create_test_user(&client, &backend.url, "s4_owner_c").await;
-    let owner_jwt = jwt_for_user(owner_id, &owner_ns);
+    let owner_jwt = jwt_for_user(&owner_id, &owner_ns);
 
     let (did, signing_key) = generate_runtime_identity();
-    register_runtime_with_pekohub(&client, &backend.url, &did, owner_id).await;
+    register_runtime_with_pekohub(&client, &backend.url, &did, &owner_id).await;
 
     let cli = PekoCli::new();
     let principal_name = "s4_noauth_principal";

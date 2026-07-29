@@ -359,7 +359,10 @@ async fn test_e2e_tunnel_chat_with_llm() {
         user_resp.text().await.unwrap_or_default(),
     );
     let user_body: serde_json::Value = user_resp.json().await.unwrap();
-    let user_id = user_body["id"].as_i64().expect("No user id") as i32;
+    let user_id = user_body["id"]
+        .as_str()
+        .expect("No user id (expected UUID string)")
+        .to_string();
     let chat_user_id = user_id.to_string();
 
     // 3. Create temporary workspace with Principal config
@@ -429,7 +432,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     );
 
     // Generate JWT for authenticated requests
-    let jwt_token = generate_jwt(user_id as i64, &format!("e2etestuser{run_tag}"));
+    let jwt_token = generate_jwt(&user_id, &format!("e2etestuser{run_tag}"));
     let auth_header = format!("Bearer {jwt_token}");
 
     // 7. Write tunnel credentials next to the AppState config directory so

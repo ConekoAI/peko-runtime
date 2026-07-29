@@ -183,7 +183,7 @@ async fn register_runtime_with_pekohub(
     client: &reqwest::Client,
     backend_url: &str,
     did: &str,
-    owner_user_id: i64,
+    owner_user_id: &str,
 ) {
     let resp = client
         .post(format!("{backend_url}/test/create-runtime"))
@@ -341,14 +341,14 @@ async fn permit_revoke_propagates_to_pekohub_within_1s() {
     //    on `instance.ownerId === userId`, so we test `grantee`
     //    exclusively — its access is governed solely by `allowedUsers`.
     let (owner_id, owner_ns) = create_test_user(&client, &backend.url, "s5_owner").await;
-    let owner_jwt = generate_jwt(owner_id, &owner_ns);
+    let owner_jwt = generate_jwt(&owner_id, &owner_ns);
 
     let (grantee_id, grantee_ns) = create_test_user(&client, &backend.url, "s5_grantee").await;
-    let grantee_jwt = generate_jwt(grantee_id, &grantee_ns);
+    let grantee_jwt = generate_jwt(&grantee_id, &grantee_ns);
 
     // 2. Generate runtime identity; register with PekoHub as `owner`.
     let (did, signing_key) = generate_runtime_identity();
-    register_runtime_with_pekohub(&client, &backend.url, &did, owner_id).await;
+    register_runtime_with_pekohub(&client, &backend.url, &did, &owner_id).await;
 
     // 3. Lay down Principal config + pekohub credential in an isolated HOME.
     let cli = PekoCli::new();
