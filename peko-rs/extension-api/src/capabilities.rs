@@ -218,6 +218,10 @@ impl Capabilities {
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",
+            // PR 2 (storage review): required by
+            // `principal_unpackager::import_identity` so the import
+            // path can write the imported DID's identity directory.
+            "principal:write_identity",
         ])
     }
 }

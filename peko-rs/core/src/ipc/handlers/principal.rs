@@ -582,6 +582,7 @@ impl RequestHandler for PrincipalHandler {
                 };
                 match import_principal_package(
                     host,
+                    caller,
                     std::path::Path::new(&file_path),
                     name.clone(),
                     allow_unsigned,
@@ -716,6 +717,7 @@ impl RequestHandler for PrincipalHandler {
                 }
                 match pull_principal_package(
                     host,
+                    caller,
                     &registry_ref,
                     name.clone(),
                     force,
@@ -2597,6 +2599,7 @@ async fn preview_principal_import(
 /// Import a `.principal` package and register it with the manager.
 async fn import_principal_package(
     host: &dyn PrincipalHost,
+    caller: &peko_auth::caller::CallerContext,
     file_path: &std::path::Path,
     new_name: Option<String>,
     allow_unsigned: bool,
@@ -2608,6 +2611,17 @@ async fn import_principal_package(
         host.config_dir(),
         host.data_dir(),
     );
+    // Phase C: project the caller's subject and capability snapshot
+    // into the unpackager so the agent-prompt + identity writes gate
+    // through `RuntimeAuthority::shared_*_write_for_name`. We use
+    // `Capabilities::starter_bundle()` widened by the caller-chosen
+    // `selected_capabilities` because the new principal doesn't exist
+    // yet on disk — the gate fires against the post-merge cap set
+    // (what the principal will actually carry once persisted).
+    let mut caller_caps = peko_extension_api::Capabilities::starter_bundle();
+    for cap in &selected_capabilities {
+        caller_caps.push(cap.clone());
+    }
     let opts = crate::registry::packaging::PrincipalImportOptions {
         new_name,
         allow_unsigned,
@@ -2615,6 +2629,8 @@ async fn import_principal_package(
         trust_store: Some(host.trust_store().clone()),
         trust_policy,
         selected_capabilities,
+        caller_subject: caller.subject().clone(),
+        caller_capabilities: caller_caps,
         ..Default::default()
     };
     let mut result = unpackager.import(opts).await?;
@@ -2739,6 +2755,7 @@ async fn preview_principal_pull(
 /// Pull a Principal from a registry and import it.
 async fn pull_principal_package(
     host: &dyn PrincipalHost,
+    caller: &peko_auth::caller::CallerContext,
     registry_ref: &str,
     new_name: Option<String>,
     force: bool,
@@ -2783,6 +2800,7 @@ async fn pull_principal_package(
 
     let import_result = import_principal_package(
         host,
+        caller,
         &temp_path,
         new_name,
         // Pulled packages are signed at export; honor force for

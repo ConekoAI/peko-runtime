@@ -3,6 +3,7 @@
 //! Extracts `.principal` files into the local peko runtime.
 #![allow(dead_code)]
 
+use crate::common::authority::{RuntimeAuthority, TierPath};
 use crate::common::paths::PathResolver;
 use crate::extensions::framework::manager::packaging::ExtensionUnpackager;
 use crate::extensions::framework::store::ExtensionStore;
@@ -14,6 +15,7 @@ use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustSto
 use crate::registry::packaging::validation::ValidationResult;
 use anyhow::Context;
 use peko_auth::Subject;
+use peko_extension_api::Capabilities;
 use peko_identity::{storage::KeyStorage, Identity, KeyPairExport};
 use peko_subject::PrincipalDID;
 use std::collections::{BTreeSet, HashMap};
@@ -42,6 +44,19 @@ pub struct PrincipalImportOptions {
     /// Capability grants to add to the imported Principal's
     /// `[capabilities] grants` list, deduplicated against existing grants.
     pub selected_capabilities: Vec<String>,
+    /// Caller subject for the WriteSide gate. The IPC handler
+    /// passes `caller.subject().clone(); defaults to
+    /// `Subject::User("local")` so library callers (tests, the CLI
+    /// `import` subcommand if it ever bypasses the IPC layer) clear
+    /// the Shared tier actor gate.
+    pub caller_subject: Subject,
+    /// Caller capability snapshot for the WriteSide gate. The IPC
+    /// handler passes the post-merge `Capabilities` (starter bundle
+    /// plus any caller-selected grants) so the gate reflects what
+    /// the new principal will actually carry. Defaults to
+    /// `Capabilities::starter_bundle()` so existing tests don't
+    /// need to thread this through.
+    pub caller_capabilities: Capabilities,
 }
 
 impl Default for PrincipalImportOptions {
@@ -55,6 +70,8 @@ impl Default for PrincipalImportOptions {
             trust_store: None,
             trust_policy: TrustPolicy::Tofu,
             selected_capabilities: Vec::new(),
+            caller_subject: Subject::User("local".to_string()),
+            caller_capabilities: Capabilities::starter_bundle(),
         }
     }
 }
@@ -215,8 +232,21 @@ impl PrincipalUnpackager {
                 .map_err(|e| anyhow::anyhow!("[unsafe_extension_id] {}: {e}", ext_ref.id))?;
         }
 
+        // Phase C: Build a per-call authority that projects the IPC
+        // caller's subject and capability snapshot. The agent prompt
+        // and identity writes (Shared tier) gate on this authority;
+        // sessions writes (Local tier) rely on the actor gate alone
+        // (no per-resource capability exists for sessions — the
+        // actor's tier-entitlement is the only Layer 2 check).
+        let resolver = PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.data_dir.clone(),
+        );
+        let authority = RuntimeAuthority::for_caller(resolver, options.caller_subject.clone());
+
         let identity = self
-            .import_identity(&files, &manifest, &options, &name)
+            .import_identity(&files, &manifest, &options, &name, &authority)
             .await?;
         let mut config = self.import_config(&files, &name, &identity)?;
 
@@ -236,7 +266,8 @@ impl PrincipalUnpackager {
             config.owner = Subject::User("local".to_string());
         }
 
-        self.import_agents(&files, &name).await?;
+        self.import_agents(&files, &name, &options, &authority)
+            .await?;
         // Phase A: the legacy `import_memory` is gone. Memory
         // snapshots are not part of the portable bundle; sessions
         // are the only Local-tier artifact that flows in.
@@ -292,6 +323,7 @@ impl PrincipalUnpackager {
         manifest: &PrincipalManifest,
         options: &PrincipalImportOptions,
         principal_name: &str,
+        authority: &RuntimeAuthority,
     ) -> anyhow::Result<Identity> {
         let did_doc_bytes = files
             .get("identity/did.json")
@@ -302,16 +334,14 @@ impl PrincipalUnpackager {
         // in the portable bundle. The directory holds the
         // `identity.json` (public DID) and `keys.enc` (private key
         // export); `KeyStorage::with_path` expects the directory.
-        let resolver = PathResolver::with_dirs(
-            self.config_dir.clone(),
-            self.data_dir.clone(),
-            self.data_dir.clone(),
-        );
-        let identity_dir = resolver
-            .principal_layout(principal_name)
-            .shared
-            .root
-            .join("identity");
+        //
+        // Phase C: gate the directory on `principal:write_identity`
+        // via the caller-projected authority. Sponsor's `[[permissions]]`
+        // ACL is the lower-level PekoHub check; this is the per-resource
+        // gate.
+        let identity_dir = authority
+            .shared_identity_dir_write_for_name(principal_name, Some(&options.caller_capabilities))?
+            .to_path_buf();
 
         if options.rotate_keys {
             let new_identity = Identity::new(
@@ -371,16 +401,19 @@ impl PrincipalUnpackager {
         &self,
         files: &HashMap<String, Vec<u8>>,
         principal_name: &str,
+        options: &PrincipalImportOptions,
+        authority: &RuntimeAuthority,
     ) -> anyhow::Result<()> {
         // Phase A: agents live under the Shared tier
         // (`{config_dir}/principals/{name}/agents/`) so they ship in
         // the principal bundle.
-        let resolver = PathResolver::with_dirs(
-            self.config_dir.clone(),
-            self.data_dir.clone(),
-            self.data_dir.clone(),
-        );
-        let agents_dir = resolver.principal_layout(principal_name).shared.agents_dir;
+        //
+        // Phase C: gate the directory on `principal:write_agents` via
+        // the caller-projected authority. Matches the
+        // `PrincipalCreate` agent-prompt write gate.
+        let agents_dir = authority
+            .shared_agents_dir_write_for_name(principal_name, Some(&options.caller_capabilities))?
+            .to_path_buf();
 
         for (path, content) in files {
             if path.starts_with("agents/") {
@@ -846,6 +879,21 @@ mod tests {
         assert!(opts.import_sessions);
         assert!(!opts.allow_unsigned);
         assert!(opts.selected_capabilities.is_empty());
+        // Phase C bootstrap: defaults clear the Shared tier gate so
+        // library callers (tests, future direct-call sites) don't
+        // have to thread `caller_subject` / `caller_capabilities`
+        // through every constructor.
+        assert!(matches!(opts.caller_subject, Subject::User(ref u) if u == "local"));
+        assert!(opts
+            .caller_capabilities
+            .is_granted(&peko_extension_api::Capability::new(
+                "principal:write_agents"
+            )));
+        assert!(opts
+            .caller_capabilities
+            .is_granted(&peko_extension_api::Capability::new(
+                "principal:write_identity"
+            )));
     }
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
@@ -1053,5 +1101,61 @@ mod tests {
         assert!(required.is_empty());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("missing"));
+    }
+
+    /// PR 2: Phase C gate. A caller without `principal:write_agents`
+    /// cannot import a `.principal` package — the gate fires inside
+    /// `import_agents` before any agent prompt reaches disk.
+    /// `import_identity` runs first and also requires
+    /// `principal:write_identity`; either gate is acceptable here
+    /// (they're checked in order: identity first, then agents).
+    /// The test asserts the operation fails with a capability-denied
+    /// message rather than letting agent prompts land on disk.
+    #[tokio::test]
+    async fn import_denied_when_caller_lacks_write_caps() {
+        use peko_extension_api::Capabilities;
+
+        let identity = Identity::new("denied", DIDScope::Local).await.unwrap();
+        let config = sample_config("denied", &identity.did);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_dir = tmp.path().join("src-agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("planner.md"), b"# Planner").unwrap();
+
+        let out = tmp.path().join("denied.principal");
+        let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
+        packager
+            .export(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let config_dir = tmp.path().join("cfg");
+        let data_dir = tmp.path().join("data");
+        let unpackager = PrincipalUnpackager::new(&out, config_dir, data_dir);
+
+        // Caller clears the Shared tier actor gate (Subject::User)
+        // but carries no capability grants — the first gate that
+        // fires (inside `import_identity` for
+        // `principal:write_identity`) returns a
+        // `CapabilityDenied{Shared}` wrapped in `anyhow::Error`.
+        let opts = PrincipalImportOptions {
+            caller_capabilities: Capabilities::new(), // empty
+            ..PrincipalImportOptions::default()
+        };
+        let err = unpackager
+            .import(opts)
+            .await
+            .expect_err("import should be denied without capability grants");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("principal:write_identity")
+                || msg.contains("principal:write_agents")
+                || msg.contains("CapabilityDenied"),
+            "expected capability denial, got: {msg}"
+        );
     }
 }
