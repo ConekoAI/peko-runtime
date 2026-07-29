@@ -9,8 +9,24 @@
 //! | Rust test                                                  | Flow step                                                  |
 //! |------------------------------------------------------------|------------------------------------------------------------|
 //! | `permit_owner_can_chat`                                   | Flow 6a: owner hits `/v1/instances/:id/chat` → 200          |
-//! | `permit_granted_user_chats_ungranted_forbidden`           | Flow 6b: granted user → 200, ungranted user → 403           |
 //! | `no_auth_returns_401`                                     | Flow 6c: no `Authorization` header → 401                   |
+//!
+//! ## Note on Flow 6b (granted-vs-ungranted)
+//!
+//! The original Flow 6b scenario
+//! (`permit_granted_user_chats_ungranted_forbidden`) was deleted in
+//! Phase B cleanup. It relied on pekohub's pre-#19 `allowedUsers`
+//! allow-list matching, but pekohub post-#19 dropped the typed
+//! `allowed_principals` DB column and the runtime-side allow-list
+//! (`PrincipalConfig.permissions`) is now the canonical ACL surface
+//! (R4). Pekohub's `canChat` checks owner-vs-caller only and
+//! forwards chat requests to the runtime, which runs the
+//! defense-in-depth `check_request_allowed` ACL itself.
+//!
+//! A replacement end-to-end test for the granted-vs-ungranted ACL
+//! path needs to target the runtime's local enforcement (not
+//! pekohub's); that's a follow-up to redesign against the post-#19
+//! model.
 //!
 //! ## Scope
 //!
@@ -481,110 +497,7 @@ async fn permit_owner_can_chat() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2 (Flow 6b) — granted user chats, ungranted user gets 403
-// ---------------------------------------------------------------------------
-
-/// Flow 6b (positive + negative): a user pre-seeded in
-/// `agent.config.permissions` is allowed to chat (200), and a user
-/// not in `allowedUsers` is rejected (403) by pekohub's `canChat`
-/// ACL at `pekohub/backend/src/services/instances.ts:339-345`.
-///
-/// We pre-seed the agent config (rather than calling
-/// `peko agent permit`) because the runtime's `grant_agent_permission`
-/// path writes to disk but does not push an `exposure_update` over
-/// the tunnel (see the docstring at the top of this file, point 5).
-/// The first `instance_announce` is the only point at which the
-/// runtime pushes `allowedUsers` to pekohub.
-#[tokio::test]
-#[ignore = "requires PEKOHUB_URL + MOCK_LLM_URL + peko daemon"]
-#[serial]
-async fn permit_granted_user_chats_ungranted_forbidden() {
-    let Some((_hub_url, mock_url)) = hub_and_llm_urls() else {
-        eprintln!("PEKOHUB_URL or MOCK_LLM_URL not set; skipping");
-        return;
-    };
-
-    let backend = PekohubBackend::start().await;
-    reset_pekohub(&backend.url).await;
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .no_proxy()
-        .build()
-        .unwrap();
-
-    // 1. Create three users: owner + granted + ungranted.
-    let (owner_id, owner_ns) = create_test_user(&client, &backend.url, "s4_owner_b").await;
-    let owner_jwt = jwt_for_user(&owner_id, &owner_ns);
-
-    let (granted_id, granted_ns) = create_test_user(&client, &backend.url, "s4_granted").await;
-    let granted_jwt = jwt_for_user(&granted_id, &granted_ns);
-
-    let (ungranted_id, ungranted_ns) =
-        create_test_user(&client, &backend.url, "s4_ungranted").await;
-    let ungranted_jwt = jwt_for_user(&ungranted_id, &ungranted_ns);
-
-    // 2. Generate runtime identity.
-    let (did, signing_key) = generate_runtime_identity();
-
-    // 3. Register the runtime with pekohub.
-    register_runtime_with_pekohub(&client, &backend.url, &did, &owner_id).await;
-
-    // 4. Set up the per-CLI HOME: principal config pre-seeds the
-    //    granted user in `[[permissions]]`; the ungranted user is NOT
-    //    in the config.
-    let cli = PekoCli::new();
-    let principal_name = "s4_acl_principal";
-    write_principal_with_perm(
-        &cli,
-        principal_name,
-        &mock_url,
-        &did,
-        Some(&granted_id.to_string()),
-    );
-    write_pekohub_credential(&cli, &backend.ws_url, &did, &signing_key);
-
-    // 5. Start daemon → tunnel → instance_announce carries
-    //    `allowed_users = [<granted_id>]` to pekohub.
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // 6. Wait for the announced instance.
-    let instance_id = wait_for_announced_instance(
-        &client,
-        &backend.url,
-        &owner_jwt,
-        &did,
-        Duration::from_secs(30),
-    )
-    .await;
-
-    // 7. Granted user → 200 (in allowedUsers).
-    let (status, body) = post_chat(&client, &backend.url, &instance_id, Some(&granted_jwt)).await;
-    assert_eq!(
-        status, 200,
-        "granted user should be allowed (in allowedUsers): body={body}"
-    );
-    assert!(
-        !body.trim().is_empty(),
-        "granted user chat body should be non-empty: {body}"
-    );
-
-    // 8. Ungranted user → 403 (not owner, not in allowedUsers).
-    let (status, body) = post_chat(&client, &backend.url, &instance_id, Some(&ungranted_jwt)).await;
-    assert_eq!(
-        status, 403,
-        "ungranted user should be forbidden: body={body}"
-    );
-    // Pekohub's chat route returns `{ error: "Forbidden" }` on 403
-    // (see `pekohub/backend/src/routes/api/instances.ts:573`).
-    assert!(
-        body.to_lowercase().contains("forbidden"),
-        "403 body should contain 'forbidden': {body}",
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Test 3 (Flow 6c) — no auth header → 401
+// Test 2 (Flow 6c) — no auth header → 401
 // ---------------------------------------------------------------------------
 
 /// Flow 6c (negative): a chat request with no `Authorization`
