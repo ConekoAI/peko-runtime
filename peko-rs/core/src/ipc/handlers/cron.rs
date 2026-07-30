@@ -251,45 +251,50 @@ impl RequestHandler for CronHandler {
             }
 
             RequestPacket::CronRemove { request_id, job_id } => {
-                // Phase A: scan loaded principals to find the
-                // owner of `job_id`, then delete from that
-                // principal's schedule file.
+                // Phase A + audit fix: resolve owner, run the
+                // tier + cap gate (which is also the cross-tenant
+                // check — it fires against the OWNER's caps, so a
+                // caller authorized for principal B cannot delete A's
+                // job), then delete from the owner's schedule file.
                 match self
-                    .resolve_principal_for_job(&job_id, self.host.path_resolver())
+                    .authorize_cron_op(caller, &job_id, CronOp::Mutate)
                     .await
                 {
-                    Ok((principal_name, cron_db)) => match CronScheduler::new(&cron_db) {
-                        Ok(scheduler) => match scheduler.delete_job(&job_id) {
-                            Ok(true) => {
-                                let response = ResponsePacket::CronRemoved { request_id, job_id };
-                                send_response(sink, response).await?;
-                            }
-                            Ok(false) => {
-                                let response = ResponsePacket::Error {
-                                    request_id,
-                                    message: format!(
-                                        "Job {job_id} not found under principal \
-                                             {principal_name}"
-                                    ),
-                                };
-                                send_response(sink, response).await?;
-                            }
+                    Ok((principal_name, cron_db, _caps)) => {
+                        match CronScheduler::new(&cron_db) {
+                            Ok(scheduler) => match scheduler.delete_job(&job_id) {
+                                Ok(true) => {
+                                    let response =
+                                        ResponsePacket::CronRemoved { request_id, job_id };
+                                    send_response(sink, response).await?;
+                                }
+                                Ok(false) => {
+                                    let response = ResponsePacket::Error {
+                                        request_id,
+                                        message: format!(
+                                            "Job {job_id} not found under principal \
+                                                 {principal_name}"
+                                        ),
+                                    };
+                                    send_response(sink, response).await?;
+                                }
+                                Err(e) => {
+                                    let response = ResponsePacket::Error {
+                                        request_id,
+                                        message: format!("Failed to remove job: {e}"),
+                                    };
+                                    send_response(sink, response).await?;
+                                }
+                            },
                             Err(e) => {
                                 let response = ResponsePacket::Error {
                                     request_id,
-                                    message: format!("Failed to remove job: {e}"),
+                                    message: format!("Cron DB error: {e}"),
                                 };
                                 send_response(sink, response).await?;
                             }
-                        },
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!("Cron DB error: {e}"),
-                            };
-                            send_response(sink, response).await?;
                         }
-                    },
+                    }
                     Err(message) => {
                         let response = ResponsePacket::Error {
                             request_id,
@@ -301,56 +306,60 @@ impl RequestHandler for CronHandler {
             }
 
             RequestPacket::CronRun { request_id, job_id } => {
-                // Phase A: same scan-by-principal as `CronRemove`.
+                // Phase A + audit fix: same gate shape as `CronRemove`.
+                // `update_job_after_run` mutates the schedule file, so
+                // the schedule-write cap is the right one to require.
                 match self
-                    .resolve_principal_for_job(&job_id, self.host.path_resolver())
+                    .authorize_cron_op(caller, &job_id, CronOp::Mutate)
                     .await
                 {
-                    Ok((_principal_name, cron_db)) => match CronScheduler::new(&cron_db) {
-                        Ok(scheduler) => match scheduler.get_job(&job_id) {
-                            Ok(Some(_job)) => {
-                                let now = Utc::now();
-                                if let Err(e) =
-                                    scheduler.update_job_after_run(&job_id, "triggered", now)
-                                {
+                    Ok((_principal_name, cron_db, _caps)) => {
+                        match CronScheduler::new(&cron_db) {
+                            Ok(scheduler) => match scheduler.get_job(&job_id) {
+                                Ok(Some(_job)) => {
+                                    let now = Utc::now();
+                                    if let Err(e) =
+                                        scheduler.update_job_after_run(&job_id, "triggered", now)
+                                    {
+                                        let response = ResponsePacket::Error {
+                                            request_id,
+                                            message: format!("Failed to trigger job: {e}"),
+                                        };
+                                        send_response(sink, response).await?;
+                                    } else {
+                                        let run_id = Uuid::new_v4().to_string();
+                                        let response = ResponsePacket::CronRunStarted {
+                                            request_id,
+                                            job_id,
+                                            run_id,
+                                        };
+                                        send_response(sink, response).await?;
+                                    }
+                                }
+                                Ok(None) => {
                                     let response = ResponsePacket::Error {
                                         request_id,
-                                        message: format!("Failed to trigger job: {e}"),
-                                    };
-                                    send_response(sink, response).await?;
-                                } else {
-                                    let run_id = Uuid::new_v4().to_string();
-                                    let response = ResponsePacket::CronRunStarted {
-                                        request_id,
-                                        job_id,
-                                        run_id,
+                                        message: format!("Job {job_id} not found"),
                                     };
                                     send_response(sink, response).await?;
                                 }
-                            }
-                            Ok(None) => {
-                                let response = ResponsePacket::Error {
-                                    request_id,
-                                    message: format!("Job {job_id} not found"),
-                                };
-                                send_response(sink, response).await?;
-                            }
+                                Err(e) => {
+                                    let response = ResponsePacket::Error {
+                                        request_id,
+                                        message: format!("Failed to get job: {e}"),
+                                    };
+                                    send_response(sink, response).await?;
+                                }
+                            },
                             Err(e) => {
                                 let response = ResponsePacket::Error {
                                     request_id,
-                                    message: format!("Failed to get job: {e}"),
+                                    message: format!("Cron DB error: {e}"),
                                 };
                                 send_response(sink, response).await?;
                             }
-                        },
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!("Cron DB error: {e}"),
-                            };
-                            send_response(sink, response).await?;
                         }
-                    },
+                    }
                     Err(message) => {
                         let response = ResponsePacket::Error {
                             request_id,
@@ -366,33 +375,39 @@ impl RequestHandler for CronHandler {
                 job_id,
                 limit,
             } => {
-                // Phase A: same scan-by-principal lookup.
+                // Phase A + audit fix: history cap
+                // (`CAP_WRITE_CRON_HISTORY`) gates the read; the gate
+                // fires against the OWNER's caps so cross-principal
+                // reads remain blocked.
                 match self
-                    .resolve_principal_for_job(&job_id, self.host.path_resolver())
+                    .authorize_cron_op(caller, &job_id, CronOp::History)
                     .await
                 {
-                    Ok((_principal_name, cron_db)) => match CronScheduler::new(&cron_db) {
-                        Ok(scheduler) => match scheduler.get_run_history(&job_id, limit) {
-                            Ok(runs) => {
-                                let response = ResponsePacket::CronHistory { request_id, runs };
-                                send_response(sink, response).await?;
-                            }
+                    Ok((_principal_name, cron_db, _caps)) => {
+                        match CronScheduler::new(&cron_db) {
+                            Ok(scheduler) => match scheduler.get_run_history(&job_id, limit) {
+                                Ok(runs) => {
+                                    let response =
+                                        ResponsePacket::CronHistory { request_id, runs };
+                                    send_response(sink, response).await?;
+                                }
+                                Err(e) => {
+                                    let response = ResponsePacket::Error {
+                                        request_id,
+                                        message: format!("Failed to get history: {e}"),
+                                    };
+                                    send_response(sink, response).await?;
+                                }
+                            },
                             Err(e) => {
                                 let response = ResponsePacket::Error {
                                     request_id,
-                                    message: format!("Failed to get history: {e}"),
+                                    message: format!("Cron DB error: {e}"),
                                 };
                                 send_response(sink, response).await?;
                             }
-                        },
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!("Cron DB error: {e}"),
-                            };
-                            send_response(sink, response).await?;
                         }
-                    },
+                    }
                     Err(message) => {
                         let response = ResponsePacket::Error {
                             request_id,
@@ -442,4 +457,77 @@ impl CronHandler {
         }
         Err(format!("Job {job_id} not found"))
     }
+
+    /// Resolve the principal that owns `job_id`, then run the
+    /// tier + capability gate for the operation kind the caller is
+    /// about to perform. Returns the owner's name, the per-principal
+    /// schedule file path, and the owner's capabilities so the caller
+    /// can pass `caps` through to any subsequent `*_write_for_name`
+    /// gate.
+    ///
+    /// **Cross-tenant enforcement (audit fix).** The cap check is the
+    /// cross-tenant gate: a caller is only permitted to mutate or
+    /// read principal A's cron state if the OWNER (principal A)
+    /// carries the relevant capability. A caller authenticated to
+    /// principal B cannot delete or trigger A's jobs because the
+    /// authority fires against A's caps, not B's. `authority_for(caller)`
+    /// independently validates that the caller is a real peer on the
+    /// Local tier — `Subject::User`/`Subject::Principal` pass;
+    /// `Subject::Public` and synthetic subjects are rejected before
+    /// the cap check runs.
+    async fn authorize_cron_op(
+        &self,
+        caller: &CallerContext,
+        job_id: &str,
+        op: CronOp,
+    ) -> Result<(String, std::path::PathBuf, peko_extension_api::Capabilities), String> {
+        let resolver = self.host.path_resolver();
+        let (principal_name, cron_db) = self
+            .resolve_principal_for_job(job_id, resolver)
+            .await?;
+
+        // Look up the owner's caps so we can pass them through to the
+        // authority gate. Without a Principal we can't proceed — the
+        // job exists on disk but its owner is no longer loaded.
+        let pm = self.host.principal_manager();
+        let principals = pm.list_all().await;
+        let mut caps: Option<peko_extension_api::Capabilities> = None;
+        for p in principals {
+            if p.name().await == principal_name {
+                caps = Some(p.capabilities().await);
+                break;
+            }
+        }
+        let caps = caps
+            .ok_or_else(|| format!("Principal '{principal_name}' is not loaded"))?;
+
+        // Tier + cap gate. The cap we check is keyed on the OWNER's
+        // capabilities (not the caller's), so a caller authorized for
+        // principal B cannot operate on A's jobs — the cross-tenant
+        // invariant the audit demanded.
+        let authority = self.host.authority_for(caller);
+        let gate = match op {
+            CronOp::Mutate => authority
+                .local_cron_schedule_write_for_name(&principal_name, Some(&caps))
+                .map(|_| ()),
+            CronOp::History => authority
+                .local_cron_history_write_for_name(&principal_name, Some(&caps))
+                .map(|_| ()),
+        };
+        if let Err(e) = gate {
+            warn!("cron {op:?} capability denied for job {job_id}: {e}");
+            return Err(format!("[permission_denied] {e}"));
+        }
+
+        Ok((principal_name, cron_db, caps))
+    }
+}
+
+/// Discriminator for [`CronHandler::authorize_cron_op`] — picks
+/// between the schedule-write gate (Remove/Run) and the history-write
+/// gate (History).
+#[derive(Debug, Clone, Copy)]
+enum CronOp {
+    Mutate,
+    History,
 }

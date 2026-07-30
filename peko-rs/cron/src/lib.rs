@@ -15,7 +15,7 @@
 //!   `CronDeleteTool`, `CronListTool`).
 //! - This file — the `CronScheduler` (engine + on-disk persistence),
 //!   `CronRun` records, `CronDatabase` schema. Daemon-internal state.
-//! - [`event_trigger`], [`events`], [`idle`] — scheduler-side submodules
+//! - [`events`], [`idle`] — scheduler-side submodules
 //!   (idle detection + event-based triggers).
 //!
 //! ## Port (`CronRuntime`)
@@ -34,7 +34,6 @@
 
 #![allow(dead_code)]
 
-pub mod event_trigger;
 pub mod events;
 pub mod idle;
 pub mod tools;
@@ -61,7 +60,7 @@ pub use tools::{
     build_send_job, build_spawn_tool_job, calculate_next_run, global_runtime, normalize_cron_expr,
     render_job_list, resolve_delete_after_run, resolve_label, resolve_prompt,
     resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool, CronJob,
-    CronJobAction, CronListTool, CronRuntime, DeliveryMode, ScheduleKind,
+    CronJobAction, CronListTool, CronRuntime, DEFAULT_MAX_RETRIES, DeliveryMode, ScheduleKind,
 };
 
 pub use idle::IdleDetector;
@@ -266,6 +265,15 @@ impl CronScheduler {
             job.last_status = Some(status.to_string());
             job.next_run = next_run;
             job.run_count += 1;
+            // Retry-budget accounting: a success resets the counter;
+            // any non-success (failed, errored, …) bumps it. The engine
+            // consults `consecutive_failures` after this call to decide
+            // whether to disable the job.
+            if status == "success" {
+                job.consecutive_failures = 0;
+            } else {
+                job.consecutive_failures += 1;
+            }
             self.write_db(&db)?;
         }
 
@@ -277,6 +285,11 @@ impl CronScheduler {
     /// reconciler when an `AsyncTask` finishes long after the original
     /// fire — the schedule is already advanced and we must not bump
     /// `run_count` again.
+    ///
+    /// `consecutive_failures` is still bumped/reset here so the
+    /// `SpawnTool` reconcile path also respects the retry budget. If
+    /// we skipped this, a `SpawnTool` job that fails would never
+    /// disable — bypassing the budget that the `Send` path enforces.
     pub fn set_job_last_status(&self, job_id: &str, status: &str) -> Result<bool> {
         let mut db = self.read_db()?;
         let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
@@ -284,6 +297,11 @@ impl CronScheduler {
         };
         job.last_run = Some(Utc::now());
         job.last_status = Some(status.to_string());
+        if status == "success" {
+            job.consecutive_failures = 0;
+        } else {
+            job.consecutive_failures += 1;
+        }
         self.write_db(&db)?;
         Ok(true)
     }
@@ -415,36 +433,7 @@ impl CronScheduler {
             .collect())
     }
 
-    /// Find jobs that are due but have never run (missed during downtime)
-    pub fn missed_jobs(&self, now: DateTime<Utc>) -> Result<Vec<CronJob>> {
-        let db = self.read_db()?;
-        let mut jobs: Vec<CronJob> = db
-            .jobs
-            .into_iter()
-            .filter(|j| j.enabled && j.next_run <= now && j.last_run.is_none())
-            .collect();
-        jobs.sort_by_key(|a| a.next_run);
-        Ok(jobs)
     }
-
-    /// Recalculate and update next_run for a job based on its schedule
-    pub fn recalculate_next_run(
-        &self,
-        job_id: &str,
-        after: DateTime<Utc>,
-    ) -> Result<DateTime<Utc>> {
-        let job = self
-            .get_job(job_id)?
-            .ok_or_else(|| anyhow::anyhow!("Job not found: {job_id}"))?;
-        let next_run = calculate_next_run(&job.schedule, after)?;
-        let mut db = self.read_db()?;
-        if let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) {
-            job.next_run = next_run;
-            self.write_db(&db)?;
-        }
-        Ok(next_run)
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -474,6 +463,8 @@ mod tests {
             last_run: None,
             last_status: None,
             run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
         };
 
         scheduler.add_job(&job).unwrap();
@@ -506,6 +497,8 @@ mod tests {
             last_run: None,
             last_status: None,
             run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
         };
 
         let future_job = CronJob {
@@ -524,6 +517,8 @@ mod tests {
             last_run: None,
             last_status: None,
             run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
         };
 
         scheduler.add_job(&past_job).unwrap();
@@ -532,98 +527,6 @@ mod tests {
         let due = scheduler.due_jobs(Utc::now()).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].name, "Past Job");
-    }
-
-    #[test]
-    fn test_missed_jobs_recovery() {
-        let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("cron.json");
-        let scheduler = CronScheduler::new(&db_path).unwrap();
-
-        // Add a past job (missed)
-        let past_job = CronJob {
-            id: Uuid::new_v4().to_string(),
-            name: "Missed Job".to_string(),
-            schedule: ScheduleKind::At {
-                at: (Utc::now() - chrono::Duration::hours(2)).to_rfc3339(),
-            },
-            principal_id: PrincipalId("prin_test_principal".to_string()),
-            action: CronJobAction::Send {
-                message: "Test".to_string(),
-            },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
-            enabled: true,
-            created_at: Utc::now(),
-            next_run: Utc::now() - chrono::Duration::hours(1),
-            last_run: None,
-            last_status: None,
-            run_count: 0,
-        };
-        scheduler.add_job(&past_job).unwrap();
-
-        // Add a future job (not missed)
-        let future_job = CronJob {
-            id: Uuid::new_v4().to_string(),
-            name: "Future Job".to_string(),
-            schedule: ScheduleKind::Every {
-                every_ms: 3_600_000,
-            },
-            principal_id: PrincipalId("prin_test_principal".to_string()),
-            action: CronJobAction::Send {
-                message: "Test".to_string(),
-            },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
-            enabled: true,
-            created_at: Utc::now(),
-            next_run: Utc::now() + chrono::Duration::hours(1),
-            last_run: None,
-            last_status: None,
-            run_count: 0,
-        };
-        scheduler.add_job(&future_job).unwrap();
-
-        let missed = scheduler.missed_jobs(Utc::now()).unwrap();
-        assert_eq!(missed.len(), 1);
-        assert_eq!(missed[0].name, "Missed Job");
-    }
-
-    #[test]
-    fn test_recalculate_next_run() {
-        let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("cron.json");
-        let scheduler = CronScheduler::new(&db_path).unwrap();
-
-        let job = CronJob {
-            id: Uuid::new_v4().to_string(),
-            name: "Recurring".to_string(),
-            schedule: ScheduleKind::Every { every_ms: 60000 },
-            principal_id: PrincipalId("prin_test_principal".to_string()),
-            action: CronJobAction::Send {
-                message: "Test".to_string(),
-            },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
-            enabled: true,
-            created_at: Utc::now(),
-            next_run: Utc::now(),
-            last_run: None,
-            last_status: None,
-            run_count: 0,
-        };
-        scheduler.add_job(&job).unwrap();
-
-        let after = Utc::now();
-        let next_run = scheduler.recalculate_next_run(&job.id, after).unwrap();
-
-        // Should be about 60 seconds after `after`
-        let diff = (next_run - after).num_milliseconds().abs();
-        assert!(
-            (59000..=61000).contains(&diff),
-            "Expected ~60s, got {}ms",
-            diff
-        );
     }
 
     #[test]
@@ -642,6 +545,130 @@ mod tests {
         // Verify normalized expressions parse successfully with the cron crate
         let normalized = normalize_cron_expr("0 0 * * *");
         assert!(Schedule::from_str(&normalized).is_ok());
+    }
+
+    // ------------------------------------------------------------------
+    // Retry-budget accounting
+    // ------------------------------------------------------------------
+
+    /// Build a minimal `CronJob` for the retry-budget tests. The fields
+    /// that don't matter for the assertions are filled with the same
+    /// defaults `peko cron add` uses.
+    fn make_job(id: &str, max_retries: Option<u32>) -> CronJob {
+        CronJob {
+            id: id.to_string(),
+            name: format!("job-{id}"),
+            principal_id: PrincipalId("prin_retry".to_string()),
+            schedule: ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::Send {
+                message: "x".to_string(),
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries,
+        }
+    }
+
+    #[test]
+    fn test_consecutive_failures_increment() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = CronScheduler::new(tmp.path().join("cron.json")).unwrap();
+        scheduler.add_job(&make_job("a", None)).unwrap();
+
+        // Two failed runs → consecutive_failures should reach 2.
+        scheduler
+            .update_job_after_run("a", "failed", Utc::now())
+            .unwrap();
+        scheduler
+            .update_job_after_run("a", "failed", Utc::now())
+            .unwrap();
+        let job = scheduler.get_job("a").unwrap().unwrap();
+        assert_eq!(job.consecutive_failures, 2);
+        assert_eq!(job.run_count, 2);
+    }
+
+    #[test]
+    fn test_consecutive_failures_reset_on_success() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = CronScheduler::new(tmp.path().join("cron.json")).unwrap();
+        scheduler.add_job(&make_job("b", None)).unwrap();
+
+        // Fail twice → 2; then succeed → 0.
+        scheduler
+            .update_job_after_run("b", "failed", Utc::now())
+            .unwrap();
+        scheduler
+            .update_job_after_run("b", "failed", Utc::now())
+            .unwrap();
+        scheduler
+            .update_job_after_run("b", "success", Utc::now())
+            .unwrap();
+        let job = scheduler.get_job("b").unwrap().unwrap();
+        assert_eq!(job.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn test_max_retries_disables_job() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = CronScheduler::new(tmp.path().join("cron.json")).unwrap();
+        scheduler.add_job(&make_job("c", Some(2))).unwrap();
+
+        // Fail twice → budget exhausted. The engine does the disabling,
+        // but we mirror the policy here directly to validate the field
+        // shapes survive the round-trip.
+        scheduler
+            .update_job_after_run("c", "failed", Utc::now())
+            .unwrap();
+        scheduler
+            .update_job_after_run("c", "failed", Utc::now())
+            .unwrap();
+        let job = scheduler.get_job("c").unwrap().unwrap();
+        assert_eq!(job.consecutive_failures, 2);
+        assert_eq!(job.max_retries, Some(2));
+        // We don't call set_job_enabled here — the engine owns that
+        // decision (see `execute_job` in the daemon). This test just
+        // covers the field plumbing.
+    }
+
+    #[test]
+    fn test_set_job_last_status_increments_on_failure() {
+        // The `SpawnTool` reconcile path goes through `set_job_last_status`
+        // (not `update_job_after_run`). Without that path also bumping
+        // `consecutive_failures`, a `SpawnTool` failure would skip the
+        // retry budget entirely.
+        let tmp = TempDir::new().unwrap();
+        let scheduler = CronScheduler::new(tmp.path().join("cron.json")).unwrap();
+        scheduler.add_job(&make_job("d", Some(3))).unwrap();
+
+        assert!(scheduler.set_job_last_status("d", "failed").unwrap());
+        assert!(scheduler.set_job_last_status("d", "failed").unwrap());
+        assert!(scheduler.set_job_last_status("d", "success").unwrap());
+
+        let job = scheduler.get_job("d").unwrap().unwrap();
+        assert_eq!(job.consecutive_failures, 0);
+        assert_eq!(job.run_count, 0); // set_job_last_status never bumps run_count
+    }
+
+    #[test]
+    fn test_at_job_single_fire_terminates() {
+        // An `At` job whose due time is in the past should produce a
+        // far-future next_run so the engine doesn't re-fire it on
+        // every poll. This is the structural fix for the retry-forever
+        // bug — the retry budget is the second line of defense.
+        let past = Utc::now() - chrono::Duration::hours(1);
+        let past_rfc = past.to_rfc3339();
+        let schedule = ScheduleKind::At { at: past_rfc };
+        let next = calculate_next_run(&schedule, Utc::now()).unwrap();
+        let since_now = next - Utc::now();
+        // Far-future sentinel: at least 50 years out.
+        assert!(since_now > chrono::Duration::days(365 * 50));
     }
 
     #[test]
@@ -668,6 +695,8 @@ mod tests {
                 last_run: None,
                 last_status: None,
                 run_count: 42,
+                consecutive_failures: 0,
+                max_retries: None,
             };
             scheduler.add_job(&job).unwrap();
         }

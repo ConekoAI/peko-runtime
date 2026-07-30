@@ -17,8 +17,7 @@ serde_json = "1.0"
 anyhow = "1.0"
 tokio = { version = "1.35", features = ["fs", "io-util", "macros", "sync", "time"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-# Schedule parsing/next-time evaluation in `CronScheduler` and
-# `event_trigger::EventTrigger`.
+# Schedule parsing/next-time evaluation in `CronScheduler`.
 cron = "0.12"
 tracing = "0.1"
 # The cron tool impls (CronCreateTool / CronDeleteTool / CronListTool)
@@ -33,6 +32,5 @@ chrono-tz = "0.10"
 peko-subject = { path = "../subject" }
 
 [dev-dependencies]
-# Test helpers in `crates/cron/src/lib.rs:439-440`.
 tempfile = "3.10"
 uuid = { version = "1.7", features = ["v4"] }

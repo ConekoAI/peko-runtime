@@ -544,6 +544,21 @@ impl RuntimeAuthority {
         Ok(LocalPath(layout.local.cron_history))
     }
 
+    /// Name-keyed variant of [`local_cron_history_write`] for IPC
+    /// `CronHistory`, mirroring [`local_cron_schedule_write_for_name`].
+    /// The actor + capability gate is identical; the layout is
+    /// resolved directly from the validated principal name.
+    pub fn local_cron_history_write_for_name(
+        &self,
+        principal_name: &str,
+        caps: Option<&Capabilities>,
+    ) -> Result<LocalPath, AuthorityError> {
+        self.assert_local_entitled()?;
+        let layout = self.resolver.principal_layout(principal_name);
+        self.assert_capability_granted(caps, CAP_WRITE_CRON_HISTORY, Tier::Local)?;
+        Ok(LocalPath(layout.local.cron_history))
+    }
+
     /// Hand out a `RuntimePath` for the extensions install root IF the
     /// principal carries `runtime:write_extensions`. Gates
     /// `ExtensionInstall` / `ExtensionUninstall` / `ExtensionBundle`.

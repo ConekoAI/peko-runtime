@@ -2437,6 +2437,8 @@ mod tests {
             last_run: None,
             last_status: None,
             run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
         };
         let req = RequestPacket::CronAdd {
             request_id: 101,
@@ -2529,6 +2531,8 @@ mod tests {
             last_run: None,
             last_status: None,
             run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
         };
         let resp = ResponsePacket::CronList {
             request_id: 200,
@@ -2658,6 +2662,8 @@ mod tests {
                 last_run: None,
                 last_status: None,
                 run_count: 0,
+                consecutive_failures: 0,
+                max_retries: None,
             },
         };
         assert_eq!(req_add.request_id(), 2);

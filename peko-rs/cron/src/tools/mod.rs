@@ -41,6 +41,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
+/// Default retry budget for cron jobs that have `max_retries: None` on
+/// disk (legacy records serialized before this field was added) or
+/// that have not opted into a custom limit. The engine disables a job
+/// after this many consecutive failed runs. `None` on the job means
+/// unlimited and preserves the legacy retry-forever behavior.
+pub const DEFAULT_MAX_RETRIES: u32 = 3;
+
 // ─── DTOs (canonical home; root re-exports these) ─────────────────
 
 /// Schedule kinds for cron jobs.
@@ -197,6 +204,18 @@ pub struct CronJob {
     pub last_run: Option<DateTime<Utc>>,
     pub last_status: Option<String>,
     pub run_count: u32,
+    /// Number of consecutive failed runs. Reset to 0 on a successful
+    /// run by [`crate::CronScheduler::update_job_after_run`] and
+    /// [`crate::CronScheduler::set_job_last_status`]. `#[serde(default)]`
+    /// so on-disk v2 records without the field deserialize unchanged.
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    /// Optional retry budget. `None` means unlimited (legacy behavior).
+    /// When `consecutive_failures >= max_retries`, the engine disables
+    /// the job via [`crate::CronScheduler::set_job_enabled`]. Default
+    /// applied by the engine when this is `None`.
+    #[serde(default)]
+    pub max_retries: Option<u32>,
 }
 
 impl CronJob {
@@ -296,6 +315,8 @@ pub fn build_send_job(
         last_run: None,
         last_status: None,
         run_count: 0,
+        consecutive_failures: 0,
+        max_retries: None,
     }
 }
 
@@ -335,6 +356,8 @@ pub fn build_spawn_tool_job(
         last_run: None,
         last_status: None,
         run_count: 0,
+        consecutive_failures: 0,
+        max_retries: None,
     }
 }
 
@@ -433,7 +456,10 @@ pub fn resolve_delete_after_run(params: &serde_json::Value) -> bool {
 /// Calculate the next run time for a schedule kind (pure function, no
 /// storage access).
 ///
-/// - `At { at }` parses the RFC3339 timestamp and returns it.
+/// - `At { at }` parses the RFC3339 timestamp. If the parsed time is
+///   in the past relative to `after` (i.e. the job has already fired),
+///   returns the far-future sentinel so the job does not re-fire.
+///   Otherwise returns the parsed time unchanged.
 /// - `Every { every_ms }` adds the interval to `after`.
 /// - `Cron { expr, tz }` uses the `cron` crate's next-occurrence logic,
 ///   with optional timezone resolution via `chrono-tz`.
@@ -446,7 +472,15 @@ pub fn calculate_next_run(schedule: &ScheduleKind, after: DateTime<Utc>) -> Resu
         ScheduleKind::At { at } => {
             let dt = DateTime::parse_from_rfc3339(at)
                 .map_err(|e| anyhow::anyhow!("Invalid timestamp: {e}"))?;
-            Ok(dt.with_timezone(&Utc))
+            let dt_utc = dt.with_timezone(&Utc);
+            // One-shot: if the at time has already passed, return the
+            // far-future sentinel so the job does not re-fire on every
+            // poll tick. Matches the Idle/Event sentinel pattern.
+            if dt_utc <= after {
+                Ok(after + chrono::Duration::days(365 * 100))
+            } else {
+                Ok(dt_utc)
+            }
         }
         ScheduleKind::Every { every_ms } => {
             Ok(after + chrono::Duration::milliseconds(*every_ms as i64))
@@ -659,6 +693,8 @@ mod tests {
             last_run: None,
             last_status: None,
             run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
         };
         let json = serde_json::to_string(&job).unwrap();
         let back: CronJob = serde_json::from_str(&json).unwrap();
