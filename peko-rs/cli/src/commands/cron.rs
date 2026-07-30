@@ -289,6 +289,8 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 last_run: None,
                 last_status: None,
                 run_count: 0,
+                consecutive_failures: 0,
+                max_retries: None,
             };
 
             match client.cron_add(job).await? {
@@ -349,6 +351,8 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 last_run: None,
                 last_status: None,
                 run_count: 0,
+                consecutive_failures: 0,
+                max_retries: None,
             };
 
             match client.cron_add(job).await? {
@@ -406,6 +410,8 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 last_run: None,
                 last_status: None,
                 run_count: 0,
+                consecutive_failures: 0,
+                max_retries: None,
             };
 
             match client.cron_add(job).await? {
@@ -540,6 +546,8 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 last_run: None,
                 last_status: None,
                 run_count: 0,
+                consecutive_failures: 0,
+                max_retries: None,
             };
 
             match client.cron_add(job).await? {
@@ -601,6 +609,8 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 last_run: None,
                 last_status: None,
                 run_count: 0,
+                consecutive_failures: 0,
+                max_retries: None,
             };
 
             match client.cron_add(job).await? {

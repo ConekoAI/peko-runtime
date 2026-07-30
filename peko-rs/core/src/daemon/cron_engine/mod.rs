@@ -17,7 +17,10 @@ use anyhow::Result;
 use chrono::Utc;
 use peko_auth::caller::CallerContext;
 use peko_cron::events::SystemEvent;
-use peko_cron::{CronJob, CronJobAction, CronRun, CronScheduler, DeliveryMode, IdleDetector};
+use peko_cron::{
+    CronJob, CronJobAction, CronRun, CronScheduler, DEFAULT_MAX_RETRIES, DeliveryMode,
+    IdleDetector,
+};
 use peko_observability::Observability;
 use peko_subject::PrincipalId;
 use peko_tools_core::ToolResult;
@@ -424,6 +427,40 @@ impl CronEngine {
 
         let next_run = scheduler.calculate_next_run(&job.schedule, finished_at)?;
         scheduler.update_job_after_run(&job.id, &status, next_run)?;
+
+        // Retry budget enforcement. `update_job_after_run` just bumped
+        // `consecutive_failures` (or reset it on success); re-read the
+        // job to inspect the updated counter and disable the job when
+        // the budget is exhausted. `max_retries: None` means unlimited
+        // — that preserves the legacy behavior for callers that have
+        // not picked up the new field yet.
+        if status != "success" {
+            if let Ok(Some(updated)) = scheduler.get_job(&job.id) {
+                let budget = updated.max_retries.unwrap_or(DEFAULT_MAX_RETRIES);
+                if updated.consecutive_failures >= budget {
+                    warn!(
+                        "🚫 Disabling job '{}' after {} consecutive failures (max_retries={})",
+                        updated.name, updated.consecutive_failures, budget
+                    );
+                    let _ = scheduler.set_job_enabled(&updated.id, false);
+                    let _ = self
+                        .observability
+                        .audit_with_caller(
+                            Some(&CallerContext::local().subject()),
+                            "cron.disabled",
+                            Some(&updated.principal_id.0),
+                            serde_json::json!({
+                                "job_id": updated.id,
+                                "job_name": updated.name,
+                                "consecutive_failures": updated.consecutive_failures,
+                                "max_retries": budget,
+                                "last_status": status,
+                            }),
+                        )
+                        .await;
+                }
+            }
+        }
 
         if let DeliveryMode::Announce { .. } = job.delivery {
             self.handle_delivery(&job, &status).await?;
@@ -1026,6 +1063,8 @@ mod tests {
             last_run: None,
             last_status: None,
             run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
         };
         scheduler.add_job(&job).unwrap();
 
@@ -1086,6 +1125,8 @@ mod tests {
             last_run: None,
             last_status: None,
             run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
         };
         scheduler.add_job(&job).unwrap();
 
@@ -1210,6 +1251,8 @@ mod tests {
             last_run: None,
             last_status: None,
             run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
         };
         scheduler.add_job(&job).unwrap();
 
