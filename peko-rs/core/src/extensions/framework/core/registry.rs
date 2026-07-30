@@ -483,8 +483,7 @@ impl ExtensionCore {
         principal_id: &PrincipalId,
     ) -> Result<super::tool_registration::ToolRegistration> {
         use super::tool_registration::{
-            AutoAsyncHandler, AutoCancelHandler, AutoPromptHandler, AutoStatusHandler,
-            ToolRegistration,
+            AutoAsyncHandler, AutoCancelHandler, AutoStatusHandler, ToolRegistration,
         };
 
         let tool_name = metadata.name.clone();
@@ -500,7 +499,7 @@ impl ExtensionCore {
             let _ = self.unregister_tool(&tool_name, principal_id).await;
         }
 
-        let mut hook_ids: Vec<HookId> = Vec::with_capacity(5);
+        let mut hook_ids: Vec<HookId> = Vec::with_capacity(4);
 
         // ── 1. Execution hook (adapter-provided business logic) ─────────────────
         let exec_point = handler.hook_point();
@@ -531,19 +530,10 @@ impl ExtensionCore {
 
         hook_ids.push(exec_hook_id);
 
-        // ── 2. Prompt section hook (auto-generated) ─────────────────────────────
-        let prompt_handler = Arc::new(AutoPromptHandler::from_metadata(
-            &metadata,
-            extension_id.clone(),
-            priority,
-        ));
-        let prompt_point = prompt_handler.hook_point();
-        let prompt_reg = self
-            .register_hook(prompt_point, prompt_handler, extension_id)
-            .await?;
-        hook_ids.push(prompt_reg.id);
-
-        // ── 3. Async execution hook (auto-generated) ────────────────────────────
+        // ── 2. Async execution hook (auto-generated) ────────────────────────────
+        // F36: the prompt-section hook was removed when peko switched
+        // to a wire-only tool catalog. `register_tool` now creates 4
+        // companion hooks (async, status, cancel) instead of 5.
         let async_handler = Arc::new(AutoAsyncHandler::from_metadata(&metadata, priority));
         let async_point = async_handler.hook_point();
         let async_reg = self
@@ -551,7 +541,7 @@ impl ExtensionCore {
             .await?;
         hook_ids.push(async_reg.id);
 
-        // ── 4. Check status hook (auto-generated) ───────────────────────────────
+        // ── 3. Check status hook (auto-generated) ───────────────────────────────
         let status_handler = Arc::new(AutoStatusHandler::from_metadata(&metadata, priority));
         let status_point = status_handler.hook_point();
         let status_reg = self
@@ -559,7 +549,7 @@ impl ExtensionCore {
             .await?;
         hook_ids.push(status_reg.id);
 
-        // ── 5. Cancel hook (auto-generated) ─────────────────────────────────────
+        // ── 4. Cancel hook (auto-generated) ─────────────────────────────────────
         let cancel_handler = Arc::new(AutoCancelHandler::from_metadata(&metadata, priority));
         let cancel_point = cancel_handler.hook_point();
         let cancel_reg = self
@@ -567,7 +557,7 @@ impl ExtensionCore {
             .await?;
         hook_ids.push(cancel_reg.id);
 
-        // ── 6. Store companion hook IDs in the primary registration's metadata ──
+        // ── 5. Store companion hook IDs in the primary registration's metadata ──
         //        so that unregister_tool() can clean them up atomically.
         {
             let mut hooks = self.hook_registry.hooks.write().await;
@@ -578,7 +568,7 @@ impl ExtensionCore {
             }
         }
 
-        // ── 7. Index in ToolRegistry for O(1) lookup ────────────────────────────
+        // ── 6. Index in ToolRegistry for O(1) lookup ────────────────────────────
         self.tool_registry
             .register_tool(&tool_name, exec_hook_id, extension_id.clone(), principal_id)
             .await?;
@@ -1473,5 +1463,150 @@ mod tests {
         // An agent that never had its key set returns None, not
         // another agent's value.
         assert_eq!(core.current_session_key("did:peko:agent:Y"), None);
+    }
+
+    // ────────────────────────── F36 wire-path catalog tests ───────────────────
+    //
+    // Mirrors the deleted `auto_prompt_*` tests in `tool_registration.rs`.
+    // Tool catalogs now travel wire-only (via `tools[]` JSON-schema array),
+    // so the same fail-closed safety property must hold at the wire path:
+    // the catalog returned by `list_tool_definitions_with_allowlist` must
+    // exclude a tool when its `tool:<name>` grant is missing, when its
+    // owning extension isn't in the active set, or when capabilities are
+    // empty.
+
+    /// Helper: register a tool with a configurable owner extension id and
+    /// default (Direct) exposure. Returns the registered name so callers
+    /// can assert on the catalog.
+    async fn register_test_tool(
+        core: &ExtensionCore,
+        name: &str,
+        extension_id: &ExtensionId,
+        exposure: ToolExposure,
+    ) {
+        let meta = ToolMetadata::new(
+            name.to_string(),
+            format!("The {name} tool"),
+            serde_json::json!({"type": "object"}),
+            crate::extensions::framework::types::ToolSource::BuiltIn,
+        )
+        .with_exposure(exposure);
+        let handler = Arc::new(MockHandler {
+            point: HookPoint::ToolExecute {
+                tool_name: name.to_string(),
+            },
+            output: HookResult::PassThrough,
+        });
+        core.register_tool(meta, handler, extension_id, PrincipalId::system())
+            .await
+            .expect("test tool should register");
+    }
+
+    fn defs_contain(defs: &[peko_providers::ToolDefinition], name: &str) -> bool {
+        defs.iter().any(|d| d.name == name)
+    }
+
+    /// F36 — without the matching `tool:<name>` grant, the wire-format
+    /// catalog must NOT contain the tool. This is the fail-closed property
+    /// that previously lived in `AutoPromptHandler`.
+    #[tokio::test]
+    async fn catalog_excludes_tool_without_grant() {
+        let core = ExtensionCore::new();
+        let ext = ExtensionId::new("builtin:tool:Read");
+        register_test_tool(&core, "Read", &ext, ToolExposure::Direct).await;
+
+        let caps = Capabilities::with_grants(["tool:Write"]);
+        let defs = core
+            .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
+            .await;
+
+        assert!(!defs_contain(&defs, "Read"));
+    }
+
+    /// F36 — with the matching grant, the wire-format catalog includes the
+    /// tool. Wildcard grant `tool:*` matches everything registered to the
+    /// system principal (see `tool_registry::is_tool_enabled`).
+    #[tokio::test]
+    async fn catalog_includes_tool_with_grant() {
+        let core = ExtensionCore::new();
+        let ext = ExtensionId::new("builtin:tool:Read");
+        register_test_tool(&core, "Read", &ext, ToolExposure::Direct).await;
+
+        let caps = Capabilities::with_grants(["tool:Read"]);
+        let defs = core
+            .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
+            .await;
+
+        assert!(defs_contain(&defs, "Read"));
+    }
+
+    /// F36 — `tool:*` wildcard grant covers every tool in the wire-format
+    /// catalog.
+    #[tokio::test]
+    async fn catalog_wildcard_grant_covers_tool() {
+        let core = ExtensionCore::new();
+        let ext = ExtensionId::new("builtin:tool:Bash");
+        register_test_tool(&core, "Bash", &ext, ToolExposure::Direct).await;
+
+        let caps = Capabilities::with_grants(["tool:*"]);
+        let defs = core
+            .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
+            .await;
+
+        assert!(defs_contain(&defs, "Bash"));
+    }
+
+    /// F36 — extension-provided tools (owner id does NOT start with
+    /// `builtin:tool:`) require their owner to be in the active set even
+    /// when the capability grant is present.
+    #[tokio::test]
+    async fn catalog_excludes_inactive_extension_tool() {
+        let core = ExtensionCore::new();
+        let ext = ExtensionId::new("extension:search");
+        register_test_tool(&core, "Search", &ext, ToolExposure::Direct).await;
+
+        let caps = Capabilities::with_grants(["tool:Search"]);
+        // Active set empty — Search's owner is missing.
+        let active = ActiveExtensionSet::empty();
+        let defs = core
+            .list_tool_definitions_with_allowlist(&caps, Some(&active), PrincipalId::system())
+            .await;
+
+        assert!(!defs_contain(&defs, "Search"));
+    }
+
+    /// F36 — extension-provided tools appear in the wire-format catalog
+    /// when their owner is in the active set.
+    #[tokio::test]
+    async fn catalog_includes_active_extension_tool() {
+        let core = ExtensionCore::new();
+        let ext = ExtensionId::new("extension:search");
+        register_test_tool(&core, "Search", &ext, ToolExposure::Direct).await;
+
+        let caps = Capabilities::with_grants(["tool:Search"]);
+        let active = ActiveExtensionSet::with_ids(["extension:search"]);
+        let defs = core
+            .list_tool_definitions_with_allowlist(&caps, Some(&active), PrincipalId::system())
+            .await;
+
+        assert!(defs_contain(&defs, "Search"));
+    }
+
+    /// F36 — an empty capability set must drop every tool. Without this,
+    /// a malformed principal profile (zero grants) would silently see
+    /// every registered tool in the wire-format catalog.
+    #[tokio::test]
+    async fn catalog_fails_closed_without_capabilities() {
+        let core = ExtensionCore::new();
+        let ext = ExtensionId::new("builtin:tool:Read");
+        register_test_tool(&core, "Read", &ext, ToolExposure::Direct).await;
+
+        let caps = Capabilities::new(); // zero grants
+        let defs = core
+            .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
+            .await;
+
+        assert!(defs.is_empty(), "empty caps must yield empty catalog");
+        assert!(!defs_contain(&defs, "Read"));
     }
 }

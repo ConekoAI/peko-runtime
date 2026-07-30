@@ -35,8 +35,8 @@ Session Start
 ┌─────────────────────────────────────────┐
 │  Main Loop (each iteration)             │
 │  ─────────────────────────              │
-│  • Rebuild tool_defs from registry      │ ◄── Same tools every iteration
-│  • Rebuild system prompt                │ ◄── Same tools mentioned
+│  • Rebuild wire tool_defs from registry │ ◄── Same tools every iteration
+│  • Rebuild system prompt                │ ◄── Tools no longer mentioned (F36 wire-only)
 │  • Provider gets static tool list       │
 └─────────────────────────────────────────┘
 ```

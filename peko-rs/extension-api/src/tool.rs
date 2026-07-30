@@ -159,26 +159,22 @@ mod tests {
         assert_eq!(ToolExposure::default(), ToolExposure::Direct);
     }
 
-    /// F34 — exposure variants split cleanly across the two surfaces.
-    /// `DirectModelOnly` is in catalog but not prompt; `Hidden` is
-    /// neither; `Deferred` is neither (the `__tool_search` stub
-    /// surfaces deferred tools on demand rather than putting them in
-    /// the initial catalog).
+    /// F34 / F36 — exposure variants split cleanly across the catalog
+    /// surface. F36 collapsed the prompt-section surface: tool catalogs
+    /// are wire-only, and `Direct` / `DirectModelOnly` are equivalent
+    /// on the wire today. `Deferred` is discovered via `__tool_search`
+    /// (F35), not in the initial catalog. `Hidden` is telemetry /
+    /// sub-tool only — never visible to the model.
     #[test]
-    fn test_tool_exposure_visibility_matrix() {
-        assert!(ToolExposure::Direct.visible_in_prompt_section());
+    fn test_tool_exposure_catalog_visibility() {
         assert!(ToolExposure::Direct.visible_in_native_catalog());
-
-        assert!(!ToolExposure::DirectModelOnly.visible_in_prompt_section());
         assert!(ToolExposure::DirectModelOnly.visible_in_native_catalog());
 
-        assert!(!ToolExposure::Deferred.visible_in_prompt_section());
         assert!(
             !ToolExposure::Deferred.visible_in_native_catalog(),
             "Deferred is discovered via __tool_search (F35), not in the initial catalog"
         );
 
-        assert!(!ToolExposure::Hidden.visible_in_prompt_section());
         assert!(!ToolExposure::Hidden.visible_in_native_catalog());
     }
 

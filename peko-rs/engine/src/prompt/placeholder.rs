@@ -1,13 +1,23 @@
 //! Placeholder replacement for system prompt templates
 //!
-//! Supports dynamic content injection via placeholders like {{tools}}, {{runtime}}, etc.
+//! Supports dynamic content injection via placeholders like {{runtime}}, {{skills}}, etc.
+//! Tool catalogs are wire-only and are no longer rendered into the
+//! system prompt; `{{tools}}` is preserved as a marker for back-compat
+//! with existing AGENT.md templates but resolves to an empty string at
+//! render time (see [`Placeholder::Tools`]).
 
 use std::collections::HashMap;
 
 /// Available placeholders for system prompt templates
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Placeholder {
-    /// Available tools section - {{tools}}
+    /// `{{tools}}` — preserved for back-compat with existing AGENT.md
+    /// templates. Wire-only in this build: no value is inserted at
+    /// render time, and `replace_placeholders` with `remove_missing=true`
+    /// strips the marker entirely. Tool catalogs travel on the wire as
+    /// the `tools[]` JSON-schema array; see
+    /// `peko_core::extensions::framework::core::registry::list_tool_definitions_with_allowlist`
+    /// and the engine's `build_tool_definitions`.
     Tools,
     /// Skills section - {{skills}}
     Skills,

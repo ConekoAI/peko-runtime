@@ -260,7 +260,7 @@ peko ext disable docker
 
 Extensions hook into the agentic loop at 22 different points:
 
-- **Prompt Hooks**: `PromptSystemSection`, `PromptPreProcess`, `PromptPostProcess`
+- **Prompt Hooks**: `PromptSystemSection` (deprecated for `section: "tools"` — F36 wire-only catalogs; supported sections: `skills`, `agents`, `mcp_context`), `PromptPreProcess`, `PromptPostProcess`
 - **Tool Hooks**: `ToolRegister`, `ToolExecute`, `ToolExecuteAsync`, `ToolCheckStatus`, `ToolCancel`
 - **Session Hooks**: `SessionStateChange`, `SessionCompaction`, `SessionContextBuild`
 - **I/O Hooks**: `ChannelInput`, `ChannelOutput`, `MessagePreSend`, `MessagePostReceive`

@@ -14,11 +14,16 @@
 //! - **Stateless.** The renderer carries no per-iteration state. The
 //!   capability-diff tracker lives on the loop and is observed upstream
 //!   of the renderer call.
-//! - **Parallel hook dispatch.** The four hook-driven sections (`tools`,
-//!   `skills`, `agents`, `mcp_context`) and the per-turn `SessionContextBuild`
-//!   hook all fire concurrently via [`tokio::join!`]. Each handler is
-//!   wrapped in a 2-second timeout; a slow or stuck handler soft-fails to
-//!   empty so a single misbehaving extension can't stall the loop.
+//! - **Parallel hook dispatch.** The three hook-driven sections (`skills`,
+//!   `agents`, `mcp_context`) and the per-turn `SessionContextBuild` hook
+//!   all fire concurrently via [`tokio::join!`]. Each handler is wrapped
+//!   in a 2-second timeout; a slow or stuck handler soft-fails to empty so
+//!   a single misbehaving extension can't stall the loop. The `tools`
+//!   section is intentionally not dispatched — tool catalogs travel on
+//!   the wire as the `tools[]` JSON-schema array (see
+//!   `crate::agentic_loop::build_tool_definitions` and the
+//!   `list_tool_definitions_with_allowlist` filter in
+//!   `peko_core::extensions::framework::core::registry`).
 //! - **`mcp_context` normalized.** This section previously used plain
 //!   `invoke_hook_text`; the rest use the trait-port
 //!   [`ToolFunnel::invoke_prompt_section_hook`](peko_extension_api::ToolFunnel::invoke_prompt_section_hook).
@@ -86,7 +91,7 @@ impl PromptRenderer {
 
     /// Render the system prompt for one iteration.
     ///
-    /// Dispatches the four hook-driven sections plus `SessionContextBuild`
+    /// Dispatches the three hook-driven sections plus `SessionContextBuild`
     /// in parallel (each with a 2s timeout) and assembles the final body
     /// via [`replace_placeholders`] with `remove_missing=true`.
     #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.agent_name, iteration = ?ctx.iteration_budget.map(|i| i.iteration)))]
@@ -99,46 +104,46 @@ impl PromptRenderer {
         }
 
         // Parallel hook dispatch. Each task is independent — a slow
-        // `tools` handler must not delay `skills`. Each is wrapped in a
+        // `skills` handler must not delay `agents`. Each is wrapped in a
         // 2s timeout so a stuck handler cannot stall the loop; the
         // handler that hits the timeout simply returns an empty string
         // and the template's `remove_missing=true` strips any
         // leftover placeholder.
-        let (tools, skills, agents, mcp, session_ctx) = tokio::join!(
-            self.dispatch_text("tools", ctx),
+        let (skills, agents, mcp, session_ctx) = tokio::join!(
             self.dispatch_text("skills", ctx),
             self.dispatch_text("agents", ctx),
             self.dispatch_text("mcp_context", ctx),
             self.dispatch_session_context(ctx),
         );
 
-        let values = build_placeholder_values(ctx, &tools, &skills, &agents, &mcp, &session_ctx);
+        let values = build_placeholder_values(ctx, &skills, &agents, &mcp, &session_ctx);
         replace_placeholders(&ctx.body, &values, true)
     }
 
     /// F23: render only the cache-stable prefix of the system prompt.
     ///
     /// Includes the agent body, inline identity / runtime / sandbox
-    /// fields, and the four hook-driven sections (`tools`, `skills`,
-    /// `agents`, `mcp_context`) — i.e. everything that is byte-stable
-    /// across iterations within a session unless the profile or tool
-    /// table mutates. Excludes per-iteration fields like
-    /// `{{iteration_budget}}`, `{{quota_state}}`, `{{session_context}}`,
-    /// `{{memory}}`, `{{timezone}}`, `{{soft_cancel}}`, and
-    /// `{{capability_diff}}` (those go in [`render_per_turn`]).
+    /// fields, and the three hook-driven sections (`skills`, `agents`,
+    /// `mcp_context`) — i.e. everything that is byte-stable across
+    /// iterations within a session unless the profile mutates.
+    /// Excludes per-iteration fields like `{{iteration_budget}}`,
+    /// `{{quota_state}}`, `{{session_context}}`, `{{memory}}`,
+    /// `{{timezone}}`, `{{soft_cancel}}`, and `{{capability_diff}}`
+    /// (those go in [`render_per_turn`]). Tool catalogs are not part of
+    /// the prefix; they reach the model on the wire as the `tools[]`
+    /// JSON-schema array.
     ///
     /// The engine loop caches the returned string in an `Arc<String>`
-    /// and only re-renders when the profile or tool table changes.
-    /// Adapter cache markers on this prefix give the provider
-    /// byte-identical prefix matching turn-over-turn.
+    /// and re-renders on profile changes. Adapter cache markers on
+    /// this prefix give the provider byte-identical prefix matching
+    /// turn-over-turn.
     #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.agent_name))]
     pub async fn render_cache_stable(&self, ctx: &TurnPromptContext) -> String {
         // Parallel hook dispatch — same as the full render, but we only
-        // consume the four stable-section hooks. The session-context
+        // consume the three stable-section hooks. The session-context
         // hook is volatile (it runs every iteration); we ignore its
         // result by reading an empty string into the values map.
-        let (tools, skills, agents, mcp) = tokio::join!(
-            self.dispatch_text("tools", ctx),
+        let (skills, agents, mcp) = tokio::join!(
             self.dispatch_text("skills", ctx),
             self.dispatch_text("agents", ctx),
             self.dispatch_text("mcp_context", ctx),
@@ -146,7 +151,7 @@ impl PromptRenderer {
 
         let empty_session = String::new();
         let values =
-            build_stable_placeholder_values(ctx, &tools, &skills, &agents, &mcp, &empty_session);
+            build_stable_placeholder_values(ctx, &skills, &agents, &mcp, &empty_session);
         replace_placeholders(&ctx.body, &values, true)
     }
 
@@ -293,7 +298,6 @@ impl PromptRenderer {
 /// Build the placeholder → value map for one iteration.
 fn build_placeholder_values(
     ctx: &TurnPromptContext,
-    tools: &str,
     skills: &str,
     agents: &str,
     mcp: &str,
@@ -311,8 +315,8 @@ fn build_placeholder_values(
         Local::now().format("%:z").to_string(),
     );
 
-    // Section placeholders (hook-driven)
-    values.insert(Placeholder::Tools, format_tools_section(tools));
+    // Section placeholders (hook-driven). Tools are wire-only — see
+    // `crate::agentic_loop::build_tool_definitions`.
     values.insert(Placeholder::Skills, format_skills_section(skills));
     values.insert(Placeholder::Agents, format_agents_section(agents));
     values.insert(Placeholder::Runtime, format_runtime_section(ctx));
@@ -368,13 +372,12 @@ fn build_placeholder_values(
 /// Same shape as `build_placeholder_values`, but only fills the
 /// placeholders that are byte-stable across iterations: inline
 /// identity, runtime, sandbox, model aliases, self-update, and the
-/// four hook-driven section placeholders. Volatile placeholders
+/// three hook-driven section placeholders. Volatile placeholders
 /// (`timezone`, `memory`, `session_context`, `iteration_budget`,
 /// `quota_state`, `soft_cancel`, `capability_diff`) are omitted —
 /// `remove_missing=true` strips them on render.
 fn build_stable_placeholder_values(
     ctx: &TurnPromptContext,
-    tools: &str,
     skills: &str,
     agents: &str,
     mcp: &str,
@@ -389,8 +392,7 @@ fn build_stable_placeholder_values(
     values.insert(Placeholder::ThinkingLevel, ctx.thinking_level.clone());
     // Placeholder::Timezone intentionally omitted — volatile.
 
-    // Hook-driven sections.
-    values.insert(Placeholder::Tools, format_tools_section(tools));
+    // Hook-driven sections. Tools are wire-only.
     values.insert(Placeholder::Skills, format_skills_section(skills));
     values.insert(Placeholder::Agents, format_agents_section(agents));
     values.insert(Placeholder::Runtime, format_runtime_section(ctx));
@@ -459,35 +461,6 @@ fn build_per_turn_placeholder_values(
     );
 
     values
-}
-
-fn format_tools_section(text: &str) -> String {
-    if text.is_empty() {
-        return String::new();
-    }
-    let mut lines = vec![
-        "## Available Tools".to_string(),
-        "You have access to the following tools. Use them wisely.".to_string(),
-        String::new(),
-        text.to_string(),
-        String::new(),
-        "### Tool Use Guidelines".to_string(),
-        "- Think step by step. Use available tools when needed to accomplish tasks.".to_string(),
-        "- Multiple tools can be called in parallel if they are independent.".to_string(),
-        "- When you have the final answer, provide it directly without tool calls.".to_string(),
-        String::new(),
-        "### Tool Timeout and Async Execution".to_string(),
-        "All tool calls have a constant 5-minute timeout. If a tool exceeds this timeout, the work is automatically detached to a background task and a receipt is returned.".to_string(),
-        "To invoke a tool explicitly in the background, use the `task` tool with `action=\"spawn\"` and specify the target tool and parameters.".to_string(),
-        "Use the `task` tool with `action=\"output\"` to retrieve the full result of a background task.".to_string(),
-        String::new(),
-        "Example:".to_string(),
-        "```json".to_string(),
-        r#"{"action": "spawn", "tool": "Agent", "params": {"prompt": "Analyze confidential data", "subagent_type": "researcher"}}"#.to_string(),
-        "```".to_string(),
-    ];
-    lines.push(String::new());
-    lines.join("\n")
 }
 
 fn format_skills_section(text: &str) -> String {

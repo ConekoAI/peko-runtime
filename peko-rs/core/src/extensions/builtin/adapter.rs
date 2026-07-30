@@ -107,8 +107,10 @@ impl BuiltinToolAdapter {
         let ext_id = ExtensionId::new(format!("builtin:tool:{tool_name}"));
 
         // Create tool metadata for unified registry. F34 — surface
-        // `tool.exposure()` so a built-in can opt into
-        // DirectModelOnly / Deferred / Hidden without subclassing.
+        // `tool.exposure()` so a built-in can opt into Deferred /
+        // Hidden without subclassing. F36: `DirectModelOnly` is now
+        // equivalent to `Direct` on the wire; both surface in the
+        // `tools[]` JSON-schema catalog.
         let metadata = ToolMetadata::new(
             tool_name.clone(),
             tool.description(),
@@ -595,50 +597,10 @@ impl HookHandler for BuiltinExecuteHandler {
     }
 }
 
-/// Handler for `PromptSystemSection` hook
-pub struct BuiltinPromptHandler {
-    tool: Arc<dyn Tool>,
-}
-
-impl std::fmt::Debug for BuiltinPromptHandler {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BuiltinPromptHandler")
-            .field("tool_name", &self.tool.name())
-            .finish()
-    }
-}
-
-impl BuiltinPromptHandler {
-    /// Create a new prompt handler for a tool
-    pub fn new(tool: Arc<dyn Tool>) -> Self {
-        Self { tool }
-    }
-}
-
-#[async_trait]
-impl HookHandler for BuiltinPromptHandler {
-    async fn handle(&self, _ctx: HookContext) -> HookResult {
-        let description = self.tool.description();
-        let text = format!("### {}\n\n{}", self.tool.name(), description);
-
-        HookResult::Continue(HookOutput::Text(text))
-    }
-
-    fn hook_point(&self) -> HookPoint {
-        HookPoint::PromptSystemSection {
-            section: "tools".to_string(),
-            priority: 100,
-        }
-    }
-
-    fn priority(&self) -> i32 {
-        100
-    }
-
-    fn name(&self) -> String {
-        format!("BuiltinPrompt({})", self.tool.name())
-    }
-}
+/// F36: `BuiltinPromptHandler` was removed when peko switched to a
+/// wire-only tool catalog. Built-in tool descriptions travel on the
+/// wire as the `tools[]` JSON-schema array; see
+/// `list_tool_definitions_with_allowlist` for the capability gate.
 
 #[cfg(test)]
 mod tests {
@@ -717,12 +679,13 @@ mod tests {
             name: "test_tool".to_string(),
         });
 
-        let exec_handler = BuiltinExecuteHandler::new(tool.clone());
+        let exec_handler = BuiltinExecuteHandler::new(tool);
         assert_eq!(exec_handler.name(), "BuiltinExecute(test_tool)");
         assert_eq!(exec_handler.priority(), 100);
 
-        let prompt_handler = BuiltinPromptHandler::new(tool);
-        assert_eq!(prompt_handler.name(), "BuiltinPrompt(test_tool)");
+        // F36: BuiltinPromptHandler was removed when peko switched to
+        // wire-only tool catalogs. Tool descriptions travel on the
+        // wire as `tools[]` JSON-schema.
     }
 
     #[test]

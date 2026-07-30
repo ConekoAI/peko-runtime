@@ -552,9 +552,11 @@ mod tests {
                 .unwrap();
         }
 
-        // Each tool registers 5 hooks (exec, prompt, async, status, cancel)
-        // via the unified registry's atomic composite operation
-        assert_eq!(core.hook_count().await, 10);
+        // Each tool registers 4 hooks (exec, async, status, cancel) via
+        // the unified registry's atomic composite operation. The
+        // prompt-section hook was removed in F36 (PR #328 follow-up);
+        // tool catalogs now travel wire-only via the `tools[]` array.
+        assert_eq!(core.hook_count().await, 8);
         assert_eq!(core.tool_count(PrincipalId::system()).await, 2);
 
         // Verify tool metadata is accessible

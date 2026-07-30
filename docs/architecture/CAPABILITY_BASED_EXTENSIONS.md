@@ -150,7 +150,7 @@ Rules:
 1. An extension is active only if it is detected/installed, at least one of its provided capabilities is granted, and all `requires` capabilities are satisfied by the Principal’s grants.
 2. A tool is callable only if the active extension that owns it is active **and** the capability `tool:<name>` is granted.
 3. An agent is spawnable only if `agent:<id>` is granted.
-4. A prompt section is injected only if the extension providing it is active.
+4. A prompt section is injected only if the extension providing it is active. (The `"tools"` section hook is reserved — F36 — because tool catalogs travel wire-only via `list_tool_definitions_with_allowlist`; only `skills`, `agents`, and `mcp_context` render into the system prompt.)
 5. Evaluation is lazy. If `requires` is not satisfied, calls fail at invocation time with a clear message rather than at startup.
 
 ### 3.6 Principal Manifest
@@ -268,7 +268,7 @@ Copying `researcher.md` into `agents/` creates an `ExtensionRecord` with `trust 
 3. For each detected extension, upsert into `ExtensionStore` with state `detected`.
 4. Evaluate active extensions from `capabilities.grants`.
 5. Register active hooks and tools.
-6. Start the root agent session with the active tool bag and prompt sections.
+6. Start the root agent session with the active tool bag (wire-format catalog) and prompt sections.
 
 ### 4.2 Tool Execution
 

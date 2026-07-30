@@ -2168,7 +2168,15 @@ mod tests {
             elapsed < std::time::Duration::from_millis(150),
             "parallel render took {elapsed:?} — should be ~50ms with fan-out, not ~200ms serial"
         );
-        assert!(rendered.contains("tools"));
+        // F36: tool catalogs are wire-only. {{tools}} is preserved as a
+        // marker but resolved to empty (no `Placeholder::Tools` value is
+        // inserted) and stripped via `remove_missing=true`. The other
+        // three sections still flow through the wire, so their markers
+        // must be substituted with the hook output.
+        assert!(!rendered.contains("{{tools}}"));
+        assert!(!rendered.contains("{{skills}}"));
+        assert!(!rendered.contains("{{agents}}"));
+        assert!(!rendered.contains("{{mcp_context}}"));
         assert!(rendered.contains("skills"));
         assert!(rendered.contains("agents"));
         assert!(rendered.contains("mcp_context"));

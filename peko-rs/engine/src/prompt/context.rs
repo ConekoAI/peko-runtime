@@ -215,12 +215,11 @@ pub struct TurnPromptContext {
     pub capability_diff: Option<CapabilityDiff>,
 
     /// Tool definitions resolved by the loop for this iteration. The
-    /// renderer does NOT re-fetch these — the loop has already
-    /// consulted the capability allowlist and active extension set,
-    /// so the renderer just threads them into the `{{tools}}` hook
-    /// input for handler introspection. Tools themselves are
-    /// advertised via the `tools` section hook, which the renderer
-    /// invokes the same way as before.
+    /// renderer does NOT consume this field — tool catalogs travel
+    /// exclusively on the wire as the `tools[]` JSON-schema array,
+    /// built by the engine's `build_tool_definitions`. Kept on the
+    /// typed context so hook handlers can introspect the visible set
+    /// if they need to.
     pub tool_definitions: Vec<ToolDefinition>,
 }
 

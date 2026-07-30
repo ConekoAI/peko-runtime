@@ -2,7 +2,9 @@
 //!
 //! Routes tool execution with a constant 5-minute timeout. Tools that exceed
 //! the timeout are auto-detached to background tasks; the agent retrieves
-//! the result via the `task` tool's `output` action.
+//! the result with `AsyncSpawn` / `AsyncOutput` / `AsyncStatus` /
+//! `AsyncList` and stops a task with `AsyncStop` (the legacy `task`
+//! tool was removed; these tools replaced it).
 //!
 //! # Usage
 //!

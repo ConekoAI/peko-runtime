@@ -5,25 +5,29 @@
 //!
 //! It also provides default handler implementations for the companion hooks that
 //! `ExtensionCore::register_tool()` auto-generates:
-//! - [`AutoPromptHandler`] — injects tool description into system prompt
 //! - [`AutoAsyncHandler`] — passes through to the executor-backed async fallback
 //! - [`AutoStatusHandler`] — passes through to executor status tracking
 //! - [`AutoCancelHandler`] — passes through to executor cancellation
 //!
-//! These handlers are intentionally simple and generic. With the exception of the
-//! prompt handler, they all return [`HookResult::PassThrough`]: a tool with no custom
-//! async support has no *native* async handler, so the async bridge must fall back to
-//! its executor (which actually spawns, tracks, and cancels the background work).
-//! Returning a concrete default here would shadow that fallback and strand the task.
-//! Adapters that need real native async should register their own higher-priority
-//! handler; the registry handles the rest.
+//! F36: the prior [`AutoPromptHandler`] that emitted per-tool prose for the
+//! `## Available Tools` prompt section was removed when peko switched to a
+//! wire-only tool catalog (see `build_tool_definitions` and
+//! `list_tool_definitions_with_allowlist`). Tool descriptions and JSON-schema
+//! parameters now travel on the wire as the `tools[]` array.
+//!
+//! The remaining handlers are intentionally simple and generic. They all
+//! return [`HookResult::PassThrough`]: a tool with no custom async support has
+//! no *native* async handler, so the async bridge must fall back to its
+//! executor (which actually spawns, tracks, and cancels the background work).
+//! Returning a concrete default here would shadow that fallback and strand
+//! the task. Adapters that need real native async should register their own
+//! higher-priority handler; the registry handles the rest.
 
 use crate::extensions::framework::core::context::HookContext;
 use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::types::{
-    Capabilities, Capability, ExtensionId, HookId, HookOutput, HookResult, ToolExposure,
-    ToolMetadata, ToolRuntimeContext,
+    ExtensionId, HookId, HookResult, ToolMetadata,
 };
 use async_trait::async_trait;
 #[cfg(test)]
@@ -77,124 +81,6 @@ impl ToolRegistration {
     #[must_use]
     pub fn hook_count(&self) -> usize {
         self.hook_ids.len()
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// AutoPromptHandler
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Default handler for `PromptSystemSection { section: "tools" }`.
-///
-/// Injects a markdown-formatted tool description into the system prompt.
-#[derive(Debug, Clone)]
-pub(crate) struct AutoPromptHandler {
-    tool_name: String,
-    description: String,
-    /// F34 — the LLM exposure from the tool's metadata. Suppressed from
-    /// the prompt section unless `visible_in_prompt_section()` is true.
-    /// `DirectModelOnly`, `Deferred`, and `Hidden` tools skip the
-    /// prompt section entirely.
-    exposure: ToolExposure,
-    extension_id: ExtensionId,
-    priority: i32,
-}
-
-impl AutoPromptHandler {
-    /// Create from [`ToolMetadata`].
-    #[must_use]
-    pub(crate) fn from_metadata(
-        metadata: &ToolMetadata,
-        extension_id: ExtensionId,
-        priority: i32,
-    ) -> Self {
-        Self {
-            tool_name: metadata.name.clone(),
-            description: metadata.description.clone(),
-            exposure: metadata.exposure,
-            extension_id,
-            priority,
-        }
-    }
-}
-
-#[async_trait]
-impl HookHandler for AutoPromptHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
-        // F34 — exposure gate. Suppress from the prompt section unless
-        // the tool's exposure says it belongs here. Capability gate runs
-        // second so a `Hidden` tool is dropped without consulting the
-        // principal's grants.
-        if !self.exposure.visible_in_prompt_section() {
-            debug!(
-                tool_name = %self.tool_name,
-                exposure = ?self.exposure,
-                "Auto-prompt suppressed: exposure hides tool from prompt section"
-            );
-            return HookResult::PassThrough;
-        }
-
-        // Capability gate: every registered tool fires this hook, so the
-        // prompt must fail closed when principal authorization context is
-        // absent or the matching tool grant is missing. Legacy callers that
-        // raise the prompt section without seeding `tool_context` are treated
-        // as having an empty grant set; that is consistent with the canonical
-        // execution funnel.
-        let (capabilities, active_extensions) =
-            match ctx.get_state::<ToolRuntimeContext>("tool_context") {
-                Some(tc) => (
-                    tc.capabilities.clone().unwrap_or_default(),
-                    tc.active_extensions.clone(),
-                ),
-                None => (Vec::new(), None),
-            };
-        if capabilities.is_empty() {
-            return HookResult::PassThrough;
-        }
-        let granted = Capabilities::with_grants(capabilities);
-        if !granted.is_granted(&Capability::new(format!("tool:{}", self.tool_name))) {
-            debug!(
-                tool_name = %self.tool_name,
-                "Auto-prompt suppressed: capability not granted"
-            );
-            return HookResult::PassThrough;
-        }
-
-        // Match the native catalog's owner gate. Built-ins are always present
-        // and need only their tool grant; extension-owned tools must also have
-        // their owner in the principal's active-extension snapshot. Empty or
-        // missing snapshots fail closed for non-builtin owners.
-        if !self.extension_id.0.starts_with("builtin:tool:") {
-            let owner_active = active_extensions
-                .as_ref()
-                .is_some_and(|active| active.iter().any(|id| id == &self.extension_id.0));
-            if !owner_active {
-                debug!(
-                    tool_name = %self.tool_name,
-                    extension_id = %self.extension_id,
-                    "Auto-prompt suppressed: owning extension is inactive"
-                );
-                return HookResult::PassThrough;
-            }
-        }
-
-        let text = format!("### {}\n\n{}", self.tool_name, self.description);
-        HookResult::Continue(HookOutput::Text(text))
-    }
-
-    fn hook_point(&self) -> HookPoint {
-        HookPoint::PromptSystemSection {
-            section: "tools".to_string(),
-            priority: self.priority,
-        }
-    }
-
-    fn priority(&self) -> i32 {
-        self.priority
-    }
-
-    fn name(&self) -> String {
-        format!("AutoPrompt({})", self.tool_name)
     }
 }
 
@@ -366,188 +252,6 @@ mod tests {
             serde_json::json!({"type": "object"}),
             crate::extensions::framework::types::ToolSource::BuiltIn,
         )
-    }
-
-    #[tokio::test]
-    async fn test_auto_prompt_handler() {
-        let meta = sample_metadata("test_tool");
-        let handler =
-            AutoPromptHandler::from_metadata(&meta, ExtensionId::new("builtin:tool:test"), 100);
-
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "tools".to_string(),
-                priority: 100,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-        ctx.set_state(
-            "tool_context",
-            ToolRuntimeContext::new().with_capabilities(["tool:test_tool"]),
-        );
-
-        let result = handler.handle(ctx).await;
-        match result {
-            HookResult::Continue(HookOutput::Text(text)) => {
-                assert!(text.contains("### test_tool"));
-                assert!(text.contains("The test_tool tool"));
-            }
-            _ => panic!("Expected Continue with Text, got {result:?}"),
-        }
-    }
-
-    /// When the principal's grants do not include `tool:<name>`, the
-    /// auto-prompt handler must omit the entry from the system prompt's
-    /// "Available Tools" section. Without this gate the prompt section
-    /// would lie about what the principal can invoke, and after a
-    /// `peko capability revoke` the LLM would still try to call revoked
-    /// tools — falling back to raw `<tool_call>` text since the native
-    /// tool catalog is now empty.
-    #[tokio::test]
-    async fn auto_prompt_suppressed_when_capability_not_granted() {
-        let meta = sample_metadata("Read");
-        let handler =
-            AutoPromptHandler::from_metadata(&meta, ExtensionId::new("builtin:tool:test"), 100);
-
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "tools".to_string(),
-                priority: 100,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-        let tc = ToolRuntimeContext::new().with_capabilities(["tool:Write".to_string()]);
-        ctx.set_state("tool_context", tc);
-
-        let result = handler.handle(ctx).await;
-        assert!(
-            matches!(result, HookResult::PassThrough),
-            "expected PassThrough when tool:Read is not granted, got {result:?}"
-        );
-    }
-
-    /// The complementary case: when the grant IS present the handler
-    /// emits the tool description as before.
-    #[tokio::test]
-    async fn auto_prompt_emitted_when_capability_granted() {
-        let meta = sample_metadata("Read");
-        let handler =
-            AutoPromptHandler::from_metadata(&meta, ExtensionId::new("builtin:tool:test"), 100);
-
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "tools".to_string(),
-                priority: 100,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-        // Grant uses the registered tool-name casing; capability matching is
-        // exact apart from explicit trailing-wildcard grants.
-        let tc = ToolRuntimeContext::new().with_capabilities(["tool:Read".to_string()]);
-        ctx.set_state("tool_context", tc);
-
-        let result = handler.handle(ctx).await;
-        match result {
-            HookResult::Continue(HookOutput::Text(text)) => {
-                assert!(text.contains("### Read"));
-                assert!(text.contains("The Read tool"));
-            }
-            other => panic!("Expected Continue with Text, got {other:?}"),
-        }
-    }
-
-    /// `tool:*` is a wildcard that satisfies the per-tool grant check.
-    #[tokio::test]
-    async fn auto_prompt_wildcard_capability_covers_tool() {
-        let meta = sample_metadata("Bash");
-        let handler =
-            AutoPromptHandler::from_metadata(&meta, ExtensionId::new("builtin:tool:test"), 100);
-
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "tools".to_string(),
-                priority: 100,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-        let tc = ToolRuntimeContext::new().with_capabilities(["tool:*".to_string()]);
-        ctx.set_state("tool_context", tc);
-
-        let result = handler.handle(ctx).await;
-        assert!(
-            matches!(result, HookResult::Continue(HookOutput::Text(_))),
-            "wildcard grant should permit the prompt, got {result:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn auto_prompt_suppresses_inactive_extension_tool() {
-        let meta = sample_metadata("Search");
-        let handler =
-            AutoPromptHandler::from_metadata(&meta, ExtensionId::new("extension:search"), 100);
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "tools".to_string(),
-                priority: 100,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-        ctx.set_state(
-            "tool_context",
-            ToolRuntimeContext::new()
-                .with_capabilities(["tool:Search"])
-                .with_active_extensions(Vec::<String>::new()),
-        );
-
-        assert!(matches!(handler.handle(ctx).await, HookResult::PassThrough));
-    }
-
-    #[tokio::test]
-    async fn auto_prompt_emits_active_extension_tool() {
-        let meta = sample_metadata("Search");
-        let handler =
-            AutoPromptHandler::from_metadata(&meta, ExtensionId::new("extension:search"), 100);
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "tools".to_string(),
-                priority: 100,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-        ctx.set_state(
-            "tool_context",
-            ToolRuntimeContext::new()
-                .with_capabilities(["tool:Search"])
-                .with_active_extensions(["extension:search"]),
-        );
-
-        assert!(matches!(
-            handler.handle(ctx).await,
-            HookResult::Continue(HookOutput::Text(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn auto_prompt_fails_closed_without_authorization_context() {
-        let meta = sample_metadata("Read");
-        let handler =
-            AutoPromptHandler::from_metadata(&meta, ExtensionId::new("builtin:tool:Read"), 100);
-        let ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "tools".to_string(),
-                priority: 100,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-
-        assert!(matches!(handler.handle(ctx).await, HookResult::PassThrough));
     }
 
     #[tokio::test]

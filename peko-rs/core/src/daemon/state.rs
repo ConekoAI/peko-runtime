@@ -3006,8 +3006,6 @@ mod tests {
         use crate::agents::agent_config::AgentConfig;
         use crate::agents::Agent;
         use crate::extensions::framework::core::init_global_core;
-        use crate::extensions::framework::core::HookPoint;
-        use crate::extensions::framework::types::HookInput;
 
         let state = create_test_state().await;
         let global_core = state.tool_runtime.extension_core().clone();
@@ -3042,27 +3040,28 @@ mod tests {
             "Grep missing after agent init"
         );
 
-        // Prompt section should return tool descriptions. Use the
-        // principal-aware seed helper so the auto-prompt handler observes a
-        // granting capability snapshot for built-in tools.
-        let prompt: Option<String> = core
-            .invoke_hook_text_with_principal(
-                HookPoint::PromptSystemSection {
-                    section: "tools".to_string(),
-                    priority: 100,
-                },
-                HookInput::Unit,
-                Some("test-principal"),
-                Some(vec!["tool:*".to_string()]),
+        // Wire-format catalog should expose Bash and Grep under the
+        // `tool:*` grant. F36 removed the `## Available Tools` prose
+        // section; tool catalogs now travel on the wire as the `tools[]`
+        // JSON-schema array. Use the principal-aware allowlist helper so
+        // the capability gate sees the wildcard grant for built-ins.
+        let caps = peko_extension_api::Capabilities::with_grants(["tool:*"]);
+        let defs = core
+            .list_tool_definitions_with_allowlist(
+                &caps,
                 None,
-                None,
+                peko_subject::PrincipalId::system(),
             )
             .await;
-        assert!(prompt.is_some(), "Prompt section returned None");
-        let prompt_text = prompt.unwrap();
-        assert!(!prompt_text.is_empty(), "Prompt section is empty");
-        assert!(prompt_text.contains("Bash"), "Prompt doesn't mention Bash");
-        assert!(prompt_text.contains("Grep"), "Prompt doesn't mention Grep");
+        let def_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
+        assert!(
+            def_names.contains(&"Bash".to_string()),
+            "Bash missing from wire catalog: {def_names:?}"
+        );
+        assert!(
+            def_names.contains(&"Grep".to_string()),
+            "Grep missing from wire catalog: {def_names:?}"
+        );
     }
 
     // ── Issue #8: tunnel health surface tests ─────────────────────

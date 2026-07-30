@@ -78,7 +78,7 @@ hooks:
 
 | Hook Point | Description | Payload |
 |------------|-------------|---------|
-| `PromptSystemSection` | Contribute to system prompt sections | `section: String, priority: i32` |
+| `PromptSystemSection` | Contribute to system prompt sections (e.g. `skills`, `agents`, `mcp_context`; the `"tools"` section is reserved — F36 tool catalogs are wire-only) | `section: String, priority: i32` |
 | `PromptPreProcess` | Modify user input before sending to LLM | User message |
 | `PromptPostProcess` | Modify LLM output before returning | Assistant message |
 
