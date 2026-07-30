@@ -285,10 +285,14 @@ pub trait ToolFunnel: Send + Sync + 'static {
     ///
     /// The lifted `PromptRenderer::dispatch_text` (Phase 9b.N.5b.4,
     /// `peko_engine::prompt::renderer`) calls this for each of the
-    /// four hook-driven sections (`tools`, `skills`, `agents`,
-    /// `mcp_context`). The impl hides `HookPoint::PromptSystemSection`
-    /// construction + `HookInput::Unit` so the trait stays free of
-    /// root-only `HookPoint` / `HookInput` types.
+    /// three hook-driven sections (`skills`, `agents`,
+    /// `mcp_context`). The `tools` section is intentionally NOT
+    /// dispatched in F36 — tool catalogs travel wire-only via the
+    /// `tools[]` JSON-schema array (see
+    /// `list_tool_definitions_with_allowlist`). The impl hides
+    /// `HookPoint::PromptSystemSection` construction + `HookInput::Unit`
+    /// so the trait stays free of root-only `HookPoint` / `HookInput`
+    /// types.
     ///
     /// `priority` is the section priority the renderer wants (today
     /// always 100 — the system-prompt section hooks ignore priority

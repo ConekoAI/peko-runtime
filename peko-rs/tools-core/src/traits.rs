@@ -66,22 +66,22 @@ pub trait Tool: Send + Sync {
 
     /// How this tool is exposed to the LLM (F34, audit section 3 row 4).
     ///
-    /// Defaults to [`ToolExposure::Direct`] (visible in both the prompt
-    /// "Available Tools" section AND the native LLM catalog;
-    /// callable). Override for:
+    /// Defaults to [`ToolExposure::Direct`] (visible in the native LLM
+    /// catalog; callable). F36 collapsed the prompt-section surface —
+    /// tool catalogs travel wire-only via the `tools[]` JSON-schema
+    /// array — so `Direct` and `DirectModelOnly` are equivalent on the
+    /// wire today. Override for:
     ///
-    /// * `DirectModelOnly` — schema is self-documenting; suppress the
-    ///   prose entry to save prompt tokens.
-    /// * `Deferred` — too large for the prompt; the model discovers it
-    ///   via the synthetic `__tool_search` stub (F35). The stub returns
-    ///   the tool's full `ToolDefinition` so the model can call it on
-    ///   the next iteration.
+    /// * `Deferred` — too large for the initial catalog; the model
+    ///   discovers it via the synthetic `__tool_search` stub (F35).
+    ///   The stub returns the tool's full `ToolDefinition` so the
+    ///   model can call it on the next iteration.
     /// * `Hidden` — telemetry-only or sub-tool-of-other-tool; the
     ///   model never sees or invokes it.
     ///
-    /// The capability gate still applies on top — a `DirectModelOnly`
-    /// tool without the principal's `tool:<name>` grant is hidden from
-    /// both surfaces regardless of this setting.
+    /// The capability gate still applies on top — a tool without the
+    /// principal's `tool:<name>` grant is hidden from the wire
+    /// catalog regardless of this setting.
     fn exposure(&self) -> ToolExposure {
         ToolExposure::default()
     }

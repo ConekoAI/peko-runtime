@@ -184,15 +184,17 @@ pub struct AgenticLoop {
     /// actually visible. Falls back to `provider.model_id()` when the
     /// agent didn't have a resolved id (e.g. test fixtures).
     resolved_model_id: String,
-    /// F23: cache-stable system-prompt prefix. Rendered once at
-    /// session start and re-rendered only on profile or tool-table
-    /// mutation (tracked via `cache_stable_signature`). The
-    /// `Arc<String>` lets the loop hand the same heap allocation to
-    /// the provider every iteration so the prefix bytes are
-    /// byte-identical turn-over-turn, which is what the prompt-cache
-    /// markers (Anthropic `cache_control`, OpenAI `prompt_cache_key`)
-    /// rely on for cache hits.
-    cache_stable_prompt: std::sync::Mutex<Option<(u64, Arc<String>)>>,
+    /// F23: cache-stable system-prompt prefix. Rendered once at session
+    /// start and re-rendered on profile mutation. Tool catalogs are
+    /// wire-only (see `build_tool_definitions`) so the prefix no
+    /// longer references tool-table contents; the signature hash
+    /// previously used to detect tool-table changes was dropped in
+    /// F36. The `Arc<String>` lets the loop hand the same heap
+    /// allocation to the provider every iteration so the prefix
+    /// bytes are byte-identical turn-over-turn, which is what the
+    /// prompt-cache markers (Anthropic `cache_control`, OpenAI
+    /// `prompt_cache_key`) rely on for cache hits.
+    cache_stable_prompt: std::sync::Mutex<Option<Arc<String>>>,
     /// Phase 9b.N.5b.9c: compaction config (thresholds, model
     /// override, retention policy). Passed in by the caller — root
     /// loads it from `~/.peko/config.toml` via
@@ -1106,20 +1108,24 @@ impl AgenticLoop {
                 }
             }
 
-            // ADR-019 Phase 2: Build tool definitions dynamically each iteration
+            // ADR-019 Phase 2: Build tool definitions dynamically each iteration.
+            // The list is sent on the wire as `tools[]`; the renderer
+            // never references it (F36 wire-only catalogs).
             let tool_defs = self.build_tool_definitions().await;
 
             // F23: Rebuild the system prompt via the two-phase render
             // (`cache_stable` + `per_turn`) so the byte-stable prefix
             // hits the provider's prompt cache turn-over-turn. The
-            // cache-stable prefix is re-rendered only when the
-            // tool-table signature changes (profile change is a
-            // loop-level concern; today's loop is bound to a single
-            // agent for its lifetime, so tool_defs is the only
-            // mutation signal we observe). The per-turn suffix is
-            // rebuilt every iteration because it carries volatile
-            // fields like `{{iteration_budget}}`, `{{quota_state}}`,
-            // `{{session_context}}`, and `{{capability_diff}}`.
+            // cache-stable prefix is re-rendered only when the cached
+            // value is missing — tool-table mutations no longer
+            // matter since the prefix doesn't reference tools (F36).
+            // Profile changes are loop-level: today's loop is bound
+            // to a single agent for its lifetime, so a fresh render
+            // after the first miss is correct for the whole session.
+            // The per-turn suffix is rebuilt every iteration because
+            // it carries volatile fields like `{{iteration_budget}}`,
+            // `{{quota_state}}`, `{{session_context}}`, and
+            // `{{capability_diff}}`.
             //
             // The previous Phase-1 path rebuilt the entire prompt
             // every iteration. That defeated provider prefix caches
@@ -1133,70 +1139,21 @@ impl AgenticLoop {
                 let ctx = self.build_turn_context(iteration, &tool_defs);
                 let renderer = PromptRenderer::new(Arc::clone(&self.extension_core));
 
-                // F23: signature = hash of tool-table contents.
-                // Names + (truncated) descriptions; sufficient to
-                // detect extension activations / capability flips
-                // that change the tool catalog seen by the prompt.
-                // Hashing a small slice avoids the cost of a full
-                // schema dump.
-                let tool_signature = {
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
-                    let mut h = DefaultHasher::new();
-                    for td in &tool_defs {
-                        td.name.hash(&mut h);
-                    }
-                    h.finish()
-                };
-
-                // Decide whether to render under no lock; the
-                // decision is just `bool`, and the lock is acquired
-                // separately to either clone the cached `Arc` or
-                // install a freshly-rendered one. The `std::sync`
-                // `MutexGuard` is `!Send`, so we cannot hold it
-                // across the renderer's `.await`; the split-acquire
-                // pattern keeps every lock acquisition local to a
-                // `Send`-safe block.
-                let needs_render = {
-                    let slot = self
-                        .cache_stable_prompt
-                        .lock()
-                        .expect("cache_stable_prompt mutex poisoned");
-                    match slot.as_ref() {
-                        Some((sig, _)) => *sig != tool_signature,
-                        None => true,
-                    }
-                };
-
-                let cache_stable: Arc<String> = if needs_render {
-                    let rendered = renderer.render_cache_stable(&ctx).await;
-                    let arc = Arc::new(rendered);
-                    let mut slot = self
-                        .cache_stable_prompt
-                        .lock()
-                        .expect("cache_stable_prompt mutex poisoned");
-                    // Re-check: if a concurrent caller raced us
-                    // and stored a value with the same signature
-                    // between our two locks, prefer theirs (same
-                    // prefix bytes for the same signature).
-                    match slot.as_ref() {
-                        Some((sig, s)) if *sig == tool_signature => Arc::clone(s),
-                        _ => {
-                            *slot = Some((tool_signature, Arc::clone(&arc)));
-                            arc
-                        }
-                    }
-                } else {
-                    // Fast path: clone the cached `Arc`. If the
-                    // slot is empty (race: another caller cleared
-                    // it between our two locks), fall back to a
-                    // fresh render under a single lock acquisition.
+                // F36: the prefix no longer references tool names, so
+                // there is no per-tool-table signal to invalidate on.
+                // Render once per session and reuse the cached
+                // `Arc<String>` on subsequent iterations. The
+                // `std::sync::MutexGuard` is `!Send`, so we cannot
+                // hold it across the renderer's `.await`; the
+                // split-acquire pattern keeps every lock acquisition
+                // local to a `Send`-safe block.
+                let cache_stable: Arc<String> = {
                     let cached = {
                         let slot = self
                             .cache_stable_prompt
                             .lock()
                             .expect("cache_stable_prompt mutex poisoned");
-                        slot.as_ref().map(|(_, s)| Arc::clone(s))
+                        slot.as_ref().map(Arc::clone)
                     };
                     match cached {
                         Some(arc) => arc,
@@ -1207,7 +1164,12 @@ impl AgenticLoop {
                                 .cache_stable_prompt
                                 .lock()
                                 .expect("cache_stable_prompt mutex poisoned");
-                            *slot = Some((tool_signature, Arc::clone(&arc)));
+                            // Last-write-wins. Two concurrent first
+                            // renders race here; either Arc is
+                            // byte-identical for the same agent body,
+                            // so the providers see the same prefix
+                            // either way.
+                            *slot = Some(Arc::clone(&arc));
                             arc
                         }
                     }

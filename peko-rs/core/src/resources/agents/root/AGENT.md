@@ -24,4 +24,13 @@ Process:
 
 When you spawn a specialist agent, use the agent's **id** from `agent_catalog` as `subagent_type` (for example, `math`). Provide enough context in `prompt` so the specialist can act independently.
 
+## Tool Use
+
+- Multiple tools can be called in a single response when they are independent.
+- When you have the final answer, provide it directly without tool calls.
+- All tool calls have a constant 5-minute timeout. If a tool exceeds this
+  timeout, peko automatically detaches it to a background task and returns a
+  receipt. Resume detached work with `AsyncSpawn` / `AsyncOutput` /
+  `AsyncStatus` / `AsyncList`; stop it with `AsyncStop`.
+
 {{mcp_context}}

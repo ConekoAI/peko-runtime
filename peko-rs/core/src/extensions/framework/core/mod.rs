@@ -39,7 +39,7 @@
 //! // Register a handler
 //! let handler = Arc::new(MyHandler);
 //! let registration = core.register_hook(
-//!     HookPoint::PromptSystemSection { section: "tools".to_string(), priority: 100 },
+//!     HookPoint::PromptSystemSection { section: "skills".to_string(), priority: 100 },
 //!     handler,
 //!     &ExtensionId::new("my-extension"),
 //! ).await?;
@@ -47,6 +47,15 @@
 //! // Invoke hooks
 //! let result = core.invoke_hook(HookPoint::ToolRegister, HookInput::Unit).await;
 //! ```
+//!
+//! Note: `HookPoint::PromptSystemSection { section: "tools" }` is
+//! retained in the enum for back-compat with extensions that
+//! registered such a hook, but the engine's `PromptRenderer` no longer
+//! dispatches it (F36). Tool catalogs travel wire-only via the
+//! `tools[]` JSON-schema array, built by
+//! `list_tool_definitions_with_allowlist`. Registering a handler for
+//! the "tools" section still works but the engine discards its
+//! output.
 
 // Re-export hook point definitions
 pub use hook_points::{common, HookPoint, HookPointBuilder};
