@@ -31,6 +31,7 @@ pub mod bash;
 pub mod fs;
 pub mod messaging;
 pub mod paths;
+pub mod plan;
 pub mod session;
 pub mod skill;
 pub mod tasks;
@@ -52,6 +53,10 @@ pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{
     AgentTool, DynamicSessionKeyProvider, SessionKeyProvider, SharedSubagentRuntime,
     SpawnAuditEvent, SpawnRequest, StaticSessionKeyProvider, SubagentRuntime,
+};
+pub use plan::{
+    PePlanAddStepTool, PePlanCloseTool, PePlanCreateTool, PePlanGetTool, PePlanListTool,
+    PePlanMarkStepTool, PePlanRecordEvidenceTool,
 };
 pub use session::{SessionCache, SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};

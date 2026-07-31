@@ -147,6 +147,13 @@ pub struct SubagentExecutor {
     /// `QuotaMeter`. Stacked inside `QuotaScope::with(parent_meter, ...)`
     /// so both meters charge when nested. `None` skips peer attribution.
     peer_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
+    /// Snapshot of the spawning principal's plan DAG port. Propagated
+    /// into the spawned `Agent` via
+    /// `Agent::with_principal_plan_port` so the seven `PePlan*` tools
+    /// are wired into the subagent's tool bag (depth-1+ children can
+    /// manage plans on behalf of their spawning principal). `None`
+    /// means unbound — subagents do not register `PePlan*` tools.
+    principal_plan_port: Option<Arc<dyn peko_plan::PlanPort>>,
 }
 
 impl SubagentExecutor {
@@ -187,6 +194,7 @@ impl SubagentExecutor {
             observability: None,
             quota_meter: None,
             peer_meter: None,
+            principal_plan_port: None,
         }
     }
 
@@ -313,6 +321,7 @@ impl SubagentExecutor {
             observability: None,
             quota_meter: None,
             peer_meter: None,
+            principal_plan_port: None,
         }
     }
 
@@ -344,6 +353,7 @@ impl SubagentExecutor {
             observability: None,
             quota_meter: None,
             peer_meter: None,
+            principal_plan_port: None,
         }
     }
 
@@ -367,6 +377,26 @@ impl SubagentExecutor {
     pub fn with_principal_workspace(mut self, workspace: std::path::PathBuf) -> Self {
         self.principal_workspace = Some(workspace);
         self
+    }
+
+    /// Set the spawning principal's plan DAG port. Propagated into the
+    /// spawned `Agent` via `Agent::with_principal_plan_port` so depth-1
+    /// children register the seven `PePlan*` built-in tools against the
+    /// same per-Principal store. `None` is the default; depth-1+
+    /// children of unbound principals do not register `PePlan*` tools.
+    #[must_use]
+    pub fn with_principal_plan_port(
+        mut self,
+        plan_port: Arc<dyn peko_plan::PlanPort>,
+    ) -> Self {
+        self.principal_plan_port = Some(plan_port);
+        self
+    }
+
+    /// Snapshot of the spawning principal's plan DAG port, if bound.
+    #[must_use]
+    pub fn principal_plan_port(&self) -> Option<&Arc<dyn peko_plan::PlanPort>> {
+        self.principal_plan_port.as_ref()
     }
 
     /// Set the announcement channel

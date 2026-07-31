@@ -53,6 +53,14 @@ pub struct PrincipalContext {
     pub sessions_dir: PathBuf,
     /// Principal-scoped memory (sessions/artifacts/todos).
     pub memory: Arc<dyn PrincipalMemory>,
+    /// Per-principal plan DAG port (PR #1 of four in the wiring
+    /// sequence; tools wired in PR #2). The principal harness reaches
+    /// plans through the dyn-trait boundary so future impls
+    /// (in-memory, network-backed) slot in without rewriting this
+    /// construction site. Used by `agent_runner.rs` to thread the
+    /// handle into `Agent::with_principal_plan_port` so the seven
+    /// `PePlan*` tools are registered on the principal's agents.
+    pub plan_port: Arc<dyn peko_plan::PlanPort>,
     /// Shared inbox the dispatcher pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,
     /// Held during root-agent session creation so concurrent peers
@@ -113,6 +121,7 @@ pub struct PrincipalContext {
 impl PrincipalContext {
     /// Build a `PrincipalContext` from already-resolved principal
     /// state.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         workspace_path: PathBuf,
         memory: Arc<dyn PrincipalMemory>,
@@ -125,6 +134,8 @@ impl PrincipalContext {
         // `RouterContext` and consumed by `Agent::init_provider`.
         message_override: Option<String>,
         principal_id: PrincipalId,
+        // PR #2 wiring: per-principal plan DAG port.
+        plan_port: Arc<dyn peko_plan::PlanPort>,
     ) -> Self {
         let sessions_dir = memory.sessions_dir().clone();
         Self {
@@ -137,6 +148,7 @@ impl PrincipalContext {
             resolver,
             provider_hint,
             message_override,
+            plan_port,
             root_prompt: OnceLock::new(),
             principal_id,
             caller_principal_did: OnceLock::new(),
@@ -301,6 +313,18 @@ impl PrincipalContext {
     pub fn workspace(&self) -> &Path {
         &self.workspace_path
     }
+
+    /// Per-principal plan DAG port (PR #2 wiring).
+    ///
+    /// Threaded into `Agent::with_principal_plan_port` by
+    /// `agent_runner.rs` so the seven `PePlan*` tools are registered
+    /// on the principal's agents. Read-only clone — callers that need
+    /// to hold the handle past the context borrow should `.clone()`
+    /// the `Arc`.
+    #[must_use]
+    pub fn plan_port(&self) -> &Arc<dyn peko_plan::PlanPort> {
+        &self.plan_port
+    }
 }
 
 /// Wire the principal's tool bag onto the daemon-global `ExtensionCore`.
@@ -397,6 +421,15 @@ mod tests {
     use serial_test::serial;
     use std::sync::Arc;
 
+    /// Build a dummy plan port for the test fixtures below. The tests
+    /// don't exercise the port — they only need *some*
+    /// `Arc<dyn PlanPort>` to satisfy the `PrincipalContext::new`
+    /// signature. `PlanStorage::new` against a tempdir is sufficient.
+    fn test_plan_port(dir: &std::path::Path) -> Arc<dyn peko_plan::PlanPort> {
+        let plans_dir = dir.join("plans");
+        Arc::new(peko_plan::PlanStorage::new(plans_dir))
+    }
+
     /// `core()` returns the daemon-global `ExtensionCore`. After the
     /// Phase-2 redo there is no per-principal core; the global core
     /// is shared across principals and the principal's tool bag is
@@ -436,6 +469,7 @@ mod tests {
             None,
             None,
             PrincipalId::generate(),
+            test_plan_port(dir.path()),
         );
 
         let returned = ctx.core().await;
@@ -469,6 +503,7 @@ mod tests {
             None,
             None,
             PrincipalId::generate(),
+            test_plan_port(dir.path()),
         );
 
         // `set_root_prompt` requires an `AgentPrompt`; constructing one
@@ -507,7 +542,34 @@ mod tests {
             None,
             None,
             id.clone(),
+            test_plan_port(dir.path()),
         );
         assert_eq!(ctx.principal_id(), &id);
+    }
+
+    /// `plan_port()` returns the handle passed at construction unchanged.
+    #[test]
+    fn plan_port_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory: Arc<dyn PrincipalMemory> =
+            Arc::new(DefaultPrincipalMemory::new(dir.path().to_path_buf()));
+
+        let port = test_plan_port(dir.path());
+        let ctx = PrincipalContext::new(
+            dir.path().to_path_buf(),
+            memory,
+            Arc::new(InboxRegistry::new(
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
+            )),
+            Arc::new(tokio::sync::Mutex::new(())),
+            Arc::new(Capabilities::default()),
+            None,
+            None,
+            None,
+            PrincipalId::generate(),
+            port.clone(),
+        );
+        assert!(Arc::ptr_eq(ctx.plan_port(), &port));
     }
 }

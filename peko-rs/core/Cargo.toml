@@ -151,6 +151,13 @@ peko-auth = { path = "../auth" }
 # root files (`src/observability/{mod,audit,metrics,tracer}.rs`)
 # are deleted when the 8 callers migrate to `peko_observability::*`.
 peko-observability = { path = "../observability" }
+# Workspace member providing the Plan DAG primitive (Phase 12+).
+# Owns the schema, file-backed storage, and `PlanPort` trait. Depends
+# only on peko-fs-persistence + peko-subject; the `Principal` struct
+# holds `plan_port: Arc<dyn peko_plan::PlanPort>` so the engine loop
+# (via the future plan tool handler #2 PR) can call into plan storage
+# without naming the concrete `PlanStorage`.
+peko-plan = { path = "../plan" }
 # Phase 14.b — peko-cron owns the cron scheduler + idle detection +
 # event-trigger engine. Depends only on `peko-tools-builtin` for the
 # canonical cron DTO re-exports (Phase 10b). The daemon-side

@@ -67,6 +67,18 @@ pub struct AgentConfig {
     #[serde(default = "default_true")]
     pub enable_task_tools: bool,
 
+    /// Whether the peko_plan DAG family (`PePlanCreate`/`PePlanList`/
+    /// `PePlanGet`/`PePlanMarkStep`/`PePlanRecordEvidence`/
+    /// `PePlanAddStep`/`PePlanClose`) is enabled for this agent.
+    ///
+    /// Defaults to `true`. Only takes effect when the agent has been
+    /// bound to a principal whose `Arc<dyn PlanPort>` was wired in via
+    /// `Agent::with_principal_plan_port` — without that binding the
+    /// plan tools are intentionally not registered regardless of this
+    /// flag (test-only `Agent::new` callers hit this path).
+    #[serde(default = "default_true")]
+    pub enable_plan_tools: bool,
+
     /// Whether the async execution family (`AsyncSpawn`/`AsyncOutput`/
     /// `AsyncStatus`/`AsyncList`/`AsyncStop`) is enabled for this agent.
     /// Defaults to `true`.
@@ -154,6 +166,7 @@ impl Default for AgentConfig {
             // Issue #28: back-filled on first `Agent::new()`.
             agent_did: None,
             enable_task_tools: true,
+            enable_plan_tools: true,
             enable_async_tools: true,
             // F35 — opt-in deferred-tool discovery stub. Off by default
             // so a fresh runtime doesn't pay the prompt-token cost.
@@ -185,6 +198,7 @@ mod tests {
         // they replaced have moved to principal-level config; their
         // round-trip coverage lives on `PrincipalRoutingConfig`.
         assert!(config.enable_task_tools);
+        assert!(config.enable_plan_tools);
         assert!(config.enable_async_tools);
         // F35 — opt-in deferred-tool discovery stub defaults off.
         assert!(!config.enable_tool_search);
