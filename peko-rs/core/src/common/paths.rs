@@ -94,6 +94,11 @@ pub struct LocalLayout {
     pub cache_dir: PathBuf,
     /// `…/local/locks/` — principal-scoped lock files.
     pub locks_dir: PathBuf,
+    /// `…/local/plans/` — file-backed Plan DAG storage (PR #1 of the
+    /// wiring sequence). One `<plan_id>.jsonl` per plan; `FileLock`-
+    /// coordinated atomic writes; per-principal scope matches the
+    /// runtime-only nature of plan state (never packaged, never shared).
+    pub plans_dir: PathBuf,
 }
 
 /// Typed paths under `{config_dir}/principals/{name}/`.
@@ -397,6 +402,7 @@ impl PathResolver {
                 cron_history: local_root.join("cron").join("history.log"),
                 cache_dir: local_root.join("cache"),
                 locks_dir: local_root.join("locks"),
+                plans_dir: local_root.join("plans"),
             },
             shared: SharedLayout {
                 root: shared_root.clone(),
@@ -829,6 +835,7 @@ impl PathResolver {
         std::fs::create_dir_all(&layout.local.cron_dir)?;
         std::fs::create_dir_all(&layout.local.cache_dir)?;
         std::fs::create_dir_all(&layout.local.locks_dir)?;
+        std::fs::create_dir_all(&layout.local.plans_dir)?;
         Ok(())
     }
 
@@ -988,6 +995,7 @@ mod tests {
         assert!(local.cron_history.ends_with("alice/local/cron/history.log"));
         assert!(local.cache_dir.ends_with("alice/local/cache"));
         assert!(local.locks_dir.ends_with("alice/local/locks"));
+        assert!(local.plans_dir.ends_with("alice/local/plans"));
     }
 
     #[test]

@@ -563,6 +563,103 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko",
         "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
     ),
+    # peko-plan is a leaf domain crate (Phase X).
+    # Allowed deps: peko-subject (PrincipalId), peko-fs-persistence (FileLock).
+    (
+        "peko-plan",
+        "peko-message",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-tools-core",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-extension-api",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-extension-host",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-protocol",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-engine",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-events",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-quota",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-identity",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-auth",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-provider-api",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-providers",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-observability",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-peko-daemon",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-peko-cli",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-chat-log",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-cron",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko-session",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
+    (
+        "peko-plan",
+        "peko",
+        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
+    ),
 ]
 
 

@@ -65,6 +65,10 @@ pub struct RootRouter {
     /// post-`start_tunnel` via [`Self::set_caller_runtime_id`].
     /// When `None`, `principal_send` is not registered.
     caller_runtime_id: StdRwLock<Option<String>>,
+    /// Per-Principal plan DAG port (PR #2 wiring). Copied into every
+    /// `PrincipalContext` produced by `build_context` so the seven
+    /// `PePlan*` tools can be wired into the principal's agents.
+    plan_port: Arc<dyn peko_plan::PlanPort>,
     // F19: removed `quota_meter` field. The engine loop fetches the
     // principal's meter directly from `Principal.quota_meter` at run
     // entrypoint and opens `QuotaScope::with` around the run. No need
@@ -92,6 +96,7 @@ impl RootRouter {
         workspace_path: PathBuf,
         principal_model_id: Option<String>,
         principal_caller_did: Option<String>,
+        plan_port: Arc<dyn peko_plan::PlanPort>,
     ) -> Self {
         Self {
             memory,
@@ -101,6 +106,7 @@ impl RootRouter {
             principal_model_id,
             principal_caller_did,
             caller_runtime_id: StdRwLock::new(None),
+            plan_port,
         }
     }
 
@@ -143,6 +149,8 @@ impl RootRouter {
             // is used.
             ctx.override_model.clone(),
             ctx.principal_id.clone(),
+            // PR #2 wiring: per-Principal plan DAG port.
+            Arc::clone(&self.plan_port),
         );
         principal_ctx.set_root_prompt(self.root_prompt.clone());
         // Phase 4b: bind caller identity so `principal_send` is

@@ -2298,6 +2298,7 @@ dependencies = [
  "peko-identity",
  "peko-message",
  "peko-observability",
+ "peko-plan",
  "peko-protocol",
  "peko-provider-api",
  "peko-providers",
@@ -2559,6 +2560,23 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "peko-plan"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "peko-fs-persistence",
+ "peko-subject",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

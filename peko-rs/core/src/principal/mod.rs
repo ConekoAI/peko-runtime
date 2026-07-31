@@ -88,6 +88,19 @@ pub struct Principal {
     /// engine loop, compactor, subagent executor, and CLI status
     /// reads.
     pub quota_meter: Arc<QuotaMeter>,
+    /// Plan DAG port (Phase 12+, PR #1 of the wiring sequence).
+    /// Per-principal storage of multi-step plans. Held as
+    /// `Arc<dyn PlanPort>` (NOT concrete `Arc<PlanStorage>`) so
+    /// future impls — in-memory for tests, network-backed for
+    /// distributed deployments — slot in without rewriting field
+    /// types. Constructed lazily when the principal is
+    /// created/loaded, from
+    /// `path_resolver.principal_layout(name).local.plans_dir`.
+    ///
+    /// Reached via `principal.plan_port`; no separate `AppState`
+    /// plumbing needed (plans are per-principal, not runtime-global
+    /// like `chat_log_store`).
+    pub plan_port: Arc<dyn peko_plan::PlanPort>,
 }
 
 impl Principal {

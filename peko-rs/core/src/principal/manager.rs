@@ -23,9 +23,16 @@ use peko_extension_api::SteeringMessage;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
 use peko_observability::Observability;
+use peko_plan::{PlanNodeStatus, PlanRecord};
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_subject::PrincipalDID;
+
+/// Maximum number of resumed plans injected into the router context at
+/// session start. Bounds token burn per turn when a principal has many
+/// stale open plans; `load_resumable` returns them ordered by
+/// `updated_at DESC`, then we cap here.
+const PLAN_INJECTION_CAP: usize = 5;
 
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
@@ -280,6 +287,15 @@ impl PrincipalManager {
         .map_err(|e| PrincipalManagerError::Config(format!("quota meter init: {e}")))?;
         let quota_meter = Arc::new(quota_meter);
 
+        // Phase 12+ PR #1: per-principal plan DAG storage. The
+        // concrete `PlanStorage` is wrapped in `Arc<dyn PlanPort>` —
+        // the principal harness reaches plans through the dyn-trait
+        // boundary so future impls (in-memory, network-backed) slot
+        // in without rewriting this construction site.
+        let plan_port: Arc<dyn peko_plan::PlanPort> = Arc::new(peko_plan::PlanStorage::new(
+            layout.local.plans_dir.clone(),
+        ));
+
         let router = self
             .router_factory
             .create(
@@ -287,6 +303,7 @@ impl PrincipalManager {
                 memory.clone(),
                 &layout.shared.root,
                 self.resolver.clone(),
+                plan_port.clone(),
             )
             .await;
 
@@ -300,6 +317,7 @@ impl PrincipalManager {
             router,
             agent_prompts,
             quota_meter,
+            plan_port,
         });
 
         self.principals
@@ -368,6 +386,12 @@ impl PrincipalManager {
         .map_err(|e| PrincipalManagerError::Config(format!("quota meter init: {e}")))?;
         let quota_meter = Arc::new(quota_meter);
 
+        // Phase 12+ PR #1: per-principal plan DAG storage. Same shape
+        // as the `create` site above.
+        let plan_port: Arc<dyn peko_plan::PlanPort> = Arc::new(peko_plan::PlanStorage::new(
+            layout.local.plans_dir.clone(),
+        ));
+
         let router = self
             .router_factory
             .create(
@@ -375,6 +399,7 @@ impl PrincipalManager {
                 memory.clone(),
                 &workspace_path,
                 self.resolver.clone(),
+                plan_port.clone(),
             )
             .await;
         let agent_prompts = discover_agent_prompts(&layout.shared.agents_dir).await?;
@@ -387,6 +412,7 @@ impl PrincipalManager {
             router,
             agent_prompts,
             quota_meter,
+            plan_port,
         });
 
         self.principals
@@ -683,6 +709,40 @@ impl PrincipalManager {
                 id: artifact.session_id.clone(),
                 content: artifact.summary.unwrap_or_default(),
             });
+        }
+
+        // Phase 12+ PR #4: surface every open plan with unresolved
+        // nodes into the router context, ordered by `updated_at DESC`
+        // (most recently active first) and capped at
+        // `PLAN_INJECTION_CAP` so a principal with dozens of stale
+        // plans doesn't blow the system prompt. `load_resumable`
+        // supersedes the single-`current_focus` call from PR #3: any
+        // plan `current_focus` would have surfaced is included here,
+        // plus everything else still resumable. Port errors and empty
+        // results both skip the push so a transient storage failure
+        // cannot block session start.
+        match principal.plan_port.load_resumable(&principal.id).await {
+            Ok(mut plans) => {
+                plans.sort_by(|a, b| {
+                    b.updated_at
+                        .cmp(&a.updated_at)
+                        .then_with(|| a.plan_id.cmp(&b.plan_id))
+                });
+                for record in plans.into_iter().take(PLAN_INJECTION_CAP) {
+                    recalled_context.push(super::router::ContextInjection {
+                        kind: super::router::ContextInjectionKind::Plan,
+                        id: record.plan_id.clone(),
+                        content: render_plan_focus_block(&record),
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    principal_id = %principal.id,
+                    error = %e,
+                    "plan_port.load_resumable failed during build_router_context; skipping plan injection"
+                );
+            }
         }
 
         let (
@@ -1834,4 +1894,351 @@ mod tests {
         // Sanity: the principal id round-trips.
         let _ = id;
     }
+
+    /// Phase 12+ PR #3: an open plan with an InProgress node surfaces
+    /// in `recalled_context` as a `Plan` injection, carrying the
+    /// title + actionable node ids so the agent knows it's resuming
+    /// work without an explicit `PePlanGet` call.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn build_router_context_includes_plan_focus() {
+        let (_temp, manager, _adapter, _id) = setup().await;
+        let principal = manager.get_by_name("stressy").await.expect("principal");
+
+        // Seed a plan with one Pending and one InProgress node so
+        // current_focus returns this plan.
+        let now = chrono::Utc::now();
+        let plan = principal
+            .plan_port
+            .create(
+                principal.id.clone(),
+                "Migrate auth".to_string(),
+                vec![
+                    peko_plan::PlanNode {
+                        node_id: peko_plan::NodeId::generate(),
+                        step: "Wire SQLX".to_string(),
+                        status: peko_plan::PlanNodeStatus::Pending,
+                        depends_on: vec![],
+                        evidence: None,
+                        blocked_reason: None,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                    peko_plan::PlanNode {
+                        node_id: peko_plan::NodeId::generate(),
+                        step: "Add smoke tests".to_string(),
+                        status: peko_plan::PlanNodeStatus::InProgress,
+                        depends_on: vec![],
+                        evidence: None,
+                        blocked_reason: None,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                ],
+            )
+            .await
+            .expect("create plan");
+
+        let ctx = manager
+            .build_router_context(
+                &principal,
+                Subject::User("test-owner".to_string()),
+                "hello".to_string(),
+                cli_channel(),
+                None,
+            )
+            .await
+            .expect("build_router_context should succeed");
+
+        let plan_injection = ctx
+            .recalled_context
+            .iter()
+            .find(|i| matches!(i.kind, super::super::router::ContextInjectionKind::Plan))
+            .expect("plan injection should be present");
+
+        assert_eq!(plan_injection.id, plan.plan_id);
+        assert!(
+            plan_injection.content.contains("Migrate auth"),
+            "body should include title; got: {}",
+            plan_injection.content
+        );
+        assert!(
+            plan_injection.content.contains("Add smoke tests"),
+            "body should include InProgress step; got: {}",
+            plan_injection.content
+        );
+        assert!(
+            plan_injection.content.contains("In progress"),
+            "body should label section; got: {}",
+            plan_injection.content
+        );
+    }
+
+    /// When the principal has no open plan with InProgress nodes,
+    /// `current_focus` returns `Ok(None)` and the Plan injection is
+    /// omitted — no empty block, no token burn.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn build_router_context_omits_plan_when_none() {
+        let (_temp, manager, _adapter, _id) = setup().await;
+        let principal = manager.get_by_name("stressy").await.expect("principal");
+
+        // No plan created → current_focus returns Ok(None).
+        let ctx = manager
+            .build_router_context(
+                &principal,
+                Subject::User("test-owner".to_string()),
+                "hello".to_string(),
+                cli_channel(),
+                None,
+            )
+            .await
+            .expect("build_router_context should succeed");
+
+        let plan_count = ctx
+            .recalled_context
+            .iter()
+            .filter(|i| matches!(i.kind, super::super::router::ContextInjectionKind::Plan))
+            .count();
+        assert_eq!(
+            plan_count, 0,
+            "no Plan injection should be pushed when current_focus returns None"
+        );
+    }
+
+    /// Phase 12+ PR #4: when the principal has multiple open plans
+    /// with unresolved nodes, every resumable plan is injected as its
+    /// own `ContextInjectionKind::Plan` block — not just the
+    /// most-recently-updated one. Three open plans ⇒ three Plan
+    /// injections, in `updated_at DESC` order.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn build_router_context_injects_all_resumable_plans() {
+        let (_temp, manager, _adapter, _id) = setup().await;
+        let principal = manager.get_by_name("stressy").await.expect("principal");
+
+        let now = chrono::Utc::now();
+        let mk = |title: &str, status: peko_plan::PlanNodeStatus| peko_plan::PlanNode {
+            node_id: peko_plan::NodeId::generate(),
+            step: format!("{title}-step"),
+            status,
+            depends_on: vec![],
+            evidence: None,
+            blocked_reason: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let a = principal
+            .plan_port
+            .create(
+                principal.id.clone(),
+                "alpha".to_string(),
+                vec![mk("alpha", peko_plan::PlanNodeStatus::InProgress)],
+            )
+            .await
+            .expect("create a");
+        let b = principal
+            .plan_port
+            .create(
+                principal.id.clone(),
+                "beta".to_string(),
+                vec![mk("beta", peko_plan::PlanNodeStatus::Pending)],
+            )
+            .await
+            .expect("create b");
+        let c = principal
+            .plan_port
+            .create(
+                principal.id.clone(),
+                "gamma".to_string(),
+                vec![mk(
+                    "gamma",
+                    peko_plan::PlanNodeStatus::Blocked {
+                        reason: "needs review".into(),
+                        since: now,
+                    },
+                )],
+            )
+            .await
+            .expect("create c");
+
+        let ctx = manager
+            .build_router_context(
+                &principal,
+                Subject::User("test-owner".to_string()),
+                "hello".to_string(),
+                cli_channel(),
+                None,
+            )
+            .await
+            .expect("build_router_context should succeed");
+
+        let plan_injections: Vec<_> = ctx
+            .recalled_context
+            .iter()
+            .filter(|i| matches!(i.kind, super::super::router::ContextInjectionKind::Plan))
+            .collect();
+        assert_eq!(
+            plan_injections.len(),
+            3,
+            "all three open plans should surface; got {:?}",
+            plan_injections
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        let ids: std::collections::HashSet<&str> = plan_injections
+            .iter()
+            .map(|i| i.id.as_str())
+            .collect();
+        assert!(ids.contains(a.plan_id.as_str()));
+        assert!(ids.contains(b.plan_id.as_str()));
+        assert!(ids.contains(c.plan_id.as_str()));
+    }
+
+    /// Phase 12+ PR #4: even when the principal has more than
+    /// `PLAN_INJECTION_CAP` resumable plans, only the cap-many most
+    /// recently updated ones are injected. Plans are ordered by
+    /// `updated_at DESC`; ties break by `plan_id` ascending
+    /// (lexicographic).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn build_router_context_caps_plan_injections_at_five() {
+        let (_temp, manager, _adapter, _id) = setup().await;
+        let principal = manager.get_by_name("stressy").await.expect("principal");
+
+        let now = chrono::Utc::now();
+        let mk = |step: &str| peko_plan::PlanNode {
+            node_id: peko_plan::NodeId::generate(),
+            step: step.to_string(),
+            status: peko_plan::PlanNodeStatus::Pending,
+            depends_on: vec![],
+            evidence: None,
+            blocked_reason: None,
+            created_at: now,
+            updated_at: now,
+        };
+        // Seed 8 plans. Each create() stamps `updated_at` to a
+        // strictly later instant, so the order of creation is the
+        // order of `updated_at DESC`.
+        let mut created_ids = Vec::new();
+        for i in 0..8 {
+            let record = principal
+                .plan_port
+                .create(
+                    principal.id.clone(),
+                    format!("plan-{i:02}"),
+                    vec![mk(&format!("step-{i:02}"))],
+                )
+                .await
+                .expect("create");
+            created_ids.push(record.plan_id.clone());
+        }
+
+        let ctx = manager
+            .build_router_context(
+                &principal,
+                Subject::User("test-owner".to_string()),
+                "hello".to_string(),
+                cli_channel(),
+                None,
+            )
+            .await
+            .expect("build_router_context should succeed");
+
+        let plan_injections: Vec<&super::super::router::ContextInjection> = ctx
+            .recalled_context
+            .iter()
+            .filter(|i| matches!(i.kind, super::super::router::ContextInjectionKind::Plan))
+            .collect();
+        assert_eq!(
+            plan_injections.len(),
+            5,
+            "exactly 5 plans should be injected; got {}",
+            plan_injections.len()
+        );
+        // The 5 most-recently-created plans (indices 7..3 from the
+        // seed loop) are the survivors; the 3 oldest (indices 0..3)
+        // are dropped by the cap.
+        let expected_ids: Vec<&str> = created_ids
+            .iter()
+            .rev()
+            .take(5)
+            .map(String::as_str)
+            .collect();
+        let actual_ids: Vec<&str> = plan_injections.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            actual_ids, expected_ids,
+            "plan injections must be ordered by updated_at DESC"
+        );
+    }
+}
+
+/// Render the body of a `ContextInjectionKind::Plan` block from a
+/// `PlanRecord`. Plain-text shape mirrors the rest of the
+/// `ContextInjection.content` surface (memory, session, file, todo
+/// are all free-form strings). Sections:
+///   - header: plan title + plan_id
+///   - "In progress" — `current_focus_nodes` (drive forward)
+///   - "Ready next" — `ready_nodes` (deps satisfied, status Pending)
+///   - "Needs attention" — blocked/failed nodes (warnings)
+fn render_plan_focus_block(record: &PlanRecord) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Plan: {} ({})\n",
+        record.title, record.plan_id
+    ));
+
+    let in_progress = record.current_focus_nodes();
+    if !in_progress.is_empty() {
+        out.push_str("\nIn progress:\n");
+        for n in &in_progress {
+            out.push_str(&format!("  - [{}] {}\n", n.node_id.as_str(), n.step));
+        }
+    }
+
+    let ready = record.ready_nodes();
+    if !ready.is_empty() {
+        out.push_str("\nReady next:\n");
+        for n in &ready {
+            out.push_str(&format!("  - [{}] {}\n", n.node_id.as_str(), n.step));
+        }
+    }
+
+    // Blocked + Failed nodes get surfaced as warnings regardless of
+    // current_focus_nodes() membership.
+    let attention: Vec<&peko_plan::PlanNode> = record
+        .nodes
+        .iter()
+        .filter(|n| {
+            matches!(
+                n.status,
+                PlanNodeStatus::Blocked { .. } | PlanNodeStatus::Failed { .. }
+            )
+        })
+        .collect();
+    if !attention.is_empty() {
+        out.push_str("\nNeeds attention:\n");
+        for n in &attention {
+            let reason = match &n.status {
+                PlanNodeStatus::Blocked { reason, .. } => reason.clone(),
+                PlanNodeStatus::Failed { reason, .. } => reason.clone(),
+                _ => String::new(),
+            };
+            let status_label = match &n.status {
+                PlanNodeStatus::Blocked { .. } => "blocked",
+                PlanNodeStatus::Failed { .. } => "failed",
+                _ => "unknown",
+            };
+            out.push_str(&format!(
+                "  - [{}] ({}): {} ({})\n",
+                n.node_id.as_str(),
+                status_label,
+                n.step,
+                reason
+            ));
+        }
+    }
+
+    out
 }

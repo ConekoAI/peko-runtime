@@ -112,6 +112,16 @@ pub struct Agent {
     /// extension is present in this set in addition to the capability
     /// grant check. Subagents inherit the same snapshot.
     principal_active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
+    /// Spawning principal's plan DAG port. Populated via
+    /// `with_principal_plan_port` from
+    /// `PrincipalContext::plan_port().clone()` in `agent_runner.rs`
+    /// (the `Agent::new_with_session_manager_resolver` chain).
+    /// Used by `init_builtins_async` to build the seven
+    /// `PePlan*` tools. `None` means the agent is unbound from
+    /// any principal and the plan tools are not registered (test-
+    /// only `Agent::new` / `Agent::new_for_test` callers hit this
+    /// path).
+    principal_plan_port: Option<Arc<dyn peko_plan::PlanPort>>,
 }
 
 impl Clone for Agent {
@@ -139,6 +149,7 @@ impl Clone for Agent {
             principal_name: self.principal_name.clone(),
             principal_capabilities: self.principal_capabilities.clone(),
             principal_active_extensions: self.principal_active_extensions.clone(),
+            principal_plan_port: self.principal_plan_port.clone(),
         }
     }
 }
@@ -241,6 +252,41 @@ impl Agent {
         // here. They are registered per-agent inside `build_agentic_loop`, bound
         // to the agent's own `AsyncExecutor` registry so each agent only sees its
         // own async tasks (session isolation).
+
+        // peko_plan DAG tools (PR #2 of four in the wiring sequence).
+        // The 7 `PePlan*` tools wrap `peko_plan::PlanPort` and require a
+        // per-Principal port handle bound via
+        // `Agent::with_principal_plan_port`. Without that binding the
+        // tools are intentionally not registered — test-only
+        // `Agent::new` callers hit this path. Mirrors the Task* shape:
+        // config-gated first, runtime-handle-gated second, otherwise
+        // warn-level skip.
+        if self.config.enable_plan_tools {
+            if let Some(plan_port) = self.principal_plan_port.as_ref().cloned() {
+                use crate::tools::builtin::{
+                    PePlanAddStepTool, PePlanCloseTool, PePlanCreateTool, PePlanGetTool,
+                    PePlanListTool, PePlanMarkStepTool, PePlanRecordEvidenceTool,
+                };
+                tools.push(Arc::new(PePlanCreateTool::new(plan_port.clone())));
+                tools.push(Arc::new(PePlanListTool::new(plan_port.clone())));
+                tools.push(Arc::new(PePlanGetTool::new(plan_port.clone())));
+                tools.push(Arc::new(PePlanMarkStepTool::new(plan_port.clone())));
+                tools.push(Arc::new(PePlanRecordEvidenceTool::new(plan_port.clone())));
+                tools.push(Arc::new(PePlanAddStepTool::new(plan_port.clone())));
+                tools.push(Arc::new(PePlanCloseTool::new(plan_port)));
+            } else {
+                tracing::warn!(
+                    "Plan tools enabled by config for agent '{}' but no principal_plan_port \
+                     was bound — PePlan* tools will not be registered",
+                    self.config.name
+                );
+            }
+        } else {
+            tracing::debug!(
+                "Plan tools disabled by config for agent '{}'",
+                self.config.name
+            );
+        }
 
         // Add principal_send tool for principal-to-principal cross-runtime
         // messaging. Replaces the legacy `a2a_send` tool (ADR-023 +
@@ -597,6 +643,7 @@ impl Agent {
             principal_name: None,
             principal_capabilities: None,
             principal_active_extensions: None,
+            principal_plan_port: None,
         };
 
         info!(
@@ -700,6 +747,35 @@ impl Agent {
             .with_active_extensions(active_extensions.clone());
         self.subagent_executor = Arc::new(executor);
         self.principal_active_extensions = active_extensions;
+        self
+    }
+
+    /// Bind the spawning principal's `peko_plan::PlanPort` for this
+    /// agent.
+    ///
+    /// `plan_port` is the per-Principal handle to the plan DAG store
+    /// (`PrincipalContext::plan_port()`). When `Some`, the seven
+    /// `PePlan*` built-in tools (`PePlanCreate` / `PePlanList` /
+    /// `PePlanGet` / `PePlanMarkStep` / `PePlanRecordEvidence` /
+    /// `PePlanAddStep` / `PePlanClose`) are registered by
+    /// `init_builtins_async`; when `None` they are skipped even if
+    /// `AgentConfig::enable_plan_tools` is `true` (the typical test
+    /// path).
+    ///
+    /// The handle is propagated to the subagent executor so depth-1
+    /// children inherit the same per-Principal port and `init_builtins_async`
+    /// on the child also wires the seven tools (subagents can manage
+    /// plans on behalf of their spawning principal).
+    #[must_use]
+    pub fn with_principal_plan_port(
+        mut self,
+        plan_port: Arc<dyn peko_plan::PlanPort>,
+    ) -> Self {
+        let executor = (*self.subagent_executor)
+            .clone()
+            .with_principal_plan_port(plan_port.clone());
+        self.subagent_executor = Arc::new(executor);
+        self.principal_plan_port = Some(plan_port);
         self
     }
 
@@ -870,6 +946,7 @@ impl Agent {
             principal_name,
             principal_capabilities,
             principal_active_extensions,
+            principal_plan_port: None,
         };
 
         info!(
@@ -2029,6 +2106,7 @@ impl Agent {
             principal_name: None,
             principal_capabilities: None,
             principal_active_extensions: None,
+            principal_plan_port: None,
         })
     }
 

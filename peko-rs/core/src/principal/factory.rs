@@ -28,6 +28,11 @@ pub trait PrincipalRouterFactory: Send + Sync {
         memory: Arc<dyn PrincipalMemory>,
         workspace_path: &std::path::Path,
         resolver: Option<Arc<LlmResolver>>,
+        // PR #2 wiring: per-Principal plan DAG port. Threaded into
+        // `RootRouter::new` and then into every `PrincipalContext`
+        // produced by `RootRouter::build_context` so the seven
+        // `PePlan*` tools can be wired into the principal's agents.
+        plan_port: Arc<dyn peko_plan::PlanPort>,
     ) -> Arc<dyn super::router::PrincipalRouter>;
 }
 
@@ -67,6 +72,7 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
         memory: Arc<dyn PrincipalMemory>,
         workspace_path: &std::path::Path,
         resolver: Option<Arc<LlmResolver>>,
+        plan_port: Arc<dyn peko_plan::PlanPort>,
     ) -> Arc<dyn super::router::PrincipalRouter> {
         // Phase A: derive the typed agents dir from the Shared
         // tier root (the `workspace_path` parameter is the
@@ -89,6 +95,7 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
             workspace_path.to_path_buf(),
             config.preferred_model_id.clone(),
             principal_caller_did,
+            plan_port,
         ))
     }
 }

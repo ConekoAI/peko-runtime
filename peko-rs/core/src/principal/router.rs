@@ -34,6 +34,12 @@ pub enum ContextInjectionKind {
     Session,
     File,
     Todo,
+    /// Active plan (from `peko_plan::PlanPort::current_focus`).
+    /// Phase 12+ PR #3 — surfaces the principal's in-flight plan
+    /// nodes so every fresh session's system prompt carries
+    /// what the agent is in the middle of, without requiring
+    /// an explicit `PePlanGet` call first.
+    Plan,
 }
 
 impl fmt::Display for ContextInjectionKind {
@@ -43,6 +49,7 @@ impl fmt::Display for ContextInjectionKind {
             Self::Session => write!(f, "session"),
             Self::File => write!(f, "file"),
             Self::Todo => write!(f, "todo"),
+            Self::Plan => write!(f, "plan"),
         }
     }
 }
@@ -273,5 +280,6 @@ mod tests {
         assert_eq!(ContextInjectionKind::Session.to_string(), "session");
         assert_eq!(ContextInjectionKind::File.to_string(), "file");
         assert_eq!(ContextInjectionKind::Todo.to_string(), "todo");
+        assert_eq!(ContextInjectionKind::Plan.to_string(), "plan");
     }
 }
