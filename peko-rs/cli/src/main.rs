@@ -3,6 +3,7 @@
 
 use clap::Parser;
 use clap_complete::generate;
+use std::io::Write;
 
 /// `peko` runtime version, lifted from a crate root constant so the CLI can
 /// answer `peko version`, `peko update --check`, and the F33/F38 startup
@@ -150,10 +151,22 @@ async fn run_command(
         }
         Commands::Update { check, force } => update::handle_update(check, force).await,
         Commands::Completions { shell } => {
+            // Render to a buffer first, then write to stdout. This keeps
+            // `peko completions <shell> | head` from panicking: a
+            // downstream SIGPIPE becomes a soft BrokenPipe on the
+            // final `write_all` (which we silently swallow), instead
+            // of bubbling up through clap_complete and crashing with
+            // a stack trace (see e2e/reports/2026-08-01-non-technical-user-field-test.md
+            // — "Bug 1: completions BrokenPipe panic").
             let mut cmd = <Cli as clap::CommandFactory>::command();
             let name = cmd.get_name().to_string();
-            generate(shell, &mut cmd, name, &mut std::io::stdout());
-            Ok(())
+            let mut buf: Vec<u8> = Vec::new();
+            generate(shell, &mut cmd, name, &mut buf);
+            match std::io::stdout().write_all(&buf) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                Err(e) => Err(e.into()),
+            }
         }
         Commands::Version(args) => version::handle_version(&args, json),
     }
