@@ -31,7 +31,7 @@ pub trait PrincipalRouterFactory: Send + Sync {
         // PR #2 wiring: per-Principal plan DAG port. Threaded into
         // `RootRouter::new` and then into every `PrincipalContext`
         // produced by `RootRouter::build_context` so the seven
-        // `PePlan*` tools can be wired into the principal's agents.
+        // `Plan*` tools can be wired into the principal's agents.
         plan_port: Arc<dyn peko_plan::PlanPort>,
     ) -> Arc<dyn super::router::PrincipalRouter>;
 }

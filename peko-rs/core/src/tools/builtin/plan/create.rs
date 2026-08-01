@@ -1,4 +1,4 @@
-//! `PePlanCreate` — create a new multi-step execution plan.
+//! `PlanCreate` — create a new multi-step execution plan.
 
 use async_trait::async_trait;
 use peko_plan::{PlanNode, PlanNodeStatus};
@@ -8,11 +8,11 @@ use serde_json::json;
 use crate::tools::builtin::plan::{require_principal_id, resolve_node_id, SharedPlanPort};
 
 /// Create a new plan in the principal's `plans/` directory.
-pub struct PePlanCreateTool {
+pub struct PlanCreateTool {
     plan_port: SharedPlanPort,
 }
 
-impl PePlanCreateTool {
+impl PlanCreateTool {
     #[must_use]
     pub fn new(plan_port: SharedPlanPort) -> Self {
         Self { plan_port }
@@ -20,9 +20,9 @@ impl PePlanCreateTool {
 }
 
 #[async_trait]
-impl Tool for PePlanCreateTool {
+impl Tool for PlanCreateTool {
     fn name(&self) -> &'static str {
-        "PePlanCreate"
+        "PlanCreate"
     }
 
     fn description(&self) -> String {
@@ -85,7 +85,7 @@ auto-assigned node id."
         })
     }
 
-    /// F33 race guard: two concurrent PePlanCreate calls in the same
+    /// F33 race guard: two concurrent PlanCreate calls in the same
     /// principal's plans dir can race on plan_id assignment and
     /// node-id collision checks.
     fn parallelizable(&self) -> bool {
@@ -105,12 +105,12 @@ auto-assigned node id."
         let title = params
             .get("title")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PePlanCreate requires 'title'"))?
+            .ok_or_else(|| anyhow::anyhow!("PlanCreate requires 'title'"))?
             .to_string();
         let nodes_json = params
             .get("nodes")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| anyhow::anyhow!("PePlanCreate requires 'nodes' array"))?;
+            .ok_or_else(|| anyhow::anyhow!("PlanCreate requires 'nodes' array"))?;
         let nodes = parse_nodes(nodes_json)?;
         let record = self.plan_port.create(principal_id, title, nodes).await?;
         Ok(serde_json::to_value(record)?)
@@ -170,14 +170,14 @@ mod tests {
     use serde_json::json;
 
     fn ctx_with_principal() -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PePlanCreate")
+        ToolContext::for_hook_run("run", "tc", "PlanCreate")
             .with_principal_id(peko_subject::PrincipalId::generate().0)
     }
 
     #[tokio::test]
     async fn create_plan_basic_happy_path() {
         let port = std::sync::Arc::new(TestPlanPort::new());
-        let tool = PePlanCreateTool::new(port);
+        let tool = PlanCreateTool::new(port);
         let result = tool
             .execute_with_context(
                 json!({
@@ -205,7 +205,7 @@ mod tests {
     #[tokio::test]
     async fn create_plan_requires_title() {
         let port = std::sync::Arc::new(TestPlanPort::new());
-        let tool = PePlanCreateTool::new(port);
+        let tool = PlanCreateTool::new(port);
         let result = tool
             .execute_with_context(
                 json!({ "nodes": [{ "step": "only" }] }),
@@ -218,7 +218,7 @@ mod tests {
     #[tokio::test]
     async fn create_plan_requires_nodes() {
         let port = std::sync::Arc::new(TestPlanPort::new());
-        let tool = PePlanCreateTool::new(port);
+        let tool = PlanCreateTool::new(port);
         let result = tool
             .execute_with_context(
                 json!({ "title": "x" }),
@@ -231,9 +231,9 @@ mod tests {
     #[tokio::test]
     async fn create_plan_requires_principal_context() {
         let port = std::sync::Arc::new(TestPlanPort::new());
-        let tool = PePlanCreateTool::new(port);
+        let tool = PlanCreateTool::new(port);
         // No principal_id in ctx.
-        let ctx = ToolContext::for_hook_run("run", "tc", "PePlanCreate");
+        let ctx = ToolContext::for_hook_run("run", "tc", "PlanCreate");
         let result = tool
             .execute_with_context(
                 json!({ "title": "x", "nodes": [{ "step": "y" }] }),

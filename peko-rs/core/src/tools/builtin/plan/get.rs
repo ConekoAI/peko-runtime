@@ -1,4 +1,4 @@
-//! `PePlanGet` — fetch a single plan by id (with principal-scope check).
+//! `PlanGet` — fetch a single plan by id (with principal-scope check).
 
 use async_trait::async_trait;
 use peko_tools_core::{Tool, ToolContext};
@@ -7,11 +7,11 @@ use serde_json::json;
 use crate::tools::builtin::plan::{require_principal_id, SharedPlanPort};
 
 /// Fetch a single plan by id, scoped to the calling principal.
-pub struct PePlanGetTool {
+pub struct PlanGetTool {
     plan_port: SharedPlanPort,
 }
 
-impl PePlanGetTool {
+impl PlanGetTool {
     #[must_use]
     pub fn new(plan_port: SharedPlanPort) -> Self {
         Self { plan_port }
@@ -19,9 +19,9 @@ impl PePlanGetTool {
 }
 
 #[async_trait]
-impl Tool for PePlanGetTool {
+impl Tool for PlanGetTool {
     fn name(&self) -> &'static str {
-        "PePlanGet"
+        "PlanGet"
     }
 
     fn description(&self) -> String {
@@ -43,7 +43,7 @@ principal (PrincipalMismatch — a corruption signal)."
             "properties": {
                 "planId": {
                     "type": "string",
-                    "description": "Plan id returned by PePlanCreate (e.g., 'plan_01abc...')."
+                    "description": "Plan id returned by PlanCreate (e.g., 'plan_01abc...')."
                 }
             },
             "required": ["planId"]
@@ -67,7 +67,7 @@ principal (PrincipalMismatch — a corruption signal)."
         let plan_id = params
             .get("planId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PePlanGet requires 'planId'"))?
+            .ok_or_else(|| anyhow::anyhow!("PlanGet requires 'planId'"))?
             .to_string();
         match self.plan_port.get_for_principal(&plan_id, &principal_id).await {
             Ok(rec) => Ok(serde_json::to_value(rec)?),
@@ -85,12 +85,12 @@ principal (PrincipalMismatch — a corruption signal)."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::plan::{PePlanCreateTool, TestPlanPort};
+    use crate::tools::builtin::plan::{PlanCreateTool, TestPlanPort};
     use peko_tools_core::ToolContext;
     use serde_json::json;
 
     fn ctx_with(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PePlanGet")
+        ToolContext::for_hook_run("run", "tc", "PlanGet")
             .with_principal_id(id.0)
     }
 
@@ -98,7 +98,7 @@ mod tests {
     async fn get_returns_existing_plan() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PePlanCreateTool::new(port.clone());
+        let create = PlanCreateTool::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "x", "nodes": [{ "step": "a" }] }),
@@ -107,7 +107,7 @@ mod tests {
             .await
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
-        let tool = PePlanGetTool::new(port);
+        let tool = PlanGetTool::new(port);
         let got = tool
             .execute_with_context(json!({ "planId": plan_id }), &ctx_with(p))
             .await
@@ -119,7 +119,7 @@ mod tests {
     async fn get_returns_soft_error_for_missing_plan() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let tool = PePlanGetTool::new(port);
+        let tool = PlanGetTool::new(port);
         let got = tool
             .execute_with_context(
                 json!({ "planId": "plan_doesnotexist" }),
@@ -136,7 +136,7 @@ mod tests {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let owner = peko_subject::PrincipalId::generate();
         let other = peko_subject::PrincipalId::generate();
-        let create = PePlanCreateTool::new(port.clone());
+        let create = PlanCreateTool::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "x", "nodes": [{ "step": "a" }] }),
@@ -145,7 +145,7 @@ mod tests {
             .await
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
-        let tool = PePlanGetTool::new(port);
+        let tool = PlanGetTool::new(port);
         let res = tool
             .execute_with_context(json!({ "planId": plan_id }), &ctx_with(other))
             .await;

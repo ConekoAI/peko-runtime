@@ -117,7 +117,7 @@ pub struct Agent {
     /// `PrincipalContext::plan_port().clone()` in `agent_runner.rs`
     /// (the `Agent::new_with_session_manager_resolver` chain).
     /// Used by `init_builtins_async` to build the seven
-    /// `PePlan*` tools. `None` means the agent is unbound from
+    /// `Plan*` tools. `None` means the agent is unbound from
     /// any principal and the plan tools are not registered (test-
     /// only `Agent::new` / `Agent::new_for_test` callers hit this
     /// path).
@@ -254,7 +254,7 @@ impl Agent {
         // own async tasks (session isolation).
 
         // peko_plan DAG tools (PR #2 of four in the wiring sequence).
-        // The 7 `PePlan*` tools wrap `peko_plan::PlanPort` and require a
+        // The 7 `Plan*` tools wrap `peko_plan::PlanPort` and require a
         // per-Principal port handle bound via
         // `Agent::with_principal_plan_port`. Without that binding the
         // tools are intentionally not registered — test-only
@@ -264,20 +264,20 @@ impl Agent {
         if self.config.enable_plan_tools {
             if let Some(plan_port) = self.principal_plan_port.as_ref().cloned() {
                 use crate::tools::builtin::{
-                    PePlanAddStepTool, PePlanCloseTool, PePlanCreateTool, PePlanGetTool,
-                    PePlanListTool, PePlanMarkStepTool, PePlanRecordEvidenceTool,
+                    PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool,
+                    PlanListTool, PlanMarkStepTool, PlanRecordEvidenceTool,
                 };
-                tools.push(Arc::new(PePlanCreateTool::new(plan_port.clone())));
-                tools.push(Arc::new(PePlanListTool::new(plan_port.clone())));
-                tools.push(Arc::new(PePlanGetTool::new(plan_port.clone())));
-                tools.push(Arc::new(PePlanMarkStepTool::new(plan_port.clone())));
-                tools.push(Arc::new(PePlanRecordEvidenceTool::new(plan_port.clone())));
-                tools.push(Arc::new(PePlanAddStepTool::new(plan_port.clone())));
-                tools.push(Arc::new(PePlanCloseTool::new(plan_port)));
+                tools.push(Arc::new(PlanCreateTool::new(plan_port.clone())));
+                tools.push(Arc::new(PlanListTool::new(plan_port.clone())));
+                tools.push(Arc::new(PlanGetTool::new(plan_port.clone())));
+                tools.push(Arc::new(PlanMarkStepTool::new(plan_port.clone())));
+                tools.push(Arc::new(PlanRecordEvidenceTool::new(plan_port.clone())));
+                tools.push(Arc::new(PlanAddStepTool::new(plan_port.clone())));
+                tools.push(Arc::new(PlanCloseTool::new(plan_port)));
             } else {
                 tracing::warn!(
                     "Plan tools enabled by config for agent '{}' but no principal_plan_port \
-                     was bound — PePlan* tools will not be registered",
+                     was bound — Plan* tools will not be registered",
                     self.config.name
                 );
             }
@@ -755,9 +755,9 @@ impl Agent {
     ///
     /// `plan_port` is the per-Principal handle to the plan DAG store
     /// (`PrincipalContext::plan_port()`). When `Some`, the seven
-    /// `PePlan*` built-in tools (`PePlanCreate` / `PePlanList` /
-    /// `PePlanGet` / `PePlanMarkStep` / `PePlanRecordEvidence` /
-    /// `PePlanAddStep` / `PePlanClose`) are registered by
+    /// `Plan*` built-in tools (`PlanCreate` / `PlanList` /
+    /// `PlanGet` / `PlanMarkStep` / `PlanRecordEvidence` /
+    /// `PlanAddStep` / `PlanClose`) are registered by
     /// `init_builtins_async`; when `None` they are skipped even if
     /// `AgentConfig::enable_plan_tools` is `true` (the typical test
     /// path).

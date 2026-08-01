@@ -38,7 +38,7 @@ pub enum ContextInjectionKind {
     /// Phase 12+ PR #3 — surfaces the principal's in-flight plan
     /// nodes so every fresh session's system prompt carries
     /// what the agent is in the middle of, without requiring
-    /// an explicit `PePlanGet` call first.
+    /// an explicit `PlanGet` call first.
     Plan,
 }
 

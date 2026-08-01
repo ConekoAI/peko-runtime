@@ -67,7 +67,7 @@ pub struct RootRouter {
     caller_runtime_id: StdRwLock<Option<String>>,
     /// Per-Principal plan DAG port (PR #2 wiring). Copied into every
     /// `PrincipalContext` produced by `build_context` so the seven
-    /// `PePlan*` tools can be wired into the principal's agents.
+    /// `Plan*` tools can be wired into the principal's agents.
     plan_port: Arc<dyn peko_plan::PlanPort>,
     // F19: removed `quota_meter` field. The engine loop fetches the
     // principal's meter directly from `Principal.quota_meter` at run

@@ -17,7 +17,7 @@
 //! - Resume-on-session-start re-injection (PR #4).
 //!
 //! What lives here as of PR #2 (shipped 2026-07-31):
-//! - The 7 `PePlan*` tool handlers are NOT in this crate — they live
+//! - The 7 `Plan*` tool handlers are NOT in this crate — they live
 //!   in `peko-rs/core/src/tools/builtin/plan/` and reach the storage
 //!   via the [`PlanPort`] trait below. This crate stays pure data
 //!   + storage; the tool surface is root-side.

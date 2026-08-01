@@ -215,6 +215,19 @@ impl Capabilities {
             "tool:TaskList",
             "tool:TaskGet",
             "tool:TaskUpdate",
+            // peko_plan DAG family (PR #1+2 wiring). Auto-granted to
+            // match `AgentConfig::enable_plan_tools: true` (default) —
+            // without these, `is_tool_enabled` filters the 7 plan
+            // tools out of the LLM's available_tools at runtime and
+            // the principal can't actually plan despite the agent
+            // config being on.
+            "tool:PlanCreate",
+            "tool:PlanList",
+            "tool:PlanGet",
+            "tool:PlanMarkStep",
+            "tool:PlanRecordEvidence",
+            "tool:PlanAddStep",
+            "tool:PlanClose",
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",
@@ -263,6 +276,30 @@ mod tests {
         assert!(caps.is_granted(&Capability::new("tool:Read")));
         assert!(caps.is_granted(&Capability::new("agent:researcher")));
         assert!(!caps.is_granted(&Capability::new("skill:unknown")));
+    }
+
+    /// Auto-grant all 7 peko_plan DAG tools so a fresh principal can
+    /// actually plan out of the box. Without these, `is_tool_enabled`
+    /// filters them out of the LLM's available_tools list and the
+    /// principal can't invoke them despite `AgentConfig::enable_plan_tools`
+    /// being true by default.
+    #[test]
+    fn starter_bundle_includes_plan_tools() {
+        let caps = Capabilities::starter_bundle();
+        for tool in [
+            "PlanCreate",
+            "PlanList",
+            "PlanGet",
+            "PlanMarkStep",
+            "PlanRecordEvidence",
+            "PlanAddStep",
+            "PlanClose",
+        ] {
+            assert!(
+                caps.is_granted(&Capability::new(&format!("tool:{tool}"))),
+                "starter_bundle must include tool:{tool}"
+            );
+        }
     }
 }
 

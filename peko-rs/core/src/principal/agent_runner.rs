@@ -319,7 +319,7 @@ where
     // that each tool's owning extension is active.
     .with_active_extensions(Some(ctx.active_extensions().clone()))
     // PR #2 wiring: bind the principal's plan DAG port so the seven
-    // `PePlan*` built-in tools are registered by `init_builtins_async`.
+    // `Plan*` built-in tools are registered by `init_builtins_async`.
     // `ctx.plan_port()` returns the per-Principal handle from
     // `PrincipalContext::plan_port` (set by the factory in PR #1).
     .with_principal_plan_port(Arc::clone(ctx.plan_port()))
@@ -344,7 +344,7 @@ where
         .with_active_extensions(Some(ctx.active_extensions().clone()))
         // PR #2 wiring: same plan_port as the agent, so depth-1+
         // children inherit the per-Principal handle and register their
-        // own seven `PePlan*` tools.
+        // own seven `Plan*` tools.
         .with_principal_plan_port(Arc::clone(ctx.plan_port()))
         .with_observability(ctx.observability().cloned())
         .with_provider(agent.provider_arc().ok_or_else(|| {

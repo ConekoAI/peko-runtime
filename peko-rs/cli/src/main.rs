@@ -21,6 +21,7 @@ use crate::commands::{
 // Phase 0.Z-B: this module used to live in `peko_core::commands` (root lib);
 // after the lift it lives in the cli crate itself.
 mod commands;
+mod summary;
 
 /// Peko - Lightweight Multi-Agent Runtime
 #[tokio::main]

@@ -1898,7 +1898,7 @@ mod tests {
     /// Phase 12+ PR #3: an open plan with an InProgress node surfaces
     /// in `recalled_context` as a `Plan` injection, carrying the
     /// title + actionable node ids so the agent knows it's resuming
-    /// work without an explicit `PePlanGet` call.
+    /// work without an explicit `PlanGet` call.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn build_router_context_includes_plan_focus() {

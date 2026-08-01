@@ -149,10 +149,10 @@ pub struct SubagentExecutor {
     peer_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
     /// Snapshot of the spawning principal's plan DAG port. Propagated
     /// into the spawned `Agent` via
-    /// `Agent::with_principal_plan_port` so the seven `PePlan*` tools
+    /// `Agent::with_principal_plan_port` so the seven `Plan*` tools
     /// are wired into the subagent's tool bag (depth-1+ children can
     /// manage plans on behalf of their spawning principal). `None`
-    /// means unbound — subagents do not register `PePlan*` tools.
+    /// means unbound — subagents do not register `Plan*` tools.
     principal_plan_port: Option<Arc<dyn peko_plan::PlanPort>>,
 }
 
@@ -381,9 +381,9 @@ impl SubagentExecutor {
 
     /// Set the spawning principal's plan DAG port. Propagated into the
     /// spawned `Agent` via `Agent::with_principal_plan_port` so depth-1
-    /// children register the seven `PePlan*` built-in tools against the
+    /// children register the seven `Plan*` built-in tools against the
     /// same per-Principal store. `None` is the default; depth-1+
-    /// children of unbound principals do not register `PePlan*` tools.
+    /// children of unbound principals do not register `Plan*` tools.
     #[must_use]
     pub fn with_principal_plan_port(
         mut self,

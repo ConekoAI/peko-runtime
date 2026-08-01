@@ -911,6 +911,42 @@ impl RequestPacket {
     }
 }
 
+/// Cumulative token usage for a completed run, surfaced on the
+/// `ResponsePacket::RunSummary` packet. Mirrors the `AgenticEvent::Usage`
+/// shape (`peko-rs/events/src/lib.rs:239-251`) — three `u32` fields,
+/// no cache/reasoning tokens (those live upstream in
+/// `peko_message::TokenUsage` and are intentionally lossy at the
+/// `AgenticEvent` boundary; widening that is a separate concern).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunUsageSummary {
+    /// Prompt tokens consumed across the run.
+    #[serde(default)]
+    pub prompt_tokens: u32,
+    /// Completion tokens generated across the run.
+    #[serde(default)]
+    pub completion_tokens: u32,
+    /// Total tokens consumed across the run.
+    #[serde(default)]
+    pub total_tokens: u32,
+}
+
+/// One tool-call error observed during a run, surfaced on
+/// `ResponsePacket::RunSummary`. `tool_name` is the name as it
+/// appeared on the most recent `ToolStart` event for the same
+/// `tool_id`; missing when no `ToolStart` was seen before the
+/// failure (the runtime still records the error so users can see
+/// `success: false` regardless). `error_message` is the
+/// short-truncated error text the tool returned in `result`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolErrorEntry {
+    #[serde(default)]
+    pub tool_id: String,
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub error_message: String,
+}
+
 /// Response sent from Daemon → CLI
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -1468,6 +1504,40 @@ pub enum ResponsePacket {
     /// and persist it. Always followed by a `Done` packet.
     #[serde(rename = "principal_sent_done")]
     PrincipalSentDone { request_id: u64, content: String },
+
+    /// Run-summary packet emitted by the daemon at the end of a
+    /// principal-send run. Aggregates the run's tool-call errors and
+    /// cumulative token usage so CLI `--no-stream` (and other thin
+    /// consumers that don't persist the session JSONL) can surface
+    /// these facts to the user.
+    ///
+    /// Always emitted between `PrincipalSent*` / `PrincipalSentDone` /
+    /// `PrincipalSent` and the final `Done` packet on both Streaming
+    /// and OneShot response kinds. Consumers that don't know about
+    /// this variant should treat it as opaque (their `_ => {}`
+    /// fallthrough already swallows it). All fields are
+    /// `#[serde(default)]` so old CLIs tolerate a daemon that emits
+    /// them and old daemons don't crash when deserializing CLI
+    /// commands that include them in the future.
+    ///
+    /// `iterations` is the count of `Lifecycle{Running}` events
+    /// observed by the daemon — i.e. the number of agentic-loop turns
+    /// the LLM ran. `usage` is the cumulative token usage across all
+    /// turns (peko-engine emits one `AgenticEvent::Usage` per run,
+    /// immediately before `Lifecycle{End}`). `tool_errors` records
+    /// every `ToolEnd { success: false }` event seen during the run,
+    /// correlated against the most recent `ToolStart` for the same
+    /// `tool_id` so the user sees `"<tool_name>: <error_msg>"`.
+    #[serde(rename = "run_summary")]
+    RunSummary {
+        request_id: u64,
+        #[serde(default)]
+        iterations: u32,
+        #[serde(default)]
+        usage: Option<RunUsageSummary>,
+        #[serde(default)]
+        tool_errors: Vec<ToolErrorEntry>,
+    },
 
     /// Successor packet emitted when a steering message was queued
     /// during the final-iteration drain of `PrincipalSendStream` and
@@ -2096,6 +2166,7 @@ impl ResponsePacket {
             | Self::PrincipalSentIteration { request_id, .. }
             | Self::PrincipalSentDone { request_id, .. }
             | Self::PrincipalSentSuccessor { request_id, .. }
+            | Self::RunSummary { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
@@ -2183,6 +2254,7 @@ impl ResponsePacket {
             Self::PrincipalSentIteration { .. } => "PrincipalSentIteration",
             Self::PrincipalSentDone { .. } => "PrincipalSentDone",
             Self::PrincipalSentSuccessor { .. } => "PrincipalSentSuccessor",
+            Self::RunSummary { .. } => "RunSummary",
             Self::PrincipalLog { .. } => "PrincipalLog",
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
@@ -2369,6 +2441,94 @@ mod tests {
             }
             _ => panic!("Wrong variant"),
         }
+    }
+
+    /// `RunSummary` round-trips with full payload: iterations + usage +
+    /// tool_errors all survive serialize → deserialize. Regression for
+    /// the variant's `#[serde(default)]` decorations — if a field's
+    /// `default` is dropped accidentally, this catches it.
+    #[test]
+    fn test_run_summary_serialization_roundtrip() {
+        let resp = ResponsePacket::RunSummary {
+            request_id: 7,
+            iterations: 3,
+            usage: Some(RunUsageSummary {
+                prompt_tokens: 1234,
+                completion_tokens: 567,
+                total_tokens: 1801,
+            }),
+            tool_errors: vec![ToolErrorEntry {
+                tool_id: "t1".into(),
+                tool_name: Some("read_file".into()),
+                error_message: "ENOENT".into(),
+            }],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::RunSummary {
+                request_id,
+                iterations,
+                usage,
+                tool_errors,
+            } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(iterations, 3);
+                let u = usage.expect("usage must round-trip");
+                assert_eq!(u.prompt_tokens, 1234);
+                assert_eq!(u.completion_tokens, 567);
+                assert_eq!(u.total_tokens, 1801);
+                assert_eq!(tool_errors.len(), 1);
+                assert_eq!(tool_errors[0].tool_name.as_deref(), Some("read_file"));
+                assert_eq!(tool_errors[0].error_message, "ENOENT");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    /// Empty `RunSummary` (no usage, no errors) still round-trips
+    /// cleanly. Mirrors a successful run with zero tool calls and no
+    /// usage emitted (e.g. an immediate-error path).
+    #[test]
+    fn test_run_summary_empty_roundtrip() {
+        let resp = ResponsePacket::RunSummary {
+            request_id: 1,
+            iterations: 0,
+            usage: None,
+            tool_errors: Vec::new(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::RunSummary {
+                request_id,
+                iterations,
+                usage,
+                tool_errors,
+            } => {
+                assert_eq!(request_id, 1);
+                assert_eq!(iterations, 0);
+                assert!(usage.is_none());
+                assert!(tool_errors.is_empty());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    /// `RunSummary` request_id is extracted via the same helper that
+    /// every other variant uses. This is the compile-time enforcement
+    /// that we didn't forget to add an arm to the exhaustive
+    /// or-pattern in `request_id()`.
+    #[test]
+    fn test_run_summary_request_id_extraction() {
+        let resp = ResponsePacket::RunSummary {
+            request_id: 99,
+            iterations: 1,
+            usage: None,
+            tool_errors: Vec::new(),
+        };
+        assert_eq!(resp.request_id(), 99);
+        assert_eq!(resp.variant_name(), "RunSummary");
     }
 
     #[test]

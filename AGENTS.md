@@ -410,7 +410,7 @@ Already extracted (`peko-rs/):
 - `message` — neutral message contract.
 - `observability` — observability hub (audit log + metrics + tracing; Phase 14 entry).
 - `peko-daemon` — daemon binary + lib (Phase 12).
-- `plan` — file-backed Plan DAG primitive for the principal harness (schema + storage + per-Principal `PlanPort` + 7 `PePlan*` built-in tools + `ContextInjectionKind::Plan` resume-on-start).
+- `plan` — file-backed Plan DAG primitive for the principal harness (schema + storage + per-Principal `PlanPort` + 7 `Plan*` built-in tools + `ContextInjectionKind::Plan` resume-on-start).
 - `protocol` — IPC + tunnel wire contracts (Phase 11a).
 - `provider-api` — provider contracts.
 - `providers` — concrete provider implementations.

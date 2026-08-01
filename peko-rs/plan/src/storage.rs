@@ -90,12 +90,37 @@ impl PlanStorage {
 
     /// Create a new plan. Generates `plan_id` and writes the initial
     /// record atomically.
+    ///
+    /// **Duplicate `node_id` check:** if the supplied `nodes` slice
+    /// contains two or more entries sharing the same `node_id`, returns
+    /// [`PlanError::InvalidNodeId`] without writing. Silently producing
+    /// a record with unreachable / shadowed nodes would leave the LLM
+    /// in an unrecoverable state — `mark_node_status` and
+    /// `set_node_evidence` only see the first match, so subsequent
+    /// operations on the duplicates would fail without explanation.
+    /// Hard-erroring here surfaces the collision to the agent so it
+    /// can correct its prompt and retry.
     pub async fn create(
         &self,
         principal_id: PrincipalId,
         title: String,
         nodes: Vec<PlanNode>,
     ) -> Result<PlanRecord> {
+        // Reject in-batch duplicate node ids up front. Iterating with
+        // an indexed loop and comparing the suffix slice is the
+        // cheapest O(n²) check that's still readable; n is bounded by
+        // the LLM's plan, not by the input stream, so the cost is fine.
+        for (i, node) in nodes.iter().enumerate() {
+            if nodes[i + 1..]
+                .iter()
+                .any(|n| n.node_id == node.node_id)
+            {
+                return Err(PlanError::InvalidNodeId(format!(
+                    "plan has duplicate node ids in initial nodes: {}",
+                    node.node_id
+                )));
+            }
+        }
         fs::create_dir_all(&self.plans_dir).await?;
         let record = PlanRecord::new(principal_id, title, nodes);
         self.write_atomic(&record).await?;
@@ -701,5 +726,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.principal_id, p);
+    }
+
+    /// Hard-error on duplicate initial node ids. Prevents the agent
+    /// from producing a record with shadowed / unreachable nodes —
+    /// later operations on the duplicates would fail without
+    /// explanation. (Complements the idempotent `add_node` collision
+    /// semantics: `create` rejects; `add_node` accepts.)
+    #[tokio::test]
+    async fn create_rejects_duplicate_initial_node_ids() {
+        let dir = TempDir::new().unwrap();
+        let storage = storage_in(&dir);
+        let p = principal();
+        let n1 = node("first");
+        let mut n2 = node("second");
+        // Force a collision by reusing n1's id on n2.
+        n2.node_id = n1.node_id.clone();
+        let err = storage
+            .create(p.clone(), "dupe-batch".into(), vec![n1, n2])
+            .await
+            .expect_err("duplicate initial node ids must surface as InvalidNodeId");
+        assert!(matches!(err, PlanError::InvalidNodeId(_)), "got {err:?}");
+        // No file should be on disk — the rejection is pre-write.
+        let plans_dir = dir.path().join("plans");
+        if plans_dir.exists() {
+            let entries: Vec<_> = std::fs::read_dir(&plans_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .collect();
+            assert!(
+                entries.is_empty(),
+                "create-rejection must not leave a plan file behind"
+            );
+        }
     }
 }

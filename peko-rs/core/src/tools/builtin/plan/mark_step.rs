@@ -1,4 +1,4 @@
-//! `PePlanMarkStep` — flip a node to a new status.
+//! `PlanMarkStep` — flip a node to a new status.
 
 use async_trait::async_trait;
 use peko_plan::NodeId;
@@ -8,13 +8,13 @@ use serde_json::json;
 use crate::tools::builtin::plan::{parse_status_param, require_principal_id, SharedPlanPort};
 
 /// Update a node's status (`pending` / `in_progress` / `completed` /
-/// `blocked` / `failed`). Mirrors `PePlanRecordEvidence` for the
+/// `blocked` / `failed`). Mirrors `PlanRecordEvidence` for the
 /// status field.
-pub struct PePlanMarkStepTool {
+pub struct PlanMarkStepTool {
     plan_port: SharedPlanPort,
 }
 
-impl PePlanMarkStepTool {
+impl PlanMarkStepTool {
     #[must_use]
     pub fn new(plan_port: SharedPlanPort) -> Self {
         Self { plan_port }
@@ -22,9 +22,9 @@ impl PePlanMarkStepTool {
 }
 
 #[async_trait]
-impl Tool for PePlanMarkStepTool {
+impl Tool for PlanMarkStepTool {
     fn name(&self) -> &'static str {
-        "PePlanMarkStep"
+        "PlanMarkStep"
     }
 
     fn description(&self) -> String {
@@ -74,17 +74,17 @@ found in the plan."
         let plan_id = params
             .get("planId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PePlanMarkStep requires 'planId'"))?
+            .ok_or_else(|| anyhow::anyhow!("PlanMarkStep requires 'planId'"))?
             .to_string();
         let node_id_str = params
             .get("nodeId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PePlanMarkStep requires 'nodeId'"))?
+            .ok_or_else(|| anyhow::anyhow!("PlanMarkStep requires 'nodeId'"))?
             .to_string();
         let status_str = params
             .get("status")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PePlanMarkStep requires 'status'"))?
+            .ok_or_else(|| anyhow::anyhow!("PlanMarkStep requires 'status'"))?
             .to_string();
         let reason = params.get("reason").and_then(|v| v.as_str()).map(String::from);
         let node_id = NodeId::parse(&node_id_str).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -120,12 +120,12 @@ found in the plan."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::plan::{PePlanCreateTool, TestPlanPort};
+    use crate::tools::builtin::plan::{PlanCreateTool, TestPlanPort};
     use peko_tools_core::ToolContext;
     use serde_json::json;
 
     fn ctx_with(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PePlanMarkStep")
+        ToolContext::for_hook_run("run", "tc", "PlanMarkStep")
             .with_principal_id(id.0)
     }
 
@@ -133,7 +133,7 @@ mod tests {
     async fn mark_step_happy_path_flips_pending_to_in_progress() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PePlanCreateTool::new(port.clone());
+        let create = PlanCreateTool::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "t", "nodes": [{ "step": "a" }] }),
@@ -143,7 +143,7 @@ mod tests {
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
         let node_id = created["nodes"][0]["nodeId"].as_str().unwrap().to_string();
-        let tool = PePlanMarkStepTool::new(port);
+        let tool = PlanMarkStepTool::new(port);
         let updated = tool
             .execute_with_context(
                 json!({ "planId": plan_id, "nodeId": node_id, "status": "in_progress" }),
@@ -158,7 +158,7 @@ mod tests {
     async fn mark_step_soft_errors_on_unknown_node() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PePlanCreateTool::new(port.clone());
+        let create = PlanCreateTool::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "t", "nodes": [{ "step": "a" }] }),
@@ -167,7 +167,7 @@ mod tests {
             .await
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
-        let tool = PePlanMarkStepTool::new(port);
+        let tool = PlanMarkStepTool::new(port);
         let res = tool
             .execute_with_context(
                 json!({
@@ -186,7 +186,7 @@ mod tests {
     async fn mark_step_mirrors_blocked_reason() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PePlanCreateTool::new(port.clone());
+        let create = PlanCreateTool::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "t", "nodes": [{ "step": "a" }] }),
@@ -196,7 +196,7 @@ mod tests {
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
         let node_id = created["nodes"][0]["nodeId"].as_str().unwrap().to_string();
-        let tool = PePlanMarkStepTool::new(port);
+        let tool = PlanMarkStepTool::new(port);
         let updated = tool
             .execute_with_context(
                 json!({
