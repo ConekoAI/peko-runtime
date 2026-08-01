@@ -267,15 +267,24 @@ peko_iso_done() {
 #   $@  args to pass to the `peko` binary (e.g. "principal create foo")
 # Stdout: command stdout
 # Stderr: command stderr (separately captured so callers can assert)
-# Returns: the exit code
+# Returns: 0 — exit code is exposed via `_peko_iso_capture_rc` so
+#   callers can inspect, fail, or ignore it independently. The function
+#   always returns 0 so flows running under `set -euo pipefail`
+#   (see scripts/e2e/run-case.sh) don't abort on a probed non-zero
+#   rc. Bug G (2026-08-01 v3 field test) was caused by this helper
+#   propagating the rc into `return`, which `set -e` then treated as
+#   a script failure — silently truncating exploratory flows.
 peko_iso() {
   "$_PEKO_ISO_BIN" "$@"
 }
 
-# Same as peko_iso but returns (stdout, stderr, exit_code) on stdout, suitable
-# for command-substitution flow scripts:
-#   eval "$(peko_iso_capture principal list)"
-# Or use the peko_iso_run helper which writes them to globals.
+# Same as peko_iso but writes (stdout, stderr, exit_code) to globals
+# so flow scripts can assert against them without command substitution
+# (which swallows non-zero rc under `set -e`):
+#   peko_iso_run principal list
+#   peko_iso_assert_rc_zero
+# The function ALWAYS returns 0 — callers check rc via
+# `_peko_iso_capture_rc` or assert helpers.
 _peko_iso_capture_out=""
 _peko_iso_capture_err=""
 _peko_iso_capture_rc=0
@@ -283,12 +292,25 @@ peko_iso_run() {
   local tmp_out tmp_err
   tmp_out="$(mktemp -t peko-e2e-stdout.XXXXXX)"
   tmp_err="$(mktemp -t peko-e2e-stderr.XXXXXX)"
-  "$_PEKO_ISO_BIN" "$@" >"$tmp_out" 2>"$tmp_err"
-  _peko_iso_capture_rc=$?
+  # `|| _peko_iso_capture_rc=$?` is load-bearing: it captures the
+  # peko subprocess's rc into `_peko_iso_capture_rc` while keeping
+  # the compound command's overall rc = 0. Without this idiom, the
+  # binary's non-zero rc would trip `set -e` (set in
+  # scripts/e2e/run-case.sh) BEFORE we reach the `$?` assignment,
+  # killing the flow. Bug G (2026-08-01 v3 field test) was caused
+  # by exactly this — the original lib propagated the rc via
+  # `return`, which `set -e` treated as a script failure.
+  _peko_iso_capture_rc=0
+  "$_PEKO_ISO_BIN" "$@" >"$tmp_out" 2>"$tmp_err" \
+    || _peko_iso_capture_rc=$?
   _peko_iso_capture_out="$(cat "$tmp_out")"
   _peko_iso_capture_err="$(cat "$tmp_err")"
   rm -f "$tmp_out" "$tmp_err"
-  return $_peko_iso_capture_rc
+  # Always return 0 — exit code is captured in `_peko_iso_capture_rc`.
+  # Callers that want to fail loudly use `peko_iso_assert_rc_zero`;
+  # callers that want to ignore can read `_peko_iso_capture_rc`
+  # directly.
+  return 0
 }
 
 # Assert helpers — fail loudly so the trap can surface what broke.
