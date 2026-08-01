@@ -1,4 +1,4 @@
-//! `PePlanClose` — close a plan (idempotent: second close returns
+//! `PlanClose` — close a plan (idempotent: second close returns
 //! `PlanError::AlreadyClosed`).
 
 use async_trait::async_trait;
@@ -11,11 +11,11 @@ use crate::tools::builtin::plan::{require_principal_id, SharedPlanPort};
 /// reason. Second close on the same plan returns
 /// `PlanError::AlreadyClosed` (propagated as a hard error so the LLM
 /// sees the duplicate-call signal).
-pub struct PePlanCloseTool {
+pub struct PlanCloseTool {
     plan_port: SharedPlanPort,
 }
 
-impl PePlanCloseTool {
+impl PlanCloseTool {
     #[must_use]
     pub fn new(plan_port: SharedPlanPort) -> Self {
         Self { plan_port }
@@ -23,9 +23,9 @@ impl PePlanCloseTool {
 }
 
 #[async_trait]
-impl Tool for PePlanCloseTool {
+impl Tool for PlanCloseTool {
     fn name(&self) -> &'static str {
-        "PePlanClose"
+        "PlanClose"
     }
 
     fn description(&self) -> String {
@@ -71,12 +71,12 @@ return value so callers can detect duplicate-close races."
         let plan_id = params
             .get("planId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PePlanClose requires 'planId'"))?
+            .ok_or_else(|| anyhow::anyhow!("PlanClose requires 'planId'"))?
             .to_string();
         let reason = params
             .get("reason")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PePlanClose requires 'reason'"))?
+            .ok_or_else(|| anyhow::anyhow!("PlanClose requires 'reason'"))?
             .to_string();
         self.plan_port
             .close(&plan_id, &principal_id, reason.clone())
@@ -92,12 +92,12 @@ return value so callers can detect duplicate-close races."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::plan::{PePlanCreateTool, TestPlanPort};
+    use crate::tools::builtin::plan::{PlanCreateTool, TestPlanPort};
     use peko_tools_core::ToolContext;
     use serde_json::json;
 
     fn ctx_with(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PePlanClose")
+        ToolContext::for_hook_run("run", "tc", "PlanClose")
             .with_principal_id(id.0)
     }
 
@@ -105,7 +105,7 @@ mod tests {
     async fn close_happy_path() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PePlanCreateTool::new(port.clone());
+        let create = PlanCreateTool::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "t", "nodes": [{ "step": "a" }] }),
@@ -114,7 +114,7 @@ mod tests {
             .await
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
-        let tool = PePlanCloseTool::new(port);
+        let tool = PlanCloseTool::new(port);
         let res = tool
             .execute_with_context(
                 json!({ "planId": plan_id, "reason": "all done" }),
@@ -129,7 +129,7 @@ mod tests {
     async fn close_second_call_errors_already_closed() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PePlanCreateTool::new(port.clone());
+        let create = PlanCreateTool::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "t", "nodes": [{ "step": "a" }] }),
@@ -138,7 +138,7 @@ mod tests {
             .await
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
-        let tool = PePlanCloseTool::new(port);
+        let tool = PlanCloseTool::new(port);
         tool.execute_with_context(
             json!({ "planId": plan_id, "reason": "first" }),
             &ctx_with(p.clone()),

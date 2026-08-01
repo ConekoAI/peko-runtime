@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # scripts/e2e/flows/plan-tool-e2e.sh
 #
-# Exercises the 7 peko_plan tools (`PePlanCreate`/`List`/`Get`/
+# Exercises the 7 peko_plan tools (`PlanCreate`/`List`/`Get`/
 # `MarkStep`/`RecordEvidence`/`AddStep`/`Close`) end-to-end against a
 # real MiniMax-M3 model. The flow:
 #
 #   1. Init isolated env (NO_DAEMON — we'll start it after seeding).
 #   2. Add the minimax model with the real API key.
 #   3. Create a principal.
-#   4. Grant the 7 `tool:PePlan*` capabilities (NOT in starter_bundle —
+#   4. Grant the 7 `tool:Plan*` capabilities (NOT in starter_bundle —
 #      the default capability set covers the Task* family but plan
 #      tools need explicit grants per the F37 funnel rule).
 #   5. Start daemon in background.
@@ -46,16 +46,16 @@ flow_main() {
   # --- step 2: start daemon (capability grant + send both need IPC) -----
   peko_iso_start_daemon || return 1
 
-  # --- step 3: grant the 7 PePlan tool capabilities ----------------------
+  # --- step 3: grant the 7 Plan tool capabilities ----------------------
   # The starter_bundle covers the Task* family (TaskCreate/List/Get/
-  # Update) but NOT the PePlan* family. The plan tools require their
+  # Update) but NOT the Plan* family. The plan tools require their
   # own `tool:<Name>` grant per the F37 funnel rule. Without these,
   # `is_tool_enabled` filters them out at runtime and the LLM can't
   # actually invoke them — it'd just see an empty `available_tools`
   # list when it tries. NOTE: `peko capability grant` is daemon-backed,
   # so the daemon must be up first (step 2 above).
-  for cap in PePlanCreate PePlanList PePlanGet PePlanMarkStep \
-             PePlanRecordEvidence PePlanAddStep PePlanClose; do
+  for cap in PlanCreate PlanList PlanGet PlanMarkStep \
+             PlanRecordEvidence PlanAddStep PlanClose; do
     peko_iso_run capability grant --principal planbot "tool:$cap"
     peko_iso_assert_rc_zero
   done
@@ -63,8 +63,8 @@ flow_main() {
   # Sanity-check: capability list should now include all 7.
   peko_iso_run capability list --principal planbot --json
   peko_iso_assert_rc_zero
-  for cap in PePlanCreate PePlanList PePlanGet PePlanMarkStep \
-             PePlanRecordEvidence PePlanAddStep PePlanClose; do
+  for cap in PlanCreate PlanList PlanGet PlanMarkStep \
+             PlanRecordEvidence PlanAddStep PlanClose; do
     if [[ "$_peko_iso_capture_out" != *"\"tool:$cap\""* ]]; then
       echo "❌ capability list missing tool:$cap" >&2
       echo "   actual: $_peko_iso_capture_out" >&2
@@ -80,28 +80,28 @@ flow_main() {
   # each tool call landed by inspecting the plan JSONL after.
   local plans_dir="$PEKO_DATA_DIR/principals/planbot/local/plans"
   peko_iso_run send planbot "$(cat <<'PROMPT'
-You must use the PePlan* tools to build, mutate, and close a single plan. Do not describe the steps in prose; actually invoke each tool. Follow this exact sequence:
+You must use the Plan* tools to build, mutate, and close a single plan. Do not describe the steps in prose; actually invoke each tool. Follow this exact sequence:
 
-1. PePlanCreate with title="Test plan", nodes=[
+1. PlanCreate with title="Test plan", nodes=[
      { step: "first step" },
      { step: "second step" },
      { step: "third step (added later)" }
    ]
    — capture the returned planId and the auto-assigned node ids for steps 1+2 (call them N1, N2).
 
-2. PePlanList and confirm the new plan shows up.
+2. PlanList and confirm the new plan shows up.
 
-3. PePlanGet planId=<planId>.
+3. PlanGet planId=<planId>.
 
-4. PePlanMarkStep planId=<planId> nodeId=N1 status=in_progress.
+4. PlanMarkStep planId=<planId> nodeId=N1 status=in_progress.
 
-5. PePlanAddStep planId=<planId> nodeId=N3 step="third step (added later)".
+5. PlanAddStep planId=<planId> nodeId=N3 step="third step (added later)".
 
-6. PePlanRecordEvidence planId=<planId> nodeId=N1 evidence="completed step one".
+6. PlanRecordEvidence planId=<planId> nodeId=N1 evidence="completed step one".
 
-7. PePlanMarkStep planId=<planId> nodeId=N1 status=completed.
+7. PlanMarkStep planId=<planId> nodeId=N1 status=completed.
 
-8. PePlanClose planId=<planId> reason="all done".
+8. PlanClose planId=<planId> reason="all done".
 
 After step 8, reply with a one-line summary including the final planId.
 PROMPT
@@ -133,12 +133,12 @@ PROMPT
     return 1
   fi
   if ! grep -q '"closed"' "$plan_jsonl"; then
-    echo "❌ plan JSONL has no closed field (PePlanClose didn't land)" >&2
+    echo "❌ plan JSONL has no closed field (PlanClose didn't land)" >&2
     cat "$plan_jsonl" >&2
     return 1
   fi
   if ! grep -q '"completed"' "$plan_jsonl"; then
-    echo "❌ plan JSONL has no completed node (PePlanMarkStep didn't land)" >&2
+    echo "❌ plan JSONL has no completed node (PlanMarkStep didn't land)" >&2
     cat "$plan_jsonl" >&2
     return 1
   fi

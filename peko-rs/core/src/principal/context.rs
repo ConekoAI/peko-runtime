@@ -59,7 +59,7 @@ pub struct PrincipalContext {
     /// (in-memory, network-backed) slot in without rewriting this
     /// construction site. Used by `agent_runner.rs` to thread the
     /// handle into `Agent::with_principal_plan_port` so the seven
-    /// `PePlan*` tools are registered on the principal's agents.
+    /// `Plan*` tools are registered on the principal's agents.
     pub plan_port: Arc<dyn peko_plan::PlanPort>,
     /// Shared inbox the dispatcher pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,
@@ -317,7 +317,7 @@ impl PrincipalContext {
     /// Per-principal plan DAG port (PR #2 wiring).
     ///
     /// Threaded into `Agent::with_principal_plan_port` by
-    /// `agent_runner.rs` so the seven `PePlan*` tools are registered
+    /// `agent_runner.rs` so the seven `Plan*` tools are registered
     /// on the principal's agents. Read-only clone — callers that need
     /// to hold the handle past the context borrow should `.clone()`
     /// the `Arc`.

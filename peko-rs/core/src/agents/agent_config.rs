@@ -67,9 +67,9 @@ pub struct AgentConfig {
     #[serde(default = "default_true")]
     pub enable_task_tools: bool,
 
-    /// Whether the peko_plan DAG family (`PePlanCreate`/`PePlanList`/
-    /// `PePlanGet`/`PePlanMarkStep`/`PePlanRecordEvidence`/
-    /// `PePlanAddStep`/`PePlanClose`) is enabled for this agent.
+    /// Whether the peko_plan DAG family (`PlanCreate`/`PlanList`/
+    /// `PlanGet`/`PlanMarkStep`/`PlanRecordEvidence`/
+    /// `PlanAddStep`/`PlanClose`) is enabled for this agent.
     ///
     /// Defaults to `true`. Only takes effect when the agent has been
     /// bound to a principal whose `Arc<dyn PlanPort>` was wired in via

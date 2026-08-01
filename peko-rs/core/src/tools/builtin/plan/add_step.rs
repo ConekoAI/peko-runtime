@@ -1,4 +1,4 @@
-//! `PePlanAddStep` — append a new node to an existing plan.
+//! `PlanAddStep` — append a new node to an existing plan.
 
 use async_trait::async_trait;
 use peko_plan::{NodeId, PlanNode, PlanNodeStatus};
@@ -11,11 +11,11 @@ use crate::tools::builtin::plan::{
 
 /// Append a node to an existing plan. Errors when the plan is closed
 /// or when the supplied `nodeId` already exists in the plan.
-pub struct PePlanAddStepTool {
+pub struct PlanAddStepTool {
     plan_port: SharedPlanPort,
 }
 
-impl PePlanAddStepTool {
+impl PlanAddStepTool {
     #[must_use]
     pub fn new(plan_port: SharedPlanPort) -> Self {
         Self { plan_port }
@@ -23,9 +23,9 @@ impl PePlanAddStepTool {
 }
 
 #[async_trait]
-impl Tool for PePlanAddStepTool {
+impl Tool for PlanAddStepTool {
     fn name(&self) -> &'static str {
-        "PePlanAddStep"
+        "PlanAddStep"
     }
 
     fn description(&self) -> String {
@@ -80,12 +80,12 @@ when the supplied nodeId collides with an existing node."
         let plan_id = params
             .get("planId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PePlanAddStep requires 'planId'"))?
+            .ok_or_else(|| anyhow::anyhow!("PlanAddStep requires 'planId'"))?
             .to_string();
         let step = params
             .get("step")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PePlanAddStep requires 'step'"))?
+            .ok_or_else(|| anyhow::anyhow!("PlanAddStep requires 'step'"))?
             .to_string();
         let node_id_str_for_error = params
             .get("nodeId")
@@ -139,12 +139,12 @@ when the supplied nodeId collides with an existing node."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::plan::{PePlanCloseTool, PePlanCreateTool, TestPlanPort};
+    use crate::tools::builtin::plan::{PlanCloseTool, PlanCreateTool, TestPlanPort};
     use peko_tools_core::ToolContext;
     use serde_json::json;
 
     fn ctx_with(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PePlanAddStep")
+        ToolContext::for_hook_run("run", "tc", "PlanAddStep")
             .with_principal_id(id.0)
     }
 
@@ -152,7 +152,7 @@ mod tests {
     async fn add_step_appends_to_open_plan() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PePlanCreateTool::new(port.clone());
+        let create = PlanCreateTool::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "t", "nodes": [{ "step": "first" }] }),
@@ -161,7 +161,7 @@ mod tests {
             .await
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
-        let tool = PePlanAddStepTool::new(port);
+        let tool = PlanAddStepTool::new(port);
         let updated = tool
             .execute_with_context(
                 json!({ "planId": plan_id, "step": "second" }),
@@ -176,7 +176,7 @@ mod tests {
     async fn add_step_rejects_duplicate_node_id() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PePlanCreateTool::new(port.clone());
+        let create = PlanCreateTool::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "t", "nodes": [{ "step": "a", "nodeId": "node_a1b2c3d4" }] }),
@@ -185,7 +185,7 @@ mod tests {
             .await
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
-        let tool = PePlanAddStepTool::new(port);
+        let tool = PlanAddStepTool::new(port);
         let res = tool
             .execute_with_context(
                 json!({
@@ -204,7 +204,7 @@ mod tests {
     async fn add_step_rejects_closed_plan() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PePlanCreateTool::new(port.clone());
+        let create = PlanCreateTool::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "t", "nodes": [{ "step": "a" }] }),
@@ -213,7 +213,7 @@ mod tests {
             .await
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
-        let closer = PePlanCloseTool::new(port.clone());
+        let closer = PlanCloseTool::new(port.clone());
         closer
             .execute_with_context(
                 json!({ "planId": plan_id, "reason": "done" }),
@@ -221,7 +221,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let adder = PePlanAddStepTool::new(port);
+        let adder = PlanAddStepTool::new(port);
         let res = adder
             .execute_with_context(
                 json!({ "planId": plan_id, "step": "too late" }),

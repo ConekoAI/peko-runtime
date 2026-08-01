@@ -595,7 +595,7 @@ mod tests {
     /// Duplicate `node_id` on `add_node` is idempotent: returns the
     /// existing record unchanged rather than erroring. The LLM mental
     /// model is "I want this step in the plan" — if it's already there,
-    /// that's a success, not a failure. (`PePlanAddStep` tool relies on
+    /// that's a success, not a failure. (`PlanAddStep` tool relies on
     /// this so retries / auto-assigned id collisions don't surface as
     /// user-visible tool errors.)
     #[tokio::test]

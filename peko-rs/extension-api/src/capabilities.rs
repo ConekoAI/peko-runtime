@@ -221,13 +221,13 @@ impl Capabilities {
             // tools out of the LLM's available_tools at runtime and
             // the principal can't actually plan despite the agent
             // config being on.
-            "tool:PePlanCreate",
-            "tool:PePlanList",
-            "tool:PePlanGet",
-            "tool:PePlanMarkStep",
-            "tool:PePlanRecordEvidence",
-            "tool:PePlanAddStep",
-            "tool:PePlanClose",
+            "tool:PlanCreate",
+            "tool:PlanList",
+            "tool:PlanGet",
+            "tool:PlanMarkStep",
+            "tool:PlanRecordEvidence",
+            "tool:PlanAddStep",
+            "tool:PlanClose",
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",
@@ -287,13 +287,13 @@ mod tests {
     fn starter_bundle_includes_plan_tools() {
         let caps = Capabilities::starter_bundle();
         for tool in [
-            "PePlanCreate",
-            "PePlanList",
-            "PePlanGet",
-            "PePlanMarkStep",
-            "PePlanRecordEvidence",
-            "PePlanAddStep",
-            "PePlanClose",
+            "PlanCreate",
+            "PlanList",
+            "PlanGet",
+            "PlanMarkStep",
+            "PlanRecordEvidence",
+            "PlanAddStep",
+            "PlanClose",
         ] {
             assert!(
                 caps.is_granted(&Capability::new(&format!("tool:{tool}"))),

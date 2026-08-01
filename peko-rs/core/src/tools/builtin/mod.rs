@@ -55,8 +55,8 @@ pub use messaging::{
     SpawnAuditEvent, SpawnRequest, StaticSessionKeyProvider, SubagentRuntime,
 };
 pub use plan::{
-    PePlanAddStepTool, PePlanCloseTool, PePlanCreateTool, PePlanGetTool, PePlanListTool,
-    PePlanMarkStepTool, PePlanRecordEvidenceTool,
+    PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool,
+    PlanMarkStepTool, PlanRecordEvidenceTool,
 };
 pub use session::{SessionCache, SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};

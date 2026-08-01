@@ -10,13 +10,13 @@
 //!
 //! | Tool | Port method |
 //! |---|---|
-//! | [`PePlanCreateTool`] | [`peko_plan::PlanPort::create`] |
-//! | [`PePlanListTool`] | [`peko_plan::PlanPort::list_for_principal`] |
-//! | [`PePlanGetTool`] | [`peko_plan::PlanPort::get_for_principal`] |
-//! | [`PePlanMarkStepTool`] | [`peko_plan::PlanPort::mark_node_status`] |
-//! | [`PePlanRecordEvidenceTool`] | [`peko_plan::PlanPort::set_node_evidence`] |
-//! | [`PePlanAddStepTool`] | [`peko_plan::PlanPort::add_node`] |
-//! | [`PePlanCloseTool`] | [`peko_plan::PlanPort::close`] |
+//! | [`PlanCreateTool`] | [`peko_plan::PlanPort::create`] |
+//! | [`PlanListTool`] | [`peko_plan::PlanPort::list_for_principal`] |
+//! | [`PlanGetTool`] | [`peko_plan::PlanPort::get_for_principal`] |
+//! | [`PlanMarkStepTool`] | [`peko_plan::PlanPort::mark_node_status`] |
+//! | [`PlanRecordEvidenceTool`] | [`peko_plan::PlanPort::set_node_evidence`] |
+//! | [`PlanAddStepTool`] | [`peko_plan::PlanPort::add_node`] |
+//! | [`PlanCloseTool`] | [`peko_plan::PlanPort::close`] |
 //!
 //! All seven bind to the same `Arc<dyn PlanPort>` (held on
 //! [`crate::principal::Principal`] as `plan_port`, plumbed into
@@ -27,7 +27,7 @@
 //! Each tool requires its own `tool:<Name>` grant per the F37 funnel's
 //! [`crate::extensions::framework::core::tool_registry::is_tool_enabled`]
 //! rule. Plan tools are visible to any principal that grants the
-//! `tool:PePlan*` set.
+//! `tool:Plan*` set.
 
 pub mod add_step;
 pub mod close;
@@ -37,13 +37,13 @@ pub mod list;
 pub mod mark_step;
 pub mod record_evidence;
 
-pub use add_step::PePlanAddStepTool;
-pub use close::PePlanCloseTool;
-pub use create::PePlanCreateTool;
-pub use get::PePlanGetTool;
-pub use list::PePlanListTool;
-pub use mark_step::PePlanMarkStepTool;
-pub use record_evidence::PePlanRecordEvidenceTool;
+pub use add_step::PlanAddStepTool;
+pub use close::PlanCloseTool;
+pub use create::PlanCreateTool;
+pub use get::PlanGetTool;
+pub use list::PlanListTool;
+pub use mark_step::PlanMarkStepTool;
+pub use record_evidence::PlanRecordEvidenceTool;
 
 use anyhow::Result as AnyhowResult;
 use peko_plan::{NodeId, PlanNodeStatus, PlanPort};
@@ -56,7 +56,7 @@ use async_trait::async_trait;
 #[cfg(test)]
 use peko_plan::Result;
 
-/// Shared handle threaded through every `PePlan*Tool` constructor.
+/// Shared handle threaded through every `Plan*Tool` constructor.
 pub type SharedPlanPort = Arc<dyn PlanPort>;
 
 /// Surface an `anyhow::Error` for tool callers that omit the
