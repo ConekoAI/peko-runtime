@@ -134,6 +134,14 @@ impl ToolRuntime {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
 
+        // F42 — Bash/Read/Write/Edit/Glob/Grep's default cwd is `<data_dir>/workspaces`,
+        // but PathResolver::ensure_dirs doesn't create it (it's lazy-created per-agent).
+        // Without this, every Bash call on a fresh principal fails with a context-less
+        // "Failed to execute Bash command" because `cmd.current_dir(<missing>)` chdir's
+        // before execve. Best-effort matches the daemon-init convention in
+        // `daemon/state.rs:771`. See scripts/e2e/reports/2026-08-01-bash-tool-cwd-bug.md.
+        let _ = tokio::fs::create_dir_all(&workspace).await;
+
         let tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(BashTool::new().with_workspace(workspace.clone())),
             Arc::new(ReadTool::new().with_workspace(workspace.clone())),
