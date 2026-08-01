@@ -4,7 +4,7 @@
 //! governance, capabilities, and thin Markdown agent prompts. This module
 //! implements the `peko principal` CLI surface.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -41,6 +41,18 @@ pub enum PrincipalCommands {
         /// "no model configured".
         #[arg(long, value_name = "MODEL_ID")]
         model: String,
+
+        /// Bypass the overwrite guard. Without `--force`,
+        /// `peko principal create <existing>` refuses with a clear
+        /// error — protects identity, agents, memory, and session
+        /// history from a one-keystroke wipe (see Bug 2 in
+        /// scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md).
+        /// With `--force`, `create` will proceed past the guard but
+        /// the existing on-disk principal is NOT destroyed — to
+        /// fully replace a principal, run `peko principal remove`
+        /// first.
+        #[arg(short, long)]
+        force: bool,
     },
 
     /// List Principals
@@ -243,9 +255,11 @@ pub async fn handle_principal(
     _json: bool,
 ) -> Result<()> {
     match cmd {
-        PrincipalCommands::Create { name, model } => create_principal(&name, &model, paths).await,
+        PrincipalCommands::Create { name, model, force } => {
+            create_principal(&name, &model, force, paths).await
+        }
         PrincipalCommands::List => list_principals(paths).await,
-        PrincipalCommands::Show { name } => show_principal(&name, paths).await,
+        PrincipalCommands::Show { name } => show_principal(&name, paths, _json).await,
         PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths).await,
         PrincipalCommands::Send { name, message } => {
             send_to_principal(&name, &message, paths).await
@@ -312,10 +326,33 @@ pub async fn handle_principal(
     }
 }
 
-async fn create_principal(name: &str, model_id: &str, paths: &GlobalPaths) -> Result<()> {
+async fn create_principal(
+    name: &str,
+    model_id: &str,
+    force: bool,
+    paths: &GlobalPaths,
+) -> Result<()> {
     use peko_providers::catalog::ModelCatalog;
 
     let manager = build_manager(paths);
+
+    // Refuse to silently overwrite an existing principal — see Bug 2 in
+    // scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
+    // Without this guard, a non-technical user running
+    //   peko principal create scout --model …
+    // a second time wipes identity, agents, memory, and session history
+    // without any prompt. `--force` is the explicit override.
+    let shared_layout = paths.resolver().principal_layout(name).shared;
+    if shared_layout.config_file.exists() && !force {
+        anyhow::bail!(
+            "principal '{name}' already exists at {}.\n\
+             Refusing to overwrite an existing principal.\n\
+             To replace it, remove it first and then re-create:\n  \
+             peko principal remove {name}\n  \
+             peko principal create {name} --model <MODEL_ID>",
+            shared_layout.root.display()
+        );
+    }
 
     // Enforce the model pin at creation: there is no runtime default
     // model, so an unpinned principal would fail every send with
@@ -388,7 +425,7 @@ async fn list_principals(paths: &GlobalPaths) -> Result<()> {
     Ok(())
 }
 
-async fn show_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
+async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<()> {
     let manager = build_manager(paths);
     let principal = load_principal(name, &manager, paths).await?;
 
@@ -404,6 +441,51 @@ async fn show_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
             config.preferred_model_id.clone(),
         )
     };
+
+    if json {
+        // Structured view — same shape as `peko log --json` for
+        // downstream tooling. `path` is the absolute workspace path;
+        // `agents` is an array of {name, description, prompt_path}.
+        // Bug 3 in scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md
+        // notes that previously `--json` was silently ignored here.
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct AgentView<'a> {
+            name: &'a str,
+            description: &'a str,
+            prompt_path: &'a std::path::PathBuf,
+        }
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ShowView<'a> {
+            name: &'a str,
+            display_name: &'a str,
+            did: Option<&'a str>,
+            workspace: &'a std::path::Path,
+            preferred_model_id: Option<&'a str>,
+            agents: Vec<AgentView<'a>>,
+        }
+        let agents: Vec<AgentView> = principal
+            .agent_prompts
+            .iter()
+            .map(|(agent_name, prompt)| AgentView {
+                name: agent_name,
+                description: prompt.frontmatter.description.as_deref().unwrap_or(""),
+                prompt_path: &prompt.path,
+            })
+            .collect();
+        let view = ShowView {
+            name: &principal.config.read().await.name,
+            display_name: &display_name,
+            did: did.as_ref().map(|d| d.0.as_str()),
+            workspace: &principal.workspace_path,
+            preferred_model_id: preferred_model_id.as_deref(),
+            agents,
+        };
+        println!("{}", serde_json::to_string_pretty(&view)?);
+        return Ok(());
+    }
+
     let did_str = did.map(|d| d.0).unwrap_or_else(|| "(none)".to_string());
 
     println!("Principal: {}", display_name);
@@ -1467,9 +1549,10 @@ mod tests {
         ])
         .expect("should parse principal create with --model");
         match cli.command {
-            Commands::Principal(PrincipalCommands::Create { name, model }) => {
+            Commands::Principal(PrincipalCommands::Create { name, model, force }) => {
                 assert_eq!(name, "alice");
                 assert_eq!(model, "anthropic-haiku");
+                assert!(!force);
             }
             _other => panic!("expected Principal create command"),
         }
@@ -1494,11 +1577,124 @@ mod tests {
 
         // Empty catalog → any model id is rejected at creation, before
         // the workspace is written.
-        let result = create_principal("alice", "no-such-model", &paths).await;
+        let result = create_principal("alice", "no-such-model", false, &paths).await;
         let err = result.expect_err("unknown model must fail creation");
         assert!(
             format!("{err:#}").contains("no-such-model"),
             "error should name the offending model id: {err:#}"
         );
+    }
+
+    #[test]
+    fn principal_create_parses_force_flag() {
+        // `--force` is the explicit override for the overwrite guard —
+        // see Bug 2 in scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
+        let cli = Cli::try_parse_from([
+            "peko",
+            "principal",
+            "create",
+            "scout",
+            "--model",
+            "anthropic-haiku",
+            "--force",
+        ])
+        .expect("should parse principal create with --force");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Create { name, model, force }) => {
+                assert_eq!(name, "scout");
+                assert_eq!(model, "anthropic-haiku");
+                assert!(force);
+            }
+            _other => panic!("expected Principal create command"),
+        }
+    }
+
+    /// Bug 2 regression: a second `create` against an existing workspace
+    /// must refuse without `--force`. Previously it silently wiped
+    /// identity / agents / memory / sessions.
+    #[tokio::test]
+    async fn create_principal_refuses_overwrite_without_force() {
+        use peko_providers::catalog::ModelCatalog;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from([
+            "peko",
+            "--config-dir",
+            dir.path().join("config").to_str().unwrap(),
+            "--data-dir",
+            dir.path().join("data").to_str().unwrap(),
+            "--cache-dir",
+            dir.path().join("cache").to_str().unwrap(),
+            "principal",
+            "list",
+        ]);
+        let paths = from_cli(&cli);
+
+        // Seed the catalog with a single valid model so the creation
+        // path can proceed past the catalog check.
+        let cat_path = paths.config_dir.join(ModelCatalog::FILENAME);
+        std::fs::create_dir_all(paths.config_dir.clone()).unwrap();
+        std::fs::write(
+            &cat_path,
+            r#"
+version = "4.0"
+
+[entries.demo-model]
+id = "demo-model"
+display_name = "Demo"
+template_id = "anthropic"
+api_format = "anthropic_messages"
+base_url = "https://example.invalid"
+model_id = "demo"
+context_window = 100000
+credential_id = "00000000-0000-0000-0000-000000000000"
+requires_key = true
+enabled = true
+created_at = "2026-01-01T00:00:00Z"
+updated_at = "2026-01-01T00:00:00Z"
+"#,
+        )
+        .unwrap();
+
+        // First create: success.
+        create_principal("scout", "demo-model", false, &paths)
+            .await
+            .expect("first create should succeed");
+
+        // Capture a sentinel file inside the workspace that the
+        // overwrite (if it happened) would destroy. This proves the
+        // refusal is real and not a "succeeded silently" trap.
+        let shared = paths.resolver().principal_layout("scout").shared;
+        std::fs::write(shared.agents_dir.join("sentinel.md"), "do-not-delete")
+            .expect("write sentinel");
+        assert!(shared.agents_dir.join("sentinel.md").exists());
+
+        // Second create without --force: must refuse.
+        let err = create_principal("scout", "demo-model", false, &paths)
+            .await
+            .expect_err("second create without --force must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("already exists") && msg.contains("remove"),
+            "error must name the guard + the recovery path: {msg}"
+        );
+
+        // Sentinel must still exist — nothing was overwritten.
+        assert!(
+            shared.agents_dir.join("sentinel.md").exists(),
+            "overwrite guard must not destroy workspace data"
+        );
+
+        // With --force: the guard is bypassed and the call succeeds.
+        // (Note: --force currently does NOT wipe existing on-disk state;
+        // the doc-comment on `Create { force }` and the bail message
+        // tell the user to `principal remove` first for a clean
+        // replacement. This regression only asserts the guard was
+        // bypassed, not that data was destroyed — destruction semantics
+        // are a follow-up tracked in the e2e report.)
+        create_principal("scout", "demo-model", true, &paths)
+            .await
+            .expect("create with --force should succeed past the guard");
     }
 }

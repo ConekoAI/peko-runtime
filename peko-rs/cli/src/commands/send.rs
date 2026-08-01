@@ -54,6 +54,23 @@ pub struct SendArgs {
 pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> Result<()> {
     let message = resolve_message(&args).await?;
 
+    // Refuse empty messages at the CLI layer — see Bug 4 in
+    // scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
+    // Without this guard, `peko send scout "" --no-stream` still calls
+    // the LLM with empty content (the 128 input tokens are the system
+    // prompt) and returns a canned greeting, silently burning the
+    // user's quota. A non-technical user typing this in a shell loop
+    // would have no idea they were paying for empty turns.
+    if message.trim().is_empty() {
+        anyhow::bail!(
+            "Message is empty. Provide a non-empty message as an argument, via --file, or via --stdin.\n\
+             Examples:\n  \
+             peko send myprincipal \"Hello\"\n  \
+             peko send myprincipal --file prompt.txt\n  \
+             echo \"Hello\" | peko send myprincipal --stdin"
+        );
+    }
+
     info!("Sending message to principal '{}'", args.principal);
 
     let client = DaemonClient::connect().await?;
@@ -298,7 +315,7 @@ async fn resolve_message(args: &SendArgs) -> Result<String> {
         Ok(buffer.trim().to_string())
     } else if let Some(ref file_path) = args.file {
         match std::fs::read_to_string(file_path) {
-            Ok(content) => Ok(content),
+            Ok(content) => Ok(content.trim().to_string()),
             Err(e) => {
                 anyhow::bail!("Failed to read message file '{file_path}': {e}");
             }
@@ -318,8 +335,46 @@ async fn resolve_message(args: &SendArgs) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::{Cli, Commands};
+    use crate::commands::{from_cli, Cli, Commands};
     use clap::Parser;
+
+    /// Bug 4 (scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md):
+    /// `peko send <name> ""` previously called the LLM with empty content
+    /// and silently burned a turn + tokens. The CLI now refuses empty /
+    /// whitespace-only messages before any IPC.
+    #[tokio::test]
+    async fn handle_send_rejects_empty_message() {
+        let cli =
+            Cli::try_parse_from(["peko", "send", "myprincipal", ""]).expect("should parse send");
+        let paths = from_cli(&cli);
+        let args = match cli.command {
+            Commands::Send(args) => args,
+            _ => panic!("expected Send"),
+        };
+        let err = super::handle_send(args, &paths, false)
+            .await
+            .expect_err("empty message must be rejected before IPC");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Message is empty"),
+            "error should explain the empty-message guard: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_send_rejects_whitespace_only_message() {
+        let cli = Cli::try_parse_from(["peko", "send", "myprincipal", "   \t\n  "])
+            .expect("should parse send");
+        let paths = from_cli(&cli);
+        let args = match cli.command {
+            Commands::Send(args) => args,
+            _ => panic!("expected Send"),
+        };
+        let err = super::handle_send(args, &paths, false)
+            .await
+            .expect_err("whitespace-only message must be rejected before IPC");
+        assert!(format!("{err:#}").contains("Message is empty"));
+    }
 
     #[test]
     fn send_parses_principal_and_message() {
