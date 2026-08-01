@@ -395,19 +395,15 @@ where
     // streaming — the caller would receive the whole answer as one chunk.
     // `execute_streaming_with_session` uses `OrchestratorConfig::live()`.
     //
-    // F19: agent_runner doesn't hold a `PrincipalManager` reference,
-    // so it can't resolve the principal's quota meter at this
-    // boundary. Pass `None` (unlimited). The IPC handler layer is
-    // where the principal's meter gets injected — see `daemon/state.rs`
-    // for the dispatcher-level plumbing in a follow-up. Until then,
-    // principal charging is disabled at this layer (test paths / agent
-    // catalog smoke tests are unaffected since they don't carry
-    // accumulated quotas).
-    //
-    // F20: same situation for peer_meter — agent_runner doesn't have a
-    // peer registry in scope. Pass `None` until the daemon's
-    // `AppState` wiring (Task #101) makes the peer registry reachable
-    // from this entrypoint.
+    // Bug A (2026-08-01 v2): read the meters off `ctx` (bound by
+    // `RootRouter::build_context` from the dispatcher-populated
+    // `RouterContext`). When unbound, fall through to `None` (which
+    // `QuotaMeter::unlimited()` semantics) — the CLI one-shot
+    // `stateless_service.rs:667` path stays `None` because it doesn't
+    // build a `PrincipalContext` at all. F20 peer metering remains
+    // `None` until the dispatcher populates `RouterContext::peer_meter`.
+    let quota_meter = ctx.quota_meter().map(Arc::clone);
+    let peer_meter = ctx.peer_meter().map(Arc::clone);
     let result = agent
         .execute_streaming_with_session(
             &user_text,
@@ -417,8 +413,8 @@ where
             None, // caller_id: attribution is handled at the dispatcher boundary
             on_event,
             cancel,
-            None, // quota_meter
-            None, // peer_meter
+            quota_meter,
+            peer_meter,
         )
         .await
         .context("root agent execution failed")?;

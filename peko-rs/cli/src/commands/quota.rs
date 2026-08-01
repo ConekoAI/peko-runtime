@@ -129,7 +129,22 @@ async fn status(name: String, is_peer: bool, json: bool) -> Result<()> {
     let client = connect_daemon().await?;
     match client.quota_get(name.clone(), is_peer).await? {
         ResponsePacket::QuotaStatus { state, config, .. } => {
-            render_status(&name, &config, &state, json);
+            if json {
+                // Mirror the envelope shape used by `set` (185-191) and
+                // `reset` (214-221) so scripts can pipe any of the three
+                // subcommands into the same `jq` filter. `render_status`
+                // short-circuits on `json: true`, so we build the
+                // snapshot here (Bug B, filed 2026-08-01 v2).
+                let snapshot = serde_json::json!({
+                    "name": name,
+                    "is_peer": is_peer,
+                    "config": config,
+                    "state": state,
+                });
+                println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            } else {
+                render_status(&name, &config, &state, false);
+            }
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
@@ -441,5 +456,43 @@ mod tests {
             }
             _ => panic!("expected List variant"),
         }
+    }
+
+    /// Bug B (2026-08-01 v2): `quota status --json` returned empty
+    /// stdout because `status()` short-circuited through `render_status`
+    /// instead of building the same `serde_json::json!({...})` envelope
+    /// that `set` and `reset` build. Pin the envelope shape so a
+    /// future regression here is caught at unit-test time rather than
+    /// by an empty `jq` invocation in CI.
+    #[test]
+    fn quota_status_json_envelope_shape() {
+        let name = "alice";
+        let is_peer = false;
+        let config = QuotaConfig::default();
+        let state = QuotaState::fresh(QuotaCycle::Daily, chrono::Utc::now());
+
+        let snapshot = serde_json::json!({
+            "name": name,
+            "is_peer": is_peer,
+            "config": config,
+            "state": state,
+        });
+
+        let pretty = serde_json::to_string_pretty(&snapshot).expect("envelope serializes");
+        // Required top-level fields — scripts pipe these through `jq`.
+        for field in ["name", "is_peer", "config", "state"] {
+            assert!(
+                pretty.contains(&format!("\"{field}\"")),
+                "envelope missing `{field}` field; got:\n{pretty}"
+            );
+        }
+        assert!(
+            pretty.contains("\"name\": \"alice\""),
+            "envelope must round-trip the principal name; got:\n{pretty}"
+        );
+        assert!(
+            pretty.contains("\"is_peer\": false"),
+            "envelope must round-trip `is_peer`; got:\n{pretty}"
+        );
     }
 }

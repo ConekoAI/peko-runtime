@@ -107,6 +107,18 @@ pub struct RouterContext {
     /// `preferred_model_id`. Resolver source becomes
     /// `ResolveSource::ExplicitOverride`.
     pub override_model: Option<String>,
+    /// Principal-level quota meter. Resolved at the IPC dispatcher
+    /// boundary from `Principal::quota_meter` and threaded through
+    /// `route_streaming` → `run_root_agent_prompt_streaming` →
+    /// `Agent::execute_streaming_with_session` so the engine loop
+    /// charges the principal's per-cycle counter on every LLM call.
+    /// `None` ⇒ unlimited (matches the F19 default when no quota is
+    /// configured). Bug A, 2026-08-01 v2.
+    pub quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
+    /// Peer-level quota meter. Resolved at the IPC dispatcher boundary
+    /// via `PrincipalManager::get_or_create_peer` and threaded the
+    /// same way as `quota_meter`. `None` ⇒ peer is unlimited. F20.
+    pub peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
 }
 
 // Manual `Debug` impl — `InboxRegistry` (peko-session) contains an
@@ -135,6 +147,8 @@ impl std::fmt::Debug for RouterContext {
             .field("session_creation_lock", &"<Mutex>")
             .field("observability", &self.observability)
             .field("override_model", &self.override_model)
+            .field("quota_meter", &self.quota_meter.as_ref().map(|m| m.is_exhausted()))
+            .field("peer_meter", &self.peer_meter.as_ref().map(|m| m.is_exhausted()))
             .finish()
     }
 }
@@ -159,6 +173,8 @@ impl Clone for RouterContext {
             session_creation_lock: Arc::clone(&self.session_creation_lock),
             observability: self.observability.clone(),
             override_model: self.override_model.clone(),
+            quota_meter: self.quota_meter.as_ref().map(Arc::clone),
+            peer_meter: self.peer_meter.as_ref().map(Arc::clone),
         }
     }
 }

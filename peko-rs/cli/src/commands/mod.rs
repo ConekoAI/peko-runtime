@@ -35,6 +35,7 @@ pub mod update;
 
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 /// Global CLI structure
@@ -266,9 +267,14 @@ pub fn from_cli(cli: &Cli) -> GlobalPaths {
 
 /// Initialize logging
 pub fn init_logging(verbosity: u8, quiet: bool) {
+    // Strip ANSI escape codes when stderr isn't a terminal — otherwise
+    // redirects / pipes capture literal `\x1b[…m` sequences that
+    // pollute log files (Bug C, filed 2026-08-01 v2).
+    let ansi = std::io::stderr().is_terminal();
     if quiet {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::ERROR)
+            .with_ansi(ansi)
             .init();
         return;
     }
@@ -280,5 +286,8 @@ pub fn init_logging(verbosity: u8, quiet: bool) {
         _ => tracing::Level::TRACE, // -vvv: trace level
     };
 
-    tracing_subscriber::fmt().with_max_level(level).init();
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_ansi(ansi)
+        .init();
 }

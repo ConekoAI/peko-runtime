@@ -23,7 +23,6 @@ use peko_core::principal::config::{
 use peko_core::principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 use peko_core::principal::{
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
-    router::{ChannelContext, ChannelKind},
     PrincipalManager,
 };
 use peko_extension_api::Capabilities;
@@ -80,15 +79,6 @@ pub enum PrincipalCommands {
         /// Skip the confirmation prompt
         #[arg(long)]
         yes: bool,
-    },
-
-    /// Send a message to a Principal
-    Send {
-        /// Principal name
-        name: String,
-
-        /// Message to send
-        message: String,
     },
 
     /// Export a Principal to a `.principal` package
@@ -311,9 +301,6 @@ pub async fn handle_principal(
         PrincipalCommands::Show { name } => show_principal(&name, paths, json).await,
         PrincipalCommands::Remove { name, yes } => {
             remove_principal(&name, yes, paths, json).await
-        }
-        PrincipalCommands::Send { name, message } => {
-            send_to_principal(&name, &message, paths).await
         }
         PrincipalCommands::Export {
             name,
@@ -547,15 +534,25 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
     if json {
         // Structured view — same shape as `peko log --json` for
         // downstream tooling. `path` is the absolute workspace path;
-        // `agents` is an array of {name, description, prompt_path}.
-        // Bug 3 in scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md
-        // notes that previously `--json` was silently ignored here.
+        // `agents` is an array of {name, description, prompt_path};
+        // `persona` is the identity + intent block (Bug D, 2026-08-01
+        // v2). The persona block is the read-back path for `peko
+        // principal persona set --from …` — non-tech users need a way
+        // to confirm what the persona-builder drafted, and parsing
+        // principal.toml by hand is a hard stop.
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct AgentView<'a> {
             name: &'a str,
             description: &'a str,
             prompt_path: &'a std::path::PathBuf,
+        }
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PersonaView<'a> {
+            description: Option<&'a str>,
+            goals: &'a [String],
+            values: &'a [String],
         }
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -566,6 +563,7 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
             workspace: &'a std::path::Path,
             preferred_model_id: Option<&'a str>,
             agents: Vec<AgentView<'a>>,
+            persona: PersonaView<'a>,
         }
         let agents: Vec<AgentView> = principal
             .agent_prompts
@@ -576,13 +574,20 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
                 prompt_path: &prompt.path,
             })
             .collect();
+        let config = principal.config.read().await;
+        let persona = PersonaView {
+            description: config.identity.description.as_deref(),
+            goals: &config.intent.goals,
+            values: &config.intent.values,
+        };
         let view = ShowView {
-            name: &principal.config.read().await.name,
+            name: &config.name,
             display_name: &display_name,
             did: did.as_ref().map(|d| d.0.as_str()),
             workspace: &principal.workspace_path,
             preferred_model_id: preferred_model_id.as_deref(),
             agents,
+            persona,
         };
         println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());
@@ -636,31 +641,6 @@ async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths, json: bool
     } else {
         println!("Removed principal '{name}'");
     }
-    Ok(())
-}
-
-async fn send_to_principal(name: &str, message: &str, paths: &GlobalPaths) -> Result<()> {
-    let manager = build_manager(paths);
-    let principal = load_principal(name, &manager, paths).await?;
-
-    let peer = Subject::User(paths.user().to_string());
-    let channel = ChannelContext {
-        kind: ChannelKind::Cli,
-        streaming: false,
-    };
-
-    let response = manager
-        .receive(
-            principal.id.clone(),
-            peer,
-            message.to_string(),
-            channel,
-            None,
-        )
-        .await
-        .context("principal receive failed")?;
-
-    println!("{}", response.content);
     Ok(())
 }
 
@@ -1909,6 +1889,105 @@ mod tests {
             }
             _other => panic!("expected Principal remove command"),
         }
+    }
+
+    /// `principal send` was a duplicate of the top-level `send` command.
+    /// Removed in 2026-08-01 v2 fixes. Migration: `principal send foo bar`
+    /// becomes `send foo bar`. The top-level `send` is the canonical
+    /// command and supports `--no-stream`, `--file`, `--stdin`, `--model`,
+    /// `--no-slash`.
+    #[test]
+    fn principal_no_send_subcommand() {
+        let result = Cli::try_parse_from(["peko", "principal", "send", "x", "y"]);
+        let err = match result {
+            Ok(_) => panic!("'principal send' must no longer parse — clap accepted it"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("unrecognized subcommand") || err.contains("unexpected argument"),
+            "expected clap to reject 'principal send' as unrecognized; got: {err}"
+        );
+    }
+
+    /// Bug D (2026-08-01 v2): `principal show --json` didn't expose the
+    /// persona fields (`[identity.description]`, `[intent.goals]`,
+    /// `[intent.values]`), so after `peko principal persona set --from …`
+    /// a non-tech user had no in-CLI way to confirm what got written.
+    /// The fix adds a `persona: {description, goals, values}` block to
+    /// the `ShowView` envelope. Pin the field set + camelCase rename so
+    /// scripts that pipe `jq '.persona.goals'` keep working.
+    #[test]
+    fn show_principal_json_envelope_has_persona_fields() {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct AgentView<'a> {
+            name: &'a str,
+            description: &'a str,
+            prompt_path: &'a std::path::PathBuf,
+        }
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PersonaView<'a> {
+            description: Option<&'a str>,
+            goals: &'a [String],
+            values: &'a [String],
+        }
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ShowView<'a> {
+            name: &'a str,
+            display_name: &'a str,
+            did: Option<&'a str>,
+            workspace: &'a std::path::Path,
+            preferred_model_id: Option<&'a str>,
+            agents: Vec<AgentView<'a>>,
+            persona: PersonaView<'a>,
+        }
+
+        let goals = vec!["write small CLI utilities".to_string()];
+        let values = vec!["idiomatic code".to_string()];
+        let path = std::path::PathBuf::from("/tmp/agents/primary.md");
+        let prompt_path = &path;
+        let view = ShowView {
+            name: "pyhelper",
+            display_name: "Python CLI Helper",
+            did: None,
+            workspace: std::path::Path::new("/tmp/pyhelper"),
+            preferred_model_id: Some("minimax-MiniMax-M3"),
+            agents: vec![AgentView {
+                name: "primary",
+                description: "Default assistant for pyhelper",
+                prompt_path,
+            }],
+            persona: PersonaView {
+                description: Some("A python helper that writes small CLI utilities."),
+                goals: &goals,
+                values: &values,
+            },
+        };
+
+        let pretty = serde_json::to_string_pretty(&view).expect("envelope serializes");
+        for field in ["description", "goals", "values"] {
+            assert!(
+                pretty.contains(&format!("\"{field}\"")),
+                "persona block missing `{field}`; got:\n{pretty}"
+            );
+        }
+        // Bug D specific: the persona round-trip must include the goal text
+        // we drafted. If the field name is misspelled (e.g. `goal` instead
+        // of `goals`) `jq '.persona.goals'` would silently emit `null`.
+        assert!(
+            pretty.contains("\"write small CLI utilities\""),
+            "persona.goals did not round-trip; got:\n{pretty}"
+        );
+        assert!(
+            pretty.contains("\"idiomatic code\""),
+            "persona.values did not round-trip; got:\n{pretty}"
+        );
+        assert!(
+            pretty.contains("\"Python CLI Helper\""),
+            "displayName did not round-trip; got:\n{pretty}"
+        );
     }
 
     #[test]

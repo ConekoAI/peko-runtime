@@ -14,6 +14,7 @@
 //! once the visibility story settles.
 
 use anyhow::{Context, Result};
+use std::io::IsTerminal;
 use std::time::Duration;
 
 use peko_core::common::paths::PathResolver;
@@ -130,11 +131,17 @@ async fn main() -> Result<()> {
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Strip ANSI escape codes when stderr isn't a terminal — the
+    // daemon writes its log file via stderr, and any `\x1b[…m`
+    // sequences in `daemon.log` would corrupt downstream tools
+    // (Bug C, filed 2026-08-01 v2).
+    let ansi = std::io::stderr().is_terminal();
     // `try_init` (not `init`) so re-spawns under the supervisor don't
     // panic if the previous attempt already installed a subscriber.
     let _ = fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(ansi)
         .try_init();
 }
 

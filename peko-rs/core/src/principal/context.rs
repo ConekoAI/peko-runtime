@@ -112,10 +112,21 @@ pub struct PrincipalContext {
     /// callable when both its capability is granted and its owning extension
     /// is active.
     active_extensions: OnceLock<peko_extension_api::ActiveExtensionSet>,
-    // F19: removed `quota_meter` field. The engine loop fetches the
-    // principal's meter directly from `Principal.quota_meter` at run
-    // entrypoint and opens `QuotaScope::with` around the run. No
-    // need to thread it through `PrincipalContext`.
+    // F19 (revised 2026-08-01 v2): the engine loop never managed to
+    // fetch the principal's meter directly — the dispatcher boundary
+    // is the only point with a `PrincipalManager` reference in scope,
+    // and `PrincipalContext` is what flows down to
+    // `run_root_agent_prompt_with_callback`. Resolved in
+    // `RootRouter::build_context` from the `RouterContext` snapshot
+    // populated by `PrincipalManager::build_router_context`. Set once
+    // and read by `agent_runner` to charge the per-cycle counter on
+    // every LLM call (Bug A).
+    quota_meter: OnceLock<Arc<peko_quota::QuotaMeter>>,
+    // F20 (deferred): peer_meter — same shape, but the peer registry
+    // isn't reachable from `RootRouter::build_context` yet. When set,
+    // subagent spawns will charge the peer counter on top of the
+    // principal counter.
+    peer_meter: OnceLock<Arc<peko_quota::QuotaMeter>>,
 }
 
 impl PrincipalContext {
@@ -155,6 +166,8 @@ impl PrincipalContext {
             caller_runtime_id: OnceLock::new(),
             observability: OnceLock::new(),
             active_extensions: OnceLock::new(),
+            quota_meter: OnceLock::new(),
+            peer_meter: OnceLock::new(),
         }
     }
 
@@ -248,6 +261,39 @@ impl PrincipalContext {
     pub fn active_extensions(&self) -> &peko_extension_api::ActiveExtensionSet {
         self.active_extensions
             .get_or_init(peko_extension_api::ActiveExtensionSet::empty)
+    }
+
+    /// Bind the principal's quota meter (Bug A, 2026-08-01 v2). Set
+    /// once in `RootRouter::build_context` from the `RouterContext`
+    /// snapshot, then read by `agent_runner` to charge the per-cycle
+    /// counter on every LLM call. Idempotent.
+    pub fn set_quota_meter(
+        &self,
+        meter: Arc<peko_quota::QuotaMeter>,
+    ) -> Result<(), Arc<peko_quota::QuotaMeter>> {
+        self.quota_meter.set(meter)
+    }
+
+    /// Bound principal quota meter, if any.
+    #[must_use]
+    pub fn quota_meter(&self) -> Option<&Arc<peko_quota::QuotaMeter>> {
+        self.quota_meter.get()
+    }
+
+    /// Bind the peer-level quota meter (F20, deferred). When set,
+    /// subagent spawns charge the peer counter in addition to the
+    /// principal counter. Idempotent.
+    pub fn set_peer_meter(
+        &self,
+        meter: Arc<peko_quota::QuotaMeter>,
+    ) -> Result<(), Arc<peko_quota::QuotaMeter>> {
+        self.peer_meter.set(meter)
+    }
+
+    /// Bound peer quota meter, if any.
+    #[must_use]
+    pub fn peer_meter(&self) -> Option<&Arc<peko_quota::QuotaMeter>> {
+        self.peer_meter.get()
     }
 
     /// Get the daemon-global `ExtensionCore` and ensure the
