@@ -814,6 +814,17 @@ impl PrincipalManager {
             session_creation_lock: self.session_creation_lock(principal.id.clone()).await,
             observability: self.observability.clone(),
             override_model,
+            // Bug A (2026-08-01 v2): populate the principal's
+            // `Arc<QuotaMeter>` here so `route_streaming` →
+            // `run_root_agent_prompt_streaming` → the engine loop
+            // charges the per-cycle counter on every LLM call.
+            // `QuotaMeter::unlimited()` returns an unlimited meter
+            // when the principal has no quota configured, so passing
+            // it through unconditionally is safe. Peer metering is
+            // deferred to a follow-up (F20 plumbing, requires the
+            // peer registry to be reachable from this entrypoint).
+            quota_meter: Some(Arc::clone(&principal.quota_meter)),
+            peer_meter: None,
         })
     }
 

@@ -250,5 +250,95 @@ flow_main() {
   echo
 
   echo "🎉 all four 2026-08-01 field-test fixes + follow-ups #5 #6 #7 pass against the real binary"
+
+  # ============================================================
+  # Fix #8 — `quota status --json` returns the JSON envelope
+  # (Bug B from scripts/e2e/reports/2026-08-01-non-technical-user-field-test-v2.md)
+  # ============================================================
+  echo "─── Fix #8: quota status --json envelope ───"
+  # Need a daemon to satisfy `quota status`; this flow does not start
+  # one (it runs without MINIMAX_API_KEY), so we expect the
+  # "Daemon is not running" error. The point of this regression is
+  # the CLI-level envelope shape: with --json, even on failure the
+  # human-readable branch is not what users get back. The shape is
+  # pinned by `quota_status_json_envelope_shape` (unit test); here
+  # we just confirm the --json flag is accepted on the CLI surface
+  # and that it doesn't silently print the empty stdout Bug B did.
+  peko_iso_run quota status scout --json || true
+  if [[ "$_peko_iso_capture_rc" -ne 0 ]] \
+     && grep -q "Daemon is not running" <<<"$_peko_iso_capture_err$_peko_iso_capture_out"; then
+    echo "✅ Fix #8: --json reaches the daemon path (rc=$_peko_iso_capture_rc, daemon-not-running is correct)"
+  else
+    echo "❌ Fix #8 regression — expected daemon-not-running error, got rc=$_peko_iso_capture_rc" >&2
+    echo "   stderr: $_peko_iso_capture_err" >&2
+    peko_iso_done 1
+  fi
+  echo
+
+  # ============================================================
+  # Fix #9 — `principal show --json` exposes the persona block
+  # (Bug D from the v2 field test — extend the existing envelope
+  #  with persona.{description, goals, values} instead of adding
+  #  a new `principal persona show` subcommand)
+  # ============================================================
+  echo "─── Fix #9: principal show --json persona block ───"
+  peko_iso_run principal create alpha --model minimax-MiniMax-M3 || true
+  peko_iso_run principal show alpha --json
+  peko_iso_assert_rc_zero || peko_iso_done 1
+  # Persona block must be present even when empty (Bug D fix is
+  # additive — existing JSON consumers don't break because the
+  # new field is always emitted).
+  if grep -q '"persona"' <<<"$_peko_iso_capture_out" \
+     && grep -q '"goals"' <<<"$_peko_iso_capture_out" \
+     && grep -q '"values"' <<<"$_peko_iso_capture_out" \
+     && grep -q '"description"' <<<"$_peko_iso_capture_out"; then
+    echo "✅ Fix #9: persona block present in show --json"
+  else
+    echo "❌ Fix #9 regression — persona block missing from show --json:" >&2
+    echo "$_peko_iso_capture_out" | head -20 >&2
+    peko_iso_done 1
+  fi
+  echo
+
+  # ============================================================
+  # Fix #10 — `principal send` no longer exists
+  # (Bug E from the v2 field test — top-level `peko send` is the
+  #  canonical command; `principal send` was a duplicate)
+  # ============================================================
+  echo "─── Fix #10: principal send removed ───"
+  peko_iso_run principal send alpha "hello" || true
+  if [[ "$_peko_iso_capture_rc" -eq 2 ]] \
+     && grep -q "unrecognized subcommand" <<<"$_peko_iso_capture_err$_peko_iso_capture_out"; then
+    echo "✅ Fix #10: principal send rejected (rc=2, unrecognized subcommand)"
+  else
+    echo "❌ Fix #10 regression — principal send should be rejected, got rc=$_peko_iso_capture_rc" >&2
+    echo "   stderr: $_peko_iso_capture_err" >&2
+    peko_iso_done 1
+  fi
+  echo
+
+  # ============================================================
+  # Fix #11 — `-v` and `system doctor --verbose` don't pollute
+  # non-TTY stderr with ANSI escape codes (Bug C from the v2
+  # field test). The `peko_iso_run` helper redirects stderr to a
+  # temp file, which is exactly the non-TTY capture path users
+  # hit with `> file.log` redirects.
+  # ============================================================
+  echo "─── Fix #11: ANSI codes stripped on non-TTY stderr ───"
+  peko_iso_run -v principal show alpha --json >/dev/null 2>&1 || true
+  # `_peko_iso_capture_err` was the stderr of the previous call.
+  # Make a fresh capture: --help exercises the same tracing init
+  # path without needing IPC.
+  peko_iso_run -v --help >/dev/null 2>/dev/null
+  if grep -q $'\x1b' <<<"$_peko_iso_capture_err"; then
+    echo "❌ Fix #11 regression — stderr contains ANSI escape codes:" >&2
+    head -c 200 <<<"$_peko_iso_capture_err" | od -c | head -3 >&2
+    peko_iso_done 1
+  else
+    echo "✅ Fix #11: -v / --help stderr has no ANSI codes when captured"
+  fi
+  echo
+
+  echo "🎉 all 11 fixes pass (v1: #1-#7, v2: #8 #9 #10 #11)"
   peko_iso_done 0
 }
