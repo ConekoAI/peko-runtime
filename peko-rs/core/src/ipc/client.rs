@@ -915,6 +915,30 @@ impl DaemonClient {
     }
 
     // ------------------------------------------------------------------
+    // Persona draft (Fix D — guided persona builder)
+    // ------------------------------------------------------------------
+
+    /// Ask the daemon to draft a persona from `from` using the
+    /// configured `model_id`. The daemon validates the model id
+    /// against its catalog, calls the LLM via
+    /// `Provider::chat_with_system`, and returns the raw text in
+    /// `ResponsePacket::PersonaDrafted { content, parse_ok }`. There
+    /// is no session, no streaming, no memory — a single-shot draft.
+    pub async fn persona_draft(
+        &self,
+        model_id: impl Into<String>,
+        from: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PersonaDraft {
+            request_id,
+            model_id: model_id.into(),
+            from: from.into(),
+        };
+        self.request_response(packet).await
+    }
+
+    // ------------------------------------------------------------------
     // Quota management (F18)
     // ------------------------------------------------------------------
 
