@@ -255,6 +255,10 @@ peko_iso_done() {
   elif [[ -n "$_PEKO_ISO_TEMPDIR" ]]; then
     echo "🗂️  KEEP_TEMPDIR=${KEEP_TEMPDIR:-} — leaving $_PEKO_ISO_TEMPDIR on disk"
   fi
+  # Clear globals so a re-fired EXIT trap (e.g. when `peko_iso_done` is
+  # called explicitly and then the shell exits) short-circuits both
+  # branches above and prints nothing — the tempdir is already gone.
+  unset _PEKO_ISO_TEMPDIR _PEKO_ISO_PEKO_DIR _PEKO_ISO_SOCK _PEKO_ISO_DAEMON_PID
   exit "$rc"
 }
 

@@ -40,7 +40,7 @@ use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
-use crate::ipc::packet::{PrincipalSendControlMode, RequestPacket, ResponsePacket};
+use crate::ipc::packet::{PrincipalSendControlMode, RequestPacket, ResponsePacket, RunUsageSummary, ToolErrorEntry};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
@@ -2125,7 +2125,26 @@ async fn run_principal_send(
     // different LLM turns). Tool-call / thinking / retry / usage events
     // stay backend-only and are dropped — the bubble break is driven
     // solely by the iteration counter, not by re-emitting those events.
+    //
+    // For the `--no-stream` UX (and any thin consumer that doesn't
+    // persist the session JSONL) we still *accumulate* the run summary
+    // — `ToolStart` / `ToolEnd` / `Usage` events are correlated into
+    // `iteration`, `tool_errors`, and `usage` and emitted as a single
+    // `RunSummary` packet right before the final `Done`. ADR-042 keeps
+    // these events off the per-event wire (no streaming deltas), but
+    // the summary path is opt-in for end-of-run.
     let mut iteration: u32 = 0;
+    // Tool-name cache so `ToolEnd { success: false }` records can show
+    // `<tool_name>` instead of a bare `tool_id`. Populated by
+    // `ToolStart`, consulted by `ToolEnd`. The map is bounded by the
+    // LLM's parallel-tool-call fanout in any one iteration (≤ ~10),
+    // so memory cost is negligible.
+    let mut tool_names: HashMap<String, String> = HashMap::new();
+    let mut tool_errors: Vec<ToolErrorEntry> = Vec::new();
+    // Cumulative token usage. `peko-engine` emits exactly one
+    // `AgenticEvent::Usage` per run, immediately before
+    // `Lifecycle{End}` — so capturing the last seen is sufficient.
+    let mut usage: Option<RunUsageSummary> = None;
     while let Some(event) = event_rx.recv().await {
         // (packet, debug label) — the label is captured up front so the
         // error log below can refer to it after `packet` has been moved
@@ -2152,7 +2171,54 @@ async fn run_principal_send(
                 },
                 "PrincipalSentChunk",
             ),
-            _ => continue, // tool/thinking/retry/usage stay backend-only
+            // Backend-only events: no packet, just mutate accumulators
+            // and continue to the next iteration of the channel-drain
+            // loop. The single `RunSummary` packet is emitted after the
+            // channel closes (see below).
+            AgenticEvent::ToolStart { tool_id, name, .. } => {
+                tool_names.insert(tool_id.to_string(), name);
+                continue;
+            }
+            AgenticEvent::ToolEnd {
+                tool_id,
+                result,
+                success,
+                ..
+            } if !success => {
+                let tool_id_str = tool_id.to_string();
+                let tool_name = tool_names
+                    .get(&tool_id_str)
+                    .cloned()
+                    .or_else(|| Some(tool_id_str.clone()));
+                // Tool results are `serde_json::Value`; coerce to a
+                // compact one-line string for the summary. Truncate to
+                // ~200 chars so the packet stays small.
+                let msg = match result {
+                    serde_json::Value::String(s) => s,
+                    other => other.to_string(),
+                };
+                let truncated: String = msg.chars().take(200).collect();
+                tool_errors.push(ToolErrorEntry {
+                    tool_id: tool_id_str,
+                    tool_name,
+                    error_message: truncated,
+                });
+                continue;
+            }
+            AgenticEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                ..
+            } => {
+                usage = Some(RunUsageSummary {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                });
+                continue;
+            }
+            _ => continue, // tool-success/thinking/retry/streaming stay backend-only
         };
         if matches!(response_kind, PrincipalSendResponseKind::Streaming) {
             if let Err(e) = send_response(sink, packet).await {
@@ -2200,6 +2266,18 @@ async fn run_principal_send(
                 },
             };
             send_response(sink, final_packet).await?;
+            // Emit the run summary (tool errors + token usage) before
+            // the terminator `Done`. ADR-042 keeps per-event tool /
+            // usage details off the streaming wire; this is the
+            // end-of-run opt-in. Old CLIs tolerate unknown variants
+            // via `_ => {}` fallthroughs, so additive-only is safe.
+            let summary = ResponsePacket::RunSummary {
+                request_id,
+                iterations: iteration,
+                usage: usage.clone(),
+                tool_errors: std::mem::take(&mut tool_errors),
+            };
+            send_response(sink, summary).await?;
             let done = ResponsePacket::Done {
                 request_id,
                 success: true,
@@ -2239,6 +2317,16 @@ async fn run_principal_send(
         }
         Err(e) => {
             let message = e.to_string();
+            // Emit any accumulated tool errors + usage even on
+            // failure — `--no-stream` users still want to know "did
+            // any tools fail?" before they see the failure banner.
+            let summary = ResponsePacket::RunSummary {
+                request_id,
+                iterations: iteration,
+                usage: usage.clone(),
+                tool_errors: std::mem::take(&mut tool_errors),
+            };
+            send_response(sink, summary).await?;
             let response = ResponsePacket::Error {
                 request_id,
                 message: message.clone(),

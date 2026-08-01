@@ -90,6 +90,16 @@ pub trait PlanPort: Send + Sync + 'static {
 
     /// Create a new plan. Generates `plan_id` and writes the initial
     /// record atomically.
+    ///
+    /// **Duplicate `node_id` check:** if `nodes` contains two or more
+    /// entries sharing the same `node_id`, returns
+    /// [`PlanError::InvalidNodeId`] without writing. Silently producing
+    /// a record with shadowed / unreachable nodes would leave the LLM
+    /// in an unrecoverable state — `mark_node_status` and
+    /// `set_node_evidence` only see the first match, so subsequent
+    /// operations on the duplicates would fail without explanation.
+    /// Hard-erroring here surfaces the collision to the agent so it
+    /// can correct its prompt and retry.
     async fn create(
         &self,
         principal_id: PrincipalId,
@@ -131,9 +141,14 @@ pub trait PlanPort: Send + Sync + 'static {
     ) -> Result<PlanRecord>;
 
     /// Append a new node to an existing plan. Returns
-    /// [`PlanError::AlreadyClosed`] if the plan has been closed;
-    /// [`PlanError::InvalidNodeId`] if the supplied `node.node_id`
-    /// is already present.
+    /// [`PlanError::AlreadyClosed`] if the plan has been closed.
+    ///
+    /// **Idempotent on `node_id` collision:** if the supplied
+    /// `node.node_id` is already present in the plan, returns the
+    /// existing record unchanged (no error, no overwrite). The LLM
+    /// mental model is "I want this step in the plan" — if it's
+    /// already there, that's a success. New `step` text on a colliding
+    /// id is silently dropped (existing wins).
     async fn add_node(
         &self,
         plan_id: &str,
@@ -259,20 +274,30 @@ impl PlanPort for PlanStorage {
         node: PlanNode,
     ) -> Result<PlanRecord> {
         let new_node_id = node.node_id.clone();
-        let new_node_id_str = new_node_id.as_str().to_string();
         self.update(plan_id, principal_id, move |r| {
-            let mut updated = r.clone();
+            let updated = r.clone();
             if updated.closed.is_some() {
                 return Err(PlanError::AlreadyClosed);
             }
-            if updated.nodes.iter().any(|n| n.node_id == new_node_id) {
-                return Err(PlanError::InvalidNodeId(format!(
-                    "node {new_node_id_str} already exists in plan {}",
-                    updated.plan_id
-                )));
+            // Idempotent on `node_id` collision: if the step is already
+            // in the plan, return the existing record unchanged. The
+            // LLM wanted the step in the plan, and it is — supplying
+            // a colliding `nodeId` on retry (or auto-assigned id that
+            // happens to land on an existing node) is a normal
+            // event, not an error. The LLM-facing tool surfaces this
+            // record so the agent can observe the step text didn't
+            // change. New `step` text on a colliding id is silently
+            // dropped — the existing node wins, by design.
+            if updated
+                .nodes
+                .iter()
+                .any(|n| n.node_id == new_node_id)
+            {
+                return Ok(updated);
             }
-            updated.nodes.push(node);
-            Ok(updated)
+            let mut appended = updated;
+            appended.nodes.push(node);
+            Ok(appended)
         })
         .await
     }
@@ -434,6 +459,24 @@ mod tests {
         assert!(resumable[0].has_unresolved_nodes());
     }
 
+    /// Hard-error on duplicate initial node ids at the port layer
+    /// (mirrors `storage::create_rejects_duplicate_initial_node_ids`).
+    /// Complements the idempotent `add_node` collision semantics:
+    /// `create` rejects; `add_node` accepts.
+    #[tokio::test]
+    async fn port_create_rejects_duplicate_node_ids() {
+        let (_tmp, port) = port_in_tempdir().await;
+        let p = PrincipalId::generate();
+        let n1 = sample_pending("first");
+        let mut n2 = sample_pending("second");
+        n2.node_id = n1.node_id.clone();
+        let err = port
+            .create(p.clone(), "dupe-batch".into(), vec![n1, n2])
+            .await
+            .expect_err("duplicate initial node ids must surface as InvalidNodeId");
+        assert!(matches!(err, PlanError::InvalidNodeId(_)), "got {err:?}");
+    }
+
     #[tokio::test]
     async fn port_create_then_close_round_trip() {
         let (_tmp, port) = port_in_tempdir().await;
@@ -535,24 +578,86 @@ mod tests {
             .expect("read");
         assert_eq!(back.nodes.len(), 2);
         assert!(back.nodes.iter().any(|n| n.node_id == new_node.node_id));
-        // Adding a node with a duplicate id is rejected.
-        let dup = sample_pending("dup");
-        let mut dup_attempt = dup.clone();
-        dup_attempt.node_id = new_node.node_id.clone();
-        let err = port
-            .add_node(&created.plan_id, &p, dup_attempt)
-            .await
-            .expect_err("duplicate must error");
-        assert!(matches!(err, PlanError::InvalidNodeId(_)), "got {err:?}");
-        // Closing the plan prevents further add_node calls.
+        // Closing the plan prevents further add_node calls. Duplicate-
+        // collision behavior is covered by the dedicated idempotency
+        // tests below — keeping this branch focused on closed-plan
+        // rejection.
         port.close(&created.plan_id, &p, "done".into())
             .await
             .expect("close");
         let err = port
-            .add_node(&created.plan_id, &p, dup)
+            .add_node(&created.plan_id, &p, new_node)
             .await
             .expect_err("closed-plan add must error");
         assert!(matches!(err, PlanError::AlreadyClosed), "got {err:?}");
+    }
+
+    /// Duplicate `node_id` on `add_node` is idempotent: returns the
+    /// existing record unchanged rather than erroring. The LLM mental
+    /// model is "I want this step in the plan" — if it's already there,
+    /// that's a success, not a failure. (`PePlanAddStep` tool relies on
+    /// this so retries / auto-assigned id collisions don't surface as
+    /// user-visible tool errors.)
+    #[tokio::test]
+    async fn port_add_node_collision_is_idempotent() {
+        let (_tmp, port) = port_in_tempdir().await;
+        let p = PrincipalId::generate();
+        let created = port
+            .create(p.clone(), "t".into(), vec![sample_pending("a")])
+            .await
+            .expect("create");
+        let node = sample_pending("first");
+        port.add_node(&created.plan_id, &p, node.clone())
+            .await
+            .expect("first add");
+        // Re-attempt with the same `node_id` returns Ok and does NOT
+        // push a duplicate row.
+        let back = port
+            .add_node(&created.plan_id, &p, node.clone())
+            .await
+            .expect("collision should be Ok, not Err");
+        assert_eq!(
+            back.nodes.len(),
+            2,
+            "collision must not push a duplicate row"
+        );
+        assert!(back.nodes.iter().any(|n| n.node_id == node.node_id));
+    }
+
+    /// When a colliding `nodeId` arrives with different `step` text,
+    /// the existing node's `step` is preserved (existing wins). The
+    /// plan's step text isn't silently mutated by a re-send that
+    /// happens to land on a colliding id with different content.
+    #[tokio::test]
+    async fn port_add_node_collision_preserves_existing_step_text() {
+        let (_tmp, port) = port_in_tempdir().await;
+        let p = PrincipalId::generate();
+        let created = port
+            .create(p.clone(), "t".into(), vec![sample_pending("a")])
+            .await
+            .expect("create");
+        let original = sample_pending("original-step-text");
+        port.add_node(&created.plan_id, &p, original.clone())
+            .await
+            .expect("first add");
+        // Build a colliding node with different `step` text.
+        let mut colliding = sample_pending("DIFFERENT-step-text");
+        colliding.node_id = original.node_id.clone();
+        let back = port
+            .add_node(&created.plan_id, &p, colliding)
+            .await
+            .expect("collision should be Ok");
+        // Find the node by id — `step` text should be the original,
+        // not the colliding payload.
+        let kept = back
+            .nodes
+            .iter()
+            .find(|n| n.node_id == original.node_id)
+            .expect("node must still be present");
+        assert_eq!(
+            kept.step, original.step,
+            "existing step wins on collision"
+        );
     }
 
     #[tokio::test]

@@ -123,6 +123,14 @@ async fn process_response_stream(
     let request_id = stream.request_id();
     if args.no_stream {
         let mut final_text = String::new();
+        // Run summary captured from the daemon's `RunSummary` packet —
+        // printed as a single-line footer on stderr in `Done{success}`
+        // so stdout stays pipe-safe (only the assistant text goes to
+        // stdout). Pre-plan-tool-e2e the footer did not exist; the
+        // daemon dropped `AgenticEvent::Usage` + `ToolEnd{success:false}`
+        // at the IPC boundary per ADR-042, so `--no-stream` callers had
+        // no signal that a tool had failed or how many tokens they used.
+        let mut summary: Option<crate::summary::RunSummaryView> = None;
         while let Some(packet) = next_or_interrupt(
             &mut stream,
             &ctrl_c_signal,
@@ -145,9 +153,34 @@ async fn process_response_stream(
                 | ResponsePacket::Text { chunk: content, .. } => {
                     final_text.push_str(&content);
                 }
+                ResponsePacket::RunSummary {
+                    iterations,
+                    usage,
+                    tool_errors,
+                    ..
+                } => {
+                    summary = Some(crate::summary::RunSummaryView {
+                        iterations,
+                        usage: usage.map(|u| crate::summary::UsageView {
+                            prompt_tokens: u.prompt_tokens,
+                            completion_tokens: u.completion_tokens,
+                            total_tokens: u.total_tokens,
+                        }),
+                        tool_errors: tool_errors
+                            .into_iter()
+                            .map(|e| crate::summary::ToolErrorView {
+                                tool_name: e.tool_name,
+                                error_message: e.error_message,
+                            })
+                            .collect(),
+                    });
+                }
                 ResponsePacket::Done { success, error, .. } => {
                     if success {
                         println!("{}", final_text.trim());
+                        if let Some(ref s) = summary {
+                            eprintln!("{}", s.format_footer());
+                        }
                         return Ok(());
                     }
                     anyhow::bail!(
