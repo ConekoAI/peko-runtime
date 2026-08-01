@@ -339,6 +339,141 @@ flow_main() {
   fi
   echo
 
-  echo "🎉 all 11 fixes pass (v1: #1-#7, v2: #8 #9 #10 #11)"
+  # ============================================================
+  # Fix #12 — `peko principal persona show <name>` exists (Bug F
+  # from scripts/e2e/reports/2026-08-01-non-technical-user-landlord-email.md).
+  # The v2 Bug D fix added a `persona` block to `show --json`, but
+  # a non-tech user still had no direct CLI read-back. The fix
+  # adds a dedicated `persona show` subcommand.
+  # ============================================================
+  echo "─── Fix #12: principal persona show subcommand ───"
+  peko_iso_run principal create persona-test --model minimax-MiniMax-M3
+  peko_iso_assert_rc_zero || peko_iso_done 1
+  # Default principal has identity.description="The persona-test Principal"
+  # but empty goals/values. The handler's `is_set` is true (description
+  # present), so the text path prints the description + empty Goals/Values.
+  peko_iso_run principal persona show persona-test
+  if [[ "$_peko_iso_capture_rc" -eq 0 ]] \
+     && grep -q "Persona for 'persona-test'" <<<"$_peko_iso_capture_out" \
+     && grep -q "Description:" <<<"$_peko_iso_capture_out" \
+     && grep -q "Goals:" <<<"$_peko_iso_capture_out" \
+     && grep -q "Values:" <<<"$_peko_iso_capture_out"; then
+    echo "✅ Fix #12: persona show text emits Description/Goals/Values"
+  else
+    echo "❌ Fix #12 regression — persona show text shape unexpected (rc=$_peko_iso_capture_rc):" >&2
+    echo "$_peko_iso_capture_out" | head -10 >&2
+    echo "stderr: $_peko_iso_capture_err" >&2
+    peko_iso_done 1
+  fi
+
+  peko_iso_run principal persona show persona-test --json
+  if [[ "$_peko_iso_capture_rc" -eq 0 ]] \
+     && [[ "$_peko_iso_capture_out" == "{"* ]] \
+     && grep -q '"name": "persona-test"' <<<"$_peko_iso_capture_out" \
+     && grep -q '"isSet":' <<<"$_peko_iso_capture_out" \
+     && grep -q '"description":' <<<"$_peko_iso_capture_out" \
+     && grep -q '"goals":' <<<"$_peko_iso_capture_out" \
+     && grep -q '"values":' <<<"$_peko_iso_capture_out"; then
+    echo "✅ Fix #12: persona show --json envelope has name/isSet/description/goals/values"
+  else
+    echo "❌ Fix #12 regression — persona show --json envelope shape unexpected:" >&2
+    echo "$_peko_iso_capture_out" | head -10 >&2
+    peko_iso_done 1
+  fi
+  echo
+
+  # ============================================================
+  # Fix #13 — `peko_iso_run` always returns 0 (Bug G from the v3
+  # field test). Before the fix, this helper propagated the
+  # captured exit code via `return`, which `set -euo pipefail` in
+  # scripts/e2e/run-case.sh treated as a script failure —
+  # truncating exploratory flows on any probed non-zero rc.
+  # The regression: a known-rc=2 call (unrecognized subcommand)
+  # must NOT kill the flow; the next line MUST execute. We assert
+  # by writing a sentinel to disk immediately after the probe; if
+  # the lib regresses and `set -e` kills the flow, the sentinel
+  # is never written and the assertion at the END of the flow
+  # catches it.
+  # ============================================================
+  echo "─── Fix #13: peko_iso_run returns 0 even on non-zero rc ───"
+  # `principal send` is a known-rc=2 path (Bug E fix deleted it).
+  # Call it WITHOUT `|| true`; if the lib regresses, `set -e`
+  # exits the flow here and the sentinel below is never written.
+  peko_iso_run principal send persona-test "hello"
+  local probe_rc="$_peko_iso_capture_rc"
+  # Sentinel — written only if we get past the probe call.
+  echo "fix13-ok" > /tmp/_peko_iso_fix13_marker
+  if [[ "$probe_rc" -ne 0 ]] \
+     && grep -q "unrecognized subcommand" <<<"$_peko_iso_capture_err$_peko_iso_capture_out"; then
+    echo "✅ Fix #13: non-zero rc was captured (rc=$probe_rc); sentinel written; flow continues"
+  else
+    echo "❌ Fix #13 regression — expected rc=2 + 'unrecognized subcommand', got rc=$probe_rc" >&2
+    echo "   stderr: $_peko_iso_capture_err" >&2
+    peko_iso_done 1
+  fi
+  echo
+
+  # ============================================================
+  # Fix #14 — `quota status` `input_tokens` is non-zero after real
+  # LLM calls (Bug H from the v3 field test). Some providers
+  # (notably MiniMax M3 / api.minimaxi.com/anthropic) report
+  # input_tokens in `message_delta.usage` and 0 in
+  # `message_start.message.usage`; before the fix the Anthropic
+  # adapter dropped the delta's input and the meter recorded 0.
+  # This regression requires MINIMAX_API_KEY — gated below.
+  # ============================================================
+  echo "─── Fix #14: input_tokens > 0 after real LLM calls ───"
+  if [[ -z "${MINIMAX_API_KEY:-}" ]]; then
+    echo "⏭  Fix #14 skipped (no MINIMAX_API_KEY — requires real LLM)"
+  else
+    # Need a daemon for `send` IPC. Start one; stop it before exit.
+    peko_iso_start_daemon || peko_iso_done 1
+    # 3 short sends — each call costs ~50-100 input tokens plus
+    # the persona + system prompt (~500 tokens). After 3 sends
+    # `input_tokens` should easily exceed 1000. Use `alpha`
+    # (already created) to avoid consuming quota on a fresh
+    # principal.
+    peko_iso_run send alpha "Reply with just the word ok" --no-stream
+    peko_iso_assert_rc_zero || peko_iso_done 1
+    peko_iso_run send alpha "Reply with just the word ok" --no-stream
+    peko_iso_assert_rc_zero || peko_iso_done 1
+    peko_iso_run send alpha "Reply with just the word ok" --no-stream
+    peko_iso_assert_rc_zero || peko_iso_done 1
+
+    peko_iso_run quota status alpha --json
+    peko_iso_assert_rc_zero || peko_iso_done 1
+    # Extract the four counters using `grep -o` — keeps the flow
+    # dependency-free (no `jq` requirement) AND portable across
+    # BSD sed (macOS) and GNU sed. Earlier sed-based extraction
+    # silently returned empty strings on BSD sed because
+    # `sed -n 's/.../.../p'` with backreferences is unreliable
+    # there.
+    local in_tok out_tok req_count
+    in_tok=$(grep -o '"input_tokens":[[:space:]]*[0-9]*' <<<"$_peko_iso_capture_out" \
+             | grep -o '[0-9]*$' | head -1)
+    out_tok=$(grep -o '"output_tokens":[[:space:]]*[0-9]*' <<<"$_peko_iso_capture_out" \
+              | grep -o '[0-9]*$' | head -1)
+    req_count=$(grep -o '"request_count":[[:space:]]*[0-9]*' <<<"$_peko_iso_capture_out" \
+                | grep -o '[0-9]*$' | head -1)
+    if [[ -n "$in_tok" ]] && [[ "$in_tok" -gt 0 ]] \
+       && [[ -n "$out_tok" ]] && [[ "$out_tok" -gt 0 ]] \
+       && [[ -n "$req_count" ]] && [[ "$req_count" -eq 3 ]]; then
+      echo "✅ Fix #14: input=$in_tok output=$out_tok requests=$req_count (all 3 counters healthy)"
+    else
+      echo "❌ Fix #14 regression — input_tokens stuck at 0 (Bug H regression):" >&2
+      echo "   input=$in_tok output=$out_tok requests=$req_count" >&2
+      peko_iso_done 1
+    fi
+  fi
+  echo
+
+  echo "🎉 all 14 fixes pass (v1: #1-#7, v2: #8 #9 #10 #11, v3: #12 #13 #14)"
+  # Final assertion for Fix #13 — the sentinel must still be on
+  # disk, proving `peko_iso_run` didn't kill the flow via `set -e`.
+  if [[ ! -s /tmp/_peko_iso_fix13_marker ]]; then
+    echo "❌ Fix #13 sentinel missing — flow was killed by set -e on the probe rc" >&2
+    peko_iso_done 1
+  fi
+  rm -f /tmp/_peko_iso_fix13_marker
   peko_iso_done 0
 }

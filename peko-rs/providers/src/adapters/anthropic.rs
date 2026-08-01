@@ -746,7 +746,7 @@ impl super::ApiAdapter for AnthropicAdapter {
                     // them and combine with the delta's output_tokens
                     // (and any cache fields the delta updates).
                     let pending = self.pending_input_tokens.lock().unwrap().clone();
-                    let (input, cache_creation, cache_read) = match pending {
+                    let (start_input, cache_creation, cache_read) = match pending {
                         Some(u) => (
                             u.input_tokens,
                             u.cache_creation_input_tokens.unwrap_or(0),
@@ -754,6 +754,16 @@ impl super::ApiAdapter for AnthropicAdapter {
                         ),
                         None => (0, 0, 0),
                     };
+                    // Some providers (MiniMax M3 — see Bug H in the
+                    // 2026-08-01 v3 field test) put the real
+                    // `input_tokens` here rather than in
+                    // `message_start.message.usage`. Prefer the
+                    // delta's value when present; fall back to the
+                    // start-of-stream value otherwise.
+                    let input: u64 = delta_usage
+                        .input_tokens
+                        .map(u64::from)
+                        .unwrap_or_else(|| u64::from(start_input));
                     // Delta may refresh cache fields; prefer delta values
                     // when present, fall back to `message_start`.
                     let cache_creation = delta_usage
@@ -762,9 +772,9 @@ impl super::ApiAdapter for AnthropicAdapter {
                     let cache_read = delta_usage.cache_read_input_tokens.unwrap_or(cache_read);
                     let output = delta_usage.output_tokens;
                     return Ok(Some(StreamEvent::Usage {
-                        input: u64::from(input),
+                        input,
                         output: u64::from(output),
-                        total: u64::from(input + output),
+                        total: input + u64::from(output),
                         cache_creation_input_tokens: u64::from(cache_creation),
                         cache_read_input_tokens: u64::from(cache_read),
                         reasoning_output_tokens: 0,
@@ -992,6 +1002,16 @@ struct AnthropicMessageStartInfo {
 
 #[derive(Debug, Deserialize)]
 struct AnthropicDeltaUsage {
+    /// Some providers (notably MiniMax M3) follow a "final usage in
+    /// `message_delta`" pattern: they report `input_tokens: 0` in
+    /// `message_start.message.usage` and only fill in the real value
+    /// here. The standard Anthropic API leaves this field absent
+    /// (serde defaults to `None`), so this is `Option`. The
+    /// `message_delta` handler prefers this value when present and
+    /// falls back to the cached `message_start` value when absent.
+    /// See Bug H (2026-08-01 v3 field test).
+    #[serde(default)]
+    input_tokens: Option<u32>,
     output_tokens: u32,
     /// Cache fields may be updated on the delta event itself
     /// (Anthropic's `message_delta.usage` reports the *final* cache
@@ -1195,6 +1215,93 @@ mod tests {
                 assert_eq!(cache_creation_input_tokens, 0);
                 assert_eq!(cache_read_input_tokens, 0);
                 assert_eq!(reasoning_output_tokens, 0);
+            }
+            _ => panic!("Expected Usage event, got {event:?}"),
+        }
+    }
+
+    /// Bug H (2026-08-01 v3 field test): MiniMax M3
+    /// (`https://api.minimaxi.com/anthropic`) reports `input_tokens:
+    /// 0` in `message_start.message.usage` and only fills in the
+    /// real value on `message_delta.usage`. Before this fix the
+    /// adapter dropped the delta's `input_tokens` and the meter
+    /// recorded 0 for every call. The fix: prefer the delta's
+    /// `input_tokens` when present; fall back to the start-of-stream
+    /// value otherwise.
+    #[test]
+    fn test_message_delta_input_tokens_overrides_start_zero() {
+        let adapter = AnthropicAdapter::new();
+        // Pretend message_start reported the all-zeros summary that
+        // MiniMax M3 actually sends.
+        *adapter.pending_input_tokens.lock().unwrap() = Some(AnthropicUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        });
+
+        // message_delta carries the real input + cache read counts.
+        let data = r#"{"type":"message_delta","usage":{"input_tokens":36,"output_tokens":11,"cache_read_input_tokens":128}}"#;
+        let event = adapter
+            .parse_sse_event("MiniMax-M3", data)
+            .expect("parse_sse_event succeeds");
+
+        match event {
+            Some(crate::StreamEvent::Usage {
+                input,
+                output,
+                total,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+                ..
+            }) => {
+                // input_tokens must be taken from the delta, not the
+                // start (which was 0). Before the fix this asserted
+                // 0 and the meter never charged.
+                assert_eq!(
+                    input, 36,
+                    "input_tokens must come from message_delta when present, not message_start"
+                );
+                assert_eq!(output, 11);
+                assert_eq!(total, 47);
+                assert_eq!(cache_creation_input_tokens, 0);
+                assert_eq!(cache_read_input_tokens, 128);
+            }
+            _ => panic!("Expected Usage event, got {event:?}"),
+        }
+    }
+
+    /// Bug H — symmetry check. When the delta carries no
+    /// `input_tokens` (the standard Anthropic shape), we still
+    /// honor the `message_start` snapshot — this test pins the
+    /// fallback so a future "always prefer the delta" change
+    /// can't silently break the upstream-Anthropic case.
+    #[test]
+    fn test_message_delta_without_input_tokens_uses_start() {
+        let adapter = AnthropicAdapter::new();
+        *adapter.pending_input_tokens.lock().unwrap() = Some(AnthropicUsage {
+            input_tokens: 128,
+            output_tokens: 0,
+            cache_creation_input_tokens: Some(64),
+            cache_read_input_tokens: Some(256),
+        });
+        // Delta has no input_tokens field — fallback path.
+        let data = r#"{"type":"message_delta","usage":{"output_tokens":7}}"#;
+        let event = adapter
+            .parse_sse_event("claude-3-7-sonnet", data)
+            .unwrap();
+        match event {
+            Some(crate::StreamEvent::Usage {
+                input,
+                output,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+                ..
+            }) => {
+                assert_eq!(input, 128, "fallback must use message_start input");
+                assert_eq!(output, 7);
+                assert_eq!(cache_creation_input_tokens, 64);
+                assert_eq!(cache_read_input_tokens, 256);
             }
             _ => panic!("Expected Usage event, got {event:?}"),
         }
