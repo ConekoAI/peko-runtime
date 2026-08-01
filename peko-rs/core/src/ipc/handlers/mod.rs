@@ -30,6 +30,7 @@ pub(crate) mod cron;
 pub(crate) mod ext_runtime;
 pub(crate) mod extension;
 pub(crate) mod instance;
+pub(crate) mod persona;
 pub(crate) mod principal;
 pub(crate) mod provider_add;
 pub(crate) mod provider_edit;
@@ -48,6 +49,7 @@ use cron::CronHandler;
 use ext_runtime::ExtRuntimeHandler;
 use extension::ExtensionHandler;
 use instance::InstanceHandler;
+use persona::PersonaHandler;
 use principal::PrincipalHandler;
 use provider_add::ProviderAddHandler;
 use provider_edit::ProviderEditHandler;
@@ -117,7 +119,7 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 17] = [
+        let handlers: [Arc<dyn RequestHandler>; 18] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
@@ -142,7 +144,14 @@ impl RequestDispatcher {
             // RP6: model update / remove / test live next to
             // the add handler so the whole catalog-mutation surface is
             // routed as one group.
-            Arc::new(ProviderEditHandler::new(host)),
+            Arc::new(ProviderEditHandler::new(host.clone())),
+            // Fix D: `PersonaDraft` is a single-shot LLM call that
+            // has nothing to do with the principal_manager or any
+            // other long-running service. It lives next to
+            // `PrincipalHandler` because it shares the principal
+            // namespace semantically (it writes principal.toml +
+            // primary.md via the CLI) but the IPC shape is its own.
+            Arc::new(PersonaHandler::new(host)),
         ];
 
         for handler in &handlers {

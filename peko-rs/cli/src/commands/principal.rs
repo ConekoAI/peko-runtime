@@ -4,6 +4,7 @@
 //! governance, capabilities, and thin Markdown agent prompts. This module
 //! implements the `peko principal` CLI surface.
 
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -42,17 +43,24 @@ pub enum PrincipalCommands {
         #[arg(long, value_name = "MODEL_ID")]
         model: String,
 
-        /// Bypass the overwrite guard. Without `--force`,
+        /// Force a destructive re-create. Without `--force`,
         /// `peko principal create <existing>` refuses with a clear
         /// error — protects identity, agents, memory, and session
         /// history from a one-keystroke wipe (see Bug 2 in
         /// scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md).
-        /// With `--force`, `create` will proceed past the guard but
-        /// the existing on-disk principal is NOT destroyed — to
-        /// fully replace a principal, run `peko principal remove`
-        /// first.
+        /// With `--force`, the existing principal is removed first —
+        /// its workspace, agents/, memory/, and session history are
+        /// all wiped before the new principal is written. There is
+        /// no undo. Combine with `--yes` to skip the confirmation
+        /// prompt in non-interactive shells.
         #[arg(short, long)]
         force: bool,
+
+        /// Skip the destructive confirmation prompt (use with
+        /// `--force` in scripts or CI). Has no effect without
+        /// `--force`.
+        #[arg(long)]
+        yes: bool,
     },
 
     /// List Principals
@@ -227,6 +235,47 @@ pub enum PrincipalCommands {
     /// Manage agents (prompts) inside a Principal
     #[command(subcommand)]
     Agent(PrincipalAgentCommands),
+
+    /// Draft or apply a persona for a Principal via the LLM
+    /// (Fix D — guided persona builder; see
+    /// scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md
+    /// "Top feature wish").
+    #[command(subcommand)]
+    Persona(PersonaCommands),
+}
+
+/// Subcommands for `peko principal persona`.
+#[derive(Subcommand)]
+pub enum PersonaCommands {
+    /// Draft a persona from a one-sentence description. Default
+    /// behavior is to write the drafted fields into
+    /// `principal.toml` + `agents/primary.md` and print a diff;
+    /// pass `--dry-run` to preview without touching disk.
+    Set {
+        /// Principal name
+        name: String,
+
+        /// Free-form one-sentence description of the persona
+        /// (e.g. "a senior rust reviewer who cites the borrow
+        /// checker and doc.rust-lang.org"). The CLI sends this
+        /// to the daemon, which calls the LLM and returns a
+        /// structured persona payload.
+        #[arg(long, value_name = "DESCRIPTION")]
+        from: String,
+
+        /// Print the drafted persona to stdout without writing
+        /// any files. Useful for inspecting what the LLM
+        /// produced before committing it.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Configured model id to call (overrides the
+        /// principal's `preferred_model_id`). Use this when the
+        /// principal has no model pinned, or to draft with a
+        /// different model than the principal will run on.
+        #[arg(long, value_name = "MODEL_ID")]
+        model: Option<String>,
+    },
 }
 
 /// Subcommands for `peko principal agent`.
@@ -252,15 +301,17 @@ pub enum PrincipalAgentCommands {
 pub async fn handle_principal(
     cmd: PrincipalCommands,
     paths: &GlobalPaths,
-    _json: bool,
+    json: bool,
 ) -> Result<()> {
     match cmd {
-        PrincipalCommands::Create { name, model, force } => {
-            create_principal(&name, &model, force, paths).await
+        PrincipalCommands::Create { name, model, force, yes } => {
+            create_principal(&name, &model, force, yes, paths).await
         }
-        PrincipalCommands::List => list_principals(paths).await,
-        PrincipalCommands::Show { name } => show_principal(&name, paths, _json).await,
-        PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths).await,
+        PrincipalCommands::List => list_principals(paths, json).await,
+        PrincipalCommands::Show { name } => show_principal(&name, paths, json).await,
+        PrincipalCommands::Remove { name, yes } => {
+            remove_principal(&name, yes, paths, json).await
+        }
         PrincipalCommands::Send { name, message } => {
             send_to_principal(&name, &message, paths).await
         }
@@ -323,6 +374,12 @@ pub async fn handle_principal(
         PrincipalCommands::Agent(PrincipalAgentCommands::Show { name, agent }) => {
             show_principal_agent(&name, &agent, paths).await
         }
+        PrincipalCommands::Persona(PersonaCommands::Set {
+            name,
+            from,
+            dry_run,
+            model,
+        }) => handle_persona_set(&name, &from, dry_run, model.as_deref(), paths).await,
     }
 }
 
@@ -330,29 +387,59 @@ async fn create_principal(
     name: &str,
     model_id: &str,
     force: bool,
+    yes: bool,
     paths: &GlobalPaths,
 ) -> Result<()> {
     use peko_providers::catalog::ModelCatalog;
-
-    let manager = build_manager(paths);
 
     // Refuse to silently overwrite an existing principal — see Bug 2 in
     // scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
     // Without this guard, a non-technical user running
     //   peko principal create scout --model …
     // a second time wipes identity, agents, memory, and session history
-    // without any prompt. `--force` is the explicit override.
+    // without any prompt.
+    //
+    // `--force` is the explicit destructive override: the existing
+    // principal is removed (wiping workspace, agents/, memory/, and
+    // session history) before the new one is written. The user is
+    // prompted to confirm interactively unless `--yes` is set or
+    // stdin is not a TTY. There is no undo.
     let shared_layout = paths.resolver().principal_layout(name).shared;
-    if shared_layout.config_file.exists() && !force {
-        anyhow::bail!(
-            "principal '{name}' already exists at {}.\n\
-             Refusing to overwrite an existing principal.\n\
-             To replace it, remove it first and then re-create:\n  \
-             peko principal remove {name}\n  \
-             peko principal create {name} --model <MODEL_ID>",
-            shared_layout.root.display()
-        );
+    if shared_layout.config_file.exists() {
+        if !force {
+            anyhow::bail!(
+                "principal '{name}' already exists at {}.\n\
+                 Refusing to overwrite an existing principal.\n\
+                 To replace it, pass --force (destructive; see --help) or remove it first:\n  \
+                 peko principal remove {name}\n  \
+                 peko principal create {name} --model <MODEL_ID>",
+                shared_layout.root.display()
+            );
+        }
+
+        // Destructive --force: confirm unless --yes or non-interactive.
+        if !yes && std::io::stdin().is_terminal() {
+            let prompt = format!(
+                "DESTRUCTIVE: re-create principal '{name}'? This wipes its workspace, \
+                 agents/, memory/, and session history. There is no undo. Proceed?"
+            );
+            if !confirm_prompt(&prompt)? {
+                println!("Create cancelled.");
+                return Ok(());
+            }
+        }
+
+        // Load first so the manager has the principal in memory; remove
+        // is a no-op on an unregistered principal. Then wipe.
+        let manager = build_manager(paths);
+        let _ = load_principal(name, &manager, paths).await?;
+        manager
+            .remove(name)
+            .await
+            .context("destructive re-create failed; the existing principal may be partially removed")?;
     }
+
+    let manager = build_manager(paths);
 
     // Enforce the model pin at creation: there is no runtime default
     // model, so an unpinned principal would fail every send with
@@ -398,29 +485,44 @@ async fn create_principal(
     Ok(())
 }
 
-async fn list_principals(paths: &GlobalPaths) -> Result<()> {
+async fn list_principals(paths: &GlobalPaths, json: bool) -> Result<()> {
     let root = paths.principals_root_dir();
-    if !root.exists() {
-        println!("No principals found.");
-        return Ok(());
-    }
 
-    let mut entries = tokio::fs::read_dir(root).await?;
-    let mut found = false;
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if path.is_dir() {
-            let config_path = path.join("principal.toml");
-            if config_path.exists() {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                println!("{name}");
-                found = true;
+    // Collect into a Vec so the JSON branch can emit a single envelope
+    // instead of streaming `println!`. Streaming JSON would require
+    // either an array with a trailing comma or NDJSON, neither of
+    // which matches the rest of the CLI's `--json` envelopes
+    // (`log --json`, `show --json`).
+    let mut names: Vec<String> = Vec::new();
+    if root.exists() {
+        let mut entries = tokio::fs::read_dir(root).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.is_dir() && path.join("principal.toml").exists() {
+                names.push(
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
         }
     }
 
-    if !found {
+    if json {
+        // Same envelope shape as `log --json` and `show --json`:
+        // a single JSON document the user can pipe into `jq`. Empty
+        // list is `[]`, not "No principals found."
+        println!("{}", render_list_principals_json(&names)?);
+        return Ok(());
+    }
+
+    if names.is_empty() {
         println!("No principals found.");
+    } else {
+        for name in &names {
+            println!("{name}");
+        }
     }
     Ok(())
 }
@@ -513,7 +615,7 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
     Ok(())
 }
 
-async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths) -> Result<()> {
+async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths, json: bool) -> Result<()> {
     let manager = build_manager(paths);
     // Load first so the principal is registered in the in-memory manager,
     // and so a missing principal fails with a clear error before prompting.
@@ -525,7 +627,15 @@ async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths) -> Result<
     }
 
     manager.remove(name).await?;
-    println!("Removed principal '{name}'");
+    if json {
+        // Symmetric with `show --json`: a single envelope so callers
+        // can chain remove+show and parse the result with `jq`. The
+        // `removed` boolean lets scripts distinguish success from
+        // cancellation if we ever add a non-zero cancellation exit.
+        println!("{}", render_remove_principal_json(name)?);
+    } else {
+        println!("Removed principal '{name}'");
+    }
     Ok(())
 }
 
@@ -1248,6 +1358,277 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
     )
 }
 
+/// Parsed persona payload the CLI extracts from the LLM's JSON.
+/// Mirrors the schema in
+/// `peko-rs/core/src/ipc/handlers/persona.rs` (DRAFT_SYSTEM_PROMPT).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct PersonaDraft {
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    goals: Vec<String>,
+    #[serde(default)]
+    values: Vec<String>,
+    #[serde(default)]
+    style: Option<String>,
+    #[serde(default)]
+    primary_md_body: Option<String>,
+}
+
+/// Render a persona preview from a `PersonaDraft`. Used by
+/// `handle_persona_set --dry-run` (and any future `persona show`).
+fn render_persona_preview(d: &PersonaDraft) -> String {
+    let mut out = String::new();
+    out.push_str("─── Persona draft ───\n");
+    if let Some(name) = &d.display_name {
+        out.push_str(&format!("Identity:\n  Display name: {name}\n"));
+    }
+    if let Some(desc) = &d.description {
+        out.push_str(&format!("  Description: {}\n", desc.replace('\n', " ")));
+    }
+    if !d.goals.is_empty() {
+        out.push_str("Goals:\n");
+        for g in &d.goals {
+            out.push_str(&format!("  - {g}\n"));
+        }
+    }
+    if !d.values.is_empty() {
+        out.push_str("Values:\n");
+        for v in &d.values {
+            out.push_str(&format!("  - {v}\n"));
+        }
+    }
+    if let Some(style) = &d.style {
+        out.push_str(&format!("Style: {style}\n"));
+    }
+    out.push_str("Primary prompt (preview):\n");
+    let body_preview = d.primary_md_body.as_deref().unwrap_or("(empty)");
+    for line in body_preview.lines().take(6) {
+        out.push_str(&format!("  {line}\n"));
+    }
+    if body_preview.lines().count() > 6 {
+        out.push_str("  …\n");
+    }
+    out
+}
+
+/// Apply a `PersonaDraft` to disk. Patches the existing
+/// `principal.toml` (mutating only the persona fields; preserves
+/// everything else — capabilities, quota, governance) and writes
+/// `agents/primary.md`. Returns the old/new strings used for
+/// the diff the handler prints.
+async fn apply_persona_to_disk(
+    paths: &GlobalPaths,
+    name: &str,
+    draft: &PersonaDraft,
+) -> Result<(String, String, String, String)> {
+    use peko_core::principal::config::{
+        PrincipalIdentityConfig, PrincipalIntentConfig,
+    };
+
+    let shared = paths.resolver().principal_layout(name).shared;
+    let config_path = shared.config_file.clone();
+
+    // Read the existing principal.toml so we patch in place rather
+    // than overwrite. If the file is missing, fall back to a fresh
+    // config so the user can re-apply the persona against an
+    // existing model pin even before `principal create`.
+    let mut config: PrincipalConfig = if config_path.exists() {
+        let raw = tokio::fs::read_to_string(&config_path).await?;
+        toml::from_str(&raw).context("failed to parse existing principal.toml")?
+    } else {
+        default_principal_config(name)
+    };
+
+    if let Some(display_name) = &draft.display_name {
+        config.identity = PrincipalIdentityConfig {
+            display_name: Some(display_name.clone()),
+            description: draft
+                .description
+                .clone()
+                .or_else(|| config.identity.description.clone()),
+            avatar: config.identity.avatar.clone(),
+        };
+    } else if let Some(desc) = &draft.description {
+        config.identity.description = Some(desc.clone());
+    }
+
+    config.intent = PrincipalIntentConfig {
+        goals: draft.goals.clone(),
+        values: draft.values.clone(),
+        preferences: config.intent.preferences.clone(),
+    };
+
+    let new_toml = toml::to_string_pretty(&config).context("failed to serialize principal.toml")?;
+    let old_toml = if config_path.exists() {
+        tokio::fs::read_to_string(&config_path).await?
+    } else {
+        String::new()
+    };
+    tokio::fs::write(&config_path, &new_toml).await?;
+
+    // Write the agent prompt: frontmatter + body. If the LLM
+    // forgot `{{memory}}`, append it so the prompt renders with
+    // memory injection (the most common failure mode).
+    let agents_dir = shared.agents_dir;
+    tokio::fs::create_dir_all(&agents_dir).await?;
+    let prompt_path = agents_dir.join("primary.md");
+    let body = draft
+        .primary_md_body
+        .clone()
+        .unwrap_or_else(|| format!("You are {name}, a helpful AI assistant."));
+    let body = if body.contains("{{memory}}") {
+        body
+    } else {
+        let mut b = body;
+        b.push_str("\n\n{{memory}}\n");
+        b
+    };
+    let new_prompt = format!("---\nname: primary\ndescription: \"{name} persona\"\n---\n\n{body}\n");
+    let old_prompt = if prompt_path.exists() {
+        tokio::fs::read_to_string(&prompt_path).await?
+    } else {
+        String::new()
+    };
+    tokio::fs::write(&prompt_path, &new_prompt).await?;
+
+    Ok((old_toml, new_toml, old_prompt, new_prompt))
+}
+
+/// Hand-rolled line-by-line diff preview. We keep this small
+/// instead of pulling in the `similar` crate (~80KB) — the only
+/// thing a non-technical user needs to see is which lines are
+/// new vs removed. This is intentionally not a real LCS diff.
+fn diff_preview(old: &str, new: &str) -> String {
+    let mut out = String::new();
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let n = old_lines.len().max(new_lines.len());
+    for i in 0..n {
+        let o = old_lines.get(i).copied();
+        let n_line = new_lines.get(i).copied();
+        match (o, n_line) {
+            (Some(o), Some(nn)) if o == nn => out.push_str(&format!("  {o}\n")),
+            (Some(o), Some(nn)) => {
+                out.push_str(&format!("- {o}\n"));
+                out.push_str(&format!("+ {nn}\n"));
+            }
+            (Some(o), None) => out.push_str(&format!("- {o}\n")),
+            (None, Some(nn)) => out.push_str(&format!("+ {nn}\n")),
+            (None, None) => {}
+        }
+    }
+    out
+}
+
+/// Handle `peko principal persona set <name> --from "..."`.
+///
+/// Resolves the model (explicit `--model` or the principal's
+/// `preferred_model_id`), asks the daemon for an LLM draft, and
+/// either prints a preview (`--dry-run`) or writes the persona
+/// to `principal.toml` + `agents/primary.md` and shows a diff.
+async fn handle_persona_set(
+    name: &str,
+    from: &str,
+    dry_run: bool,
+    model: Option<&str>,
+    paths: &GlobalPaths,
+) -> Result<()> {
+    let config_path = paths
+        .resolver()
+        .principal_layout(name)
+        .shared
+        .config_file
+        .clone();
+    if !config_path.exists() {
+        anyhow::bail!(
+            "principal '{name}' does not exist. Run `peko principal create {name} --model <MODEL_ID>` first."
+        );
+    }
+
+    // Resolve model_id: explicit --model wins; otherwise read the
+    // principal's preferred_model_id; otherwise error.
+    let model_id = match model {
+        Some(m) => m.to_string(),
+        None => {
+            let raw = tokio::fs::read_to_string(&config_path).await?;
+            let cfg: PrincipalConfig =
+                toml::from_str(&raw).context("failed to parse principal.toml")?;
+            match cfg.preferred_model_id {
+                Some(m) => m,
+                None => anyhow::bail!(
+                    "principal '{name}' has no preferred_model_id; pass --model explicitly."
+                ),
+            }
+        }
+    };
+
+    let client = DaemonClient::connect().await?;
+    let response = client.persona_draft(&model_id, from).await?;
+    let (content, parse_ok) = match response {
+        ResponsePacket::PersonaDrafted {
+            content, parse_ok, ..
+        } => (content, parse_ok),
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("persona draft failed: {message}");
+        }
+        other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
+    };
+
+    let draft: PersonaDraft = if parse_ok {
+        match serde_json::from_str(&content) {
+            Ok(d) => d,
+            Err(_) => PersonaDraft {
+                display_name: None,
+                description: None,
+                goals: Vec::new(),
+                values: Vec::new(),
+                style: None,
+                primary_md_body: Some(content.clone()),
+            },
+        }
+    } else {
+        // Non-JSON LLM output: treat the whole text as the primary
+        // prompt body so the user can still get value from
+        // `persona set` even when the model is uncooperative.
+        PersonaDraft {
+            display_name: None,
+            description: None,
+            goals: Vec::new(),
+            values: Vec::new(),
+            style: None,
+            primary_md_body: Some(content.clone()),
+        }
+    };
+
+    if dry_run {
+        print!("{}", render_persona_preview(&draft));
+        eprintln!(
+            "(dry-run: principal '{}' was not modified)",
+            name
+        );
+        return Ok(());
+    }
+
+    let (old_toml, new_toml, old_prompt, new_prompt) =
+        apply_persona_to_disk(paths, name, &draft).await?;
+
+    println!("─── Persona drafted for '{name}' (model: {model_id}) ───");
+    println!();
+    println!("principal.toml:");
+    print!("{}", diff_preview(&old_toml, &new_toml));
+    println!();
+    println!("agents/primary.md:");
+    print!("{}", diff_preview(&old_prompt, &new_prompt));
+    println!();
+    println!(
+        "Run `peko send {name} '…'` to chat. Re-run with the same --from to no-op; pass a different --from to refine."
+    );
+    Ok(())
+}
+
 /// Minimal safe built-in extension bundle for a freshly-created Principal.
 ///
 /// With deny-all semantics an empty allowlist would leave the root agent
@@ -1296,6 +1677,28 @@ fn default_agent_prompt(name: &str) -> String {
         You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
         {{{{memory}}}}\n"
     )
+}
+
+/// JSON envelope for `peko principal list --json`. Empty list is `[]`
+/// (never "No principals found."), matching `log --json` / `show --json`.
+fn render_list_principals_json(names: &[String]) -> serde_json::Result<String> {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Item<'a> {
+        name: &'a str,
+    }
+    let items: Vec<Item> = names.iter().map(|n| Item { name: n }).collect();
+    serde_json::to_string_pretty(&items)
+}
+
+/// JSON envelope for `peko principal remove <name> --json`. The
+/// `removed` boolean lets scripts distinguish success from a future
+/// cancellation-with-nonzero-exit without parsing prose.
+fn render_remove_principal_json(name: &str) -> serde_json::Result<String> {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "removed": true,
+        "name": name,
+    }))
 }
 
 /// Memory factory that places Principal memory under the Local tier root.
@@ -1549,10 +1952,11 @@ mod tests {
         ])
         .expect("should parse principal create with --model");
         match cli.command {
-            Commands::Principal(PrincipalCommands::Create { name, model, force }) => {
+            Commands::Principal(PrincipalCommands::Create { name, model, force, yes }) => {
                 assert_eq!(name, "alice");
                 assert_eq!(model, "anthropic-haiku");
                 assert!(!force);
+                assert!(!yes);
             }
             _other => panic!("expected Principal create command"),
         }
@@ -1577,7 +1981,7 @@ mod tests {
 
         // Empty catalog → any model id is rejected at creation, before
         // the workspace is written.
-        let result = create_principal("alice", "no-such-model", false, &paths).await;
+        let result = create_principal("alice", "no-such-model", false, false, &paths).await;
         let err = result.expect_err("unknown model must fail creation");
         assert!(
             format!("{err:#}").contains("no-such-model"),
@@ -1601,10 +2005,11 @@ mod tests {
         .expect("should parse principal create with --force");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Create { name, model, force }) => {
+            Commands::Principal(PrincipalCommands::Create { name, model, force, yes }) => {
                 assert_eq!(name, "scout");
                 assert_eq!(model, "anthropic-haiku");
                 assert!(force);
+                assert!(!yes);
             }
             _other => panic!("expected Principal create command"),
         }
@@ -1658,7 +2063,7 @@ updated_at = "2026-01-01T00:00:00Z"
         .unwrap();
 
         // First create: success.
-        create_principal("scout", "demo-model", false, &paths)
+        create_principal("scout", "demo-model", false, false, &paths)
             .await
             .expect("first create should succeed");
 
@@ -1671,7 +2076,7 @@ updated_at = "2026-01-01T00:00:00Z"
         assert!(shared.agents_dir.join("sentinel.md").exists());
 
         // Second create without --force: must refuse.
-        let err = create_principal("scout", "demo-model", false, &paths)
+        let err = create_principal("scout", "demo-model", false, false, &paths)
             .await
             .expect_err("second create without --force must fail");
         let msg = format!("{err:#}");
@@ -1686,15 +2091,275 @@ updated_at = "2026-01-01T00:00:00Z"
             "overwrite guard must not destroy workspace data"
         );
 
-        // With --force: the guard is bypassed and the call succeeds.
-        // (Note: --force currently does NOT wipe existing on-disk state;
-        // the doc-comment on `Create { force }` and the bail message
-        // tell the user to `principal remove` first for a clean
-        // replacement. This regression only asserts the guard was
-        // bypassed, not that data was destroyed — destruction semantics
-        // are a follow-up tracked in the e2e report.)
-        create_principal("scout", "demo-model", true, &paths)
+        // With --force and --yes (non-TTY test env): the existing
+        // principal is removed (wiping the sentinel) and the new one
+        // is written. This is the destructive re-create flow that
+        // closes the 2026-08-01 follow-up "Known follow-up: --force
+        // does not actually destroy the existing principal".
+        create_principal("scout", "demo-model", true, true, &paths)
             .await
-            .expect("create with --force should succeed past the guard");
+            .expect("create with --force --yes should succeed and destroy the prior principal");
+
+        // Sentinel must be gone — the destructive re-create wiped it.
+        assert!(
+            !shared.agents_dir.join("sentinel.md").exists(),
+            "destructive --force must remove the prior principal's on-disk state"
+        );
+
+        // And a fresh principal.toml must be in place — the new
+        // principal really did get created.
+        assert!(
+            shared.config_file.exists(),
+            "destructive --force must end with a fresh principal.toml"
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // Fix B — JSON output for `principal list` and `principal remove`.
+    //
+    // Same `--json` consistency gap that Bug 3 closed for `show`:
+    // these two neighbors emitted human-formatted text regardless of
+    // the flag. The render helpers are factored out so the tests can
+    // assert on the envelope string without capturing stdout (the
+    // existing CLI test suite is hermetic and has no precedent for
+    // fd-level capture — see `version.rs:51`).
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn list_principals_json_envelope_is_array_of_names() {
+        let names = vec!["alice".to_string(), "bob".to_string()];
+        let s = render_list_principals_json(&names).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        let arr = parsed.as_array().expect("must be a JSON array");
+        assert_eq!(arr.len(), 2, "envelope must have one element per principal");
+        assert_eq!(arr[0]["name"].as_str(), Some("alice"));
+        assert_eq!(arr[1]["name"].as_str(), Some("bob"));
+    }
+
+    #[test]
+    fn list_principals_json_empty_envelope_is_empty_array() {
+        let names: Vec<String> = vec![];
+        let s = render_list_principals_json(&names).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        assert!(
+            parsed.as_array().is_some_and(|a| a.is_empty()),
+            "empty list must serialize as `[]`, got: {parsed}"
+        );
+    }
+
+    #[test]
+    fn remove_principal_json_envelope_carries_name_and_flag() {
+        let s = render_remove_principal_json("scout").expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        assert_eq!(parsed["removed"].as_bool(), Some(true));
+        assert_eq!(parsed["name"].as_str(), Some("scout"));
+    }
+
+    // ----------------------------------------------------------------
+    // Fix D — guided persona builder.
+    //
+    // The end-to-end flow needs a live daemon (LLM call); the
+    // parse-write unit tests cover the schema + on-disk patch
+    // without booting one. The daemon + LLM path is exercised by
+    // scripts/e2e/flows/persona-builder.sh.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn persona_draft_parses_set_command() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "principal",
+            "persona",
+            "set",
+            "scout",
+            "--from",
+            "a senior rust reviewer",
+            "--dry-run",
+            "--model",
+            "anthropic-haiku",
+        ])
+        .expect("persona set should parse");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Persona(PersonaCommands::Set {
+                name,
+                from,
+                dry_run,
+                model,
+            })) => {
+                assert_eq!(name, "scout");
+                assert_eq!(from, "a senior rust reviewer");
+                assert!(dry_run);
+                assert_eq!(model.as_deref(), Some("anthropic-haiku"));
+            }
+            _other => panic!("expected Principal persona set command"),
+        }
+    }
+
+    #[test]
+    fn persona_draft_parses_set_command_defaults() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "principal",
+            "persona",
+            "set",
+            "scout",
+            "--from",
+            "a senior rust reviewer",
+        ])
+        .expect("persona set should parse");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Persona(PersonaCommands::Set {
+                name,
+                from,
+                dry_run,
+                model,
+            })) => {
+                assert_eq!(name, "scout");
+                assert_eq!(from, "a senior rust reviewer");
+                assert!(!dry_run);
+                assert!(model.is_none());
+            }
+            _other => panic!("expected Principal persona set command"),
+        }
+    }
+
+    /// Fix D — unit test for the persona write path. Builds a
+    /// scratch principal in a tempdir, parses a fixed JSON
+    /// `PersonaDraft`, runs the on-disk patch, and asserts the
+    /// resulting `principal.toml` has `[intent]` populated and
+    /// `primary.md` has the drafted body. No daemon needed.
+    #[tokio::test]
+    async fn persona_draft_writes_to_existing_principal() {
+        use peko_providers::catalog::ModelCatalog;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from([
+            "peko",
+            "--config-dir",
+            dir.path().join("config").to_str().unwrap(),
+            "--data-dir",
+            dir.path().join("data").to_str().unwrap(),
+            "--cache-dir",
+            dir.path().join("cache").to_str().unwrap(),
+            "principal",
+            "list",
+        ]);
+        let paths = from_cli(&cli);
+
+        // Seed a catalog entry so `create_principal` can pass the
+        // catalog check.
+        let cat_path = paths.config_dir.join(ModelCatalog::FILENAME);
+        std::fs::create_dir_all(paths.config_dir.clone()).unwrap();
+        std::fs::write(
+            &cat_path,
+            r#"
+version = "4.0"
+
+[entries.demo-model]
+id = "demo-model"
+display_name = "Demo"
+template_id = "anthropic"
+api_format = "anthropic_messages"
+base_url = "https://example.invalid"
+model_id = "demo"
+context_window = 100000
+credential_id = "00000000-0000-0000-0000-000000000000"
+requires_key = true
+enabled = true
+created_at = "2026-01-01T00:00:00Z"
+updated_at = "2026-01-01T00:00:00Z"
+"#,
+        )
+        .unwrap();
+
+        create_principal("scout", "demo-model", false, false, &paths)
+            .await
+            .expect("create succeeds");
+
+        let shared = paths.resolver().principal_layout("scout").shared;
+        let draft = PersonaDraft {
+            display_name: Some("Rust Reviewer".to_string()),
+            description: Some("Reviews PRs for idiomatic Rust.".to_string()),
+            goals: vec!["Catch lifetime errors".to_string(), "Suggest idiomatic fixes".to_string()],
+            values: vec!["Cite the borrow checker".to_string()],
+            style: Some("Concise.".to_string()),
+            primary_md_body: Some("You are a senior Rust reviewer.\n\n{{memory}}\n".to_string()),
+        };
+        let (old_toml, new_toml, old_prompt, new_prompt) =
+            apply_persona_to_disk(&paths, "scout", &draft)
+                .await
+                .expect("apply succeeds");
+
+        // Diff function ran (no assertion on shape — it's a preview).
+        assert!(!new_toml.is_empty(), "new toml must be non-empty");
+        assert!(!new_prompt.is_empty(), "new prompt must be non-empty");
+        // Old snapshot captured the pre-write state (the default
+        // principal.toml + the default `primary.md`).
+        assert!(!old_toml.is_empty(), "old toml must be non-empty");
+        assert!(!old_prompt.is_empty(), "old prompt must be non-empty");
+
+        // On-disk assertions.
+        let written_toml = std::fs::read_to_string(shared.config_file.clone()).unwrap();
+        assert!(
+            written_toml.contains("[intent]"),
+            "principal.toml must contain [intent] after persona write"
+        );
+        assert!(
+            written_toml.contains("Catch lifetime errors"),
+            "principal.toml must contain drafted goals"
+        );
+        assert!(
+            written_toml.contains("Rust Reviewer"),
+            "principal.toml must contain drafted display_name"
+        );
+
+        let written_prompt =
+            std::fs::read_to_string(shared.agents_dir.join("primary.md")).unwrap();
+        assert!(
+            written_prompt.contains("senior Rust reviewer"),
+            "primary.md must contain drafted body"
+        );
+        assert!(
+            written_prompt.contains("{{memory}}"),
+            "primary.md must include the {{memory}} placeholder"
+        );
+    }
+
+    /// Fix D — unit test for `diff_preview`. Asserts that added
+    /// lines get a `+` and removed lines get a `-`. Pure
+    /// function, no I/O.
+    #[test]
+    fn diff_preview_marks_additions_and_removals() {
+        let old = "alpha\nbeta\ngamma\n";
+        let new = "alpha\nBETA\ngamma\ndelta\n";
+        let d = diff_preview(old, new);
+        assert!(d.contains("  alpha"), "unchanged lines get no marker");
+        assert!(d.contains("- beta"), "removed line gets `-`");
+        assert!(d.contains("+ BETA"), "modified line gets `+`");
+        assert!(d.contains("+ delta"), "appended line gets `+`");
+    }
+
+    /// Fix D — unit test for `render_persona_preview`. Asserts
+    /// that the preview contains the key sections so a
+    /// `--dry-run` user can read what the LLM produced.
+    #[test]
+    fn render_persona_preview_surfaces_sections() {
+        let draft = PersonaDraft {
+            display_name: Some("Rust Reviewer".to_string()),
+            description: Some("Reviews PRs.".to_string()),
+            goals: vec!["Catch lifetime errors".to_string()],
+            values: vec!["Cite doc.rust-lang.org".to_string()],
+            style: Some("Concise.".to_string()),
+            primary_md_body: Some("You review Rust code.\n\n{{memory}}\n".to_string()),
+        };
+        let s = render_persona_preview(&draft);
+        assert!(s.contains("Rust Reviewer"), "preview shows display_name");
+        assert!(s.contains("Reviews PRs"), "preview shows description");
+        assert!(s.contains("Catch lifetime errors"), "preview shows goals");
+        assert!(s.contains("Cite doc.rust-lang.org"), "preview shows values");
+        assert!(s.contains("Concise"), "preview shows style");
+        assert!(s.contains("{{memory}}"), "preview shows {{memory}}");
     }
 }

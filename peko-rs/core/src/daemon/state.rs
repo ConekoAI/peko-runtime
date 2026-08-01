@@ -2636,6 +2636,35 @@ impl crate::ipc::handlers::provider_edit::ModelEditHost for AppState {
     }
 }
 
+/// Fix D: the port the `persona` IPC domain handler uses. Trait
+/// lives in `ipc::handlers::persona`. The handler is a thin wrapper
+/// around `Provider::chat_with_system`; the daemon-side impl
+/// resolves the model via the shared `LlmResolver`, builds a
+/// one-shot Provider, and returns the raw LLM text.
+#[async_trait::async_trait]
+impl crate::ipc::handlers::persona::PersonaHost for AppState {
+    async fn draft_persona(
+        &self,
+        model_id: String,
+        system: String,
+        from: String,
+    ) -> anyhow::Result<String> {
+        let entry = self
+            .resolver
+            .catalog()
+            .get(&model_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("model not found in catalog: {model_id}"))?;
+        if !entry.enabled {
+            anyhow::bail!("model '{model_id}' is disabled");
+        }
+        let provider = self.resolver.build_provider(&entry).await?;
+        provider
+            .chat_with_system(Some(&system), &from, &model_id, 0.7)
+            .await
+    }
+}
+
 /// F7 thirteenth narrow handle: the port the `credential` IPC domain
 /// handler uses. Trait lives in `ipc::handlers::credential`. Sync
 /// because reading the in-memory vault (`Vault::list_providers` +

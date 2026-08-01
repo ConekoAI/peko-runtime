@@ -23,6 +23,18 @@ use std::str::FromStr;
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum QuotaCommands {
+    /// Alias for `status` — `list` is the discoverable verb a user
+    /// reaches for after seeing `principal list` / `model list`. We
+    /// accept it instead of renaming `status` so existing scripts
+    /// (`peko quota status <name>`) keep working.
+    List {
+        /// Principal name (or peer id when `--peer` is set)
+        name: String,
+        /// Query a peer's quota instead of a principal's
+        #[arg(long)]
+        peer: bool,
+    },
+
     /// Show a principal's live quota counters and window.
     ///
     /// F20: pass `--peer` to query a peer's quota instead of a
@@ -96,6 +108,9 @@ async fn connect_daemon() -> Result<DaemonClient> {
 /// Top-level dispatcher for `peko quota <sub>`.
 pub async fn handle_quota(cmd: QuotaCommands, _paths: &GlobalPaths, json: bool) -> Result<()> {
     match cmd {
+        // `list` is a discoverable alias for `status`. Same handler,
+        // same envelope, same JSON shape.
+        QuotaCommands::List { name, peer } => status(name, peer, json).await,
         QuotaCommands::Status { name, peer } => status(name, peer, json).await,
         QuotaCommands::Set {
             name,
@@ -329,6 +344,16 @@ mod tests {
         cmd
     }
 
+    fn parse_list(args: &[&str]) -> QuotaCommands {
+        let mut full = vec!["peko", "quota"];
+        full.extend_from_slice(args);
+        let cli = crate::commands::Cli::try_parse_from(full).expect("list should parse");
+        let crate::commands::Commands::Quota(cmd) = cli.command else {
+            panic!("expected Quota variant");
+        };
+        cmd
+    }
+
     #[test]
     fn cli_status_default_is_principal() {
         match parse_status(&["status", "alice"]) {
@@ -393,6 +418,28 @@ mod tests {
                 assert!(peer);
             }
             _ => panic!("expected Reset variant"),
+        }
+    }
+
+    #[test]
+    fn cli_list_parses_with_name_and_peer_flag() {
+        // `list` is a discoverable alias for `status` (see the
+        // QuotaCommands::List doc-comment). The dispatch in
+        // `handle_quota` delegates to `status(...)` so the CLI
+        // surface area is just clap plumbing here.
+        match parse_list(&["list", "scout"]) {
+            QuotaCommands::List { name, peer } => {
+                assert_eq!(name, "scout");
+                assert!(!peer, "default `peer` must be false");
+            }
+            _ => panic!("expected List variant"),
+        }
+        match parse_list(&["list", "pekohub-user-bob", "--peer"]) {
+            QuotaCommands::List { name, peer } => {
+                assert_eq!(name, "pekohub-user-bob");
+                assert!(peer);
+            }
+            _ => panic!("expected List variant"),
         }
     }
 }
