@@ -24,13 +24,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use peko_subject::PrincipalId;
 use peko_subject::Subject;
 
-use crate::daemon::api::{RequestId, SelfModifyError};
+use crate::daemon::api::{RequestId, SelfModifyError, SelfModifyOp};
 
 /// Default cap on the in-memory queue. Sized generously so a noisy
 /// agent can't easily OOM the daemon, but small enough to surface
@@ -325,6 +326,79 @@ impl ApprovalQueue {
         }
         std::fs::rename(&tmp_path, &final_path)?;
         Ok(())
+    }
+}
+
+// =============================================================================
+// `ApprovalQueueApi` — thin `DaemonApi` adapter over `Arc<ApprovalQueue>`.
+//
+// ADR-045 PR #3: the daemon populates the process-global `DaemonApi`
+// slot BEFORE `ToolRuntime::with_workspace_and_core` runs
+// `register_builtins` (so `peko_self` registration can find the API).
+// At that point `AppState` doesn't exist yet — `let state = Self { ... }`
+// runs later. We need a value type that can be constructed from just
+// `Arc<ApprovalQueue>` and that implements `DaemonApi`.
+//
+// `AppState` later implements `DaemonApi` by delegating to this same
+// adapter, so the meta-capability check + queue insertion logic lives
+// in exactly one place.
+// =============================================================================
+
+/// Thin adapter that exposes an `Arc<ApprovalQueue>` as the
+/// `DaemonApi` trait. See module-level docs for the construction
+/// ordering constraint this addresses.
+#[derive(Clone, Debug)]
+pub struct ApprovalQueueApi {
+    queue: Arc<ApprovalQueue>,
+}
+
+impl ApprovalQueueApi {
+    /// Wrap an `ApprovalQueue` as a `DaemonApi`.
+    #[must_use]
+    pub fn new(queue: Arc<ApprovalQueue>) -> Self {
+        Self { queue }
+    }
+}
+
+#[async_trait]
+impl crate::daemon::api::DaemonApi for ApprovalQueueApi {
+    async fn request_self_modify(
+        &self,
+        op: SelfModifyOp,
+        ctx: crate::daemon::api::SelfModifyContext,
+    ) -> Result<RequestId, SelfModifyError> {
+        // Meta-capability immutability. Reject before reaching the
+        // queue so the user's inbox never sees these ops.
+        if let SelfModifyOp::GrantCapability { capability, .. } = &op {
+            // Parse `<domain>:<action>`. We accept any non-empty
+            // string containing a colon to avoid lockstep with the
+            // catalog; an unknown capability just won't grant
+            // anything when `peko pending decide --grant` runs
+            // (PR #4 `ApprovalEngine::execute`).
+            let Some((domain, action)) = capability.split_once(':') else {
+                return Err(SelfModifyError::InvalidCapabilityFormat(capability.clone()));
+            };
+            if domain.is_empty() || action.is_empty() {
+                return Err(SelfModifyError::InvalidCapabilityFormat(capability.clone()));
+            }
+            if domain == "principal" || domain == "runtime" {
+                return Err(SelfModifyError::MetaCapabilityForbidden(capability.clone()));
+            }
+            if domain == "tool" {
+                return Err(SelfModifyError::ToolCapabilityNotSelfGrantable(
+                    capability.clone(),
+                ));
+            }
+        }
+
+        // Internal callers (cron, daemon-originated) may pass
+        // `PrincipalId::system()`; agent-driven callers (peko_self
+        // from a running agent) pass the active principal's id.
+        // Both are accepted at the queue level — the meta-capability
+        // gate above is the only structural protection.
+        let principal_id = ctx.principal_id;
+        let request = ApprovalRequest::from_op(op, principal_id);
+        self.queue.insert(request)
     }
 }
 

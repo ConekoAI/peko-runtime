@@ -34,6 +34,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(unix)]
+use std::os::unix::fs::DirBuilderExt;
+
 use peko_session::safe_filename_component;
 
 // =========================================================================
@@ -873,7 +876,14 @@ impl PathResolver {
         std::fs::create_dir_all(&runtime.registry_root)?;
         std::fs::create_dir_all(&runtime.locks_dir)?;
         // ADR-045 PR #3: durable queue for self-modify requests.
-        std::fs::create_dir_all(&runtime.pending_requests_dir)?;
+        // Owner-only (0700): the bucket holds per-request 0600 JSON files
+        // whose contents reveal the principal's intent (capabilities,
+        // edit paths, schedule targets). World-readable `create_dir_all`
+        // would defeat the file mode.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&runtime.pending_requests_dir)?;
         Ok(())
     }
 

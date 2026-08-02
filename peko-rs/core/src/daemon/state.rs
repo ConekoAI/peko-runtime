@@ -534,6 +534,18 @@ impl AppState {
             cache_dir.clone(),
         );
 
+        // ADR-045 PR #3 step 3: eagerly create the on-disk layout so
+        // the pending-requests bucket exists by the time the integration
+        // test inspects it after `DaemonGuard::spawn`. Previously this
+        // was lazy — the bucket appeared only when the first `peko_self`
+        // call hit `ApprovalQueue::insert`, which is too late for tests
+        // asserting the directory shape.
+        if let Err(e) = path_resolver.ensure_dirs() {
+            tracing::warn!(
+                "PathResolver::ensure_dirs failed at startup: {e} (continuing)"
+            );
+        }
+
         // Load the unified credential vault before identity/provider setup.
         // Wrap in Arc so both the daemon's SecretStore (passed to the
         // LlmResolver) and the daemon's reload machinery can share the
@@ -702,6 +714,23 @@ impl AppState {
 
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.
+        //
+        // ADR-045 PR #3 step 3: the `peko_self` tool is registered inside
+        // `ToolRuntime::with_workspace_and_core` via `register_builtins`,
+        // which reads `global_daemon_api()`. The global slot must be
+        // populated BEFORE this call — `AppState` is `let state = Self { ... }`
+        // below, so we wrap the freshly-constructed `ApprovalQueue` in
+        // `ApprovalQueueApi` (an `Arc<ApprovalQueue>`-shaped `DaemonApi`
+        // impl) and seed the slot here.
+        let approval_queue = crate::daemon::approval_queue::ApprovalQueue::new(
+            path_resolver_clone.pending_requests_dir(),
+            crate::daemon::approval_queue::DEFAULT_MAX_PENDING,
+        );
+        crate::daemon::api::init_global_daemon_api(Arc::new(
+            crate::daemon::approval_queue::ApprovalQueueApi::new(Arc::clone(&approval_queue)),
+        )
+            as Arc<dyn crate::daemon::api::DaemonApi>);
+
         let tool_runtime = Arc::new(
             ToolRuntime::with_workspace_and_core(
                 path_resolver_clone.clone(),
@@ -990,22 +1019,14 @@ impl AppState {
             // the dispatcher's handle-publisher on every reconnect.
             pending_a2a_responses,
             streaming_runs,
-            // ADR-045 PR #3: durable self-modify queue.
-            approval_queue: crate::daemon::approval_queue::ApprovalQueue::new(
-                path_resolver_clone.pending_requests_dir(),
-                crate::daemon::approval_queue::DEFAULT_MAX_PENDING,
-            ),
+            // ADR-045 PR #3: durable self-modify queue. The
+            // `approval_queue` Arc was constructed earlier (before
+            // `ToolRuntime::with_workspace_and_core`) so the global
+            // `DaemonApi` slot could be seeded with an
+            // `ApprovalQueueApi` adapter. Move the same Arc here.
+            approval_queue,
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
         };
-
-        // ADR-045 PR #3: stash the daemon's `DaemonApi` impl in the
-        // process-global slot so `peko_self` registration (which runs
-        // lazily via `install_principal_tool_bag` → `register_builtins`
-        // when the first agent loads) can find it without threading
-        // the handle through every constructor signature.
-        crate::daemon::api::init_global_daemon_api(
-            Arc::new(state.clone()) as Arc<dyn crate::daemon::api::DaemonApi>,
-        );
 
         Ok(state)
     }
@@ -3120,48 +3141,15 @@ impl crate::daemon::api::DaemonApi for AppState {
         crate::daemon::api::RequestId,
         crate::daemon::api::SelfModifyError,
     > {
-        use crate::daemon::api::{RequestId, SelfModifyError, SelfModifyOp};
-
-        // Meta-capability immutability. Reject before reaching the
-        // queue so the user's inbox never sees these ops.
-        if let SelfModifyOp::GrantCapability { capability, .. } = &op {
-            // Parse `<domain>:<action>`. We accept any non-empty
-            // string containing a colon to avoid lockstep with the
-            // catalog; an unknown capability just won't grant
-            // anything when `peko pending decide --grant` runs
-            // (PR #4 `ApprovalEngine::execute`).
-            let Some((domain, action)) = capability.split_once(':') else {
-                return Err(SelfModifyError::InvalidCapabilityFormat(
-                    capability.clone(),
-                ));
-            };
-            if domain.is_empty() || action.is_empty() {
-                return Err(SelfModifyError::InvalidCapabilityFormat(
-                    capability.clone(),
-                ));
-            }
-            if domain == "principal" || domain == "runtime" {
-                return Err(SelfModifyError::MetaCapabilityForbidden(
-                    capability.clone(),
-                ));
-            }
-            if domain == "tool" {
-                return Err(SelfModifyError::ToolCapabilityNotSelfGrantable(
-                    capability.clone(),
-                ));
-            }
-        }
-
-        // Internal callers (cron, daemon-originated) may pass
-        // `PrincipalId::system()`; agent-driven callers (peko_self
-        // from a running agent) pass the active principal's id.
-        // Both are accepted at the queue level — the meta-capability
-        // gate above is the only structural protection.
-        let principal_id = ctx.principal_id;
-
-        let request =
-            crate::daemon::approval_queue::ApprovalRequest::from_op(op, principal_id);
-        self.approval_queue.insert(request)
+        // Delegate to the same `ApprovalQueueApi` adapter that backs
+        // the process-global `DaemonApi` slot. The meta-capability
+        // gate + queue insertion logic lives in `ApprovalQueueApi`
+        // (see `daemon/approval_queue.rs`) so the process-global
+        // representation and the `AppState` representation can't
+        // drift apart.
+        crate::daemon::approval_queue::ApprovalQueueApi::new(Arc::clone(&self.approval_queue))
+            .request_self_modify(op, ctx)
+            .await
     }
 }
 
