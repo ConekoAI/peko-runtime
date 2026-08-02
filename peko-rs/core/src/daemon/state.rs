@@ -966,9 +966,7 @@ impl AppState {
             jwt_validator,
             rate_limiter,
             auth_table: crate::ipc::auth::AuthTable::new(),
-            auth_session_required: std::env::var("PEKO_AUTH_SESSION_REQUIRED")
-                .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
-                .unwrap_or(false),
+            auth_session_required: parse_auth_session_required(),
             auth_bootstrap: Arc::new(std::sync::Mutex::new(None)),
             service_token: Arc::new(std::sync::RwLock::new(None)),
             tunnel_cancel: Arc::new(RwLock::new(None)),
@@ -3007,10 +3005,83 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
     }
 }
 
+/// Parse `PEKO_AUTH_SESSION_REQUIRED` into a strict-mode boolean.
+///
+/// Read the value via `std::env` and delegate to [`parse_strict_mode`].
+/// `unset` defaults to `true` (PR #2 step 5 flipped the default).
+fn parse_auth_session_required() -> bool {
+    match std::env::var("PEKO_AUTH_SESSION_REQUIRED") {
+        Ok(v) => parse_strict_mode(Some(&v)),
+        Err(_) => parse_strict_mode(None),
+    }
+}
+
+/// Pure parser — given an `Option<&str>` for the env-var value,
+/// return whether strict mode is on. `None` (unset) → strict (true).
+///
+/// Accepted truthy spellings: `1`, `true`, `yes`, `on` (case
+/// insensitive, whitespace tolerant).
+///
+/// Accepted falsey spellings: `0`, `false`, `no`, `off`.
+///
+/// Invalid values warn and fall through to the secure default of
+/// `true` — strict mode is the post-PR #2 baseline and the only
+/// safe behavior when the operator's intent is ambiguous.
+fn parse_strict_mode(value: Option<&str>) -> bool {
+    let raw = match value {
+        Some(v) => v,
+        None => return true, // default ON
+    };
+
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "0" | "false" | "no" | "off" => false,
+        "1" | "true" | "yes" | "on" => true,
+        other => {
+            tracing::warn!(
+                target: "peko::auth",
+                "PEKO_AUTH_SESSION_REQUIRED={other:?} is unrecognized; \
+                 defaulting to strict (true). Use 0/false/no/off to \
+                 opt out for legacy/dev use."
+            );
+            true
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Pure-parser tests: `parse_strict_mode` doesn't touch the env
+    /// (avoids cross-test races on `PEKO_AUTH_SESSION_REQUIRED`).
+    #[test]
+    fn auth_session_required_default_is_true() {
+        // Unset env → secure default of true.
+        assert!(parse_strict_mode(None));
+    }
+
+    #[test]
+    fn auth_session_required_falsey_spellings() {
+        for v in &["0", "false", "no", "off", "FALSE", " No ", "OFF"] {
+            assert!(!parse_strict_mode(Some(v)), "{v} should disable");
+        }
+    }
+
+    #[test]
+    fn auth_session_required_truthy_spellings() {
+        for v in &["1", "true", "yes", "on", "TRUE", " Yes ", "ON"] {
+            assert!(parse_strict_mode(Some(v)), "{v} should enable");
+        }
+    }
+
+    #[test]
+    fn auth_session_required_invalid_defaults_strict() {
+        // Garbage falls back to strict (fail-closed).
+        assert!(parse_strict_mode(Some("maybe")));
+        assert!(parse_strict_mode(Some("")));
+    }
 
     async fn create_test_state() -> AppState {
         let temp_dir = TempDir::new().unwrap();
