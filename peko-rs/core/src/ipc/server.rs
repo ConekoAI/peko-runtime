@@ -526,8 +526,8 @@ impl IpcServer {
                                         let response = ResponsePacket::Error {
                                             request_id,
                                             message: format!(
-                                                "session not authenticated: run `peko auth` first \
-                                                 (peer SID {sid})"
+                                                "[auth_required] session not authenticated: run \
+                                                 `peko auth submit` first (peer SID {sid})"
                                             ),
                                         };
                                         if let Ok(bytes) = response.to_bytes() {
@@ -856,6 +856,16 @@ impl IpcServer {
                 } else {
                     Err(AuthError::InvalidCredential)
                 }
+            }
+            AuthCredential::SessionToken(_) => {
+                // ADR-045 PR #2 placeholder: full verification (SID +
+                // constant-time token-hash compare) is wired into the
+                // strict gate at server.rs accept-loop in step 3. Until
+                // then, refuse SessionToken here so the variant is
+                // honored in the type system without weakening the gate.
+                // The CLI bootstrap path uses AuthCredential::None and
+                // is handled before resolve_caller.
+                Err(AuthError::InvalidCredential)
             }
         }
     }

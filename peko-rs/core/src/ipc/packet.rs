@@ -548,6 +548,14 @@ pub enum RequestPacket {
     AuthApiKeyRevoke { request_id: u64, key_id: String },
     #[serde(rename = "auth_status")]
     AuthStatus { request_id: u64 },
+    // ── Session-group IPC auth (ADR-045 PR #2) ──
+    //
+    // First-time enrollment with the daemon's startup diceware code.
+    // Bypasses the strict session-token gate (the caller's SID is not
+    // yet authorized). Valid only over a local Unix socket; the daemon
+    // rejects AuthSubmit over UDP/named-pipe.
+    #[serde(rename = "auth_submit")]
+    AuthSubmit { request_id: u64, code: String },
 
     // ── Ownership and Permission (ADR-039) ──
     //
@@ -850,6 +858,7 @@ impl RequestPacket {
             | Self::AuthApiKeyList { request_id }
             | Self::AuthApiKeyRevoke { request_id, .. }
             | Self::AuthStatus { request_id }
+            | Self::AuthSubmit { request_id, .. }
             | Self::TunnelStop { request_id }
             | Self::TunnelStatus { request_id }
             | Self::Status { request_id }
@@ -1506,6 +1515,17 @@ pub enum ResponsePacket {
         pekohub_jwt_enabled: bool,
         api_key_enabled: bool,
         api_key_count: usize,
+    },
+    // ── Session-group IPC auth (ADR-045 PR #2) ──
+    //
+    // Returned on successful `AuthSubmit`. The CLI persists the
+    // `token` to `~/.peko/run/auth-token-<sid>` and attaches it as
+    // `AuthCredential::SessionToken` on every subsequent request.
+    #[serde(rename = "auth_submitted")]
+    AuthSubmitted {
+        request_id: u64,
+        token: String,
+        expires_in_secs: u64,
     },
 
     // ── Principal operations ─────────────────────────────────────────
@@ -2197,6 +2217,7 @@ impl ResponsePacket {
             | Self::AuthApiKeyList { request_id, .. }
             | Self::AuthApiKeyRevoked { request_id, .. }
             | Self::AuthStatus { request_id, .. }
+            | Self::AuthSubmitted { request_id, .. }
             | Self::PrincipalSent { request_id, .. }
             | Self::PrincipalSentChunk { request_id, .. }
             | Self::PrincipalSentIteration { request_id, .. }
@@ -2286,6 +2307,7 @@ impl ResponsePacket {
             Self::AuthApiKeyList { .. } => "AuthApiKeyList",
             Self::AuthApiKeyRevoked { .. } => "AuthApiKeyRevoked",
             Self::AuthStatus { .. } => "AuthStatus",
+            Self::AuthSubmitted { .. } => "AuthSubmitted",
             Self::PrincipalSent { .. } => "PrincipalSent",
             Self::PrincipalSentChunk { .. } => "PrincipalSentChunk",
             Self::PrincipalSentIteration { .. } => "PrincipalSentIteration",
@@ -2475,6 +2497,69 @@ mod tests {
                 assert_eq!(request_id, 42);
                 assert_eq!(seq, 7);
                 assert_eq!(chunk, "hello world");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    /// `AuthSubmit` round-trips with the wire shape `"auth_submit"`
+    /// (ADR-045 PR #2). Guards the request-id extraction arm and the
+    /// `#[serde(rename)]` discriminator in one shot.
+    #[test]
+    fn test_auth_submit_roundtrip() {
+        let req = RequestPacket::AuthSubmit {
+            request_id: 91,
+            code: "alpha bridge cloud drift eagle forest".to_string(),
+        };
+        assert_eq!(req.request_id(), 91);
+
+        let bytes = req.to_bytes().unwrap();
+        assert!(
+            bytes.windows(11).any(|w| w == b"auth_submit"),
+            "wire payload must contain the snake_case discriminator; got: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::AuthSubmit { request_id, code } => {
+                assert_eq!(request_id, 91);
+                assert_eq!(code, "alpha bridge cloud drift eagle forest");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    /// `AuthSubmitted` round-trips with the wire shape `"auth_submitted"`
+    /// (ADR-045 PR #2). The `token` and `expires_in_secs` fields are
+    /// what the CLI persists to `~/.peko/run/auth-token-<sid>`.
+    #[test]
+    fn test_auth_submitted_roundtrip() {
+        let resp = ResponsePacket::AuthSubmitted {
+            request_id: 92,
+            token: "pst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            expires_in_secs: 28800,
+        };
+        assert_eq!(resp.request_id(), 92);
+        assert_eq!(resp.variant_name(), "AuthSubmitted");
+
+        let bytes = resp.to_bytes().unwrap();
+        assert!(
+            bytes.windows(14).any(|w| w == b"auth_submitted"),
+            "wire payload must contain the snake_case discriminator; got: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::AuthSubmitted {
+                request_id,
+                token,
+                expires_in_secs,
+            } => {
+                assert_eq!(request_id, 92);
+                assert_eq!(token, "pst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+                assert_eq!(expires_in_secs, 28800);
             }
             _ => panic!("Wrong variant"),
         }
