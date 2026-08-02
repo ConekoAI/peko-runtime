@@ -316,6 +316,14 @@ pub(crate) struct AppState {
     /// until `Daemon::run` starts, by which point the engine is set.
     approval_engine: Arc<std::sync::OnceLock<Arc<crate::daemon::approval_engine::ApprovalEngine>>>,
 
+    /// **ADR-045 PR #5.** Named, persistent service-token store.
+    /// Wraps `<data_dir>/runtime/service.tokens/<name>/{meta.json,token}`.
+    /// Populated by `build_internal` after `PathResolver::ensure_dirs`.
+    /// Rehydrated at daemon startup (PR #5 step 1); mutations
+    /// (`peko service-token create|revoke`) flow through the IPC
+    /// handler in PR #5 step 2.
+    service_token_store: Arc<crate::storage::service_token_store::ServiceTokenStore>,
+
     /// Slot for the live outbound tunnel handle. The
     /// `TunnelDispatcher` writes the freshest handle on every
     /// reconnect; the `CrossRuntimeA2aCtx` (and any other consumer
@@ -737,6 +745,16 @@ impl AppState {
             path_resolver_clone.pending_requests_dir(),
             crate::daemon::approval_queue::DEFAULT_MAX_PENDING,
         );
+
+        // ADR-045 PR #5: named, persistent service-token store.
+        // Bucket at `<data_dir>/runtime/service.tokens/`, ensured by
+        // `PathResolver::ensure_dirs()` earlier in `build_internal`.
+        let service_token_store = Arc::new(
+            crate::storage::service_token_store::ServiceTokenStore::new(
+                path_resolver_clone.service_tokens_dir(),
+            ),
+        );
+
         crate::daemon::api::init_global_daemon_api(Arc::new(
             crate::daemon::approval_queue::ApprovalQueueApi::new(Arc::clone(&approval_queue)),
         )
@@ -1040,6 +1058,7 @@ impl AppState {
             // `set_approval_engine` below once `state` is fully
             // built and can hand out `&self` to the host impl.
             approval_engine: Arc::new(std::sync::OnceLock::new()),
+            service_token_store,
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
         };
 
@@ -1431,6 +1450,19 @@ impl AppState {
         &self,
     ) -> Option<Arc<crate::daemon::approval_engine::ApprovalEngine>> {
         self.approval_engine.get().cloned()
+    }
+
+    /// Access the named service-token store (ADR-045 PR #5).
+    ///
+    /// The store wraps `<data_dir>/runtime/service.tokens/<name>/`
+    /// and is the source of truth for token metadata on disk. The
+    /// in-memory cache for auth-time lookup lives on
+    /// [`crate::ipc::auth::AuthTable`].
+    #[must_use]
+    pub fn service_token_store(
+        &self,
+    ) -> Arc<crate::storage::service_token_store::ServiceTokenStore> {
+        Arc::clone(&self.service_token_store)
     }
 
     /// Access the in-memory service token (ADR-045 PR #2 step 2).

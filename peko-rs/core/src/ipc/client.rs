@@ -112,6 +112,25 @@ impl DaemonClient {
         Ok(client)
     }
 
+    /// ADR-045 PR #5: connect with a **named, persistent** service
+    /// token. Unlike [`DaemonClient::connect_with_service_token`]
+    /// (which sends `AuthCredential::SessionToken` and relies on the
+    /// daemon having preauthorized the caller's SID), this method
+    /// sends `AuthCredential::ServiceToken` — the strict gate looks
+    /// up the token in the dedicated `service_tokens` map by hash
+    /// only (sid-independent). Use this for long-lived clients
+    /// (runtime, persistent agents, external scripts) whose Unix
+    /// session ID is not stable.
+    ///
+    /// # Errors
+    /// Returns error if daemon is unreachable.
+    pub async fn connect_with_service_token_v2(token: impl Into<String>) -> anyhow::Result<Self> {
+        let conn = ConnectionManager::connect().await?;
+        let mut client = Self::with_connection(conn).await?;
+        client.credential = Some(AuthCredential::ServiceToken(token.into()));
+        Ok(client)
+    }
+
     /// Generate a new unique request ID
     fn next_id(&self) -> u64 {
         self.next_request_id.fetch_add(1, Ordering::SeqCst)
@@ -272,6 +291,58 @@ impl DaemonClient {
             request_id,
             id,
             decision,
+        };
+        self.request_response(packet).await
+    }
+
+    // ------------------------------------------------------------------
+    // Service-token CRUD (ADR-045 PR #5)
+    // ------------------------------------------------------------------
+
+    /// Create a named, persistent service token. Returns the raw
+    /// token **once** — `peko service-token create` prints it and
+    /// the caller is responsible for handing it to their long-lived
+    /// process (runtime, persistent agent, external script).
+    ///
+    /// `caps` is the immutable capability list the token is bound
+    /// to. `expires_in_secs` is an optional relative TTL — `None`
+    /// means no expiry.
+    pub async fn service_token_create(
+        &self,
+        name: impl Into<String>,
+        caps: Vec<String>,
+        expires_in_secs: Option<u64>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ServiceTokenCreate {
+            request_id,
+            name: name.into(),
+            caps,
+            expires_in_secs,
+        };
+        self.request_response(packet).await
+    }
+
+    /// List every registered service token's metadata (never the
+    /// raw secret). Returned as a `ServiceTokenListed` response
+    /// carrying `Vec<ServiceTokenInfo>`.
+    pub async fn service_token_list(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ServiceTokenList { request_id };
+        self.request_response(packet).await
+    }
+
+    /// Revoke a named service token. Removes the on-disk directory
+    /// AND clears the in-memory cache entry. Returns the
+    /// `ServiceTokenRevoked` envelope on success.
+    pub async fn service_token_revoke(
+        &self,
+        name: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ServiceTokenRevoke {
+            request_id,
+            name: name.into(),
         };
         self.request_response(packet).await
     }

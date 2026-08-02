@@ -35,6 +35,7 @@ pub const CLI_TIMEOUT_SECS: u64 = 60;
 /// { "type": "jwt", "token": "..." }
 /// { "type": "api_key", "token": "..." }
 /// { "type": "session_token", "token": "..." }
+/// { "type": "service_token", "token": "..." }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "token")]
@@ -56,6 +57,15 @@ pub enum AuthCredential {
     /// verifies both the SID and the SHA-256 hash of the token.
     #[serde(rename = "session_token")]
     SessionToken(String),
+    /// Named service token (ADR-045 PR #5). The raw token is the
+    /// credential; the daemon looks it up in
+    /// `AuthTable::service_tokens` and, on hit, populates the
+    /// resulting `CallerContext::service_token_caps`. Bound only
+    /// to the token itself (sid-independent) so it survives
+    /// daemon restarts and works for processes whose SID is not
+    /// stable (runtime, cron, persistent agents).
+    #[serde(rename = "service_token")]
+    ServiceToken(String),
 }
 
 /// Mode for a `PrincipalSendControl` request.
@@ -89,9 +99,10 @@ mod tests {
     use super::*;
 
     /// Round-trip for the `AuthCredential` tagged enum. Guards the
-    /// wire shape `"none"`/`"jwt"`/`"api_key"`/`"session_token"`
-    /// (ADR-034 + ADR-045 PR #2) so any future rename surfaces
-    /// here, not in production CLI↔daemon framing.
+    /// wire shape `"none"`/`"jwt"`/`"api_key"`/`"session_token"`/
+    /// `"service_token"` (ADR-034 + ADR-045 PR #2 + PR #5) so any
+    /// future rename surfaces here, not in production CLI↔daemon
+    /// framing.
     #[test]
     fn auth_credential_round_trip() {
         for (variant, json) in [
@@ -107,6 +118,10 @@ mod tests {
             (
                 AuthCredential::SessionToken("pst_abc123".into()),
                 r#"{"type":"session_token","token":"pst_abc123"}"#,
+            ),
+            (
+                AuthCredential::ServiceToken("svc_64hexchars".into()),
+                r#"{"type":"service_token","token":"svc_64hexchars"}"#,
             ),
         ] {
             let parsed: AuthCredential = serde_json::from_str(json).unwrap();

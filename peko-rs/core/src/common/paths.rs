@@ -152,6 +152,12 @@ pub struct RuntimeLayout {
     /// queue. One `<uuid>.json` per pending request, mode 0600. PR #4
     /// adds `peko pending list/decide` and `rehydrate()` at startup.
     pub pending_requests_dir: PathBuf,
+    /// `{data_dir}/runtime/service.tokens` — ADR-045 PR #5 named,
+    /// persistent service-token bucket. One `<name>/` subdirectory per
+    /// token, containing `meta.json` (caps + timestamps) and `token`
+    /// (the raw 256-bit secret). Both files mode 0600; the bucket dir
+    /// itself mode 0700.
+    pub service_tokens_dir: PathBuf,
     /// `{config_dir}/principals` — convenience accessor for principal index.
     pub principals_root: PathBuf,
 }
@@ -442,6 +448,11 @@ impl PathResolver {
             // requests. Lives under `runtime/` (not `run/`) because it
             // is part of the runtime data plane, not IPC auth state.
             pending_requests_dir: runtime_dir.join("pending-requests"),
+            // ADR-045 PR #5: persistent service-token bucket.
+            // Parallel to `pending-requests` (mode 0700 dir, mode 0600
+            // per-file) but holds long-lived credentials rather than
+            // ephemeral request artifacts.
+            service_tokens_dir: runtime_dir.join("service.tokens"),
             principals_root: self.principals_root_dir(),
         }
     }
@@ -492,6 +503,20 @@ impl PathResolver {
     #[must_use]
     pub fn pending_requests_dir(&self) -> PathBuf {
         self.runtime_layout().pending_requests_dir
+    }
+
+    /// Persistent service-token bucket (ADR-045 PR #5).
+    ///
+    /// Path: `{data_dir}/runtime/service.tokens`
+    ///
+    /// One `<name>/` subdirectory per token, holding `meta.json`
+    /// and `token` (both mode 0600). Created by `ensure_dirs`
+    /// with mode 0700. The bucket survives daemon restarts; the
+    /// daemon rehydrates `AuthTable` from this directory at
+    /// startup.
+    #[must_use]
+    pub fn service_tokens_dir(&self) -> PathBuf {
+        self.runtime_layout().service_tokens_dir
     }
 
     /// Per-principal cron schedule file (Local tier).
@@ -884,6 +909,14 @@ impl PathResolver {
             .recursive(true)
             .mode(0o700)
             .create(&runtime.pending_requests_dir)?;
+        // ADR-045 PR #5: persistent service-token bucket. Same
+        // owner-only rationale as `pending-requests` — the per-file
+        // manifests leak capability-scope names, which are sensitive
+        // metadata even without the secret.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&runtime.service_tokens_dir)?;
         Ok(())
     }
 

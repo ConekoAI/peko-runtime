@@ -450,6 +450,54 @@ impl Daemon {
             tracing::info!("Preauthorized daemon SID {self_sid} for internal service-token IPC");
         }
 
+        // ADR-045 PR #5: rehydrate named service tokens from disk into
+        // the in-memory `AuthTable` map. Tokens are persistent — they
+        // survive daemon restarts — so the auth table needs every
+        // entry present before serving the first IPC request.
+        match app_state.service_token_store().load_all() {
+            Ok(loaded) => {
+                let count = loaded.len();
+                for (name, raw_token, meta) in loaded {
+                    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+                    let ttl = match meta.expires_at_secs {
+                        Some(exp_secs) => {
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            // Compute relative TTL, clamped at 0 for
+                            // already-expired tokens (which the table
+                            // will then evict on first access).
+                            i64::try_from(exp_secs)
+                                .ok()
+                                .and_then(|exp| {
+                                    let now_i = i64::try_from(now).ok()?;
+                                    exp.checked_sub(now_i)
+                                })
+                                .and_then(|rel| u64::try_from(rel.max(0)).ok())
+                                .map(Duration::from_secs)
+                        }
+                        None => None,
+                    };
+                    app_state.auth_table().register_service_token(
+                        &name,
+                        crate::ipc::auth::hash_token(raw_token.as_bytes()),
+                        meta.caps,
+                        ttl,
+                    );
+                }
+                tracing::info!(
+                    "Rehydrated {count} named service tokens from disk into AuthTable"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "ServiceTokenStore::load_all failed at startup: {e}; \
+                     no tokens registered"
+                );
+            }
+        }
+
         // Emit code to stderr. Preserves `PEKO_VERSION=` as line 1
         // (the desktop supervisor parses that prefix).
         eprintln!(

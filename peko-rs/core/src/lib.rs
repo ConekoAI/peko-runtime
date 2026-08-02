@@ -270,6 +270,11 @@ pub mod daemon;
 // [extract:phase-12b] peko-ipc
 pub mod ipc;
 
+// ADR-045 PR #5: named, persistent service-token storage (mode 0600
+// per-file, mode 0700 bucket). User-managed data files; lives next
+// to `daemon` / `ipc` so the bucket conventions are discoverable.
+pub mod storage;
+
 // [extract:phase-14] peko-observability — DONE (PR #300, 2026-07-24):
 // 4 root files moved to `peko-rs/observability/src/{lib,audit,metrics,tracer}.rs`.
 // Callers in daemon/cron_engine, principal/{context,manager,router}, tunnel/host,

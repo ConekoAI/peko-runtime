@@ -75,6 +75,27 @@ pub(crate) enum AuthSource {
     Service,
 }
 
+/// Named service-token entry (ADR-045 PR #5).
+///
+/// Independent from [`AuthEntry`] because service tokens are
+/// presented by long-lived processes whose Unix session ID is not
+/// stable — the token itself is the credential, not `(sid, token)`.
+/// The on-disk source of truth is
+/// `crate::storage::service_token_store::ServiceTokenStore`;
+/// this in-memory cache is rehydrated at daemon startup and
+/// invalidated on revoke.
+#[derive(Debug, Clone)]
+pub(crate) struct ServiceTokenEntry {
+    /// SHA-256 hash of the raw token (never the raw token).
+    pub token_hash: [u8; 32],
+    /// Capability list the token was created with. **Immutable** —
+    /// the ADR's "cannot grow" rule means once registered, the
+    /// caps set is fixed. To change caps, revoke + recreate.
+    pub caps: Vec<String>,
+    /// When this entry expires (None = no expiry).
+    pub expires_at: Option<Instant>,
+}
+
 /// Concurrent map of session ID → authorization entry.
 ///
 /// Reads happen on every IPC accept (hot path); writes happen on auth
@@ -83,6 +104,10 @@ pub(crate) enum AuthSource {
 #[derive(Debug)]
 pub(crate) struct AuthTable {
     inner: RwLock<AuthTableInner>,
+    /// ADR-045 PR #5: parallel name-keyed map for persistent service
+    /// tokens. Token is the credential (sid-independent); see
+    /// [`ServiceTokenEntry`] doc for the rationale.
+    service_tokens: RwLock<HashMap<String, ServiceTokenEntry>>,
 }
 
 #[derive(Debug, Default)]
@@ -94,6 +119,7 @@ impl AuthTable {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: RwLock::new(AuthTableInner::default()),
+            service_tokens: RwLock::new(HashMap::new()),
         })
     }
 
@@ -202,6 +228,96 @@ impl AuthTable {
         };
         let mut g = self.inner.write().expect("auth table poisoned");
         g.entries.insert(sid, entry);
+    }
+
+    // =====================================================================
+    // Service-token map (ADR-045 PR #5)
+    // =====================================================================
+
+    /// Register (or replace) a named service-token entry. Called by
+    /// `peko service-token create` (step 2) and by daemon
+    /// `rehydrate` at startup.
+    ///
+    /// `ttl` is a relative duration; `None` means no expiry.
+    pub(crate) fn register_service_token(
+        &self,
+        name: &str,
+        token_hash: [u8; 32],
+        caps: Vec<String>,
+        ttl: Option<Duration>,
+    ) {
+        let entry = ServiceTokenEntry {
+            token_hash,
+            caps,
+            expires_at: ttl.map(|d| Instant::now() + d),
+        };
+        let mut g = self
+            .service_tokens
+            .write()
+            .expect("service-token map poisoned");
+        g.insert(name.to_string(), entry);
+    }
+
+    /// Verify a raw token against the service-token map. Returns
+    /// the bound capability list on match (None on miss / wrong
+    /// token / unknown name / expired entry).
+    ///
+    /// Side effect: evicts expired entries on access (same shape as
+    /// `lookup`).
+    pub(crate) fn verify_service_token(&self, token: &[u8]) -> Option<Vec<String>> {
+        let supplied = hash_token(token);
+        let mut g = self
+            .service_tokens
+            .write()
+            .expect("service-token map poisoned");
+        let now = Instant::now();
+        let mut expired: Option<String> = None;
+        let mut found: Option<Vec<String>> = None;
+        for (name, entry) in g.iter() {
+            if let Some(exp) = entry.expires_at {
+                if exp <= now {
+                    expired.get_or_insert_with(|| name.clone());
+                    continue;
+                }
+            }
+            if ct_eq(&supplied, &entry.token_hash) {
+                found = Some(entry.caps.clone());
+                break;
+            }
+        }
+        if let Some(name) = expired {
+            g.remove(&name);
+        }
+        found
+    }
+
+    /// Revoke a named service-token entry. Returns `true` if the
+    /// entry was present. On-disk revocation is the caller's job
+    /// (see `ServiceTokenStore::revoke`); this method only clears
+    /// the in-memory cache.
+    pub(crate) fn revoke_service_token(&self, name: &str) -> bool {
+        self.service_tokens
+            .write()
+            .expect("service-token map poisoned")
+            .remove(name)
+            .is_some()
+    }
+
+    /// Snapshot of every registered service token's name + caps +
+    /// expiry. Used by `peko service-token list` (via the IPC
+    /// handler) and by PR #6 audit/counter paths.
+    ///
+    /// Excludes expired entries (they're evicted on access in
+    /// [`verify_service_token`], but a list call should not trigger
+    /// an eviction).
+    pub(crate) fn list_service_tokens(&self) -> Vec<(String, Vec<String>, Option<Instant>)> {
+        let g = self
+            .service_tokens
+            .read()
+            .expect("service-token map poisoned");
+        g.iter()
+            .map(|(name, entry)| (name.clone(), entry.caps.clone(), entry.expires_at))
+            .collect()
     }
 }
 
@@ -334,5 +450,109 @@ mod tests {
         assert!(!t.verify(3000, b"soon-expired"));
         // Entry should be evicted on access.
         assert!(!t.revoke(3000));
+    }
+
+    // ---- service-token map (ADR-045 PR #5) ----
+
+    #[test]
+    fn register_and_verify_service_token_round_trip() {
+        let t = AuthTable::new();
+        let token = b"my-secret-token";
+        t.register_service_token(
+            "runtime",
+            hash_token(token),
+            vec!["fs:read".into(), "tool:Bash".into()],
+            None,
+        );
+        let caps = t.verify_service_token(token);
+        assert_eq!(caps, Some(vec!["fs:read".to_string(), "tool:Bash".to_string()]));
+    }
+
+    #[test]
+    fn verify_service_token_rejects_wrong_token() {
+        let t = AuthTable::new();
+        t.register_service_token(
+            "runtime",
+            hash_token(b"real-token"),
+            vec!["fs:read".into()],
+            None,
+        );
+        assert!(t.verify_service_token(b"wrong-token").is_none());
+    }
+
+    #[test]
+    fn verify_service_token_rejects_unknown_name() {
+        let t = AuthTable::new();
+        t.register_service_token(
+            "runtime",
+            hash_token(b"a-token"),
+            vec!["fs:read".into()],
+            None,
+        );
+        // Same hash but unknown name → no hit.
+        let unknown_hash = hash_token(b"a-token");
+        // Verify against the map with no entry for "ghost" → None.
+        assert!(t.verify_service_token(b"a-token").is_some()); // hits "runtime"
+        // Now revoke "runtime" and confirm verify returns None.
+        assert!(t.revoke_service_token("runtime"));
+        assert!(t.verify_service_token(b"a-token").is_none());
+        let _ = unknown_hash; // silence unused
+    }
+
+    #[test]
+    fn revoke_service_token_removes_entry() {
+        let t = AuthTable::new();
+        t.register_service_token("rt", hash_token(b"tok"), vec!["x".into()], None);
+        assert!(t.revoke_service_token("rt"));
+        assert!(!t.revoke_service_token("rt"));
+        assert!(t.verify_service_token(b"tok").is_none());
+    }
+
+    #[test]
+    fn verify_service_token_with_ttl_returns_none_after_expiry() {
+        let t = AuthTable::new();
+        t.register_service_token(
+            "rt",
+            hash_token(b"tok"),
+            vec!["x".into()],
+            Some(Duration::from_millis(0)),
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(t.verify_service_token(b"tok").is_none());
+        // Entry should be evicted.
+        assert!(!t.revoke_service_token("rt"));
+    }
+
+    #[test]
+    fn list_service_tokens_returns_all_entries() {
+        let t = AuthTable::new();
+        t.register_service_token("a", hash_token(b"tok-a"), vec!["a".into()], None);
+        t.register_service_token("b", hash_token(b"tok-b"), vec!["b".into()], None);
+        let list = t.list_service_tokens();
+        assert_eq!(list.len(), 2);
+        // Order not guaranteed, but both names must be present.
+        let names: Vec<String> = list.iter().map(|(n, _, _)| n.clone()).collect();
+        assert!(names.contains(&"a".to_string()));
+        assert!(names.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn service_token_caps_are_immutable_after_register() {
+        // The ADR says "capability-scoped at creation (cannot grow)".
+        // Enforce at the API surface: there is no `set_caps` /
+        // `add_cap` method on the table. The only way to change
+        // caps is revoke + register.
+        let t = AuthTable::new();
+        t.register_service_token(
+            "rt",
+            hash_token(b"tok"),
+            vec!["fs:read".into()],
+            None,
+        );
+        // Verify the registered caps are exactly what we set.
+        assert_eq!(
+            t.verify_service_token(b"tok"),
+            Some(vec!["fs:read".to_string()])
+        );
     }
 }

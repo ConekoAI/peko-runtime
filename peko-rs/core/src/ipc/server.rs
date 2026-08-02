@@ -32,6 +32,7 @@ use tracing::{error, info, trace, warn};
 
 use super::auth_bootstrap::AuthCodeError;
 use super::packet::{AuthCredential, AuthenticatedRequest, RequestPacket, ResponsePacket};
+
 #[cfg(unix)]
 use super::peer_credentials::peer_credentials;
 use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
@@ -39,7 +40,12 @@ use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
 use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::daemon::state::AppState;
+// ADR-045 PR #5: hash the raw service token for the audit-trail
+// identifier (6-byte hex prefix). sha2/hex are already in Cargo.toml
+// for `auth::hash_token`; we reuse the same dep pair here.
+use hex;
 use peko_auth::caller::CallerContext;
+use sha2::{Digest, Sha256};
 #[cfg(not(windows))]
 use peko_auth::config::enforce_auth_for_public_bind;
 use peko_auth::permissions::AuthError;
@@ -577,6 +583,18 @@ impl IpcServer {
                                         .app_state
                                         .auth_table()
                                         .verify(sid, token.as_bytes()),
+                                    // ADR-045 PR #5: named service
+                                    // tokens are sid-independent — the
+                                    // token itself is the credential.
+                                    // Any peer (sid or no sid) may
+                                    // present a registered service
+                                    // token; we just look it up by
+                                    // hash in the dedicated map.
+                                    (_, AuthCredential::ServiceToken(token)) => self
+                                        .app_state
+                                        .auth_table()
+                                        .verify_service_token(token.as_bytes())
+                                        .is_some(),
                                     _ => false,
                                 };
 
@@ -927,6 +945,32 @@ impl IpcServer {
                     return Err(AuthError::InvalidCredential);
                 }
                 Ok(CallerContext::local())
+            }
+            // ADR-045 PR #5: the strict gate already verified the
+            // service token (sid-independent — the token itself is the
+            // credential). Look the matching caps up *again* here so
+            // `CallerContext::service_token_caps` carries them for
+            // downstream authorization (PR #6 audit will consult this).
+            //
+            // The double lookup is intentional: the gate uses a
+            // `verify_service_token` boolean and discards the caps
+            // to keep the hot path branch-light; this call retrieves
+            // the actual values. We re-hash + re-iterate the map
+            // rather than caching the lookup result across the gate
+            // boundary so each layer stays self-contained.
+            AuthCredential::ServiceToken(token) => {
+                let caps = state
+                    .auth_table()
+                    .verify_service_token(token.as_bytes())
+                    .ok_or(AuthError::InvalidCredential)?;
+                // Identify the token by its hash prefix for audit
+                // trail purposes (never the raw token). PR #6
+                // audit counters key on this identifier.
+                let mut hasher = Sha256::new();
+                Digest::update(&mut hasher, token.as_bytes());
+                let digest = hasher.finalize();
+                let token_name = format!("svc:{}", hex::encode(&digest[..6]));
+                Ok(CallerContext::from_service_token(token_name, caps))
             }
         }
     }

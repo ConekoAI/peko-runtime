@@ -557,6 +557,29 @@ pub enum RequestPacket {
     #[serde(rename = "auth_submit")]
     AuthSubmit { request_id: u64, code: String },
 
+    // ── Service tokens (ADR-045 PR #5) ──
+    //
+    // Named, persistent, capability-scoped tokens for long-lived
+    // daemon clients (runtime, cron, persistent agents, external
+    // scripts). All three requests below are gated by the existing
+    // PR #2 strict SID+token gate (caller must already be an
+    // authorized interactive session). Token is shown ONCE in
+    // `ServiceTokenCreated::token`; subsequent list/verify return
+    // only metadata.
+    #[serde(rename = "service_token_create")]
+    ServiceTokenCreate {
+        request_id: u64,
+        name: String,
+        caps: Vec<String>,
+        /// Optional relative TTL in seconds. `None` = no expiry.
+        #[serde(default)]
+        expires_in_secs: Option<u64>,
+    },
+    #[serde(rename = "service_token_list")]
+    ServiceTokenList { request_id: u64 },
+    #[serde(rename = "service_token_revoke")]
+    ServiceTokenRevoke { request_id: u64, name: String },
+
     // ── Ownership and Permission (ADR-039) ──
     //
     // Grant/revoke packets carry a single `subject: Subject`.
@@ -912,6 +935,10 @@ impl RequestPacket {
             | Self::QuotaSet { request_id, .. }
             | Self::QuotaReset { request_id, .. }
             | Self::ApprovalDecision { request_id, .. } => *request_id,
+            // Service-token CRUD (ADR-045 PR #5).
+            | Self::ServiceTokenCreate { request_id, .. }
+            | Self::ServiceTokenList { request_id, .. }
+            | Self::ServiceTokenRevoke { request_id, .. } => *request_id,
         }
     }
 
@@ -1556,6 +1583,43 @@ pub enum ResponsePacket {
         expires_in_secs: u64,
     },
 
+    // ── Service tokens (ADR-045 PR #5) ──
+    //
+    // Returned by `ServiceTokenCreate`. `token` is the raw secret and is
+    // shown to the caller **exactly once** at creation time. Subsequent
+    // `ServiceTokenList` / `ServiceTokenRevoke` responses never include
+    // the raw secret. Caps, expires_at_secs are mirrored from the
+    // on-disk meta for caller convenience.
+    #[serde(rename = "service_token_created")]
+    ServiceTokenCreated {
+        request_id: u64,
+        name: String,
+        token: String,
+        caps: Vec<String>,
+        expires_at_secs: Option<u64>,
+    },
+
+    /// Returned by `ServiceTokenList` — never contains the raw secret.
+    #[serde(rename = "service_token_listed")]
+    ServiceTokenListed {
+        request_id: u64,
+        tokens: Vec<ServiceTokenInfo>,
+    },
+
+    /// Returned by `ServiceTokenRevoke` on success.
+    #[serde(rename = "service_token_revoked")]
+    ServiceTokenRevoked { request_id: u64, name: String },
+
+    /// Returned by any service-token request on failure. `name` is
+    /// present for create/revoke errors; `None` for list errors.
+    #[serde(rename = "service_token_error")]
+    ServiceTokenError {
+        request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        message: String,
+    },
+
     // ── Principal operations ─────────────────────────────────────────
     /// Non-streaming result of `PrincipalSend`. Single packet with the
     /// root agent's final answer.
@@ -2185,6 +2249,26 @@ pub struct ApiKeySummary {
     pub enabled: bool,
 }
 
+/// Public metadata for a registered service token (ADR-045 PR #5).
+///
+/// Mirrors `crate::storage::service_token_store::ServiceTokenInfo`
+/// but uses crate-internal field names so the wire shape stays
+/// consistent (the on-disk form lives in `service_token_store`).
+///
+/// **Wire invariant**: never carries the raw token. `token` is
+/// returned only in `ResponsePacket::ServiceTokenCreated` and only
+/// at creation time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceTokenInfo {
+    pub name: String,
+    pub caps: Vec<String>,
+    pub created_at_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at_secs: Option<u64>,
+}
+
 impl AuthenticatedRequest {
     /// Deserialize an authenticated request from JSON bytes.
     ///
@@ -2294,6 +2378,10 @@ impl ResponsePacket {
             | Self::AuthApiKeyRevoked { request_id, .. }
             | Self::AuthStatus { request_id, .. }
             | Self::AuthSubmitted { request_id, .. }
+            | Self::ServiceTokenCreated { request_id, .. }
+            | Self::ServiceTokenListed { request_id, .. }
+            | Self::ServiceTokenRevoked { request_id, .. }
+            | Self::ServiceTokenError { request_id, .. }
             | Self::PrincipalSent { request_id, .. }
             | Self::PrincipalSentChunk { request_id, .. }
             | Self::PrincipalSentIteration { request_id, .. }
@@ -2386,6 +2474,10 @@ impl ResponsePacket {
             Self::AuthApiKeyRevoked { .. } => "AuthApiKeyRevoked",
             Self::AuthStatus { .. } => "AuthStatus",
             Self::AuthSubmitted { .. } => "AuthSubmitted",
+            Self::ServiceTokenCreated { .. } => "ServiceTokenCreated",
+            Self::ServiceTokenListed { .. } => "ServiceTokenListed",
+            Self::ServiceTokenRevoked { .. } => "ServiceTokenRevoked",
+            Self::ServiceTokenError { .. } => "ServiceTokenError",
             Self::PrincipalSent { .. } => "PrincipalSent",
             Self::PrincipalSentChunk { .. } => "PrincipalSentChunk",
             Self::PrincipalSentIteration { .. } => "PrincipalSentIteration",
