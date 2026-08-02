@@ -142,7 +142,7 @@ impl ToolRuntime {
         // `daemon/state.rs:771`. See scripts/e2e/reports/2026-08-01-bash-tool-cwd-bug.md.
         let _ = tokio::fs::create_dir_all(&workspace).await;
 
-        let tools: Vec<Arc<dyn Tool>> = vec![
+        let mut tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(BashTool::new().with_workspace(workspace.clone())),
             Arc::new(ReadTool::new().with_workspace(workspace.clone())),
             Arc::new(WriteTool::new().with_workspace(workspace.clone())),
@@ -153,6 +153,14 @@ impl ToolRuntime {
             Arc::new(CronDeleteTool::new()),
             Arc::new(CronListTool::new()),
         ];
+
+        // ADR-045 PR #3: peko_self is registered globally iff the
+        // daemon has populated the global `DaemonApi` slot. CLI
+        // subprocesses (no daemon) skip the tool; on the daemon it
+        // gets registered once and visible to every principal.
+        if let Some(api) = crate::daemon::api::global_daemon_api() {
+            tools.push(Arc::new(crate::tools::builtin::PekoSelfTool::new(api)));
+        }
 
         // Built-in tools are visible to every principal and registered exactly
         // once per process under PrincipalId::system(). The `register_builtins`

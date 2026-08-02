@@ -22,6 +22,7 @@
 //! `peko_self` tool unit-testable without a full daemon.
 
 use std::fmt;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -170,6 +171,64 @@ pub trait DaemonApi: Send + Sync + fmt::Debug {
         op: SelfModifyOp,
         ctx: SelfModifyContext,
     ) -> Result<RequestId, SelfModifyError>;
+}
+
+// =============================================================================
+// Global daemon-api registry (ADR-045 PR #3)
+// =============================================================================
+//
+// One process-global slot for the `DaemonApi` impl. The daemon
+// populates it once at startup; `peko_self` registration (via
+// `register_builtins` and `register_globals`) reads from it. This
+// avoids threading the handle through 4 layers of constructor
+// signatures for a tool that always needs the same per-process
+// handle.
+//
+// In tests, the slot is a `RwLock` so multiple tests in the same
+// binary can re-set it without `OnceLock::set` poisoning.
+//
+// Reading returns `None` if the daemon hasn't initialized — peko_self
+// simply isn't registered in that case (the tool gets a clean
+// "not found" error rather than a panic), and the CLI side can run
+// without the daemon.
+
+use std::sync::OnceLock;
+
+#[cfg(not(test))]
+static GLOBAL_DAEMON_API: OnceLock<Arc<dyn DaemonApi>> = OnceLock::new();
+#[cfg(test)]
+static GLOBAL_DAEMON_API: std::sync::RwLock<Option<Arc<dyn DaemonApi>>> =
+    std::sync::RwLock::new(None);
+
+/// Initialize the process-global `DaemonApi` handle.
+///
+/// Called once by the daemon at startup. Subsequent calls are
+/// no-ops in release builds (the `OnceLock` rejects duplicates); in
+/// tests, the slot is `RwLock<Option<…>>` so tests can re-set it.
+pub fn init_global_daemon_api(api: Arc<dyn DaemonApi>) {
+    #[cfg(not(test))]
+    {
+        let _ = GLOBAL_DAEMON_API.set(api);
+    }
+    #[cfg(test)]
+    {
+        let mut g = GLOBAL_DAEMON_API.write().expect("daemon api global poisoned");
+        *g = Some(api);
+    }
+}
+
+/// Get the process-global `DaemonApi` handle, if the daemon has
+/// initialized one.
+#[must_use]
+pub fn global_daemon_api() -> Option<Arc<dyn DaemonApi>> {
+    #[cfg(not(test))]
+    {
+        GLOBAL_DAEMON_API.get().cloned()
+    }
+    #[cfg(test)]
+    {
+        GLOBAL_DAEMON_API.read().expect("daemon api global poisoned").clone()
+    }
 }
 
 #[cfg(test)]

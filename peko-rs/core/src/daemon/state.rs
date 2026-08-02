@@ -913,7 +913,7 @@ impl AppState {
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
 
-        Ok(Self {
+        let state = Self {
             started_at: SystemTime::now(),
             workspace_path,
             config_dir,
@@ -996,7 +996,18 @@ impl AppState {
                 crate::daemon::approval_queue::DEFAULT_MAX_PENDING,
             ),
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
-        })
+        };
+
+        // ADR-045 PR #3: stash the daemon's `DaemonApi` impl in the
+        // process-global slot so `peko_self` registration (which runs
+        // lazily via `install_principal_tool_bag` → `register_builtins`
+        // when the first agent loads) can find it without threading
+        // the handle through every constructor signature.
+        crate::daemon::api::init_global_daemon_api(
+            Arc::new(state.clone()) as Arc<dyn crate::daemon::api::DaemonApi>,
+        );
+
+        Ok(state)
     }
 
     /// Get the current uptime in seconds
