@@ -20,6 +20,7 @@ pub mod interrupt;
 pub mod log;
 pub mod mcp;
 pub mod model;
+pub mod pending;
 pub mod principal;
 pub mod quota;
 pub mod registry;
@@ -192,6 +193,19 @@ pub enum Commands {
     ///   peko quota reset myprincipal
     #[command(subcommand)]
     Quota(quota::QuotaCommands),
+
+    /// Pending self-modification request queue (ADR-045 PR #4).
+    ///
+    /// `peko pending list` reads the on-disk queue directly (no IPC).
+    /// `peko pending decide` roundtrips to the daemon to stamp the
+    /// decision and (on grant) execute the privileged op.
+    ///
+    /// Examples:
+    ///   peko pending list
+    ///   peko pending decide --id <uuid> --grant
+    ///   peko pending decide --id <uuid> --deny --reason "not yet"
+    #[command(subcommand)]
+    Pending(pending::PendingCommands),
 
     /// Log in to the PekoHub registry
     Login {

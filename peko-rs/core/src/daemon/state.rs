@@ -2270,6 +2270,19 @@ impl crate::ipc::handlers::auth::AuthHost for AppState {
     }
 }
 
+/// ADR-045 PR #4: the `approval` IPC handler reaches the
+/// `ApprovalEngine` via this narrow port. The handler stays
+/// uninitialized until `AppState::build_internal` finishes wiring;
+/// during that brief window the handler returns `None` to the
+/// caller with a clear "engine not ready" error.
+impl crate::ipc::handlers::approval::ApprovalHost for AppState {
+    fn approval_engine(
+        &self,
+    ) -> Option<Arc<crate::daemon::approval_engine::ApprovalEngine>> {
+        AppState::approval_engine(self)
+    }
+}
+
 /// F7 third narrow handle: the port the `tool` IPC domain handler uses
 /// to reach the async task executor, tool runtime, principal manager,
 /// and extension store. Trait lives in `ipc::handlers::tool`. All

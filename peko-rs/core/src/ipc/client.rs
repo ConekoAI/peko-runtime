@@ -255,6 +255,27 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
+    /// Send an `ApprovalDecision` for a pending self-modification
+    /// request (ADR-045 PR #4).
+    ///
+    /// The daemon marks the queue with the user's choice and (on
+    /// grant) executes the privileged op. Returns the
+    /// `ApprovalDecided` envelope — the CLI renders it as a one-line
+    /// summary plus the per-op `op_result`.
+    pub async fn approval_decide(
+        &self,
+        id: uuid::Uuid,
+        decision: crate::ipc::packet::ApprovalDecisionPayload,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ApprovalDecision {
+            request_id,
+            id,
+            decision,
+        };
+        self.request_response(packet).await
+    }
+
     /// Send a request and wait for a single response
     ///
     /// This is the generic method used by all CRUD operations.
