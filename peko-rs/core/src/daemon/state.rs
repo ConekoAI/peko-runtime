@@ -2319,6 +2319,23 @@ impl crate::ipc::handlers::approval::ApprovalHost for AppState {
     }
 }
 
+/// ADR-045 PR #5: the `service_token` IPC handler reaches the
+/// on-disk store + in-memory auth table via this narrow port.
+/// Strict-gate authorization happens *before* the handler runs
+/// (server.rs), so by the time `handle()` is invoked the caller
+/// is already an authorized interactive session.
+impl crate::ipc::handlers::service_token::ServiceTokenHost for AppState {
+    fn service_token_store(
+        &self,
+    ) -> Arc<crate::storage::service_token_store::ServiceTokenStore> {
+        AppState::service_token_store(self)
+    }
+
+    fn auth_table(&self) -> Arc<crate::ipc::auth::AuthTable> {
+        AppState::auth_table(self)
+    }
+}
+
 /// F7 third narrow handle: the port the `tool` IPC domain handler uses
 /// to reach the async task executor, tool runtime, principal manager,
 /// and extension store. Trait lives in `ipc::handlers::tool`. All

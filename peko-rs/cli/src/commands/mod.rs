@@ -21,6 +21,7 @@ pub mod log;
 pub mod mcp;
 pub mod model;
 pub mod pending;
+pub mod service_token;
 pub mod principal;
 pub mod quota;
 pub mod registry;
@@ -206,6 +207,26 @@ pub enum Commands {
     ///   peko pending decide --id <uuid> --deny --reason "not yet"
     #[command(subcommand)]
     Pending(pending::PendingCommands),
+
+    /// Manage named service tokens for long-lived daemon clients
+    /// (ADR-045 PR #5).
+    ///
+    /// `peko service-token create` generates a 256-bit random token,
+    /// persists it to `<data>/runtime/service.tokens/<name>/`, and
+    /// prints the raw secret **exactly once**.
+    ///
+    /// `peko service-token list` enumerates every registered token's
+    /// metadata (never the raw secret).
+    ///
+    /// `peko service-token revoke` deletes the on-disk artifacts
+    /// and clears the in-memory cache.
+    ///
+    /// Examples:
+    ///   peko service-token create --name runtime --caps fs:read,tool:Bash
+    ///   peko service-token list
+    ///   peko service-token revoke --name runtime
+    #[command(subcommand)]
+    ServiceToken(service_token::ServiceTokenCommands),
 
     /// Log in to the PekoHub registry
     Login {

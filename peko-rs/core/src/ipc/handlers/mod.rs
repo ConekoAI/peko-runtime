@@ -39,6 +39,7 @@ pub(crate) mod provider_mcp;
 pub(crate) mod provider_templates;
 pub(crate) mod quota;
 pub(crate) mod runtime;
+pub(crate) mod service_token;
 pub(crate) mod system;
 pub(crate) mod tool;
 pub(crate) mod tunnel;
@@ -59,6 +60,7 @@ use provider_mcp::ProviderMcpHandler;
 use provider_templates::ProviderTemplatesHandler;
 use quota::QuotaHandler;
 use runtime::RuntimeHandler;
+use service_token::ServiceTokenHandler;
 use system::SystemHandler;
 use tool::ToolHandler;
 use tunnel::TunnelHandler;
@@ -121,7 +123,7 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 19] = [
+        let handlers: [Arc<dyn RequestHandler>; 20] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             // ADR-045 PR #4: `ApprovalDecision` sits next to `Auth` so
@@ -156,7 +158,13 @@ impl RequestDispatcher {
             // `PrincipalHandler` because it shares the principal
             // namespace semantically (it writes principal.toml +
             // primary.md via the CLI) but the IPC shape is its own.
-            Arc::new(PersonaHandler::new(host)),
+            Arc::new(PersonaHandler::new(host.clone())),
+            // ADR-045 PR #5: `service_token` CRUD lives next to
+            // the other auth-management variants (Auth + Approval)
+            // because all three share the strict-gate authorization
+            // surface. New handler bumps the dispatch array from
+            // 19 → 20.
+            Arc::new(ServiceTokenHandler::new(host)),
         ];
 
         for handler in &handlers {
