@@ -488,7 +488,7 @@ impl AppState {
     }
 
     #[cfg(test)]
-    async fn build_for_test(
+    pub(crate) async fn build_for_test(
         workspace_path: PathBuf,
         host: String,
         port: u16,
@@ -920,7 +920,9 @@ impl AppState {
             // daemon itself is the actor. IPC handlers that act on
             // behalf of a caller wrap this with `Subject::Principal`
             // for tier-specific reads.
-            authority: Arc::new(crate::common::authority::RuntimeAuthority::for_runtime(path_resolver)),
+            authority: Arc::new(crate::common::authority::RuntimeAuthority::for_runtime(
+                path_resolver,
+            )),
             port,
             host,
             config,
@@ -1310,7 +1312,10 @@ impl AppState {
     /// against the daemon's own preauthorized SID.
     #[must_use]
     pub fn service_token(&self) -> Option<String> {
-        self.service_token.read().expect("service token poisoned").clone()
+        self.service_token
+            .read()
+            .expect("service token poisoned")
+            .clone()
     }
 
     /// Set the in-memory service token (ADR-045 PR #2 step 2).
@@ -3170,11 +3175,7 @@ mod tests {
         // the capability gate sees the wildcard grant for built-ins.
         let caps = peko_extension_api::Capabilities::with_grants(["tool:*"]);
         let defs = core
-            .list_tool_definitions_with_allowlist(
-                &caps,
-                None,
-                peko_subject::PrincipalId::system(),
-            )
+            .list_tool_definitions_with_allowlist(&caps, None, peko_subject::PrincipalId::system())
             .await;
         let def_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
         assert!(

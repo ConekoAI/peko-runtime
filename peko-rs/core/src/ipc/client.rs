@@ -10,17 +10,35 @@ use std::sync::Arc;
 use tracing::trace;
 
 use super::connection::{ConnectionHandle, ConnectionManager};
-use super::packet::{PrincipalSendControlMode, RequestPacket, ResponsePacket};
+use super::packet::{
+    AuthCredential, AuthenticatedRequest, PrincipalSendControlMode, RequestPacket, ResponsePacket,
+};
 use super::stream::{PacketStream, StreamRouter};
 
 /// Client for communicating with the peko daemon
 ///
 /// Thin wrapper around a `ConnectionHandle`. Sends requests, returns
 /// response streams. No connection management, no retry logic.
+///
+/// When a [`credential`] is set (via [`DaemonClient::connect_with_service_token`]
+/// or future per-SID auto-loaders), every outgoing request is wrapped
+/// in an [`AuthenticatedRequest`] envelope so the daemon's strict
+/// session-token gate sees the matching `(peer_sid, token)` pair.
+/// Without a credential, requests are sent bare (legacy format) and
+/// the daemon falls back to `AuthCredential::None` — which is
+/// rejected by strict mode but accepted when
+/// `auth_session_required=false`.
 pub struct DaemonClient {
     conn: ConnectionHandle,
     router: StreamRouter,
     next_request_id: Arc<AtomicU64>,
+    /// Optional credential attached to every outgoing request
+    /// envelope. `None` means "send bare RequestPacket" (legacy
+    /// format). Daemon-internal clients set this to
+    /// `AuthCredential::SessionToken(<service-token>)`; CLI-side
+    /// clients in strict mode set it to the per-SID token read from
+    /// `~/.peko/run/auth-token-<sid>`.
+    credential: Option<AuthCredential>,
 }
 
 impl std::fmt::Debug for DaemonClient {
@@ -54,7 +72,30 @@ impl DaemonClient {
             conn,
             router,
             next_request_id: Arc::new(AtomicU64::new(1)),
+            credential: None,
         })
+    }
+
+    /// Connect with an explicit `SessionToken` credential attached.
+    ///
+    /// Used by daemon-internal clients (cron adapter, runtime hosts,
+    /// etc.) that need to authenticate against the daemon's own
+    /// preauthorized SID under `auth_session_required=true`. The
+    /// service token is generated at daemon startup (see
+    /// `Daemon::run`'s setsid + service-token block) and preauthorized
+    /// for the daemon's SID with `AuthSource::Service`.
+    ///
+    /// CLI-side callers should use [`DaemonClient::connect`]
+    /// (legacy, no credential — step 4 will load the per-SID token
+    /// file automatically).
+    ///
+    /// # Errors
+    /// Returns error if daemon is unreachable.
+    pub async fn connect_with_service_token(token: impl Into<String>) -> anyhow::Result<Self> {
+        let conn = ConnectionManager::connect().await?;
+        let mut client = Self::with_connection(conn).await?;
+        client.credential = Some(AuthCredential::SessionToken(token.into()));
+        Ok(client)
     }
 
     /// Generate a new unique request ID
@@ -67,7 +108,23 @@ impl DaemonClient {
         let request_id = packet.request_id();
         let stream = self.router.register(request_id).await;
 
-        let bytes = packet.to_bytes()?;
+        // Wrap in `AuthenticatedRequest` envelope when a credential
+        // is configured. Bare `RequestPacket` is the legacy wire
+        // format (still accepted by the daemon's `from_bytes`
+        // fallback) — used by callers that haven't been migrated to
+        // session-token auth yet.
+        let bytes = match &self.credential {
+            Some(credential) => {
+                let envelope = AuthenticatedRequest {
+                    auth: super::packet::AuthHeader {
+                        credential: credential.clone(),
+                    },
+                    packet,
+                };
+                envelope.to_bytes()?
+            }
+            None => packet.to_bytes()?,
+        };
         trace!("Sending request {} ({} bytes)", request_id, bytes.len());
         self.conn.send(&bytes).await?;
 
@@ -145,6 +202,43 @@ impl DaemonClient {
             Ok(ResponsePacket::Pong { .. }) => true,
             _ => false,
         }
+    }
+
+    // ── Session-group IPC auth (ADR-045 PR #2 step 3) ───────────────
+    //
+    // The first-time enrollment flow is the bootstrap call: the CLI
+    // has no token yet, so it bypasses every session-token gate on
+    // the server side. The server verifies the diceware code, mints a
+    // fresh session token, and returns it for the CLI to persist at
+    // `~/.peko/run/auth-token-<sid>`.
+    //
+    // The server's strict gate sees the supplied `RequestPacket` as
+    // a bare request (no envelope wrapping), parses it via
+    // `AuthenticatedRequest::from_bytes` (which falls back to bare
+    // `RequestPacket`), and dispatches inline — no SID lookup, no
+    // token verification, no caller resolution.
+
+    /// Submit the daemon's startup diceware code and receive a fresh
+    /// session token.
+    ///
+    /// On success returns `ResponsePacket::AuthSubmitted { token,
+    /// expires_in_secs, .. }`; the caller is responsible for persisting
+    /// the token at the appropriate `~/.peko/run/auth-token-<sid>`
+    /// path (mode 0600) and for attaching it as
+    /// `AuthCredential::SessionToken` on every subsequent request
+    /// (PR #2 step 4 wires that side).
+    ///
+    /// On failure returns `ResponsePacket::Error { message, .. }`
+    /// with a bracket-prefixed code: `[invalid_auth_code]`,
+    /// `[auth_code_expired]`, `[auth_code_exhausted]`,
+    /// `[auth_code_consumed]`, or `[auth_code_not_initialized]`.
+    pub async fn auth_submit(&self, code: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::AuthSubmit {
+            request_id,
+            code: code.into(),
+        };
+        self.request_response(packet).await
     }
 
     /// Send a request and wait for a single response

@@ -444,9 +444,7 @@ impl Daemon {
             app_state
                 .auth_table()
                 .authorize_service(self_sid, service_token.as_bytes());
-            tracing::info!(
-                "Preauthorized daemon SID {self_sid} for internal service-token IPC"
-            );
+            tracing::info!("Preauthorized daemon SID {self_sid} for internal service-token IPC");
         }
 
         // Emit code to stderr. Preserves `PEKO_VERSION=` as line 1
@@ -532,7 +530,11 @@ impl Daemon {
         // (pre-extraction) to `src/daemon/cron_runtime.rs` because it
         // depends on `crate::ipc::{DaemonClient, ResponsePacket}` which
         // stays in root.
-        match crate::daemon::cron_runtime::DaemonCronAdapter::connect().await {
+        match crate::daemon::cron_runtime::DaemonCronAdapter::connect_with_service_token(
+            app_state.service_token().unwrap_or_default(),
+        )
+        .await
+        {
             Ok(adapter) => {
                 let adapter = std::sync::Arc::new(adapter);
                 adapter.install_as_global();
