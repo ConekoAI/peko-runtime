@@ -336,35 +336,76 @@ impl AgentTool {
     /// Format error response
     ///
     /// Classifies the error using a typed [`SpawnError`] when available,
-    /// falling back to string matching only for untyped errors.
+    /// falling back to string matching only for untyped errors. Walks
+    /// the `anyhow` chain first; if no typed error is found (the async
+    /// exec layer stringifies the error at `executor.rs:343` before it
+    /// reaches us), parses the well-defined `SpawnError` Display
+    /// format to reconstruct the typed fields.
     fn format_error_response(error: &anyhow::Error) -> anyhow::Result<serde_json::Value> {
-        // Try typed classification first
-        if let Some(spawn_err) = error.downcast_ref::<SpawnError>() {
-            return match spawn_err {
-                SpawnError::DepthLimitExceeded { .. } => Ok(json!({
-                    "status": "forbidden",
-                    "error": spawn_err.to_string(),
-                    "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
-                })),
-                SpawnError::ConcurrentLimitExceeded { .. } => Ok(json!({
-                    "status": "forbidden",
-                    "error": spawn_err.to_string(),
-                    "note": "Maximum concurrent subagent runs exceeded. Please wait for existing runs to complete."
-                })),
-                SpawnError::Timeout { .. } => Ok(json!({
-                    "status": "timeout",
-                    "error": spawn_err.to_string(),
-                    "note": "Subagent execution timed out."
-                })),
-                SpawnError::ExecutionFailed(msg) => Ok(json!({
-                    "status": "error",
-                    "error": msg,
-                })),
-            };
+        // 1. Try typed classification first, walking the anyhow chain
+        //    because intermediate layers re-wrap the typed error with
+        //    a string-formatted `anyhow!`.
+        for source in error.chain() {
+            if let Some(spawn_err) = source.downcast_ref::<SpawnError>() {
+                return Self::spawn_error_to_json(spawn_err);
+            }
         }
 
-        // Fallback to string matching for untyped errors
+        // 2. The async-exec layer at `extensions/async_exec/executor.rs:343`
+        //    stringifies `e.to_string()` when constructing
+        //    `AsyncTaskStatus::Failed`. The typed chain is gone by the
+        //    time we get here, so parse the well-defined
+        //    `SpawnError::Display` shape and reconstruct the typed
+        //    fields. Display formats (canonical from
+        //    `subagent_error.rs` and `messaging/dto.rs`):
+        //      DepthLimitExceeded { current, max }
+        //        → "Maximum spawn depth exceeded: {current} (max: {max})"
+        //      ConcurrentLimitExceeded { current, max }
+        //        → "Maximum concurrent subagent runs exceeded: {current} (max: {max})"
+        //      Timeout { seconds }
+        //        → "Subagent execution timed out after {seconds}s"
         let error_msg = error.to_string();
+
+        if let Some((current, max)) =
+            parse_two_u32s(&error_msg, "Maximum spawn depth exceeded:", "(max:")
+        {
+            return Ok(json!({
+                "status": "forbidden",
+                "error_type": "DepthLimitExceeded",
+                "current_depth": current,
+                "max_depth": max,
+                "error": error_msg,
+                "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
+            }));
+        }
+
+        if let Some((current, max)) = parse_two_u32s(
+            &error_msg,
+            "Maximum concurrent subagent runs exceeded:",
+            "(max:",
+        ) {
+            return Ok(json!({
+                "status": "forbidden",
+                "error_type": "ConcurrentLimitExceeded",
+                "current_concurrent": current,
+                "max_concurrent": max,
+                "error": error_msg,
+                "note": "Maximum concurrent subagent runs exceeded. Please wait for existing runs to complete."
+            }));
+        }
+
+        if let Some(secs) = parse_one_u32(&error_msg, "Subagent execution timed out after", "s")
+        {
+            return Ok(json!({
+                "status": "timeout",
+                "error_type": "Timeout",
+                "timeout_seconds": secs,
+                "error": error_msg,
+                "note": "Subagent execution timed out."
+            }));
+        }
+
+        // 3. Fallback to string matching for untyped errors
         let lower_msg = error_msg.to_lowercase();
         if lower_msg.contains("depth") {
             Ok(json!({
@@ -391,6 +432,72 @@ impl AgentTool {
             }))
         }
     }
+
+    /// Render a typed `SpawnError` to the canonical JSON envelope.
+    fn spawn_error_to_json(spawn_err: &SpawnError) -> anyhow::Result<serde_json::Value> {
+        Ok(match spawn_err {
+            SpawnError::DepthLimitExceeded { current, max } => json!({
+                "status": "forbidden",
+                "error_type": "DepthLimitExceeded",
+                "current_depth": current,
+                "max_depth": max,
+                "error": spawn_err.to_string(),
+                "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
+            }),
+            SpawnError::ConcurrentLimitExceeded { current, max } => json!({
+                "status": "forbidden",
+                "error_type": "ConcurrentLimitExceeded",
+                "current_concurrent": current,
+                "max_concurrent": max,
+                "error": spawn_err.to_string(),
+                "note": "Maximum concurrent subagent runs exceeded. Please wait for existing runs to complete."
+            }),
+            SpawnError::Timeout { seconds } => json!({
+                "status": "timeout",
+                "error_type": "Timeout",
+                "timeout_seconds": seconds,
+                "error": spawn_err.to_string(),
+                "note": "Subagent execution timed out."
+            }),
+            SpawnError::ExecutionFailed(msg) => json!({
+                "status": "error",
+                "error_type": "ExecutionFailed",
+                "error": msg,
+            }),
+        })
+    }
+}
+
+/// Parse two `u32`s from a string of the shape
+/// `"<prefix>{a}<sep>{b}<suffix>"`. Returns `None` if the prefix or
+/// separator can't be located or the captures don't parse as u32.
+fn parse_two_u32s(s: &str, prefix: &str, sep: &str) -> Option<(u32, u32)> {
+    let after_prefix = s.find(prefix)? + prefix.len();
+    let rest = &s[after_prefix..];
+    let sep_idx = rest.find(sep)?;
+    let a: u32 = rest[..sep_idx].trim().parse().ok()?;
+    let after_sep = &rest[sep_idx + sep.len()..];
+    // Skip leading whitespace before scanning digits — the second
+    // number is preceded by a space in the SpawnError Display format
+    // (e.g. `"... (max: {max})"` becomes `"... (max: 3)"` so `after_sep`
+    // is `" 3)"`, not `"3)"`).
+    let after_ws = after_sep.trim_start();
+    // Stop at the first non-digit character for the second number.
+    let end = after_ws
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after_ws.len());
+    let b: u32 = after_ws[..end].trim().parse().ok()?;
+    Some((a, b))
+}
+
+/// Parse a single `u32` from a string of the shape
+/// `"<prefix>{n}<suffix>"`. Returns `None` if the prefix can't be
+/// located or the capture doesn't parse as u32.
+fn parse_one_u32(s: &str, prefix: &str, suffix: &str) -> Option<u32> {
+    let after_prefix = s.find(prefix)? + prefix.len();
+    let rest = &s[after_prefix..];
+    let suffix_idx = rest.find(suffix)?;
+    rest[..suffix_idx].trim().parse().ok()
 }
 
 // (Trait helpers used by the port live in `subagent_runtime.rs`:
@@ -418,6 +525,16 @@ Parameters:
 - isolated: If true, creates isolated session without parent context (default: false)
 - cleanup: "keep" or "delete" - what to do with session after completion (default: "keep")
 - parent_session_key: Parent session key (optional - auto-detected if not provided)
+
+Limits:
+- Spawn depth is capped at 3 levels from the root. Attempting a deeper
+  chain returns `error_type: "DepthLimitExceeded"` with `current_depth`
+  and `max_depth` fields — count the depth of your current subagent
+  chain (root + every Agent call in the lineage) before spawning and
+  stop at depth 3 to avoid the rejection.
+- Up to 5 concurrent subagent runs are allowed; exceeding that returns
+  `error_type: "ConcurrentLimitExceeded"` with `current_concurrent` and
+  `max_concurrent` fields.
 
 Examples:
 // Blocking spawn - parent waits for result (auto-detaches on timeout)
@@ -871,6 +988,9 @@ mod tests {
         let depth_err = anyhow::anyhow!(SpawnError::DepthLimitExceeded { current: 4, max: 3 });
         let response = AgentTool::format_error_response(&depth_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
+        assert_eq!(response["error_type"].as_str().unwrap(), "DepthLimitExceeded");
+        assert_eq!(response["current_depth"].as_u64().unwrap(), 4);
+        assert_eq!(response["max_depth"].as_u64().unwrap(), 3);
         assert!(response["note"].as_str().unwrap().contains("depth"));
         assert!(response["error"].as_str().unwrap().contains('4'));
 
@@ -879,13 +999,20 @@ mod tests {
             anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded { current: 5, max: 5 });
         let response = AgentTool::format_error_response(&concurrent_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
+        assert_eq!(
+            response["error_type"].as_str().unwrap(),
+            "ConcurrentLimitExceeded"
+        );
+        assert_eq!(response["current_concurrent"].as_u64().unwrap(), 5);
+        assert_eq!(response["max_concurrent"].as_u64().unwrap(), 5);
         assert!(response["note"].as_str().unwrap().contains("concurrent"));
 
         // Test typed timeout error
         let timeout_err = anyhow::anyhow!(SpawnError::Timeout { seconds: 30 });
         let response = AgentTool::format_error_response(&timeout_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "timeout");
-        assert!(response["error"].as_str().unwrap().contains("30"));
+        assert_eq!(response["error_type"].as_str().unwrap(), "Timeout");
+        assert_eq!(response["timeout_seconds"].as_u64().unwrap(), 30);
 
         // Test typed execution failed error
         let exec_err = anyhow::anyhow!(SpawnError::ExecutionFailed(
@@ -893,10 +1020,46 @@ mod tests {
         ));
         let response = AgentTool::format_error_response(&exec_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "error");
+        assert_eq!(
+            response["error_type"].as_str().unwrap(),
+            "ExecutionFailed"
+        );
         assert!(response["error"]
             .as_str()
             .unwrap()
             .contains("something went wrong"));
+
+        // Field-test fix (2026-08-02): the async-exec layer stringifies
+        // `SpawnError` into `AsyncTaskStatus::Failed { error: String }`
+        // before it reaches us, destroying the typed chain. Verify the
+        // Display-string fallback reconstructs the typed fields.
+        let stringified_depth = anyhow::anyhow!(
+            "Subagent failed: Maximum spawn depth exceeded: 4 (max: 3)"
+        );
+        let response = AgentTool::format_error_response(&stringified_depth).unwrap();
+        assert_eq!(
+            response["error_type"].as_str().unwrap(),
+            "DepthLimitExceeded"
+        );
+        assert_eq!(response["current_depth"].as_u64().unwrap(), 4);
+        assert_eq!(response["max_depth"].as_u64().unwrap(), 3);
+
+        let stringified_concurrent = anyhow::anyhow!(
+            "Subagent failed: Maximum concurrent subagent runs exceeded: 6 (max: 5)"
+        );
+        let response = AgentTool::format_error_response(&stringified_concurrent).unwrap();
+        assert_eq!(
+            response["error_type"].as_str().unwrap(),
+            "ConcurrentLimitExceeded"
+        );
+        assert_eq!(response["current_concurrent"].as_u64().unwrap(), 6);
+        assert_eq!(response["max_concurrent"].as_u64().unwrap(), 5);
+
+        let stringified_timeout =
+            anyhow::anyhow!("Subagent execution timed out after 300s");
+        let response = AgentTool::format_error_response(&stringified_timeout).unwrap();
+        assert_eq!(response["status"].as_str().unwrap(), "timeout");
+        assert_eq!(response["timeout_seconds"].as_u64().unwrap(), 300);
 
         // Test fallback string matching for untyped errors
         let untyped = anyhow::anyhow!("Some random depth-related failure");

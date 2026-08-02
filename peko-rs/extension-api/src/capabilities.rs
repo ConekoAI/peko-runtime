@@ -228,6 +228,18 @@ impl Capabilities {
             "tool:PlanRecordEvidence",
             "tool:PlanAddStep",
             "tool:PlanClose",
+            // Async control family (auto-granted to match the
+            // builtin async_control tools). Without these, the model
+            // sees the tool descriptions in `available_tools` but
+            // `is_tool_enabled` filters them out at dispatch and the
+            // principal can't actually call them — the agent would
+            // surface "tool not in my toolset" errors when it tries
+            // `AsyncSpawn` / `AsyncList` / etc.
+            "tool:AsyncSpawn",
+            "tool:AsyncOutput",
+            "tool:AsyncStatus",
+            "tool:AsyncList",
+            "tool:AsyncStop",
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",
@@ -294,6 +306,30 @@ mod tests {
             "PlanRecordEvidence",
             "PlanAddStep",
             "PlanClose",
+        ] {
+            assert!(
+                caps.is_granted(&Capability::new(&format!("tool:{tool}"))),
+                "starter_bundle must include tool:{tool}"
+            );
+        }
+    }
+
+    /// Auto-grant all 5 async control tools so a fresh principal can
+    /// actually background and inspect long-running tasks. Without
+    /// these, `is_tool_enabled` filters them out of the LLM's
+    /// `available_tools` list despite the framework describing them
+    /// in tool descriptions — the model would see them as available
+    /// but get refused at dispatch with a "tool not in my toolset"
+    /// style error. Surfaced in the 2026-08-02 subagent field test.
+    #[test]
+    fn starter_bundle_includes_async_tools() {
+        let caps = Capabilities::starter_bundle();
+        for tool in [
+            "AsyncSpawn",
+            "AsyncOutput",
+            "AsyncStatus",
+            "AsyncList",
+            "AsyncStop",
         ] {
             assert!(
                 caps.is_granted(&Capability::new(&format!("tool:{tool}"))),

@@ -41,6 +41,13 @@ pub struct SendArgs {
     #[arg(long)]
     pub no_stream: bool,
 
+    /// Enable streaming (default behaviour). Accepted as a synonym
+    /// for the default path so users who try to force streaming
+    /// don't get an unknown-flag error. Hidden from `--help` because
+    /// it's a no-op, not a real knob. Use `--no-stream` to opt out.
+    #[arg(long, hide = true)]
+    pub stream: bool,
+
     /// Do not treat `/`-prefixed messages as slash commands; pass them to the LLM verbatim
     #[arg(long)]
     pub no_slash: bool,
@@ -216,6 +223,14 @@ async fn process_response_stream(
     }
 
     let mut has_started_line = false;
+    // Run summary captured from the daemon's `RunSummary` packet —
+    // printed as a single-line footer on stderr in `Done{success}`
+    // so stdout stays pipe-safe (only the assistant text goes to
+    // stdout). Mirrors the --no-stream path. Field-test finding
+    // (2026-08-02): this footer was previously *only* visible in
+    // `--no-stream` mode, hiding per-turn token cost from the
+    // common streaming path.
+    let mut summary: Option<crate::summary::RunSummaryView> = None;
     while let Some(packet) = next_or_interrupt(
         &mut stream,
         &ctrl_c_signal,
@@ -247,11 +262,39 @@ async fn process_response_stream(
                     has_started_line = true;
                 }
             }
+            // RunSummary is emitted by the daemon *before* `Done`.
+            // Capture it so we can emit the per-turn footer after the
+            // stream completes (mirrors the --no-stream path).
+            ResponsePacket::RunSummary {
+                iterations,
+                usage,
+                tool_errors,
+                ..
+            } => {
+                summary = Some(crate::summary::RunSummaryView {
+                    iterations,
+                    usage: usage.map(|u| crate::summary::UsageView {
+                        prompt_tokens: u.prompt_tokens,
+                        completion_tokens: u.completion_tokens,
+                        total_tokens: u.total_tokens,
+                    }),
+                    tool_errors: tool_errors
+                        .into_iter()
+                        .map(|e| crate::summary::ToolErrorView {
+                            tool_name: e.tool_name,
+                            error_message: e.error_message,
+                        })
+                        .collect(),
+                });
+            }
             ResponsePacket::Done { success, error, .. } => {
                 if has_started_line {
                     println!();
                 }
                 if success {
+                    if let Some(ref s) = summary {
+                        eprintln!("{}", s.format_footer());
+                    }
                     return Ok(());
                 }
                 anyhow::bail!(
@@ -423,6 +466,28 @@ mod tests {
                 assert_eq!(args.principal, "myprincipal");
                 assert_eq!(args.message, Some("hello".to_string()));
                 assert_eq!(args.model, Some("anthropic-claude-sonnet-4-5".to_string()));
+            }
+            _other => panic!("expected Send command"),
+        }
+    }
+
+    /// Field-test finding (2026-08-02): `peko send --stream` previously
+    /// errored with `unexpected argument '--stream' found` even though
+    /// streaming is the default behaviour. The CLI now accepts `--stream`
+    /// as a hidden synonym so existing scripts don't break.
+    #[test]
+    fn send_parses_stream_flag_as_noop_synonym() {
+        let cli = Cli::try_parse_from([
+            "peko", "send", "myprincipal", "hello", "--stream",
+        ])
+        .expect("should parse send command with --stream synonym");
+
+        match cli.command {
+            Commands::Send(args) => {
+                assert!(args.stream, "--stream flag should parse");
+                assert!(!args.no_stream, "--stream must not imply --no-stream");
+                assert_eq!(args.principal, "myprincipal");
+                assert_eq!(args.message, Some("hello".to_string()));
             }
             _other => panic!("expected Send command"),
         }
