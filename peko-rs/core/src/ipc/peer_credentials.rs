@@ -96,13 +96,13 @@ pub(crate) fn peer_credentials(_fd: std::os::fd::RawFd) -> io::Result<PeerCreden
 /// Returns `None` on non-Unix platforms (Windows named-pipe DACL auth
 /// is structurally different and does not use session IDs).
 #[cfg(unix)]
-pub(crate) fn getsid_self() -> Option<i32> {
+pub fn getsid_self() -> Option<i32> {
     let sid = unsafe { libc::getsid(0) };
     if sid < 0 { None } else { Some(sid) }
 }
 
 #[cfg(not(unix))]
-pub(crate) fn getsid_self() -> Option<i32> {
+pub fn getsid_self() -> Option<i32> {
     None
 }
 

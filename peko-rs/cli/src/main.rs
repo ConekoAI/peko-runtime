@@ -126,7 +126,7 @@ async fn run_command(
         Commands::Send(args) => send::handle_send(args, paths, json).await,
         Commands::Interrupt(args) => interrupt::handle_interrupt(args, paths, json).await,
         Commands::Log(cmd) => log::handle_log(cmd, paths, json).await,
-        Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json),
+        Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json).await,
         Commands::Credential(cmd) => credential::execute(cmd, paths).await,
         Commands::Vault(cmd) => vault::execute(cmd, paths).await,
         Commands::Ext(cmd) => ext::handle_ext_command(cmd, paths, json, cli_registry).await,

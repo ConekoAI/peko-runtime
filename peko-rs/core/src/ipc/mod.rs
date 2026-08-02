@@ -34,7 +34,7 @@ pub mod daemon_transport_impl;
 pub mod errors;
 pub(crate) mod handlers;
 pub mod packet;
-pub(crate) mod peer_credentials;
+pub mod peer_credentials;
 pub mod pipe_security;
 pub mod response_sink;
 pub(crate) mod send_response;

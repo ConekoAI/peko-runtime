@@ -55,11 +55,25 @@ impl DaemonClient {
     /// The CLI does NOT auto-start the daemon. Start it manually with:
     ///   peko daemon start
     ///
+    /// If `auth_session_required=true` (the post-PR #2 default), the
+    /// daemon will gate every non-`AuthSubmit` request behind the
+    /// strict SID+token check. This `connect` call therefore loads
+    /// `~/.peko/run/auth-token-<sid>` — written by `peko auth
+    /// submit` — and attaches the `SessionToken` credential to every
+    /// subsequent packet automatically.
+    ///
+    /// Legacy behavior (no token file, no token attached) is preserved
+    /// for callers that opt out via `PEKO_AUTH_SESSION_REQUIRED=0` on
+    /// the daemon side; the daemon will reject their requests with
+    /// `[auth_required]` if strict mode is on.
+    ///
     /// # Errors
     /// Returns error if daemon is not reachable
     pub async fn connect() -> anyhow::Result<Self> {
         let conn = ConnectionManager::connect().await?;
-        Self::with_connection(conn).await
+        let mut client = Self::with_connection(conn).await?;
+        client.credential = load_session_token_for_current_sid();
+        Ok(client)
     }
 
     /// Create a client with an existing connection
@@ -1090,6 +1104,93 @@ impl DaemonClient {
         };
         self.request_response(packet).await
     }
+}
+
+/// Load the per-SID session token from `~/.peko/run/auth-token-<sid>`.
+///
+/// Returns `None` if:
+/// - The current process's SID cannot be determined (non-Unix).
+/// - The token file does not exist (caller has not yet run
+///   `peko auth submit`).
+/// - The token file fails any of the safety checks (symlink, wrong
+///   mode, wrong owner, empty, oversized).
+///
+/// This is the canonical entry point for `DaemonClient::connect` to
+/// auto-attach credentials on every CLI invocation. It deliberately
+/// never returns `Err` — a missing/malformed token file just means
+/// "no credential" and is the legacy (pre-PR #2) behavior.
+fn load_session_token_for_current_sid() -> Option<AuthCredential> {
+    #[cfg(unix)]
+    {
+        let sid = super::peer_credentials::getsid_self()?;
+        let resolver = default_path_resolver();
+        let token_path = resolver.auth_token_file(sid);
+        read_token_file(&token_path).map(AuthCredential::SessionToken)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = sid;
+        None
+    }
+}
+
+/// Read a session token from `path`, applying the safety checks
+/// documented in PR #2 step 4:
+///
+/// - Must be a regular file (not a symlink).
+/// - File mode must be exactly `0o600`. A token file with broader
+///   permissions is treated as tampered and ignored.
+/// - Owned by the current UID (best-effort check via `MetadataExt`).
+/// - Non-empty after trim.
+/// - ≤ 1024 bytes (defensive cap; session tokens are ~43 bytes).
+#[cfg(unix)]
+fn read_token_file(path: &std::path::Path) -> Option<String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    // Reject symlinks outright — they could redirect us to a
+    // world-readable or attacker-controlled file.
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+
+    // Mode must be exactly 0600.
+    let mode = meta.permissions().mode() & 0o777;
+    if mode != 0o600 {
+        return None;
+    }
+
+    // Owner must match the current UID (defense in depth: catches
+    // tokens planted by a different user).
+    let my_uid = unsafe { libc::getuid() };
+    if meta.uid() != my_uid {
+        return None;
+    }
+
+    // Read with permissive size cap. We already enforce symlink +
+    // mode + owner sanity, so a cap is just paranoid backstop.
+    let raw = std::fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim().to_string();
+    if trimmed.is_empty() || trimmed.len() > 1024 {
+        return None;
+    }
+    Some(trimmed)
+}
+
+/// Default `PathResolver` honoring `PEKO_HOME` and the XDG rules.
+///
+/// Mirrors `GlobalPaths::new` resolution so the CLI's auth-token
+/// file lives under the same tree as everything else.
+fn default_path_resolver() -> crate::common::paths::PathResolver {
+    use crate::common::paths::{
+        default_cache_dir, default_config_dir, default_data_dir,
+    };
+
+    let config_dir = default_config_dir();
+    let data_dir = default_data_dir();
+    let cache_dir = default_cache_dir();
+
+    crate::common::paths::PathResolver::with_dirs(config_dir, data_dir, cache_dir)
 }
 
 #[cfg(test)]
