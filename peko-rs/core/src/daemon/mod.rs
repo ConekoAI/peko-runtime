@@ -9,6 +9,7 @@
 
 pub(crate) mod api;
 pub(crate) mod approval_queue;
+pub(crate) mod approval_engine;
 pub(crate) mod background_runtime;
 pub(crate) mod cron_engine;
 pub(crate) mod cron_runtime;

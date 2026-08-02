@@ -139,6 +139,28 @@ pub enum DecisionError {
     CorruptedArtifact(RequestId, String),
 }
 
+/// User-driven decision input.
+///
+/// Distinct from [`ApprovalStatus`] (the on-disk/in-memory wire shape)
+/// because the daemon fills in the `Subject` (from caller context) and
+/// the timestamp — the CLI only says "grant" or "deny with reason".
+///
+/// PR #4 step 1: the IPC handler calls
+/// `ApprovalQueue::decide_with(id, decision, subject)` to apply this.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Grant,
+    Deny { reason: String },
+}
+
+impl Decision {
+    /// `true` if this is a grant.
+    #[must_use]
+    pub fn is_grant(&self) -> bool {
+        matches!(self, Self::Grant)
+    }
+}
+
 /// Concurrent map of `RequestId → ApprovalRequest`, mirrored to disk.
 ///
 /// The in-memory map is the authoritative source for the running
@@ -207,6 +229,47 @@ impl ApprovalQueue {
     pub fn list_pending(&self) -> Vec<ApprovalRequest> {
         let g = self.inner.lock().expect("approval queue poisoned");
         g.values().filter(|r| r.status.is_pending()).cloned().collect()
+    }
+
+    /// All requests in the queue, regardless of status. Used by the
+    /// daemon-side inbox (push delivery path) and by tests that need
+    /// to audit decided requests.
+    #[must_use]
+    pub fn list_all(&self) -> Vec<ApprovalRequest> {
+        let g = self.inner.lock().expect("approval queue poisoned");
+        g.values().cloned().collect()
+    }
+
+    /// User-driven decision from the CLI / inbox UI.
+    ///
+    /// Distinct from [`ApprovalStatus`] (the in-memory wire shape) because
+    /// the daemon fills in the `Subject` (from caller context) and the
+    /// timestamp — the CLI only says "grant" or "deny with reason".
+    pub fn decide_with(
+        &self,
+        id: RequestId,
+        decision: Decision,
+        by: Subject,
+    ) -> Result<ApprovalRequest, DecisionError> {
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let new_status = match decision {
+            Decision::Grant => ApprovalStatus::Approved {
+                decided_at_secs: now_secs,
+                by,
+            },
+            Decision::Deny { reason } => ApprovalStatus::Denied {
+                decided_at_secs: now_secs,
+                by,
+                reason,
+            },
+        };
+        self.decide(id, new_status)?;
+        // Re-fetch the updated entry. The decide() above succeeded so
+        // it's guaranteed to be present.
+        Ok(self.get(id).expect("decide succeeded but entry vanished"))
     }
 
     /// Apply a decision to a pending request.

@@ -791,6 +791,33 @@ pub enum RequestPacket {
         name: String,
         jti: String,
     },
+
+    // ── ADR-045 PR #4 — user→daemon decision on a pending request ──
+    //
+    // Requires the strict SID+token gate (the user is making a
+    // privileged decision; the same gate that protects CronAdd
+    // protects this). The daemon fills in `by: Subject` from the
+    // caller's IPC auth context, not from the wire.
+    #[serde(rename = "approval_decision")]
+    ApprovalDecision {
+        request_id: u64,
+        /// The pending request's id (UUIDv4, from `peko pending list`).
+        id: uuid::Uuid,
+        decision: ApprovalDecisionPayload,
+    },
+}
+
+/// User→daemon decision payload (ADR-045 PR #4).
+///
+/// Wire shape mirrors the user-facing CLI flags
+/// (`peko pending decide --grant|--deny --reason ...`). The daemon
+/// stamps the `Subject` from the caller's auth context, so it doesn't
+/// travel on the wire.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum ApprovalDecisionPayload {
+    Grant,
+    Deny { reason: String },
 }
 
 impl RequestPacket {
@@ -883,7 +910,8 @@ impl RequestPacket {
             | Self::PrincipalSendControl { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
-            | Self::QuotaReset { request_id, .. } => *request_id,
+            | Self::QuotaReset { request_id, .. }
+            | Self::ApprovalDecision { request_id, .. } => *request_id,
         }
     }
 
@@ -1766,6 +1794,54 @@ pub enum ResponsePacket {
     // reachable from the IPC surface; if a future ADR reintroduces it,
     // it must key off PrincipalMemory rather than legacy
     // SessionService.)
+
+    // ── ADR-045 PR #4 — daemon→user responses for pending decisions ──
+    /// Returned on successful `ApprovalDecision`. The CLI prints a
+    /// one-line summary; the daemon's `ApprovalEngine` has already
+    /// executed the op (or staged it for asynchronous completion) and
+    /// pushed the result into the agent's session inbox.
+    #[serde(rename = "approval_decided")]
+    ApprovalDecided {
+        request_id: u64,
+        id: uuid::Uuid,
+        /// Final status (Approved or Denied, with the by/reason).
+        status: ApprovalStatusPayload,
+        /// Operation-specific result, e.g. `{"granted": "fs:read"}`
+        /// for a successful `GrantCapability`.
+        op_result: serde_json::Value,
+    },
+    /// Returned when `ApprovalDecision` failed (unknown id,
+    /// not-implemented op, executor error). The CLI surfaces the
+    /// message verbatim.
+    #[serde(rename = "approval_error")]
+    ApprovalError {
+        request_id: u64,
+        id: uuid::Uuid,
+        message: String,
+    },
+}
+
+/// Wire-shaped mirror of `ApprovalStatus` from
+/// `peko_core::daemon::approval_queue`. Round-trips through serde so
+/// the CLI can display the status without parsing tags itself.
+///
+/// ADR-045 PR #4.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ApprovalStatusPayload {
+    Pending,
+    Approved {
+        decided_at_secs: u64,
+        /// Wire-shaped `Subject` — separate type so the IPC layer
+        /// doesn't depend on `peko_subject`. See the `Subject` enum
+        /// in `peko-rs/subject/src/lib.rs` for the canonical shape.
+        by: serde_json::Value,
+    },
+    Denied {
+        decided_at_secs: u64,
+        by: serde_json::Value,
+        reason: String,
+    },
 }
 
 /// Summary of an extension for IPC responses
@@ -2240,7 +2316,9 @@ impl ResponsePacket {
             | Self::Status { request_id, .. }
             | Self::QuotaStatus { request_id, .. }
             | Self::PrincipalInviteMinted { request_id, .. }
-            | Self::PrincipalInviteRevoked { request_id, .. } => *request_id,
+            | Self::PrincipalInviteRevoked { request_id, .. }
+            | Self::ApprovalDecided { request_id, .. }
+            | Self::ApprovalError { request_id, .. } => *request_id,
         }
     }
 
@@ -2331,6 +2409,8 @@ impl ResponsePacket {
             Self::QuotaStatus { .. } => "QuotaStatus",
             Self::PrincipalInviteMinted { .. } => "PrincipalInviteMinted",
             Self::PrincipalInviteRevoked { .. } => "PrincipalInviteRevoked",
+            Self::ApprovalDecided { .. } => "ApprovalDecided",
+            Self::ApprovalError { .. } => "ApprovalError",
         }
     }
 

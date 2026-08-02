@@ -304,6 +304,17 @@ pub(crate) struct AppState {
     /// `peko pending list/decide` CLI command and wires
     /// `rehydrate()` into daemon startup.
     approval_queue: Arc<crate::daemon::approval_queue::ApprovalQueue>,
+    /// ADR-045 PR #4 step 1: executes approved `SelfModifyOp`s.
+    /// Wraps the approval_queue + a narrowed host trait so callers
+    /// (IPC handler in PR #4 step 2, future cron engines) don't
+    /// import `AppState` directly.
+    ///
+    /// Lazy because the host impl needs `&AppState` (chicken-and-egg
+    /// with `Self { ... }`). Populated via `set_approval_engine()`
+    /// at the end of `build_internal`. `approval_engine()` returns
+    /// a `None` placeholder until then; the IPC handler isn't reachable
+    /// until `Daemon::run` starts, by which point the engine is set.
+    approval_engine: Arc<std::sync::OnceLock<Arc<crate::daemon::approval_engine::ApprovalEngine>>>,
 
     /// Slot for the live outbound tunnel handle. The
     /// `TunnelDispatcher` writes the freshest handle on every
@@ -1025,10 +1036,54 @@ impl AppState {
             // `DaemonApi` slot could be seeded with an
             // `ApprovalQueueApi` adapter. Move the same Arc here.
             approval_queue,
+            // ADR-045 PR #4 step 1: lazy cell — populated by
+            // `set_approval_engine` below once `state` is fully
+            // built and can hand out `&self` to the host impl.
+            approval_engine: Arc::new(std::sync::OnceLock::new()),
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
         };
 
+        // ── ADR-045 PR #4 step 1: wire up the engine now that `state`
+        // exists. The host impl needs `&AppState` for capability-grant
+        // delegation; we couldn't pass it during `Self { ... }` above
+        // because Rust's borrow checker won't let us move a half-built
+        // struct into a trait object that's also referenced by a field
+        // of that struct.
+        let host: Arc<dyn crate::daemon::approval_engine::ApprovalExecutionHost> =
+            Arc::new(state.clone());
+        let engine = crate::daemon::approval_engine::ApprovalEngine::new(
+            Arc::clone(&state.approval_queue),
+            host,
+        );
+        // Rehydrate pending requests from disk so user decisions
+        // survive daemon restart (upgrade, crash, etc.). The queue
+        // was constructed above with `persist_root` already on disk;
+        // `rehydrate` is idempotent (re-reads the same files).
+        match state.approval_queue.rehydrate() {
+            Ok(loaded) => tracing::info!(
+                approval_queue_rehydrated = loaded,
+                "ApprovalQueue::rehydrate() loaded pending requests from disk"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "ApprovalQueue::rehydrate() failed; in-memory map is empty"
+            ),
+        }
+        state
+            .approval_engine
+            .set(Arc::new(engine))
+            .expect("approval_engine OnceLock unset at end of build_internal");
+
         Ok(state)
+    }
+
+    /// Internal setter used by `build_internal` only. Public for tests.
+    #[cfg(test)]
+    pub(crate) fn set_approval_engine_for_test(
+        &self,
+        engine: Arc<crate::daemon::approval_engine::ApprovalEngine>,
+    ) {
+        let _ = self.approval_engine.set(engine);
     }
 
     /// Get the current uptime in seconds
@@ -1359,6 +1414,23 @@ impl AppState {
         &self,
     ) -> Arc<crate::daemon::approval_queue::ApprovalQueue> {
         Arc::clone(&self.approval_queue)
+    }
+
+    /// Access the `ApprovalEngine` (ADR-045 PR #4 step 1).
+    ///
+    /// The engine owns the post-decision execution flow: it applies
+    /// the queue's decision and then runs the privileged op via the
+    /// narrowed [`ApprovalExecutionHost`] trait.
+    ///
+    /// Returns `None` before `build_internal` finishes wiring the
+    /// lazy cell (i.e. only in pathological pre-startup paths — the
+    /// IPC handler isn't reachable until `Daemon::run` starts, by
+    /// which point this is always set).
+    #[must_use]
+    pub fn approval_engine(
+        &self,
+    ) -> Option<Arc<crate::daemon::approval_engine::ApprovalEngine>> {
+        self.approval_engine.get().cloned()
     }
 
     /// Access the in-memory service token (ADR-045 PR #2 step 2).
@@ -3150,6 +3222,70 @@ impl crate::daemon::api::DaemonApi for AppState {
         crate::daemon::approval_queue::ApprovalQueueApi::new(Arc::clone(&self.approval_queue))
             .request_self_modify(op, ctx)
             .await
+    }
+}
+
+/// ADR-045 PR #4 step 1 — `AppState` implements the narrowed
+/// `ApprovalExecutionHost` so `ApprovalEngine` can perform approved
+/// ops via `&AppState` without importing `AppState` directly.
+///
+/// **Scope cut**: only `GrantCapability` has a real implementation.
+/// The other three ops return `Err("not implemented yet (PR #4.5)")`
+/// — the engine wraps that as `ExecuteError::OpFailed` and the agent's
+/// session inbox surfaces the message verbatim. The stubs are
+/// intentionally callable so the delivery path can be exercised in
+/// tests; they fail loudly so users see "not implemented" instead of
+/// a silent success.
+#[async_trait::async_trait]
+impl crate::daemon::approval_engine::ApprovalExecutionHost for AppState {
+    async fn grant_capability(
+        &self,
+        _principal_id: peko_subject::PrincipalId,
+        _capability: String,
+    ) -> Result<serde_json::Value, String> {
+        // PR #4 step 1: stub. The real implementation threads through
+        // `principal_manager().update_config(...)` (mirroring
+        // `PrincipalGrantPermission` in `handlers/principal.rs:750`).
+        // That requires (a) the principal's existing config to mutate
+        // in-memory + persist, and (b) the capability to be in a form
+        // the `Capabilities` parser accepts. Both have edge cases
+        // (the principal might not exist yet under `system()` — the
+        // placeholder used by the engine's TODO) and are PR #4.5 work.
+        // For now we return a clearly-not-implemented error so the
+        // delivery path is testable end-to-end.
+        Err("grant_capability: real implementation is PR #4.5 work".into())
+    }
+
+    async fn install_extension(
+        &self,
+        _principal_id: peko_subject::PrincipalId,
+        package_ref: String,
+    ) -> Result<serde_json::Value, String> {
+        Err(format!(
+            "install_extension not implemented yet (PR #4.5); requested package_ref = {package_ref}"
+        ))
+    }
+
+    async fn edit_agent_config(
+        &self,
+        _principal_id: peko_subject::PrincipalId,
+        path: String,
+        _new_content: String,
+    ) -> Result<serde_json::Value, String> {
+        Err(format!(
+            "edit_agent_config not implemented yet (PR #4.5); requested path = {path}"
+        ))
+    }
+
+    async fn edit_cron_schedule(
+        &self,
+        _principal_id: peko_subject::PrincipalId,
+        job_id: String,
+        _new_schedule: String,
+    ) -> Result<serde_json::Value, String> {
+        Err(format!(
+            "edit_cron_schedule not implemented yet (PR #4.5); requested job_id = {job_id}"
+        ))
     }
 }
 
