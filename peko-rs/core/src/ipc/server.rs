@@ -31,6 +31,8 @@ use tokio::net::UnixDatagram;
 use tracing::{error, info, trace, warn};
 
 use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket};
+#[cfg(unix)]
+use super::peer_credentials::peer_credentials;
 use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
 #[cfg(windows)]
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
@@ -485,6 +487,58 @@ impl IpcServer {
                         Ok((len, addr)) => {
                             if len == 0 {
                                 continue;
+                            }
+
+                            // ADR-045 PR #1: peek at peer credentials BEFORE
+                            // credential resolution so the session-group
+                            // check can short-circuit allow-or-deny for the
+                            // structural bash-launched escape defense.
+                            #[cfg(unix)]
+                            let peer_sid: Option<i32> = match &self.socket {
+                                ServerSocket::Unix { socket, .. } => {
+                                    let fd = socket.as_raw_fd();
+                                    match peer_credentials(fd) {
+                                        Ok(creds) => Some(creds.sid),
+                                        Err(e) => {
+                                            warn!("could not read peer credentials: {e}");
+                                            None
+                                        }
+                                    }
+                                }
+                                _ => None,
+                            };
+
+                            // ADR-045 PR #1: when strict session-group
+                            // auth is enabled, a peer whose SID is not in
+                            // the auth table is rejected before any other
+                            // credential resolution runs.
+                            #[cfg(unix)]
+                            if self.app_state.auth_session_required() {
+                                if let Some(sid) = peer_sid {
+                                    if self.app_state.auth_table().lookup(sid).is_none() {
+                                        let request_id = AuthenticatedRequest::from_bytes(&buf[..len])
+                                            .map(|e| e.request_id())
+                                            .unwrap_or(0);
+                                        warn!(
+                                            "session-group auth denied: peer SID {sid} not in auth table \
+                                             (request_id={request_id})"
+                                        );
+                                        let response = ResponsePacket::Error {
+                                            request_id,
+                                            message: format!(
+                                                "session not authenticated: run `peko auth` first \
+                                                 (peer SID {sid})"
+                                            ),
+                                        };
+                                        if let Ok(bytes) = response.to_bytes() {
+                                            let sink = sink_for_unix_or_udp(&self.socket, &addr);
+                                            if let Ok(sink) = sink {
+                                                let _ = sink.send_bytes(&bytes).await;
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                }
                             }
 
                             match AuthenticatedRequest::from_bytes(&buf[..len]) {

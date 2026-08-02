@@ -224,6 +224,23 @@ pub(crate) struct AppState {
     /// Rate limiter (ADR-034)
     rate_limiter: Option<peko_auth::rate_limit::RateLimiter>,
 
+    /// Session-group IPC auth table (ADR-045 PR #1).
+    ///
+    /// Maps Unix process session IDs (`getsid(pid)`) to authorization
+    /// entries. When `auth_session_required` is true, an IPC connection
+    /// from a peer whose SID is not in this table is rejected before
+    /// credential resolution. Defaults to false (opportunistic lookup);
+    /// PR #2 introduces `peko auth` and flips the default to true.
+    auth_table: Arc<crate::ipc::auth::AuthTable>,
+
+    /// Whether missing auth-table entries should be rejected.
+    ///
+    /// Defaults to false. When true, the IPC accept path requires the
+    /// connecting peer's session group to be in `auth_table`. Configured
+    /// via `PEKO_AUTH_SESSION_REQUIRED=1` (PR #1 dev flag; PR #2 flips
+    /// the production default).
+    auth_session_required: bool,
+
     /// Tunnel cancellation token — set when tunnel is active
     tunnel_cancel: Arc<RwLock<Option<tokio_util::sync::CancellationToken>>>,
 
@@ -929,6 +946,10 @@ impl AppState {
             api_key_verifier,
             jwt_validator,
             rate_limiter,
+            auth_table: crate::ipc::auth::AuthTable::new(),
+            auth_session_required: std::env::var("PEKO_AUTH_SESSION_REQUIRED")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false),
             tunnel_cancel: Arc::new(RwLock::new(None)),
             tunnel_connected: Arc::new(RwLock::new(false)),
             tunnel_dispatcher: Arc::new(RwLock::new(None)),
@@ -1227,6 +1248,17 @@ impl AppState {
     #[must_use]
     pub fn rate_limiter(&self) -> Option<peko_auth::rate_limit::RateLimiter> {
         self.rate_limiter.clone()
+    }
+
+    /// Access the session-group auth table (ADR-045 PR #1).
+    pub fn auth_table(&self) -> Arc<crate::ipc::auth::AuthTable> {
+        Arc::clone(&self.auth_table)
+    }
+
+    /// Whether session-group auth is required for IPC connections.
+    /// False in PR #1 (dev-flag opt-in); PR #2 flips to true.
+    pub fn auth_session_required(&self) -> bool {
+        self.auth_session_required
     }
 
     /// Build a `StarterContext` for use by runtime starters.
