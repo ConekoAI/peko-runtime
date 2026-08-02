@@ -2334,6 +2334,10 @@ impl crate::ipc::handlers::service_token::ServiceTokenHost for AppState {
     fn auth_table(&self) -> Arc<crate::ipc::auth::AuthTable> {
         AppState::auth_table(self)
     }
+
+    fn observability(&self) -> Arc<Observability> {
+        AppState::observability(self)
+    }
 }
 
 /// F7 third narrow handle: the port the `tool` IPC domain handler uses

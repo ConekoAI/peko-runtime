@@ -51,11 +51,19 @@ use peko_auth::caller::CallerContext;
 /// [`crate::ipc::auth::AuthTable`] via the
 /// [`crate::daemon::state::AppState::service_token_store`] +
 /// `auth_table` accessors.
+///
+/// PR #6 added the [`Self::observability`] accessor so this is the
+/// first IPC handler that emits metrics + audit events (the cron
+/// engine is the only other audit-emitting code path; it predates
+/// the per-domain handler split).
 pub(crate) trait ServiceTokenHost: Send + Sync {
     /// The on-disk CRUD store.
     fn service_token_store(&self) -> Arc<ServiceTokenStore>;
     /// The in-memory cache (register/revoke after store mutations).
     fn auth_table(&self) -> Arc<crate::ipc::auth::AuthTable>;
+    /// Observability hub for counters (`service_token.create`,
+    /// `.revoke`) and audit events (PR #6).
+    fn observability(&self) -> Arc<peko_observability::Observability>;
 }
 
 /// `service_token` domain request handler.
@@ -141,6 +149,14 @@ impl RequestHandler for ServiceTokenHandler {
                             "service token created"
                         );
 
+                        // PR #6 step 1: counter increment for the
+                        // create path. `Observability::count` is
+                        // fire-and-forget; no `await`. We are the
+                        // first metric producer in the IPC handler
+                        // tree (cron_engine predates the per-domain
+                        // split and never emitted counters).
+                        self.host.observability().count("service_token.create", 1).await;
+
                         let response = ResponsePacket::ServiceTokenCreated {
                             request_id,
                             name,
@@ -170,20 +186,35 @@ impl RequestHandler for ServiceTokenHandler {
 
             RequestPacket::ServiceTokenList { request_id } => {
                 let by = subject.subject_id();
+                let auth_table = self.host.auth_table();
                 match self.host.service_token_store().list() {
                     Ok(tokens) => {
                         // Build the wire `ServiceTokenInfo` list.
-                        // `last_used_at_secs` is daemon-internal
-                        // (PR #6 audit will populate); the on-disk
-                        // store doesn't track it, so emit None.
+                        // PR #6 step 1: merge `last_used_at_secs`
+                        // from the in-memory `AuthTable` over each
+                        // store row. The store has no concept of
+                        // "use" (it's a write-side artifact); the
+                        // daemon stamps the timestamp inside
+                        // `verify_service_token` and the merge is
+                        // the only place the operator-facing list
+                        // surface learns about it.
                         let infos: Vec<ServiceTokenInfo> = tokens
                             .into_iter()
-                            .map(|t| ServiceTokenInfo {
-                                name: t.name,
-                                caps: t.caps,
-                                created_at_secs: t.created_at_secs,
-                                expires_at_secs: t.expires_at_secs,
-                                last_used_at_secs: t.last_used_at_secs,
+                            .map(|mut t| {
+                                // Convert storage type to wire type
+                                // via field-by-field copy, then
+                                // overwrite `last_used_at_secs` from
+                                // the in-memory cache.
+                                let mut wire = ServiceTokenInfo {
+                                    name: t.name.clone(),
+                                    caps: t.caps.clone(),
+                                    created_at_secs: t.created_at_secs,
+                                    expires_at_secs: t.expires_at_secs,
+                                    last_used_at_secs: t.last_used_at_secs,
+                                };
+                                wire.last_used_at_secs =
+                                    auth_table.service_token_last_used(&t.name);
+                                wire
                             })
                             .collect();
                         let response = ResponsePacket::ServiceTokenListed {
@@ -224,6 +255,13 @@ impl RequestHandler for ServiceTokenHandler {
                             cache_cleared = was_present,
                             "service token revoked"
                         );
+                        // PR #6 step 1: counter increment on
+                        // actual revoke (the on-disk artifact was
+                        // removed). The idempotent `Ok(false)`
+                        // path below intentionally does NOT bump
+                        // the counter — revoking a non-existent
+                        // token is a no-op.
+                        self.host.observability().count("service_token.revoke", 1).await;
                         let response = ResponsePacket::ServiceTokenRevoked {
                             request_id,
                             name,
@@ -285,6 +323,7 @@ mod tests {
     struct TestHost {
         store: Arc<ServiceTokenStore>,
         table: Arc<AuthTable>,
+        obs: Arc<peko_observability::Observability>,
     }
 
     impl ServiceTokenHost for TestHost {
@@ -293,6 +332,9 @@ mod tests {
         }
         fn auth_table(&self) -> Arc<AuthTable> {
             Arc::clone(&self.table)
+        }
+        fn observability(&self) -> Arc<peko_observability::Observability> {
+            Arc::clone(&self.obs)
         }
     }
 
@@ -333,19 +375,27 @@ mod tests {
         }
     }
 
+    static TEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     fn fresh_test_host() -> (Arc<TestHost>, std::path::PathBuf) {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        // `nanos`+`pid` collides when two tokio::test invocations
+        // run inside the same nanosecond (common on fast CI). A
+        // monotonic counter guarantees a unique root per call
+        // regardless of clock resolution.
+        let counter = TEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "peko-svc-tok-test-{nanos}-{}",
+            "peko-svc-tok-test-{nanos}-{}-{counter}",
             std::process::id()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let store = Arc::new(ServiceTokenStore::new(&root));
         let table = AuthTable::new();
-        (Arc::new(TestHost { store, table }), root)
+        let obs = Arc::new(peko_observability::Observability::new("test"));
+        (Arc::new(TestHost { store, table, obs }), root)
     }
 
     fn alice() -> CallerContext {
@@ -508,11 +558,12 @@ mod tests {
         };
         // The handler should have registered the token into the
         // auth table; verify there.
-        let caps = host.auth_table().verify_service_token(raw_token.as_bytes());
-        assert_eq!(
-            caps,
-            Some(vec!["fs:read".to_string(), "tool:Read".to_string()])
-        );
+        let (verified_name, caps) = host
+            .auth_table()
+            .verify_service_token(raw_token.as_bytes())
+            .expect("registered token should verify");
+        assert_eq!(verified_name, "rt");
+        assert_eq!(caps, vec!["fs:read".to_string(), "tool:Read".to_string()]);
     }
 
     #[tokio::test]
@@ -532,5 +583,207 @@ mod tests {
         }));
         // Unrelated packets must not match.
         assert!(!handler.matches(&RequestPacket::Ping { request_id: 1 }));
+    }
+
+    // ---- PR #6 step 1: counters + last_used merge ----
+
+    /// `peko service-token create` must bump
+    /// `service_token.create` by exactly 1 per successful create.
+    /// Read via `Observability::snapshot`; the counter API has no
+    /// per-counter read accessor so we round-trip through JSON.
+    #[tokio::test]
+    async fn create_bumps_service_token_create_counter() {
+        let (host, _root) = fresh_test_host();
+        let handler = ServiceTokenHandler::new(host.clone());
+        let sink = CaptureSink::new();
+        handler
+            .handle(
+                RequestPacket::ServiceTokenCreate {
+                    request_id: 1,
+                    name: "rt".into(),
+                    caps: vec!["fs:read".into()],
+                    expires_in_secs: None,
+                },
+                &alice(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .unwrap();
+        let snap = host.observability().get_metrics().await;
+        assert_eq!(
+            snap["counters"]["service_token.create"], 1,
+            "snapshot was: {snap}"
+        );
+    }
+
+    /// `peko service-token revoke` must bump
+    /// `service_token.revoke` only when the on-disk artifact was
+    /// actually removed (`Ok(true)`). The idempotent `Ok(false)`
+    /// path (revoking a non-existent token) must NOT bump.
+    #[tokio::test]
+    async fn revoke_bumps_service_token_revoke_counter_only_on_actual_revoke() {
+        let (host, _root) = fresh_test_host();
+        let handler = ServiceTokenHandler::new(host.clone());
+        let sink = CaptureSink::new();
+
+        // Create then revoke (real revoke).
+        handler
+            .handle(
+                RequestPacket::ServiceTokenCreate {
+                    request_id: 1,
+                    name: "rt".into(),
+                    caps: vec!["x".into()],
+                    expires_in_secs: None,
+                },
+                &alice(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .unwrap();
+        sink.clear();
+        handler
+            .handle(
+                RequestPacket::ServiceTokenRevoke {
+                    request_id: 2,
+                    name: "rt".into(),
+                },
+                &alice(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .unwrap();
+        let snap = host.observability().get_metrics().await;
+        assert_eq!(snap["counters"]["service_token.revoke"], 1);
+
+        // Revoke again — idempotent path, counter must NOT advance.
+        sink.clear();
+        handler
+            .handle(
+                RequestPacket::ServiceTokenRevoke {
+                    request_id: 3,
+                    name: "rt".into(),
+                },
+                &alice(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .unwrap();
+        let snap2 = host.observability().get_metrics().await;
+        assert_eq!(
+            snap2["counters"]["service_token.revoke"], 1,
+            "idempotent revoke must not bump counter: {snap2}"
+        );
+    }
+
+    /// After a successful `verify_service_token` (the use path),
+    /// `peko service-token list` must surface `last_used_at_secs`
+    /// populated from the in-memory cache — proves the list-merge
+    /// wires the daemon-internal `last_used` to the wire field.
+    #[tokio::test]
+    async fn list_merges_last_used_at_secs_from_auth_table() {
+        let (host, _root) = fresh_test_host();
+        let handler = ServiceTokenHandler::new(host.clone());
+        let sink = CaptureSink::new();
+        // Create a token and capture the raw secret.
+        handler
+            .handle(
+                RequestPacket::ServiceTokenCreate {
+                    request_id: 1,
+                    name: "rt".into(),
+                    caps: vec!["fs:read".into()],
+                    expires_in_secs: None,
+                },
+                &alice(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .unwrap();
+        let resp = sink.take_response().unwrap();
+        let raw_token = match resp {
+            ResponsePacket::ServiceTokenCreated { token, .. } => token,
+            other => panic!("expected Created, got {other:?}"),
+        };
+
+        // Drive a verify through the auth table — simulates a
+        // long-lived client making one IPC request.
+        let (name, _caps) = host
+            .auth_table()
+            .verify_service_token(raw_token.as_bytes())
+            .expect("registered token should verify");
+        assert_eq!(name, "rt");
+
+        // List — the merged `last_used_at_secs` should be Some.
+        sink.clear();
+        handler
+            .handle(
+                RequestPacket::ServiceTokenList { request_id: 2 },
+                &alice(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .unwrap();
+        let resp = sink.take_response().unwrap();
+        match resp {
+            ResponsePacket::ServiceTokenListed { tokens, .. } => {
+                assert_eq!(tokens.len(), 1);
+                assert_eq!(tokens[0].name, "rt");
+                assert!(
+                    tokens[0].last_used_at_secs.is_some(),
+                    "last_used_at_secs must be populated after a verify"
+                );
+            }
+            other => panic!("expected Listed, got {other:?}"),
+        }
+    }
+
+    /// A token that's registered but never used must surface
+    /// `last_used_at_secs = None` on the list response — proves the
+    /// merge doesn't fabricate a timestamp.
+    #[tokio::test]
+    async fn list_last_used_is_none_for_unused_token() {
+        let (host, _root) = fresh_test_host();
+        let handler = ServiceTokenHandler::new(host.clone());
+        let sink = CaptureSink::new();
+        handler
+            .handle(
+                RequestPacket::ServiceTokenCreate {
+                    request_id: 1,
+                    name: "rt".into(),
+                    caps: vec!["fs:read".into()],
+                    expires_in_secs: None,
+                },
+                &alice(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .unwrap();
+        sink.clear();
+        handler
+            .handle(
+                RequestPacket::ServiceTokenList { request_id: 2 },
+                &alice(),
+                &sink,
+                &test_peer(),
+            )
+            .await
+            .unwrap();
+        let resp = sink.take_response().unwrap();
+        match resp {
+            ResponsePacket::ServiceTokenListed { tokens, .. } => {
+                assert_eq!(tokens.len(), 1);
+                assert!(
+                    tokens[0].last_used_at_secs.is_none(),
+                    "last_used_at_secs must be None for an unused token"
+                );
+            }
+            other => panic!("expected Listed, got {other:?}"),
+        }
     }
 }

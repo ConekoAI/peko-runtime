@@ -92,8 +92,18 @@ pub(crate) struct ServiceTokenEntry {
     /// the ADR's "cannot grow" rule means once registered, the
     /// caps set is fixed. To change caps, revoke + recreate.
     pub caps: Vec<String>,
-    /// When this entry expires (None = no expiry).
+    /// When this entry expires (None = no expiry). `Instant`
+    /// (monotonic) — TTL semantics, not a wall-clock observation.
     pub expires_at: Option<Instant>,
+    /// Unix-seconds at which this token was last verified by a
+    /// live IPC request. `None` = never used. Stored as wall-clock
+    /// (not `Instant`) because the only consumer is the wire-level
+    /// `last_used_at_secs` field on
+    /// [`crate::storage::service_token_store::ServiceTokenInfo`];
+    /// we avoid a doomed conversion at the read boundary.
+    /// The IPC hot path (`verify_service_token`) is already
+    /// write-locked for expiry eviction, so this write is free.
+    pub last_used: Option<u64>,
 }
 
 /// Concurrent map of session ID → authorization entry.
@@ -250,6 +260,7 @@ impl AuthTable {
             token_hash,
             caps,
             expires_at: ttl.map(|d| Instant::now() + d),
+            last_used: None,
         };
         let mut g = self
             .service_tokens
@@ -259,29 +270,50 @@ impl AuthTable {
     }
 
     /// Verify a raw token against the service-token map. Returns
-    /// the bound capability list on match (None on miss / wrong
-    /// token / unknown name / expired entry).
+    /// `(name, caps)` on match; `None` on miss / wrong token /
+    /// unknown name / expired entry.
     ///
-    /// Side effect: evicts expired entries on access (same shape as
-    /// `lookup`).
-    pub(crate) fn verify_service_token(&self, token: &[u8]) -> Option<Vec<String>> {
+    /// **Side effects** on success: stamps the matching entry's
+    /// `last_used` to the current unix-seconds so the list path
+    /// can surface the most recent activity. The write is free —
+    /// the entry is already mutably borrowed under the write lock
+    /// used for expiry eviction.
+    ///
+    /// **Side effects** on miss: evicts the first expired entry it
+    /// encounters (same shape as [`Self::lookup`]).
+    ///
+    /// The widened `(name, caps)` return (vs. PR #5's bare `caps`)
+    /// lets the caller log against the **registered name** rather
+    /// than a fabricated hash-prefix identifier; this matters for
+    /// the audit trail (ADR-045 PR #6) and the deny-event shape.
+    pub(crate) fn verify_service_token(
+        &self,
+        token: &[u8],
+    ) -> Option<(String, Vec<String>)> {
         let supplied = hash_token(token);
         let mut g = self
             .service_tokens
             .write()
             .expect("service-token map poisoned");
-        let now = Instant::now();
+        let now_inst = Instant::now();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let mut expired: Option<String> = None;
-        let mut found: Option<Vec<String>> = None;
-        for (name, entry) in g.iter() {
+        let mut found: Option<(String, Vec<String>)> = None;
+        for (name, entry) in g.iter_mut() {
             if let Some(exp) = entry.expires_at {
-                if exp <= now {
+                if exp <= now_inst {
                     expired.get_or_insert_with(|| name.clone());
                     continue;
                 }
             }
             if ct_eq(&supplied, &entry.token_hash) {
-                found = Some(entry.caps.clone());
+                // Stamp the wall-clock timestamp inside the existing
+                // critical section (we already have `&mut`).
+                entry.last_used = Some(now_secs);
+                found = Some((name.clone(), entry.caps.clone()));
                 break;
             }
         }
@@ -289,6 +321,19 @@ impl AuthTable {
             g.remove(&name);
         }
         found
+    }
+
+    /// Read the `last_used` timestamp for `name` as unix seconds.
+    /// Returns `None` if the token was never used or doesn't
+    /// exist. Used by the list path to populate
+    /// [`crate::storage::service_token_store::ServiceTokenInfo::last_used_at_secs`]
+    /// on the wire.
+    pub(crate) fn service_token_last_used(&self, name: &str) -> Option<u64> {
+        let g = self
+            .service_tokens
+            .read()
+            .expect("service-token map poisoned");
+        g.get(name).and_then(|e| e.last_used)
     }
 
     /// Revoke a named service-token entry. Returns `true` if the
@@ -464,8 +509,9 @@ mod tests {
             vec!["fs:read".into(), "tool:Bash".into()],
             None,
         );
-        let caps = t.verify_service_token(token);
-        assert_eq!(caps, Some(vec!["fs:read".to_string(), "tool:Bash".to_string()]));
+        let (name, caps) = t.verify_service_token(token).unwrap();
+        assert_eq!(name, "runtime");
+        assert_eq!(caps, vec!["fs:read".to_string(), "tool:Bash".to_string()]);
     }
 
     #[test]
@@ -550,9 +596,87 @@ mod tests {
             None,
         );
         // Verify the registered caps are exactly what we set.
-        assert_eq!(
-            t.verify_service_token(b"tok"),
-            Some(vec!["fs:read".to_string()])
+        let (_name, caps) = t.verify_service_token(b"tok").unwrap();
+        assert_eq!(caps, vec!["fs:read".to_string()]);
+    }
+
+    // ---- PR #6 step 1: last_used + widened return shape ----
+
+    /// `service_token_last_used` must return `None` for an entry
+    /// that's been registered but never verified.
+    #[test]
+    fn service_token_last_used_is_none_before_use() {
+        let t = AuthTable::new();
+        t.register_service_token("rt", hash_token(b"tok"), vec!["x".into()], None);
+        assert!(t.service_token_last_used("rt").is_none());
+    }
+
+    /// After a successful `verify_service_token`, `service_token_last_used`
+    /// must return `Some(secs)` where `secs` is a unix-seconds
+    /// timestamp at or before the verify call.
+    #[test]
+    fn service_token_last_used_is_set_after_verify() {
+        let t = AuthTable::new();
+        t.register_service_token("rt", hash_token(b"tok"), vec!["x".into()], None);
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let (_name, _caps) = t.verify_service_token(b"tok").unwrap();
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let used = t.service_token_last_used("rt").unwrap();
+        assert!(
+            used >= before && used <= after,
+            "last_used={used} not in [{before},{after}]"
         );
+    }
+
+    /// Two consecutive verifies must advance the `last_used`
+    /// timestamp — proves the stamp happens every time, not just
+    /// on first use.
+    #[test]
+    fn service_token_last_used_advances_on_repeated_verify() {
+        let t = AuthTable::new();
+        t.register_service_token("rt", hash_token(b"tok"), vec!["x".into()], None);
+        let _ = t.verify_service_token(b"tok").unwrap();
+        let first = t.service_token_last_used("rt").unwrap();
+        std::thread::sleep(Duration::from_millis(1100));
+        let _ = t.verify_service_token(b"tok").unwrap();
+        let second = t.service_token_last_used("rt").unwrap();
+        assert!(
+            second >= first,
+            "last_used did not advance: first={first} second={second}"
+        );
+        assert!(second - first >= 1, "expected >=1s gap, got {}", second - first);
+    }
+
+    /// PR #6 widened `verify_service_token` to return
+    /// `Option<(String, Vec<String>)>` so the audit trail can log
+    /// the registered **name** rather than a fabricated hash-prefix
+    /// identifier. Confirm the name round-trips.
+    #[test]
+    fn verify_service_token_returns_registered_name() {
+        let t = AuthTable::new();
+        t.register_service_token(
+            "deploy-bot",
+            hash_token(b"tok"),
+            vec!["fs:read".into()],
+            None,
+        );
+        let (name, caps) = t.verify_service_token(b"tok").unwrap();
+        assert_eq!(name, "deploy-bot");
+        assert_eq!(caps, vec!["fs:read".to_string()]);
+    }
+
+    /// `service_token_last_used` for an unknown name returns `None`
+    /// (does not panic, does not crash). Symmetric with the
+    /// pre-existing `revoke_service_token` semantics.
+    #[test]
+    fn service_token_last_used_for_unknown_name_is_none() {
+        let t = AuthTable::new();
+        assert!(t.service_token_last_used("never-registered").is_none());
     }
 }

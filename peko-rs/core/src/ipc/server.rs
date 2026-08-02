@@ -40,12 +40,7 @@ use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
 use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::daemon::state::AppState;
-// ADR-045 PR #5: hash the raw service token for the audit-trail
-// identifier (6-byte hex prefix). sha2/hex are already in Cargo.toml
-// for `auth::hash_token`; we reuse the same dep pair here.
-use hex;
 use peko_auth::caller::CallerContext;
-use sha2::{Digest, Sha256};
 #[cfg(not(windows))]
 use peko_auth::config::enforce_auth_for_public_bind;
 use peko_auth::permissions::AuthError;
@@ -959,17 +954,18 @@ impl IpcServer {
             // rather than caching the lookup result across the gate
             // boundary so each layer stays self-contained.
             AuthCredential::ServiceToken(token) => {
-                let caps = state
+                // PR #6 widened `verify_service_token` to return
+                // `(name, caps)` so we can use the **registered
+                // name** (`"deploy-bot"`, `"runtime"`, …) as the
+                // `CallerContext` identity and audit-trail subject —
+                // rather than the fabricated hash-prefix identifier
+                // PR #5 emitted (which prevented operators from
+                // correlating an event back to the entry in
+                // `peko service-token list`).
+                let (token_name, caps) = state
                     .auth_table()
                     .verify_service_token(token.as_bytes())
                     .ok_or(AuthError::InvalidCredential)?;
-                // Identify the token by its hash prefix for audit
-                // trail purposes (never the raw token). PR #6
-                // audit counters key on this identifier.
-                let mut hasher = Sha256::new();
-                Digest::update(&mut hasher, token.as_bytes());
-                let digest = hasher.finalize();
-                let token_name = format!("svc:{}", hex::encode(&digest[..6]));
                 Ok(CallerContext::from_service_token(token_name, caps))
             }
         }
