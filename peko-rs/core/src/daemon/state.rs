@@ -2363,6 +2363,10 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
     fn async_task_executor(&self) -> Arc<AsyncExecutor> {
         self.async_task_executor.clone()
     }
+
+    fn observability(&self) -> Arc<Observability> {
+        AppState::observability(self)
+    }
 }
 
 /// F7 fifth narrow handle: the port the `capability` IPC domain handler
