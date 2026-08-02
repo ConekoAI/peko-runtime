@@ -297,6 +297,14 @@ pub(crate) struct AppState {
     /// the lock. See `src/tunnel/a2a_pending.rs:53-55`.
     streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>>,
 
+    /// **ADR-045 PR #3.** Durable in-memory queue of self-modification
+    /// requests submitted by agents via the `peko_self` tool. The
+    /// `peko_self` tool calls `request_self_modify` on the
+    /// `DaemonApi` impl below, which delegates here. PR #4 adds the
+    /// `peko pending list/decide` CLI command and wires
+    /// `rehydrate()` into daemon startup.
+    approval_queue: Arc<crate::daemon::approval_queue::ApprovalQueue>,
+
     /// Slot for the live outbound tunnel handle. The
     /// `TunnelDispatcher` writes the freshest handle on every
     /// reconnect; the `CrossRuntimeA2aCtx` (and any other consumer
@@ -982,6 +990,11 @@ impl AppState {
             // the dispatcher's handle-publisher on every reconnect.
             pending_a2a_responses,
             streaming_runs,
+            // ADR-045 PR #3: durable self-modify queue.
+            approval_queue: crate::daemon::approval_queue::ApprovalQueue::new(
+                path_resolver_clone.pending_requests_dir(),
+                crate::daemon::approval_queue::DEFAULT_MAX_PENDING,
+            ),
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
         })
     }
@@ -1300,6 +1313,20 @@ impl AppState {
     /// process).
     pub fn set_auth_bootstrap(&self, state: crate::ipc::auth_bootstrap::AuthCodeState) {
         *self.auth_bootstrap.lock().expect("auth bootstrap poisoned") = Some(state);
+    }
+
+    /// **ADR-045 PR #3.** Borrow the in-memory approval queue.
+    ///
+    /// Used by the `peko_self` tool to enqueue requests via
+    /// `DaemonApi::request_self_modify` (impl below) and by
+    /// `peko pending list/decide` (PR #4). The accessor returns an
+    /// `Arc` so callers can hold the queue across `.await` without
+    /// borrowing `AppState` for the entire duration.
+    #[must_use]
+    pub fn approval_queue(
+        &self,
+    ) -> Arc<crate::daemon::approval_queue::ApprovalQueue> {
+        Arc::clone(&self.approval_queue)
     }
 
     /// Access the in-memory service token (ADR-045 PR #2 step 2).
@@ -3049,6 +3076,84 @@ fn parse_strict_mode(value: Option<&str>) -> bool {
     }
 }
 
+// ============================================================================
+// ADR-045 PR #3: `DaemonApi` impl on `AppState`
+// ============================================================================
+//
+// The `peko_self` tool calls into this impl via the in-process
+// `Arc<dyn DaemonApi>` (not via IPC). The runtime thread
+// `CallerContext` carries the principal's identity; we extract the
+// `PrincipalId` and hand the validated op to the in-memory queue.
+//
+// **Meta-capability immutability** (ADR-045 §"Meta-capability
+// immutability") is enforced HERE, before the op reaches the queue:
+//   - `principal:*` / `runtime:*` → categorically rejected; the user
+//     must grant (if at all) from their terminal.
+//   - `tool:*` → categorically rejected; tool capabilities are
+//     user-grantable only — a principal cannot grow its own toolset
+//     via `peko_self`.
+//   - `invalid:format` → rejected (no `<domain>:<action>` colon).
+//
+// PR #4 adds the user-side `peko pending list/decide` command and
+// the `ApprovalEngine::execute(op)` that actually performs the
+// privileged work after the user decides. PR #3 ships the request
+// path only.
+
+#[async_trait::async_trait]
+impl crate::daemon::api::DaemonApi for AppState {
+    async fn request_self_modify(
+        &self,
+        op: crate::daemon::api::SelfModifyOp,
+        ctx: crate::daemon::api::SelfModifyContext,
+    ) -> Result<
+        crate::daemon::api::RequestId,
+        crate::daemon::api::SelfModifyError,
+    > {
+        use crate::daemon::api::{RequestId, SelfModifyError, SelfModifyOp};
+
+        // Meta-capability immutability. Reject before reaching the
+        // queue so the user's inbox never sees these ops.
+        if let SelfModifyOp::GrantCapability { capability, .. } = &op {
+            // Parse `<domain>:<action>`. We accept any non-empty
+            // string containing a colon to avoid lockstep with the
+            // catalog; an unknown capability just won't grant
+            // anything when `peko pending decide --grant` runs
+            // (PR #4 `ApprovalEngine::execute`).
+            let Some((domain, action)) = capability.split_once(':') else {
+                return Err(SelfModifyError::InvalidCapabilityFormat(
+                    capability.clone(),
+                ));
+            };
+            if domain.is_empty() || action.is_empty() {
+                return Err(SelfModifyError::InvalidCapabilityFormat(
+                    capability.clone(),
+                ));
+            }
+            if domain == "principal" || domain == "runtime" {
+                return Err(SelfModifyError::MetaCapabilityForbidden(
+                    capability.clone(),
+                ));
+            }
+            if domain == "tool" {
+                return Err(SelfModifyError::ToolCapabilityNotSelfGrantable(
+                    capability.clone(),
+                ));
+            }
+        }
+
+        // Internal callers (cron, daemon-originated) may pass
+        // `PrincipalId::system()`; agent-driven callers (peko_self
+        // from a running agent) pass the active principal's id.
+        // Both are accepted at the queue level — the meta-capability
+        // gate above is the only structural protection.
+        let principal_id = ctx.principal_id;
+
+        let request =
+            crate::daemon::approval_queue::ApprovalRequest::from_op(op, principal_id);
+        self.approval_queue.insert(request)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3081,6 +3186,142 @@ mod tests {
         // Garbage falls back to strict (fail-closed).
         assert!(parse_strict_mode(Some("maybe")));
         assert!(parse_strict_mode(Some("")));
+    }
+
+    // ============================================================
+    // ADR-045 PR #3 — DaemonApi impl on AppState
+    // ============================================================
+    //
+    // The structural defense for meta-capability immutability lives
+    // in `DaemonApi for AppState::request_self_modify`. These tests
+    // pin the contract: `principal:*`, `runtime:*`, `tool:*`, and
+    // malformed capability strings are rejected BEFORE the queue;
+    // a non-meta capability (e.g. `fs:read`) is queued durably.
+
+    use crate::daemon::api::{DaemonApi, SelfModifyContext, SelfModifyOp};
+    use peko_subject::PrincipalId;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn principal() -> PrincipalId {
+        PrincipalId::system().clone()
+    }
+
+    fn ctx() -> SelfModifyContext {
+        SelfModifyContext::for_principal(principal())
+    }
+
+    #[tokio::test]
+    async fn daemon_api_rejects_principal_meta_capability() {
+        let state = create_test_state().await;
+        let api: &dyn DaemonApi = &state;
+        let op = SelfModifyOp::GrantCapability {
+            capability: "principal:create".into(),
+            reason: "test".into(),
+        };
+        let err = api.request_self_modify(op, ctx()).await.unwrap_err();
+        assert_eq!(
+            err,
+            crate::daemon::api::SelfModifyError::MetaCapabilityForbidden(
+                "principal:create".into(),
+            ),
+            "principal:* must be categorically rejected",
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_api_rejects_runtime_meta_capability() {
+        let state = create_test_state().await;
+        let api: &dyn DaemonApi = &state;
+        let op = SelfModifyOp::GrantCapability {
+            capability: "runtime:control".into(),
+            reason: "test".into(),
+        };
+        let err = api.request_self_modify(op, ctx()).await.unwrap_err();
+        assert!(matches!(
+            err,
+            crate::daemon::api::SelfModifyError::MetaCapabilityForbidden(_),
+        ));
+    }
+
+    #[tokio::test]
+    async fn daemon_api_rejects_tool_capability() {
+        let state = create_test_state().await;
+        let api: &dyn DaemonApi = &state;
+        let op = SelfModifyOp::GrantCapability {
+            capability: "tool:Write".into(),
+            reason: "test".into(),
+        };
+        let err = api.request_self_modify(op, ctx()).await.unwrap_err();
+        assert_eq!(
+            err,
+            crate::daemon::api::SelfModifyError::ToolCapabilityNotSelfGrantable(
+                "tool:Write".into(),
+            ),
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_api_rejects_malformed_capability() {
+        let state = create_test_state().await;
+        let api: &dyn DaemonApi = &state;
+        // No colon.
+        let op = SelfModifyOp::GrantCapability {
+            capability: "badaction".into(),
+            reason: "test".into(),
+        };
+        let err = api.request_self_modify(op, ctx()).await.unwrap_err();
+        assert!(matches!(
+            err,
+            crate::daemon::api::SelfModifyError::InvalidCapabilityFormat(_),
+        ));
+        // Empty domain.
+        let op = SelfModifyOp::GrantCapability {
+            capability: ":action".into(),
+            reason: "test".into(),
+        };
+        let err = api.request_self_modify(op, ctx()).await.unwrap_err();
+        assert!(matches!(
+            err,
+            crate::daemon::api::SelfModifyError::InvalidCapabilityFormat(_),
+        ));
+    }
+
+    #[tokio::test]
+    async fn daemon_api_queues_non_meta_capability_and_persists() {
+        let state = create_test_state().await;
+        let api: &dyn DaemonApi = &state;
+        let op = SelfModifyOp::GrantCapability {
+            capability: "fs:read".into(),
+            reason: "agent needs file read".into(),
+        };
+        let id = api.request_self_modify(op, ctx()).await.unwrap();
+
+        // In-memory queue has the request.
+        let q = state.approval_queue();
+        let req = q.get(id).expect("request should be in queue");
+        assert_eq!(req.status, crate::daemon::approval_queue::ApprovalStatus::Pending);
+        assert_eq!(req.principal_id, principal());
+
+        // On-disk artifact exists and is mode 0600.
+        let path = q.artifact_path(id);
+        assert!(path.exists(), "artifact file must exist");
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn daemon_api_queues_install_extension_without_gate() {
+        // Install-extension requests don't pass through the meta-cap
+        // gate (no capability string to validate). They should land
+        // in the queue durably.
+        let state = create_test_state().await;
+        let api: &dyn DaemonApi = &state;
+        let op = SelfModifyOp::InstallExtension {
+            package_ref: "acme/foo@1.2.3".into(),
+            reason: "needs ext".into(),
+        };
+        let id = api.request_self_modify(op, ctx()).await.unwrap();
+        assert!(state.approval_queue().get(id).is_some());
     }
 
     async fn create_test_state() -> AppState {

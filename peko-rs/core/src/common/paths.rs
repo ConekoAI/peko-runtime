@@ -145,6 +145,10 @@ pub struct RuntimeLayout {
     pub registry_root: PathBuf,
     /// `{data_dir}/runtime/locks` — runtime-wide lock files.
     pub locks_dir: PathBuf,
+    /// `{data_dir}/runtime/pending-requests` — ADR-045 PR #3 self-modify
+    /// queue. One `<uuid>.json` per pending request, mode 0600. PR #4
+    /// adds `peko pending list/decide` and `rehydrate()` at startup.
+    pub pending_requests_dir: PathBuf,
     /// `{config_dir}/principals` — convenience accessor for principal index.
     pub principals_root: PathBuf,
 }
@@ -431,6 +435,10 @@ impl PathResolver {
             mcps_root: runtime_dir.join("mcps"),
             registry_root: runtime_dir.join("registry"),
             locks_dir: runtime_dir.join("locks"),
+            // ADR-045 PR #3: durable on-disk queue for self-modify
+            // requests. Lives under `runtime/` (not `run/`) because it
+            // is part of the runtime data plane, not IPC auth state.
+            pending_requests_dir: runtime_dir.join("pending-requests"),
             principals_root: self.principals_root_dir(),
         }
     }
@@ -468,6 +476,19 @@ impl PathResolver {
     #[must_use]
     pub fn runtime_locks_dir(&self) -> PathBuf {
         self.runtime_layout().locks_dir
+    }
+
+    /// Pending self-modification request queue (ADR-045 PR #3).
+    ///
+    /// Path: `{data_dir}/runtime/pending-requests`
+    ///
+    /// One `<uuid>.json` file per pending request, mode 0600.
+    /// The runtime writes here when `peko_self` is called; the
+    /// daemon reads it on `peko pending list` (PR #4) and at
+    /// startup via `ApprovalQueue::rehydrate` (also PR #4).
+    #[must_use]
+    pub fn pending_requests_dir(&self) -> PathBuf {
+        self.runtime_layout().pending_requests_dir
     }
 
     /// Per-principal cron schedule file (Local tier).
@@ -851,6 +872,8 @@ impl PathResolver {
         std::fs::create_dir_all(&runtime.mcps_root)?;
         std::fs::create_dir_all(&runtime.registry_root)?;
         std::fs::create_dir_all(&runtime.locks_dir)?;
+        // ADR-045 PR #3: durable queue for self-modify requests.
+        std::fs::create_dir_all(&runtime.pending_requests_dir)?;
         Ok(())
     }
 
@@ -1087,7 +1110,53 @@ mod tests {
         assert!(runtime.mcps_root.ends_with("/data/runtime/mcps"));
         assert!(runtime.registry_root.ends_with("/data/runtime/registry"));
         assert!(runtime.locks_dir.ends_with("/data/runtime/locks"));
+        assert!(runtime
+            .pending_requests_dir
+            .ends_with("/data/runtime/pending-requests"));
         assert!(runtime.principals_root.ends_with("/config/principals"));
+    }
+
+    #[test]
+    fn pending_requests_dir_lives_under_data_runtime_not_config() {
+        // ADR-045 PR #3 invariant: pending-request artifacts are
+        // runtime data (ephemeral-but-durable, queue-shaped) so they
+        // belong under `<data_dir>/runtime/`, NOT under
+        // `<config_dir>/runtime/` (portable config) or `<run_dir>/`
+        // (IPC auth state). This test pins the contract so a future
+        // refactor that swaps to `config_dir.join("runtime")` is caught.
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        let dir = resolver.pending_requests_dir();
+        assert!(dir.starts_with("/data/runtime/"));
+        assert!(!dir.starts_with("/config/"));
+        assert!(!dir.starts_with("/data/run/"));
+    }
+
+    #[test]
+    fn pending_requests_dir_is_distinct_from_other_runtime_buckets() {
+        // Distinct from `extensions_root`, `mcps_root`, `registry_root`,
+        // `locks_dir`. Each bucket owns its own subdirectory name.
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        let layout = resolver.runtime_layout();
+        let other = [
+            &layout.extensions_root,
+            &layout.mcps_root,
+            &layout.registry_root,
+            &layout.locks_dir,
+        ];
+        for o in other {
+            assert_ne!(
+                &layout.pending_requests_dir, o,
+                "pending-requests must be its own directory, not collide with {o:?}",
+            );
+        }
     }
 
     #[test]
@@ -1401,6 +1470,14 @@ impl GlobalPaths {
     #[must_use]
     pub fn runtime_locks_dir(&self) -> PathBuf {
         self.resolver.runtime_locks_dir()
+    }
+
+    /// Pending self-modification request queue (ADR-045 PR #3).
+    ///
+    /// Path: `{data_dir}/runtime/pending-requests`
+    #[must_use]
+    pub fn pending_requests_dir(&self) -> PathBuf {
+        self.resolver.pending_requests_dir()
     }
 
     /// Per-principal cron schedule file (Local tier).
