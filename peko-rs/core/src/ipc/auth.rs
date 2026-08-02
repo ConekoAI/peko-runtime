@@ -47,6 +47,11 @@ pub type SessionId = i32;
 /// Default TTL for auth entries. Configurable via AppState.
 pub const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(8 * 60 * 60);
 
+/// TTL for daemon-internal service tokens. Service tokens are held
+/// in memory only and rotate each daemon restart; 24h is generous
+/// headroom for any long-running internal client.
+pub const SERVICE_SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// A single authorization entry. Keyed by session ID; values are opaque
 /// session tokens compared in constant time at the IPC handshake.
 #[derive(Debug, Clone)]
@@ -140,6 +145,64 @@ impl AuthTable {
         g.entries.retain(|_, e| e.expires_at > now);
         before - g.entries.len()
     }
+
+    /// Authorize an interactive session for `sid` keyed by `token`.
+    ///
+    /// The raw `token` is SHA-256 hashed before insertion; the table
+    /// never holds the raw token. Replaces any existing entry for
+    /// the same SID (this is what `peko auth submit` calls after a
+    /// successful code verification).
+    pub(crate) fn authorize_interactive(&self, sid: SessionId, token: &[u8]) {
+        self.insert_with_ttl(
+            sid,
+            hash_token(token),
+            DEFAULT_SESSION_TTL,
+            AuthSource::Interactive,
+        );
+    }
+
+    /// Authorize a long-lived service token for `sid`.
+    ///
+    /// Used at daemon startup to preauthorize the daemon's own SID
+    /// so internal clients (cron adapter, etc.) can authenticate
+    /// without going through the diceware-code flow.
+    pub(crate) fn authorize_service(&self, sid: SessionId, token: &[u8]) {
+        self.insert_with_ttl(
+            sid,
+            hash_token(token),
+            SERVICE_SESSION_TTL,
+            AuthSource::Service,
+        );
+    }
+
+    /// Verify that `(sid, token)` matches a live entry.
+    ///
+    /// Returns true on match, false on miss / wrong SID / wrong token
+    /// / expired entry. Expired entries are evicted on access.
+    pub(crate) fn verify(&self, sid: SessionId, token: &[u8]) -> bool {
+        let supplied = hash_token(token);
+        if let Some(entry) = self.lookup(sid) {
+            ct_eq(&supplied, &entry.token_hash)
+        } else {
+            false
+        }
+    }
+
+    fn insert_with_ttl(
+        &self,
+        sid: SessionId,
+        token_hash: [u8; 32],
+        ttl: Duration,
+        source: AuthSource,
+    ) {
+        let entry = AuthEntry {
+            token_hash,
+            expires_at: Instant::now() + ttl,
+            source,
+        };
+        let mut g = self.inner.write().expect("auth table poisoned");
+        g.entries.insert(sid, entry);
+    }
 }
 
 /// Hash a session token with SHA-256. Stored in the table; the raw
@@ -230,5 +293,46 @@ mod tests {
         assert!(ct_eq(b"abc", b"abc"));
         assert!(!ct_eq(b"abc", b"abd"));
         assert!(!ct_eq(b"abc", b"abcd")); // length mismatch
+    }
+
+    #[test]
+    fn authorize_interactive_registers_session() {
+        let t = AuthTable::new();
+        t.authorize_interactive(1000, b"session-token-a");
+        assert!(t.verify(1000, b"session-token-a"));
+        assert!(!t.verify(1000, b"session-token-b")); // wrong token
+        assert!(!t.verify(1001, b"session-token-a")); // wrong SID
+    }
+
+    #[test]
+    fn authorize_service_overwrites_existing_entry() {
+        let t = AuthTable::new();
+        t.authorize_interactive(2000, b"old-token");
+        assert!(t.verify(2000, b"old-token"));
+
+        t.authorize_service(2000, b"new-service-token");
+        // The service entry replaces the interactive one (HashMap<_, _>).
+        assert!(t.verify(2000, b"new-service-token"));
+        assert!(!t.verify(2000, b"old-token"));
+    }
+
+    #[test]
+    fn verify_expired_returns_false_and_evicts() {
+        let t = AuthTable::new();
+        // Manually insert an already-expired entry via the existing
+        // `insert` helper to avoid sleeping in tests.
+        t.insert(
+            3000,
+            AuthEntry {
+                token_hash: hash_token(b"soon-expired"),
+                expires_at: Instant::now(),
+                source: AuthSource::Interactive,
+            },
+        );
+        // Sleep just past expiry.
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!t.verify(3000, b"soon-expired"));
+        // Entry should be evicted on access.
+        assert!(!t.revoke(3000));
     }
 }

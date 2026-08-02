@@ -659,6 +659,39 @@ impl PathResolver {
         self.runtime_dir().join("pekohub.toml")
     }
 
+    /// Get the IPC run directory.
+    ///
+    /// Path: `{config_dir}/run` — this is the directory the daemon
+    /// socket (`daemon.sock`), pid file (`daemon.pid`), and the
+    /// session-auth artifacts (`auth-code`, `auth-token-<sid>`)
+    /// live in. Distinct from `runtime_dir()` (`{config_dir}/runtime`)
+    /// which holds structured config files; `run_dir()` is for
+    /// ephemeral sockets and short-lived secret material.
+    #[must_use]
+    pub fn run_dir(&self) -> PathBuf {
+        self.config_dir.join("run")
+    }
+
+    /// Get the startup auth-code file path.
+    ///
+    /// Path: `{config_dir}/run/auth-code` (mode 0600). The daemon
+    /// writes the diceware code here at startup and deletes it on
+    /// shutdown or after first successful submission.
+    #[must_use]
+    pub fn auth_code_file(&self) -> PathBuf {
+        self.run_dir().join("auth-code")
+    }
+
+    /// Get the per-session auth-token file path.
+    ///
+    /// Path: `{config_dir}/run/auth-token-{sid}` (mode 0600).
+    /// Keyed by Unix session ID so multiple terminals (each with
+    /// its own SID) keep independent tokens.
+    #[must_use]
+    pub fn auth_token_file(&self, sid: i32) -> PathBuf {
+        self.run_dir().join(format!("auth-token-{sid}"))
+    }
+
     /// Get the encrypted vault file path
     ///
     /// Path: `{config_dir}/vault.enc`
@@ -809,6 +842,9 @@ impl PathResolver {
         std::fs::create_dir_all(&self.data_dir)?;
         std::fs::create_dir_all(&self.cache_dir)?;
         std::fs::create_dir_all(self.chat_logs_dir())?;
+        // ADR-045 PR #2: `run/` holds the daemon socket, pid file,
+        // and session-auth artifacts (auth-code, auth-token-<sid>).
+        std::fs::create_dir_all(self.run_dir())?;
         // Phase A: runtime-global bucket.
         let runtime = self.runtime_layout();
         std::fs::create_dir_all(&runtime.extensions_root)?;
@@ -1076,6 +1112,57 @@ mod tests {
         assert_eq!(
             resolver.principals_root_dir(),
             PathBuf::from("/config/principals")
+        );
+    }
+
+    // ADR-045 PR #2: session-auth artifact paths live under
+    // `{config_dir}/run/`, NOT under the existing `{config_dir}/runtime/`
+    // bucket. These tests pin the path split so a future refactor
+    // can't silently move auth-code / auth-token between the two.
+
+    #[test]
+    fn run_dir_is_under_config_not_runtime() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        assert_eq!(resolver.run_dir(), PathBuf::from("/config/run"));
+        // The runtime/ bucket holds structured config and must
+        // remain distinct from run/.
+        assert_ne!(resolver.run_dir(), resolver.runtime_dir());
+    }
+
+    #[test]
+    fn auth_code_file_lives_under_run() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        assert_eq!(
+            resolver.auth_code_file(),
+            PathBuf::from("/config/run/auth-code")
+        );
+    }
+
+    #[test]
+    fn auth_token_file_is_sid_keyed_under_run() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+        assert_eq!(
+            resolver.auth_token_file(1234),
+            PathBuf::from("/config/run/auth-token-1234")
+        );
+        // Negative SIDs are not produced by the kernel — we still
+        // format them rather than reject so unit tests can exercise
+        // the helper with any i32 value.
+        assert_eq!(
+            resolver.auth_token_file(-1),
+            PathBuf::from("/config/run/auth-token--1")
         );
     }
 }

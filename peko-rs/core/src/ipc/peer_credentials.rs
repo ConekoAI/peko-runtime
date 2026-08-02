@@ -80,6 +80,32 @@ pub(crate) fn peer_credentials(_fd: std::os::fd::RawFd) -> io::Result<PeerCreden
     ))
 }
 
+/// Return the session ID of the calling process.
+///
+/// Uses `getsid(0)` which returns the SID of the calling process's
+/// session leader. All descendants of a process inherit its SID
+/// unless explicitly changed via `setsid()`, so two CLI processes
+/// in the same shell return the same value here.
+///
+/// Used by:
+/// - The daemon at startup (preauthorize its own SID for service-token
+///   internal IPC).
+/// - The CLI before reading its per-SID token file
+///   (`auth-token-<sid>`).
+///
+/// Returns `None` on non-Unix platforms (Windows named-pipe DACL auth
+/// is structurally different and does not use session IDs).
+#[cfg(unix)]
+pub(crate) fn getsid_self() -> Option<i32> {
+    let sid = unsafe { libc::getsid(0) };
+    if sid < 0 { None } else { Some(sid) }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn getsid_self() -> Option<i32> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

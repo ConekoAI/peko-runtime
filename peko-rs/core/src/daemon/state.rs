@@ -241,6 +241,23 @@ pub(crate) struct AppState {
     /// the production default).
     auth_session_required: bool,
 
+    /// Daemon-side bootstrap-code state (ADR-045 PR #2).
+    ///
+    /// Built once at daemon startup from the diceware code emitted
+    /// to stderr + `~/.peko/run/auth-code`. Setter is called from
+    /// `Daemon::run` after the code is generated. The `AuthSubmit`
+    /// handler reads this on every first-time enrollment request.
+    auth_bootstrap: Arc<std::sync::Mutex<Option<crate::ipc::auth_bootstrap::AuthCodeState>>>,
+
+    /// In-memory service token (ADR-045 PR #2 step 2).
+    ///
+    /// Generated at daemon startup and preauthorized for the daemon's
+    /// own SID via `auth_table.authorize_service`. Internal clients
+    /// (cron adapter, etc.) take this token explicitly when
+    /// constructing `DaemonClient`. The token is never persisted to
+    /// disk — daemon restart rotates it.
+    service_token: Arc<std::sync::RwLock<Option<String>>>,
+
     /// Tunnel cancellation token — set when tunnel is active
     tunnel_cancel: Arc<RwLock<Option<tokio_util::sync::CancellationToken>>>,
 
@@ -950,6 +967,8 @@ impl AppState {
             auth_session_required: std::env::var("PEKO_AUTH_SESSION_REQUIRED")
                 .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
                 .unwrap_or(false),
+            auth_bootstrap: Arc::new(std::sync::Mutex::new(None)),
+            service_token: Arc::new(std::sync::RwLock::new(None)),
             tunnel_cancel: Arc::new(RwLock::new(None)),
             tunnel_connected: Arc::new(RwLock::new(false)),
             tunnel_dispatcher: Arc::new(RwLock::new(None)),
@@ -1259,6 +1278,49 @@ impl AppState {
     /// False in PR #1 (dev-flag opt-in); PR #2 flips to true.
     pub fn auth_session_required(&self) -> bool {
         self.auth_session_required
+    }
+
+    /// Access the daemon-side bootstrap-code state (ADR-045 PR #2).
+    ///
+    /// `None` until `Daemon::run` has generated the startup diceware
+    /// code and called `set_auth_bootstrap`. AuthSubmit handler
+    /// reads this on every first-time enrollment request.
+    #[must_use]
+    pub fn auth_bootstrap(
+        &self,
+    ) -> Arc<std::sync::Mutex<Option<crate::ipc::auth_bootstrap::AuthCodeState>>> {
+        Arc::clone(&self.auth_bootstrap)
+    }
+
+    /// Set the daemon-side bootstrap-code state after code generation.
+    ///
+    /// Called from `Daemon::run` once the diceware code has been
+    /// emitted to stderr + `~/.peko/run/auth-code`. Replaces any
+    /// previously-set state (only one code is alive per daemon
+    /// process).
+    pub fn set_auth_bootstrap(&self, state: crate::ipc::auth_bootstrap::AuthCodeState) {
+        *self.auth_bootstrap.lock().expect("auth bootstrap poisoned") = Some(state);
+    }
+
+    /// Access the in-memory service token (ADR-045 PR #2 step 2).
+    ///
+    /// `None` until `Daemon::run` has generated the service token and
+    /// called `set_service_token`. Internal clients take this value
+    /// explicitly when constructing `DaemonClient` to authenticate
+    /// against the daemon's own preauthorized SID.
+    #[must_use]
+    pub fn service_token(&self) -> Option<String> {
+        self.service_token.read().expect("service token poisoned").clone()
+    }
+
+    /// Set the in-memory service token (ADR-045 PR #2 step 2).
+    ///
+    /// Called from `Daemon::run` immediately after the token is
+    /// generated. The token is also preauthorized for the daemon's
+    /// own SID via `auth_table.authorize_service` at the same point
+    /// in startup.
+    pub fn set_service_token(&self, token: String) {
+        *self.service_token.write().expect("service token poisoned") = Some(token);
     }
 
     /// Build a `StarterContext` for use by runtime starters.
