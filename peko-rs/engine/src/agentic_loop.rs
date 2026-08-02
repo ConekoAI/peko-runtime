@@ -1048,16 +1048,33 @@ impl AgenticLoop {
                 let items = inbox.drain_all().await;
                 let mut completions = Vec::new();
                 let mut steering = Vec::new();
+                let mut approvals = Vec::new();
                 for item in items {
                     match item {
                         AsyncInboxItem::Completion(e) => completions.push(e),
                         AsyncInboxItem::Steering(m) => steering.push(m),
+                        // ADR-045 PR #4 step 3: decisions on pending
+                        // `peko_self` requests arrive here; the agent
+                        // needs to see them so it can act on the
+                        // granted capability or surface the denial.
+                        AsyncInboxItem::Approval(a) => approvals.push(a),
                     }
                 }
                 if let Some(msg) = super::async_completion::build_async_completion_message(
                     &completions,
                     &session_id,
                 ) {
+                    messages.push(msg);
+                }
+                // Approval decisions are rendered after completions
+                // but before free-form steering messages — the
+                // synthesized approval text is structured, and
+                // putting steering last preserves the prior ordering
+                // contract for any code that depended on relative
+                // ordering of completions vs. steering.
+                if let Some(msg) =
+                    super::async_completion::build_approval_message(&approvals, &session_id)
+                {
                     messages.push(msg);
                 }
                 for msg in steering {

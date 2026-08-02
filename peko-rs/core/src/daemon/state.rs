@@ -2281,6 +2281,10 @@ impl crate::ipc::handlers::approval::ApprovalHost for AppState {
     ) -> Option<Arc<crate::daemon::approval_engine::ApprovalEngine>> {
         AppState::approval_engine(self)
     }
+
+    fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry> {
+        &self.inbox_registry
+    }
 }
 
 /// F7 third narrow handle: the port the `tool` IPC domain handler uses

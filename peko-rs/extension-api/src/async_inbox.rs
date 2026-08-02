@@ -21,21 +21,26 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::AsyncTaskStatus;
 
 /// One inbox item yielded by [`AsyncInboxLike::drain_all`].
 ///
-/// Mirrors `peko_extension_host::InboxItem`'s two relevant variants.
+/// Mirrors `peko_extension_host::InboxItem`'s three relevant variants.
 /// Other variants (`Provider`, `ExtensionSignal`) are kept
-/// host-side; the agentic loop only ever sees `Completion` and
-/// `Steering`.
+/// host-side; the agentic loop only ever sees `Completion`,
+/// `Steering`, and `Approval`.
 #[derive(Debug, Clone)]
 pub enum AsyncInboxItem {
     /// A completed async task (returned by `AsyncSpawnTool`).
     Completion(CompletionEnvelope),
     /// A steering message pushed by an extension or runtime.
     Steering(SteeringEnvelope),
+    /// A decision on a pending self-modification request
+    /// (ADR-045 PR #4). Pushed by the daemon's `ApprovalHandler`
+    /// after the user runs `peko pending decide --grant|--deny`.
+    Approval(ApprovalEnvelope),
 }
 
 /// Envelope form of a `peko_extension_host::CompletionEvent`.
@@ -60,6 +65,39 @@ pub struct SteeringEnvelope {
     pub id: uuid::Uuid,
     pub content: String,
     pub queued_at: DateTime<Utc>,
+}
+
+/// Envelope form of `peko_extension_host::ApprovalEvent` (ADR-045
+/// PR #4). Carries the per-op result so the agent's next iteration
+/// can render "Approval <uuid>: approved — granted fs:read" as a
+/// user-role message and continue.
+///
+/// `parent_session_key` is the principal_id of the principal that
+/// originated the request. The agentic loop filters on it the same
+/// way it filters completion events.
+#[derive(Debug, Clone)]
+pub struct ApprovalEnvelope {
+    pub request_id: uuid::Uuid,
+    /// Short, stable label of the op (e.g. `"GrantCapability:fs:read"`).
+    /// Mirrors `peko_core::daemon::api::SelfModifyOp::label()`.
+    pub op_label: String,
+    pub decision: ApprovalDecision,
+    /// Per-op result. `Value::Null` on a deny / on a NotImplementedYet
+    /// stub (the engine returns `ExecuteError::OpFailed` for those
+    /// rather than an op_result payload).
+    pub op_result: serde_json::Value,
+    pub decided_at: DateTime<Utc>,
+    pub parent_session_key: String,
+}
+
+/// Tagged enum mirror of `ApprovalDecisionPayload` (wire) and
+/// `Decision` (engine-side). Kept distinct so this crate stays
+/// independent of `peko_core::ipc::packet`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    Approved,
+    Denied { reason: String },
 }
 
 /// Narrow view of a per-session async inbox.
