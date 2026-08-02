@@ -966,6 +966,25 @@ impl IpcServer {
                     .auth_table()
                     .verify_service_token(token.as_bytes())
                     .ok_or(AuthError::InvalidCredential)?;
+                // PR #6 step 2: every successful verify is a
+                // security-sensitive event — emit the first-ever
+                // `audit_security_with_caller` call (the API has
+                // existed since observability was extracted but no
+                // caller used it). Severity=Security so operators
+                // can filter the audit log to token-usage.
+                let _ = state.observability().audit_security_with_caller(
+                    Some(&peko_auth::caller::CallerContext::from_service_token(
+                        token_name.clone(),
+                        caps.clone(),
+                    ).subject()),
+                    "service_token.used",
+                    Some(&token_name),
+                    serde_json::json!({
+                        "token": token_name,
+                        "caps_count": caps.len(),
+                    }),
+                ).await;
+                state.observability().count("service_token.use", 1).await;
                 Ok(CallerContext::from_service_token(token_name, caps))
             }
         }
