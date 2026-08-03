@@ -243,6 +243,14 @@ impl Capabilities {
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",
+            // PR #339: required by the `CronHistory` IPC handler so a
+            // starter principal can read its own cron run history. The
+            // cron engine writes the log on the principal's behalf at
+            // execution time; the IPC read path gates on this same cap
+            // so starter principals work out-of-the-box. Custom
+            // principals can revoke it via `principal revoke` to lock
+            // history reads down.
+            "principal:write_cron_history",
             // PR 2 (storage review): required by
             // `principal_unpackager::import_identity` so the import
             // path can write the imported DID's identity directory.

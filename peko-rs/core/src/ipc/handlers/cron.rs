@@ -199,17 +199,19 @@ impl RequestHandler for CronHandler {
                 // Phase C: WriteSide gate. The principal's own
                 // capabilities must include `principal:write_cron`
                 // before the scheduler writes to its per-principal
-                // schedule file. Actor + tier gate fires inside
-                // `local_cron_schedule_write_for_name` via
-                // `authority_for(caller)`. Name-keyed variant is
-                // required (the ID-keyed variant fails with
-                // `UnknownPrincipal` because the in-memory `PrincipalId`
-                // is `prin_<uuid>` while the on-disk `did` is
-                // `did:peko:public:<uuid>` — see the `_for_name`
-                // docstring).
+                // schedule file. The actor projection is the daemon's
+                // runtime authority (`Subject::Public`), NOT the IPC
+                // caller's — the peer-as-CLI is a UI driver; the
+                // actual write is the daemon acting as the principal's
+                // runtime. The principal's cap check via `Some(&caps)`
+                // is the only gate. Name-keyed variant is required
+                // (the ID-keyed variant fails with `UnknownPrincipal`
+                // because the in-memory `PrincipalId` is `prin_<uuid>`
+                // while the on-disk `did` is `did:peko:public:<uuid>` —
+                // see the `_for_name` docstring).
                 if let Err(e) = self
                     .host
-                    .authority_for(caller)
+                    .authority()
                     .local_cron_schedule_write_for_name(&principal_name, Some(&caps))
                 {
                     warn!("CronAdd capability denied: {e}");
@@ -470,11 +472,12 @@ impl CronHandler {
     /// read principal A's cron state if the OWNER (principal A)
     /// carries the relevant capability. A caller authenticated to
     /// principal B cannot delete or trigger A's jobs because the
-    /// authority fires against A's caps, not B's. `authority_for(caller)`
-    /// independently validates that the caller is a real peer on the
-    /// Local tier — `Subject::User`/`Subject::Principal` pass;
-    /// `Subject::Public` and synthetic subjects are rejected before
-    /// the cap check runs.
+    /// authority fires against A's caps, not B's. The actor
+    /// projection is the daemon's runtime authority
+    /// (`Subject::Public`); IPC auth already validated the peer
+    /// upstream of this point, so the tier check is purely about the
+    /// principal's runtime acting on its own behalf, not about peer
+    /// entitlement.
     async fn authorize_cron_op(
         &self,
         caller: &CallerContext,
@@ -501,11 +504,15 @@ impl CronHandler {
         let caps = caps
             .ok_or_else(|| format!("Principal '{principal_name}' is not loaded"))?;
 
-        // Tier + cap gate. The cap we check is keyed on the OWNER's
+        // Cap gate. The cap we check is keyed on the OWNER's
         // capabilities (not the caller's), so a caller authorized for
         // principal B cannot operate on A's jobs — the cross-tenant
-        // invariant the audit demanded.
-        let authority = self.host.authority_for(caller);
+        // invariant the audit demanded. The actor projection is the
+        // daemon's runtime authority (`Subject::Public`); the CLI is a
+        // peer driver but the actual Local-tier write is the daemon
+        // acting as the principal's runtime (same rationale as
+        // CronAdd at line ~212).
+        let authority = self.host.authority();
         let gate = match op {
             CronOp::Mutate => authority
                 .local_cron_schedule_write_for_name(&principal_name, Some(&caps))

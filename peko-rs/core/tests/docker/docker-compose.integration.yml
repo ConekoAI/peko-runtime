@@ -26,7 +26,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-      start_period: 10s
+      # PGlite (the test fixture's in-memory PostgreSQL compiled to
+      # WASM) takes ~30-40s to boot on a cold runner (WASM compile +
+      # 11 sequential `CREATE TABLE` statements in
+      # pekohub/backend/tests/fixtures/db.ts). 10s grace was too
+      # tight — slow runners exhausted the retry budget before
+      # `/health` could respond. The companion GitHub Actions wait
+      # loop was also bumped from 60s → 180s to match.
+      start_period: 60s
     networks:
       - peko-test
 

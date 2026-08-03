@@ -193,8 +193,6 @@ fn import_options(
 ) -> PrincipalImportOptions {
     PrincipalImportOptions {
         new_name: Some("imported-sig-test".to_string()),
-        rotate_keys: false,
-        import_sessions: false,
         allow_unsigned,
         force,
         trust_store,
@@ -204,6 +202,12 @@ fn import_options(
             TrustPolicy::Tofu
         },
         selected_capabilities: Vec::new(),
+        // PR #338 added these two fields for the WriteSide gate. The
+        // import-options helper is library-side (tests + the `import`
+        // CLI), not an IPC handler, so the defaults match what the
+        // IPC handler would have computed: Subject::User("local") +
+        // Capabilities::starter_bundle().
+        ..Default::default()
     }
 }
 
@@ -824,13 +828,9 @@ async fn unsafe_new_name_rejected() {
 
     let opts = PrincipalImportOptions {
         new_name: Some("../escape".to_string()),
-        rotate_keys: false,
-        import_sessions: false,
-        allow_unsigned: false,
         force: true,
-        trust_store: None,
         trust_policy: TrustPolicy::AllowUntrusted,
-        selected_capabilities: Vec::new(),
+        ..Default::default()
     };
     let err = run_import(&files, opts).await.expect_err("unsafe new_name should fail");
     assert_error_code(err, "[unsafe_name]", "unsafe_new_name_rejected");
@@ -851,14 +851,9 @@ async fn unsafe_principal_name_rejected() {
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
     let opts = PrincipalImportOptions {
-        new_name: None,
-        rotate_keys: false,
-        import_sessions: false,
-        allow_unsigned: false,
         force: true,
-        trust_store: None,
         trust_policy: TrustPolicy::AllowUntrusted,
-        selected_capabilities: Vec::new(),
+        ..Default::default()
     };
     let err = run_import(&files, opts)
         .await
@@ -884,14 +879,9 @@ async fn unsafe_agent_entry_path_rejected() {
     files.insert("agents/../escape.md".to_string(), b"pwned".to_vec());
 
     let opts = PrincipalImportOptions {
-        new_name: None,
-        rotate_keys: false,
-        import_sessions: false,
-        allow_unsigned: false,
         force: true,
-        trust_store: None,
         trust_policy: TrustPolicy::AllowUntrusted,
-        selected_capabilities: Vec::new(),
+        ..Default::default()
     };
     let err = run_import(&files, opts)
         .await
@@ -922,14 +912,10 @@ async fn unsafe_sessions_entry_path_rejected() {
     files.insert("sessions/../../../escape.jsonl".to_string(), b"pwned".to_vec());
 
     let opts = PrincipalImportOptions {
-        new_name: None,
-        rotate_keys: false,
         import_sessions: true,
-        allow_unsigned: false,
         force: true,
-        trust_store: None,
         trust_policy: TrustPolicy::AllowUntrusted,
-        selected_capabilities: Vec::new(),
+        ..Default::default()
     };
     let err = run_import(&files, opts)
         .await
@@ -971,14 +957,9 @@ async fn unsafe_extension_id_rejected() {
     // gate specifically.
 
     let opts = PrincipalImportOptions {
-        new_name: None,
-        rotate_keys: false,
-        import_sessions: false,
-        allow_unsigned: false,
         force: true,
-        trust_store: None,
         trust_policy: TrustPolicy::AllowUntrusted,
-        selected_capabilities: Vec::new(),
+        ..Default::default()
     };
     let err = run_import(&files, opts)
         .await
