@@ -21,6 +21,7 @@ pub use tracer::{TraceSpan, Tracer};
 
 use anyhow::Result;
 use peko_auth::Subject;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -45,7 +46,10 @@ impl std::fmt::Debug for Observability {
 }
 
 impl Observability {
-    /// Create new observability hub
+    /// Create new observability hub (audit events live in the
+    /// in-memory ring buffer only — no JSONL persistence). Use this
+    /// in tests and in components that don't own the lifetime of a
+    /// persistent audit dir.
     pub fn new(component: impl Into<String>) -> Self {
         let component = component.into();
         Self {
@@ -54,6 +58,28 @@ impl Observability {
             tracer: Arc::new(RwLock::new(Tracer::new())),
             component,
         }
+    }
+
+    /// Create new observability hub with a durable JSONL audit sink
+    /// rooted at `audit_dir`. The directory is created if missing.
+    /// Every `audit_*` call writes both to the in-memory ring buffer
+    /// (fast IPC queries for events emitted this session) AND to
+    /// `<audit_dir>/audit-YYYY-MM-DD.jsonl` (durable, queryable via
+    /// `peko audit tail`). Daily rotation is lazy — see
+    /// [`audit::JsonlSink`] for details.
+    ///
+    /// Returns an error if `audit_dir` cannot be created or the
+    /// initial file cannot be opened (which is fail-fast: a daemon
+    /// that can't persist audit events shouldn't start).
+    pub fn with_audit_dir(component: impl Into<String>, audit_dir: PathBuf) -> Result<Self> {
+        let component = component.into();
+        let audit_logger = AuditLogger::with_jsonl(audit_dir)?;
+        Ok(Self {
+            audit: Arc::new(RwLock::new(audit_logger)),
+            metrics: Arc::new(RwLock::new(MetricsCollector::new())),
+            tracer: Arc::new(RwLock::new(Tracer::new())),
+            component,
+        })
     }
 
     /// Log an audit event

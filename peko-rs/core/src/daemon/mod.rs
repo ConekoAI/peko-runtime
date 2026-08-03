@@ -167,11 +167,20 @@ impl Daemon {
             config.data_dir.clone(),
             dirs::cache_dir().map_or_else(|| config.data_dir.join("cache"), |d| d.join("peko")),
         );
+        // ADR-046 trust + audit: extract the audit dir BEFORE moving
+        // the path resolver into the cron engine — JSONL audit
+        // events (cron.execute, cron.result, cron.write) flow
+        // through this observability instance and need a sink to land
+        // in.
+        let cron_audit_dir = cron_path_resolver.audit_dir();
 
         let cron_engine = CronEngine::new(
             cron_path_resolver,
             std::sync::Arc::new(peko_cron::IdleDetector::new()),
-            std::sync::Arc::new(peko_observability::Observability::new("daemon")),
+            std::sync::Arc::new(peko_observability::Observability::with_audit_dir(
+                "daemon",
+                cron_audit_dir,
+            )?),
             None,
             // Placeholder executor for the un-wired constructor — the
             // daemon replaces this in `Daemon::run` with a real one
@@ -208,11 +217,20 @@ impl Daemon {
             config.data_dir.clone(),
             dirs::cache_dir().map_or_else(|| config.data_dir.join("cache"), |d| d.join("peko")),
         );
+        // ADR-046 trust + audit: extract the audit dir BEFORE moving
+        // the path resolver into the cron engine — JSONL audit
+        // events (cron.execute, cron.result, cron.write) flow
+        // through this observability instance and need a sink to land
+        // in.
+        let cron_audit_dir = cron_path_resolver.audit_dir();
 
         let cron_engine = CronEngine::new(
             cron_path_resolver,
             std::sync::Arc::new(peko_cron::IdleDetector::new()),
-            std::sync::Arc::new(peko_observability::Observability::new("daemon")),
+            std::sync::Arc::new(peko_observability::Observability::with_audit_dir(
+                "daemon",
+                cron_audit_dir,
+            )?),
             None,
             std::sync::Arc::new(
                 crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
@@ -319,7 +337,10 @@ impl Daemon {
         self.cron_engine = CronEngine::new(
             cron_path_resolver,
             idle_detector,
-            Arc::new(peko_observability::Observability::new("daemon")),
+            Arc::new(peko_observability::Observability::with_audit_dir(
+                "daemon",
+                app_state.path_resolver.audit_dir(),
+            )?),
             Some(app_state.principal_manager().clone()),
             cron_async_executor,
             cron_extension_core,

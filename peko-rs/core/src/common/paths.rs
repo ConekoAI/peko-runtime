@@ -145,6 +145,10 @@ pub struct RuntimeLayout {
     pub registry_root: PathBuf,
     /// `{data_dir}/runtime/locks` — runtime-wide lock files.
     pub locks_dir: PathBuf,
+    /// `{data_dir}/runtime/audit` — durable JSONL audit log sink.
+    /// Holds `audit-YYYY-MM-DD.jsonl` files (one per UTC day,
+    /// created lazily by [`crate::observability::audit::JsonlSink`]).
+    pub audit_dir: PathBuf,
     /// `{config_dir}/principals` — convenience accessor for principal index.
     pub principals_root: PathBuf,
 }
@@ -368,7 +372,10 @@ impl PathResolver {
     /// as you touch them.
     #[must_use]
     pub fn principal_identity_path(&self, principal: &str) -> PathBuf {
-        self.principal_layout(principal).shared.root.join("identity")
+        self.principal_layout(principal)
+            .shared
+            .root
+            .join("identity")
     }
 
     // ========================================================================
@@ -431,6 +438,7 @@ impl PathResolver {
             mcps_root: runtime_dir.join("mcps"),
             registry_root: runtime_dir.join("registry"),
             locks_dir: runtime_dir.join("locks"),
+            audit_dir: runtime_dir.join("audit"),
             principals_root: self.principals_root_dir(),
         }
     }
@@ -470,6 +478,22 @@ impl PathResolver {
         self.runtime_layout().locks_dir
     }
 
+    /// Runtime-wide audit log directory.
+    ///
+    /// Path: `{data_dir}/runtime/audit` — holds `audit-YYYY-MM-DD.jsonl`
+    /// files written by [`crate::observability::audit::JsonlSink`].
+    /// The directory is created on first write; it is NOT created
+    /// here, so callers that just want to read it (e.g. `peko audit
+    /// tail`) can do so without producing a side effect.
+    ///
+    /// ADR-046 §"Known v1 limitations": historical files are NOT
+    /// pruned automatically; users run `peko audit prune` or a
+    /// manual cron to clean up old files.
+    #[must_use]
+    pub fn audit_dir(&self) -> PathBuf {
+        self.runtime_layout().audit_dir
+    }
+
     /// Per-principal cron schedule file (Local tier).
     ///
     /// Path: `{data_dir}/principals/{principal}/local/cron/schedule.toml`
@@ -497,7 +521,10 @@ impl PathResolver {
     /// `paths.rs` does not need to depend on `crate::principal::config`
     /// (which would create a cycle — `principal` depends on `common`).
     #[must_use]
-    pub fn lookup_principal_name(&self, principal_id: &peko_subject::PrincipalId) -> Option<String> {
+    pub fn lookup_principal_name(
+        &self,
+        principal_id: &peko_subject::PrincipalId,
+    ) -> Option<String> {
         let principals_root = self.principals_root_dir();
         let entries = std::fs::read_dir(&principals_root).ok()?;
         let needle = principal_id.0.as_str();
@@ -515,10 +542,7 @@ impl PathResolver {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let did = value
-                .get("did")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let did = value.get("did").and_then(|v| v.as_str()).unwrap_or("");
             if did == needle {
                 // The on-disk `name` field is the canonical name; fall
                 // back to the directory name if `name` is missing.
@@ -546,7 +570,10 @@ impl PathResolver {
     /// if the principal doesn't exist on disk. Cost is the same as the
     /// DID scan: O(principals).
     #[must_use]
-    pub fn lookup_principal_id_by_name(&self, principal_name: &str) -> Option<peko_subject::PrincipalId> {
+    pub fn lookup_principal_id_by_name(
+        &self,
+        principal_name: &str,
+    ) -> Option<peko_subject::PrincipalId> {
         let principals_root = self.principals_root_dir();
         let entries = std::fs::read_dir(&principals_root).ok()?;
         for entry in entries.flatten() {
@@ -554,10 +581,7 @@ impl PathResolver {
             if !path.is_dir() {
                 continue;
             }
-            let dir_name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let dir_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             // Match either by directory name (cheap) or by `name` field
             // (authoritative when both are present).
             if dir_name != principal_name {
@@ -570,10 +594,7 @@ impl PathResolver {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                let declared_name = value
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let declared_name = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 if declared_name != principal_name {
                     continue;
                 }
@@ -802,7 +823,7 @@ impl PathResolver {
     /// or if directories already exist.
     ///
     /// **Phase A.** Also creates the runtime-global bucket at
-    /// `{data_dir}/runtime/{extensions,mcps,registry,locks}` so daemon
+    /// `{data_dir}/runtime/{extensions,mcps,registry,locks,audit}` so daemon
     /// startup is a no-op when the bucket is fresh.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.config_dir)?;
@@ -815,6 +836,10 @@ impl PathResolver {
         std::fs::create_dir_all(&runtime.mcps_root)?;
         std::fs::create_dir_all(&runtime.registry_root)?;
         std::fs::create_dir_all(&runtime.locks_dir)?;
+        // Phase 2 (ADR-046 trust + audit): pre-create the audit dir
+        // so `peko audit tail` and other read paths don't need to
+        // distinguish "missing" from "empty" on first boot.
+        std::fs::create_dir_all(&runtime.audit_dir)?;
         Ok(())
     }
 
@@ -989,9 +1014,13 @@ mod tests {
         // Local root lives under `<data_dir>/principals/<name>/local/`.
         assert!(local.root.ends_with("principals/alice/local"));
         assert!(local.sessions_dir.ends_with("alice/local/sessions"));
-        assert!(local.memory_index.ends_with("alice/local/memory_index.json"));
+        assert!(local
+            .memory_index
+            .ends_with("alice/local/memory_index.json"));
         assert!(local.cron_dir.ends_with("alice/local/cron"));
-        assert!(local.cron_schedule.ends_with("alice/local/cron/schedule.toml"));
+        assert!(local
+            .cron_schedule
+            .ends_with("alice/local/cron/schedule.toml"));
         assert!(local.cron_history.ends_with("alice/local/cron/history.log"));
         assert!(local.cache_dir.ends_with("alice/local/cache"));
         assert!(local.locks_dir.ends_with("alice/local/locks"));
@@ -1009,10 +1038,15 @@ mod tests {
         let shared = layout.shared;
         // Shared root lives under `<config_dir>/principals/<name>/`.
         assert!(shared.root.ends_with("principals/alice"));
-        assert!(shared.config_file.ends_with("principals/alice/principal.toml"));
+        assert!(shared
+            .config_file
+            .ends_with("principals/alice/principal.toml"));
         assert!(shared.agents_dir.ends_with("principals/alice/agents"));
-        assert!(shared.identity_file.ends_with("principals/alice/identity.json"));
-        assert!(shared.memory_snapshots_dir
+        assert!(shared
+            .identity_file
+            .ends_with("principals/alice/identity.json"));
+        assert!(shared
+            .memory_snapshots_dir
             .ends_with("principals/alice/memory/snapshots"));
         assert!(shared.mcps_dir.ends_with("principals/alice/mcps"));
     }
@@ -1051,6 +1085,7 @@ mod tests {
         assert!(runtime.mcps_root.ends_with("/data/runtime/mcps"));
         assert!(runtime.registry_root.ends_with("/data/runtime/registry"));
         assert!(runtime.locks_dir.ends_with("/data/runtime/locks"));
+        assert!(runtime.audit_dir.ends_with("/data/runtime/audit"));
         assert!(runtime.principals_root.ends_with("/config/principals"));
     }
 
@@ -1148,12 +1183,10 @@ impl GlobalPaths {
 
         let services = crate::common::services::ServiceContainer::new(resolver.clone());
 
-        let authority = Arc::new(
-            crate::common::authority::RuntimeAuthority::for_caller(
-                resolver.clone(),
-                peko_subject::Subject::User(user.clone()),
-            ),
-        );
+        let authority = Arc::new(crate::common::authority::RuntimeAuthority::for_caller(
+            resolver.clone(),
+            peko_subject::Subject::User(user.clone()),
+        ));
 
         Self {
             config_dir,
@@ -1314,6 +1347,16 @@ impl GlobalPaths {
     #[must_use]
     pub fn runtime_locks_dir(&self) -> PathBuf {
         self.resolver.runtime_locks_dir()
+    }
+
+    /// Runtime-wide audit log directory.
+    ///
+    /// Path: `{data_dir}/runtime/audit`. See the inner resolver's
+    /// `audit_dir` for the JSONL file naming convention and ADR-046
+    /// §"Known v1 limitations" for the no-auto-prune rule.
+    #[must_use]
+    pub fn audit_dir(&self) -> PathBuf {
+        self.resolver.audit_dir()
     }
 
     /// Per-principal cron schedule file (Local tier).

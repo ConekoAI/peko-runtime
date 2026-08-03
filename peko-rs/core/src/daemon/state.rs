@@ -748,7 +748,15 @@ impl AppState {
 
         // Observability hub is constructed early so it can be shared with the
         // PrincipalManager and threaded through to subagent spawn audit events.
-        let observability = Arc::new(Observability::new("api"));
+        // ADR-046 trust + audit: write to JSONL sink rooted at
+        // `<data_dir>/runtime/audit` so audit events survive daemon
+        // restarts and are queryable via `peko audit tail`. Construction
+        // is fail-fast: if the audit dir can't be created, the daemon
+        // refuses to start — an un-audited daemon is worse than no daemon.
+        let observability = Arc::new(Observability::with_audit_dir(
+            "api",
+            path_resolver.audit_dir(),
+        )?);
 
         // Initialize the PrincipalManager and load any existing principals.
         // This happens after the extension manager is built so we can inject
@@ -886,7 +894,9 @@ impl AppState {
             // daemon itself is the actor. IPC handlers that act on
             // behalf of a caller wrap this with `Subject::Principal`
             // for tier-specific reads.
-            authority: Arc::new(crate::common::authority::RuntimeAuthority::for_runtime(path_resolver)),
+            authority: Arc::new(crate::common::authority::RuntimeAuthority::for_runtime(
+                path_resolver,
+            )),
             port,
             host,
             config,
@@ -3076,11 +3086,7 @@ mod tests {
         // the capability gate sees the wildcard grant for built-ins.
         let caps = peko_extension_api::Capabilities::with_grants(["tool:*"]);
         let defs = core
-            .list_tool_definitions_with_allowlist(
-                &caps,
-                None,
-                peko_subject::PrincipalId::system(),
-            )
+            .list_tool_definitions_with_allowlist(&caps, None, peko_subject::PrincipalId::system())
             .await;
         let def_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
         assert!(
