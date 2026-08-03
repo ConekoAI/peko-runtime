@@ -494,6 +494,23 @@ impl PathResolver {
         self.runtime_layout().audit_dir
     }
 
+    /// Runtime-wide principal-config drift baseline file.
+    ///
+    /// Path: `{data_dir}/runtime/principal-hashes.json` — written by
+    /// [`crate::daemon::config_drift::run_drift_check`] at the end of
+    /// every daemon startup so the next boot can detect mid-session
+    /// edits to `principal.toml`. File is a JSON object of
+    /// `{principal_name: hex_sha256_hash}`.
+    ///
+    /// **v1 limitation (ADR-046):** drift is only detected at daemon
+    /// startup. In-session edits go undetected; the `notify` crate
+    /// would be needed to watch the file at runtime and is deferred
+    /// to a follow-up PR.
+    #[must_use]
+    pub fn principal_hashes_file(&self) -> PathBuf {
+        self.runtime_dir().join("principal-hashes.json")
+    }
+
     /// Per-principal cron schedule file (Local tier).
     ///
     /// Path: `{data_dir}/principals/{principal}/local/cron/schedule.toml`
@@ -1357,6 +1374,16 @@ impl GlobalPaths {
     #[must_use]
     pub fn audit_dir(&self) -> PathBuf {
         self.resolver.audit_dir()
+    }
+
+    /// Runtime-wide principal-config drift baseline file.
+    ///
+    /// Path: `{data_dir}/runtime/principal-hashes.json`. See the
+    /// inner resolver's `principal_hashes_file` for the file format
+    /// and the v1 startup-only detection rule.
+    #[must_use]
+    pub fn principal_hashes_file(&self) -> PathBuf {
+        self.resolver.principal_hashes_file()
     }
 
     /// Per-principal cron schedule file (Local tier).

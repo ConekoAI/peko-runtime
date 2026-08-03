@@ -8,6 +8,7 @@
 //! - Graceful shutdown
 
 pub(crate) mod background_runtime;
+pub(crate) mod config_drift;
 pub(crate) mod cron_engine;
 pub(crate) mod cron_runtime;
 pub(crate) mod state;
@@ -313,6 +314,29 @@ impl Daemon {
         .map_err(|e| anyhow::anyhow!("Failed to create AppState: {e}"))?;
 
         app_state.set_idle_detector(idle_detector.clone());
+
+        // ADR-046: principal-config drift detection. Hashes every
+        // `principal.toml` and compares against the baseline written
+        // on the previous boot. Drifted principals emit a
+        // `principal.config_drift` Security audit event so operators
+        // see them in `peko audit tail --since 5m`. The check is
+        // startup-only in v1 — see the module doc for the `notify`-
+        // based follow-up. Failures here are non-fatal: a corrupted
+        // baseline logs a warning and the boot proceeds as a
+        // first-boot.
+        match config_drift::run_drift_check(&app_state.path_resolver, app_state.observability())
+            .await
+        {
+            Ok(n) if n > 0 => {
+                warn!("drift: {n} principal(s) drifted since last boot (see JSONL audit log)");
+            }
+            Ok(_) => {
+                debug!("drift: no principal config drift detected");
+            }
+            Err(e) => {
+                warn!("drift: check failed (continuing boot): {e}");
+            }
+        }
 
         // Build the cron engine's `AsyncExecutor` with the daemon's
         // shared `InboxRegistry` so completion events and steer
