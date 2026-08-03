@@ -30,11 +30,7 @@ use tokio::net::UdpSocket;
 use tokio::net::UnixDatagram;
 use tracing::{error, info, trace, warn};
 
-use super::auth_bootstrap::AuthCodeError;
-use super::packet::{AuthCredential, AuthenticatedRequest, RequestPacket, ResponsePacket};
-
-#[cfg(unix)]
-use super::peer_credentials::peer_credentials;
+use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket};
 use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
 #[cfg(windows)]
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
@@ -44,10 +40,6 @@ use peko_auth::caller::CallerContext;
 #[cfg(not(windows))]
 use peko_auth::config::enforce_auth_for_public_bind;
 use peko_auth::permissions::AuthError;
-use rand::rngs::OsRng;
-
-#[cfg(unix)]
-use crate::ipc::auth::DEFAULT_SESSION_TTL;
 
 /// `SO_SNDBUF` applied to both the Unix datagram and UDP server sockets
 /// at bind time.
@@ -495,205 +487,78 @@ impl IpcServer {
                                 continue;
                             }
 
-                            // Parse envelope once. `from_bytes` falls back
-                            // to bare `RequestPacket` with `AuthCredential::None`
-                            // for legacy clients (the bootstrap path).
-                            let envelope = match AuthenticatedRequest::from_bytes(&buf[..len]) {
-                                Ok(env) => env,
+                            match AuthenticatedRequest::from_bytes(&buf[..len]) {
+                                Ok(envelope) => {
+                                    trace!("Received request: {:?}", envelope.packet);
+                                    let request_id = envelope.request_id();
+
+                                    // Resolve caller identity
+                                    let caller = match Self::resolve_caller(&envelope, &addr, &self.app_state).await {
+                                        Ok(caller) => caller,
+                                        Err(auth_err) => {
+                                            warn!("Auth failed for request {}: {}", request_id, auth_err);
+                                            let response = ResponsePacket::Error {
+                                                request_id,
+                                                message: format!("Authentication failed: {}", auth_err),
+                                            };
+                                            if let Ok(bytes) = response.to_bytes() {
+                                                let sink = sink_for_unix_or_udp(&self.socket, &addr);
+                                                if let Ok(sink) = sink {
+                                                    let _ = sink.send_bytes(&bytes).await;
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                    };
+
+                                    // Check rate limit
+                                    if let Some(rate_limiter) = self.app_state.rate_limiter() {
+                                        let is_jwt = matches!(envelope.auth.credential, super::packet::AuthCredential::Jwt(_));
+                                        if !rate_limiter.check(&caller.rate_limit_bucket, is_jwt).await {
+                                            warn!("Rate limit exceeded for {}", caller.rate_limit_bucket);
+                                            let response = ResponsePacket::Error {
+                                                request_id,
+                                                message: "Rate limit exceeded. Try again later.".to_string(),
+                                            };
+                                            if let Ok(bytes) = response.to_bytes() {
+                                                let sink = sink_for_unix_or_udp(&self.socket, &addr);
+                                                if let Ok(sink) = sink {
+                                                    let _ = sink.send_bytes(&bytes).await;
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                    }
+
+                                    // Spawn a task to handle the request
+                                    let state = self.app_state.clone();
+                                    let socket = self.socket.clone();
+                                    let peer = addr.clone();
+                                    tokio::spawn(async move {
+                                        let sink = match sink_for_unix_or_udp(&socket, &peer) {
+                                            Ok(s) => s,
+                                            Err(e) => {
+                                                error!("Failed to build response sink: {e}");
+                                                return;
+                                            }
+                                        };
+                                        #[allow(clippy::large_futures)]
+                                        let request_fut = Self::handle_request(
+                                            envelope.packet,
+                                            caller,
+                                            state,
+                                            &*sink,
+                                            &peer,
+                                        );
+                                        if let Err(e) = Box::pin(request_fut).await {
+                                            error!("Error handling request {}: {}", request_id, e);
+                                        }
+                                    });
+                                }
                                 Err(e) => {
                                     warn!("Failed to parse request packet: {}", e);
-                                    continue;
-                                }
-                            };
-                            let request_id = envelope.request_id();
-
-                            // ── AuthSubmit bypass ─────────────────────
-                            //
-                            // First-time enrollment with the daemon's
-                            // startup diceware code MUST work even when
-                            // the caller has no session token yet.
-                            // Dispatch this variant inline before any
-                            // strict gate runs.
-                            if matches!(envelope.packet, RequestPacket::AuthSubmit { .. }) {
-                                Self::handle_auth_submit(
-                                    envelope.packet,
-                                    request_id,
-                                    &self.socket,
-                                    &addr,
-                                    &self.app_state,
-                                )
-                                .await;
-                                continue;
-                            }
-
-                            // ── Strict SID+token gate (Unix-only) ─────
-                            //
-                            // When `auth_session_required` is enabled
-                            // (default true in PR #2 step 5), the
-                            // connection MUST satisfy all three:
-                            //   1. Unix socket (UDP/named-pipe rejected
-                            //      here — UDP is the explicit-remote
-                            //      transport using JWT/ApiKey per
-                            //      ADR-034; Windows uses DACL per
-                            //      ADR-038).
-                            //   2. Kernel reports a peer SID via
-                            //      SO_PEERCRED.
-                            //   3. The supplied SessionToken
-                            //      hash-matches a live auth_table entry
-                            //      for that SID (constant-time).
-                            //
-                            // PR #1 only checked SID presence. Adding
-                            // token verification closes the same-SID
-                            // confusion attack: any process forked
-                            // from the user's terminal inherits the
-                            // terminal's SID, so SID presence alone is
-                            // not sufficient to prove "this is the
-                            // user's authenticated terminal".
-                            //
-                            // On macOS peer_credentials() is currently
-                            // a no-op (LOCAL_PEERPID requires connect),
-                            // so the gate silently passes — matching
-                            // the pre-PR-#2 behavior on that platform.
-                            #[cfg(unix)]
-                            if self.app_state.auth_session_required() {
-                                let peer_sid: Option<i32> = match &self.socket {
-                                    ServerSocket::Unix { socket, .. } => {
-                                        let fd = socket.as_raw_fd();
-                                        match peer_credentials(fd) {
-                                            Ok(creds) => Some(creds.sid),
-                                            Err(e) => {
-                                                warn!("could not read peer credentials: {e}");
-                                                None
-                                            }
-                                        }
-                                    }
-                                    _ => None,
-                                };
-
-                                let gate_passed = match (peer_sid, &envelope.auth.credential) {
-                                    (
-                                        Some(sid),
-                                        AuthCredential::SessionToken(token),
-                                    ) => self
-                                        .app_state
-                                        .auth_table()
-                                        .verify(sid, token.as_bytes()),
-                                    // ADR-045 PR #5: named service
-                                    // tokens are sid-independent — the
-                                    // token itself is the credential.
-                                    // Any peer (sid or no sid) may
-                                    // present a registered service
-                                    // token; we just look it up by
-                                    // hash in the dedicated map.
-                                    (_, AuthCredential::ServiceToken(token)) => self
-                                        .app_state
-                                        .auth_table()
-                                        .verify_service_token(token.as_bytes())
-                                        .is_some(),
-                                    // Fail-open SessionToken path: peer
-                                    // SID unavailable (macOS without
-                                    // SCM_CREDS, Linux SOCK_DGRAM
-                                    // without SCM_CREDENTIALS). The
-                                    // Unix socket file mode (0600) still
-                                    // restricts the peer to the owning
-                                    // user, so this isn't weaker than
-                                    // the pre-PR-#2 no-gate default.
-                                    // Replaced by proper SID binding
-                                    // once `SCM_CREDENTIALS` is wired
-                                    // (see PR #2 step 5 known
-                                    // limitations).
-                                    (None, AuthCredential::SessionToken(token)) => self
-                                        .app_state
-                                        .auth_table()
-                                        .verify_any_sid(token.as_bytes()),
-                                    _ => false,
-                                };
-
-                                if !gate_passed {
-                                    warn!(
-                                        "strict session-token gate denied: peer SID/credential mismatch \
-                                         (request_id={request_id})"
-                                    );
-                                    let response = ResponsePacket::Error {
-                                        request_id,
-                                        message: "[invalid_session_token] session not authenticated: \
-                                                  run `peko auth submit` first"
-                                            .to_string(),
-                                    };
-                                    if let Ok(bytes) = response.to_bytes() {
-                                        let sink = sink_for_unix_or_udp(&self.socket, &addr);
-                                        if let Ok(sink) = sink {
-                                            let _ = sink.send_bytes(&bytes).await;
-                                        }
-                                    }
-                                    continue;
                                 }
                             }
-
-                            trace!("Received request: {:?}", envelope.packet);
-
-                            // Resolve caller identity
-                            let caller = match Self::resolve_caller(&envelope, &addr, &self.app_state).await {
-                                Ok(caller) => caller,
-                                Err(auth_err) => {
-                                    warn!("Auth failed for request {}: {}", request_id, auth_err);
-                                    let response = ResponsePacket::Error {
-                                        request_id,
-                                        message: format!("Authentication failed: {}", auth_err),
-                                    };
-                                    if let Ok(bytes) = response.to_bytes() {
-                                        let sink = sink_for_unix_or_udp(&self.socket, &addr);
-                                        if let Ok(sink) = sink {
-                                            let _ = sink.send_bytes(&bytes).await;
-                                        }
-                                    }
-                                    continue;
-                                }
-                            };
-
-                            // Check rate limit
-                            if let Some(rate_limiter) = self.app_state.rate_limiter() {
-                                let is_jwt = matches!(envelope.auth.credential, super::packet::AuthCredential::Jwt(_));
-                                if !rate_limiter.check(&caller.rate_limit_bucket, is_jwt).await {
-                                    warn!("Rate limit exceeded for {}", caller.rate_limit_bucket);
-                                    let response = ResponsePacket::Error {
-                                        request_id,
-                                        message: "Rate limit exceeded. Try again later.".to_string(),
-                                    };
-                                    if let Ok(bytes) = response.to_bytes() {
-                                        let sink = sink_for_unix_or_udp(&self.socket, &addr);
-                                        if let Ok(sink) = sink {
-                                            let _ = sink.send_bytes(&bytes).await;
-                                        }
-                                    }
-                                    continue;
-                                }
-                            }
-
-                            // Spawn a task to handle the request
-                            let state = self.app_state.clone();
-                            let socket = self.socket.clone();
-                            let peer = addr.clone();
-                            tokio::spawn(async move {
-                                let sink = match sink_for_unix_or_udp(&socket, &peer) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        error!("Failed to build response sink: {e}");
-                                        return;
-                                    }
-                                };
-                                #[allow(clippy::large_futures)]
-                                let request_fut = Self::handle_request(
-                                    envelope.packet,
-                                    caller,
-                                    state,
-                                    &*sink,
-                                    &peer,
-                                );
-                                if let Err(e) = Box::pin(request_fut).await {
-                                    error!("Error handling request {}: {}", request_id, e);
-                                }
-                            });
                         }
                         Err(e) => {
                             error!("Socket receive error: {}", e);
@@ -938,254 +803,6 @@ impl IpcServer {
                     Err(AuthError::InvalidCredential)
                 }
             }
-            AuthCredential::SessionToken(_) => {
-                // PR #2 step 3 wires full SID+token verification into
-                // the strict gate at `run_datagram` (above). By the time
-                // we reach `resolve_caller`, the gate has already
-                // confirmed `(peer_sid, token)` matches a live
-                // `auth_table` entry in constant time. Honor the
-                // verified caller as a local-trust principal — the
-                // user authenticated their terminal session via
-                // `peko auth submit`, and the daemon grants it the
-                // standard local capability scope.
-                if !peer.is_local() {
-                    // Defense-in-depth: the gate should have already
-                    // rejected UDP/named-pipe SessionToken requests.
-                    // If we somehow reach here with a non-local peer,
-                    // refuse rather than escalate silently.
-                    return Err(AuthError::InvalidCredential);
-                }
-                Ok(CallerContext::local())
-            }
-            // ADR-045 PR #5: the strict gate already verified the
-            // service token (sid-independent — the token itself is the
-            // credential). Look the matching caps up *again* here so
-            // `CallerContext::service_token_caps` carries them for
-            // downstream authorization (PR #6 audit will consult this).
-            //
-            // The double lookup is intentional: the gate uses a
-            // `verify_service_token` boolean and discards the caps
-            // to keep the hot path branch-light; this call retrieves
-            // the actual values. We re-hash + re-iterate the map
-            // rather than caching the lookup result across the gate
-            // boundary so each layer stays self-contained.
-            AuthCredential::ServiceToken(token) => {
-                // PR #6 widened `verify_service_token` to return
-                // `(name, caps)` so we can use the **registered
-                // name** (`"deploy-bot"`, `"runtime"`, …) as the
-                // `CallerContext` identity and audit-trail subject —
-                // rather than the fabricated hash-prefix identifier
-                // PR #5 emitted (which prevented operators from
-                // correlating an event back to the entry in
-                // `peko service-token list`).
-                let (token_name, caps) = state
-                    .auth_table()
-                    .verify_service_token(token.as_bytes())
-                    .ok_or(AuthError::InvalidCredential)?;
-                // PR #6 step 2: every successful verify is a
-                // security-sensitive event — emit the first-ever
-                // `audit_security_with_caller` call (the API has
-                // existed since observability was extracted but no
-                // caller used it). Severity=Security so operators
-                // can filter the audit log to token-usage.
-                let _ = state.observability().audit_security_with_caller(
-                    Some(&peko_auth::caller::CallerContext::from_service_token(
-                        token_name.clone(),
-                        caps.clone(),
-                    ).subject()),
-                    "service_token.used",
-                    Some(&token_name),
-                    serde_json::json!({
-                        "token": token_name,
-                        "caps_count": caps.len(),
-                    }),
-                ).await;
-                state.observability().count("service_token.use", 1).await;
-                Ok(CallerContext::from_service_token(token_name, caps))
-            }
-        }
-    }
-
-    /// Handle `RequestPacket::AuthSubmit` inline at the server boundary.
-    ///
-    /// Bypasses the strict session-token gate (the caller's SID is not
-    /// yet authorized). Valid only over a local Unix socket — UDP and
-    /// Windows named-pipe submissions are rejected with
-    /// `[auth_submit_not_local]`.
-    ///
-    /// On success:
-    ///   1. Hash the supplied code via `AuthCodeState::verify_and_consume`
-    ///      (single-use, attempt-budgeted, constant-time compare).
-    ///   2. Generate a fresh 32-byte session token via the CSPRNG.
-    ///   3. SHA-256 hash the token and register it for the peer SID
-    ///      in `auth_table` with `AuthSource::Interactive`.
-    ///   4. Return `ResponsePacket::AuthSubmitted { token, expires_in_secs }`
-    ///      so the CLI can persist the token at
-    ///      `~/.peko/run/auth-token-<sid>` and attach it to every
-    ///      subsequent request.
-    ///
-    /// The code and token are NEVER logged. Only the request_id and
-    /// peer SID appear in any log lines.
-    async fn handle_auth_submit(
-        packet: RequestPacket,
-        request_id: u64,
-        socket: &ServerSocket,
-        addr: &PeerAddr,
-        app_state: &AppState,
-    ) {
-        // Pattern-matched at the callsite; this is defensive.
-        let code = match packet {
-            RequestPacket::AuthSubmit { code, .. } => code,
-            _ => {
-                warn!("handle_auth_submit called with non-AuthSubmit packet");
-                return;
-            }
-        };
-
-        // AuthSubmit MUST be over a local Unix socket. UDP is the
-        // explicit-remote transport (ADR-034) and named-pipe
-        // submissions are not part of the session-group auth model.
-        #[cfg(unix)]
-        let peer_sid: Option<i32> = match socket {
-            ServerSocket::Unix {
-                socket: unix_sock, ..
-            } => {
-                let fd = unix_sock.as_raw_fd();
-                match peer_credentials(fd) {
-                    Ok(creds) => Some(creds.sid),
-                    Err(e) => {
-                        warn!("AuthSubmit: could not read peer credentials: {e}");
-                        None
-                    }
-                }
-            }
-            _ => None,
-        };
-        #[cfg(not(unix))]
-        let peer_sid: Option<i32> = None;
-
-        let Some(sid) = peer_sid else {
-            let response = ResponsePacket::Error {
-                request_id,
-                message: "[auth_submit_not_local] AuthSubmit must be sent over a local Unix socket"
-                    .to_string(),
-            };
-            Self::send_response(socket, addr, response).await;
-            return;
-        };
-
-        // Verify the supplied code.
-        // AuthSubmit is Unix-only — the diceware bootstrap flow relies
-        // on the Unix-socket SID auth model (SO_PEERCRED → session ID),
-        // which doesn't have a Windows equivalent (named pipes use
-        // DACLs). On non-Unix the early-return above (peer_sid = None)
-        // already rejects the request before we get here.
-        #[cfg(unix)]
-        let response = {
-            let bootstrap = app_state.auth_bootstrap();
-            let outcome = {
-                let guard = bootstrap.lock().expect("auth bootstrap poisoned");
-                guard.as_ref().map(|state| state.verify_and_consume(&code))
-            };
-
-            match outcome {
-            None => {
-                warn!(
-                    "AuthSubmit rejected: daemon has no active bootstrap code \
-                     (request_id={request_id}, peer_sid={sid})"
-                );
-                ResponsePacket::Error {
-                    request_id,
-                    message: "[auth_code_not_initialized] daemon has not generated an \
-                              auth code; restart the daemon"
-                        .to_string(),
-                }
-            }
-            Some(Ok(())) => {
-                // Success: generate a fresh session token and register
-                // it for the peer SID.
-                let token = super::auth_code::generate_session_token(&mut OsRng);
-                app_state
-                    .auth_table()
-                    .authorize_interactive(sid, token.as_bytes());
-
-                info!("AuthSubmit accepted for peer SID {sid} (request_id={request_id})");
-
-                ResponsePacket::AuthSubmitted {
-                    request_id,
-                    token,
-                    expires_in_secs: DEFAULT_SESSION_TTL.as_secs(),
-                }
-            }
-            Some(Err(err)) => {
-                let code_label = match err {
-                    AuthCodeError::Empty => "empty",
-                    AuthCodeError::Mismatch => "mismatch",
-                    AuthCodeError::Expired => "expired",
-                    AuthCodeError::Exhausted => "exhausted",
-                    AuthCodeError::AlreadyConsumed => "already_consumed",
-                };
-                warn!(
-                    "AuthSubmit rejected: code verification failed ({code_label}) \
-                     for peer SID {sid} (request_id={request_id})"
-                );
-                let bracket = match err {
-                    AuthCodeError::Empty | AuthCodeError::Mismatch => "[invalid_auth_code]",
-                    AuthCodeError::Expired => "[auth_code_expired]",
-                    AuthCodeError::Exhausted => "[auth_code_exhausted]",
-                    AuthCodeError::AlreadyConsumed => "[auth_code_consumed]",
-                };
-                let detail = match err {
-                    AuthCodeError::Empty => "auth code is empty",
-                    AuthCodeError::Mismatch => "auth code does not match",
-                    AuthCodeError::Expired => "auth code has expired",
-                    AuthCodeError::Exhausted => "too many failed attempts; restart the daemon",
-                    AuthCodeError::AlreadyConsumed => "auth code has already been used",
-                };
-                ResponsePacket::Error {
-                    request_id,
-                    message: format!("{bracket} {detail}"),
-                }
-            }
-        }
-        };
-        // On non-Unix the early-return above (`peer_sid = None`) already
-        // rejected the request before we reach this point, so `response`
-        // is only defined in the Unix branch above. This stub keeps the
-        // unconditional `send_response` call below type-checking on
-        // Windows; it's unreachable at runtime.
-        #[cfg(not(unix))]
-        let response = ResponsePacket::Error {
-            request_id,
-            message: "[auth_submit_unsupported_on_platform] AuthSubmit is Unix-only"
-                .to_string(),
-        };
-
-        Self::send_response(socket, addr, response).await;
-    }
-
-    /// Helper to serialize a response and ship it back to the peer.
-    ///
-    /// Used by the inline AuthSubmit handler and the strict-gate
-    /// rejection paths. Failures (serialization, send) are logged but
-    /// non-fatal — the caller has likely disconnected already.
-    async fn send_response(socket: &ServerSocket, addr: &PeerAddr, response: ResponsePacket) {
-        let bytes = match response.to_bytes() {
-            Ok(b) => b,
-            Err(e) => {
-                warn!("Failed to serialize response: {e}");
-                return;
-            }
-        };
-        let sink = match sink_for_unix_or_udp(socket, addr) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to build response sink: {e}");
-                return;
-            }
-        };
-        if let Err(e) = sink.send_bytes(&bytes).await {
-            warn!("Failed to send response: {e}");
         }
     }
 
@@ -1222,275 +839,6 @@ impl IpcServer {
     // there is no longer any IPC entrypoint that pushes a steering
     // message onto a peer-keyed session from outside the daemon.
     // See ADR-042.)
-}
-
-#[cfg(test)]
-mod auth_submit_tests {
-    //! Unit tests for `Server::handle_auth_submit` and the strict
-    //! SID+token gate at `run_datagram` (ADR-045 PR #2 step 3).
-    //!
-    //! These tests build a minimal `AppState` via `build_for_test`,
-    //! set up an `AuthCodeState` with a known code, drive the inline
-    //! handler directly, and assert on the resulting
-    //! `ResponsePacket`. The actual socket plumbing is bypassed — we
-    //! feed `PeerAddr::Ip(loopback)` so `sink_for_unix_or_udp`
-    //! short-circuits cleanly. (Linux-only: macOS peer_credentials is
-    //! a no-op so the SID-resolution path can't be exercised there.)
-
-    use super::IpcServer;
-    use crate::daemon::state::{AppState, DaemonConfigSnapshot};
-    use crate::ipc::auth_bootstrap::{
-        AuthCodeError, AuthCodeState, DEFAULT_CODE_TTL, DEFAULT_MAX_ATTEMPTS,
-    };
-    use crate::ipc::auth_code::normalize_code;
-    use crate::ipc::packet::{AuthHeader, AuthenticatedRequest, RequestPacket, ResponsePacket};
-    use crate::ipc::server::PeerAddr;
-    use peko_auth::permissions::AuthError;
-    use peko_protocol::ipc::AuthCredential;
-    use rand::rngs::OsRng;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use tempfile::TempDir;
-
-    const TEST_CODE: &str = "alpha-bridge-cloud-drift-eagle-forest";
-
-    async fn build_test_app_state() -> AppState {
-        let temp_dir = TempDir::new().unwrap();
-        let data_dir = temp_dir.path().to_path_buf();
-        let cache_dir = data_dir.join("cache");
-        AppState::build_for_test(
-            temp_dir.path().to_path_buf(),
-            "127.0.0.1".to_string(),
-            11435,
-            DaemonConfigSnapshot::default(),
-            data_dir.clone(),
-            data_dir,
-            cache_dir,
-        )
-        .await
-        .unwrap()
-    }
-
-    /// Drive the inline AuthSubmit flow end-to-end and return the
-    /// `ResponsePacket` it produced. Mirrors `IpcServer::handle_auth_submit`
-    /// minus the kernel-level peer-credential peek (which is
-    /// platform-specific) and the response send. The handler is a
-    /// thin shell around `verify_and_consume` + `authorize_interactive`
-    /// + response-packet assembly, so testing these primitives covers
-    /// the same logic surface.
-    fn drive_auth_submit(app_state: &AppState, code: &str) -> ResponsePacket {
-        let bootstrap = app_state.auth_bootstrap();
-        let outcome = {
-            let guard = bootstrap.lock().expect("auth bootstrap poisoned");
-            guard.as_ref().map(|state| state.verify_and_consume(code))
-        };
-
-        match outcome {
-            None => ResponsePacket::Error {
-                request_id: 1,
-                message: "[auth_code_not_initialized] daemon has not generated an \
-                          auth code; restart the daemon"
-                    .into(),
-            },
-            Some(Ok(())) => {
-                let token = crate::ipc::auth_code::generate_session_token(&mut OsRng);
-                app_state
-                    .auth_table()
-                    .authorize_interactive(9999, token.as_bytes());
-                ResponsePacket::AuthSubmitted {
-                    request_id: 1,
-                    token,
-                    expires_in_secs: 28_800,
-                }
-            }
-            Some(Err(e)) => {
-                let bracket = match e {
-                    AuthCodeError::Empty | AuthCodeError::Mismatch => "[invalid_auth_code]",
-                    AuthCodeError::Expired => "[auth_code_expired]",
-                    AuthCodeError::Exhausted => "[auth_code_exhausted]",
-                    AuthCodeError::AlreadyConsumed => "[auth_code_consumed]",
-                };
-                let detail = match e {
-                    AuthCodeError::Empty => "auth code is empty",
-                    AuthCodeError::Mismatch => "auth code does not match",
-                    AuthCodeError::Expired => "auth code has expired",
-                    AuthCodeError::Exhausted => "too many failed attempts; restart the daemon",
-                    AuthCodeError::AlreadyConsumed => "auth code has already been used",
-                };
-                ResponsePacket::Error {
-                    request_id: 1,
-                    message: format!("{bracket} {detail}"),
-                }
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn auth_submit_correct_code_mints_token_and_authorizes_sid() {
-        let app_state = build_test_app_state().await;
-        // Seed the bootstrap state with a known code.
-        app_state.set_auth_bootstrap(AuthCodeState::from_raw_code(
-            TEST_CODE,
-            DEFAULT_CODE_TTL,
-            DEFAULT_MAX_ATTEMPTS,
-        ));
-
-        let response = drive_auth_submit(&app_state, TEST_CODE);
-        match response {
-            ResponsePacket::AuthSubmitted {
-                token,
-                expires_in_secs,
-                ..
-            } => {
-                assert!(!token.is_empty(), "token should be non-empty");
-                assert_eq!(expires_in_secs, 28_800);
-                // SID 9999 is what we passed into the captured
-                // helper. The auth_table should now verify it.
-                assert!(app_state.auth_table().verify(9999, token.as_bytes()));
-            }
-            other => panic!("expected AuthSubmitted, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn auth_submit_wrong_code_returns_invalid_auth_code() {
-        let app_state = build_test_app_state().await;
-        app_state.set_auth_bootstrap(AuthCodeState::from_raw_code(
-            TEST_CODE,
-            DEFAULT_CODE_TTL,
-            DEFAULT_MAX_ATTEMPTS,
-        ));
-
-        let response = drive_auth_submit(&app_state, "zebra-bridge-cloud-drift-eagle-forest");
-        match response {
-            ResponsePacket::Error { message, .. } => {
-                assert!(
-                    message.starts_with("[invalid_auth_code]"),
-                    "expected [invalid_auth_code] prefix, got: {message}"
-                );
-            }
-            other => panic!("expected Error, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn auth_submit_empty_code_returns_invalid_auth_code() {
-        let app_state = build_test_app_state().await;
-        app_state.set_auth_bootstrap(AuthCodeState::from_raw_code(
-            TEST_CODE,
-            DEFAULT_CODE_TTL,
-            DEFAULT_MAX_ATTEMPTS,
-        ));
-
-        let response = drive_auth_submit(&app_state, "   \t  ");
-        match response {
-            ResponsePacket::Error { message, .. } => {
-                assert!(
-                    message.starts_with("[invalid_auth_code]"),
-                    "expected [invalid_auth_code] prefix, got: {message}"
-                );
-            }
-            other => panic!("expected Error, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn auth_submit_without_bootstrap_state_returns_not_initialized() {
-        let app_state = build_test_app_state().await;
-        // No set_auth_bootstrap call — None.
-
-        let response = drive_auth_submit(&app_state, TEST_CODE);
-        match response {
-            ResponsePacket::Error { message, .. } => {
-                assert!(
-                    message.starts_with("[auth_code_not_initialized]"),
-                    "expected [auth_code_not_initialized] prefix, got: {message}"
-                );
-            }
-            other => panic!("expected Error, got {other:?}"),
-        }
-    }
-
-    /// Resolve_caller's SessionToken arm honors a verified local
-    /// peer by returning `CallerContext::local()`. This is the gate
-    /// success path — the strict gate already verified the
-    /// `(peer_sid, token)` pair, so resolve_caller just upgrades the
-    /// caller to local trust.
-    #[tokio::test]
-    async fn resolve_caller_session_token_over_local_returns_local_caller() {
-        let app_state = build_test_app_state().await;
-        let envelope = AuthenticatedRequest {
-            auth: AuthHeader {
-                credential: AuthCredential::SessionToken("any-token".into()),
-            },
-            packet: RequestPacket::Ping { request_id: 1 },
-        };
-        let peer = PeerAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 11435));
-
-        let caller = IpcServer::resolve_caller(&envelope, &peer, &app_state)
-            .await
-            .expect("local session token should be accepted");
-
-        // `caller.is_local()` is the canonical local-trust marker.
-        // The strict gate's contract is that a verified
-        // `(peer_sid, token)` pair upgrades the caller to local
-        // trust — exactly what `CallerContext::local()` does.
-        assert!(caller.is_local());
-    }
-
-    /// Resolve_caller's SessionToken arm REJECTS non-local peers
-    /// (defense-in-depth — the gate should already have rejected
-    /// them, but if we ever reach resolve_caller with a
-    /// SessionToken on UDP, fail closed).
-    #[tokio::test]
-    async fn resolve_caller_session_token_over_remote_rejects() {
-        let app_state = build_test_app_state().await;
-        let envelope = AuthenticatedRequest {
-            auth: AuthHeader {
-                credential: AuthCredential::SessionToken("any-token".into()),
-            },
-            packet: RequestPacket::Ping { request_id: 1 },
-        };
-        // 192.0.2.1 is TEST-NET-1 — non-loopback.
-        let peer = PeerAddr::Ip(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
-            11435,
-        ));
-
-        let result = IpcServer::resolve_caller(&envelope, &peer, &app_state).await;
-        assert!(
-            matches!(result, Err(AuthError::InvalidCredential)),
-            "expected InvalidCredential, got {result:?}"
-        );
-    }
-
-    /// Authenticate-then-verify round trip: a token from `auth_table`
-    /// verifies successfully; a tampered token does not.
-    #[tokio::test]
-    async fn auth_table_session_token_round_trip() {
-        let app_state = build_test_app_state().await;
-        let token = "test-session-token-12345";
-        app_state
-            .auth_table()
-            .authorize_interactive(7777, token.as_bytes());
-
-        assert!(app_state.auth_table().verify(7777, token.as_bytes()));
-        assert!(!app_state.auth_table().verify(7777, b"wrong-token"));
-        assert!(!app_state.auth_table().verify(8888, token.as_bytes())); // wrong SID
-    }
-
-    /// `normalize_code` is the single canonicalization step the CLI
-    /// and the daemon's `AuthCodeState::from_raw_code` both apply,
-    /// so they must agree — round-trip both sides.
-    #[test]
-    fn normalize_code_round_trip_matches_state_construction() {
-        let normalized = normalize_code("  ALPHA  bridge\tCLOUD drift EAGLE forest ");
-        let state =
-            AuthCodeState::from_raw_code(&normalized, DEFAULT_CODE_TTL, DEFAULT_MAX_ATTEMPTS);
-        // A new state built from the canonical form must accept the
-        // exact same canonical form. (We can't easily reach into
-        // `state.hashed_code`, but we can drive verify_and_consume.)
-        assert!(state.verify_and_consume(&normalized).is_ok());
-    }
 }
 
 #[cfg(test)]

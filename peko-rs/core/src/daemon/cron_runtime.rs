@@ -46,28 +46,6 @@ impl DaemonCronAdapter {
         })
     }
 
-    /// Connect with an explicit service-token credential (ADR-045 PR #2).
-    ///
-    /// The service token is generated at daemon startup and preauthorized
-    /// for the daemon's own SID via `auth_table.authorize_service`. When
-    /// `auth_session_required=true` (PR #2 step 5 default), internal
-    /// clients like this cron adapter MUST authenticate via the service
-    /// token — they have no `peko auth submit` flow and cannot use the
-    /// diceware code path.
-    pub async fn connect_with_service_token(service_token: impl Into<String>) -> Result<Self> {
-        let client = DaemonClient::connect_with_service_token(service_token)
-            .await
-            .map_err(|e| {
-                anyhow!(
-                    "Cannot reach daemon for cron operations with service token. \
-                     Is it running? ({e})"
-                )
-            })?;
-        Ok(Self {
-            client: Arc::new(client),
-        })
-    }
-
     /// Convenience: install this adapter as the global runtime. Idempotent
     /// for repeated calls with the same adapter.
     pub fn install_as_global(self: Arc<Self>) {

@@ -548,37 +548,6 @@ pub enum RequestPacket {
     AuthApiKeyRevoke { request_id: u64, key_id: String },
     #[serde(rename = "auth_status")]
     AuthStatus { request_id: u64 },
-    // ── Session-group IPC auth (ADR-045 PR #2) ──
-    //
-    // First-time enrollment with the daemon's startup diceware code.
-    // Bypasses the strict session-token gate (the caller's SID is not
-    // yet authorized). Valid only over a local Unix socket; the daemon
-    // rejects AuthSubmit over UDP/named-pipe.
-    #[serde(rename = "auth_submit")]
-    AuthSubmit { request_id: u64, code: String },
-
-    // ── Service tokens (ADR-045 PR #5) ──
-    //
-    // Named, persistent, capability-scoped tokens for long-lived
-    // daemon clients (runtime, cron, persistent agents, external
-    // scripts). All three requests below are gated by the existing
-    // PR #2 strict SID+token gate (caller must already be an
-    // authorized interactive session). Token is shown ONCE in
-    // `ServiceTokenCreated::token`; subsequent list/verify return
-    // only metadata.
-    #[serde(rename = "service_token_create")]
-    ServiceTokenCreate {
-        request_id: u64,
-        name: String,
-        caps: Vec<String>,
-        /// Optional relative TTL in seconds. `None` = no expiry.
-        #[serde(default)]
-        expires_in_secs: Option<u64>,
-    },
-    #[serde(rename = "service_token_list")]
-    ServiceTokenList { request_id: u64 },
-    #[serde(rename = "service_token_revoke")]
-    ServiceTokenRevoke { request_id: u64, name: String },
 
     // ── Ownership and Permission (ADR-039) ──
     //
@@ -814,33 +783,6 @@ pub enum RequestPacket {
         name: String,
         jti: String,
     },
-
-    // ── ADR-045 PR #4 — user→daemon decision on a pending request ──
-    //
-    // Requires the strict SID+token gate (the user is making a
-    // privileged decision; the same gate that protects CronAdd
-    // protects this). The daemon fills in `by: Subject` from the
-    // caller's IPC auth context, not from the wire.
-    #[serde(rename = "approval_decision")]
-    ApprovalDecision {
-        request_id: u64,
-        /// The pending request's id (UUIDv4, from `peko pending list`).
-        id: uuid::Uuid,
-        decision: ApprovalDecisionPayload,
-    },
-}
-
-/// User→daemon decision payload (ADR-045 PR #4).
-///
-/// Wire shape mirrors the user-facing CLI flags
-/// (`peko pending decide --grant|--deny --reason ...`). The daemon
-/// stamps the `Subject` from the caller's auth context, so it doesn't
-/// travel on the wire.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "decision", rename_all = "snake_case")]
-pub enum ApprovalDecisionPayload {
-    Grant,
-    Deny { reason: String },
 }
 
 impl RequestPacket {
@@ -908,7 +850,6 @@ impl RequestPacket {
             | Self::AuthApiKeyList { request_id }
             | Self::AuthApiKeyRevoke { request_id, .. }
             | Self::AuthStatus { request_id }
-            | Self::AuthSubmit { request_id, .. }
             | Self::TunnelStop { request_id }
             | Self::TunnelStatus { request_id }
             | Self::Status { request_id }
@@ -933,12 +874,7 @@ impl RequestPacket {
             | Self::PrincipalSendControl { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
-            | Self::QuotaReset { request_id, .. }
-            | Self::ApprovalDecision { request_id, .. } => *request_id,
-            // Service-token CRUD (ADR-045 PR #5).
-            | Self::ServiceTokenCreate { request_id, .. }
-            | Self::ServiceTokenList { request_id, .. }
-            | Self::ServiceTokenRevoke { request_id, .. } => *request_id,
+            | Self::QuotaReset { request_id, .. } => *request_id,
         }
     }
 
@@ -1571,54 +1507,6 @@ pub enum ResponsePacket {
         api_key_enabled: bool,
         api_key_count: usize,
     },
-    // ── Session-group IPC auth (ADR-045 PR #2) ──
-    //
-    // Returned on successful `AuthSubmit`. The CLI persists the
-    // `token` to `~/.peko/run/auth-token-<sid>` and attaches it as
-    // `AuthCredential::SessionToken` on every subsequent request.
-    #[serde(rename = "auth_submitted")]
-    AuthSubmitted {
-        request_id: u64,
-        token: String,
-        expires_in_secs: u64,
-    },
-
-    // ── Service tokens (ADR-045 PR #5) ──
-    //
-    // Returned by `ServiceTokenCreate`. `token` is the raw secret and is
-    // shown to the caller **exactly once** at creation time. Subsequent
-    // `ServiceTokenList` / `ServiceTokenRevoke` responses never include
-    // the raw secret. Caps, expires_at_secs are mirrored from the
-    // on-disk meta for caller convenience.
-    #[serde(rename = "service_token_created")]
-    ServiceTokenCreated {
-        request_id: u64,
-        name: String,
-        token: String,
-        caps: Vec<String>,
-        expires_at_secs: Option<u64>,
-    },
-
-    /// Returned by `ServiceTokenList` — never contains the raw secret.
-    #[serde(rename = "service_token_listed")]
-    ServiceTokenListed {
-        request_id: u64,
-        tokens: Vec<ServiceTokenInfo>,
-    },
-
-    /// Returned by `ServiceTokenRevoke` on success.
-    #[serde(rename = "service_token_revoked")]
-    ServiceTokenRevoked { request_id: u64, name: String },
-
-    /// Returned by any service-token request on failure. `name` is
-    /// present for create/revoke errors; `None` for list errors.
-    #[serde(rename = "service_token_error")]
-    ServiceTokenError {
-        request_id: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        message: String,
-    },
 
     // ── Principal operations ─────────────────────────────────────────
     /// Non-streaming result of `PrincipalSend`. Single packet with the
@@ -1858,54 +1746,6 @@ pub enum ResponsePacket {
     // reachable from the IPC surface; if a future ADR reintroduces it,
     // it must key off PrincipalMemory rather than legacy
     // SessionService.)
-
-    // ── ADR-045 PR #4 — daemon→user responses for pending decisions ──
-    /// Returned on successful `ApprovalDecision`. The CLI prints a
-    /// one-line summary; the daemon's `ApprovalEngine` has already
-    /// executed the op (or staged it for asynchronous completion) and
-    /// pushed the result into the agent's session inbox.
-    #[serde(rename = "approval_decided")]
-    ApprovalDecided {
-        request_id: u64,
-        id: uuid::Uuid,
-        /// Final status (Approved or Denied, with the by/reason).
-        status: ApprovalStatusPayload,
-        /// Operation-specific result, e.g. `{"granted": "fs:read"}`
-        /// for a successful `GrantCapability`.
-        op_result: serde_json::Value,
-    },
-    /// Returned when `ApprovalDecision` failed (unknown id,
-    /// not-implemented op, executor error). The CLI surfaces the
-    /// message verbatim.
-    #[serde(rename = "approval_error")]
-    ApprovalError {
-        request_id: u64,
-        id: uuid::Uuid,
-        message: String,
-    },
-}
-
-/// Wire-shaped mirror of `ApprovalStatus` from
-/// `peko_core::daemon::approval_queue`. Round-trips through serde so
-/// the CLI can display the status without parsing tags itself.
-///
-/// ADR-045 PR #4.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ApprovalStatusPayload {
-    Pending,
-    Approved {
-        decided_at_secs: u64,
-        /// Wire-shaped `Subject` — separate type so the IPC layer
-        /// doesn't depend on `peko_subject`. See the `Subject` enum
-        /// in `peko-rs/subject/src/lib.rs` for the canonical shape.
-        by: serde_json::Value,
-    },
-    Denied {
-        decided_at_secs: u64,
-        by: serde_json::Value,
-        reason: String,
-    },
 }
 
 /// Summary of an extension for IPC responses
@@ -2249,26 +2089,6 @@ pub struct ApiKeySummary {
     pub enabled: bool,
 }
 
-/// Public metadata for a registered service token (ADR-045 PR #5).
-///
-/// Mirrors `crate::storage::service_token_store::ServiceTokenInfo`
-/// but uses crate-internal field names so the wire shape stays
-/// consistent (the on-disk form lives in `service_token_store`).
-///
-/// **Wire invariant**: never carries the raw token. `token` is
-/// returned only in `ResponsePacket::ServiceTokenCreated` and only
-/// at creation time.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServiceTokenInfo {
-    pub name: String,
-    pub caps: Vec<String>,
-    pub created_at_secs: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_used_at_secs: Option<u64>,
-}
-
 impl AuthenticatedRequest {
     /// Deserialize an authenticated request from JSON bytes.
     ///
@@ -2377,11 +2197,6 @@ impl ResponsePacket {
             | Self::AuthApiKeyList { request_id, .. }
             | Self::AuthApiKeyRevoked { request_id, .. }
             | Self::AuthStatus { request_id, .. }
-            | Self::AuthSubmitted { request_id, .. }
-            | Self::ServiceTokenCreated { request_id, .. }
-            | Self::ServiceTokenListed { request_id, .. }
-            | Self::ServiceTokenRevoked { request_id, .. }
-            | Self::ServiceTokenError { request_id, .. }
             | Self::PrincipalSent { request_id, .. }
             | Self::PrincipalSentChunk { request_id, .. }
             | Self::PrincipalSentIteration { request_id, .. }
@@ -2404,9 +2219,7 @@ impl ResponsePacket {
             | Self::Status { request_id, .. }
             | Self::QuotaStatus { request_id, .. }
             | Self::PrincipalInviteMinted { request_id, .. }
-            | Self::PrincipalInviteRevoked { request_id, .. }
-            | Self::ApprovalDecided { request_id, .. }
-            | Self::ApprovalError { request_id, .. } => *request_id,
+            | Self::PrincipalInviteRevoked { request_id, .. } => *request_id,
         }
     }
 
@@ -2473,11 +2286,6 @@ impl ResponsePacket {
             Self::AuthApiKeyList { .. } => "AuthApiKeyList",
             Self::AuthApiKeyRevoked { .. } => "AuthApiKeyRevoked",
             Self::AuthStatus { .. } => "AuthStatus",
-            Self::AuthSubmitted { .. } => "AuthSubmitted",
-            Self::ServiceTokenCreated { .. } => "ServiceTokenCreated",
-            Self::ServiceTokenListed { .. } => "ServiceTokenListed",
-            Self::ServiceTokenRevoked { .. } => "ServiceTokenRevoked",
-            Self::ServiceTokenError { .. } => "ServiceTokenError",
             Self::PrincipalSent { .. } => "PrincipalSent",
             Self::PrincipalSentChunk { .. } => "PrincipalSentChunk",
             Self::PrincipalSentIteration { .. } => "PrincipalSentIteration",
@@ -2501,8 +2309,6 @@ impl ResponsePacket {
             Self::QuotaStatus { .. } => "QuotaStatus",
             Self::PrincipalInviteMinted { .. } => "PrincipalInviteMinted",
             Self::PrincipalInviteRevoked { .. } => "PrincipalInviteRevoked",
-            Self::ApprovalDecided { .. } => "ApprovalDecided",
-            Self::ApprovalError { .. } => "ApprovalError",
         }
     }
 
@@ -2669,69 +2475,6 @@ mod tests {
                 assert_eq!(request_id, 42);
                 assert_eq!(seq, 7);
                 assert_eq!(chunk, "hello world");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    /// `AuthSubmit` round-trips with the wire shape `"auth_submit"`
-    /// (ADR-045 PR #2). Guards the request-id extraction arm and the
-    /// `#[serde(rename)]` discriminator in one shot.
-    #[test]
-    fn test_auth_submit_roundtrip() {
-        let req = RequestPacket::AuthSubmit {
-            request_id: 91,
-            code: "alpha bridge cloud drift eagle forest".to_string(),
-        };
-        assert_eq!(req.request_id(), 91);
-
-        let bytes = req.to_bytes().unwrap();
-        assert!(
-            bytes.windows(11).any(|w| w == b"auth_submit"),
-            "wire payload must contain the snake_case discriminator; got: {}",
-            String::from_utf8_lossy(&bytes)
-        );
-
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::AuthSubmit { request_id, code } => {
-                assert_eq!(request_id, 91);
-                assert_eq!(code, "alpha bridge cloud drift eagle forest");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    /// `AuthSubmitted` round-trips with the wire shape `"auth_submitted"`
-    /// (ADR-045 PR #2). The `token` and `expires_in_secs` fields are
-    /// what the CLI persists to `~/.peko/run/auth-token-<sid>`.
-    #[test]
-    fn test_auth_submitted_roundtrip() {
-        let resp = ResponsePacket::AuthSubmitted {
-            request_id: 92,
-            token: "pst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-            expires_in_secs: 28800,
-        };
-        assert_eq!(resp.request_id(), 92);
-        assert_eq!(resp.variant_name(), "AuthSubmitted");
-
-        let bytes = resp.to_bytes().unwrap();
-        assert!(
-            bytes.windows(14).any(|w| w == b"auth_submitted"),
-            "wire payload must contain the snake_case discriminator; got: {}",
-            String::from_utf8_lossy(&bytes)
-        );
-
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::AuthSubmitted {
-                request_id,
-                token,
-                expires_in_secs,
-            } => {
-                assert_eq!(request_id, 92);
-                assert_eq!(token, "pst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-                assert_eq!(expires_in_secs, 28800);
             }
             _ => panic!("Wrong variant"),
         }

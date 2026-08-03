@@ -38,7 +38,6 @@ pub mod tasks;
 
 // Root-only impls that didn't have a sat counterpart:
 pub mod agent_catalog;
-pub mod peko_self;
 pub mod tool_search;
 
 // Re-exports of every tool *struct* at the canonical namespace so
@@ -63,11 +62,6 @@ pub use session::{SessionCache, SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};
 pub use tasks::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool, Todo, TodoStatus};
 pub use tool_search::{ToolSearchTool, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_TOOL_NAME};
-
-// ADR-045 PR #3: peko_self — agent-driven self-modify request tool.
-// Always registered globally when the daemon has initialized the
-// `DaemonApi` global; see `engine/tool_runtime.rs::register_builtins`.
-pub use peko_self::PekoSelfTool;
 
 // Phase F4: thin re-exports of items that stay in the sat so root
 // callers can keep importing them through `crate::tools::builtin::*`
