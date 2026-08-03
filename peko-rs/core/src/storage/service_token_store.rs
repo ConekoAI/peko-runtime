@@ -24,6 +24,7 @@
 //! 4. `rename(tmp_path, final_path)` (atomic on the same filesystem).
 
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -33,6 +34,28 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 
 use crate::ipc::auth_code::generate_session_token;
+
+/// Open `path` for writing with owner-only mode (`0600`) on Unix;
+/// mode is not enforced on Windows (NTFS DACLs are out of scope
+/// for peko — only the Unix transport-layer trust model applies).
+#[cfg(unix)]
+fn open_mode_0600(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_mode_0600(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+}
 
 /// Public, IPC-serializable view of a service token.
 ///
@@ -250,7 +273,8 @@ fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Ensure the per-name directory exists with mode 0700.
+/// Ensure the per-name directory exists with mode 0700 (Unix only).
+#[cfg(unix)]
 fn ensure_dir_0700(dir: &Path) -> Result<()> {
     if dir.exists() {
         return Ok(());
@@ -263,7 +287,18 @@ fn ensure_dir_0700(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Atomic write: temp file in the same dir, then rename. Mode 0600.
+#[cfg(not(unix))]
+fn ensure_dir_0700(dir: &Path) -> Result<()> {
+    if dir.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("create_dir_all {}", dir.display()))?;
+    Ok(())
+}
+
+/// Atomic write: temp file in the same dir, then rename. Mode 0600
+/// (Unix only — NTFS DACLs are out of scope).
 fn write_atomic(final_path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = final_path
         .parent()
@@ -283,12 +318,7 @@ fn write_atomic(final_path: &Path, bytes: &[u8]) -> Result<()> {
     ));
 
     {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
+        let mut f = open_mode_0600(&tmp)
             .with_context(|| format!("open tmp {}", tmp.display()))?;
         f.write_all(bytes)?;
         f.sync_all()?;
@@ -479,6 +509,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn files_have_0600_mode() {
         use std::os::unix::fs::PermissionsExt;
         let root = fresh_root("mode");

@@ -33,6 +33,29 @@ use peko_subject::Subject;
 
 use crate::daemon::api::{RequestId, SelfModifyError, SelfModifyOp};
 
+/// Open `path` for writing with owner-only mode (`0600`) on Unix;
+/// mode is not enforced on Windows (NTFS DACLs are out of scope
+/// for peko — only the Unix transport-layer trust model applies).
+#[cfg(unix)]
+fn open_mode_0600(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_mode_0600(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+}
+
 /// Default cap on the in-memory queue. Sized generously so a noisy
 /// agent can't easily OOM the daemon, but small enough to surface
 /// "user is ignoring the inbox" before the queue grows unbounded.
@@ -362,11 +385,11 @@ impl ApprovalQueue {
     }
 
     /// Atomically write the request to `<persist_root>/<id>.json`,
-    /// mode 0600. Uses `temp + rename` so a crash mid-write leaves
-    /// either the old file or the new file, never a partial file.
+    /// mode 0600 (Unix only — NTFS DACLs are out of scope). Uses
+    /// `temp + rename` so a crash mid-write leaves either the old
+    /// file or the new file, never a partial file.
     fn write_to_disk(&self, request: &ApprovalRequest) -> std::io::Result<()> {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
 
         std::fs::create_dir_all(&self.persist_root)?;
         let final_path = self.artifact_path(request.id);
@@ -378,12 +401,7 @@ impl ApprovalQueue {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         {
-            let mut f = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp_path)?;
+            let mut f = open_mode_0600(&tmp_path)?;
             f.write_all(&bytes)?;
             f.sync_all()?;
         }
@@ -470,7 +488,6 @@ mod tests {
     use super::*;
     use crate::daemon::api::{RequestId, SelfModifyOp};
     use peko_subject::PrincipalId;
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     fn mk_queue() -> (TempDir, Arc<ApprovalQueue>) {
@@ -491,7 +508,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn insert_returns_id_and_persists_atomically() {
+        use std::os::unix::fs::PermissionsExt;
         let (_dir, q) = mk_queue();
         let req = ApprovalRequest::from_op(gr_op("need to read /tmp"), system_principal());
         let id = q.insert(req).unwrap();

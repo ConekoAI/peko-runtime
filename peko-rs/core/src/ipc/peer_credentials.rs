@@ -73,7 +73,10 @@ pub(crate) fn peer_credentials(_fd: std::os::fd::RawFd) -> io::Result<PeerCreden
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(crate) fn peer_credentials(_fd: std::os::fd::RawFd) -> io::Result<PeerCredentials> {
+pub(crate) fn peer_credentials(_fd: i32) -> io::Result<PeerCredentials> {
+    // `std::os::fd::RawFd` isn't available on Windows; the parameter
+    // is unused on this stub path. i32 keeps the signature
+    // platform-portable without dragging in a unix-only type.
     Err(io::Error::new(
         io::ErrorKind::Other,
         "peer_credentials not supported on this platform",
@@ -112,30 +115,36 @@ mod tests {
     #[cfg(target_os = "linux")]
     use std::os::fd::AsRawFd;
 
-    /// Linux: SO_PEERCRED returns the peer's PID after a datagram has
-    /// been received from that peer. We exercise the helper with a
-    /// client→server send so the kernel records peer credentials.
+    /// Linux: exercise `peer_credentials` against a `SOCK_STREAM` pair
+    /// so `SO_PEERCRED` returns the connected peer's PID. The
+    /// production code path uses `SOCK_DGRAM` (see
+    /// `peko-rs/core/src/ipc/server.rs:562`), where `SO_PEERCRED`
+    /// only returns non-zero PID when the sender included
+    /// `SCM_CREDENTIALS` ancillary data — peko doesn't wire that
+    /// today, so the production gate operates in fail-open mode (see
+    /// PR #2 step 5 known limitations). A future PR will plumb
+    /// `SCM_CREDENTIALS` through `recvmsg`/`sendmsg` so the DGRAM path
+    /// gets the same protection; until then this test proves the
+    /// helper itself is correct for the socket types where peer
+    /// credentials are available.
     #[cfg(target_os = "linux")]
     #[test]
-    fn peer_credentials_after_recv() {
+    fn peer_credentials_after_recv_stream() {
+        // SOCK_STREAM pair: connect() performs a real handshake
+        // so both ends record peer_pid via `sk_peer_pid`. The
+        // helper then returns the client's PID for the server fd.
         let srv_path =
             std::env::temp_dir().join(format!("peko_peer_srv_{}.sock", std::process::id()));
-        let cli_path =
-            std::env::temp_dir().join(format!("peko_peer_cli_{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&srv_path);
-        let _ = std::fs::remove_file(&cli_path);
 
-        let srv = std::os::unix::net::UnixDatagram::bind(&srv_path).expect("bind srv");
-        let cli = std::os::unix::net::UnixDatagram::bind(&cli_path).expect("bind cli");
-        cli.send_to(b"hello", &srv_path).expect("send");
-        let mut buf = [0u8; 16];
-        let _ = srv.recv(&mut buf).expect("recv");
+        let listener = std::os::unix::net::UnixListener::bind(&srv_path).expect("bind srv");
+        let cli = std::os::unix::net::UnixStream::connect(&srv_path).expect("connect cli");
+        let (srv, _) = listener.accept().expect("accept");
 
         let creds = peer_credentials(srv.as_raw_fd()).expect("peer_credentials");
         assert_eq!(creds.pid, std::process::id() as i32);
         assert!(creds.sid > 0, "sid should be positive, got {}", creds.sid);
 
         let _ = std::fs::remove_file(&srv_path);
-        let _ = std::fs::remove_file(&cli_path);
     }
 }

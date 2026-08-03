@@ -39,6 +39,28 @@ use std::os::unix::fs::DirBuilderExt;
 
 use peko_session::safe_filename_component;
 
+/// Create `path` recursively with owner-only mode (`0700`) on Unix;
+/// mode is not enforced on Windows (NTFS DACLs are out of scope for
+/// peko — only the Unix transport-layer trust model applies).
+///
+/// Used by `PathResolver::ensure_dirs` for buckets whose per-file
+/// artifacts are sensitive (pending-requests, service-tokens). On
+/// Unix the mode is set via `DirBuilderExt::mode`; on non-Unix the
+/// `mode` extension trait isn't available and the helper is a
+/// straight `create_dir_all`.
+#[cfg(unix)]
+fn create_owner_only_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+}
+
+#[cfg(not(unix))]
+fn create_owner_only_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
 // =========================================================================
 // Three-Tier Storage Layout (Phase A)
 //
@@ -905,18 +927,12 @@ impl PathResolver {
         // whose contents reveal the principal's intent (capabilities,
         // edit paths, schedule targets). World-readable `create_dir_all`
         // would defeat the file mode.
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&runtime.pending_requests_dir)?;
+        create_owner_only_dir(&runtime.pending_requests_dir)?;
         // ADR-045 PR #5: persistent service-token bucket. Same
         // owner-only rationale as `pending-requests` — the per-file
         // manifests leak capability-scope names, which are sensitive
         // metadata even without the secret.
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&runtime.service_tokens_dir)?;
+        create_owner_only_dir(&runtime.service_tokens_dir)?;
         Ok(())
     }
 

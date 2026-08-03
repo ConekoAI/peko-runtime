@@ -224,6 +224,30 @@ impl AuthTable {
         }
     }
 
+    /// Look up `token` against any registered session entry,
+    /// ignoring the SID binding. Returns `true` if the token's hash
+    /// matches any live entry.
+    ///
+    /// Used by the strict gate's fail-open path on platforms where
+    /// `peer_credentials` cannot determine the calling SID (macOS,
+    /// Linux SOCK_DGRAM without `SCM_CREDENTIALS`). On those
+    /// platforms the Unix socket file mode (`0600`) still provides
+    /// transport-layer trust — only the same user can connect —
+    /// so this fail-open is no worse than the pre-PR-#2 default
+    /// (which had no gate at all).
+    ///
+    /// TODO: replace with proper SID binding once peko's IPC
+    /// protocol plumbs `SCM_CREDENTIALS` through `recvmsg` /
+    /// `sendmsg` (ADR-045 PR #2 step 5 known limitation).
+    pub(crate) fn verify_any_sid(&self, token: &[u8]) -> bool {
+        let supplied = hash_token(token);
+        let now = Instant::now();
+        let g = self.inner.read().expect("auth table poisoned");
+        g.entries
+            .values()
+            .any(|entry| entry.expires_at > now && ct_eq(&supplied, &entry.token_hash))
+    }
+
     fn insert_with_ttl(
         &self,
         sid: SessionId,
@@ -495,6 +519,47 @@ mod tests {
         assert!(!t.verify(3000, b"soon-expired"));
         // Entry should be evicted on access.
         assert!(!t.revoke(3000));
+    }
+
+    #[test]
+    fn verify_any_sid_matches_any_registered_session() {
+        // ADR-045 PR #2 step 5: on platforms where peer_credentials
+        // can't determine the calling SID, the strict gate's
+        // fail-open path uses `verify_any_sid`. The token's hash
+        // must match ANY live entry; the SID binding is dropped.
+        let t = AuthTable::new();
+        let token = b"any-sid-token";
+        t.authorize_interactive(1234, token);
+        t.authorize_interactive(5678, token);
+        t.authorize_interactive(9012, token);
+
+        // Token matches under any SID the table carries.
+        assert!(t.verify_any_sid(token));
+        // Wrong token: no match across any SID.
+        assert!(!t.verify_any_sid(b"different-token"));
+    }
+
+    #[test]
+    fn verify_any_sid_returns_false_on_empty_table() {
+        let t = AuthTable::new();
+        assert!(!t.verify_any_sid(b"any-token"));
+    }
+
+    #[test]
+    fn verify_any_sid_skips_expired_entries() {
+        // Expired entries are filtered (same shape as
+        // `verify_service_token`'s miss-side eviction).
+        let t = AuthTable::new();
+        t.insert(
+            4000,
+            AuthEntry {
+                token_hash: hash_token(b"expiring"),
+                expires_at: Instant::now(),
+                source: AuthSource::Interactive,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!t.verify_any_sid(b"expiring"));
     }
 
     // ---- service-token map (ADR-045 PR #5) ----

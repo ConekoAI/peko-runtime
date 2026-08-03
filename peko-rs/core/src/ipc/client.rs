@@ -1221,7 +1221,6 @@ fn load_session_token_for_current_sid() -> Option<AuthCredential> {
     }
     #[cfg(not(unix))]
     {
-        let _ = sid;
         None
     }
 }

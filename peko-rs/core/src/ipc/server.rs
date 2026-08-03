@@ -590,6 +590,22 @@ impl IpcServer {
                                         .auth_table()
                                         .verify_service_token(token.as_bytes())
                                         .is_some(),
+                                    // Fail-open SessionToken path: peer
+                                    // SID unavailable (macOS without
+                                    // SCM_CREDS, Linux SOCK_DGRAM
+                                    // without SCM_CREDENTIALS). The
+                                    // Unix socket file mode (0600) still
+                                    // restricts the peer to the owning
+                                    // user, so this isn't weaker than
+                                    // the pre-PR-#2 no-gate default.
+                                    // Replaced by proper SID binding
+                                    // once `SCM_CREDENTIALS` is wired
+                                    // (see PR #2 step 5 known
+                                    // limitations).
+                                    (None, AuthCredential::SessionToken(token)) => self
+                                        .app_state
+                                        .auth_table()
+                                        .verify_any_sid(token.as_bytes()),
                                     _ => false,
                                 };
 
@@ -1059,13 +1075,20 @@ impl IpcServer {
         };
 
         // Verify the supplied code.
-        let bootstrap = app_state.auth_bootstrap();
-        let outcome = {
-            let guard = bootstrap.lock().expect("auth bootstrap poisoned");
-            guard.as_ref().map(|state| state.verify_and_consume(&code))
-        };
+        // AuthSubmit is Unix-only — the diceware bootstrap flow relies
+        // on the Unix-socket SID auth model (SO_PEERCRED → session ID),
+        // which doesn't have a Windows equivalent (named pipes use
+        // DACLs). On non-Unix the early-return above (peer_sid = None)
+        // already rejects the request before we get here.
+        #[cfg(unix)]
+        let response = {
+            let bootstrap = app_state.auth_bootstrap();
+            let outcome = {
+                let guard = bootstrap.lock().expect("auth bootstrap poisoned");
+                guard.as_ref().map(|state| state.verify_and_consume(&code))
+            };
 
-        let response = match outcome {
+            match outcome {
             None => {
                 warn!(
                     "AuthSubmit rejected: daemon has no active bootstrap code \
@@ -1124,6 +1147,18 @@ impl IpcServer {
                     message: format!("{bracket} {detail}"),
                 }
             }
+        }
+        };
+        // On non-Unix the early-return above (`peer_sid = None`) already
+        // rejected the request before we reach this point, so `response`
+        // is only defined in the Unix branch above. This stub keeps the
+        // unconditional `send_response` call below type-checking on
+        // Windows; it's unreachable at runtime.
+        #[cfg(not(unix))]
+        let response = ResponsePacket::Error {
+            request_id,
+            message: "[auth_submit_unsupported_on_platform] AuthSubmit is Unix-only"
+                .to_string(),
         };
 
         Self::send_response(socket, addr, response).await;

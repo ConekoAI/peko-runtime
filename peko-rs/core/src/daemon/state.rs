@@ -3409,6 +3409,7 @@ mod tests {
 
     use crate::daemon::api::{DaemonApi, SelfModifyContext, SelfModifyOp};
     use peko_subject::PrincipalId;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn principal() -> PrincipalId {
@@ -3496,6 +3497,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn daemon_api_queues_non_meta_capability_and_persists() {
         let state = create_test_state().await;
         let api: &dyn DaemonApi = &state;
@@ -3511,7 +3513,7 @@ mod tests {
         assert_eq!(req.status, crate::daemon::approval_queue::ApprovalStatus::Pending);
         assert_eq!(req.principal_id, principal());
 
-        // On-disk artifact exists and is mode 0600.
+        // On-disk artifact exists and is mode 0600 (Unix only).
         let path = q.artifact_path(id);
         assert!(path.exists(), "artifact file must exist");
         let meta = std::fs::metadata(&path).unwrap();
