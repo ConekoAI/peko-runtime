@@ -9,6 +9,7 @@
 //! - `system`: System diagnostics and maintenance
 //! - `daemon`: Daemon mode for cron job execution
 
+pub mod audit;
 pub mod auth;
 pub mod capability;
 pub mod config;
@@ -227,6 +228,25 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+
+    /// Audit log: tail the JSONL or list in-memory events (ADR-046).
+    ///
+    /// Two subcommands:
+    ///   peko audit tail [--since 1h] [--type cron.] [--principal foo] [--limit N] [--follow]
+    ///     Reads `<data_dir>/runtime/audit/audit-YYYY-MM-DD.jsonl`
+    ///     directly. Survives daemon restarts. `--follow` is
+    ///     single-file (today's file).
+    ///   peko audit list [--type cron.] [--principal foo]
+    ///     Sends an IPC query to the daemon and reads the in-memory
+    ///     ring buffer. Fast path for "what just happened this
+    ///     session"; never touches disk.
+    ///
+    /// Examples:
+    ///   peko audit tail --since 30m
+    ///   peko audit tail --principal alice --limit 20
+    ///   peko audit list --type principal.config_drift
+    #[command(subcommand)]
+    Audit(audit::AuditCommands),
 
     /// Print the runtime version
     ///

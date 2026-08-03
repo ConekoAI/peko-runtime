@@ -2395,6 +2395,7 @@ dependencies = [
  "peko-cron",
  "peko-extension-api",
  "peko-identity",
+ "peko-observability",
  "peko-providers",
  "peko-quota",
  "peko-subject",

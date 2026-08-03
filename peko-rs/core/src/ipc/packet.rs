@@ -109,6 +109,28 @@ pub enum RequestPacket {
     #[serde(rename = "system_doctor")]
     SystemDoctor { request_id: u64 },
 
+    /// Query the in-memory audit log for events emitted this
+    /// session (ADR-046). For historical events that pre-date the
+    /// current daemon process, the CLI falls back to reading the
+    /// JSONL file directly via `peko audit tail` — the IPC query
+    /// only sees the ring buffer. The CLI's `peko audit list`
+    /// subcommand is the primary user of this packet.
+    #[serde(rename = "audit_query")]
+    AuditQuery {
+        request_id: u64,
+        /// Maximum number of entries to return (newest first). The
+        /// daemon's ring buffer is bounded (10k entries); requests
+        /// above the cap are clipped by the ring buffer.
+        limit: u32,
+        /// Optional filter: only return events whose `event_type`
+        /// starts with this prefix (e.g. `"cron."`).
+        event_type_prefix: Option<String>,
+        /// Optional filter: only return events whose `details.principal_name`
+        /// matches (or whose caller is a `Subject::Principal` with
+        /// this id). The `peko audit tail --principal` flag uses this.
+        principal: Option<String>,
+    },
+
     /// Start a background runtime (extension lifecycle — ADR-026)
     #[serde(rename = "ext_start")]
     ExtStart {
@@ -828,6 +850,7 @@ impl RequestPacket {
             | Self::BindingDelete { request_id, .. }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
+            | Self::AuditQuery { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::CapabilityGrant { request_id, .. }
             | Self::CapabilityRevoke { request_id, .. }
@@ -1061,6 +1084,25 @@ pub enum ResponsePacket {
     CronHistory {
         request_id: u64,
         runs: Vec<peko_cron::CronRun>,
+    },
+
+    /// Audit log query response (ADR-046). Returns up to `limit`
+    /// audit events (newest first) that match the optional filters
+    /// passed to the corresponding `AuditQuery` request. Events
+    /// come from the in-memory ring buffer; the CLI's `peko audit
+    /// tail` reads the JSONL file directly for cross-session
+    /// history.
+    #[serde(rename = "audit_events")]
+    AuditEvents {
+        request_id: u64,
+        /// Newest-first list of audit events matching the query.
+        /// `AuditEvent` is re-exported here (not imported) so the
+        /// wire shape is owned by this file and the CLI / desktop
+        /// can deserialize without pulling in the observability
+        /// crate directly. Field shape matches `peko-observability`'s
+        /// `AuditEvent` — see `audit_event_wire_schema_v1` in
+        /// the daemon test suite for the canonical contract.
+        entries: Vec<peko_observability::AuditEvent>,
     },
 
     /// Background runtime started (ADR-026)
@@ -2150,6 +2192,7 @@ impl ResponsePacket {
             | Self::CronRemoved { request_id, .. }
             | Self::CronRunStarted { request_id, .. }
             | Self::CronHistory { request_id, .. }
+            | Self::AuditEvents { request_id, .. }
             | Self::ExtStarted { request_id, .. }
             | Self::ExtStopped { request_id, .. }
             | Self::ExtRestarted { request_id, .. }
@@ -2239,6 +2282,7 @@ impl ResponsePacket {
             Self::CronRemoved { .. } => "CronRemoved",
             Self::CronRunStarted { .. } => "CronRunStarted",
             Self::CronHistory { .. } => "CronHistory",
+            Self::AuditEvents { .. } => "AuditEvents",
             Self::ExtStarted { .. } => "ExtStarted",
             Self::ExtStopped { .. } => "ExtStopped",
             Self::ExtRestarted { .. } => "ExtRestarted",

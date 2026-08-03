@@ -23,6 +23,7 @@ use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use peko_auth::caller::CallerContext;
 
+pub(crate) mod audit;
 pub(crate) mod auth;
 pub(crate) mod capability;
 pub(crate) mod credential;
@@ -42,6 +43,7 @@ pub(crate) mod system;
 pub(crate) mod tool;
 pub(crate) mod tunnel;
 
+use audit::AuditHandler;
 use auth::AuthHandler;
 use capability::CapabilityHandler;
 use credential::CredentialHandler;
@@ -119,7 +121,7 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 18] = [
+        let handlers: [Arc<dyn RequestHandler>; 19] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
@@ -151,7 +153,15 @@ impl RequestDispatcher {
             // `PrincipalHandler` because it shares the principal
             // namespace semantically (it writes principal.toml +
             // primary.md via the CLI) but the IPC shape is its own.
-            Arc::new(PersonaHandler::new(host)),
+            Arc::new(PersonaHandler::new(host.clone())),
+            // ADR-046: the `audit` IPC query handler reads from
+            // the daemon's in-memory ring buffer. The CLI falls
+            // back to direct JSONL reads for cross-session
+            // queries (`peko audit tail --since 24h`), so the IPC
+            // path only sees "events emitted this session" — the
+            // ring buffer ceiling matches the user's mental
+            // model of "what just happened".
+            Arc::new(AuditHandler::new(host)),
         ];
 
         for handler in &handlers {

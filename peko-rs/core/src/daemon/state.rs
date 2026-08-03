@@ -2675,6 +2675,18 @@ impl crate::ipc::handlers::persona::PersonaHost for AppState {
     }
 }
 
+/// ADR-046 trust+audit: the port the `audit` IPC domain handler
+/// uses. Sync because reading the in-memory audit ring buffer is
+/// just an Arc clone over the bounded VecDeque — the daemon's
+/// `get_audit_log` is internally cheap. (The handler itself is
+/// async because `RequestHandler::handle` is async, but the host
+/// port here is sync to match the read-only `get_audit_log` API.)
+impl crate::ipc::handlers::audit::AuditHost for AppState {
+    fn observability(&self) -> Arc<Observability> {
+        Arc::clone(&self.observability)
+    }
+}
+
 /// F7 thirteenth narrow handle: the port the `credential` IPC domain
 /// handler uses. Trait lives in `ipc::handlers::credential`. Sync
 /// because reading the in-memory vault (`Vault::list_providers` +

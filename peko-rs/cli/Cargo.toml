@@ -28,6 +28,7 @@ peko-providers = { path = "../providers" }
 peko-quota = { path = "../quota" }
 peko-identity = { path = "../identity" }
 peko-subject = { path = "../subject" }
+peko-observability = { path = "../observability" }
 
 # External crates
 clap = { version = "4.4", features = ["derive", "env"] }
