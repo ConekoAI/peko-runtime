@@ -2091,6 +2091,15 @@ impl crate::ipc::handlers::capability::CapabilityHost for AppState {
     fn extension_store(&self) -> &Arc<ExtensionStore> {
         AppState::extension_store(self)
     }
+
+    /// ADR-046: grant audit events are emitted from the
+    /// capability handler. Returns the Observability hub by
+    /// cheap Arc clone — same shape as the existing `observability`
+    /// accessor at line 1985, just lifted onto the trait surface
+    /// the handler imports.
+    fn observability(&self) -> Arc<Observability> {
+        AppState::observability(self)
+    }
 }
 
 /// F7 sixth narrow handle: the port the `instance` IPC domain handler

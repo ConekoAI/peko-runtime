@@ -34,6 +34,7 @@ use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use crate::principal::manager::PrincipalManager;
 use peko_auth::caller::CallerContext;
+use peko_observability::{AuditSeverity, Observability};
 
 /// Narrow port the `capability` handler uses to reach daemon state.
 ///
@@ -49,6 +50,11 @@ pub(crate) trait CapabilityHost: Send + Sync {
     /// Extension store used to source `global_items()` for the list
     /// path's `ExtensionCatalog::build`.
     fn extension_store(&self) -> &Arc<ExtensionStore>;
+
+    /// Observability hub for ADR-046 grant audit events.
+    /// Returns `Arc<Observability>` (cloned cheaply) so the handler
+    /// can call `audit_with_severity` after a successful grant.
+    fn observability(&self) -> Arc<Observability>;
 }
 
 /// `capability` domain request handler. Constructed with an
@@ -82,7 +88,7 @@ impl RequestHandler for CapabilityHandler {
     async fn handle(
         &self,
         request: RequestPacket,
-        _caller: &CallerContext,
+        caller: &CallerContext,
         sink: &dyn ResponseSink,
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
@@ -104,6 +110,39 @@ impl RequestHandler for CapabilityHandler {
 
                 match result {
                     Ok(_) => {
+                        // ADR-046 trust+audit: every successful
+                        // grant emits a `principal.capability_granted`
+                        // audit event. High-power capabilities
+                        // (tool:Bash, fs:* network, principal:*,
+                        // runtime:*) escalate to `Warn` so they
+                        // show up in the user's tail view with the
+                        // ⚠ glyph. Low-power grants stay at `Info`.
+                        let severity = if cap.is_high_power() {
+                            AuditSeverity::Warning
+                        } else {
+                            AuditSeverity::Info
+                        };
+                        let details = serde_json::json!({
+                            "principal_name": principal,
+                            "capability": cap.to_string(),
+                            "is_high_power": cap.is_high_power(),
+                        });
+                        // Best-effort: a logging failure must not
+                        // fail the grant — the user's primary
+                        // expectation is "the grant happened", the
+                        // audit is the durable side effect.
+                        let _ = self
+                            .host
+                            .observability()
+                            .audit_with_severity(
+                                severity,
+                                Some(&caller.subject()),
+                                "principal.capability_granted",
+                                None,
+                                details,
+                            )
+                            .await;
+
                         let response = ResponsePacket::CapabilityGranted {
                             request_id,
                             capability: cap.to_string(),

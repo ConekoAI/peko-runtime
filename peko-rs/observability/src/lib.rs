@@ -153,6 +153,25 @@ impl Observability {
         .await
     }
 
+    /// Log an audit event with an explicit severity. Use when the
+    /// fixed severity helpers (`audit`, `audit_security`) don't fit —
+    /// e.g. ADR-046 grant warnings where a high-power capability
+    /// grant is not yet a security incident but is more noteworthy
+    /// than routine info. Most callers should prefer the typed
+    /// helpers; this escape hatch exists for the trust+audit
+    /// surface specifically.
+    pub async fn audit_with_severity(
+        &self,
+        severity: AuditSeverity,
+        caller: Option<&Subject>,
+        event_type: &str,
+        agent_did: Option<&str>,
+        details: serde_json::Value,
+    ) -> Result<()> {
+        self.log_audit(event_type, agent_did, caller, details, severity)
+            .await
+    }
+
     /// Internal: log a fully-specified audit event.
     async fn log_audit(
         &self,
