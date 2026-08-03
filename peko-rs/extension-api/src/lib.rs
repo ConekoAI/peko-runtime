@@ -47,15 +47,18 @@ pub mod tool;
 pub mod tool_funnel;
 pub mod types;
 
-pub use async_inbox::{AsyncInboxItem, AsyncInboxLike, CompletionEnvelope, SteeringEnvelope};
-// Phase F2 foldback: `CompletionEvent`, `SteeringMessage`, `InboxItem`
-// moved here from `peko-extension-host::inbox` (deleted). Engine's
-// `peko_engine::async_completion` previously reached for
+pub use async_inbox::{
+    ApprovalDecision, ApprovalEnvelope, AsyncInboxItem, AsyncInboxLike, CompletionEnvelope,
+    SteeringEnvelope,
+};
+// Phase F2 foldback: `CompletionEvent`, `SteeringMessage`, `InboxItem`,
+// `ApprovalEvent` moved here from `peko-extension-host::inbox` (deleted).
+// Engine's `peko_engine::async_completion` previously reached for
 // `peko_extension_host::CompletionEvent`; it now uses
 // `peko_extension_api::CompletionEvent` directly (the trait only
 // depends on `peko_extension_api::AsyncTaskStatus`, which is here
 // too).
-pub use completion_event::{CompletionEvent, InboxItem, SteeringMessage};
+pub use completion_event::{ApprovalEvent, CompletionEvent, InboxItem, SteeringMessage};
 // Phase F2 foldback: `ToolFunnel` trait lives here (not in root) so
 // the engine can depend on the API crate without depending on root
 // (would cycle). The trait impl lives in root on the real

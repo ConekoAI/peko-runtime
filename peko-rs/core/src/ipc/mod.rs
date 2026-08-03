@@ -22,6 +22,10 @@
 //! - Streaming responses use `seq` numbers for ordering
 //! - Heartbeat packets prevent hanging on dead daemon
 
+pub mod auth;
+pub(crate) mod auth_bootstrap;
+pub(crate) mod auth_code;
+pub(crate) mod auth_wordlist;
 pub mod client;
 pub mod client_service;
 pub mod connection;
@@ -30,6 +34,7 @@ pub mod daemon_transport_impl;
 pub mod errors;
 pub(crate) mod handlers;
 pub mod packet;
+pub mod peer_credentials;
 pub mod pipe_security;
 pub mod response_sink;
 pub(crate) mod send_response;

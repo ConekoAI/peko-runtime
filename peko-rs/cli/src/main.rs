@@ -13,8 +13,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use crate::commands::{
     auth, capability, config, credential, cron, daemon, ext, from_cli, init_logging, interrupt,
-    log, model, principal, quota, registry, runtime, search, send, system, tunnel, update, vault,
-    version, Cli, Commands, GlobalPaths,
+    log, model, pending, principal, quota, registry, runtime, search, send, service_token,
+    system, tunnel, update, vault, version, Cli, Commands, GlobalPaths,
 };
 
 // `peko-rs/cli/` is a binary-only crate (no `src/lib.rs`), so the
@@ -126,7 +126,7 @@ async fn run_command(
         Commands::Send(args) => send::handle_send(args, paths, json).await,
         Commands::Interrupt(args) => interrupt::handle_interrupt(args, paths, json).await,
         Commands::Log(cmd) => log::handle_log(cmd, paths, json).await,
-        Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json),
+        Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json).await,
         Commands::Credential(cmd) => credential::execute(cmd, paths).await,
         Commands::Vault(cmd) => vault::execute(cmd, paths).await,
         Commands::Ext(cmd) => ext::handle_ext_command(cmd, paths, json, cli_registry).await,
@@ -141,6 +141,11 @@ async fn run_command(
         Commands::Runtime(cmd) => runtime::handle_runtime(cmd, paths, json).await,
         Commands::Tunnel(cmd) => tunnel::handle_tunnel(cmd, paths, json).await,
         Commands::Quota(cmd) => quota::handle_quota(cmd, paths, json).await,
+        Commands::Pending(cmd) => pending::handle_pending(cmd, paths, json).await,
+        // ADR-045 PR #5: `peko service-token {create,list,revoke}`.
+        Commands::ServiceToken(cmd) => {
+            service_token::handle_service_token(cmd, paths, json).await
+        }
         Commands::Login { registry, api_key } => {
             let host = registry.unwrap_or_else(|| paths.registry_config().default);
             auth::handle_login(paths, &host, api_key)
