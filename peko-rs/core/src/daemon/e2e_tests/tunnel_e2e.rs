@@ -230,6 +230,9 @@ fn seed_mock_provider_catalog(
         updated_at: now,
         compat: None,
         spec: None,
+        // Phase 2 of `feature/multi-model-subagents`: no user
+        // annotation on the seeded mock catalog entry.
+        note: None,
     };
     let mut entries = BTreeMap::new();
     entries.insert("mock-llm".to_string(), entry);
@@ -276,6 +279,9 @@ fn seed_minimax_catalog_entry(
         updated_at: now,
         compat: None,
         spec: None,
+        // Phase 2 of `feature/multi-model-subagents`: no user
+        // annotation on the seeded Minimax catalog entry.
+        note: None,
     };
     let mut entries = BTreeMap::new();
     entries.insert("minimax".to_string(), entry);
