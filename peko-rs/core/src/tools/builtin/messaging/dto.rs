@@ -146,6 +146,12 @@ pub struct ExecutionConfig {
     pub announce_completion: bool,
     /// Maximum spawn depth (0 = unlimited)
     pub max_depth: u32,
+    /// Phase 1 of `feature/multi-model-subagents`: optional
+    /// catalog model id the parent picked for this spawn.
+    /// Forwarded into `SpawnRequest.model` at the call site
+    /// (`messaging/agent.rs::execute_spawn_blocking`). `None`
+    /// means "inherit the parent's model".
+    pub model_override: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -156,6 +162,7 @@ impl Default for ExecutionConfig {
             label: None,
             announce_completion: true,
             max_depth: 1,
+            model_override: None,
         }
     }
 }
