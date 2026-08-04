@@ -1042,6 +1042,9 @@ mod tests {
                     output_tokens: None,
                     request_count: None,
                     cycle: QuotaCycle::Hourly,
+                    // Phase 3 — cost fields default to None.
+                    cost_per_call_max: None,
+                    budget_per_cycle: None,
                 },
                 None,
                 chrono::Utc::now(),
@@ -1814,6 +1817,9 @@ mod tests {
                     output_tokens: None,
                     request_count: None,
                     cycle: QuotaCycle::Hourly,
+                    // Phase 3 — cost fields default to None.
+                    cost_per_call_max: None,
+                    budget_per_cycle: None,
                 },
                 None,
                 chrono::Utc::now(),
@@ -1856,6 +1862,9 @@ mod tests {
                     output_tokens: None,
                     request_count: Some(10),
                     cycle: QuotaCycle::Hourly,
+                    // Phase 3 — cost fields default to None.
+                    cost_per_call_max: None,
+                    budget_per_cycle: None,
                 },
                 None,
                 chrono::Utc::now(),
@@ -1870,6 +1879,9 @@ mod tests {
                     output_tokens: None,
                     request_count: Some(10),
                     cycle: QuotaCycle::Hourly,
+                    // Phase 3 — cost fields default to None.
+                    cost_per_call_max: None,
+                    budget_per_cycle: None,
                 },
                 None,
                 chrono::Utc::now(),

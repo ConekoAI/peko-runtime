@@ -18,8 +18,14 @@
 //! - `cycle` — copy of the cycle that produced this state. If the
 //!   config's cycle later changes, the meter detects the mismatch
 //!   on `advance_if_needed` and resets with the new cycle.
-//! - `input_tokens` / `output_tokens` / `request_count` —
-//!   cumulative counters within the current window.
+//! - `input_tokens` / `output_tokens` / `request_count` /
+//!   `cost_usd` — cumulative counters within the current window.
+//!   `cost_usd` is Phase 3 of `feature/multi-model-subagents`;
+//!   `serde(default, skip_serializing_if = "Option::is_none")`
+//!   keeps pre-Phase-3 state files loadable.
+//!
+//!   `Eq` removed from the derive because `f64` (cost) doesn't
+//!   implement `Eq`. Tests compare fields individually.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -29,7 +35,7 @@ use tokio::io::AsyncWriteExt;
 use super::config::QuotaCycle;
 
 /// Runtime counters for one principal's current quota window.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuotaState {
     /// Window start (inclusive, UTC).
     pub window_start: DateTime<Utc>,
@@ -45,6 +51,12 @@ pub struct QuotaState {
     pub output_tokens: u64,
     /// Cumulative LLM requests made in the current window.
     pub request_count: u64,
+    /// Phase 3 of `feature/multi-model-subagents` —
+    /// cumulative USD spend in the current window. `None` for
+    /// pre-Phase-3 state files (the meter treats absent as
+    /// `0.0`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 impl QuotaState {
@@ -61,6 +73,7 @@ impl QuotaState {
             input_tokens: 0,
             output_tokens: 0,
             request_count: 0,
+            cost_usd: Some(0.0),
         }
     }
 
@@ -150,10 +163,16 @@ mod tests {
             input_tokens: 1234,
             output_tokens: 567,
             request_count: 9,
+            cost_usd: Some(0.0123),
         };
         original.save(&path).await.unwrap();
         let loaded = QuotaState::load(&path).await.unwrap().unwrap();
-        assert_eq!(loaded, original);
+        // Field-by-field because `cost_usd` is `f64` (no `Eq`).
+        assert_eq!(loaded.input_tokens, original.input_tokens);
+        assert_eq!(loaded.output_tokens, original.output_tokens);
+        assert_eq!(loaded.request_count, original.request_count);
+        assert_eq!(loaded.cycle, original.cycle);
+        assert_eq!(loaded.cost_usd, original.cost_usd);
         // ts must round-trip too — verifies the DateTime<Utc>
         // serde wire format stays stable.
         assert_eq!(loaded.window_start, original.window_start);
@@ -171,6 +190,31 @@ mod tests {
         let s = QuotaState::fresh(QuotaCycle::Daily, ts(2026, 7, 12, 0, 0, 0));
         s.save(&path).await.unwrap();
         assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn pre_phase_3_state_file_loads_with_cost_usd_none() {
+        // Pre-Phase-3 state files don't carry `cost_usd`.
+        // `serde(default, skip_serializing_if = "Option::is_none")`
+        // on the new field means they parse cleanly with
+        // `cost_usd = None` rather than failing the read.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("quota_state.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "window_start": "2026-07-12T14:00:00Z",
+  "window_end": "2026-07-12T15:00:00Z",
+  "cycle": "hourly",
+  "input_tokens": 1234,
+  "output_tokens": 567,
+  "request_count": 9
+}"#,
+        )
+        .unwrap();
+        let loaded = QuotaState::load(&path).await.unwrap().unwrap();
+        assert!(loaded.cost_usd.is_none(), "missing field defaults to None");
+        assert_eq!(loaded.input_tokens, 1234);
     }
 
     #[tokio::test]

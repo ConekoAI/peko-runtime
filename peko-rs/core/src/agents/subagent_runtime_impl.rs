@@ -205,6 +205,15 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             "cleanup": cleanup_label,
             "description": event.description,
             "parent_session_key": event.parent_session_key,
+            // Phase 3 of `feature/multi-model-subagents` — the
+            // conservative spawn-time cost estimate. `None` when
+            // no `cost_per_call_max` is configured (so no
+            // pre-flight ran) or the model has no pricing hint
+            // (local / unpriced model — cost is `0.0` by
+            // convention). Surface in `peko audit tail` so
+            // operators can see what the parent's spawn-time
+            // estimator saw.
+            "cost_estimate_usd": event.cost_estimate_usd,
         });
 
         if let Err(e) = obs
@@ -213,6 +222,40 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         {
             tracing::warn!("Failed to audit subagent spawn: {e}");
         }
+    }
+
+    fn spawn_cost_estimate_usd(&self) -> Option<f64> {
+        // Phase 3 — same heuristic the spawn-time pre-flight
+        // uses: 4K input + 1K output projected through the
+        // provider's `PricingHint`. Returns `None` when the
+        // principal has no `cost_per_call_max` configured or
+        // the provider carries no pricing hint. Match the
+        // production pre-flight math exactly so the audit row
+        // and the gate agree.
+        let ceiling = self
+            .executor
+            .quota_meter()
+            .as_ref()
+            .and_then(|m| m.config().cost_per_call_max)?;
+        let provider = self.executor.provider_for_cost_estimate()?;
+        let pricing = provider.spec().and_then(|s| s.pricing)?;
+        const EST_INPUT_TOKENS: u64 = 4_000;
+        const EST_OUTPUT_TOKENS: u64 = 1_000;
+        let input_cost = pricing
+            .input_per_million
+            .map_or(0.0, |rate| rate * EST_INPUT_TOKENS as f64 / 1_000_000.0);
+        let output_cost = pricing
+            .output_per_million
+            .map_or(0.0, |rate| rate * EST_OUTPUT_TOKENS as f64 / 1_000_000.0);
+        let estimated = input_cost + output_cost;
+        // Surface the estimate regardless of whether the
+        // ceiling would have rejected it — the audit log shows
+        // what the estimator saw, not just the gate decision.
+        // `ceiling` is consulted only to decide whether to
+        // populate the field at all (pre-flight runs iff
+        // ceiling is `Some`).
+        let _ = ceiling;
+        Some(estimated)
     }
 
     async fn execute_and_wait(&self, request: SpawnRequest) -> anyhow::Result<SubagentRunView> {
