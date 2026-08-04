@@ -90,6 +90,9 @@ pub enum ModelCommands {
     /// Add a model to the catalog. Either `--template` or `--custom`
     /// plus the relevant flags must be supplied.
     Add(AddArgs),
+    /// Edit an existing catalog entry. Only the supplied flags
+    /// (`--note`) are touched; everything else is preserved.
+    Edit(EditArgs),
     /// Remove a model from the catalog (does not delete its credential).
     Remove {
         /// Configured model id to remove.
@@ -215,6 +218,35 @@ pub struct AddArgs {
     /// land on disk.
     #[arg(long)]
     dry_run: bool,
+    /// Phase 2 of `feature/multi-model-subagents`: attach a
+    /// free-text note to the entry. Parent agents read this via
+    /// the `model_list` tool before choosing which model to
+    /// spawn with — standardized `ModelSpec` flags cannot
+    /// capture subjective annotations like "use it for cron".
+    /// Empty string is rejected; pass no flag to leave the note
+    /// unchanged on `edit`. Capped at 500 chars (enforced by
+    /// the catalog).
+    #[arg(long, value_name = "TEXT")]
+    note: Option<String>,
+}
+
+/// Arguments for `peko model edit`. Today only `--note` is
+/// editable; future per-field edits (display_name, headers,
+/// credential_id) can extend the struct without breaking the
+/// CLI shape.
+#[derive(clap::Args)]
+pub struct EditArgs {
+    /// Configured model id to edit.
+    id: String,
+    /// Replace the user note attached to this entry. Pass an
+    /// empty string in `--note ""` to clear an existing note.
+    /// Omit the flag to leave the note unchanged. Capped at
+    /// 500 chars.
+    #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
+    note: Option<String>,
+    /// Print what would change without touching the catalog.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 /// Execute a model subcommand.
@@ -230,6 +262,7 @@ pub async fn execute(cmd: ModelCommands, paths: &GlobalPaths) -> Result<()> {
         ModelCommands::Compare { ids, json } => compare_cmd(&ids, paths, json).await,
         ModelCommands::Search(args) => search_cmd(args, paths).await,
         ModelCommands::Add(args) => add_cmd(args, paths).await,
+        ModelCommands::Edit(args) => edit_cmd(args, paths).await,
         ModelCommands::Remove { id, dry_run } => remove_cmd(&id, paths, dry_run).await,
         ModelCommands::Test { id } => test_cmd(&id, paths).await,
     }
@@ -334,11 +367,27 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool, json: bool) -> Result<()>
             if !e.headers.is_empty() {
                 println!("      headers:       {} item(s)", e.headers.len());
             }
+            if let Some(ref note) = e.note {
+                println!("      note:          {}", truncate_note(note, 80));
+            }
             println!();
         }
     }
 
     Ok(())
+}
+
+/// Truncate a user note to `max_chars` runes with a trailing `…`
+/// when shortened. Used by `peko model list --detailed` so the
+/// table stays compact; `peko model show` prints the full text.
+fn truncate_note(s: &str, max_chars: usize) -> String {
+    let total = s.chars().count();
+    if total <= max_chars {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 async fn templates_cmd() -> Result<()> {
@@ -408,6 +457,9 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
         if let Some(dn) = args.display_name.clone() {
             entry.display_name = dn;
         }
+        if let Some(note) = args.note.clone() {
+            entry.note = Some(note);
+        }
         entry
     } else if args.custom {
         let api_format_str = args.api_format.as_deref().with_context(|| {
@@ -443,6 +495,7 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
             updated_at: chrono::Utc::now(),
             compat: None,
             spec: None,
+            note: args.note.clone(),
         }
     } else {
         unreachable!("guarded by the bare-invocation check above");
@@ -556,6 +609,58 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
             "Next: store its API key with: peko credential set llm {entry_id} --kind api_key --material \"$YOUR_KEY\"\n\
              (or re-run `peko model add` with --key to store and wire it in one step)"
         );
+    }
+
+    notify_daemon_reload().await;
+    Ok(())
+}
+
+/// Edit an existing catalog entry. Only the supplied flags are
+/// touched; everything else is preserved. Phase 2 ships only
+/// `--note` (and the dry-run escape hatch).
+async fn edit_cmd(args: EditArgs, paths: &GlobalPaths) -> Result<()> {
+    let cat = open_catalog(paths).await?;
+    let id = &args.id;
+    let mut entry = cat
+        .get(id)
+        .await
+        .with_context(|| format!("model not found in catalog: {id}"))?;
+
+    let before_note = entry.note.clone();
+
+    if let Some(note) = args.note.clone() {
+        if note.is_empty() {
+            // Empty string in `--note ""` clears the note.
+            entry.note = None;
+        } else {
+            entry.note = Some(note);
+        }
+    }
+
+    // Validate the resulting entry via the catalog's normal
+    // `upsert` path so the 500-char cap (and any future caps)
+    // apply uniformly across add / edit / IPC.
+    let new_note = entry.note.clone();
+    if args.dry_run {
+        println!("[dry-run] Would edit model '{id}'.");
+        if before_note != new_note {
+            println!("  note: {:?} -> {:?}", before_note, new_note);
+        } else {
+            println!("  (no changes)");
+        }
+        return Ok(());
+    }
+
+    cat.upsert(entry).await.with_context(|| {
+        format!(
+            "failed to update model '{id}' — note must be ≤500 chars"
+        )
+    })?;
+
+    if before_note != new_note {
+        println!("Updated note on '{id}'.");
+    } else {
+        println!("No changes to '{id}'.");
     }
 
     notify_daemon_reload().await;
@@ -677,6 +782,14 @@ struct ModelSummaryWire {
     /// `ModelSpec::default()` (text-only, no tools, no thinking,
     /// streaming on).
     spec: Option<ModelSpecWire>,
+    /// Phase 2 of `feature/multi-model-subagents`: free-text
+    /// user note attached to this entry. Surfaced to the parent
+    /// agent via the `model_list` tool and to operators via
+    /// `peko model show`. Skipped from JSON when absent so
+    /// pre-Phase-2 entries deserialize cleanly into the new
+    /// field set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
 }
 
 impl ModelSummaryWire {
@@ -699,6 +812,7 @@ impl ModelSummaryWire {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             spec: cfg.spec.map(ModelSpecWire::from_spec),
+            note: cfg.note.clone(),
         }
     }
 }
@@ -855,6 +969,9 @@ fn print_detail(e: &ModelConfig) {
             println!("    spec:            (none — pre-PR-1 entry)");
         }
     }
+    if let Some(note) = &e.note {
+        println!("    note:            {note}");
+    }
     println!("    created_at:      {}", e.created_at.to_rfc3339());
     println!("    updated_at:      {}", e.updated_at.to_rfc3339());
 }
@@ -900,6 +1017,10 @@ fn render_add_command(e: &ModelConfig) -> String {
     if let Some(cid) = &e.credential_id {
         parts.push("--credential-id".to_string());
         parts.push(cid.clone());
+    }
+    if let Some(note) = &e.note {
+        parts.push("--note".to_string());
+        parts.push(note.clone());
     }
     parts.join(" ")
 }
@@ -1336,6 +1457,10 @@ mod tests {
             context_window: None,
             max_output_tokens: None,
             dry_run: false,
+            // Phase 2 of `feature/multi-model-subagents` —
+            // tests don't exercise the note flag, so the field
+            // stays at its default.
+            note: None,
         };
         add_cmd(args, &paths)
             .await
@@ -1382,6 +1507,10 @@ mod tests {
             context_window: None,
             max_output_tokens: None,
             dry_run: false,
+            // Phase 2 of `feature/multi-model-subagents` —
+            // tests don't exercise the note flag, so the field
+            // stays at its default.
+            note: None,
         };
         let err = add_cmd(args, &paths).await.unwrap_err();
         let msg = err.to_string();
@@ -1410,6 +1539,10 @@ mod tests {
             context_window: None,
             max_output_tokens: None,
             dry_run: false,
+            // Phase 2 of `feature/multi-model-subagents` —
+            // tests don't exercise the note flag, so the field
+            // stays at its default.
+            note: None,
         };
         let err = add_cmd(args, &paths).await.unwrap_err();
         assert!(
@@ -1436,6 +1569,10 @@ mod tests {
             context_window: None,
             max_output_tokens: None,
             dry_run: false,
+            // Phase 2 of `feature/multi-model-subagents` —
+            // tests don't exercise the note flag, so the field
+            // stays at its default.
+            note: None,
         };
         let err = add_cmd(args, &paths).await.unwrap_err();
         assert!(
@@ -1469,6 +1606,9 @@ mod tests {
                 context_window: None,
                 max_output_tokens: None,
                 dry_run: false,
+                // Phase 2 — tests don't exercise the note flag,
+                // so the field stays at its default.
+                note: None,
             },
             &paths,
         )
@@ -1488,6 +1628,9 @@ mod tests {
                 context_window: None,
                 max_output_tokens: None,
                 dry_run: false,
+                // Phase 2 — tests don't exercise the note flag,
+                // so the field stays at its default.
+                note: None,
             },
             &paths,
         )
@@ -1538,6 +1681,161 @@ mod tests {
         // spec is populated by PR 1 backfill — vision-capable
         assert!(s.contains("\"imageInput\":true"));
         assert!(s.contains("\"toolSupport\":\"function_calling\""));
+    }
+
+    // ─── Phase 2 of `feature/multi-model-subagents`: `--note` ──
+
+    /// `--note` is threaded through `peko model add` and round-trips
+    /// to disk + the wire projection.
+    #[tokio::test]
+    #[serial_test::serial(vault_passphrase)]
+    async fn add_with_note_persists_and_round_trips() {
+        let paths = fresh_paths();
+        add_cmd(
+            AddArgs {
+                template: Some("anthropic".into()),
+                id: None,
+                model: Some("claude-3-5-haiku-latest".into()),
+                display_name: None,
+                custom: false,
+                api_format: None,
+                base_url: None,
+                key: Some("sk-ant-test-key".into()),
+                credential_id: None,
+                context_window: None,
+                max_output_tokens: None,
+                dry_run: false,
+                note: Some("very cheap, use it for cron".into()),
+            },
+            &paths,
+        )
+        .await
+        .expect("add should succeed");
+
+        let cat = peko_providers::catalog::ModelCatalog::load_or_init(
+            &paths.config_dir.join(peko_providers::catalog::ModelCatalog::FILENAME),
+        )
+        .await
+        .unwrap();
+        let entry = cat
+            .get("anthropic-claude-3-5-haiku-latest")
+            .await
+            .expect("entry exists");
+        assert_eq!(
+            entry.note.as_deref(),
+            Some("very cheap, use it for cron"),
+            "note must round-trip to disk"
+        );
+
+        // Wire projection also exposes the note.
+        let wire = ModelSummaryWire::from_config(&entry);
+        let s = serde_json::to_string(&wire).unwrap();
+        assert!(s.contains("\"note\":\"very cheap, use it for cron\""));
+    }
+
+    /// `--note ""` clears the note via the edit path.
+    #[tokio::test]
+    #[serial_test::serial(vault_passphrase)]
+    async fn edit_with_empty_note_clears_existing_note() {
+        let paths = fresh_paths();
+        add_cmd(
+            AddArgs {
+                template: Some("anthropic".into()),
+                id: None,
+                model: Some("claude-3-5-haiku-latest".into()),
+                display_name: None,
+                custom: false,
+                api_format: None,
+                base_url: None,
+                key: Some("sk-ant-test-key".into()),
+                credential_id: None,
+                context_window: None,
+                max_output_tokens: None,
+                dry_run: false,
+                note: Some("very cheap, use it for cron".into()),
+            },
+            &paths,
+        )
+        .await
+        .expect("add succeeds");
+
+        edit_cmd(
+            EditArgs {
+                id: "anthropic-claude-3-5-haiku-latest".into(),
+                note: Some(String::new()),
+                dry_run: false,
+            },
+            &paths,
+        )
+        .await
+        .expect("edit succeeds");
+
+        let cat = peko_providers::catalog::ModelCatalog::load_or_init(
+            &paths.config_dir.join(peko_providers::catalog::ModelCatalog::FILENAME),
+        )
+        .await
+        .unwrap();
+        let entry = cat
+            .get("anthropic-claude-3-5-haiku-latest")
+            .await
+            .expect("entry exists");
+        assert!(entry.note.is_none(), "empty string must clear the note");
+    }
+
+    /// `--note` longer than 500 chars is rejected by `edit_cmd` (the
+    /// catalog validator enforces the cap).
+    #[tokio::test]
+    #[serial_test::serial(vault_passphrase)]
+    async fn edit_with_overlong_note_errors() {
+        let paths = fresh_paths();
+        add_cmd(
+            AddArgs {
+                template: Some("anthropic".into()),
+                id: None,
+                model: Some("claude-3-5-haiku-latest".into()),
+                display_name: None,
+                custom: false,
+                api_format: None,
+                base_url: None,
+                key: Some("sk-ant-test-key".into()),
+                credential_id: None,
+                context_window: None,
+                max_output_tokens: None,
+                dry_run: false,
+                note: None,
+            },
+            &paths,
+        )
+        .await
+        .expect("add succeeds");
+
+        let too_long: String = std::iter::repeat('x')
+            .take(peko_providers::catalog::NOTE_MAX_CHARS + 1)
+            .collect();
+        let err = edit_cmd(
+            EditArgs {
+                id: "anthropic-claude-3-5-haiku-latest".into(),
+                note: Some(too_long),
+                dry_run: false,
+            },
+            &paths,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("500"),
+            "expected 500-char message, got: {err}"
+        );
+    }
+
+    /// `truncate_note` shortens long strings with `…`.
+    #[test]
+    fn truncate_note_shortens_with_ellipsis() {
+        let s = "a".repeat(200);
+        let t = truncate_note(&s, 10);
+        assert!(t.ends_with('…'));
+        // 9 chars + ellipsis char
+        assert!(t.chars().count() <= 11);
     }
 
     #[tokio::test]
@@ -1750,6 +2048,9 @@ mod tests {
                 context_window: None,
                 max_output_tokens: None,
                 dry_run: true,
+                // Phase 2 — tests don't exercise the note flag,
+                // so the field stays at its default.
+                note: None,
             },
             &paths,
         )

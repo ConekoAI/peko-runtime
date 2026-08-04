@@ -323,6 +323,17 @@ where
     // `ctx.plan_port()` returns the per-Principal handle from
     // `PrincipalContext::plan_port` (set by the factory in PR #1).
     .with_principal_plan_port(Arc::clone(ctx.plan_port()))
+    // Phase 2 of `feature/multi-model-subagents`: bind the
+    // principal's `ModelCatalog` (sourced from the same `LlmResolver`
+    // the agent already uses for model resolution) so
+    // `init_builtins_async` can register the `model_list` builtin.
+    // `ctx.resolver` is `Option` because the CLI one-shot path
+    // builds a stateless `Agent` without a resolver; in that case
+    // the `model_list` tool is intentionally omitted (`None` ⇒
+    // `init_builtins_async` skips registration).
+    .with_model_catalog(
+        ctx.resolver.as_ref().map(|r| Arc::clone(r.catalog())),
+    )
     // Phase 4b: bind caller DID so `principal_send` is registered.
     // `None` ⇒ tool is intentionally omitted (no local-only fallback
     // for `principal_send`; it is exclusively cross-runtime).

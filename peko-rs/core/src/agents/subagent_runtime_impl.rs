@@ -131,6 +131,10 @@ impl SubagentExecutorRuntime {
             enable_task_tools: config.enable_task_tools,
             enable_async_tools: config.enable_async_tools,
             enable_tool_search: config.enable_tool_search,
+            // Phase 2 of `feature/multi-model-subagents`: project
+            // the `enable_model_list` flag so the builtin's view of
+            // the config matches the canonical `AgentConfig`.
+            enable_model_list: config.enable_model_list,
             channel: config.channel.clone(),
             thinking_level: config.thinking_level.clone(),
             sandbox_enabled: config.sandbox_enabled,

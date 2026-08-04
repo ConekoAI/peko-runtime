@@ -187,6 +187,10 @@ mod tests {
             is_local: false,
             enabled: true,
             spec: None,
+            // Phase 2 of `feature/multi-model-subagents`: test
+            // fixtures carry no annotations. `None` keeps the
+            // pre-Phase-2 default.
+            note: None,
         }
     }
 

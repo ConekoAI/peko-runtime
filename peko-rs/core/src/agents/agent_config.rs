@@ -100,6 +100,21 @@ pub struct AgentConfig {
     #[serde(default)]
     pub enable_tool_search: bool,
 
+    /// Phase 2 of `feature/multi-model-subagents`: whether the
+    /// `model_list` builtin is registered for this agent. Defaults
+    /// to `true` because discoverability matters for the parent
+    /// agent's model-picking decisions — without `model_list` the
+    /// parent must shell out to `peko model list` between turns,
+    /// breaking the agentic flow. Off when the agent is run in a
+    /// constrained mode that already knows the catalog statically
+    /// (test fixtures, the CLI one-shot path with no resolver).
+    ///
+    /// No effect when the agent has no bound `ModelCatalog` — the
+    /// registration site checks both this flag and the catalog
+    /// handle before instantiating the tool.
+    #[serde(default = "default_true")]
+    pub enable_model_list: bool,
+
     /// Channel that triggered this agent's LLM calls (CLI, Discord, etc.).
     ///
     /// Surfaces in the rendered system prompt at `{{channel}}` and in the
@@ -171,6 +186,9 @@ impl Default for AgentConfig {
             // F35 — opt-in deferred-tool discovery stub. Off by default
             // so a fresh runtime doesn't pay the prompt-token cost.
             enable_tool_search: false,
+            // Phase 2 — `model_list` on by default; parent agents
+            // need discovery to pick child models.
+            enable_model_list: true,
             // Phase 2 inert fields. The renderer reads these from
             // `AgentConfig` via `Agent` accessors; `None`/`false`/`[]`
             // here preserves the legacy hardcoded runtime defaults
@@ -202,6 +220,9 @@ mod tests {
         assert!(config.enable_async_tools);
         // F35 — opt-in deferred-tool discovery stub defaults off.
         assert!(!config.enable_tool_search);
+        // Phase 2 — `model_list` defaults on so the parent agent can
+        // discover the catalog before picking a child model.
+        assert!(config.enable_model_list);
         // Issue #28: `agent_did` is `None` by default — back-filled on
         // first `Agent::new()` and persisted into config.toml.
         assert!(config.agent_did.is_none());

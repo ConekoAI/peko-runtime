@@ -35,6 +35,14 @@ pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] = &[
     "TaskGet",
     "TaskList",
     "TaskUpdate",
+    // F35 — synthetic deferred-tool discovery stub. Registered
+    // per-agent when `AgentConfig.enable_tool_search` is true.
+    "__tool_search",
+    // Phase 2 of `feature/multi-model-subagents` — `model_list`
+    // builtin. Registered per-agent when both
+    // `AgentConfig.enable_model_list` and a bound `ModelCatalog`
+    // are present.
+    "model_list",
 ];
 
 /// Concatenation of [`GLOBAL_TOOL_NAMES`] and [`AGENT_SPECIFIC_TOOL_NAMES`].

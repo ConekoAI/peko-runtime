@@ -2302,6 +2302,11 @@ fn model_summary_from_config(
         // attachment picker, tool toggle, thinking toggle, JSON
         // toggle, etc. without hard-coding per-model branches.
         spec: entry.spec.map(model_spec_to_wire),
+        // Phase 2 of `feature/multi-model-subagents`: forward
+        // the user note so the desktop can render it on each
+        // catalog card. Parent agents reading `model_list` see
+        // the same field.
+        note: entry.note.clone(),
     }
 }
 
@@ -2488,6 +2493,15 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
                 updated_at: chrono::Utc::now(),
                 compat: None,
                 spec: None,
+                // Phase 2 of `feature/multi-model-subagents`: the
+                // IPC `models.upsert` accepts `note` via the CLI
+                // `--note` flag; this branch is the `--custom`
+                // non-template path where the IPC handler hasn't
+                // surfaced a note yet (only the CLI's `model
+                // add --custom --note ...` path does). `None`
+                // preserves the pre-Phase-2 default; users edit
+                // notes via `peko model edit --note ...`.
+                note: None,
             }
         } else {
             // Bare-invocation guard. The handler also short-circuits

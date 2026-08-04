@@ -443,6 +443,8 @@ mod tests {
             updated_at: chrono::Utc::now(),
             compat: None,
             spec: None,
+            // Phase 2 — no annotation.
+            note: None,
         }
     }
 

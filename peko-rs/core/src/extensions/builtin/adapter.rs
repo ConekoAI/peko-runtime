@@ -338,6 +338,25 @@ impl BuiltinToolAdapter {
         Self::register_tool(core, tool, principal_id).await
     }
 
+    /// Phase 2 of `feature/multi-model-subagents`: register the
+    /// `model_list` builtin so the parent agent can discover what
+    /// models the principal has configured before picking which one
+    /// to spawn a subagent against. The tool holds a
+    /// `Weak<ModelCatalog>` (not `Arc`) so it does not extend the
+    /// catalog's lifetime past the daemon.
+    ///
+    /// Registered under the calling agent's `principal_id` (not the
+    /// system scope) so each agent gets its own `model_list`
+    /// instance whose `Weak<ModelCatalog>` upgrades to the
+    /// principal's catalog at execute time.
+    pub async fn register_model_list_tool(
+        core: &ExtensionCore,
+        tool: Arc<crate::tools::builtin::ModelListTool>,
+        principal_id: &PrincipalId,
+    ) -> Result<()> {
+        Self::register_tool(core, tool, principal_id).await
+    }
+
     /// Get list of globally-registered built-in tool names.
     ///
     /// These tools are registered once at daemon startup by
