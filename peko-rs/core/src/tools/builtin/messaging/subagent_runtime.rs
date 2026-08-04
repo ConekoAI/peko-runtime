@@ -133,6 +133,13 @@ pub struct SpawnRequest {
     /// The resolved subagent config (from
     /// [`SubagentRuntime::resolve_agent_config`]).
     pub subagent_config: AgentConfig,
+    /// Phase 1 of `feature/multi-model-subagents`: optional
+    /// catalog model id the parent picked for this spawn. When
+    /// `Some`, the subagent dispatches its LLM calls against this
+    /// model instead of inheriting the parent's model verbatim.
+    /// `None` falls back to the parent's model (the historical
+    /// behavior).
+    pub model: Option<String>,
 }
 
 // ─── SpawnAuditEvent (port input DTO) ─────────────────────────────
@@ -158,4 +165,10 @@ pub struct SpawnAuditEvent {
     pub description: Option<String>,
     /// Parent session key.
     pub parent_session_key: String,
+    /// Phase 1: catalog model id the parent picked for this
+    /// spawn (when a non-default model was chosen). `None` means
+    /// the child inherited the parent's model verbatim. Surfaced
+    /// in the audit row under `model_id` so `peko audit tail`
+    /// shows the parent-driven model choice.
+    pub model_id: Option<String>,
 }

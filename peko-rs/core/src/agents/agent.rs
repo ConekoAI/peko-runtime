@@ -866,6 +866,46 @@ impl Agent {
             crate::extensions::framework::types::ActiveExtensionSet,
         >,
     ) -> Result<Self> {
+        Self::new_with_shared_executor_with_model_override(
+            config,
+            session_manager,
+            subagent_executor,
+            inherited_provider,
+            principal_capabilities,
+            principal_active_extensions,
+            None,
+        )
+        .await
+    }
+
+    /// Phase 1 of `feature/multi-model-subagents`: variant of
+    /// [`new_with_shared_executor`] that lets the caller stamp the
+    /// `resolved_model_id` directly when the inherited provider was
+    /// already overridden at the call site (e.g. via
+    /// `Provider::with_model_id`). Without this hook the
+    /// inherited-provider branch returns `(Some(p), None)` and the
+    /// renderer's `{{runtime}}` line falls back to
+    /// `provider.model_id()` — which already reflects the
+    /// override, so this is mostly belt-and-suspenders to keep the
+    /// catalog id explicit. The hard work happens in
+    /// `execute_subagent_task`: it clones the provider with
+    /// `with_model_id` and pre-flights `SpecGate::check`.
+    pub async fn new_with_shared_executor_with_model_override(
+        config: AgentConfig,
+        session_manager: Arc<TokioRwLock<SessionManager>>,
+        subagent_executor: Arc<SubagentExecutor>,
+        inherited_provider: Option<Arc<peko_providers::Provider>>,
+        principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
+        principal_active_extensions: Option<
+            crate::extensions::framework::types::ActiveExtensionSet,
+        >,
+        // Optional catalog id the caller stamped on the inherited
+        // provider (Phase 1). `None` keeps the pre-Phase-1
+        // behavior: `resolved_model_id` is `None` for the
+        // inherited-provider branch and the renderer falls back to
+        // `provider.model_id()`.
+        resolved_model_id_override: Option<String>,
+    ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
         let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
@@ -901,7 +941,7 @@ impl Agent {
         // lookup cost twice. Fall back to the v3 resolver path if the
         // caller didn't supply one (e.g., unit tests).
         let (provider, resolved_model_id) = match inherited_provider {
-            Some(p) => (Some(p), None),
+            Some(p) => (Some(p), resolved_model_id_override),
             // Subagent path: no principal binding, so no provider hint;
             // the resolver falls back to the catalog default.
             None => match Self::init_provider(&config, None, None, None).await? {

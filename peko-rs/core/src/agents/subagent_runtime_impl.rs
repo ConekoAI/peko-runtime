@@ -157,6 +157,12 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         &self,
         name: &str,
         workspace: Option<&Path>,
+        // Phase 1: forwarded into the returned `AgentConfig` via
+        // the existing `model_aliases` so the spawn-time override
+        // plumbing in `AgentTool` can pick it up. The actual
+        // provider override happens in `execute_subagent_task` —
+        // `resolve_agent_config` only carries the requested model
+        // id for the agent-side `model_aliases` resolution.
         _model_override: Option<&str>,
     ) -> anyhow::Result<BuiltinAgentConfig> {
         // Prefer a principal-scoped AGENT.md when a workspace is bound;
@@ -201,6 +207,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             "cleanup": cleanup_label,
             "description": event.description,
             "parent_session_key": event.parent_session_key,
+            "model_id": event.model_id,
         });
 
         if let Err(e) = obs
@@ -215,6 +222,15 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         let timeout_seconds = request.timeout_seconds;
         let parent_session_key = request.parent_session_key.clone();
         let prompt = request.prompt.clone();
+        // Phase 1: the parent-driven model id (if any). Caller puts
+        // it on `ExecutionConfig.model_override`; we lift it onto the
+        // root-side `ExecutionConfig` and clear it from the source so
+        // the built-in shape stays single-source. When `request.model`
+        // is `Some`, it wins — the parent picked it directly.
+        let model_override = request
+            .model
+            .clone()
+            .or_else(|| request.config.model_override.clone());
 
         // Translate the built-in's `ExecutionConfig` to the root's
         // `ExecutionConfig`. Both are structurally identical (timeout,
@@ -226,6 +242,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             label: request.config.label,
             announce_completion: request.config.announce_completion,
             max_depth: request.config.max_depth,
+            model_override,
         };
 
         let view = self

@@ -267,6 +267,23 @@ impl Provider {
         &self.options
     }
 
+    /// Override the provider's `default_model_id`, returning a new
+    /// `Provider` with the same client/adapter and the new model id.
+    ///
+    /// Used by `Agent::new_with_shared_executor` when a spawn
+    /// inherits the parent's provider but needs to dispatch
+    /// requests against a different catalog id (multi-model
+    /// subagents, Phase 1 of `feature/multi-model-subagents`). The
+    /// options struct is otherwise unchanged — same context
+    /// window, same headers, same spec — so callers that pre-flown
+    /// the spec via `provider.spec()` see the new id paired with
+    /// the original `ModelSpec`.
+    #[must_use]
+    pub fn with_model_id(mut self, model_id: impl Into<String>) -> Self {
+        self.options.default_model_id = model_id.into();
+        self
+    }
+
     /// PR 2 / `feature/model-first-config`: declarative capability
     /// descriptor copied from `ModelConfig::spec` at factory time.
     /// Returns `None` for entries written before PR 1; the engine

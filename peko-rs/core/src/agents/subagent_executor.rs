@@ -74,6 +74,16 @@ pub struct ExecutionConfig {
     pub announce_completion: bool,
     /// Maximum spawn depth (0 = unlimited)
     pub max_depth: u32,
+    /// Phase 1 of `feature/multi-model-subagents`: optional
+    /// catalog model id the parent picked for this spawn. The
+    /// adapter at `agents::subagent_runtime_impl.rs` projects this
+    /// from the built-in's `ExecutionConfig::model_override`. When
+    /// `Some`, `execute_subagent_task` clones the inherited
+    /// provider and overrides `default_model_id` before handing it
+    /// to `Agent::new_with_shared_executor`. `None` means
+    /// "inherit the parent's model verbatim" (pre-Phase-1
+    /// behavior).
+    pub model_override: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -84,6 +94,7 @@ impl Default for ExecutionConfig {
             label: None,
             announce_completion: true,
             max_depth: 1, // Default: no nested spawns
+            model_override: None,
         }
     }
 }
@@ -550,6 +561,11 @@ impl SubagentExecutor {
         // propagation but means a child cancel would also cancel the
         // parent — wrong direction. Derivation fixes both directions.
         let child_cancel_for_closure = parent_cancel.as_ref().map(|t| t.child_token());
+        // Phase 1: clone the model override so the spawned task can
+        // honor the parent-driven model choice inside
+        // `execute_subagent_task` (task-locals don't cross
+        // `tokio::spawn`, but plain owned Strings do).
+        let model_override_clone = config.model_override.clone();
 
         self.unified_executor
             .execute_with_metadata(
@@ -598,6 +614,7 @@ impl SubagentExecutor {
                         &child_session_key_clone,
                         &system_prompt,
                         &task_message,
+                        model_override_clone, // Phase 1
                         provider_clone,
                         agent_config_clone,
                         session_manager_clone,
@@ -995,6 +1012,14 @@ async fn execute_subagent_task(
     session_key: &str,
     system_prompt: &str,
     task_message: &str,
+    // Phase 1 of `feature/multi-model-subagents`: when the parent
+    // picked a model for this spawn, `model_override` is the catalog
+    // id. `None` means "inherit the parent's model verbatim"
+    // (pre-Phase-1 behavior). Inside the function we clone the
+    // inherited provider, stamp `default_model_id`, and pre-flight
+    // `SpecGate::check` against the new spec before handing the
+    // provider to `Agent::new_with_shared_executor`.
+    model_override: Option<String>,
     provider: Option<Arc<peko_providers::Provider>>,
     agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
@@ -1033,6 +1058,32 @@ async fn execute_subagent_task(
             ));
         }
     };
+
+    // Phase 1: parent-driven model selection. When the parent
+    // picked a model for this spawn, clone the inherited provider's
+    // inner `Provider` (cheap — ProviderRuntimeOptions is small),
+    // stamp `default_model_id`, and re-wrap in a new `Arc`. The
+    // pre-existing Arc refcount is preserved on the original; the
+    // new Arc is a sibling. `provider.spec()` is shared unchanged,
+    // so `SpecGate::check` sees the same capability descriptor the
+    // parent used.
+    let provider = if let Some(ref id) = model_override {
+        let inner = Arc::try_unwrap(provider).unwrap_or_else(|arc| (*arc).clone());
+        let new_provider = inner.with_model_id(id.clone());
+        info!(
+            "Subagent '{}' dispatching with parent-picked model: {}",
+            agent_name, id
+        );
+        Arc::new(new_provider)
+    } else {
+        provider
+    };
+    // Capture the resolved model id so `Agent::new_with_shared_executor`
+    // sees a non-`None` `resolved_model_id` when a parent picked a
+    // model (the inherited-provider branch currently returns `None`,
+    // which would make the renderer fall back to the parent's
+    // `default_model_id` instead of the chosen override).
+    let resolved_model_id_override: Option<String> = model_override.clone();
 
     // Get the base session key from the session key
     let base_key = peko_session::key::base_key_from_overlay(session_key)
@@ -1093,7 +1144,17 @@ async fn execute_subagent_task(
     .with_agent_config(config.clone())
     .with_principal_capabilities(principal_capabilities.clone())
     .with_active_extensions(active_extensions.clone())
-    .with_observability(observability.clone());
+    .with_observability(observability.clone())
+    // F39: nested sub-subagents must inherit the parent meters so
+    // they too charge against the spawning principal (not
+    // `unlimited()`). `parent_quota_meter` / `parent_peer_meter`
+    // come from the closure that spawned this task — they reflect
+    // the chain back to the root principal. When `None` (no
+    // quota config), subagent meter attribution falls open to
+    // `QuotaMeter::unlimited()` inside the nested
+    // `execute_subagent_task`, matching pre-F39 behavior.
+    .with_quota_meter(parent_quota_meter.clone())
+    .with_peer_meter(parent_peer_meter.clone());
     if let Some(ref ws) = principal_workspace {
         shared_executor_builder = shared_executor_builder.with_principal_workspace(ws.clone());
     }
@@ -1104,16 +1165,64 @@ async fn execute_subagent_task(
     // `new_with_shared_executor` no longer re-resolves a provider (the v1
     // `[provider]` fallback was removed in PR #44) and would otherwise fail
     // `execute_with_session` with "No provider configured".
-    let mut subagent = crate::agents::Agent::new_with_shared_executor(
+    //
+    // Phase 1: when the parent picked a model for this spawn, the
+    // provider above already carries the new `default_model_id` (we
+    // cloned with `with_model_id` earlier). Forward
+    // `model_override` as the `resolved_model_id` so the renderer
+    // surfaces the parent-driven id rather than the inherited
+    // default. The pre-flight SpecGate check below is what makes
+    // the override authoritative — without it the loop would
+    // accept requests the new model cannot serve and surface
+    // confusing provider errors on the first LLM call.
+    let mut subagent = crate::agents::Agent::new_with_shared_executor_with_model_override(
         config,
         session_manager,
         shared_executor,
         Some(provider.clone()),
         principal_capabilities,
         active_extensions,
+        resolved_model_id_override.clone(),
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
+
+    // Phase 1: pre-flight `SpecGate::check` against the resolved
+    // provider's `ModelSpec`. The provider carries the override
+    // id (or the inherited id when `None`), so this checks "can the
+    // chosen model serve the tools the subagent will need?". The
+    // request envelope here is empty — the gate looks at the
+    // bound provider's `tool_support` / `thinking` / `image_input`
+    // capabilities directly. A refusal here means "your chosen
+    // model cannot use the tools we would hand it", which is the
+    // right failure mode for a parent that picked e.g. a
+    // text-only model for a tool-using subagent.
+    if let Some(spec) = provider.spec() {
+        if let Err(gate_err) = peko_engine::spec_gate::check(
+            Some(spec),
+            &provider.model_id(),
+            provider.name(),
+            &[],
+            // Empty tool defs here — the gate only refuses when
+            // the spec says `tool_support == None`, which is the
+            // mismatch we want to surface. Per-call gates inside
+            // the loop handle the actual tool set.
+            &[],
+            &peko_provider_api::ChatOptions::default(),
+        ) {
+            warn!(
+                "SpecGate refused subagent '{}' against model '{}': {}",
+                agent_name,
+                provider.model_id(),
+                gate_err
+            );
+            return Err(anyhow::anyhow!(
+                "Model '{model}' cannot serve this subagent: {reason}",
+                model = provider.model_id(),
+                reason = gate_err
+            ));
+        }
+    }
 
     // Scope the child's own `Agent` tool to the principal workspace so it can
     // resolve and delegate to nested subagents (depth 2+).

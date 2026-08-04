@@ -347,6 +347,15 @@ where
         // own seven `Plan*` tools.
         .with_principal_plan_port(Arc::clone(ctx.plan_port()))
         .with_observability(ctx.observability().cloned())
+        // F39: chain the principal's quota meters so subagent LLM
+        // calls charge against the parent principal instead of
+        // falling open to `QuotaMeter::unlimited()`. Pre-F39
+        // wiring left these `None`, so subagent LLM traffic was
+        // unattributed. `ctx.quota_meter()` / `ctx.peer_meter()`
+        // return `Option` — principals with no quota config keep
+        // the old behavior.
+        .with_quota_meter(ctx.quota_meter().map(Arc::clone))
+        .with_peer_meter(ctx.peer_meter().map(Arc::clone))
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
             // `PathResolver::principal_dir`), so the principal.toml path is
