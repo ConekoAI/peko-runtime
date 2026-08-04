@@ -135,6 +135,16 @@ impl StackedMeteredProvider {
         self.inner.supports_prompt_cache_control()
     }
 
+    /// PR 2 / `feature/model-first-config`: declarative capability
+    /// descriptor for the bound model. `None` for entries written
+    /// before PR 1; the engine's spec gate treats that as "no
+    /// gate" so pre-PR-1 setups keep working. Field access at
+    /// `agentic_loop.rs:2240` — `provider.spec()`.
+    #[must_use]
+    pub fn spec(&self) -> Option<peko_providers::spec::ModelSpec> {
+        self.inner.spec()
+    }
+
     /// How many meters are stacked on this wrapper. Empty means
     /// passthrough (no quota will be charged).
     #[must_use]

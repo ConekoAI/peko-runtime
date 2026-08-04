@@ -2221,7 +2221,26 @@ impl AgenticLoop {
         >,
     > {
         use crate::compaction::drop_oldest_respecting_pairs;
+        use crate::spec_gate::check as check_spec;
         use peko_provider_api::is_context_window_exceeded;
+
+        // PR 2 / `feature/model-first-config`: refuse the call if
+        // the bound model's `ModelSpec` does not declare a
+        // capability the request would hit (image / audio / tools /
+        // thinking). Pre-PR-1 entries (spec == None) skip the gate
+        // so legacy catalogs keep working. The refusal is
+        // structured (`SpecGateError` → `AgenticError::SpecViolation`)
+        // so callers can render "this model doesn't accept images"
+        // without parsing provider strings.
+        check_spec(
+            provider.spec(),
+            model_id,
+            provider.name(),
+            messages,
+            tool_defs,
+            options,
+        )
+        .map_err(crate::AgenticError::from)?;
 
         let native_streaming = provider.supports_native_tools();
         let mut current: Vec<LlmMessage> = messages.to_vec();

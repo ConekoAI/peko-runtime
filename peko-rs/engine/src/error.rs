@@ -68,6 +68,17 @@ pub enum AgenticError {
         /// budget-exhaustion event (preserved verbatim).
         cause: String,
     },
+
+    /// PR 2 / `feature/model-first-config`: an outgoing LLM call
+    /// was refused because the bound model's `ModelSpec` does not
+    /// declare the capability the request would hit (image /
+    /// audio / tools / thinking). The inner `SpecGateError` carries
+    /// the specific capability and a structured message suitable
+    /// for the CLI / desktop UI. Callers branch on
+    /// `.as_spec_violation()` for the typed surface or fall
+    /// through to `Display` for the existing string path.
+    #[error(transparent)]
+    SpecViolation(#[from] crate::SpecGateError),
 }
 
 impl AgenticError {
@@ -105,6 +116,18 @@ impl AgenticError {
                 max_attempts,
                 cause,
             } => Some((*attempts, *max_attempts, cause)),
+            _ => None,
+        }
+    }
+
+    /// PR 2: if this is a spec-gate refusal, return a reference to
+    /// the typed `SpecGateError`. Lets callers render
+    /// "model X doesn't accept images" UX without matching the
+    /// variant shape manually.
+    #[must_use]
+    pub fn as_spec_violation(&self) -> Option<&crate::SpecGateError> {
+        match self {
+            AgenticError::SpecViolation(e) => Some(e),
             _ => None,
         }
     }

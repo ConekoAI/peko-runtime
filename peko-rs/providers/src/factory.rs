@@ -106,6 +106,11 @@ pub fn create_provider_for_model(
         // ±N% backoff spread. `None` here means "deterministic
         // pre-F40 behavior"; `Some(0.1)` matches codex's default.
         retry_jitter: retry.retry_jitter,
+        // PR 2 / `feature/model-first-config`: forward the
+        // declarative capability descriptor so `ProviderView::spec()`
+        // returns it. The engine's spec gate reads it to refuse
+        // requests that would hit a capability the model lacks.
+        spec: config.spec,
     };
 
     Provider::new(adapter, api_key.to_string(), options).map(Arc::new)

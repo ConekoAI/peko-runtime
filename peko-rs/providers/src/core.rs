@@ -57,6 +57,16 @@ pub struct ProviderRuntimeOptions {
     /// ±10% default. The factory wires `Some(crate::factory::PROVIDER_JITTER)`
     /// into every provider it constructs.
     pub retry_jitter: Option<f64>,
+    /// PR 2 / `feature/model-first-config`: declarative capability
+    /// descriptor (vision, audio, tools, streaming, thinking,
+    /// json_mode, pricing). Copied from `ModelConfig::spec` when
+    /// the factory builds the provider; surfaced through
+    /// `Provider::spec()` and `ProviderView::spec()` so the
+    /// engine's spec gate can refuse requests that would hit a
+    /// capability the model doesn't have. `None` keeps the
+    /// pre-PR-2 behaviour (no gate), which matches any model
+    /// entry written before the spec was plumbed.
+    pub spec: Option<crate::spec::ModelSpec>,
 }
 
 impl Default for ProviderRuntimeOptions {
@@ -71,6 +81,7 @@ impl Default for ProviderRuntimeOptions {
             session_id: None,
             cache_retention: CacheRetention::Default,
             retry_jitter: None,
+            spec: None,
         }
     }
 }
@@ -254,6 +265,15 @@ impl Provider {
     #[must_use]
     pub fn options(&self) -> &ProviderRuntimeOptions {
         &self.options
+    }
+
+    /// PR 2 / `feature/model-first-config`: declarative capability
+    /// descriptor copied from `ModelConfig::spec` at factory time.
+    /// Returns `None` for entries written before PR 1; the engine
+    /// treats that as "no gate" (pre-PR-2 behavior).
+    #[must_use]
+    pub fn spec(&self) -> Option<crate::spec::ModelSpec> {
+        self.options.spec
     }
 
     /// Check if this provider supports native tool calling

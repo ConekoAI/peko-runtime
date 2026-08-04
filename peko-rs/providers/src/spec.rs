@@ -70,7 +70,7 @@ pub enum ToolSupport {
 ///
 /// Stored as USD per 1M tokens (the unit the industry converged on).
 /// Conversion to other currencies is the desktop's problem.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 pub struct PricingHint {
     /// USD per 1M input tokens. `None` = not advertised.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,15 +78,6 @@ pub struct PricingHint {
     /// USD per 1M output tokens. `None` = not advertised.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_per_million: Option<f64>,
-}
-
-impl Default for PricingHint {
-    fn default() -> Self {
-        Self {
-            input_per_million: None,
-            output_per_million: None,
-        }
-    }
 }
 
 /// Declarative model capability descriptor.
