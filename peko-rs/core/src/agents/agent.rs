@@ -130,6 +130,22 @@ pub struct Agent {
     /// `None` means no catalog is reachable (test path) and the
     /// `model_list` builtin is not registered.
     model_catalog: Option<Arc<peko_providers::catalog::ModelCatalog>>,
+    /// Phase 4 of `feature/multi-model-subagents`: optional audit
+    /// sink forwarded to the `AgenticLoop` so it can emit
+    /// `model.selected` events on every successful LLM call. Bound
+    /// at construction via `with_audit_sink`. Production wiring
+    /// (`principal/agent_runner.rs`) passes an
+    /// `ObservabilityAuditSink` constructed from the principal's
+    /// `Observability` hub.
+    audit_sink: Option<Arc<dyn peko_engine::audit_sink::AuditSink>>,
+    /// Phase 4 of `feature/multi-model-subagents`: closure that
+    /// the loop consults right before emitting the audit event to
+    /// decide `Warning` (first use) vs `Info` (subsequent). The
+    /// closure receives a model id and returns `true` on first
+    /// use of (principal, model). When `None`, the loop emits
+    /// `Info` for every call.
+    audit_first_use_for_model:
+        Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
 }
 
 impl Clone for Agent {
@@ -159,6 +175,12 @@ impl Clone for Agent {
             principal_active_extensions: self.principal_active_extensions.clone(),
             principal_plan_port: self.principal_plan_port.clone(),
             model_catalog: self.model_catalog.clone(),
+            // Phase 4: Arc-cloned so the trait-object + closure
+            // handles survive the `Agent::clone()` that the
+            // subagent executor uses to share the parent agent with
+            // descendants.
+            audit_sink: self.audit_sink.clone(),
+            audit_first_use_for_model: self.audit_first_use_for_model.clone(),
         }
     }
 }
@@ -658,6 +680,13 @@ impl Agent {
             // bind a `ModelCatalog`. The `model_list` builtin is
             // intentionally not registered for these agents.
             model_catalog: None,
+            // Phase 4: unbound by default; production wiring at
+            // `principal/agent_runner.rs` reaches into
+            // `PrincipalContext::observability()` and
+            // `PrincipalContext::seen_models` to construct both
+            // fields.
+            audit_sink: None,
+            audit_first_use_for_model: None,
         };
 
         info!(
@@ -810,6 +839,29 @@ impl Agent {
         catalog: Option<Arc<peko_providers::catalog::ModelCatalog>>,
     ) -> Self {
         self.model_catalog = catalog;
+        self
+    }
+
+    /// Phase 4 of `feature/multi-model-subagents`: bind an audit
+    /// sink + first-use lookup. The loop emits a `model.selected`
+    /// audit event on every successful LLM call; the lookup closure
+    /// decides `Warning` vs `Info` severity based on whether
+    /// `(principal, model)` has been seen before. Production wiring
+    /// (`principal/agent_runner.rs`) constructs both from
+    /// `PrincipalContext::observability()` and
+    /// `PrincipalContext::seen_models`.
+    ///
+    /// `None` for either argument disables the corresponding half:
+    /// `sink = None` ⇒ no audit emission at all; `sink = Some` +
+    /// `first_use_lookup = None` ⇒ every event is `Info`.
+    #[must_use]
+    pub fn with_audit_sink(
+        mut self,
+        sink: Option<Arc<dyn peko_engine::audit_sink::AuditSink>>,
+        first_use_lookup: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    ) -> Self {
+        self.audit_sink = sink;
+        self.audit_first_use_for_model = first_use_lookup;
         self
     }
 
@@ -982,6 +1034,12 @@ impl Agent {
             principal_active_extensions,
             principal_plan_port: None,
             model_catalog: None,
+            // Phase 4: CLI one-shot path doesn't bind an audit
+            // sink. Production wiring at
+            // `principal/agent_runner.rs` adds it via
+            // `Agent::with_audit_sink`.
+            audit_sink: None,
+            audit_first_use_for_model: None,
         };
 
         info!(
@@ -1746,7 +1804,17 @@ impl Agent {
         .with_async_completion_queue(async_completion_queue)
         .with_caller_id(caller_id)
         .with_quota_meter(quota_meter)
-        .with_peer_meter(peer_meter);
+        .with_peer_meter(peer_meter)
+        // Phase 4: forward the agent's bound audit sink so the
+        // loop emits `model.selected` events on every successful
+        // LLM call. Both fields default to `None` (CLI one-shot
+        // path, test fixtures); production wiring at
+        // `principal/agent_runner.rs` sets both via
+        // `Agent::with_audit_sink`.
+        .with_audit_sink(
+            self.audit_sink.clone(),
+            self.audit_first_use_for_model.clone(),
+        );
         if let Some(token) = cancel {
             loop_ = loop_.with_cancel_token(token);
         }
@@ -2182,6 +2250,13 @@ impl Agent {
             // catalog. Tests that need a catalog can use
             // `with_model_catalog(...)` after construction.
             model_catalog: None,
+            // Phase 4: test path doesn't bind an audit sink; the
+            // integration test in
+            // `engine/agentic_loop_compat.rs::tests::test_audit_sink_emits_first_use_warning_then_info`
+            // builds the sink directly via
+            // `AgenticLoop::with_audit_sink`.
+            audit_sink: None,
+            audit_first_use_for_model: None,
         })
     }
 

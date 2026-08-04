@@ -235,6 +235,11 @@ pub mod principal;
 
 // (Phase 15: peko-quota shim deleted; callers use peko_quota::* directly)
 
+// Phase 4 of `feature/multi-model-subagents`: root-side
+// `AuditSink` adapter for `peko_engine::AuditSink`. Bridges the
+// engine-side `AuditEventView` to `peko_observability`.
+pub mod observability;
+
 // ============================================================================
 // Append-only runtime surfaces
 // ============================================================================

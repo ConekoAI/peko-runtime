@@ -11,6 +11,7 @@
 //! - Background compaction works for both streaming and blocking modes
 //! - Event semantics are uniform across all consumers
 
+use crate::audit_sink::{AuditEventView, AuditSeverity};
 use crate::synthetic_stream::synthesize_stream_from_blocking;
 use crate::{
     AgentView, AgenticEvent, AsyncInboxItem, AsyncInboxLike, BackgroundCompactorFactory,
@@ -205,6 +206,29 @@ pub struct AgenticLoop {
     /// every `run_inner_with_meter` invocation (line 940 in the
     /// pre-9c version).
     compaction_config: CompactionConfig,
+    /// Phase 4 (`feature/multi-model-subagents`): optional audit
+    /// sink. When `Some`, the loop emits one `model.selected` audit
+    /// event per successful LLM call (after `stream_with_eviction`
+    /// returns `Ok`); the root-side `ObservabilityAuditSink`
+    /// adapter converts that view to
+    /// `peko_observability::Observability::audit_with_severity`. The
+    /// `first_use` flag is computed from
+    /// `agent_principal_id`-keyed seen-models state carried in
+    /// `audit_first_use_for_model` (root sets this when binding the
+    /// sink) so the engine stays decoupled from
+    /// `peko-principal`.
+    audit_sink: Option<Arc<dyn crate::audit_sink::AuditSink>>,
+    /// Phase 4 (`feature/multi-model-subagents`): lookup table
+    /// keyed by model id that the loop consults right before
+    /// emitting the `model.selected` audit event to decide
+    /// `Warning` vs `Info` severity. Populated by root when
+    /// binding the sink (root reaches into `PrincipalContext`'s
+    /// `seen_models` set). When `None` for a given model id, the
+    /// loop falls back to `Info` — engines constructed without a
+    /// sink-binding don't get first-use UX, just the
+    /// info-tier baseline.
+    audit_first_use_for_model:
+        Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
 }
 
 impl AgenticLoop {
@@ -294,6 +318,12 @@ impl AgenticLoop {
             // loads it from `~/.peko/config.toml`; tests pass
             // `CompactionConfig::default()`.
             compaction_config,
+            // Phase 4: opt-in audit sink. Callers (root's
+            // `Agent::new_with_shared_executor`) attach via
+            // `with_audit_sink` after `new` so the engine stays
+            // decoupled from `peko-observability`.
+            audit_sink: None,
+            audit_first_use_for_model: None,
         }
     }
 
@@ -403,6 +433,31 @@ impl AgenticLoop {
         budget: Arc<peko_providers::transport::SharedRetryBudget>,
     ) -> Self {
         self.shared_budget = budget;
+        self
+    }
+
+    /// Phase 4 (`feature/multi-model-subagents`): bind an audit
+    /// sink. The loop emits one `model.selected` audit event per
+    /// successful LLM call. `first_use_lookup` lets the caller
+    /// (root's `Agent::new_with_shared_executor`) project the
+    /// principal's `seen_models` set into a closure so the engine
+    /// stays decoupled from `peko-principal`. When `None`, the
+    /// loop skips the lookup and emits at `Info` severity.
+    ///
+    /// Both arguments are optional independently:
+    /// - `sink = None`: no audit emission.
+    /// - `sink = Some`, `first_use_lookup = None`: every event is
+    ///   `Info` (no first-use UX).
+    /// - `sink = Some`, `first_use_lookup = Some`: full
+    ///   warning-then-info UX per (principal, model) pair.
+    #[must_use]
+    pub fn with_audit_sink(
+        mut self,
+        sink: Option<Arc<dyn crate::audit_sink::AuditSink>>,
+        first_use_lookup: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    ) -> Self {
+        self.audit_sink = sink;
+        self.audit_first_use_for_model = first_use_lookup;
         self
     }
 
@@ -2270,7 +2325,37 @@ impl AgenticLoop {
             };
 
             match result {
-                Ok(stream) => return Ok(stream),
+                Ok(stream) => {
+                    // Phase 4 (`feature/multi-model-subagents`): emit
+                    // a `model.selected` audit event on every
+                    // successful LLM call. Severity is `Warning` on
+                    // the first use of (principal, model), `Info`
+                    // thereafter — the lookup closure is supplied by
+                    // root so the engine stays decoupled from
+                    // `peko-principal`. Failure to compute the
+                    // lookup falls back to `Info`; failures inside
+                    // the sink are the sink's problem.
+                    if let Some(sink) = self.audit_sink.as_ref() {
+                        let first_use = self
+                            .audit_first_use_for_model
+                            .as_ref()
+                            .is_some_and(|f| f(model_id));
+                        let severity = if first_use {
+                            AuditSeverity::Warning
+                        } else {
+                            AuditSeverity::Info
+                        };
+                        sink.audit(AuditEventView {
+                            event_type: "model.selected",
+                            severity,
+                            principal: Some(self.agent_principal_id.clone()),
+                            subagent_id: None,
+                            model_id: Some(model_id.to_string()),
+                            details: serde_json::json!({ "first_use": first_use }),
+                        });
+                    }
+                    return Ok(stream);
+                }
                 Err(e) if is_context_window_exceeded(&e) && current.len() > 1 => {
                     let before = current.len();
                     let dropped = drop_oldest_respecting_pairs(&mut current);
