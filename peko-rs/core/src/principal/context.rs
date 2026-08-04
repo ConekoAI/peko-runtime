@@ -19,14 +19,16 @@
 //! This is the post-Phase-1 realisation of the design rule "the root
 //! agent is but another agent of the principal, simply user-facing".
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::extensions::agent::{register_agents_with_core, AgentAdapter};
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
+use crate::principal::seen_models::{seen_models_path, SeenModels};
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 use peko_observability::Observability;
 use peko_providers::LlmResolver;
@@ -127,6 +129,17 @@ pub struct PrincipalContext {
     // subagent spawns will charge the peer counter on top of the
     // principal counter.
     peer_meter: OnceLock<Arc<peko_quota::QuotaMeter>>,
+    // Phase 4 (`feature/multi-model-subagents`):
+    // per-principal set of model ids the principal has called.
+    // `mark_model_seen(model_id)` returns `true` on the first use of
+    // a model — the caller picks `Warning` severity for that
+    // audit row, `Info` for subsequent calls. Persisted at
+    // `<workspace_path>/seen_models.json` via the atomic-rename
+    // pattern in `seen_models::SeenModels::save`. `BTreeSet`
+    // matches the on-disk shape (`SeenModels::models`) so the
+    // in-memory mirror and the file stay byte-equivalent after
+    // save.
+    seen_models: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl PrincipalContext {
@@ -149,6 +162,25 @@ impl PrincipalContext {
         plan_port: Arc<dyn peko_plan::PlanPort>,
     ) -> Self {
         let sessions_dir = memory.sessions_dir().clone();
+        // Phase 4: load per-principal `seen_models.json`. A missing
+        // file is expected on a fresh principal — fall open to an
+        // empty set so the first LLM call surfaces a `Warning` row.
+        // Parse failures are tolerated: the file is small and
+        // self-healing (the next `mark_model_seen` rewrites it
+        // cleanly), so dropping the corrupted content is preferable
+        // to refusing the principal.
+        let seen_path = seen_models_path(&workspace_path);
+        let initial_seen = SeenModels::load(&seen_path).map_or_else(
+            |e| {
+                tracing::warn!(
+                    "failed to parse seen_models.json at {}: {e}; \
+                     starting with empty set (next mark_model_seen will rewrite)",
+                    seen_path.display()
+                );
+                SeenModels::empty()
+            },
+            |seen| seen,
+        );
         Self {
             workspace_path,
             sessions_dir,
@@ -168,6 +200,7 @@ impl PrincipalContext {
             active_extensions: OnceLock::new(),
             quota_meter: OnceLock::new(),
             peer_meter: OnceLock::new(),
+            seen_models: Arc::new(Mutex::new(initial_seen.models)),
         }
     }
 
@@ -294,6 +327,86 @@ impl PrincipalContext {
     #[must_use]
     pub fn peer_meter(&self) -> Option<&Arc<peko_quota::QuotaMeter>> {
         self.peer_meter.get()
+    }
+
+    /// Phase 4 (`feature/multi-model-subagents`):
+    /// idempotent first-use check for `model_id`. Pure read — does
+    /// not mutate state. Use [`Self::mark_model_seen`] instead when
+    /// the caller wants to record the use.
+    #[must_use]
+    pub fn has_model_seen(&self, model_id: &str) -> bool {
+        let guard = self
+            .seen_models
+            .lock()
+            .expect("seen_models mutex poisoned");
+        guard.contains(model_id)
+    }
+
+    /// Phase 4 (`feature/multi-model-subagents`):
+    /// return a clone of the `Arc<Mutex<BTreeSet<String>>>` that
+    /// backs the seen-models state. Callers (the
+    /// `principal/agent_runner.rs` audit-sink binding) keep the
+    /// clone alive across an `&PrincipalContext` borrow so they
+    /// can build `'static + Send + Sync` closures for the
+    /// engine loop's `with_audit_sink`. Mutations performed by
+    /// [`Self::mark_model_seen`] on the principal side are visible
+    /// to clones because they share the same `Arc`.
+    #[must_use]
+    pub fn seen_models_handle(&self) -> Arc<Mutex<BTreeSet<String>>> {
+        Arc::clone(&self.seen_models)
+    }
+
+    /// Phase 4 (`feature/multi-model-subagents`):
+    /// record that `model_id` has been used by this principal.
+    /// Returns `true` if this is the **first** use, `false`
+    /// otherwise. The caller uses the boolean to pick
+    /// `Warning` severity for the audit row on first use, `Info`
+    /// thereafter (so `peko audit tail` can surface new-model
+    /// warnings without spamming on every repeat call).
+    ///
+    /// ## Persistence
+    ///
+    /// The first-use insert persists to
+    /// `<workspace_path>/seen_models.json` via the atomic-rename
+    /// pattern in [`SeenModels::save`]. Repeat calls do not rewrite
+    /// the file (the `add_then_save` no-op optimization). On
+    /// persistence errors we keep the in-memory state in sync but
+    /// log the error — the worst case is that the next principal
+    /// boot replays the first-use warning once after a power
+    /// failure, which is acceptable.
+    pub fn mark_model_seen(&self, model_id: &str) -> bool {
+        let path = seen_models_path(&self.workspace_path);
+        let mut guard = self
+            .seen_models
+            .lock()
+            .expect("seen_models mutex poisoned");
+        let mut snapshot = SeenModels {
+            version: 1,
+            models: guard.clone(),
+        };
+        let fresh = snapshot
+            .add_then_save(model_id, &path)
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    "failed to persist seen_models.json at {}: {e}; \
+                     in-memory state remains authoritative",
+                    path.display()
+                );
+                // `add_then_save` returned Err only after
+                // successfully inserting into the in-memory set.
+                // We don't have the boolean separately, but if
+                // we hit this branch, the in-memory insert did
+                // happen — assume fresh=true so the caller still
+                // gets the audit warning. The next call on the
+                // same id will short-circuit on the in-memory
+                // set and return `false`.
+                true
+            });
+        // Always sync the in-memory set, even when the save
+        // failed — keeps `mark_model_seen` consistent with what
+        // the caller would observe on the next call.
+        *guard = snapshot.models;
+        fresh
     }
 
     /// Get the daemon-global `ExtensionCore` and ensure the
@@ -462,6 +575,7 @@ pub(crate) async fn install_agent_catalog(
 mod tests {
     use super::*;
     use crate::principal::memory::DefaultPrincipalMemory;
+    use crate::principal::seen_models::seen_models_path;
     use peko_extension_api::Capabilities;
     use peko_subject::PrincipalId;
     use serial_test::serial;
@@ -617,5 +731,124 @@ mod tests {
             port.clone(),
         );
         assert!(Arc::ptr_eq(ctx.plan_port(), &port));
+    }
+
+    /// Phase 4: `mark_model_seen` returns `true` on the first call
+    /// for a model, `false` on subsequent calls. Persistence is
+    /// verified end-to-end: a second `PrincipalContext` built
+    /// against the same workspace sees the prior record.
+    #[test]
+    fn mark_model_seen_returns_true_once_then_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory: Arc<dyn PrincipalMemory> =
+            Arc::new(DefaultPrincipalMemory::new(dir.path().to_path_buf()));
+
+        let ctx = PrincipalContext::new(
+            dir.path().to_path_buf(),
+            memory.clone(),
+            Arc::new(InboxRegistry::new(
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
+            )),
+            Arc::new(tokio::sync::Mutex::new(())),
+            Arc::new(Capabilities::default()),
+            None,
+            None,
+            None,
+            PrincipalId::generate(),
+            test_plan_port(dir.path()),
+        );
+
+        // First call for `claude-sonnet-4-6`: fresh → `true`.
+        assert!(ctx.mark_model_seen("claude-sonnet-4-6"));
+        // Second call for the same model: already present → `false`.
+        assert!(!ctx.mark_model_seen("claude-sonnet-4-6"));
+        // A different model: fresh → `true`.
+        assert!(ctx.mark_model_seen("claude-haiku-4-5"));
+
+        // The persisted file should be loadable from disk.
+        let path = seen_models_path(dir.path());
+        let on_disk = SeenModels::load(&path).unwrap();
+        assert_eq!(on_disk.models.len(), 2);
+        assert!(on_disk.contains("claude-sonnet-4-6"));
+        assert!(on_disk.contains("claude-haiku-4-5"));
+    }
+
+    /// Phase 4: a fresh `PrincipalContext` constructed against a
+    /// workspace that already has `seen_models.json` should
+    /// hydrate its in-memory set from disk. The first call to
+    /// `mark_model_seen` on a recorded model id must return `false`.
+    #[test]
+    fn principal_context_hydrates_seen_models_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        // Seed the file by writing through `SeenModels::save`.
+        let path = seen_models_path(dir.path());
+        let mut prior = SeenModels::empty();
+        prior
+            .add_then_save("claude-sonnet-4-6", &path)
+            .unwrap();
+        assert!(path.exists());
+
+        // Build a context pointing at the seeded workspace.
+        let memory: Arc<dyn PrincipalMemory> =
+            Arc::new(DefaultPrincipalMemory::new(dir.path().to_path_buf()));
+        let ctx = PrincipalContext::new(
+            dir.path().to_path_buf(),
+            memory,
+            Arc::new(InboxRegistry::new(
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
+            )),
+            Arc::new(tokio::sync::Mutex::new(())),
+            Arc::new(Capabilities::default()),
+            None,
+            None,
+            None,
+            PrincipalId::generate(),
+            test_plan_port(dir.path()),
+        );
+
+        // The pre-existing model should be reported as seen
+        // (i.e. `mark_model_seen` returns `false`).
+        assert!(!ctx.mark_model_seen("claude-sonnet-4-6"));
+        // `has_model_seen` should agree.
+        assert!(ctx.has_model_seen("claude-sonnet-4-6"));
+        // A new model still gets the `true` first-use treatment.
+        assert!(ctx.mark_model_seen("claude-haiku-4-5"));
+    }
+
+    /// Phase 4: corrupt `seen_models.json` is tolerated — the
+    /// context boots with an empty set, and the next successful
+    /// `mark_model_seen` rewrites the file cleanly.
+    #[test]
+    fn principal_context_tolerates_corrupt_seen_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seen_models_path(dir.path());
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(&path, "not valid json").unwrap();
+
+        let memory: Arc<dyn PrincipalMemory> =
+            Arc::new(DefaultPrincipalMemory::new(dir.path().to_path_buf()));
+        let ctx = PrincipalContext::new(
+            dir.path().to_path_buf(),
+            memory,
+            Arc::new(InboxRegistry::new(
+                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
+                ),
+            )),
+            Arc::new(tokio::sync::Mutex::new(())),
+            Arc::new(Capabilities::default()),
+            None,
+            None,
+            None,
+            PrincipalId::generate(),
+            test_plan_port(dir.path()),
+        );
+
+        // The set is empty, so this is a first-use → `true`.
+        assert!(ctx.mark_model_seen("claude-sonnet-4-6"));
+        // The file is now valid JSON containing the model.
+        let reloaded = SeenModels::load(&path).unwrap();
+        assert!(reloaded.contains("claude-sonnet-4-6"));
     }
 }
