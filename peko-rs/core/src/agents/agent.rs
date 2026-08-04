@@ -122,6 +122,14 @@ pub struct Agent {
     /// only `Agent::new` / `Agent::new_for_test` callers hit this
     /// path).
     principal_plan_port: Option<Arc<dyn peko_plan::PlanPort>>,
+    /// Phase 2 of `feature/multi-model-subagents`: weak handle to
+    /// the principal's `ModelCatalog`. Bound at construction via
+    /// `with_model_catalog` so the `model_list` builtin can
+    /// snapshot the catalog at execute time. Weak so the agent
+    /// never extends the catalog's lifetime past the daemon.
+    /// `None` means no catalog is reachable (test path) and the
+    /// `model_list` builtin is not registered.
+    model_catalog: Option<Arc<peko_providers::catalog::ModelCatalog>>,
 }
 
 impl Clone for Agent {
@@ -150,6 +158,7 @@ impl Clone for Agent {
             principal_capabilities: self.principal_capabilities.clone(),
             principal_active_extensions: self.principal_active_extensions.clone(),
             principal_plan_port: self.principal_plan_port.clone(),
+            model_catalog: self.model_catalog.clone(),
         }
     }
 }
@@ -644,6 +653,11 @@ impl Agent {
             principal_capabilities: None,
             principal_active_extensions: None,
             principal_plan_port: None,
+            // Phase 2 of `feature/multi-model-subagents`: the
+            // standalone / CLI one-shot `Agent::new` path doesn't
+            // bind a `ModelCatalog`. The `model_list` builtin is
+            // intentionally not registered for these agents.
+            model_catalog: None,
         };
 
         info!(
@@ -776,6 +790,26 @@ impl Agent {
             .with_principal_plan_port(plan_port.clone());
         self.subagent_executor = Arc::new(executor);
         self.principal_plan_port = Some(plan_port);
+        self
+    }
+
+    /// Phase 2 of `feature/multi-model-subagents`: bind the
+    /// principal's model catalog so `init_builtins_async` can
+    /// register the `model_list` builtin. The catalog handle is
+    /// stored as an `Arc` so the `model_list` tool can downgrade
+    /// it to a `Weak` at registration time without losing the
+    /// principal's catalog reference (the executor passes the same
+    /// `Arc` to the tool's `Weak<ModelCatalog>` field).
+    ///
+    /// `None` ⇒ no catalog reachable (CLI one-shot path that builds
+    /// an `Agent` without a resolver); the `model_list` builtin is
+    /// intentionally not registered.
+    #[must_use]
+    pub fn with_model_catalog(
+        mut self,
+        catalog: Option<Arc<peko_providers::catalog::ModelCatalog>>,
+    ) -> Self {
+        self.model_catalog = catalog;
         self
     }
 
@@ -947,6 +981,7 @@ impl Agent {
             principal_capabilities,
             principal_active_extensions,
             principal_plan_port: None,
+            model_catalog: None,
         };
 
         info!(
@@ -1638,6 +1673,41 @@ impl Agent {
             );
         }
 
+        // Phase 2 of `feature/multi-model-subagents`: register the
+        // `model_list` builtin when both the agent's config opts in
+        // (`enable_model_list`) AND a principal catalog is reachable.
+        // The CLI one-shot path binds neither (no resolver); the
+        // build surfaces silently skip the tool. Same Weak-downgrade
+        // pattern as `ToolSearchTool` so the tool never extends the
+        // catalog's lifetime past the daemon.
+        if self.config.enable_model_list {
+            if let Some(ref catalog) = self.model_catalog {
+                let model_list_tool =
+                    Arc::new(crate::tools::builtin::ModelListTool::new(
+                        Arc::downgrade(catalog),
+                    ));
+                if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_model_list_tool(
+                    &extension_core,
+                    model_list_tool,
+                    &self.principal_id,
+                )
+                .await
+                {
+                    warn!("Failed to register per-agent ModelListTool: {e}");
+                }
+            } else {
+                tracing::debug!(
+                    "Model list disabled for agent '{}': no bound ModelCatalog",
+                    self.config.name
+                );
+            }
+        } else {
+            tracing::debug!(
+                "Model list disabled by config for agent '{}'",
+                self.config.name
+            );
+        }
+
         // 5. Push the session key onto the core so AsyncSpawn can stamp
         //    parent_session_key on every spawned task. The session key is
         //    keyed by this agent's DID on the shared core so concurrent
@@ -2107,6 +2177,11 @@ impl Agent {
             principal_capabilities: None,
             principal_active_extensions: None,
             principal_plan_port: None,
+            // Phase 2 of `feature/multi-model-subagents`: the
+            // test-only `Agent::new_for_test` path doesn't bind a
+            // catalog. Tests that need a catalog can use
+            // `with_model_catalog(...)` after construction.
+            model_catalog: None,
         })
     }
 

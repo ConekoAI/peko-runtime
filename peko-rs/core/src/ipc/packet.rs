@@ -1905,6 +1905,14 @@ pub struct ModelSummary {
     /// vice versa.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<ModelSpec>,
+    /// Phase 2 of `feature/multi-model-subagents`: free-text
+    /// user note attached to this entry. Surfaced on the IPC
+    /// `model.list` / `model.show` replies and (via the
+    /// `model_list` builtin) to the parent agent so it can pick
+    /// models using both `spec` flags and subjective annotations.
+    /// `None` for entries written before Phase 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// PR 1 / `feature/model-first-config`: IPC mirror of
@@ -3426,6 +3434,8 @@ mod tests {
                 is_local: false,
                 enabled: true,
                 spec: None,
+                // Phase 2 — no annotation.
+                note: None,
             },
         };
         let bytes = resp.to_bytes().unwrap();

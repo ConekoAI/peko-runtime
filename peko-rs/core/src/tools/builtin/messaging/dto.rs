@@ -44,6 +44,11 @@ pub struct AgentConfig {
     /// F35 — whether the synthetic `__tool_search` stub is registered.
     #[serde(default)]
     pub enable_tool_search: bool,
+    /// Phase 2 of `feature/multi-model-subagents`: whether the
+    /// `model_list` builtin is registered. Mirrors
+    /// `crate::agents::agent_config::AgentConfig::enable_model_list`.
+    #[serde(default = "default_true")]
+    pub enable_model_list: bool,
     /// Channel that triggered this agent's LLM calls.
     #[serde(default)]
     pub channel: Option<String>,
@@ -72,6 +77,7 @@ impl Default for AgentConfig {
             enable_task_tools: true,
             enable_async_tools: true,
             enable_tool_search: false,
+            enable_model_list: true,
             channel: None,
             thinking_level: None,
             sandbox_enabled: false,

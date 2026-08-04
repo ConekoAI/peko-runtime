@@ -195,6 +195,10 @@ impl LlmResolver {
             updated_at: chrono::Utc::now(),
             compat: None,
             spec: None,
+            // Phase 2 of `feature/multi-model-subagents`: mock
+            // catalog has no user annotations. `None` is the
+            // pre-Phase-2 default; `upsert` validates the value.
+            note: None,
         };
         catalog.upsert(config).await.expect("mock upsert failed");
 

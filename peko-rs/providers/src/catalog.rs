@@ -164,6 +164,39 @@ pub struct ModelConfig {
     /// override it directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<ModelSpec>,
+    /// Phase 2 of `feature/multi-model-subagents`: free-text
+    /// user note attached to this catalog entry. Surfaces on the
+    /// `model_list` tool and in `peko model show` so a parent
+    /// agent can reason about model choice using both
+    /// standardized `ModelSpec` flags and subjective annotations
+    /// ("very cheap, use it for cron", "RPG model, use it to
+    /// generate fictions", "very capable, use it for coding")
+    /// that the spec cannot capture. `None` keeps the pre-Phase-2
+    /// behavior. Capped at 500 chars (validated in `from_template`
+    /// and `upsert`). `serde-default` skips the field on read so
+    /// entries written before Phase 2 still load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Maximum length of a model `note`, in chars. Subjective
+/// annotations that blow past this cap are almost certainly
+/// pasted-in prompt fragments that don't belong on the catalog —
+/// reject early so the UI / CLI can show a clean error.
+pub const NOTE_MAX_CHARS: usize = 500;
+
+fn validate_note(note: Option<String>) -> Result<Option<String>> {
+    let Some(s) = note else {
+        return Ok(None);
+    };
+    if s.chars().count() > NOTE_MAX_CHARS {
+        anyhow::bail!(
+            "model note is {n} chars; max is {max}",
+            n = s.chars().count(),
+            max = NOTE_MAX_CHARS
+        );
+    }
+    Ok(Some(s))
 }
 
 fn default_true() -> bool {
@@ -217,6 +250,12 @@ impl ModelConfig {
             updated_at: Utc::now(),
             compat: template.compat,
             spec,
+            // `from_template` is the only construction path that
+            // isn't already gated by `upsert()`'s note validation,
+            // so seed with `None`. Users add the note via
+            // `peko model edit --note ...`, which routes through
+            // `upsert`.
+            note: None,
         }
     }
 }
@@ -352,7 +391,18 @@ impl ModelCatalog {
     }
 
     /// Add or replace an entry. Bumps `updated_at`.
+    ///
+    /// Phase 2: validates `entry.note` against [`NOTE_MAX_CHARS`]
+    /// before persisting; a too-long note is rejected with an
+    /// `anyhow::Error` carrying a clear message so callers (the
+    /// CLI's `peko model add --note`, the `peko model edit --note`
+    /// handler, and the IPC `models.upsert` handler) can surface
+    /// the exact limit.
     pub async fn upsert(&self, entry: ModelConfig) -> Result<()> {
+        let entry = ModelConfig {
+            note: validate_note(entry.note)?,
+            ..entry
+        };
         {
             let mut guard = self.inner.write().await;
             let mut entry = entry;
@@ -691,5 +741,115 @@ mod tests {
         let changed = cat.rewire_credential("missing", "new").await.unwrap();
         assert_eq!(changed, 0);
         assert_eq!(cat.list_all().await.len(), 0);
+    }
+
+    // ─── Phase 2 of `feature/multi-model-subagents`: note field ──
+    //
+    // Round-trip + 500-char cap + serde-default so pre-Phase-2
+    // catalog files still load.
+
+    #[tokio::test]
+    async fn upsert_with_note_round_trips() {
+        let (_dir, cat) = temp_catalog().await;
+        let entry = ModelConfig {
+            id: "haiku".to_string(),
+            display_name: "Haiku".to_string(),
+            template_id: None,
+            api_format: ApiFormat::AnthropicMessages,
+            base_url: "https://api.anthropic.com".to_string(),
+            model_id: "claude-haiku-4-5".to_string(),
+            context_window: None,
+            max_output_tokens: None,
+            headers: Default::default(),
+            credential_id: None,
+            requires_key: true,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            compat: None,
+            spec: None,
+            note: Some("very cheap, use it for cron".to_string()),
+        };
+        cat.upsert(entry).await.expect("upsert succeeds");
+        let back = cat.get("haiku").await.expect("entry round-trips");
+        assert_eq!(back.note.as_deref(), Some("very cheap, use it for cron"));
+    }
+
+    #[tokio::test]
+    async fn upsert_rejects_note_above_500_chars() {
+        let (_dir, cat) = temp_catalog().await;
+        let too_long = "x".repeat(NOTE_MAX_CHARS + 1);
+        let entry = ModelConfig {
+            id: "opus".to_string(),
+            display_name: "Opus".to_string(),
+            template_id: None,
+            api_format: ApiFormat::AnthropicMessages,
+            base_url: "https://api.anthropic.com".to_string(),
+            model_id: "claude-opus-4-8".to_string(),
+            context_window: None,
+            max_output_tokens: None,
+            headers: Default::default(),
+            credential_id: None,
+            requires_key: true,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            compat: None,
+            spec: None,
+            note: Some(too_long),
+        };
+        let err = cat.upsert(entry).await.expect_err("must reject");
+        assert!(err.to_string().contains("500"), "expected 500-char message, got: {err}");
+    }
+
+    #[tokio::test]
+    async fn upsert_accepts_note_at_exactly_500_chars() {
+        let (_dir, cat) = temp_catalog().await;
+        let at_cap: String = std::iter::repeat('a').take(NOTE_MAX_CHARS).collect();
+        let entry = ModelConfig {
+            id: "edge".to_string(),
+            display_name: "Edge".to_string(),
+            template_id: None,
+            api_format: ApiFormat::AnthropicMessages,
+            base_url: "https://api.anthropic.com".to_string(),
+            model_id: "claude-opus-4-8".to_string(),
+            context_window: None,
+            max_output_tokens: None,
+            headers: Default::default(),
+            credential_id: None,
+            requires_key: true,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            compat: None,
+            spec: None,
+            note: Some(at_cap.clone()),
+        };
+        cat.upsert(entry).await.expect("500-char note must succeed");
+        let back = cat.get("edge").await.expect("entry round-trips");
+        assert_eq!(back.note.as_deref().map(str::len), Some(NOTE_MAX_CHARS));
+    }
+
+    #[test]
+    fn pre_phase_2_models_toml_loads_with_note_none() {
+        // On-disk fixtures written before Phase 2 don't carry the
+        // `note` field. `serde(default, skip_serializing_if =
+        // "Option::is_none")` means they parse cleanly with
+        // `note = None` rather than failing the read.
+        let toml = r#"
+            version = "4.0"
+
+            [entries.legacy]
+            id = "legacy"
+            display_name = "Legacy"
+            api_format = "anthropic_messages"
+            base_url = "https://api.anthropic.com"
+            model_id = "claude-3-5-sonnet-latest"
+            requires_key = true
+            enabled = true
+        "#;
+        let parsed: ModelCatalogFile = toml::from_str(toml).expect("legacy file parses");
+        let entry = parsed.entries.get("legacy").expect("legacy entry present");
+        assert!(entry.note.is_none(), "missing field must default to None");
     }
 }
