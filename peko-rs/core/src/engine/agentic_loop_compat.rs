@@ -1042,6 +1042,9 @@ mod tests {
                     output_tokens: None,
                     request_count: None,
                     cycle: QuotaCycle::Hourly,
+                    // Phase 3 — cost fields default to None.
+                    cost_per_call_max: None,
+                    budget_per_cycle: None,
                 },
                 None,
                 chrono::Utc::now(),
@@ -1814,6 +1817,9 @@ mod tests {
                     output_tokens: None,
                     request_count: None,
                     cycle: QuotaCycle::Hourly,
+                    // Phase 3 — cost fields default to None.
+                    cost_per_call_max: None,
+                    budget_per_cycle: None,
                 },
                 None,
                 chrono::Utc::now(),
@@ -1856,6 +1862,9 @@ mod tests {
                     output_tokens: None,
                     request_count: Some(10),
                     cycle: QuotaCycle::Hourly,
+                    // Phase 3 — cost fields default to None.
+                    cost_per_call_max: None,
+                    budget_per_cycle: None,
                 },
                 None,
                 chrono::Utc::now(),
@@ -1870,6 +1879,9 @@ mod tests {
                     output_tokens: None,
                     request_count: Some(10),
                     cycle: QuotaCycle::Hourly,
+                    // Phase 3 — cost fields default to None.
+                    cost_per_call_max: None,
+                    budget_per_cycle: None,
                 },
                 None,
                 chrono::Utc::now(),
@@ -4147,5 +4159,228 @@ mod tests {
             retries, 0,
             "zero Retry events expected when custom classifier trips terminal"
         );
+    }
+
+    // ===================================================================
+    // Phase 4 (`feature/multi-model-subagents`): audit_sink
+    // integration. Wires a capturing sink + first-use closure into
+    // the loop and asserts:
+    //  - The first call against a model emits a `Warning`
+    //    `model.selected` audit event.
+    //  - The second call against the same model emits `Info`.
+    // ===================================================================
+    use peko_engine::audit_sink::{
+        AuditEventView, AuditSeverity as EngineSeverity, AuditSink,
+    };
+
+    /// Test-only sink that captures every audit event for later
+    /// assertion. Mirrors the `CapturingSink` in
+    /// `peko-rs/engine/src/audit_sink.rs:tests` but lives in root
+    /// because that's where the loop integration tests run
+    /// (`AgenticLoop` test suite references root-only fixtures).
+    #[derive(Default, Clone)]
+    struct RootCapturingSink {
+        events: Arc<Mutex<Vec<AuditEventView>>>,
+    }
+
+    impl AuditSink for RootCapturingSink {
+        fn audit(&self, event: AuditEventView) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_audit_sink_emits_first_use_warning_then_info() {
+        // Force the encrypted-file identity fallback — see
+        // `peko_identity::init_test_env` for the rationale.
+        peko_identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+
+        // Capturing sink + a closure that flips its answer after
+        // the first call. The closure captures a `Cell<bool>` so
+        // it behaves like the principal's `seen_models` set: the
+        // first lookup returns `true` (first use), all subsequent
+        // ones return `false`.
+        let sink = RootCapturingSink::default();
+        let first_use = Arc::new(std::sync::Mutex::new(true));
+        let first_use_lookup = {
+            let first_use = Arc::clone(&first_use);
+            Arc::new(move |_model_id: &str| {
+                let mut flag = first_use.lock().unwrap();
+                let v = *flag;
+                *flag = false;
+                v
+            }) as Arc<dyn Fn(&str) -> bool + Send + Sync>
+        };
+        let sink_arc: Arc<dyn AuditSink> = Arc::new(sink.clone());
+
+        // First run: assert a `Warning` event for `mock-model`.
+        {
+            let (provider, mock) = mock_provider();
+            mock.queue_text("Hello first call.");
+            let config = test_agent_config("audit-first-agent");
+            let agent =
+                Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+            let extension_core = global_core().unwrap();
+            let loop_ = AgenticLoop::new(
+                agent.clone(),
+                provider.clone(),
+                extension_core,
+                std::sync::Arc::new(
+                    crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                        provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                    ),
+                ),
+                peko_engine::CompactionConfig::default(),
+            )
+            .await
+            .with_audit_sink(Some(sink_arc.clone()), Some(first_use_lookup.clone()));
+
+            let session = test_session("audit-first-agent", temp_dir.path()).await;
+            let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+            let events_clone = events.clone();
+            let result = loop_
+                .run_with_resume(
+                    "Say hi",
+                    Vec::new(),
+                    move |event| {
+                        events_clone.lock().unwrap().push(event);
+                    },
+                    &session,
+                    None,
+                )
+                .await;
+            assert!(result.is_ok(), "first agentic loop run should succeed");
+        }
+
+        // After the first run, exactly one audit event should have
+        // been captured — a `Warning` for `mock-model` with
+        // `first_use = true`.
+        let events = sink.events.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "exactly one audit event expected after the first call"
+        );
+        let ev = &events[0];
+        assert_eq!(ev.event_type, "model.selected");
+        assert_eq!(ev.severity, EngineSeverity::Warning);
+        assert_eq!(ev.model_id.as_deref(), Some("mock-model"));
+        assert_eq!(
+            ev.details["first_use"], true,
+            "first_use flag must be true on the first call"
+        );
+        drop(events);
+
+        // Second run (different agent to keep the loop builder
+        // paths simple — the sink + first-use closure are
+        // independent of agent identity). The closure now returns
+        // `false` for every subsequent call.
+        {
+            let (provider, mock) = mock_provider();
+            mock.queue_text("Hello second call.");
+            let config = test_agent_config("audit-second-agent");
+            let agent =
+                Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+            let extension_core = global_core().unwrap();
+            let loop_ = AgenticLoop::new(
+                agent.clone(),
+                provider.clone(),
+                extension_core,
+                std::sync::Arc::new(
+                    crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                        provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                    ),
+                ),
+                peko_engine::CompactionConfig::default(),
+            )
+            .await
+            .with_audit_sink(Some(sink_arc.clone()), Some(first_use_lookup.clone()));
+
+            let session = test_session("audit-second-agent", temp_dir.path()).await;
+            let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+            let events_clone = events.clone();
+            let result = loop_
+                .run_with_resume(
+                    "Say hi again",
+                    Vec::new(),
+                    move |event| {
+                        events_clone.lock().unwrap().push(event);
+                    },
+                    &session,
+                    None,
+                )
+                .await;
+            assert!(result.is_ok(), "second agentic loop run should succeed");
+        }
+
+        let events = sink.events.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "two audit events expected after the second call"
+        );
+        let ev = &events[1];
+        assert_eq!(ev.event_type, "model.selected");
+        assert_eq!(
+            ev.severity,
+            EngineSeverity::Info,
+            "subsequent calls must downgrade to Info"
+        );
+        assert_eq!(
+            ev.details["first_use"], false,
+            "first_use flag must be false on subsequent calls"
+        );
+    }
+
+    /// When the loop is constructed without an audit sink (or with
+    /// `sink = None`), no audit emission happens — the agentic run
+    /// is unchanged. This is the CLI one-shot / test-fixture
+    /// default.
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_no_audit_sink_means_no_audit_events() {
+        peko_identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("Quiet run.");
+        let config = test_agent_config("audit-none-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(
+            agent.clone(),
+            provider.clone(),
+            extension_core,
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
+        // No `.with_audit_sink` — default `None`.
+
+        let session = test_session("audit-none-agent", temp_dir.path()).await;
+        let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let result = loop_
+            .run_with_resume(
+                "Anything",
+                Vec::new(),
+                move |event| {
+                    events_clone.lock().unwrap().push(event);
+                },
+                &session,
+                None,
+            )
+            .await;
+        assert!(result.is_ok());
+        // No assertion on a sink — the run simply doesn't emit
+        // audit events. The test passes as long as the loop
+        // succeeds without panicking on the missing sink.
     }
 }

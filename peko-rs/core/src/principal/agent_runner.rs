@@ -323,10 +323,61 @@ where
     // `ctx.plan_port()` returns the per-Principal handle from
     // `PrincipalContext::plan_port` (set by the factory in PR #1).
     .with_principal_plan_port(Arc::clone(ctx.plan_port()))
+    // Phase 2 of `feature/multi-model-subagents`: bind the
+    // principal's `ModelCatalog` (sourced from the same `LlmResolver`
+    // the agent already uses for model resolution) so
+    // `init_builtins_async` can register the `model_list` builtin.
+    // `ctx.resolver` is `Option` because the CLI one-shot path
+    // builds a stateless `Agent` without a resolver; in that case
+    // the `model_list` tool is intentionally omitted (`None` ⇒
+    // `init_builtins_async` skips registration).
+    .with_model_catalog(
+        ctx.resolver.as_ref().map(|r| Arc::clone(r.catalog())),
+    )
     // Phase 4b: bind caller DID so `principal_send` is registered.
     // `None` ⇒ tool is intentionally omitted (no local-only fallback
     // for `principal_send`; it is exclusively cross-runtime).
     .with_caller_principal_did(ctx.caller_principal_did().cloned());
+
+    // Phase 4 of `feature/multi-model-subagents`: bind the audit
+    // sink + first-use lookup so the engine loop emits a
+    // `model.selected` event on every successful LLM call. The
+    // sink wraps the principal's `Observability` hub; the lookup
+    // closure projects `PrincipalContext::seen_models` (a
+    // `BTreeSet<String>` keyed by model id, wrapped in
+    // `Arc<Mutex<_>>`) so the engine stays decoupled from
+    // `peko-principal`. The closure captures a cloned `Arc` so it
+    // outlives the borrowed `&PrincipalContext`; any updates made
+    // by `PrincipalContext::mark_model_seen` after the agent is
+    // constructed are visible because they mutate the same shared
+    // set. When either half is missing (CLI one-shot path without
+    // an Observability hub; principal with no `seen_models.json`
+    // yet), the corresponding side is passed as `None` and the
+    // loop falls back to `Info` severity.
+    //
+    // Applied as a separate statement (not chained) because the
+    // closure needs to capture a value computed from `ctx` that
+    // outlives the `&PrincipalContext` borrow.
+    let agent = {
+        let seen_set = ctx.seen_models_handle();
+        let audit_sink: Option<Arc<dyn peko_engine::audit_sink::AuditSink>> =
+            ctx.observability().map(|obs| {
+                Arc::new(crate::observability::ObservabilityAuditSink::new(
+                    Arc::clone(obs),
+                )) as Arc<dyn peko_engine::audit_sink::AuditSink>
+            });
+        let first_use_lookup: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>> = {
+            let set = Arc::clone(&seen_set);
+            Some(Arc::new(move |model_id: &str| {
+                !set
+                    .lock()
+                    .expect("seen_models mutex poisoned")
+                    .contains(model_id)
+            }) as Arc<dyn Fn(&str) -> bool + Send + Sync>)
+        };
+        agent.with_audit_sink(audit_sink, first_use_lookup)
+    };
+
     // F19: quota meter no longer threaded through Agent. The
     // engine loop fetches the principal's meter directly via
     // `Principal.quota_meter` at run entrypoint and opens
@@ -347,6 +398,15 @@ where
         // own seven `Plan*` tools.
         .with_principal_plan_port(Arc::clone(ctx.plan_port()))
         .with_observability(ctx.observability().cloned())
+        // F39: chain the principal's quota meters so subagent LLM
+        // calls charge against the parent principal instead of
+        // falling open to `QuotaMeter::unlimited()`. Pre-F39
+        // wiring left these `None`, so subagent LLM traffic was
+        // unattributed. `ctx.quota_meter()` / `ctx.peer_meter()`
+        // return `Option` — principals with no quota config keep
+        // the old behavior.
+        .with_quota_meter(ctx.quota_meter().map(Arc::clone))
+        .with_peer_meter(ctx.peer_meter().map(Arc::clone))
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
             // `PathResolver::principal_dir`), so the principal.toml path is

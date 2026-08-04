@@ -194,6 +194,8 @@ mod tests {
             is_local: false,
             enabled: true,
             spec: None,
+            // Phase 2 — no annotation.
+            note: None,
         }
     }
 
@@ -213,6 +215,8 @@ mod tests {
             is_local: true,
             enabled: true,
             spec: None,
+            // Phase 2 — no annotation.
+            note: None,
         }
     }
 
@@ -233,6 +237,8 @@ mod tests {
             is_local: false,
             enabled: false,
             spec: None,
+            // Phase 2 — no annotation.
+            note: None,
         }
     }
 
@@ -357,6 +363,8 @@ mod tests {
             is_local: false,
             enabled: true,
             spec: None,
+            // Phase 2 — no annotation.
+            note: None,
         };
         let host = StubHost(vec![custom.clone()]);
         let handler = ProviderMcpHandler::new(Arc::new(host));

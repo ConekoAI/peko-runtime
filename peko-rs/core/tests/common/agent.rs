@@ -183,6 +183,9 @@ fn seed_model_in_catalog(
         updated_at: now,
         compat: None,
         spec: None,
+        // Phase 2 of `feature/multi-model-subagents`: test helper
+        // seeds catalog entries without a user annotation.
+        note: None,
     };
     let mut entries = BTreeMap::new();
     entries.insert(id.to_string(), entry);

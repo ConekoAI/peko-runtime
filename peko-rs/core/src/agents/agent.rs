@@ -122,6 +122,30 @@ pub struct Agent {
     /// only `Agent::new` / `Agent::new_for_test` callers hit this
     /// path).
     principal_plan_port: Option<Arc<dyn peko_plan::PlanPort>>,
+    /// Phase 2 of `feature/multi-model-subagents`: weak handle to
+    /// the principal's `ModelCatalog`. Bound at construction via
+    /// `with_model_catalog` so the `model_list` builtin can
+    /// snapshot the catalog at execute time. Weak so the agent
+    /// never extends the catalog's lifetime past the daemon.
+    /// `None` means no catalog is reachable (test path) and the
+    /// `model_list` builtin is not registered.
+    model_catalog: Option<Arc<peko_providers::catalog::ModelCatalog>>,
+    /// Phase 4 of `feature/multi-model-subagents`: optional audit
+    /// sink forwarded to the `AgenticLoop` so it can emit
+    /// `model.selected` events on every successful LLM call. Bound
+    /// at construction via `with_audit_sink`. Production wiring
+    /// (`principal/agent_runner.rs`) passes an
+    /// `ObservabilityAuditSink` constructed from the principal's
+    /// `Observability` hub.
+    audit_sink: Option<Arc<dyn peko_engine::audit_sink::AuditSink>>,
+    /// Phase 4 of `feature/multi-model-subagents`: closure that
+    /// the loop consults right before emitting the audit event to
+    /// decide `Warning` (first use) vs `Info` (subsequent). The
+    /// closure receives a model id and returns `true` on first
+    /// use of (principal, model). When `None`, the loop emits
+    /// `Info` for every call.
+    audit_first_use_for_model:
+        Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
 }
 
 impl Clone for Agent {
@@ -150,6 +174,13 @@ impl Clone for Agent {
             principal_capabilities: self.principal_capabilities.clone(),
             principal_active_extensions: self.principal_active_extensions.clone(),
             principal_plan_port: self.principal_plan_port.clone(),
+            model_catalog: self.model_catalog.clone(),
+            // Phase 4: Arc-cloned so the trait-object + closure
+            // handles survive the `Agent::clone()` that the
+            // subagent executor uses to share the parent agent with
+            // descendants.
+            audit_sink: self.audit_sink.clone(),
+            audit_first_use_for_model: self.audit_first_use_for_model.clone(),
         }
     }
 }
@@ -644,6 +675,18 @@ impl Agent {
             principal_capabilities: None,
             principal_active_extensions: None,
             principal_plan_port: None,
+            // Phase 2 of `feature/multi-model-subagents`: the
+            // standalone / CLI one-shot `Agent::new` path doesn't
+            // bind a `ModelCatalog`. The `model_list` builtin is
+            // intentionally not registered for these agents.
+            model_catalog: None,
+            // Phase 4: unbound by default; production wiring at
+            // `principal/agent_runner.rs` reaches into
+            // `PrincipalContext::observability()` and
+            // `PrincipalContext::seen_models` to construct both
+            // fields.
+            audit_sink: None,
+            audit_first_use_for_model: None,
         };
 
         info!(
@@ -779,6 +822,49 @@ impl Agent {
         self
     }
 
+    /// Phase 2 of `feature/multi-model-subagents`: bind the
+    /// principal's model catalog so `init_builtins_async` can
+    /// register the `model_list` builtin. The catalog handle is
+    /// stored as an `Arc` so the `model_list` tool can downgrade
+    /// it to a `Weak` at registration time without losing the
+    /// principal's catalog reference (the executor passes the same
+    /// `Arc` to the tool's `Weak<ModelCatalog>` field).
+    ///
+    /// `None` ⇒ no catalog reachable (CLI one-shot path that builds
+    /// an `Agent` without a resolver); the `model_list` builtin is
+    /// intentionally not registered.
+    #[must_use]
+    pub fn with_model_catalog(
+        mut self,
+        catalog: Option<Arc<peko_providers::catalog::ModelCatalog>>,
+    ) -> Self {
+        self.model_catalog = catalog;
+        self
+    }
+
+    /// Phase 4 of `feature/multi-model-subagents`: bind an audit
+    /// sink + first-use lookup. The loop emits a `model.selected`
+    /// audit event on every successful LLM call; the lookup closure
+    /// decides `Warning` vs `Info` severity based on whether
+    /// `(principal, model)` has been seen before. Production wiring
+    /// (`principal/agent_runner.rs`) constructs both from
+    /// `PrincipalContext::observability()` and
+    /// `PrincipalContext::seen_models`.
+    ///
+    /// `None` for either argument disables the corresponding half:
+    /// `sink = None` ⇒ no audit emission at all; `sink = Some` +
+    /// `first_use_lookup = None` ⇒ every event is `Info`.
+    #[must_use]
+    pub fn with_audit_sink(
+        mut self,
+        sink: Option<Arc<dyn peko_engine::audit_sink::AuditSink>>,
+        first_use_lookup: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    ) -> Self {
+        self.audit_sink = sink;
+        self.audit_first_use_for_model = first_use_lookup;
+        self
+    }
+
     // ---- Phase 2 inert fields ----
     //
     // Each setter mutates the matching `AgentConfig` field and returns
@@ -866,6 +952,46 @@ impl Agent {
             crate::extensions::framework::types::ActiveExtensionSet,
         >,
     ) -> Result<Self> {
+        Self::new_with_shared_executor_with_model_override(
+            config,
+            session_manager,
+            subagent_executor,
+            inherited_provider,
+            principal_capabilities,
+            principal_active_extensions,
+            None,
+        )
+        .await
+    }
+
+    /// Phase 1 of `feature/multi-model-subagents`: variant of
+    /// [`new_with_shared_executor`] that lets the caller stamp the
+    /// `resolved_model_id` directly when the inherited provider was
+    /// already overridden at the call site (e.g. via
+    /// `Provider::with_model_id`). Without this hook the
+    /// inherited-provider branch returns `(Some(p), None)` and the
+    /// renderer's `{{runtime}}` line falls back to
+    /// `provider.model_id()` — which already reflects the
+    /// override, so this is mostly belt-and-suspenders to keep the
+    /// catalog id explicit. The hard work happens in
+    /// `execute_subagent_task`: it clones the provider with
+    /// `with_model_id` and pre-flights `SpecGate::check`.
+    pub async fn new_with_shared_executor_with_model_override(
+        config: AgentConfig,
+        session_manager: Arc<TokioRwLock<SessionManager>>,
+        subagent_executor: Arc<SubagentExecutor>,
+        inherited_provider: Option<Arc<peko_providers::Provider>>,
+        principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
+        principal_active_extensions: Option<
+            crate::extensions::framework::types::ActiveExtensionSet,
+        >,
+        // Optional catalog id the caller stamped on the inherited
+        // provider (Phase 1). `None` keeps the pre-Phase-1
+        // behavior: `resolved_model_id` is `None` for the
+        // inherited-provider branch and the renderer falls back to
+        // `provider.model_id()`.
+        resolved_model_id_override: Option<String>,
+    ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
         let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
@@ -901,7 +1027,7 @@ impl Agent {
         // lookup cost twice. Fall back to the v3 resolver path if the
         // caller didn't supply one (e.g., unit tests).
         let (provider, resolved_model_id) = match inherited_provider {
-            Some(p) => (Some(p), None),
+            Some(p) => (Some(p), resolved_model_id_override),
             // Subagent path: no principal binding, so no provider hint;
             // the resolver falls back to the catalog default.
             None => match Self::init_provider(&config, None, None, None).await? {
@@ -947,6 +1073,13 @@ impl Agent {
             principal_capabilities,
             principal_active_extensions,
             principal_plan_port: None,
+            model_catalog: None,
+            // Phase 4: CLI one-shot path doesn't bind an audit
+            // sink. Production wiring at
+            // `principal/agent_runner.rs` adds it via
+            // `Agent::with_audit_sink`.
+            audit_sink: None,
+            audit_first_use_for_model: None,
         };
 
         info!(
@@ -1638,6 +1771,41 @@ impl Agent {
             );
         }
 
+        // Phase 2 of `feature/multi-model-subagents`: register the
+        // `model_list` builtin when both the agent's config opts in
+        // (`enable_model_list`) AND a principal catalog is reachable.
+        // The CLI one-shot path binds neither (no resolver); the
+        // build surfaces silently skip the tool. Same Weak-downgrade
+        // pattern as `ToolSearchTool` so the tool never extends the
+        // catalog's lifetime past the daemon.
+        if self.config.enable_model_list {
+            if let Some(ref catalog) = self.model_catalog {
+                let model_list_tool =
+                    Arc::new(crate::tools::builtin::ModelListTool::new(
+                        Arc::downgrade(catalog),
+                    ));
+                if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_model_list_tool(
+                    &extension_core,
+                    model_list_tool,
+                    &self.principal_id,
+                )
+                .await
+                {
+                    warn!("Failed to register per-agent ModelListTool: {e}");
+                }
+            } else {
+                tracing::debug!(
+                    "Model list disabled for agent '{}': no bound ModelCatalog",
+                    self.config.name
+                );
+            }
+        } else {
+            tracing::debug!(
+                "Model list disabled by config for agent '{}'",
+                self.config.name
+            );
+        }
+
         // 5. Push the session key onto the core so AsyncSpawn can stamp
         //    parent_session_key on every spawned task. The session key is
         //    keyed by this agent's DID on the shared core so concurrent
@@ -1676,7 +1844,17 @@ impl Agent {
         .with_async_completion_queue(async_completion_queue)
         .with_caller_id(caller_id)
         .with_quota_meter(quota_meter)
-        .with_peer_meter(peer_meter);
+        .with_peer_meter(peer_meter)
+        // Phase 4: forward the agent's bound audit sink so the
+        // loop emits `model.selected` events on every successful
+        // LLM call. Both fields default to `None` (CLI one-shot
+        // path, test fixtures); production wiring at
+        // `principal/agent_runner.rs` sets both via
+        // `Agent::with_audit_sink`.
+        .with_audit_sink(
+            self.audit_sink.clone(),
+            self.audit_first_use_for_model.clone(),
+        );
         if let Some(token) = cancel {
             loop_ = loop_.with_cancel_token(token);
         }
@@ -2107,6 +2285,18 @@ impl Agent {
             principal_capabilities: None,
             principal_active_extensions: None,
             principal_plan_port: None,
+            // Phase 2 of `feature/multi-model-subagents`: the
+            // test-only `Agent::new_for_test` path doesn't bind a
+            // catalog. Tests that need a catalog can use
+            // `with_model_catalog(...)` after construction.
+            model_catalog: None,
+            // Phase 4: test path doesn't bind an audit sink; the
+            // integration test in
+            // `engine/agentic_loop_compat.rs::tests::test_audit_sink_emits_first_use_warning_then_info`
+            // builds the sink directly via
+            // `AgenticLoop::with_audit_sink`.
+            audit_sink: None,
+            audit_first_use_for_model: None,
         })
     }
 

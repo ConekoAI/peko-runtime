@@ -1027,6 +1027,8 @@ mod tests {
                         is_local: false,
                         enabled: true,
                         spec: None,
+                        // Phase 2 — no annotation.
+                        note: None,
                     }],
                 })
             }
@@ -1253,6 +1255,8 @@ mod tests {
                         is_local: false,
                         enabled: true,
                         spec: None,
+                        // Phase 2 — no annotation.
+                        note: None,
                     }],
                 );
                 m

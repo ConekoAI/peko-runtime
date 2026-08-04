@@ -74,6 +74,16 @@ pub struct ExecutionConfig {
     pub announce_completion: bool,
     /// Maximum spawn depth (0 = unlimited)
     pub max_depth: u32,
+    /// Phase 1 of `feature/multi-model-subagents`: optional
+    /// catalog model id the parent picked for this spawn. The
+    /// adapter at `agents::subagent_runtime_impl.rs` projects this
+    /// from the built-in's `ExecutionConfig::model_override`. When
+    /// `Some`, `execute_subagent_task` clones the inherited
+    /// provider and overrides `default_model_id` before handing it
+    /// to `Agent::new_with_shared_executor`. `None` means
+    /// "inherit the parent's model verbatim" (pre-Phase-1
+    /// behavior).
+    pub model_override: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -84,6 +94,7 @@ impl Default for ExecutionConfig {
             label: None,
             announce_completion: true,
             max_depth: 1, // Default: no nested spawns
+            model_override: None,
         }
     }
 }
@@ -228,6 +239,16 @@ impl SubagentExecutor {
     #[must_use]
     pub fn peer_meter(&self) -> Option<&Arc<peko_quota::meter::QuotaMeter>> {
         self.peer_meter.as_ref()
+    }
+
+    /// Phase 3 of `feature/multi-model-subagents`: the bound
+    /// provider's `Arc` for cost estimation. Used by
+    /// `SubagentRuntime::spawn_cost_estimate_usd` to pull the
+    /// `ModelSpec::pricing` field at audit time. Returns `None`
+    /// when no provider has been bound (test paths).
+    #[must_use]
+    pub fn provider_for_cost_estimate(&self) -> Option<&Arc<peko_providers::Provider>> {
+        self.provider.as_ref()
     }
 
     /// Get the spawning principal's runtime id.
@@ -451,6 +472,23 @@ impl SubagentExecutor {
         config: ExecutionConfig,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
+        // Phase 3 — spawn-time pre-flight against
+        // `cost_per_call_max`. Conservative token projection
+        // (4K input + 1K output) multiplied by the chosen
+        // model's `PricingHint`. Refuses the spawn before any
+        // LLM traffic. No pre-flight when:
+        //   * the principal has no quota config (`quota_meter`
+        //     is `None`),
+        //   * `cost_per_call_max` is `None` (no per-call cap),
+        //   * the chosen provider has no `PricingHint` (local
+        //     / unpriced model — can't estimate).
+        if let Some(err) = pre_flight_cost_ceiling(
+            self.quota_meter.as_deref(),
+            self.provider.as_ref(),
+        ) {
+            return Err(anyhow::anyhow!(err));
+        }
+
         // Check depth limits
         let parent_depth = self.get_parent_depth(parent_session_key).await;
         let child_depth = parent_depth + 1;
@@ -550,6 +588,11 @@ impl SubagentExecutor {
         // propagation but means a child cancel would also cancel the
         // parent — wrong direction. Derivation fixes both directions.
         let child_cancel_for_closure = parent_cancel.as_ref().map(|t| t.child_token());
+        // Phase 1: clone the model override so the spawned task can
+        // honor the parent-driven model choice inside
+        // `execute_subagent_task` (task-locals don't cross
+        // `tokio::spawn`, but plain owned Strings do).
+        let model_override_clone = config.model_override.clone();
 
         self.unified_executor
             .execute_with_metadata(
@@ -598,6 +641,7 @@ impl SubagentExecutor {
                         &child_session_key_clone,
                         &system_prompt,
                         &task_message,
+                        model_override_clone, // Phase 1
                         provider_clone,
                         agent_config_clone,
                         session_manager_clone,
@@ -995,6 +1039,14 @@ async fn execute_subagent_task(
     session_key: &str,
     system_prompt: &str,
     task_message: &str,
+    // Phase 1 of `feature/multi-model-subagents`: when the parent
+    // picked a model for this spawn, `model_override` is the catalog
+    // id. `None` means "inherit the parent's model verbatim"
+    // (pre-Phase-1 behavior). Inside the function we clone the
+    // inherited provider, stamp `default_model_id`, and pre-flight
+    // `SpecGate::check` against the new spec before handing the
+    // provider to `Agent::new_with_shared_executor`.
+    model_override: Option<String>,
     provider: Option<Arc<peko_providers::Provider>>,
     agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
@@ -1033,6 +1085,32 @@ async fn execute_subagent_task(
             ));
         }
     };
+
+    // Phase 1: parent-driven model selection. When the parent
+    // picked a model for this spawn, clone the inherited provider's
+    // inner `Provider` (cheap — ProviderRuntimeOptions is small),
+    // stamp `default_model_id`, and re-wrap in a new `Arc`. The
+    // pre-existing Arc refcount is preserved on the original; the
+    // new Arc is a sibling. `provider.spec()` is shared unchanged,
+    // so `SpecGate::check` sees the same capability descriptor the
+    // parent used.
+    let provider = if let Some(ref id) = model_override {
+        let inner = Arc::try_unwrap(provider).unwrap_or_else(|arc| (*arc).clone());
+        let new_provider = inner.with_model_id(id.clone());
+        info!(
+            "Subagent '{}' dispatching with parent-picked model: {}",
+            agent_name, id
+        );
+        Arc::new(new_provider)
+    } else {
+        provider
+    };
+    // Capture the resolved model id so `Agent::new_with_shared_executor`
+    // sees a non-`None` `resolved_model_id` when a parent picked a
+    // model (the inherited-provider branch currently returns `None`,
+    // which would make the renderer fall back to the parent's
+    // `default_model_id` instead of the chosen override).
+    let resolved_model_id_override: Option<String> = model_override.clone();
 
     // Get the base session key from the session key
     let base_key = peko_session::key::base_key_from_overlay(session_key)
@@ -1093,7 +1171,17 @@ async fn execute_subagent_task(
     .with_agent_config(config.clone())
     .with_principal_capabilities(principal_capabilities.clone())
     .with_active_extensions(active_extensions.clone())
-    .with_observability(observability.clone());
+    .with_observability(observability.clone())
+    // F39: nested sub-subagents must inherit the parent meters so
+    // they too charge against the spawning principal (not
+    // `unlimited()`). `parent_quota_meter` / `parent_peer_meter`
+    // come from the closure that spawned this task — they reflect
+    // the chain back to the root principal. When `None` (no
+    // quota config), subagent meter attribution falls open to
+    // `QuotaMeter::unlimited()` inside the nested
+    // `execute_subagent_task`, matching pre-F39 behavior.
+    .with_quota_meter(parent_quota_meter.clone())
+    .with_peer_meter(parent_peer_meter.clone());
     if let Some(ref ws) = principal_workspace {
         shared_executor_builder = shared_executor_builder.with_principal_workspace(ws.clone());
     }
@@ -1104,16 +1192,64 @@ async fn execute_subagent_task(
     // `new_with_shared_executor` no longer re-resolves a provider (the v1
     // `[provider]` fallback was removed in PR #44) and would otherwise fail
     // `execute_with_session` with "No provider configured".
-    let mut subagent = crate::agents::Agent::new_with_shared_executor(
+    //
+    // Phase 1: when the parent picked a model for this spawn, the
+    // provider above already carries the new `default_model_id` (we
+    // cloned with `with_model_id` earlier). Forward
+    // `model_override` as the `resolved_model_id` so the renderer
+    // surfaces the parent-driven id rather than the inherited
+    // default. The pre-flight SpecGate check below is what makes
+    // the override authoritative — without it the loop would
+    // accept requests the new model cannot serve and surface
+    // confusing provider errors on the first LLM call.
+    let mut subagent = crate::agents::Agent::new_with_shared_executor_with_model_override(
         config,
         session_manager,
         shared_executor,
         Some(provider.clone()),
         principal_capabilities,
         active_extensions,
+        resolved_model_id_override.clone(),
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
+
+    // Phase 1: pre-flight `SpecGate::check` against the resolved
+    // provider's `ModelSpec`. The provider carries the override
+    // id (or the inherited id when `None`), so this checks "can the
+    // chosen model serve the tools the subagent will need?". The
+    // request envelope here is empty — the gate looks at the
+    // bound provider's `tool_support` / `thinking` / `image_input`
+    // capabilities directly. A refusal here means "your chosen
+    // model cannot use the tools we would hand it", which is the
+    // right failure mode for a parent that picked e.g. a
+    // text-only model for a tool-using subagent.
+    if let Some(spec) = provider.spec() {
+        if let Err(gate_err) = peko_engine::spec_gate::check(
+            Some(spec),
+            &provider.model_id(),
+            provider.name(),
+            &[],
+            // Empty tool defs here — the gate only refuses when
+            // the spec says `tool_support == None`, which is the
+            // mismatch we want to surface. Per-call gates inside
+            // the loop handle the actual tool set.
+            &[],
+            &peko_provider_api::ChatOptions::default(),
+        ) {
+            warn!(
+                "SpecGate refused subagent '{}' against model '{}': {}",
+                agent_name,
+                provider.model_id(),
+                gate_err
+            );
+            return Err(anyhow::anyhow!(
+                "Model '{model}' cannot serve this subagent: {reason}",
+                model = provider.model_id(),
+                reason = gate_err
+            ));
+        }
+    }
 
     // Scope the child's own `Agent` tool to the principal workspace so it can
     // resolve and delegate to nested subagents (depth 2+).
@@ -1225,6 +1361,42 @@ async fn execute_subagent_task(
     }
 }
 
+/// Phase 3 of `feature/multi-model-subagents`: spawn-time
+/// pre-flight against `cost_per_call_max`. Conservative token
+/// projection (4K input + 1K output) multiplied by the chosen
+/// model's `PricingHint`. Refuses the spawn before any LLM
+/// traffic. Returns `Some(SpawnError::CostCeilingExceeded)` when
+/// the estimate exceeds the ceiling, `None` when the spawn
+/// should proceed or when no pre-flight applies (no `cost_per_call_max`
+/// configured or no `PricingHint` available).
+fn pre_flight_cost_ceiling(
+    quota_meter: Option<&peko_quota::meter::QuotaMeter>,
+    provider: Option<&Arc<peko_providers::Provider>>,
+) -> Option<SpawnError> {
+    let meter = quota_meter?;
+    let ceiling = meter.config().cost_per_call_max?;
+    let provider = provider?;
+    let pricing = provider.spec().and_then(|s| s.pricing)?;
+    const EST_INPUT_TOKENS: u64 = 4_000;
+    const EST_OUTPUT_TOKENS: u64 = 1_000;
+    let input_cost = pricing
+        .input_per_million
+        .map_or(0.0, |rate| rate * EST_INPUT_TOKENS as f64 / 1_000_000.0);
+    let output_cost = pricing
+        .output_per_million
+        .map_or(0.0, |rate| rate * EST_OUTPUT_TOKENS as f64 / 1_000_000.0);
+    let estimated = input_cost + output_cost;
+    if estimated > ceiling {
+        Some(SpawnError::CostCeilingExceeded {
+            estimated,
+            ceiling,
+            model_id: provider.model_id(),
+        })
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1237,6 +1409,146 @@ mod tests {
     use peko_quota::scope::QuotaScope;
     use peko_quota::{QuotaConfig, QuotaCycle, QuotaMeter};
     use peko_session::manager::SessionManager;
+
+    /// Phase 3 — the spawn-time pre-flight heuristic in a
+    /// standalone form so it's unit-testable without wiring the
+    /// full subagent flow. Returns the `SpawnError` the gate
+    /// would emit, or `None` if the spawn should proceed.
+    fn pre_flight_cost_ceiling_for_test(
+        quota_meter: Option<&QuotaMeter>,
+        provider_spec: Option<&peko_providers::spec::ModelSpec>,
+        model_id: &str,
+    ) -> Option<SpawnError> {
+        let ceiling = quota_meter
+            .and_then(|m| m.config().cost_per_call_max)?;
+        let pricing = provider_spec.and_then(|s| s.pricing)?;
+        const EST_INPUT_TOKENS: u64 = 4_000;
+        const EST_OUTPUT_TOKENS: u64 = 1_000;
+        let input_cost = pricing
+            .input_per_million
+            .map_or(0.0, |rate| rate * EST_INPUT_TOKENS as f64 / 1_000_000.0);
+        let output_cost = pricing
+            .output_per_million
+            .map_or(0.0, |rate| rate * EST_OUTPUT_TOKENS as f64 / 1_000_000.0);
+        let estimated = input_cost + output_cost;
+        if estimated > ceiling {
+            Some(SpawnError::CostCeilingExceeded {
+                estimated,
+                ceiling,
+                model_id: model_id.to_string(),
+            })
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn pre_flight_rejects_when_estimated_cost_exceeds_ceiling() {
+        // Opus-priced ($15/M input, $75/M output) — 4K input +
+        // 1K output = 4·15/1000 + 1·75/1000 = $0.060 + $0.075 =
+        // $0.135. A ceiling of $0.10 rejects.
+        let spec = peko_providers::spec::ModelSpec {
+            pricing: Some(peko_providers::spec::PricingHint {
+                input_per_million: Some(15.0),
+                output_per_million: Some(75.0),
+            }),
+            ..Default::default()
+        };
+        let meter = QuotaMeter::new(
+            QuotaConfig {
+                cost_per_call_max: Some(0.10),
+                ..Default::default()
+            },
+            None,
+            Utc::now(),
+        );
+        let err = pre_flight_cost_ceiling_for_test(
+            Some(&meter),
+            Some(&spec),
+            "claude-opus-4-8",
+        )
+        .expect("Opus with $0.10 ceiling must trip");
+        match err {
+            SpawnError::CostCeilingExceeded {
+                estimated,
+                ceiling,
+                model_id,
+            } => {
+                assert!((estimated - 0.135).abs() < 1e-9, "got {estimated}");
+                assert!((ceiling - 0.10).abs() < 1e-9);
+                assert_eq!(model_id, "claude-opus-4-8");
+            }
+            other => panic!("expected CostCeilingExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pre_flight_accepts_when_estimated_cost_under_ceiling() {
+        // Haiku ($1/M input, $5/M output) → 4K in + 1K out =
+        // $0.004 + $0.005 = $0.009. A ceiling of $0.05 accepts.
+        let spec = peko_providers::spec::ModelSpec {
+            pricing: Some(peko_providers::spec::PricingHint {
+                input_per_million: Some(1.0),
+                output_per_million: Some(5.0),
+            }),
+            ..Default::default()
+        };
+        let meter = QuotaMeter::new(
+            QuotaConfig {
+                cost_per_call_max: Some(0.05),
+                ..Default::default()
+            },
+            None,
+            Utc::now(),
+        );
+        assert!(
+            pre_flight_cost_ceiling_for_test(Some(&meter), Some(&spec), "haiku").is_none(),
+            "Haiku under the $0.05 ceiling must pass"
+        );
+    }
+
+    #[test]
+    fn pre_flight_skipped_when_no_ceiling() {
+        // `cost_per_call_max = None` ⇒ no pre-flight. Even
+        // Opus-priced model is accepted.
+        let spec = peko_providers::spec::ModelSpec {
+            pricing: Some(peko_providers::spec::PricingHint {
+                input_per_million: Some(15.0),
+                output_per_million: Some(75.0),
+            }),
+            ..Default::default()
+        };
+        let meter = QuotaMeter::new(QuotaConfig::default(), None, Utc::now());
+        assert!(pre_flight_cost_ceiling_for_test(Some(&meter), Some(&spec), "opus").is_none());
+    }
+
+    #[test]
+    fn pre_flight_skipped_when_no_pricing_hint() {
+        // Local / unpriced model — can't estimate, no pre-flight.
+        let spec = peko_providers::spec::ModelSpec::default(); // pricing: None
+        let meter = QuotaMeter::new(
+            QuotaConfig {
+                cost_per_call_max: Some(0.001), // tight cap
+                ..Default::default()
+            },
+            None,
+            Utc::now(),
+        );
+        assert!(pre_flight_cost_ceiling_for_test(Some(&meter), Some(&spec), "local").is_none());
+    }
+
+    #[test]
+    fn pre_flight_skipped_when_no_meter() {
+        // No `QuotaMeter` ⇒ no `cost_per_call_max` ⇒ no gate.
+        let spec = peko_providers::spec::ModelSpec {
+            pricing: Some(peko_providers::spec::PricingHint {
+                input_per_million: Some(15.0),
+                output_per_million: Some(75.0),
+            }),
+            ..Default::default()
+        };
+        assert!(pre_flight_cost_ceiling_for_test(None, Some(&spec), "opus").is_none());
+    }
 
     /// F39 test fixture: build a `MockAdapter`-backed `Provider` and
     /// a single quota meter (request_count cap = 10 so a successful

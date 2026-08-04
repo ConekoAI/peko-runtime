@@ -28,6 +28,11 @@ pub mod peer;
 pub mod router;
 pub mod routers;
 pub mod runtime;
+// Phase 4 of `feature/multi-model-subagents` (plan:
+// `/Users/rlsn/.claude/plans/goofy-humming-wall.md`).
+// `seen_models.json` persistence + the `PrincipalContext::mark_model_seen`
+// helper that powers the first-use-per-model audit-warning UX.
+pub mod seen_models;
 pub mod slash;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};

@@ -915,6 +915,8 @@ mod buffer_tests {
                 is_local: false,
                 enabled: true,
                 spec: None,
+                // Phase 2 — no annotation.
+                note: None,
             })
             .collect();
         let response = ResponsePacket::ModelList {

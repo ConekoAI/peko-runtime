@@ -28,6 +28,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use serde::Serialize;
+
 use async_trait::async_trait;
 
 use crate::tools::builtin::messaging::dto::{
@@ -74,6 +76,18 @@ pub trait SubagentRuntime: Send + Sync {
     /// Adapter no-ops when no observability hub is attached (the
     /// standalone / test path). Failures are logged but never bubble.
     async fn audit_spawn(&self, event: SpawnAuditEvent);
+
+    /// Phase 3 of `feature/multi-model-subagents`: the
+    /// conservative cost estimate (USD) computed at spawn time
+    /// from the chosen model's `PricingHint` and a 4K-in +
+    /// 1K-out token projection. Returns `None` when no
+    /// pre-flight applies (no `cost_per_call_max` configured or
+    /// no model pricing hint available). Default impl returns
+    /// `None` so existing test stubs don't need to grow a new
+    /// method.
+    fn spawn_cost_estimate_usd(&self) -> Option<f64> {
+        None
+    }
 
     /// Execute a subagent spawn and wait for completion (or framework
     /// detach on timeout).
@@ -133,6 +147,13 @@ pub struct SpawnRequest {
     /// The resolved subagent config (from
     /// [`SubagentRuntime::resolve_agent_config`]).
     pub subagent_config: AgentConfig,
+    /// Phase 1 of `feature/multi-model-subagents`: optional
+    /// catalog model id the parent picked for this spawn. When
+    /// `Some`, the subagent dispatches its LLM calls against this
+    /// model instead of inheriting the parent's model verbatim.
+    /// `None` falls back to the parent's model (the historical
+    /// behavior).
+    pub model: Option<String>,
 }
 
 // ─── SpawnAuditEvent (port input DTO) ─────────────────────────────
@@ -141,7 +162,7 @@ pub struct SpawnRequest {
 ///
 /// Carries the structured details the production executor used to
 /// log under `SubagentSpawn`. Tests no-op this path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SpawnAuditEvent {
     /// Subagent type identifier.
     pub subagent_type: String,
@@ -158,4 +179,19 @@ pub struct SpawnAuditEvent {
     pub description: Option<String>,
     /// Parent session key.
     pub parent_session_key: String,
+    /// Phase 1: catalog model id the parent picked for this
+    /// spawn (when a non-default model was chosen). `None` means
+    /// the child inherited the parent's model verbatim. Surfaced
+    /// in the audit row under `model_id` so `peko audit tail`
+    /// shows the parent-driven model choice.
+    pub model_id: Option<String>,
+    /// Phase 3 of `feature/multi-model-subagents`: the
+    /// conservative cost estimate (USD) computed at spawn time
+    /// from the chosen model's `PricingHint` and a 4K-in +
+    /// 1K-out token projection. `None` when the principal has
+    /// no `cost_per_call_max` configured (so no pre-flight ran)
+    /// or when the model carries no pricing hint (local /
+    /// unpriced model — cost is `0.0` by convention).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_estimate_usd: Option<f64>,
 }

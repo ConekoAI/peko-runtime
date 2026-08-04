@@ -244,6 +244,11 @@ impl AgentTool {
         config: ExecutionConfig,
         description: Option<String>,
         cleanup: SpawnCleanupPolicy,
+        // Phase 1: the parent-driven model id (if any). Surfaces on
+        // the audit row (`model_id`) and gets threaded onto
+        // `SpawnRequest.model` so the adapter can project it onto
+        // the root-side `ExecutionConfig.model_override`.
+        model: Option<String>,
         ctx: Option<&ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
         let timeout_seconds = config.timeout_seconds;
@@ -253,7 +258,7 @@ impl AgentTool {
         // spawn is later blocked by a runtime error).
         let subagent_config = self
             .runtime
-            .resolve_agent_config(subagent_type, self.workspace.as_deref(), None)
+            .resolve_agent_config(subagent_type, self.workspace.as_deref(), model.as_deref())
             .await?;
 
         // Audit the spawn under the parent principal, if an observability hub
@@ -269,6 +274,21 @@ impl AgentTool {
                 cleanup,
                 description: description.clone(),
                 parent_session_key: parent_session_key.to_string(),
+                // Phase 1: parent-driven model choice (when set).
+                // `None` means the child inherits the parent's
+                // model — pre-Phase-1 behavior.
+                model_id: model.clone(),
+                // Phase 3 — conservative cost estimate from the
+                // chosen model's `PricingHint` and the 4K-in +
+                // 1K-out token projection. `None` when the
+                // principal has no `cost_per_call_max` or the
+                // model carries no pricing hint. The runtime
+                // knows what model is being spawned; the cost
+                // estimator is centralised on the runtime
+                // adapter so Phase 1's model resolution can
+                // populate this without touching this call
+                // site.
+                cost_estimate_usd: self.runtime.spawn_cost_estimate_usd(),
             })
             .await;
 
@@ -295,6 +315,10 @@ impl AgentTool {
                 timeout_seconds,
                 parent_cancel,
                 subagent_config,
+                // Phase 1: forward the model override. Adapter
+                // lifts it onto `ExecutionConfig.model_override`
+                // before calling `execute_subagent_task`.
+                model: model.clone(),
             })
             .await
         {
@@ -621,6 +645,12 @@ Examples:
             label: description.clone(),
             announce_completion: true,
             max_depth: self.max_depth,
+            // Phase 1: forward the parent-driven model id onto the
+            // execution config; the adapter projects it onto the
+            // root-side `ExecutionConfig.model_override` and
+            // `execute_subagent_task` clones the inherited provider
+            // with this id stamped on `default_model_id`.
+            model_override: args.model.clone(),
         };
 
         // Always go through the blocking path; the framework detaches on
@@ -634,6 +664,7 @@ Examples:
             config,
             description,
             cleanup,
+            args.model.clone(),
             None,
         )
         .await
@@ -680,6 +711,9 @@ Examples:
             label: args.description.clone(),
             announce_completion: true,
             max_depth: self.max_depth,
+            // Phase 1: see `execute` above — same forwarding
+            // pattern.
+            model_override: args.model.clone(),
         };
         self.execute_spawn_blocking(
             &args.prompt,
@@ -689,6 +723,7 @@ Examples:
             config,
             args.description,
             cleanup,
+            args.model.clone(),
             Some(ctx),
         )
         .await
@@ -714,6 +749,11 @@ struct TestSubagentState {
     configs: std::collections::HashMap<String, crate::tools::builtin::messaging::dto::AgentConfig>,
     /// Audit log of spawn events.
     audits: Vec<SpawnAuditEvent>,
+    /// Phase 1: every `model_override` seen in
+    /// `resolve_agent_config` calls. Tests assert on this to
+    /// confirm the parent-driven model id is forwarded all the
+    /// way to the resolve path.
+    model_overrides_seen: Vec<Option<String>>,
     /// Whether `execute_and_wait` should succeed (true) or fail with
     /// an error (false).
     succeed_on_execute: bool,
@@ -733,6 +773,7 @@ impl TestSubagentRuntime {
                 grants: Vec::new(),
                 configs: std::collections::HashMap::new(),
                 audits: Vec::new(),
+                model_overrides_seen: Vec::new(),
                 succeed_on_execute: true,
                 principal_id: String::new(),
                 principal_name: None,
@@ -769,6 +810,19 @@ impl TestSubagentRuntime {
             .lock()
             .expect("TestSubagentRuntime mutex poisoned")
             .audits
+            .clone()
+    }
+
+    /// Phase 1: every `model_override` seen in
+    /// `resolve_agent_config` calls (in order). Tests use this to
+    /// confirm the parent-driven model id is forwarded from the
+    /// JSON schema all the way to the resolve path.
+    #[must_use]
+    pub fn model_overrides_seen(&self) -> Vec<Option<String>> {
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .model_overrides_seen
             .clone()
     }
 
@@ -815,12 +869,17 @@ impl SubagentRuntime for TestSubagentRuntime {
         &self,
         name: &str,
         _workspace: Option<&Path>,
-        _model_override: Option<&str>,
+        model_override: Option<&str>,
     ) -> anyhow::Result<crate::tools::builtin::messaging::dto::AgentConfig> {
-        let state = self
+        let mut state = self
             .inner
             .lock()
             .expect("TestSubagentRuntime mutex poisoned");
+        // Phase 1: record the model override so tests can assert it
+        // was forwarded.
+        state
+            .model_overrides_seen
+            .push(model_override.map(str::to_string));
         state
             .configs
             .get(name)
@@ -1084,6 +1143,29 @@ mod tests {
         assert_eq!(args.description, Some("my-task".to_string()));
         assert!(args.isolated);
         assert_eq!(args.cleanup, Some("delete".to_string()));
+        // Phase 1: `model` is absent from the legacy JSON, parses
+        // as `None` (`#[serde(skip_serializing_if = "Option::is_none")]`).
+        assert_eq!(args.model, None);
+    }
+
+    #[test]
+    fn test_args_parsing_with_model() {
+        // Phase 1: round-trip the parent-driven `model` field
+        // through `AgentArgs`. Without this, callers cannot pick
+        // a model for a subagent — the field is dropped on
+        // deserialization.
+        let json = r#"{
+            "prompt": "Do something",
+            "subagent_type": "writer",
+            "model": "claude-haiku-4-5"
+        }"#;
+
+        let args: AgentArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            args.model,
+            Some("claude-haiku-4-5".to_string()),
+            "model must round-trip through AgentArgs"
+        );
     }
 
     #[tokio::test]
@@ -1117,9 +1199,11 @@ mod tests {
                     label: None,
                     announce_completion: true,
                     max_depth: 3,
+                    model_override: None,
                 },
                 Some("my-task".into()),
                 SpawnCleanupPolicy::Keep,
+                None, // model override
                 None,
             )
             .await
@@ -1133,5 +1217,74 @@ mod tests {
         assert_eq!(audits[0].subagent_type, "writer");
         assert_eq!(audits[0].principal_id, "test-principal");
         assert_eq!(audits[0].parent_session_key, "parent:1");
+        // Phase 1: no model override in this test → audit row
+        // records `model_id: None`.
+        assert_eq!(audits[0].model_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_audit_records_model_override_on_spawn() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.grant("agent:writer");
+        runtime.register_agent(
+            "writer",
+            AgentConfig {
+                name: "writer".into(),
+                ..Default::default()
+            },
+        );
+        runtime.set_principal_id("test-principal");
+
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+
+        // Phase 1: parent picks a model. The audit row must carry
+        // `model_id: Some("haiku-4")` so `peko audit tail` shows the
+        // parent-driven model choice. `execute_spawn_blocking`
+        // forwards `model` straight into `SpawnAuditEvent.model_id`.
+        let result = tool
+            .execute_spawn_blocking(
+                "do work",
+                "writer",
+                false,
+                "parent:1",
+                ExecutionConfig {
+                    timeout_seconds: 60,
+                    cleanup: SpawnCleanupPolicy::Keep,
+                    label: None,
+                    announce_completion: true,
+                    max_depth: 3,
+                    model_override: Some("haiku-4".to_string()),
+                },
+                Some("my-task".into()),
+                SpawnCleanupPolicy::Keep,
+                Some("haiku-4".to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result["status"], "completed");
+
+        let audits = runtime.audits();
+        assert_eq!(audits.len(), 1);
+        assert_eq!(
+            audits[0].model_id,
+            Some("haiku-4".to_string()),
+            "audit row must carry the parent-driven model id"
+        );
+
+        // Phase 1: `execute_spawn_blocking` calls `resolve_agent_config`
+        // with the model override. (The pre-validate
+        // `resolve_subagent_config` in `execute_with_context` is
+        // bypassed because this test calls
+        // `execute_spawn_blocking` directly.) Pre-Phase-1 the
+        // resolve path dropped the override via `_model_override`,
+        // so the recorded list would have been `[None]` here.
+        let seen = runtime.model_overrides_seen();
+        assert_eq!(
+            seen,
+            vec![Some("haiku-4".to_string())],
+            "resolve must see the model override, got: {seen:?}"
+        );
     }
 }

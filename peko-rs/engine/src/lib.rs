@@ -59,6 +59,7 @@
 
 pub mod agent_view;
 pub mod agentic_loop;
+pub mod audit_sink;
 pub mod async_completion;
 pub mod async_inbox;
 pub mod chunker;
