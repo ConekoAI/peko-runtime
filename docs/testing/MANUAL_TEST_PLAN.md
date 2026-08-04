@@ -95,10 +95,10 @@ Run these once before starting the tests below.
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
 | T-001 | From `peko-runtime/`: `cargo build --release` | Build succeeds, binary at `./target/release/peko` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-002 | Move `peko` onto your PATH (or export it) | `which peko` prints a path | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | CLI only — used by T-003..T-005 for provider/credential setup |
-| T-003 | `peko provider add --template openai` (or anthropic/kimi/etc.) | Provider added, no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-004 | `peko credential set openai` (paste API key when prompted) | No error; key stored | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-005 | `peko credential test openai` | Prints success (✓ / ok) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-002 | Move `peko` onto your PATH (or export it) | `which peko` prints a path | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | CLI only — used by T-003..T-005 for model/credential setup |
+| T-003 | `peko model add --template openai --model gpt-4o --key "$OPENAI_API_KEY"` (or anthropic/kimi/etc.) | Model added, no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-004 | `peko credential set llm openai-gpt-4o --kind api_key --material "$OPENAI_API_KEY"` | No error; key stored | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-005 | `peko model test openai-gpt-4o` | Prints success (✓ / ok) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-006 | From `peko-desktop/`: `pnpm install` | Install completes | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-007 | From `peko-desktop/`: `pnpm run sidecar:build-and-fetch` | Rebuilds the runtime in release mode (incremental — fast on a warm cache) and copies the binary to `src-tauri/binaries/peko-<host-triple>`. The script ends by running `peko version` against the copy to confirm the version line lands on stderr. **No separate `peko daemon start` is needed** — the desktop's sidecar supervisor will own the engine (or adopt one that's already on the IPC socket) when you launch the app in T-008. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The host triple is detected from `rustc -vV`; on Apple Silicon Macs it's `aarch64-apple-darwin`, on Intel Macs `x86_64-apple-darwin`. The release process handles this in CI; this manual step exists so a local checkout doesn't ship the stub script (`PEKO_VERSION=0.0.0-stub`) into the sidecar slot — that would fail T-103 with a "version mismatch" banner. |
 | T-008 | `pnpm tauri dev` (first run is slow — 5–10 min) | App window opens, shows Dashboard | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |

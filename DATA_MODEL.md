@@ -104,15 +104,14 @@ preferred_model_id    = "claude-sonnet-4-5"  # Optional. Model id within that pr
 
 # These are *hints* — `LlmResolver` chooses the actual provider/model
 # at request time using this precedence:
-#   1. explicit caller override (`peko send --provider X --model Y`)
+#   1. explicit caller override (`peko send --model <id>`)
 #   2. session-pinned choice from a prior turn
-#   3. agent.preferred_provider_id / preferred_model_id  <-- here
-#   4. runtime default (`peko provider set-default X`)
-#   5. first enabled catalog entry
+#   3. agent.preferred_model_id  <-- here
+#   4. first enabled catalog entry
 
 # v3 agents only carry soft hints. The actual provider wiring
-# (base_url, api_key, model catalog) lives in `~/.peko/providers.toml`
-# and the OS keychain via `peko provider add` / `peko credential set`.
+# (base_url, api_key, model catalog) lives in `~/.peko/models.toml`
+# and the encrypted vault via `peko model add` / `peko credential set`.
 
 # ── Base image inheritance ─────────────────────────────────────────────────
 
@@ -207,13 +206,12 @@ service `"peko"` with the provider id as the account name. Manage
 them with:
 
 ```bash
-peko provider add --template anthropic   # seeds a catalog entry
-peko credential set anthropic             # stores the API key in the keychain
-peko provider set-default anthropic --model claude-sonnet-4-5
+peko model add --template anthropic --model claude-sonnet-4-5   # seeds a catalog entry + stores the API key
+peko credential set llm anthropic-claude-sonnet-4-5 --kind api_key --material "$ANTHROPIC_API_KEY"  # OR store a key against an existing entry
 ```
 
-Agent configs carry `preferred_provider_id` / `preferred_model_id`
-only — never an inline `[provider]` block. The v3-cleanup series
+Agent configs carry `preferred_model_id` only — never an inline
+`[provider]` block. The v3-cleanup series
 deleted the deprecated field entirely (PR #43 follow-up).
 
 ### 2.3 Inheritance and Merging

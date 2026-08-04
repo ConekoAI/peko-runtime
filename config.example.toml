@@ -2,11 +2,24 @@
 name = "default"
 description = "Default Peko agent"
 
-[provider]
-# Default provider - can be overridden per-agent
-type = "ollama"
-model = "llama2"
-# api_key = "${secret:OPENAI_API_KEY}"  # For OpenAI
+# ============================================
+# DAEMON BOOTSTRAP PROVIDER (optional)
+# ============================================
+# PR 6 / `feature/model-first-config`: the runtime is now catalog-
+# driven. Add model entries with `peko model add --template <id>
+# --model <wire-id> --key "$YOUR_KEY"` and the daemon will pick
+# one up from `~/.peko/models.toml`. The `[provider]` block below
+# is only consulted as a FALLBACK bootstrap when the catalog is
+# empty — comment in the block AND fill in the wire ids if you
+# want the daemon to start without a populated catalog.
+
+# [provider]
+# type = "anthropic"           # anthropic | openai | ollama | ...
+# model = "claude-3-5-haiku-latest"
+#
+# NOTE: API keys are NEVER stored in this file. Use
+#       `peko credential set llm <model-id> --kind api_key --material "$YOUR_KEY"`
+#       to store the key in the encrypted vault.
 
 # ============================================
 # PROVIDER RETRY BEHAVIOR (F40b / PR #3)
