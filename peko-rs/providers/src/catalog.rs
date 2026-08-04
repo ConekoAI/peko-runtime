@@ -38,6 +38,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use crate::spec::ModelSpec;
 use crate::templates::ProviderTemplate;
 use peko_provider_api::ProviderCompat;
 
@@ -152,6 +153,17 @@ pub struct ModelConfig {
     /// pre-F29 entries keep loading without migration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compat: Option<ProviderCompat>,
+    /// PR 1 / `feature/model-first-config`: declarative model
+    /// capability descriptor (vision, audio, tools, streaming,
+    /// thinking, json_mode, pricing). `None` for entries written
+    /// before PR 1; the engine falls back to conservative
+    /// `ModelSpec::default()` (text-only, no tools, no thinking,
+    /// streaming on). Templates that have been audited copy
+    /// `ModelSpec` from `ModelTemplate::spec` at create time;
+    /// users editing a custom entry via `peko model edit` can
+    /// override it directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<ModelSpec>,
 }
 
 fn default_true() -> bool {
@@ -178,12 +190,12 @@ impl ModelConfig {
         } else {
             model_id.clone()
         };
-        let (context_window, max_output_tokens) = template
+        let (context_window, max_output_tokens, spec) = template
             .models
             .iter()
             .find(|m| m.id == model_id)
-            .map(|m| (m.context_length, m.max_output_tokens))
-            .unwrap_or((None, None));
+            .map(|m| (m.context_length, m.max_output_tokens, m.spec))
+            .unwrap_or((None, None, None));
         Self {
             id,
             display_name,
@@ -204,6 +216,7 @@ impl ModelConfig {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             compat: template.compat,
+            spec,
         }
     }
 }

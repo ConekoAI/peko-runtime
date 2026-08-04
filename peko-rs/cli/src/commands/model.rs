@@ -313,6 +313,7 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             compat: None,
+            spec: None,
         }
     } else {
         unreachable!("guarded by the bare-invocation check above");

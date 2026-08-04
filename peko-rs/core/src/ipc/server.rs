@@ -914,6 +914,7 @@ mod buffer_tests {
                 requires_key: true,
                 is_local: false,
                 enabled: true,
+                spec: None,
             })
             .collect();
         let response = ResponsePacket::ModelList {

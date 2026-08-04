@@ -254,6 +254,7 @@ mod tests {
             requires_key: true,
             is_local: false,
             enabled: true,
+            spec: None,
         }
     }
 

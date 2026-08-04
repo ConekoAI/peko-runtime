@@ -2297,6 +2297,40 @@ fn model_summary_from_config(
         requires_key: entry.requires_key,
         is_local: !entry.requires_key,
         enabled: entry.enabled,
+        // PR 1 / `feature/model-first-config`: forward the
+        // declarative spec so the desktop can gate the image
+        // attachment picker, tool toggle, thinking toggle, JSON
+        // toggle, etc. without hard-coding per-model branches.
+        spec: entry.spec.map(model_spec_to_wire),
+    }
+}
+
+/// PR 1 / `feature/model-first-config`: project the
+/// `peko_providers::spec::ModelSpec` into the IPC mirror. Lives
+/// at module scope so the future gallery rework (PR 4) can reuse it
+/// when shaping "Recommended" / "By facet" lists.
+fn model_spec_to_wire(spec: peko_providers::spec::ModelSpec) -> crate::ipc::packet::ModelSpec {
+    use crate::ipc::packet::{ModelPricingHint, ModelThinkingMode, ModelToolSupport};
+    crate::ipc::packet::ModelSpec {
+        image_input: spec.image_input,
+        audio_input: spec.audio_input,
+        tool_support: match spec.tool_support {
+            peko_providers::spec::ToolSupport::None => ModelToolSupport::None,
+            peko_providers::spec::ToolSupport::FunctionCalling => ModelToolSupport::FunctionCalling,
+            peko_providers::spec::ToolSupport::Full => ModelToolSupport::Full,
+        },
+        streaming: spec.streaming,
+        thinking: match spec.thinking {
+            peko_providers::spec::ThinkingMode::Disabled => ModelThinkingMode::Disabled,
+            peko_providers::spec::ThinkingMode::Optional => ModelThinkingMode::Optional,
+            peko_providers::spec::ThinkingMode::Required => ModelThinkingMode::Required,
+            peko_providers::spec::ThinkingMode::CustomBudget => ModelThinkingMode::CustomBudget,
+        },
+        json_mode: spec.json_mode,
+        pricing: spec.pricing.map(|p| ModelPricingHint {
+            input_per_million: p.input_per_million,
+            output_per_million: p.output_per_million,
+        }),
     }
 }
 
@@ -2453,6 +2487,7 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 compat: None,
+                spec: None,
             }
         } else {
             // Bare-invocation guard. The handler also short-circuits

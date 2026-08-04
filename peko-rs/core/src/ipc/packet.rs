@@ -1895,6 +1895,101 @@ pub struct ModelSummary {
     /// list so the desktop can render them greyed-out / at the bottom
     /// of the models panel.
     pub enabled: bool,
+    /// PR 1 / `feature/model-first-config`: declarative capability
+    /// descriptor (vision, audio, tools, streaming, thinking,
+    /// json_mode, pricing). `None` for entries written before
+    /// PR 1; the desktop falls back to `ModelSpec::default()` in
+    /// that case (text-only, no tools, no thinking, streaming on).
+    /// Field is skipped from JSON when absent so old daemons and
+    /// old desktop builds keep working against new packets, and
+    /// vice versa.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<ModelSpec>,
+}
+
+/// PR 1 / `feature/model-first-config`: IPC mirror of
+/// `peko_providers::spec::ModelSpec`. Kept in this file (rather than
+/// imported from `peko_providers`) so the wire shape is owned by the
+/// IPC layer and can evolve independently. All fields use
+/// `#[serde(default)]` so packets emitted by a pre-PR-1 daemon
+/// deserialize cleanly into the new field set.
+///
+/// The mirror is intentionally one-way: the daemon reads `ModelSpec`
+/// from `ModelConfig::spec` and projects it onto this struct. The
+/// desktop never round-trips a `ModelSpec` back through IPC — edits
+/// go through the catalog file (`peko model edit` / `peko model add`)
+/// rather than the IPC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelSpec {
+    #[serde(default)]
+    pub image_input: bool,
+    #[serde(default)]
+    pub audio_input: bool,
+    #[serde(default)]
+    pub tool_support: ModelToolSupport,
+    #[serde(default = "default_streaming_true")]
+    pub streaming: bool,
+    #[serde(default)]
+    pub thinking: ModelThinkingMode,
+    #[serde(default)]
+    pub json_mode: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricingHint>,
+}
+
+fn default_streaming_true() -> bool {
+    true
+}
+
+impl Default for ModelSpec {
+    fn default() -> Self {
+        Self {
+            image_input: false,
+            audio_input: false,
+            tool_support: ModelToolSupport::None,
+            streaming: true,
+            thinking: ModelThinkingMode::Disabled,
+            json_mode: false,
+            pricing: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelToolSupport {
+    None,
+    FunctionCalling,
+    Full,
+}
+
+impl Default for ModelToolSupport {
+    fn default() -> Self {
+        ModelToolSupport::None
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelThinkingMode {
+    Disabled,
+    Optional,
+    Required,
+    CustomBudget,
+}
+
+impl Default for ModelThinkingMode {
+    fn default() -> Self {
+        ModelThinkingMode::Disabled
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ModelPricingHint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_per_million: Option<f64>,
 }
 
 /// One model declared by a built-in model preset.
@@ -3330,6 +3425,7 @@ mod tests {
                 requires_key: true,
                 is_local: false,
                 enabled: true,
+                spec: None,
             },
         };
         let bytes = resp.to_bytes().unwrap();

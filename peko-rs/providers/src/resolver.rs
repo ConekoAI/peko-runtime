@@ -194,6 +194,7 @@ impl LlmResolver {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             compat: None,
+            spec: None,
         };
         catalog.upsert(config).await.expect("mock upsert failed");
 
