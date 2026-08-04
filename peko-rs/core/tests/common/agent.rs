@@ -182,6 +182,7 @@ fn seed_model_in_catalog(
         created_at: now,
         updated_at: now,
         compat: None,
+        spec: None,
     };
     let mut entries = BTreeMap::new();
     entries.insert(id.to_string(), entry);

@@ -229,6 +229,7 @@ fn seed_mock_provider_catalog(
         created_at: now,
         updated_at: now,
         compat: None,
+        spec: None,
     };
     let mut entries = BTreeMap::new();
     entries.insert("mock-llm".to_string(), entry);
@@ -274,6 +275,7 @@ fn seed_minimax_catalog_entry(
         created_at: now,
         updated_at: now,
         compat: None,
+        spec: None,
     };
     let mut entries = BTreeMap::new();
     entries.insert("minimax".to_string(), entry);
