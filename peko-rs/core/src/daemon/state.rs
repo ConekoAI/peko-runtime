@@ -2704,6 +2704,14 @@ impl crate::ipc::handlers::audit::AuditHost for AppState {
 /// the generic vault API (`Vault::list_credentials`,
 /// `Vault::set_credential`, `Vault::delete_credential`) and the IPC
 /// wire types in `crate::ipc::packet`.
+///
+/// PR 3 / `feature/model-first-config` adds the catalog join used to
+/// populate `CredentialRow::is_referenced` / `referenced_by`, the
+/// `force` flag on `delete_credential`, and the `replace_on` flag on
+/// `set_credential`. The catalog is read through
+/// `peko_providers::catalog::ModelCatalog` — the same instance the
+/// resolver uses, so any mutation is reflected here without a reload.
+#[async_trait::async_trait]
 impl crate::ipc::handlers::credential::CredentialHost for AppState {
     fn list_credentials(
         &self,
@@ -2728,6 +2736,11 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
                 last_tested_at: summary.last_tested_at.map(|dt| dt.to_rfc3339()),
                 last_tested_ok: summary.last_tested_ok,
                 system_owned: summary.system_owned,
+                // `is_referenced` / `referenced_by` populated by the
+                // handler from `credential_references()` after this
+                // returns, so the row stays "flat" here.
+                is_referenced: false,
+                referenced_by: Vec::new(),
             })
             .collect()
     }
@@ -2753,14 +2766,15 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
         self.vault.get_credential(id).map(|c| c.material)
     }
 
-    fn set_credential(
+    async fn set_credential(
         &self,
         namespace: &str,
         name: &str,
         kind: crate::common::vault::CredentialKind,
         material: &secrecy::SecretString,
         metadata: Option<serde_json::Value>,
-    ) -> anyhow::Result<String> {
+        replace_on: Option<&str>,
+    ) -> anyhow::Result<(String, u32)> {
         // Reuse the existing credential id when overwriting the same
         // (namespace, name) slot so rotation bindings remain valid.
         let mut credential = crate::common::vault::Credential::now(
@@ -2782,17 +2796,101 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
         {
             credential.id = existing.id;
         }
-        let id = credential.id.clone();
+        let new_id = credential.id.clone();
         self.vault.set_credential(&credential).map_err(|e| {
             anyhow::anyhow!("vault refused to store credential '{namespace}/{name}': {e}")
         })?;
-        Ok(id)
+
+        // PR 3: bulk-rewire dependents when `--replace-on` was
+        // supplied. Only count rewires that actually happened;
+        // unknown `old_id` is a no-op (rewired_models = 0).
+        let rewired = if let Some(old_id) = replace_on {
+            if old_id == new_id {
+                0
+            } else {
+                self.resolver
+                    .catalog()
+                    .rewire_credential(old_id, &new_id)
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "vault stored credential but catalog rewire failed: {e}"
+                        )
+                    })?
+            }
+        } else {
+            0
+        };
+
+        Ok((new_id, rewired as u32))
     }
 
-    fn delete_credential(&self, id: &str) -> anyhow::Result<bool> {
+    async fn delete_credential(
+        &self,
+        id: &str,
+        force: bool,
+    ) -> anyhow::Result<crate::ipc::handlers::credential::CredentialDeleteOutcome> {
+        // PR 3: refuse if dependents exist and force is false.
+        let dependents = self
+            .resolver
+            .catalog()
+            .models_referencing(id)
+            .await
+            .into_iter()
+            .map(|e| model_summary_from_config(&e))
+            .collect::<Vec<_>>();
+        if !dependents.is_empty() && !force {
+            return Ok(
+                crate::ipc::handlers::credential::CredentialDeleteOutcome::InUse { dependents },
+            );
+        }
+
+        // Detach dependents (force path) before deleting the vault
+        // record so a partially-failed delete can't strand a model
+        // pointing at a missing credential.
+        let mut detached = 0u32;
+        if !dependents.is_empty() {
+            let entries = self.resolver.catalog().list_all().await;
+            for mut entry in entries {
+                if entry.credential_id.as_deref() == Some(id) {
+                    entry.credential_id = None;
+                    entry.updated_at = chrono::Utc::now();
+                    if let Err(e) = self.resolver.catalog().upsert(entry).await {
+                        // Surface the catalog failure so the caller
+                        // can retry — never silently leak orphans.
+                        return Err(anyhow::anyhow!(
+                            "catalog detach failed during credential delete: {e}"
+                        ));
+                    }
+                    detached += 1;
+                }
+            }
+        }
+
         self.vault
             .delete_credential(id)
-            .map_err(|e| anyhow::anyhow!("vault refused to delete credential '{id}': {e}"))
+            .map_err(|e| anyhow::anyhow!("vault refused to delete credential '{id}': {e}"))?;
+
+        Ok(
+            crate::ipc::handlers::credential::CredentialDeleteOutcome::Removed {
+                broken_references: detached,
+            },
+        )
+    }
+
+    async fn credential_references(&self) -> HashMap<String, Vec<crate::ipc::packet::ModelSummary>> {
+        let mut out: HashMap<String, Vec<crate::ipc::packet::ModelSummary>> = HashMap::new();
+        // Best-effort join: if the catalog is corrupt or unloaded we
+        // just don't decorate rows. The handler will still paint a
+        // list, just without the dependents badge.
+        for entry in self.resolver.catalog().list_all().await {
+            if let Some(cid) = entry.credential_id.clone() {
+                out.entry(cid)
+                    .or_default()
+                    .push(model_summary_from_config(&entry));
+            }
+        }
+        out
     }
 }
 

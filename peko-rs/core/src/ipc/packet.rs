@@ -304,6 +304,14 @@ pub enum RequestPacket {
     /// optional JSON object holding per-kind extras (OAuth
     /// `refresh_token` / `expires_at`, BasicAuth `username`,
     /// PrivateKey `algorithm`).
+    ///
+    /// `replace_on` (PR 3 / `feature/model-first-config`): when
+    /// supplied, every catalog entry that previously referenced the
+    /// credential at `replace_on` is rewritten to point at the new
+    /// id before the response is sent. Used by
+    /// `peko credential set --replace-on <old-id>` for bulk rotation
+    /// of dependents. The response's `rewired_models` field reports
+    /// how many entries were rebound.
     #[serde(rename = "credential_set")]
     CredentialSet {
         request_id: u64,
@@ -315,14 +323,31 @@ pub enum RequestPacket {
         material: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replace_on: Option<String>,
     },
 
     /// Remove a credential by `id`. Powers the desktop's
     /// `credential_delete` Tauri command; the CLI's
     /// `peko credential delete <id>` writes the vault directly.
     /// Mirrors `Vault::delete_credential`.
+    ///
+    /// `force` (PR 3 / `feature/model-first-config`): when `false`
+    /// (the default), the handler refuses to delete a credential
+    /// referenced by one or more configured models and emits
+    /// `ResponsePacket::Error` with code `credential_in_use` so the
+    /// CLI can show a dependents list. When `true`, every catalog
+    /// entry that pointed at this credential is detached (`null`)
+    /// before the delete; `broken_references` on the response
+    /// reports how many entries were detached. Force-deletes are
+    /// audit-logged at WARN.
     #[serde(rename = "credential_delete")]
-    CredentialDelete { request_id: u64, id: String },
+    CredentialDelete {
+        request_id: u64,
+        id: String,
+        #[serde(default)]
+        force: bool,
+    },
 
     // ─── Rotation bindings (RP3A) ───────────────────────────────────
     /// Enumerate every rotation binding currently configured in the
@@ -1230,14 +1255,40 @@ pub enum ResponsePacket {
     /// [`ResponsePacket::Error`]) by the time this is sent. The
     /// `id` echo lets the desktop update its local UI without
     /// re-issuing a `credential_list` round-trip.
+    ///
+    /// `rewired_models` (PR 3 / `feature/model-first-config`):
+    /// count of catalog entries that were rebound from the
+    /// previous credential id (passed via
+    /// `CredentialSet::replace_on`) to this new id. Zero on a plain
+    /// set; the CLI's `--replace-on` flow surfaces this count so
+    /// the user sees "Rewired N models: …" without a follow-up
+    /// `model list` round-trip.
     #[serde(rename = "credential_set_done")]
-    CredentialSetDone { request_id: u64, id: String },
+    CredentialSetDone {
+        request_id: u64,
+        id: String,
+        #[serde(default)]
+        rewired_models: u32,
+    },
 
     /// Reply to [`RequestPacket::CredentialDelete`]. See
     /// [`ResponsePacket::CredentialSetDone`] for the same notes on
     /// the success/error split.
+    ///
+    /// `broken_references` (PR 3 / `feature/model-first-config`):
+    /// count of catalog entries that pointed at this credential
+    /// and were detached (`credential_id = null`) before the
+    /// delete. Zero on a normal delete; non-zero on a `--force`
+    /// delete. The CLI surfaces this count so the user sees
+    /// "Removed credential. Detached N model(s)." without a
+    /// follow-up `model list` round-trip.
     #[serde(rename = "credential_deleted")]
-    CredentialDeleted { request_id: u64, id: String },
+    CredentialDeleted {
+        request_id: u64,
+        id: String,
+        #[serde(default)]
+        broken_references: u32,
+    },
 
     /// Reply to [`RequestPacket::CredentialGet`]. Carries the full
     /// record (id, namespace, name, kind, metadata, timestamps)
@@ -2020,6 +2071,17 @@ pub struct ModelTestResult {
 /// `last_tested_at` is an ISO-8601 UTC stamp from the most recent
 /// `CredentialTest` against this credential; `last_tested_ok`
 /// records the outcome. Both are `None` until the first test runs.
+///
+/// `is_referenced` / `referenced_by` (PR 3 / `feature/model-first-config`):
+/// populated when the catalog has at least one `ModelConfig` whose
+/// `credential_id` matches this row. `is_referenced` is the cheap
+/// summary flag the desktop paints next to the credential name;
+/// `referenced_by` carries the dependent `ModelSummary` rows so the
+/// delete confirmation dialog can show jump links without a follow-up
+/// `model list` round-trip. `#[serde(default)]` keeps the field
+/// forward+backward compatible — old daemons that don't compute
+/// references deserialize as `false` / `[]`, and old clients ignore
+/// the fields on a new daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialRow {
     pub id: String,
@@ -2033,6 +2095,10 @@ pub struct CredentialRow {
     pub last_tested_ok: Option<bool>,
     #[serde(default)]
     pub system_owned: bool,
+    #[serde(default)]
+    pub is_referenced: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub referenced_by: Vec<ModelSummary>,
 }
 
 /// Full credential record returned by `CredentialGet`. Includes
@@ -3596,6 +3662,8 @@ mod tests {
                     last_tested_at: Some("2026-07-15T11:48:00Z".to_string()),
                     last_tested_ok: Some(true),
                     system_owned: false,
+                    is_referenced: false,
+                    referenced_by: Vec::new(),
                 },
                 CredentialRow {
                     id: "id-openai".to_string(),
@@ -3606,6 +3674,8 @@ mod tests {
                     last_tested_at: None,
                     last_tested_ok: None,
                     system_owned: false,
+                    is_referenced: false,
+                    referenced_by: Vec::new(),
                 },
             ],
         };
@@ -3819,6 +3889,7 @@ mod tests {
             kind: "api_key".to_string(),
             material: "sk-test-123".to_string(),
             metadata: Some(serde_json::json!({ "foo": "bar" })),
+            replace_on: None,
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -3853,6 +3924,7 @@ mod tests {
                 kind,
                 material,
                 metadata,
+                replace_on,
             } => {
                 assert_eq!(request_id, 921);
                 assert_eq!(namespace, "provider:minimax");
@@ -3865,6 +3937,7 @@ mod tests {
                         .and_then(|m| m.get("foo").and_then(|v| v.as_str())),
                     Some("bar")
                 );
+                assert!(replace_on.is_none());
             }
             _ => panic!("Wrong variant"),
         }
@@ -3879,6 +3952,7 @@ mod tests {
         let resp = ResponsePacket::CredentialSetDone {
             request_id: 922,
             id: "id-minimax".to_string(),
+            rewired_models: 0,
         };
         let bytes = resp.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -3891,9 +3965,14 @@ mod tests {
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::CredentialSetDone { request_id, id } => {
+            ResponsePacket::CredentialSetDone {
+                request_id,
+                id,
+                rewired_models,
+            } => {
                 assert_eq!(request_id, 922);
                 assert_eq!(id, "id-minimax");
+                assert_eq!(rewired_models, 0);
             }
             _ => panic!("Wrong variant"),
         }
@@ -3908,6 +3987,7 @@ mod tests {
         let req = RequestPacket::CredentialDelete {
             request_id: 931,
             id: "id-minimax".to_string(),
+            force: false,
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -3920,9 +4000,14 @@ mod tests {
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::CredentialDelete { request_id, id } => {
+            RequestPacket::CredentialDelete {
+                request_id,
+                id,
+                force,
+            } => {
                 assert_eq!(request_id, 931);
                 assert_eq!(id, "id-minimax");
+                assert!(!force);
             }
             _ => panic!("Wrong variant"),
         }
@@ -3934,6 +4019,7 @@ mod tests {
         let resp = ResponsePacket::CredentialDeleted {
             request_id: 932,
             id: "id-minimax".to_string(),
+            broken_references: 0,
         };
         let bytes = resp.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -3946,9 +4032,14 @@ mod tests {
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::CredentialDeleted { request_id, id } => {
+            ResponsePacket::CredentialDeleted {
+                request_id,
+                id,
+                broken_references,
+            } => {
                 assert_eq!(request_id, 932);
                 assert_eq!(id, "id-minimax");
+                assert_eq!(broken_references, 0);
             }
             _ => panic!("Wrong variant"),
         }
