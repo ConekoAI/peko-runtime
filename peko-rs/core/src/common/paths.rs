@@ -34,32 +34,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[cfg(unix)]
-use std::os::unix::fs::DirBuilderExt;
-
 use peko_session::safe_filename_component;
-
-/// Create `path` recursively with owner-only mode (`0700`) on Unix;
-/// mode is not enforced on Windows (NTFS DACLs are out of scope for
-/// peko — only the Unix transport-layer trust model applies).
-///
-/// Used by `PathResolver::ensure_dirs` for buckets whose per-file
-/// artifacts are sensitive (pending-requests, service-tokens). On
-/// Unix the mode is set via `DirBuilderExt::mode`; on non-Unix the
-/// `mode` extension trait isn't available and the helper is a
-/// straight `create_dir_all`.
-#[cfg(unix)]
-fn create_owner_only_dir(path: &Path) -> std::io::Result<()> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(path)
-}
-
-#[cfg(not(unix))]
-fn create_owner_only_dir(path: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(path)
-}
 
 // =========================================================================
 // Three-Tier Storage Layout (Phase A)
@@ -170,16 +145,10 @@ pub struct RuntimeLayout {
     pub registry_root: PathBuf,
     /// `{data_dir}/runtime/locks` — runtime-wide lock files.
     pub locks_dir: PathBuf,
-    /// `{data_dir}/runtime/pending-requests` — ADR-045 PR #3 self-modify
-    /// queue. One `<uuid>.json` per pending request, mode 0600. PR #4
-    /// adds `peko pending list/decide` and `rehydrate()` at startup.
-    pub pending_requests_dir: PathBuf,
-    /// `{data_dir}/runtime/service.tokens` — ADR-045 PR #5 named,
-    /// persistent service-token bucket. One `<name>/` subdirectory per
-    /// token, containing `meta.json` (caps + timestamps) and `token`
-    /// (the raw 256-bit secret). Both files mode 0600; the bucket dir
-    /// itself mode 0700.
-    pub service_tokens_dir: PathBuf,
+    /// `{data_dir}/runtime/audit` — durable JSONL audit log sink.
+    /// Holds `audit-YYYY-MM-DD.jsonl` files (one per UTC day,
+    /// created lazily by [`crate::observability::audit::JsonlSink`]).
+    pub audit_dir: PathBuf,
     /// `{config_dir}/principals` — convenience accessor for principal index.
     pub principals_root: PathBuf,
 }
@@ -403,7 +372,10 @@ impl PathResolver {
     /// as you touch them.
     #[must_use]
     pub fn principal_identity_path(&self, principal: &str) -> PathBuf {
-        self.principal_layout(principal).shared.root.join("identity")
+        self.principal_layout(principal)
+            .shared
+            .root
+            .join("identity")
     }
 
     // ========================================================================
@@ -466,15 +438,7 @@ impl PathResolver {
             mcps_root: runtime_dir.join("mcps"),
             registry_root: runtime_dir.join("registry"),
             locks_dir: runtime_dir.join("locks"),
-            // ADR-045 PR #3: durable on-disk queue for self-modify
-            // requests. Lives under `runtime/` (not `run/`) because it
-            // is part of the runtime data plane, not IPC auth state.
-            pending_requests_dir: runtime_dir.join("pending-requests"),
-            // ADR-045 PR #5: persistent service-token bucket.
-            // Parallel to `pending-requests` (mode 0700 dir, mode 0600
-            // per-file) but holds long-lived credentials rather than
-            // ephemeral request artifacts.
-            service_tokens_dir: runtime_dir.join("service.tokens"),
+            audit_dir: runtime_dir.join("audit"),
             principals_root: self.principals_root_dir(),
         }
     }
@@ -514,31 +478,37 @@ impl PathResolver {
         self.runtime_layout().locks_dir
     }
 
-    /// Pending self-modification request queue (ADR-045 PR #3).
+    /// Runtime-wide audit log directory.
     ///
-    /// Path: `{data_dir}/runtime/pending-requests`
+    /// Path: `{data_dir}/runtime/audit` — holds `audit-YYYY-MM-DD.jsonl`
+    /// files written by [`crate::observability::audit::JsonlSink`].
+    /// The directory is created on first write; it is NOT created
+    /// here, so callers that just want to read it (e.g. `peko audit
+    /// tail`) can do so without producing a side effect.
     ///
-    /// One `<uuid>.json` file per pending request, mode 0600.
-    /// The runtime writes here when `peko_self` is called; the
-    /// daemon reads it on `peko pending list` (PR #4) and at
-    /// startup via `ApprovalQueue::rehydrate` (also PR #4).
+    /// ADR-046 §"Known v1 limitations": historical files are NOT
+    /// pruned automatically; users run `peko audit prune` or a
+    /// manual cron to clean up old files.
     #[must_use]
-    pub fn pending_requests_dir(&self) -> PathBuf {
-        self.runtime_layout().pending_requests_dir
+    pub fn audit_dir(&self) -> PathBuf {
+        self.runtime_layout().audit_dir
     }
 
-    /// Persistent service-token bucket (ADR-045 PR #5).
+    /// Runtime-wide principal-config drift baseline file.
     ///
-    /// Path: `{data_dir}/runtime/service.tokens`
+    /// Path: `{data_dir}/runtime/principal-hashes.json` — written by
+    /// [`crate::daemon::config_drift::run_drift_check`] at the end of
+    /// every daemon startup so the next boot can detect mid-session
+    /// edits to `principal.toml`. File is a JSON object of
+    /// `{principal_name: hex_sha256_hash}`.
     ///
-    /// One `<name>/` subdirectory per token, holding `meta.json`
-    /// and `token` (both mode 0600). Created by `ensure_dirs`
-    /// with mode 0700. The bucket survives daemon restarts; the
-    /// daemon rehydrates `AuthTable` from this directory at
-    /// startup.
+    /// **v1 limitation (ADR-046):** drift is only detected at daemon
+    /// startup. In-session edits go undetected; the `notify` crate
+    /// would be needed to watch the file at runtime and is deferred
+    /// to a follow-up PR.
     #[must_use]
-    pub fn service_tokens_dir(&self) -> PathBuf {
-        self.runtime_layout().service_tokens_dir
+    pub fn principal_hashes_file(&self) -> PathBuf {
+        self.runtime_dir().join("principal-hashes.json")
     }
 
     /// Per-principal cron schedule file (Local tier).
@@ -568,7 +538,10 @@ impl PathResolver {
     /// `paths.rs` does not need to depend on `crate::principal::config`
     /// (which would create a cycle — `principal` depends on `common`).
     #[must_use]
-    pub fn lookup_principal_name(&self, principal_id: &peko_subject::PrincipalId) -> Option<String> {
+    pub fn lookup_principal_name(
+        &self,
+        principal_id: &peko_subject::PrincipalId,
+    ) -> Option<String> {
         let principals_root = self.principals_root_dir();
         let entries = std::fs::read_dir(&principals_root).ok()?;
         let needle = principal_id.0.as_str();
@@ -586,10 +559,7 @@ impl PathResolver {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let did = value
-                .get("did")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let did = value.get("did").and_then(|v| v.as_str()).unwrap_or("");
             if did == needle {
                 // The on-disk `name` field is the canonical name; fall
                 // back to the directory name if `name` is missing.
@@ -617,7 +587,10 @@ impl PathResolver {
     /// if the principal doesn't exist on disk. Cost is the same as the
     /// DID scan: O(principals).
     #[must_use]
-    pub fn lookup_principal_id_by_name(&self, principal_name: &str) -> Option<peko_subject::PrincipalId> {
+    pub fn lookup_principal_id_by_name(
+        &self,
+        principal_name: &str,
+    ) -> Option<peko_subject::PrincipalId> {
         let principals_root = self.principals_root_dir();
         let entries = std::fs::read_dir(&principals_root).ok()?;
         for entry in entries.flatten() {
@@ -625,10 +598,7 @@ impl PathResolver {
             if !path.is_dir() {
                 continue;
             }
-            let dir_name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let dir_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             // Match either by directory name (cheap) or by `name` field
             // (authoritative when both are present).
             if dir_name != principal_name {
@@ -641,10 +611,7 @@ impl PathResolver {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                let declared_name = value
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let declared_name = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 if declared_name != principal_name {
                     continue;
                 }
@@ -728,39 +695,6 @@ impl PathResolver {
     #[must_use]
     pub fn pekohub_config(&self) -> PathBuf {
         self.runtime_dir().join("pekohub.toml")
-    }
-
-    /// Get the IPC run directory.
-    ///
-    /// Path: `{config_dir}/run` — this is the directory the daemon
-    /// socket (`daemon.sock`), pid file (`daemon.pid`), and the
-    /// session-auth artifacts (`auth-code`, `auth-token-<sid>`)
-    /// live in. Distinct from `runtime_dir()` (`{config_dir}/runtime`)
-    /// which holds structured config files; `run_dir()` is for
-    /// ephemeral sockets and short-lived secret material.
-    #[must_use]
-    pub fn run_dir(&self) -> PathBuf {
-        self.config_dir.join("run")
-    }
-
-    /// Get the startup auth-code file path.
-    ///
-    /// Path: `{config_dir}/run/auth-code` (mode 0600). The daemon
-    /// writes the diceware code here at startup and deletes it on
-    /// shutdown or after first successful submission.
-    #[must_use]
-    pub fn auth_code_file(&self) -> PathBuf {
-        self.run_dir().join("auth-code")
-    }
-
-    /// Get the per-session auth-token file path.
-    ///
-    /// Path: `{config_dir}/run/auth-token-{sid}` (mode 0600).
-    /// Keyed by Unix session ID so multiple terminals (each with
-    /// its own SID) keep independent tokens.
-    #[must_use]
-    pub fn auth_token_file(&self, sid: i32) -> PathBuf {
-        self.run_dir().join(format!("auth-token-{sid}"))
     }
 
     /// Get the encrypted vault file path
@@ -906,33 +840,23 @@ impl PathResolver {
     /// or if directories already exist.
     ///
     /// **Phase A.** Also creates the runtime-global bucket at
-    /// `{data_dir}/runtime/{extensions,mcps,registry,locks}` so daemon
+    /// `{data_dir}/runtime/{extensions,mcps,registry,locks,audit}` so daemon
     /// startup is a no-op when the bucket is fresh.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.config_dir)?;
         std::fs::create_dir_all(&self.data_dir)?;
         std::fs::create_dir_all(&self.cache_dir)?;
         std::fs::create_dir_all(self.chat_logs_dir())?;
-        // ADR-045 PR #2: `run/` holds the daemon socket, pid file,
-        // and session-auth artifacts (auth-code, auth-token-<sid>).
-        std::fs::create_dir_all(self.run_dir())?;
         // Phase A: runtime-global bucket.
         let runtime = self.runtime_layout();
         std::fs::create_dir_all(&runtime.extensions_root)?;
         std::fs::create_dir_all(&runtime.mcps_root)?;
         std::fs::create_dir_all(&runtime.registry_root)?;
         std::fs::create_dir_all(&runtime.locks_dir)?;
-        // ADR-045 PR #3: durable queue for self-modify requests.
-        // Owner-only (0700): the bucket holds per-request 0600 JSON files
-        // whose contents reveal the principal's intent (capabilities,
-        // edit paths, schedule targets). World-readable `create_dir_all`
-        // would defeat the file mode.
-        create_owner_only_dir(&runtime.pending_requests_dir)?;
-        // ADR-045 PR #5: persistent service-token bucket. Same
-        // owner-only rationale as `pending-requests` — the per-file
-        // manifests leak capability-scope names, which are sensitive
-        // metadata even without the secret.
-        create_owner_only_dir(&runtime.service_tokens_dir)?;
+        // Phase 2 (ADR-046 trust + audit): pre-create the audit dir
+        // so `peko audit tail` and other read paths don't need to
+        // distinguish "missing" from "empty" on first boot.
+        std::fs::create_dir_all(&runtime.audit_dir)?;
         Ok(())
     }
 
@@ -1107,9 +1031,13 @@ mod tests {
         // Local root lives under `<data_dir>/principals/<name>/local/`.
         assert!(local.root.ends_with("principals/alice/local"));
         assert!(local.sessions_dir.ends_with("alice/local/sessions"));
-        assert!(local.memory_index.ends_with("alice/local/memory_index.json"));
+        assert!(local
+            .memory_index
+            .ends_with("alice/local/memory_index.json"));
         assert!(local.cron_dir.ends_with("alice/local/cron"));
-        assert!(local.cron_schedule.ends_with("alice/local/cron/schedule.toml"));
+        assert!(local
+            .cron_schedule
+            .ends_with("alice/local/cron/schedule.toml"));
         assert!(local.cron_history.ends_with("alice/local/cron/history.log"));
         assert!(local.cache_dir.ends_with("alice/local/cache"));
         assert!(local.locks_dir.ends_with("alice/local/locks"));
@@ -1127,10 +1055,15 @@ mod tests {
         let shared = layout.shared;
         // Shared root lives under `<config_dir>/principals/<name>/`.
         assert!(shared.root.ends_with("principals/alice"));
-        assert!(shared.config_file.ends_with("principals/alice/principal.toml"));
+        assert!(shared
+            .config_file
+            .ends_with("principals/alice/principal.toml"));
         assert!(shared.agents_dir.ends_with("principals/alice/agents"));
-        assert!(shared.identity_file.ends_with("principals/alice/identity.json"));
-        assert!(shared.memory_snapshots_dir
+        assert!(shared
+            .identity_file
+            .ends_with("principals/alice/identity.json"));
+        assert!(shared
+            .memory_snapshots_dir
             .ends_with("principals/alice/memory/snapshots"));
         assert!(shared.mcps_dir.ends_with("principals/alice/mcps"));
     }
@@ -1169,53 +1102,8 @@ mod tests {
         assert!(runtime.mcps_root.ends_with("/data/runtime/mcps"));
         assert!(runtime.registry_root.ends_with("/data/runtime/registry"));
         assert!(runtime.locks_dir.ends_with("/data/runtime/locks"));
-        assert!(runtime
-            .pending_requests_dir
-            .ends_with("/data/runtime/pending-requests"));
+        assert!(runtime.audit_dir.ends_with("/data/runtime/audit"));
         assert!(runtime.principals_root.ends_with("/config/principals"));
-    }
-
-    #[test]
-    fn pending_requests_dir_lives_under_data_runtime_not_config() {
-        // ADR-045 PR #3 invariant: pending-request artifacts are
-        // runtime data (ephemeral-but-durable, queue-shaped) so they
-        // belong under `<data_dir>/runtime/`, NOT under
-        // `<config_dir>/runtime/` (portable config) or `<run_dir>/`
-        // (IPC auth state). This test pins the contract so a future
-        // refactor that swaps to `config_dir.join("runtime")` is caught.
-        let resolver = PathResolver::with_dirs(
-            PathBuf::from("/config"),
-            PathBuf::from("/data"),
-            PathBuf::from("/cache"),
-        );
-        let dir = resolver.pending_requests_dir();
-        assert!(dir.starts_with("/data/runtime/"));
-        assert!(!dir.starts_with("/config/"));
-        assert!(!dir.starts_with("/data/run/"));
-    }
-
-    #[test]
-    fn pending_requests_dir_is_distinct_from_other_runtime_buckets() {
-        // Distinct from `extensions_root`, `mcps_root`, `registry_root`,
-        // `locks_dir`. Each bucket owns its own subdirectory name.
-        let resolver = PathResolver::with_dirs(
-            PathBuf::from("/config"),
-            PathBuf::from("/data"),
-            PathBuf::from("/cache"),
-        );
-        let layout = resolver.runtime_layout();
-        let other = [
-            &layout.extensions_root,
-            &layout.mcps_root,
-            &layout.registry_root,
-            &layout.locks_dir,
-        ];
-        for o in other {
-            assert_ne!(
-                &layout.pending_requests_dir, o,
-                "pending-requests must be its own directory, not collide with {o:?}",
-            );
-        }
     }
 
     #[test]
@@ -1240,57 +1128,6 @@ mod tests {
         assert_eq!(
             resolver.principals_root_dir(),
             PathBuf::from("/config/principals")
-        );
-    }
-
-    // ADR-045 PR #2: session-auth artifact paths live under
-    // `{config_dir}/run/`, NOT under the existing `{config_dir}/runtime/`
-    // bucket. These tests pin the path split so a future refactor
-    // can't silently move auth-code / auth-token between the two.
-
-    #[test]
-    fn run_dir_is_under_config_not_runtime() {
-        let resolver = PathResolver::with_dirs(
-            PathBuf::from("/config"),
-            PathBuf::from("/data"),
-            PathBuf::from("/cache"),
-        );
-        assert_eq!(resolver.run_dir(), PathBuf::from("/config/run"));
-        // The runtime/ bucket holds structured config and must
-        // remain distinct from run/.
-        assert_ne!(resolver.run_dir(), resolver.runtime_dir());
-    }
-
-    #[test]
-    fn auth_code_file_lives_under_run() {
-        let resolver = PathResolver::with_dirs(
-            PathBuf::from("/config"),
-            PathBuf::from("/data"),
-            PathBuf::from("/cache"),
-        );
-        assert_eq!(
-            resolver.auth_code_file(),
-            PathBuf::from("/config/run/auth-code")
-        );
-    }
-
-    #[test]
-    fn auth_token_file_is_sid_keyed_under_run() {
-        let resolver = PathResolver::with_dirs(
-            PathBuf::from("/config"),
-            PathBuf::from("/data"),
-            PathBuf::from("/cache"),
-        );
-        assert_eq!(
-            resolver.auth_token_file(1234),
-            PathBuf::from("/config/run/auth-token-1234")
-        );
-        // Negative SIDs are not produced by the kernel — we still
-        // format them rather than reject so unit tests can exercise
-        // the helper with any i32 value.
-        assert_eq!(
-            resolver.auth_token_file(-1),
-            PathBuf::from("/config/run/auth-token--1")
         );
     }
 }
@@ -1363,12 +1200,10 @@ impl GlobalPaths {
 
         let services = crate::common::services::ServiceContainer::new(resolver.clone());
 
-        let authority = Arc::new(
-            crate::common::authority::RuntimeAuthority::for_caller(
-                resolver.clone(),
-                peko_subject::Subject::User(user.clone()),
-            ),
-        );
+        let authority = Arc::new(crate::common::authority::RuntimeAuthority::for_caller(
+            resolver.clone(),
+            peko_subject::Subject::User(user.clone()),
+        ));
 
         Self {
             config_dir,
@@ -1531,12 +1366,24 @@ impl GlobalPaths {
         self.resolver.runtime_locks_dir()
     }
 
-    /// Pending self-modification request queue (ADR-045 PR #3).
+    /// Runtime-wide audit log directory.
     ///
-    /// Path: `{data_dir}/runtime/pending-requests`
+    /// Path: `{data_dir}/runtime/audit`. See the inner resolver's
+    /// `audit_dir` for the JSONL file naming convention and ADR-046
+    /// §"Known v1 limitations" for the no-auto-prune rule.
     #[must_use]
-    pub fn pending_requests_dir(&self) -> PathBuf {
-        self.resolver.pending_requests_dir()
+    pub fn audit_dir(&self) -> PathBuf {
+        self.resolver.audit_dir()
+    }
+
+    /// Runtime-wide principal-config drift baseline file.
+    ///
+    /// Path: `{data_dir}/runtime/principal-hashes.json`. See the
+    /// inner resolver's `principal_hashes_file` for the file format
+    /// and the v1 startup-only detection rule.
+    #[must_use]
+    pub fn principal_hashes_file(&self) -> PathBuf {
+        self.resolver.principal_hashes_file()
     }
 
     /// Per-principal cron schedule file (Local tier).

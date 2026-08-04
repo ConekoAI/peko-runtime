@@ -13,15 +13,9 @@
 //! `peko_extension_api::CompletionEvent`), and the remaining
 //! dependencies (`peko_message`, `peko_tools_core`) are already
 //! `peko-engine` deps. No trait ports or session-coupled shims needed.
-//!
-//! ADR-045 PR #4 step 3: extends the synthesis surface to also
-//! render `AsyncInboxItem::Approval` envelopes as a synthetic
-//! user-role message — the agent learns its `peko_self` request was
-//     decided. The agentic loop drains them at the same iteration
-//! boundary as completions and steering messages.
 
 use chrono::Utc;
-use peko_extension_api::{ApprovalDecision, AsyncTaskStatus};
+use peko_extension_api::AsyncTaskStatus;
 use peko_message::{ContentBlock, LlmMessage, MessageRole};
 use std::collections::HashMap;
 
@@ -81,39 +75,6 @@ impl AsyncCompletionLike for peko_extension_api::CompletionEnvelope {
     }
     fn status(&self) -> &AsyncTaskStatus {
         &self.status
-    }
-    fn parent_session_key(&self) -> &str {
-        &self.parent_session_key
-    }
-}
-
-/// View trait over an approval-decision envelope used to build the
-/// synthetic user-role message at iteration start (ADR-045 PR #4
-/// step 3). Mirrors `AsyncCompletionLike`'s decoupling pattern so the
-/// synthesis function works against either the API crate's
-/// [`ApprovalEnvelope`](peko_extension_api::ApprovalEnvelope) (the
-/// in-flight shape) or any future host-side struct that carries the
-/// same fields.
-pub trait ApprovalLike {
-    fn request_id(&self) -> uuid::Uuid;
-    fn op_label(&self) -> &str;
-    fn decision(&self) -> &ApprovalDecision;
-    fn op_result(&self) -> &serde_json::Value;
-    fn parent_session_key(&self) -> &str;
-}
-
-impl ApprovalLike for peko_extension_api::ApprovalEnvelope {
-    fn request_id(&self) -> uuid::Uuid {
-        self.request_id
-    }
-    fn op_label(&self) -> &str {
-        &self.op_label
-    }
-    fn decision(&self) -> &ApprovalDecision {
-        &self.decision
-    }
-    fn op_result(&self) -> &serde_json::Value {
-        &self.op_result
     }
     fn parent_session_key(&self) -> &str {
         &self.parent_session_key
@@ -201,63 +162,6 @@ pub fn build_async_completion_message<E: AsyncCompletionLike>(
     Some(LlmMessage {
         role: MessageRole::User,
         content,
-        timestamp: Utc::now(),
-        metadata: HashMap::new(),
-        tool_call_id: None,
-        usage: None,
-    })
-}
-
-/// Build a synthetic user-role `LlmMessage` from a list of approval
-/// decisions (ADR-045 PR #4 step 3). Filters to envelopes whose
-/// `parent_session_key` matches the current session. Returns `None`
-/// if no envelopes belong to this session.
-///
-/// The rendered message is a single `Text` block:
-/// ```text
-/// [Approval decisions — N decided since last turn]
-///
-/// Approval <uuid> for <op_label>: approved.
-///   result: <json>
-///
-/// Approval <uuid> for <op_label>: denied — <reason>.
-///   result: <json>
-/// ```
-///
-/// Plain-text — the LLM is the consumer, not the user. The agent
-/// uses this to learn its `peko_self` request was decided so it can
-/// continue with the granted capability or surface the denial.
-pub fn build_approval_message<A: ApprovalLike>(
-    approvals: &[A],
-    session_id: &str,
-) -> Option<LlmMessage> {
-    let for_session: Vec<&A> = approvals
-        .iter()
-        .filter(|a| a.parent_session_key() == session_id)
-        .collect();
-    if for_session.is_empty() {
-        return None;
-    }
-
-    let n = for_session.len();
-    let mut body = format!("[Approval decisions — {n} decided since last turn]\n");
-    for a in for_session {
-        let status_line = match a.decision() {
-            ApprovalDecision::Approved => "approved".to_string(),
-            ApprovalDecision::Denied { reason } => format!("denied — {reason}"),
-        };
-        body.push_str(&format!(
-            "\nApproval {} for {}: {}.\n  result: {}\n",
-            a.request_id(),
-            a.op_label(),
-            status_line,
-            a.op_result(),
-        ));
-    }
-
-    Some(LlmMessage {
-        role: MessageRole::User,
-        content: vec![ContentBlock::Text { text: body }],
         timestamp: Utc::now(),
         metadata: HashMap::new(),
         tool_call_id: None,
@@ -528,139 +432,6 @@ mod tests {
         assert!(
             msg.is_none(),
             "events from a different session must be filtered out"
-        );
-    }
-
-    // ---- build_approval_message (ADR-045 PR #4 step 3) ----
-
-    fn make_approval_envelope(
-        request_id: uuid::Uuid,
-        op_label: &str,
-        decision: ApprovalDecision,
-        op_result: serde_json::Value,
-        parent_session_key: &str,
-    ) -> peko_extension_api::ApprovalEnvelope {
-        peko_extension_api::ApprovalEnvelope {
-            request_id,
-            op_label: op_label.to_string(),
-            decision,
-            op_result,
-            decided_at: chrono::Utc::now(),
-            parent_session_key: parent_session_key.to_string(),
-        }
-    }
-
-    #[test]
-    fn test_build_approval_message_no_events() {
-        let approvals: Vec<peko_extension_api::ApprovalEnvelope> = vec![];
-        let msg = build_approval_message(&approvals, "session_a");
-        assert!(msg.is_none(), "zero envelopes should return None");
-    }
-
-    #[test]
-    fn test_build_approval_message_one_approved() {
-        let req_id = uuid::Uuid::new_v4();
-        let envs = vec![make_approval_envelope(
-            req_id,
-            "GrantCapability:fs:read",
-            ApprovalDecision::Approved,
-            serde_json::json!({ "granted": "fs:read" }),
-            "session_a",
-        )];
-        let msg = build_approval_message(&envs, "session_a")
-            .expect("matching envelope should produce Some(msg)");
-
-        assert!(matches!(msg.role, MessageRole::User));
-        assert_eq!(msg.content.len(), 1);
-
-        match &msg.content[0] {
-            ContentBlock::Text { text } => {
-                assert!(text.contains("Approval decisions — 1 decided"));
-                assert!(text.contains(&req_id.to_string()));
-                assert!(text.contains("GrantCapability:fs:read"));
-                assert!(text.contains("approved"));
-                assert!(text.contains("granted"));
-                assert!(text.contains("fs:read"));
-            }
-            other => panic!("expected Text block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_build_approval_message_one_denied() {
-        let req_id = uuid::Uuid::new_v4();
-        let envs = vec![make_approval_envelope(
-            req_id,
-            "GrantCapability:fs:write",
-            ApprovalDecision::Denied {
-                reason: "not needed yet".into(),
-            },
-            serde_json::json!(null),
-            "session_a",
-        )];
-        let msg = build_approval_message(&envs, "session_a")
-            .expect("matching envelope should produce Some(msg)");
-
-        match &msg.content[0] {
-            ContentBlock::Text { text } => {
-                assert!(text.contains("denied"));
-                assert!(text.contains("not needed yet"));
-                assert!(text.contains(&req_id.to_string()));
-                assert!(text.contains("GrantCapability:fs:write"));
-            }
-            other => panic!("expected Text block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_build_approval_message_two_envelopes() {
-        let envs = vec![
-            make_approval_envelope(
-                uuid::Uuid::new_v4(),
-                "GrantCapability:fs:read",
-                ApprovalDecision::Approved,
-                serde_json::json!({ "granted": "fs:read" }),
-                "session_a",
-            ),
-            make_approval_envelope(
-                uuid::Uuid::new_v4(),
-                "InstallExtension:foo",
-                ApprovalDecision::Denied {
-                    reason: "not approved".into(),
-                },
-                serde_json::json!(null),
-                "session_a",
-            ),
-        ];
-        let msg = build_approval_message(&envs, "session_a")
-            .expect("two matching envelopes should produce Some(msg)");
-
-        match &msg.content[0] {
-            ContentBlock::Text { text } => {
-                assert!(text.contains("Approval decisions — 2 decided"));
-                assert!(text.contains("GrantCapability:fs:read"));
-                assert!(text.contains("InstallExtension:foo"));
-                assert!(text.contains("approved"));
-                assert!(text.contains("denied"));
-                assert!(text.contains("not approved"));
-            }
-            other => panic!("expected Text block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_build_approval_message_filters_other_sessions() {
-        let envs = vec![make_approval_envelope(
-            uuid::Uuid::new_v4(),
-            "GrantCapability:fs:read",
-            ApprovalDecision::Approved,
-            serde_json::json!({ "granted": "fs:read" }),
-            "session_b",
-        )];
-        let msg = build_approval_message(&envs, "session_a");
-        assert!(
-            msg.is_none(),
-            "envelopes from a different session must be filtered out"
         );
     }
 }

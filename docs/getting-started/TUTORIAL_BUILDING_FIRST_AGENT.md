@@ -32,10 +32,9 @@ The easiest way to create a Principal is with the `principal create` command:
 # Set your API key
 export OPENAI_API_KEY="sk-..."
 
-# Add a provider entry to the runtime catalog and store the key in one command
-peko provider add --template openai \
-    --key "$OPENAI_API_KEY" \
-    --default
+# Add a model entry to the runtime catalog and store the key in one command
+peko model add --template openai --model gpt-4o \
+    --key "$OPENAI_API_KEY"
 
 # Create a Principal
 peko principal create my-first-principal
@@ -192,16 +191,15 @@ Manage provider API keys centrally. As of v3, the runtime owns a
 `~/.peko/providers.toml` catalog and keys live in the encrypted vault:
 
 ```bash
-# Add a provider entry, store the key, and set it as default in one command
-peko provider add --template openai \
-    --key "$OPENAI_API_KEY" \
-    --default
+# Add a model entry, store the key in one command
+peko model add --template openai --model gpt-4o \
+    --key "$OPENAI_API_KEY"
 
-# List which providers have a stored key
-peko credential list
+# List which models have a stored key
+peko credential list --namespace llm
 
-# Format-only check on a stored key
-peko credential test openai
+# Live-test a stored key by pinging the endpoint
+peko model test openai-gpt-4o
 ```
 
 ### 3. Export and Share Principals

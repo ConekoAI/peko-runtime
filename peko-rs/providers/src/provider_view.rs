@@ -66,6 +66,13 @@ pub trait ProviderView: Send + Sync + 'static {
     /// `agentic_loop.rs:1202` — `provider.supports_prompt_cache_control()`.
     fn supports_prompt_cache_control(&self) -> bool;
 
+    /// PR 2 / `feature/model-first-config`: declarative capability
+    /// descriptor for the bound model. `None` when the catalog
+    /// entry was written before PR 1; the engine treats that as
+    /// "no gate" so pre-PR-1 setups keep working. Field access at
+    /// `agentic_loop.rs:1280` — `provider.spec()`.
+    fn spec(&self) -> Option<crate::spec::ModelSpec>;
+
     /// Blocking chat that returns the full `ChatResponse` (including usage).
     /// Used at line 2119 (`provider.chat_with_tools(...)`) when the provider
     /// doesn't support streaming — the loop synthesizes a stream from the
@@ -109,6 +116,10 @@ impl ProviderView for Provider {
 
     fn supports_prompt_cache_control(&self) -> bool {
         Provider::supports_prompt_cache_control(self)
+    }
+
+    fn spec(&self) -> Option<crate::spec::ModelSpec> {
+        Provider::spec(self)
     }
 
     async fn chat_with_tools(

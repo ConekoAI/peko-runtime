@@ -35,7 +35,7 @@
 //! `AsyncInboxLike` trait impl boundary.
 
 use peko_extension_api::{
-    ApprovalEvent, AsyncInboxItem, AsyncInboxLike, CompletionEvent, InboxItem, SteeringMessage,
+    AsyncInboxItem, AsyncInboxLike, CompletionEvent, InboxItem, SteeringMessage,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -135,7 +135,7 @@ impl SessionInbox {
     }
 
     /// Drain only completion events, leaving any pending steering
-    /// messages or approval decisions in place.
+    /// messages in place.
     pub async fn drain_completions(&self) -> Vec<CompletionEvent> {
         let mut guard = self.inner.lock().await;
         let mut out = Vec::new();
@@ -143,10 +143,7 @@ impl SessionInbox {
         for item in guard.drain(..) {
             match item {
                 InboxItem::Completion(e) => out.push(e),
-                // Steering + Approval events belong to other drain
-                // sites (the agentic loop drains the full inbox at
-                // iteration start). Keep them in the buffer.
-                other => keep.push_back(other),
+                InboxItem::Steering(m) => keep.push_back(InboxItem::Steering(m)),
             }
         }
         *guard = keep;
@@ -160,7 +157,7 @@ impl SessionInbox {
             .iter()
             .filter_map(|i| match i {
                 InboxItem::Steering(m) => Some(m.clone()),
-                InboxItem::Completion(_) | InboxItem::Approval(_) => None,
+                InboxItem::Completion(_) => None,
             })
             .collect()
     }
@@ -222,7 +219,6 @@ impl AsyncInboxLike for SessionInbox {
             .map(|item| match item {
                 InboxItem::Completion(e) => AsyncInboxItem::Completion(e.into()),
                 InboxItem::Steering(m) => AsyncInboxItem::Steering(m.into()),
-                InboxItem::Approval(a) => AsyncInboxItem::Approval(a.into()),
             })
             .collect()
     }
@@ -242,14 +238,6 @@ impl AsyncInboxLike for SessionInbox {
                 id: m.id,
                 content: m.content,
                 queued_at: m.queued_at,
-            }),
-            AsyncInboxItem::Approval(a) => InboxItem::Approval(ApprovalEvent {
-                request_id: a.request_id,
-                op_label: a.op_label,
-                decision: a.decision,
-                op_result: a.op_result,
-                decided_at: a.decided_at,
-                parent_session_key: a.parent_session_key,
             }),
         };
         SessionInbox::push(self, native);

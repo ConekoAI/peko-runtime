@@ -34,12 +34,6 @@ pub struct PekoCli {
     /// so real-LLM tests can resolve API keys without an OS keychain.
     /// Default false keeps mock-tier tests safe from leaking env vars.
     allow_real_llm_keys: bool,
-    /// If true, do NOT set `PEKO_AUTH_SESSION_REQUIRED=0`, so the
-    /// daemon enables the strict SID+token gate by default (the
-    /// post-PR #2 production behavior). Tests opting in here must
-    /// call [`PekoCli::auth_submit`] before any non-`auth`-family
-    /// command will succeed. Default false keeps legacy tests happy.
-    strict_session_auth: bool,
 }
 
 impl PekoCli {
@@ -86,7 +80,6 @@ impl PekoCli {
             #[cfg(windows)]
             pipe_name,
             allow_real_llm_keys: false,
-            strict_session_auth: false,
         }
     }
 
@@ -252,26 +245,6 @@ impl PekoCli {
             c.env("PEKO_DAEMON_PIPE", &self.pipe_name);
         }
 
-        // ADR-045 PR #2 step 5: legacy harness opt-out. By default we
-        // disable strict session auth so the existing CLI integration
-        // tests don't have to enroll. Tests that intentionally exercise
-        // the strict gate opt in via [`PekoCli::strict_session_auth`].
-        if !self.strict_session_auth {
-            c.env("PEKO_AUTH_SESSION_REQUIRED", "0");
-        } else {
-            // Belt-and-suspenders: remove any leaked env so the
-            // daemon sees "unset" and applies the secure default.
-            c.env_remove("PEKO_AUTH_SESSION_REQUIRED");
-        }
-
         c
-    }
-
-    /// Opt into the strict SID+token auth gate (ADR-045 PR #2 step 5
-    /// default). Tests calling this must use [`PekoCli::auth_submit`]
-    /// before any non-`auth`-family command will succeed.
-    pub fn strict_session_auth(mut self) -> Self {
-        self.strict_session_auth = true;
-        self
     }
 }

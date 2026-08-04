@@ -221,79 +221,76 @@ current consumers use `round_robin`.
 peko credential set mcp:analytics default \
   --kind api_key --material "$ANALYTICS_API_KEY"
 
-# Store a provider API key
-peko credential provider-set-key openai --material "$OPENAI_API_KEY"
-# or the shorter provider-form
-peko provider set-key openai --material "$OPENAI_API_KEY"
-
-# Add a secondary key for rotation
-peko provider rotate-add anthropic --material "$ANTHROPIC_ALT_KEY"
+# Store a model API key (catalog + vault wiring)
+peko credential set llm openai-gpt-4o \
+  --kind api_key --material "$OPENAI_API_KEY"
+# (or pass --key on `peko model add` to do both in one step)
 
 # Inspect + verify
-peko credential list --namespace provider:openai
-peko credential provider-test openai
+peko credential list --namespace llm
+peko model test openai-gpt-4o
 
 # Rotation binding
-ALT=$(peko provider rotate-add anthropic --material "$ANTHROPIC_ALT_KEY" 2>&1 | grep -oE 'alt-[0-9]+' | head -1)
-ID=$(peko credential list --namespace provider:anthropic | awk '/default/ {print $1}')
-peko credential binding set provider:anthropic:default \
-  --strategy round_robin --order "$ID" "$ALT"
-peko credential binding test-rotation provider:anthropic:default
+ID=$(peko credential list --namespace llm | awk '/openai-gpt-4o/ {print $1}')
+peko credential binding set llm:openai-gpt-4o \
+  --strategy round_robin --order "$ID"
 
 # Remove
 peko credential delete <id>
-peko credential provider-delete-key openai
+peko model remove openai-gpt-4o
 ```
 
 ---
 
-### `provider` — Runtime provider catalog
+### `model` — Runtime model catalog
 
-Inspect and manage the provider catalog (`~/.peko/providers.toml`).
-Agents reference catalog entries by id via their
-`preferred_provider_id` soft hint; the catalog + keychain own all
-provider wiring.
+Inspect and manage the model catalog (`~/.peko/models.toml`).
+The runtime is now model-first (PR 1 of `feature/model-first-config`):
+each entry bundles endpoint info, the wire model id, and a
+`credential_id` reference. There is no separate `peko provider`
+command — model management subsumes it.
 
 ```bash
-peko provider <COMMAND>
+peko model <COMMAND>
 ```
 
 #### Subcommands
 
 | Subcommand | Description |
 |-----------|-------------|
-| `list [--detailed]` | List all catalog entries. |
-| `templates` | Print built-in provider templates (openai, anthropic, …). |
-| `add <id> [--template T \| --api-format F --base-url U --default-model M]` | Add or update an entry. |
-| `remove <id>` | Remove an entry from the catalog. |
-| `set-default <id> [--model M]` | Set the runtime default provider / model. |
-| `get-default` | Print the current default provider + model. |
-| `set-key <provider> [--material <SECRET>]` | Store the default API key in the vault. |
-| `rotate-add <provider> [--material <SECRET>]` | Add a secondary API key at `provider:<provider>/alt-N`. |
+| `list [--detailed] [--json]` | List all configured models. |
+| `templates` | Print built-in preset templates (anthropic, openai, ollama, …). |
+| `show <id> [--json] [--copy-as-cli]` | Show one model in detail, or emit JSON, or render the `peko model add` invocation that would recreate it. |
+| `compare <id>... [--json]` | Side-by-side capability matrix (vision / tools / thinking / json_mode / pricing). |
+| `search [--vision] [--tools] [--thinking] [--json-mode] [--priced] [--no-key] [--enabled] [--contains <NEEDLE>] [--json]` | Filter by capability predicate (at least one required). |
+| `add [--template T --model M --key K] \| [--custom --id ID --api-format F --base-url U --model M]` | Add a model to the catalog. `--dry-run` skips the catalog + vault write. |
+| `remove <id> [--dry-run]` | Remove a model from the catalog (does not delete its credential). |
+| `test <id>` | Live-test a model: ping the endpoint with the stored credential. |
 
 #### Examples
 
 ```bash
-# Seed from a built-in template
-peko provider add openai --template openai
+# Seed from a built-in template (preferred — picks up curated spec/pricing)
+peko model add --template anthropic --model claude-sonnet-4-5 \
+               --key "$ANTHROPIC_API_KEY"
 
 # Self-hosted OpenAI-compatible endpoint
-peko provider add my-local \
+peko model add --custom \
+    --id my-local \
     --api-format openai_completions \
     --base-url http://localhost:8080 \
-    --default-model default
+    --model llama-3.1-8b
 
-# Store / rotate API keys
-peko provider set-key openai --material "$OPENAI_API_KEY"
-peko provider rotate-add anthropic --material "$ANTHROPIC_ALT_KEY"
+# Inspect / compare / search
+peko model list --detailed
+peko model show openai-gpt-4o
+peko model compare openai-gpt-4o claude-sonnet-4-5
+peko model search --vision --tools --thinking
+peko model show openai-gpt-4o --copy-as-cli   # share a config across machines
 
-# Inspect
-peko provider list
-peko provider list --detailed
-
-# Default
-peko provider set-default openai
-peko provider get-default
+# Remove (use --dry-run first to preview)
+peko model remove my-local --dry-run
+peko model remove my-local
 ```
 
 ---
@@ -630,8 +627,10 @@ peko search researcher
 peko search info acme/researcher
 
 # Provider setup
-peko provider add --template anthropic --key "$ANTHROPIC_API_KEY" --default
-peko credential set anthropic
+peko model add --template anthropic --model claude-sonnet-4-5 \
+               --key "$ANTHROPIC_API_KEY"
+peko credential set llm anthropic-claude-sonnet-4-5 \
+  --kind api_key --material "$ANTHROPIC_API_KEY"
 
 # Extensions
 peko ext list

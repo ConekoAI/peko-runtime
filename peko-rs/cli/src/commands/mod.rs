@@ -9,6 +9,7 @@
 //! - `system`: System diagnostics and maintenance
 //! - `daemon`: Daemon mode for cron job execution
 
+pub mod audit;
 pub mod auth;
 pub mod capability;
 pub mod config;
@@ -20,8 +21,6 @@ pub mod interrupt;
 pub mod log;
 pub mod mcp;
 pub mod model;
-pub mod pending;
-pub mod service_token;
 pub mod principal;
 pub mod quota;
 pub mod registry;
@@ -195,39 +194,6 @@ pub enum Commands {
     #[command(subcommand)]
     Quota(quota::QuotaCommands),
 
-    /// Pending self-modification request queue (ADR-045 PR #4).
-    ///
-    /// `peko pending list` reads the on-disk queue directly (no IPC).
-    /// `peko pending decide` roundtrips to the daemon to stamp the
-    /// decision and (on grant) execute the privileged op.
-    ///
-    /// Examples:
-    ///   peko pending list
-    ///   peko pending decide --id <uuid> --grant
-    ///   peko pending decide --id <uuid> --deny --reason "not yet"
-    #[command(subcommand)]
-    Pending(pending::PendingCommands),
-
-    /// Manage named service tokens for long-lived daemon clients
-    /// (ADR-045 PR #5).
-    ///
-    /// `peko service-token create` generates a 256-bit random token,
-    /// persists it to `<data>/runtime/service.tokens/<name>/`, and
-    /// prints the raw secret **exactly once**.
-    ///
-    /// `peko service-token list` enumerates every registered token's
-    /// metadata (never the raw secret).
-    ///
-    /// `peko service-token revoke` deletes the on-disk artifacts
-    /// and clears the in-memory cache.
-    ///
-    /// Examples:
-    ///   peko service-token create --name runtime --caps fs:read,tool:Bash
-    ///   peko service-token list
-    ///   peko service-token revoke --name runtime
-    #[command(subcommand)]
-    ServiceToken(service_token::ServiceTokenCommands),
-
     /// Log in to the PekoHub registry
     Login {
         /// Registry host (default: from config or pekohub.ai)
@@ -262,6 +228,25 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+
+    /// Audit log: tail the JSONL or list in-memory events (ADR-046).
+    ///
+    /// Two subcommands:
+    ///   peko audit tail [--since 1h] [--type cron.] [--principal foo] [--limit N] [--follow]
+    ///     Reads `<data_dir>/runtime/audit/audit-YYYY-MM-DD.jsonl`
+    ///     directly. Survives daemon restarts. `--follow` is
+    ///     single-file (today's file).
+    ///   peko audit list [--type cron.] [--principal foo]
+    ///     Sends an IPC query to the daemon and reads the in-memory
+    ///     ring buffer. Fast path for "what just happened this
+    ///     session"; never touches disk.
+    ///
+    /// Examples:
+    ///   peko audit tail --since 30m
+    ///   peko audit tail --principal alice --limit 20
+    ///   peko audit list --type principal.config_drift
+    #[command(subcommand)]
+    Audit(audit::AuditCommands),
 
     /// Print the runtime version
     ///

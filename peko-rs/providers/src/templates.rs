@@ -27,6 +27,7 @@
 //! those models. Add a unit test asserting the template is findable.
 
 use crate::catalog::ApiFormat;
+use crate::spec::ModelSpec;
 use peko_provider_api::ProviderCompat;
 
 /// One model declared by a provider template.
@@ -40,6 +41,12 @@ pub struct ModelTemplate {
     pub context_length: Option<u32>,
     /// Maximum output tokens for a single response.
     pub max_output_tokens: Option<u32>,
+    /// PR 1 / `feature/model-first-config`: declarative capability
+    /// descriptor (vision, audio, tools, streaming, thinking,
+    /// json_mode, pricing). `None` keeps the pre-PR-1 conservative
+    /// defaults — text-only, no tools, no thinking, streaming on.
+    /// Templates that have been audited populate this.
+    pub spec: Option<ModelSpec>,
 }
 
 /// One preset provider template.
@@ -88,18 +95,51 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
                 display_name: Some("GPT-4o"),
                 context_length: Some(128_000),
                 max_output_tokens: Some(16_384),
+                spec: Some(ModelSpec {
+                    image_input: true,
+                    tool_support: crate::spec::ToolSupport::FunctionCalling,
+                    thinking: crate::spec::ThinkingMode::Disabled,
+                    json_mode: true,
+                    pricing: Some(crate::spec::PricingHint {
+                        input_per_million: Some(2.5),
+                        output_per_million: Some(10.0),
+                    }),
+                    ..ModelSpec::frontier_chat()
+                }),
             },
             ModelTemplate {
                 id: "gpt-4o-mini",
                 display_name: Some("GPT-4o mini"),
                 context_length: Some(128_000),
                 max_output_tokens: Some(16_384),
+                spec: Some(ModelSpec {
+                    image_input: true,
+                    thinking: crate::spec::ThinkingMode::Disabled,
+                    json_mode: true,
+                    pricing: Some(crate::spec::PricingHint {
+                        input_per_million: Some(0.15),
+                        output_per_million: Some(0.6),
+                    }),
+                    ..ModelSpec::frontier_chat()
+                }),
             },
             ModelTemplate {
                 id: "o1",
                 display_name: Some("o1"),
                 context_length: Some(200_000),
                 max_output_tokens: Some(100_000),
+                spec: Some(ModelSpec {
+                    image_input: false,
+                    tool_support: crate::spec::ToolSupport::FunctionCalling,
+                    thinking: crate::spec::ThinkingMode::Required,
+                    json_mode: false,
+                    streaming: false,
+                    pricing: Some(crate::spec::PricingHint {
+                        input_per_million: Some(15.0),
+                        output_per_million: Some(60.0),
+                    }),
+                    ..ModelSpec::text_only()
+                }),
             },
         ],
         default_model: "gpt-4o-mini",
@@ -119,18 +159,36 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
                 display_name: Some("Claude Sonnet 4.5"),
                 context_length: Some(200_000),
                 max_output_tokens: Some(8_192),
+                spec: Some(ModelSpec {
+                    thinking: crate::spec::ThinkingMode::CustomBudget,
+                    pricing: Some(crate::spec::PricingHint {
+                        input_per_million: Some(3.0),
+                        output_per_million: Some(15.0),
+                    }),
+                    ..ModelSpec::frontier_chat()
+                }),
             },
             ModelTemplate {
                 id: "claude-3-5-sonnet-latest",
                 display_name: Some("Claude 3.5 Sonnet"),
                 context_length: Some(200_000),
                 max_output_tokens: Some(8_192),
+                spec: Some(ModelSpec::frontier_chat()),
             },
             ModelTemplate {
                 id: "claude-3-5-haiku-latest",
                 display_name: Some("Claude 3.5 Haiku"),
                 context_length: Some(200_000),
                 max_output_tokens: Some(8_192),
+                spec: Some(ModelSpec {
+                    thinking: crate::spec::ThinkingMode::Disabled,
+                    json_mode: false,
+                    pricing: Some(crate::spec::PricingHint {
+                        input_per_million: Some(0.8),
+                        output_per_million: Some(4.0),
+                    }),
+                    ..ModelSpec::frontier_chat()
+                }),
             },
         ],
         default_model: "claude-sonnet-4-5",
@@ -152,6 +210,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
             display_name: Some("GPT-4 (deployment-specific)"),
             context_length: Some(8_192),
             max_output_tokens: None,
+            spec: None,
         }],
         default_model: "gpt-4",
         headers: &[],
@@ -168,6 +227,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
             display_name: Some("Command R+"),
             context_length: Some(128_000),
             max_output_tokens: None,
+            spec: None,
         }],
         default_model: "command-r-plus",
         headers: &[],
@@ -185,12 +245,14 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
                 display_name: Some("DeepSeek-V3"),
                 context_length: Some(64_000),
                 max_output_tokens: None,
+                spec: None,
             },
             ModelTemplate {
                 id: "deepseek-reasoner",
                 display_name: Some("DeepSeek-R1"),
                 context_length: Some(64_000),
                 max_output_tokens: None,
+                spec: None,
             },
         ],
         default_model: "deepseek-chat",
@@ -218,6 +280,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
             display_name: Some("Llama 3.1 70B (Fireworks)"),
             context_length: Some(131_072),
             max_output_tokens: None,
+            spec: None,
         }],
         default_model: "accounts/fireworks/models/llama-v3p1-70b-instruct",
         headers: &[],
@@ -235,12 +298,14 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
                 display_name: Some("Llama 3.1 70B Versatile"),
                 context_length: Some(131_072),
                 max_output_tokens: None,
+                spec: None,
             },
             ModelTemplate {
                 id: "llama-3.3-70b-versatile",
                 display_name: Some("Llama 3.3 70B Versatile"),
                 context_length: Some(131_072),
                 max_output_tokens: None,
+                spec: None,
             },
         ],
         default_model: "llama-3.3-70b-versatile",
@@ -266,6 +331,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
             display_name: Some("Kimi K2.5"),
             context_length: Some(128_000),
             max_output_tokens: None,
+            spec: None,
         }],
         default_model: "kimi-k2.5",
         headers: &[],
@@ -294,12 +360,14 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
                 display_name: Some("Llama 3.1"),
                 context_length: Some(128_000),
                 max_output_tokens: None,
+                spec: None,
             },
             ModelTemplate {
                 id: "qwen2.5-coder",
                 display_name: Some("Qwen 2.5 Coder"),
                 context_length: Some(32_768),
                 max_output_tokens: None,
+                spec: None,
             },
         ],
         default_model: "llama3.1",
@@ -318,12 +386,14 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
                 display_name: Some("GPT-4o mini (via OpenRouter)"),
                 context_length: Some(128_000),
                 max_output_tokens: None,
+                spec: None,
             },
             ModelTemplate {
                 id: "anthropic/claude-3.5-sonnet",
                 display_name: Some("Claude 3.5 Sonnet (via OpenRouter)"),
                 context_length: Some(200_000),
                 max_output_tokens: None,
+                spec: None,
             },
         ],
         default_model: "openai/gpt-4o-mini",
@@ -350,6 +420,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
             display_name: Some("Llama 3.1 Sonar Large 128k Online"),
             context_length: Some(127_072),
             max_output_tokens: None,
+            spec: None,
         }],
         default_model: "llama-3.1-sonar-large-128k-online",
         headers: &[],
@@ -366,6 +437,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
             display_name: Some("Llama 3.1 70B Instruct Turbo"),
             context_length: Some(131_072),
             max_output_tokens: None,
+            spec: None,
         }],
         default_model: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
         headers: &[],
@@ -389,12 +461,14 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
                 display_name: Some("Grok Beta"),
                 context_length: Some(131_072),
                 max_output_tokens: None,
+                spec: None,
             },
             ModelTemplate {
                 id: "grok-2",
                 display_name: Some("Grok 2"),
                 context_length: Some(131_072),
                 max_output_tokens: None,
+                spec: None,
             },
         ],
         default_model: "grok-2",
@@ -413,6 +487,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
             display_name: Some("Kimi for Coding"),
             context_length: Some(128_000),
             max_output_tokens: None,
+            spec: None,
         }],
         default_model: "kimi-for-coding",
         headers: &[],
@@ -440,6 +515,7 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
             display_name: Some("MiniMax M3"),
             context_length: Some(512_000),
             max_output_tokens: None,
+            spec: None,
         }],
         default_model: "MiniMax-M3",
         headers: &[],
@@ -461,12 +537,14 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
                 display_name: Some("GLM-4.6"),
                 context_length: Some(200_000),
                 max_output_tokens: None,
+                spec: None,
             },
             ModelTemplate {
                 id: "glm-4.5",
                 display_name: Some("GLM-4.5"),
                 context_length: Some(128_000),
                 max_output_tokens: None,
+                spec: None,
             },
         ],
         default_model: "glm-4.6",
@@ -492,12 +570,14 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
                 display_name: Some("Qwen Plus"),
                 context_length: Some(128_000),
                 max_output_tokens: None,
+                spec: None,
             },
             ModelTemplate {
                 id: "qwen-turbo",
                 display_name: Some("Qwen Turbo"),
                 context_length: Some(128_000),
                 max_output_tokens: None,
+                spec: None,
             },
         ],
         default_model: "qwen-plus",

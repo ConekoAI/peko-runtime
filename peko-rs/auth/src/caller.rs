@@ -46,14 +46,6 @@ pub struct CallerContext {
     pub rate_limit_bucket: String,
     /// API key scopes (only populated for API key auth)
     pub api_key_scopes: Vec<ApiKeyScope>,
-    /// Capability list for service-token auth (ADR-045 PR #5).
-    /// Populated by the strict-gate `ServiceToken` arm when the
-    /// caller presents a registered service token; empty for
-    /// every other auth path. **Read-only** — these caps are
-    /// scoped at token creation (cannot grow); the auth-table
-    /// map holds the source of truth.
-    #[allow(clippy::vec_default)] // explicit default empty for clarity
-    pub service_token_caps: Vec<String>,
 }
 
 impl CallerContext {
@@ -65,7 +57,6 @@ impl CallerContext {
             auth_method: AuthMethod::LocalTrust,
             rate_limit_bucket: "local".to_string(),
             api_key_scopes: vec![ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Admin],
-            service_token_caps: Vec::new(),
         }
     }
 
@@ -78,7 +69,6 @@ impl CallerContext {
             auth_method: AuthMethod::PekohubJwt,
             rate_limit_bucket: bucket,
             api_key_scopes: Vec::new(), // N/A for JWT
-            service_token_caps: Vec::new(),
         }
     }
 
@@ -91,24 +81,6 @@ impl CallerContext {
             auth_method: AuthMethod::ApiKey,
             rate_limit_bucket: bucket,
             api_key_scopes: scopes,
-            service_token_caps: Vec::new(),
-        }
-    }
-
-    /// Create a caller context from a service token (ADR-045 PR #5).
-    ///
-    /// The raw token is the credential; the `token_name` is the
-    /// display identifier for the audit log. `caps` is the immutable
-    /// capability list the token was created with.
-    #[must_use]
-    pub fn from_service_token(token_name: String, caps: Vec<String>) -> Self {
-        let bucket = format!("service_token:{token_name}");
-        Self {
-            identity: Identity::ApiKey(token_name),
-            auth_method: AuthMethod::ApiKey,
-            rate_limit_bucket: bucket,
-            api_key_scopes: Vec::new(),
-            service_token_caps: caps,
         }
     }
 
@@ -167,7 +139,6 @@ impl CallerContext {
             auth_method: AuthMethod::LocalTrust,
             rate_limit_bucket: bucket.clone(),
             api_key_scopes: vec![ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Admin],
-            service_token_caps: Vec::new(),
         }
     }
 

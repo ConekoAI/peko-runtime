@@ -23,7 +23,7 @@ use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use peko_auth::caller::CallerContext;
 
-pub(crate) mod approval;
+pub(crate) mod audit;
 pub(crate) mod auth;
 pub(crate) mod capability;
 pub(crate) mod credential;
@@ -39,12 +39,11 @@ pub(crate) mod provider_mcp;
 pub(crate) mod provider_templates;
 pub(crate) mod quota;
 pub(crate) mod runtime;
-pub(crate) mod service_token;
 pub(crate) mod system;
 pub(crate) mod tool;
 pub(crate) mod tunnel;
 
-use approval::ApprovalHandler;
+use audit::AuditHandler;
 use auth::AuthHandler;
 use capability::CapabilityHandler;
 use credential::CredentialHandler;
@@ -60,7 +59,6 @@ use provider_mcp::ProviderMcpHandler;
 use provider_templates::ProviderTemplatesHandler;
 use quota::QuotaHandler;
 use runtime::RuntimeHandler;
-use service_token::ServiceTokenHandler;
 use system::SystemHandler;
 use tool::ToolHandler;
 use tunnel::TunnelHandler;
@@ -123,12 +121,9 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 20] = [
+        let handlers: [Arc<dyn RequestHandler>; 19] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
-            // ADR-045 PR #4: `ApprovalDecision` sits next to `Auth` so
-            // both strict-gate decision variants live in one neighborhood.
-            Arc::new(ApprovalHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
             Arc::new(TunnelHandler::new(host.clone())),
             Arc::new(CapabilityHandler::new(host.clone())),
@@ -159,12 +154,14 @@ impl RequestDispatcher {
             // namespace semantically (it writes principal.toml +
             // primary.md via the CLI) but the IPC shape is its own.
             Arc::new(PersonaHandler::new(host.clone())),
-            // ADR-045 PR #5: `service_token` CRUD lives next to
-            // the other auth-management variants (Auth + Approval)
-            // because all three share the strict-gate authorization
-            // surface. New handler bumps the dispatch array from
-            // 19 → 20.
-            Arc::new(ServiceTokenHandler::new(host)),
+            // ADR-046: the `audit` IPC query handler reads from
+            // the daemon's in-memory ring buffer. The CLI falls
+            // back to direct JSONL reads for cross-session
+            // queries (`peko audit tail --since 24h`), so the IPC
+            // path only sees "events emitted this session" — the
+            // ring buffer ceiling matches the user's mental
+            // model of "what just happened".
+            Arc::new(AuditHandler::new(host)),
         ];
 
         for handler in &handlers {

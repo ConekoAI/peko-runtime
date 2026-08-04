@@ -193,6 +193,7 @@ mod tests {
             requires_key: true,
             is_local: false,
             enabled: true,
+            spec: None,
         }
     }
 
@@ -211,6 +212,7 @@ mod tests {
             requires_key: false,
             is_local: true,
             enabled: true,
+            spec: None,
         }
     }
 
@@ -230,6 +232,7 @@ mod tests {
             requires_key: true,
             is_local: false,
             enabled: false,
+            spec: None,
         }
     }
 
@@ -353,6 +356,7 @@ mod tests {
             requires_key: true,
             is_local: false,
             enabled: true,
+            spec: None,
         };
         let host = StubHost(vec![custom.clone()]);
         let handler = ProviderMcpHandler::new(Arc::new(host));

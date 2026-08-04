@@ -22,3 +22,10 @@ serde_json = "1.0"
 # Async + error
 tokio = { version = "1.35", features = ["sync", "macros", "rt-multi-thread", "time"] }
 anyhow = "1.0"
+
+[dev-dependencies]
+# Used by `JsonlSink` tests to construct isolated temp dirs for
+# the append / rotation / fsync / seq-monotonic assertions. Lives
+# only in dev-deps so the runtime audit-sink has no test-only
+# surface area.
+tempfile = "3"

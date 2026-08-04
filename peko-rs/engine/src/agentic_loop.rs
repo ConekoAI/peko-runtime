@@ -1048,33 +1048,16 @@ impl AgenticLoop {
                 let items = inbox.drain_all().await;
                 let mut completions = Vec::new();
                 let mut steering = Vec::new();
-                let mut approvals = Vec::new();
                 for item in items {
                     match item {
                         AsyncInboxItem::Completion(e) => completions.push(e),
                         AsyncInboxItem::Steering(m) => steering.push(m),
-                        // ADR-045 PR #4 step 3: decisions on pending
-                        // `peko_self` requests arrive here; the agent
-                        // needs to see them so it can act on the
-                        // granted capability or surface the denial.
-                        AsyncInboxItem::Approval(a) => approvals.push(a),
                     }
                 }
                 if let Some(msg) = super::async_completion::build_async_completion_message(
                     &completions,
                     &session_id,
                 ) {
-                    messages.push(msg);
-                }
-                // Approval decisions are rendered after completions
-                // but before free-form steering messages — the
-                // synthesized approval text is structured, and
-                // putting steering last preserves the prior ordering
-                // contract for any code that depended on relative
-                // ordering of completions vs. steering.
-                if let Some(msg) =
-                    super::async_completion::build_approval_message(&approvals, &session_id)
-                {
                     messages.push(msg);
                 }
                 for msg in steering {
@@ -2238,7 +2221,26 @@ impl AgenticLoop {
         >,
     > {
         use crate::compaction::drop_oldest_respecting_pairs;
+        use crate::spec_gate::check as check_spec;
         use peko_provider_api::is_context_window_exceeded;
+
+        // PR 2 / `feature/model-first-config`: refuse the call if
+        // the bound model's `ModelSpec` does not declare a
+        // capability the request would hit (image / audio / tools /
+        // thinking). Pre-PR-1 entries (spec == None) skip the gate
+        // so legacy catalogs keep working. The refusal is
+        // structured (`SpecGateError` → `AgenticError::SpecViolation`)
+        // so callers can render "this model doesn't accept images"
+        // without parsing provider strings.
+        check_spec(
+            provider.spec(),
+            model_id,
+            provider.name(),
+            messages,
+            tool_defs,
+            options,
+        )
+        .map_err(crate::AgenticError::from)?;
 
         let native_streaming = provider.supports_native_tools();
         let mut current: Vec<LlmMessage> = messages.to_vec();

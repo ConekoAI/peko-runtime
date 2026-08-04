@@ -78,10 +78,10 @@ cargo build --release
 ### Basic Usage
 
 ```bash
-# Add a provider (only needed once)
-./target/release/peko provider add openai --template openai --default
+# Add a model to the catalog (only needed once; pick a template + wire id)
+./target/release/peko model add --template openai --model gpt-4o --key "$OPENAI_API_KEY"
 
-# Create a Principal (default provider is the catalog default)
+# Create a Principal (default model is the catalog default)
 ./target/release/peko principal create myprincipal
 
 # Send a message to a Principal (primary interaction method)
@@ -142,22 +142,25 @@ peko send <PRINCIPAL> "Hello" --no-stream          # Wait for full response
 
 #### Authentication (v3: catalog + vault)
 ```bash
-# 1. Add a provider entry to the runtime catalog (`~/.peko/providers.toml`)
-peko provider add openai --template openai
-peko provider add my-local --api-format openai_completions --base-url http://localhost:8080
+# 1. Add a model entry to the runtime catalog (`~/.peko/models.toml`)
+peko model add --template openai --model gpt-4o
+peko model add --custom --id my-local \
+               --api-format openai_completions \
+               --base-url http://localhost:8080 \
+               --model llama-3.1-8b
 
-# 2. Store the API key in the encrypted vault (one per provider)
-peko provider set-key openai --material "$OPENAI_API_KEY"
-# or: peko credential provider-set-key openai --material "$OPENAI_API_KEY"
+# 2. Store the API key in the encrypted vault (one per model)
+peko credential set llm openai-gpt-4o --kind api_key --material "$OPENAI_API_KEY"
 
-# 3. Create a Principal — it inherits the catalog default provider
+# 3. Create a Principal — it inherits the catalog default model
 peko principal create alice
 
 # Inspect / manage the catalog and vault
-peko provider list
-peko provider set-default openai
-peko credential list --namespace provider:openai
-peko credential provider-test openai
+peko model list
+peko model show openai-gpt-4o
+peko model compare openai-gpt-4o claude-sonnet-4-5
+peko credential list --namespace llm
+peko model test openai-gpt-4o
 
 # PekoHub registry token (separate flow)
 peko login --api-key ph_xxx --registry https://hub.example.com
@@ -199,9 +202,15 @@ peko daemon check                                 # Trigger immediate check
 
 > **Note:** Advanced commands (`config`, `cron`, `registry`, `runtime`, `tunnel`, `vault`, and `auth apikey`) are hidden from `--help` because they expose operational internals. They remain functional for operators and scripts.
 
-#### Provider Management
+#### Model Management
 ```bash
-peko provider list                                # List available providers
+peko model list                                   # List configured models
+peko model show <MODEL_ID>                        # Detail view (incl. spec)
+peko model compare <MODEL_ID>...                  # Side-by-side capability matrix
+peko model search --vision --tools --thinking     # Filter by capability predicate
+peko model add --template <id> --model <wire-id>  # Add a model (catalog)
+peko model remove <MODEL_ID>                      # Remove a model from the catalog
+peko model test <MODEL_ID>                        # Live-test a model
 ```
 
 #### Update
@@ -323,7 +332,7 @@ release.
 
 ## Configuration
 
-Most users never need to edit `~/.peko/config.toml` directly — `peko provider`
+Most users never need to edit `~/.peko/config.toml` directly — `peko model`
 and `peko principal` write the required state. Operators who need low-level
 can use the hidden `peko config` commands or edit the file by hand.
 
@@ -331,13 +340,12 @@ can use the hidden `peko config` commands or edit the file by hand.
 [daemon]
 bind_address = "127.0.0.1:11435"
 log_level = "info"
-
-[defaults]
-provider = "anthropic"
-model = "claude-sonnet-4-5"
-temperature = 0.7
-max_tokens = 2048
 ```
+
+Model selection is now catalog-driven (PR 1 of `feature/model-first-config`).
+The `[defaults]` block no longer exists — pick the default model via the
+catalog (`peko model list` to see what's wired). Per-send overrides use
+`peko send --model <id>`.
 
 ---
 

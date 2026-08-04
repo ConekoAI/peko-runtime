@@ -38,6 +38,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use crate::spec::ModelSpec;
 use crate::templates::ProviderTemplate;
 use peko_provider_api::ProviderCompat;
 
@@ -152,6 +153,17 @@ pub struct ModelConfig {
     /// pre-F29 entries keep loading without migration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compat: Option<ProviderCompat>,
+    /// PR 1 / `feature/model-first-config`: declarative model
+    /// capability descriptor (vision, audio, tools, streaming,
+    /// thinking, json_mode, pricing). `None` for entries written
+    /// before PR 1; the engine falls back to conservative
+    /// `ModelSpec::default()` (text-only, no tools, no thinking,
+    /// streaming on). Templates that have been audited copy
+    /// `ModelSpec` from `ModelTemplate::spec` at create time;
+    /// users editing a custom entry via `peko model edit` can
+    /// override it directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<ModelSpec>,
 }
 
 fn default_true() -> bool {
@@ -178,12 +190,12 @@ impl ModelConfig {
         } else {
             model_id.clone()
         };
-        let (context_window, max_output_tokens) = template
+        let (context_window, max_output_tokens, spec) = template
             .models
             .iter()
             .find(|m| m.id == model_id)
-            .map(|m| (m.context_length, m.max_output_tokens))
-            .unwrap_or((None, None));
+            .map(|m| (m.context_length, m.max_output_tokens, m.spec))
+            .unwrap_or((None, None, None));
         Self {
             id,
             display_name,
@@ -204,6 +216,7 @@ impl ModelConfig {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             compat: template.compat,
+            spec,
         }
     }
 }
@@ -361,6 +374,44 @@ impl ModelCatalog {
         Ok(removed)
     }
 
+    /// Catalog entries that reference the given credential id.
+    /// Used by the credential-deletion safety check (PR 3 / feature
+    /// branch `feature/model-first-config`) to refuse a delete that
+    /// would orphan a configured model. Returns a fresh `Vec`; safe
+    /// to call without holding any lock.
+    pub async fn models_referencing(&self, credential_id: &str) -> Vec<ModelConfig> {
+        let guard = self.inner.read().await;
+        guard
+            .entries
+            .values()
+            .filter(|e| e.credential_id.as_deref() == Some(credential_id))
+            .cloned()
+            .collect()
+    }
+
+    /// Rebind every catalog entry that referenced `from` to `to`.
+    /// Returns the count of rewritten entries. Persists only when at
+    /// least one entry was rewritten. Used by
+    /// `peko credential set --replace-on <old-id>` to bulk-swap a
+    /// credential across dependents without breaking them.
+    pub async fn rewire_credential(&self, from: &str, to: &str) -> Result<usize> {
+        let mut changed = 0usize;
+        {
+            let mut guard = self.inner.write().await;
+            for entry in guard.entries.values_mut() {
+                if entry.credential_id.as_deref() == Some(from) {
+                    entry.credential_id = Some(to.to_string());
+                    entry.updated_at = Utc::now();
+                    changed += 1;
+                }
+            }
+        }
+        if changed > 0 {
+            self.persist().await?;
+        }
+        Ok(changed)
+    }
+
     /// Atomically persist the in-memory catalog to disk.
     pub async fn persist(&self) -> Result<()> {
         let snapshot = {
@@ -397,10 +448,10 @@ mod tests {
     use crate::templates;
     use tempfile::tempdir;
 
-    fn temp_catalog() -> (tempfile::TempDir, Arc<ModelCatalog>) {
+    async fn temp_catalog() -> (tempfile::TempDir, Arc<ModelCatalog>) {
         let dir = tempdir().unwrap();
         let path = dir.path().join("models.toml");
-        let cat = tokio_test::block_on(ModelCatalog::load_or_init(&path)).unwrap();
+        let cat = ModelCatalog::load_or_init(&path).await.unwrap();
         (dir, cat)
     }
 
@@ -440,7 +491,7 @@ mod tests {
 
     #[test]
     fn empty_catalog_loads_cleanly() {
-        let (_dir, cat) = temp_catalog();
+        let (_dir, cat) = tokio_test::block_on(temp_catalog());
         let snap = tokio_test::block_on(cat.snapshot());
         assert_eq!(snap.entries.len(), 0);
         assert_eq!(snap.version, "4.0");
@@ -448,7 +499,7 @@ mod tests {
 
     #[test]
     fn upsert_persists_to_disk() {
-        let (dir, cat) = temp_catalog();
+        let (dir, cat) = tokio_test::block_on(temp_catalog());
         let tmpl = templates::find_template("anthropic").unwrap();
         let entry = ModelConfig::from_template(tmpl, "anthropic-haiku", "claude-3-5-haiku-latest");
         tokio_test::block_on(cat.upsert(entry)).unwrap();
@@ -464,7 +515,7 @@ mod tests {
 
     #[test]
     fn remove_returns_true_then_false() {
-        let (_dir, cat) = temp_catalog();
+        let (_dir, cat) = tokio_test::block_on(temp_catalog());
         let tmpl = templates::find_template("openai").unwrap();
         let entry = ModelConfig::from_template(tmpl, "openai-gpt-4o", "gpt-4o");
         tokio_test::block_on(cat.upsert(entry)).unwrap();
@@ -474,7 +525,7 @@ mod tests {
 
     #[test]
     fn context_window_resolves_from_catalog() {
-        let (_dir, cat) = temp_catalog();
+        let (_dir, cat) = tokio_test::block_on(temp_catalog());
         let tmpl = templates::find_template("anthropic").unwrap();
         let entry = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
         tokio_test::block_on(cat.upsert(entry)).unwrap();
@@ -491,7 +542,7 @@ mod tests {
 
     #[test]
     fn context_window_returns_none_for_disabled_entry() {
-        let (_dir, cat) = temp_catalog();
+        let (_dir, cat) = tokio_test::block_on(temp_catalog());
         let tmpl = templates::find_template("anthropic").unwrap();
         let mut entry = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
         entry.enabled = false;
@@ -569,5 +620,76 @@ mod tests {
         assert_eq!(count, 1, "should report the prior in-memory count");
         assert_eq!(cat.list_all().await.len(), 1);
         assert_eq!(cat.get("ollama-llama").await.unwrap().id, "ollama-llama");
+    }
+
+    /// PR 3: `models_referencing` returns every entry whose
+    /// `credential_id` matches, in catalog order.
+    #[tokio::test]
+    async fn models_referencing_finds_matching_entries() {
+        let (_dir, cat) = temp_catalog().await;
+        let tmpl = templates::find_template("anthropic").unwrap();
+        let mut a = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
+        a.credential_id = Some("cred-1".into());
+        let mut b = ModelConfig::from_template(tmpl, "anthropic-haiku", "claude-3-5-haiku-latest");
+        b.credential_id = Some("cred-1".into());
+        let mut c = ModelConfig::from_template(tmpl, "anthropic-opus", "claude-3-opus");
+        c.credential_id = Some("cred-2".into());
+        cat.upsert(a).await.unwrap();
+        cat.upsert(b).await.unwrap();
+        cat.upsert(c).await.unwrap();
+
+        let refs = cat.models_referencing("cred-1").await;
+        assert_eq!(refs.len(), 2);
+        let ids: Vec<_> = refs.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"anthropic-sonnet"));
+        assert!(ids.contains(&"anthropic-haiku"));
+
+        let none = cat.models_referencing("cred-nonexistent").await;
+        assert!(none.is_empty());
+    }
+
+    /// PR 3: `rewire_credential` flips every matching `credential_id`
+    /// from `from` to `to`, persists the change, and reports the count.
+    /// Entries that already point at `to` (or have no credential at all)
+    /// are left alone.
+    #[tokio::test]
+    async fn rewire_credential_swaps_and_persists() {
+        let (dir, cat) = temp_catalog().await;
+        let tmpl = templates::find_template("anthropic").unwrap();
+        let mut a = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
+        a.credential_id = Some("old-id".into());
+        let mut b = ModelConfig::from_template(tmpl, "anthropic-haiku", "claude-3-5-haiku-latest");
+        b.credential_id = Some("old-id".into());
+        let mut c = ModelConfig::from_template(tmpl, "anthropic-opus", "claude-3-opus");
+        c.credential_id = Some("other".into());
+        cat.upsert(a).await.unwrap();
+        cat.upsert(b).await.unwrap();
+        cat.upsert(c).await.unwrap();
+
+        let changed = cat.rewire_credential("old-id", "new-id").await.unwrap();
+        assert_eq!(changed, 2);
+
+        let refs = cat.models_referencing("new-id").await;
+        assert_eq!(refs.len(), 2);
+        let unaffected = cat.models_referencing("other").await;
+        assert_eq!(unaffected.len(), 1);
+        assert_eq!(unaffected[0].id, "anthropic-opus");
+
+        // Reload from disk and verify the rewire was persisted.
+        let reloaded = ModelCatalog::load_or_init(dir.path().join("models.toml"))
+            .await
+            .unwrap();
+        let after = reloaded.models_referencing("new-id").await;
+        assert_eq!(after.len(), 2);
+    }
+
+    /// PR 3: `rewire_credential` against an id with no dependents
+    /// returns `0` and does not touch the on-disk file.
+    #[tokio::test]
+    async fn rewire_credential_is_noop_when_nothing_references() {
+        let (_dir, cat) = temp_catalog().await;
+        let changed = cat.rewire_credential("missing", "new").await.unwrap();
+        assert_eq!(changed, 0);
+        assert_eq!(cat.list_all().await.len(), 0);
     }
 }

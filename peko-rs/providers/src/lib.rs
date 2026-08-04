@@ -35,6 +35,7 @@ pub mod provider_view;
 pub mod resolver;
 pub mod rotating_auth;
 pub mod secret_store;
+pub mod spec;
 pub mod templates;
 pub mod transport;
 pub mod validator;
@@ -54,6 +55,7 @@ pub use provider_view::ProviderView;
 pub use resolver::{KeyProbeReport, LlmResolver, ResolveRequest, ResolveSource, ResolvedChoice};
 pub use rotating_auth::RotationState;
 pub use secret_store::{InMemorySecretStore, SecretStore, SecretStoreError};
+pub use spec::{ModelSpec, PricingHint, ThinkingMode, ToolSupport};
 pub use templates::{find_template, iter_templates, ModelTemplate, ProviderTemplate};
 pub use transport::{AuthConfig, HttpClient, SseParser};
 

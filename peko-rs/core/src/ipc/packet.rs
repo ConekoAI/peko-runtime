@@ -109,6 +109,28 @@ pub enum RequestPacket {
     #[serde(rename = "system_doctor")]
     SystemDoctor { request_id: u64 },
 
+    /// Query the in-memory audit log for events emitted this
+    /// session (ADR-046). For historical events that pre-date the
+    /// current daemon process, the CLI falls back to reading the
+    /// JSONL file directly via `peko audit tail` — the IPC query
+    /// only sees the ring buffer. The CLI's `peko audit list`
+    /// subcommand is the primary user of this packet.
+    #[serde(rename = "audit_query")]
+    AuditQuery {
+        request_id: u64,
+        /// Maximum number of entries to return (newest first). The
+        /// daemon's ring buffer is bounded (10k entries); requests
+        /// above the cap are clipped by the ring buffer.
+        limit: u32,
+        /// Optional filter: only return events whose `event_type`
+        /// starts with this prefix (e.g. `"cron."`).
+        event_type_prefix: Option<String>,
+        /// Optional filter: only return events whose `details.principal_name`
+        /// matches (or whose caller is a `Subject::Principal` with
+        /// this id). The `peko audit tail --principal` flag uses this.
+        principal: Option<String>,
+    },
+
     /// Start a background runtime (extension lifecycle — ADR-026)
     #[serde(rename = "ext_start")]
     ExtStart {
@@ -282,6 +304,14 @@ pub enum RequestPacket {
     /// optional JSON object holding per-kind extras (OAuth
     /// `refresh_token` / `expires_at`, BasicAuth `username`,
     /// PrivateKey `algorithm`).
+    ///
+    /// `replace_on` (PR 3 / `feature/model-first-config`): when
+    /// supplied, every catalog entry that previously referenced the
+    /// credential at `replace_on` is rewritten to point at the new
+    /// id before the response is sent. Used by
+    /// `peko credential set --replace-on <old-id>` for bulk rotation
+    /// of dependents. The response's `rewired_models` field reports
+    /// how many entries were rebound.
     #[serde(rename = "credential_set")]
     CredentialSet {
         request_id: u64,
@@ -293,14 +323,31 @@ pub enum RequestPacket {
         material: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replace_on: Option<String>,
     },
 
     /// Remove a credential by `id`. Powers the desktop's
     /// `credential_delete` Tauri command; the CLI's
     /// `peko credential delete <id>` writes the vault directly.
     /// Mirrors `Vault::delete_credential`.
+    ///
+    /// `force` (PR 3 / `feature/model-first-config`): when `false`
+    /// (the default), the handler refuses to delete a credential
+    /// referenced by one or more configured models and emits
+    /// `ResponsePacket::Error` with code `credential_in_use` so the
+    /// CLI can show a dependents list. When `true`, every catalog
+    /// entry that pointed at this credential is detached (`null`)
+    /// before the delete; `broken_references` on the response
+    /// reports how many entries were detached. Force-deletes are
+    /// audit-logged at WARN.
     #[serde(rename = "credential_delete")]
-    CredentialDelete { request_id: u64, id: String },
+    CredentialDelete {
+        request_id: u64,
+        id: String,
+        #[serde(default)]
+        force: bool,
+    },
 
     // ─── Rotation bindings (RP3A) ───────────────────────────────────
     /// Enumerate every rotation binding currently configured in the
@@ -548,37 +595,6 @@ pub enum RequestPacket {
     AuthApiKeyRevoke { request_id: u64, key_id: String },
     #[serde(rename = "auth_status")]
     AuthStatus { request_id: u64 },
-    // ── Session-group IPC auth (ADR-045 PR #2) ──
-    //
-    // First-time enrollment with the daemon's startup diceware code.
-    // Bypasses the strict session-token gate (the caller's SID is not
-    // yet authorized). Valid only over a local Unix socket; the daemon
-    // rejects AuthSubmit over UDP/named-pipe.
-    #[serde(rename = "auth_submit")]
-    AuthSubmit { request_id: u64, code: String },
-
-    // ── Service tokens (ADR-045 PR #5) ──
-    //
-    // Named, persistent, capability-scoped tokens for long-lived
-    // daemon clients (runtime, cron, persistent agents, external
-    // scripts). All three requests below are gated by the existing
-    // PR #2 strict SID+token gate (caller must already be an
-    // authorized interactive session). Token is shown ONCE in
-    // `ServiceTokenCreated::token`; subsequent list/verify return
-    // only metadata.
-    #[serde(rename = "service_token_create")]
-    ServiceTokenCreate {
-        request_id: u64,
-        name: String,
-        caps: Vec<String>,
-        /// Optional relative TTL in seconds. `None` = no expiry.
-        #[serde(default)]
-        expires_in_secs: Option<u64>,
-    },
-    #[serde(rename = "service_token_list")]
-    ServiceTokenList { request_id: u64 },
-    #[serde(rename = "service_token_revoke")]
-    ServiceTokenRevoke { request_id: u64, name: String },
 
     // ── Ownership and Permission (ADR-039) ──
     //
@@ -814,33 +830,6 @@ pub enum RequestPacket {
         name: String,
         jti: String,
     },
-
-    // ── ADR-045 PR #4 — user→daemon decision on a pending request ──
-    //
-    // Requires the strict SID+token gate (the user is making a
-    // privileged decision; the same gate that protects CronAdd
-    // protects this). The daemon fills in `by: Subject` from the
-    // caller's IPC auth context, not from the wire.
-    #[serde(rename = "approval_decision")]
-    ApprovalDecision {
-        request_id: u64,
-        /// The pending request's id (UUIDv4, from `peko pending list`).
-        id: uuid::Uuid,
-        decision: ApprovalDecisionPayload,
-    },
-}
-
-/// User→daemon decision payload (ADR-045 PR #4).
-///
-/// Wire shape mirrors the user-facing CLI flags
-/// (`peko pending decide --grant|--deny --reason ...`). The daemon
-/// stamps the `Subject` from the caller's auth context, so it doesn't
-/// travel on the wire.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "decision", rename_all = "snake_case")]
-pub enum ApprovalDecisionPayload {
-    Grant,
-    Deny { reason: String },
 }
 
 impl RequestPacket {
@@ -886,6 +875,7 @@ impl RequestPacket {
             | Self::BindingDelete { request_id, .. }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
+            | Self::AuditQuery { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::CapabilityGrant { request_id, .. }
             | Self::CapabilityRevoke { request_id, .. }
@@ -908,7 +898,6 @@ impl RequestPacket {
             | Self::AuthApiKeyList { request_id }
             | Self::AuthApiKeyRevoke { request_id, .. }
             | Self::AuthStatus { request_id }
-            | Self::AuthSubmit { request_id, .. }
             | Self::TunnelStop { request_id }
             | Self::TunnelStatus { request_id }
             | Self::Status { request_id }
@@ -933,12 +922,7 @@ impl RequestPacket {
             | Self::PrincipalSendControl { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
-            | Self::QuotaReset { request_id, .. }
-            | Self::ApprovalDecision { request_id, .. } => *request_id,
-            // Service-token CRUD (ADR-045 PR #5).
-            | Self::ServiceTokenCreate { request_id, .. }
-            | Self::ServiceTokenList { request_id, .. }
-            | Self::ServiceTokenRevoke { request_id, .. } => *request_id,
+            | Self::QuotaReset { request_id, .. } => *request_id,
         }
     }
 
@@ -1127,6 +1111,25 @@ pub enum ResponsePacket {
         runs: Vec<peko_cron::CronRun>,
     },
 
+    /// Audit log query response (ADR-046). Returns up to `limit`
+    /// audit events (newest first) that match the optional filters
+    /// passed to the corresponding `AuditQuery` request. Events
+    /// come from the in-memory ring buffer; the CLI's `peko audit
+    /// tail` reads the JSONL file directly for cross-session
+    /// history.
+    #[serde(rename = "audit_events")]
+    AuditEvents {
+        request_id: u64,
+        /// Newest-first list of audit events matching the query.
+        /// `AuditEvent` is re-exported here (not imported) so the
+        /// wire shape is owned by this file and the CLI / desktop
+        /// can deserialize without pulling in the observability
+        /// crate directly. Field shape matches `peko-observability`'s
+        /// `AuditEvent` — see `audit_event_wire_schema_v1` in
+        /// the daemon test suite for the canonical contract.
+        entries: Vec<peko_observability::AuditEvent>,
+    },
+
     /// Background runtime started (ADR-026)
     #[serde(rename = "ext_started")]
     ExtStarted {
@@ -1252,14 +1255,40 @@ pub enum ResponsePacket {
     /// [`ResponsePacket::Error`]) by the time this is sent. The
     /// `id` echo lets the desktop update its local UI without
     /// re-issuing a `credential_list` round-trip.
+    ///
+    /// `rewired_models` (PR 3 / `feature/model-first-config`):
+    /// count of catalog entries that were rebound from the
+    /// previous credential id (passed via
+    /// `CredentialSet::replace_on`) to this new id. Zero on a plain
+    /// set; the CLI's `--replace-on` flow surfaces this count so
+    /// the user sees "Rewired N models: …" without a follow-up
+    /// `model list` round-trip.
     #[serde(rename = "credential_set_done")]
-    CredentialSetDone { request_id: u64, id: String },
+    CredentialSetDone {
+        request_id: u64,
+        id: String,
+        #[serde(default)]
+        rewired_models: u32,
+    },
 
     /// Reply to [`RequestPacket::CredentialDelete`]. See
     /// [`ResponsePacket::CredentialSetDone`] for the same notes on
     /// the success/error split.
+    ///
+    /// `broken_references` (PR 3 / `feature/model-first-config`):
+    /// count of catalog entries that pointed at this credential
+    /// and were detached (`credential_id = null`) before the
+    /// delete. Zero on a normal delete; non-zero on a `--force`
+    /// delete. The CLI surfaces this count so the user sees
+    /// "Removed credential. Detached N model(s)." without a
+    /// follow-up `model list` round-trip.
     #[serde(rename = "credential_deleted")]
-    CredentialDeleted { request_id: u64, id: String },
+    CredentialDeleted {
+        request_id: u64,
+        id: String,
+        #[serde(default)]
+        broken_references: u32,
+    },
 
     /// Reply to [`RequestPacket::CredentialGet`]. Carries the full
     /// record (id, namespace, name, kind, metadata, timestamps)
@@ -1571,54 +1600,6 @@ pub enum ResponsePacket {
         api_key_enabled: bool,
         api_key_count: usize,
     },
-    // ── Session-group IPC auth (ADR-045 PR #2) ──
-    //
-    // Returned on successful `AuthSubmit`. The CLI persists the
-    // `token` to `~/.peko/run/auth-token-<sid>` and attaches it as
-    // `AuthCredential::SessionToken` on every subsequent request.
-    #[serde(rename = "auth_submitted")]
-    AuthSubmitted {
-        request_id: u64,
-        token: String,
-        expires_in_secs: u64,
-    },
-
-    // ── Service tokens (ADR-045 PR #5) ──
-    //
-    // Returned by `ServiceTokenCreate`. `token` is the raw secret and is
-    // shown to the caller **exactly once** at creation time. Subsequent
-    // `ServiceTokenList` / `ServiceTokenRevoke` responses never include
-    // the raw secret. Caps, expires_at_secs are mirrored from the
-    // on-disk meta for caller convenience.
-    #[serde(rename = "service_token_created")]
-    ServiceTokenCreated {
-        request_id: u64,
-        name: String,
-        token: String,
-        caps: Vec<String>,
-        expires_at_secs: Option<u64>,
-    },
-
-    /// Returned by `ServiceTokenList` — never contains the raw secret.
-    #[serde(rename = "service_token_listed")]
-    ServiceTokenListed {
-        request_id: u64,
-        tokens: Vec<ServiceTokenInfo>,
-    },
-
-    /// Returned by `ServiceTokenRevoke` on success.
-    #[serde(rename = "service_token_revoked")]
-    ServiceTokenRevoked { request_id: u64, name: String },
-
-    /// Returned by any service-token request on failure. `name` is
-    /// present for create/revoke errors; `None` for list errors.
-    #[serde(rename = "service_token_error")]
-    ServiceTokenError {
-        request_id: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        message: String,
-    },
 
     // ── Principal operations ─────────────────────────────────────────
     /// Non-streaming result of `PrincipalSend`. Single packet with the
@@ -1858,54 +1839,6 @@ pub enum ResponsePacket {
     // reachable from the IPC surface; if a future ADR reintroduces it,
     // it must key off PrincipalMemory rather than legacy
     // SessionService.)
-
-    // ── ADR-045 PR #4 — daemon→user responses for pending decisions ──
-    /// Returned on successful `ApprovalDecision`. The CLI prints a
-    /// one-line summary; the daemon's `ApprovalEngine` has already
-    /// executed the op (or staged it for asynchronous completion) and
-    /// pushed the result into the agent's session inbox.
-    #[serde(rename = "approval_decided")]
-    ApprovalDecided {
-        request_id: u64,
-        id: uuid::Uuid,
-        /// Final status (Approved or Denied, with the by/reason).
-        status: ApprovalStatusPayload,
-        /// Operation-specific result, e.g. `{"granted": "fs:read"}`
-        /// for a successful `GrantCapability`.
-        op_result: serde_json::Value,
-    },
-    /// Returned when `ApprovalDecision` failed (unknown id,
-    /// not-implemented op, executor error). The CLI surfaces the
-    /// message verbatim.
-    #[serde(rename = "approval_error")]
-    ApprovalError {
-        request_id: u64,
-        id: uuid::Uuid,
-        message: String,
-    },
-}
-
-/// Wire-shaped mirror of `ApprovalStatus` from
-/// `peko_core::daemon::approval_queue`. Round-trips through serde so
-/// the CLI can display the status without parsing tags itself.
-///
-/// ADR-045 PR #4.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ApprovalStatusPayload {
-    Pending,
-    Approved {
-        decided_at_secs: u64,
-        /// Wire-shaped `Subject` — separate type so the IPC layer
-        /// doesn't depend on `peko_subject`. See the `Subject` enum
-        /// in `peko-rs/subject/src/lib.rs` for the canonical shape.
-        by: serde_json::Value,
-    },
-    Denied {
-        decided_at_secs: u64,
-        by: serde_json::Value,
-        reason: String,
-    },
 }
 
 /// Summary of an extension for IPC responses
@@ -1962,6 +1895,101 @@ pub struct ModelSummary {
     /// list so the desktop can render them greyed-out / at the bottom
     /// of the models panel.
     pub enabled: bool,
+    /// PR 1 / `feature/model-first-config`: declarative capability
+    /// descriptor (vision, audio, tools, streaming, thinking,
+    /// json_mode, pricing). `None` for entries written before
+    /// PR 1; the desktop falls back to `ModelSpec::default()` in
+    /// that case (text-only, no tools, no thinking, streaming on).
+    /// Field is skipped from JSON when absent so old daemons and
+    /// old desktop builds keep working against new packets, and
+    /// vice versa.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<ModelSpec>,
+}
+
+/// PR 1 / `feature/model-first-config`: IPC mirror of
+/// `peko_providers::spec::ModelSpec`. Kept in this file (rather than
+/// imported from `peko_providers`) so the wire shape is owned by the
+/// IPC layer and can evolve independently. All fields use
+/// `#[serde(default)]` so packets emitted by a pre-PR-1 daemon
+/// deserialize cleanly into the new field set.
+///
+/// The mirror is intentionally one-way: the daemon reads `ModelSpec`
+/// from `ModelConfig::spec` and projects it onto this struct. The
+/// desktop never round-trips a `ModelSpec` back through IPC — edits
+/// go through the catalog file (`peko model edit` / `peko model add`)
+/// rather than the IPC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelSpec {
+    #[serde(default)]
+    pub image_input: bool,
+    #[serde(default)]
+    pub audio_input: bool,
+    #[serde(default)]
+    pub tool_support: ModelToolSupport,
+    #[serde(default = "default_streaming_true")]
+    pub streaming: bool,
+    #[serde(default)]
+    pub thinking: ModelThinkingMode,
+    #[serde(default)]
+    pub json_mode: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricingHint>,
+}
+
+fn default_streaming_true() -> bool {
+    true
+}
+
+impl Default for ModelSpec {
+    fn default() -> Self {
+        Self {
+            image_input: false,
+            audio_input: false,
+            tool_support: ModelToolSupport::None,
+            streaming: true,
+            thinking: ModelThinkingMode::Disabled,
+            json_mode: false,
+            pricing: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelToolSupport {
+    None,
+    FunctionCalling,
+    Full,
+}
+
+impl Default for ModelToolSupport {
+    fn default() -> Self {
+        ModelToolSupport::None
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelThinkingMode {
+    Disabled,
+    Optional,
+    Required,
+    CustomBudget,
+}
+
+impl Default for ModelThinkingMode {
+    fn default() -> Self {
+        ModelThinkingMode::Disabled
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ModelPricingHint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_per_million: Option<f64>,
 }
 
 /// One model declared by a built-in model preset.
@@ -2138,6 +2166,17 @@ pub struct ModelTestResult {
 /// `last_tested_at` is an ISO-8601 UTC stamp from the most recent
 /// `CredentialTest` against this credential; `last_tested_ok`
 /// records the outcome. Both are `None` until the first test runs.
+///
+/// `is_referenced` / `referenced_by` (PR 3 / `feature/model-first-config`):
+/// populated when the catalog has at least one `ModelConfig` whose
+/// `credential_id` matches this row. `is_referenced` is the cheap
+/// summary flag the desktop paints next to the credential name;
+/// `referenced_by` carries the dependent `ModelSummary` rows so the
+/// delete confirmation dialog can show jump links without a follow-up
+/// `model list` round-trip. `#[serde(default)]` keeps the field
+/// forward+backward compatible — old daemons that don't compute
+/// references deserialize as `false` / `[]`, and old clients ignore
+/// the fields on a new daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialRow {
     pub id: String,
@@ -2151,6 +2190,10 @@ pub struct CredentialRow {
     pub last_tested_ok: Option<bool>,
     #[serde(default)]
     pub system_owned: bool,
+    #[serde(default)]
+    pub is_referenced: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub referenced_by: Vec<ModelSummary>,
 }
 
 /// Full credential record returned by `CredentialGet`. Includes
@@ -2249,26 +2292,6 @@ pub struct ApiKeySummary {
     pub enabled: bool,
 }
 
-/// Public metadata for a registered service token (ADR-045 PR #5).
-///
-/// Mirrors `crate::storage::service_token_store::ServiceTokenInfo`
-/// but uses crate-internal field names so the wire shape stays
-/// consistent (the on-disk form lives in `service_token_store`).
-///
-/// **Wire invariant**: never carries the raw token. `token` is
-/// returned only in `ResponsePacket::ServiceTokenCreated` and only
-/// at creation time.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServiceTokenInfo {
-    pub name: String,
-    pub caps: Vec<String>,
-    pub created_at_secs: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_used_at_secs: Option<u64>,
-}
-
 impl AuthenticatedRequest {
     /// Deserialize an authenticated request from JSON bytes.
     ///
@@ -2330,6 +2353,7 @@ impl ResponsePacket {
             | Self::CronRemoved { request_id, .. }
             | Self::CronRunStarted { request_id, .. }
             | Self::CronHistory { request_id, .. }
+            | Self::AuditEvents { request_id, .. }
             | Self::ExtStarted { request_id, .. }
             | Self::ExtStopped { request_id, .. }
             | Self::ExtRestarted { request_id, .. }
@@ -2377,11 +2401,6 @@ impl ResponsePacket {
             | Self::AuthApiKeyList { request_id, .. }
             | Self::AuthApiKeyRevoked { request_id, .. }
             | Self::AuthStatus { request_id, .. }
-            | Self::AuthSubmitted { request_id, .. }
-            | Self::ServiceTokenCreated { request_id, .. }
-            | Self::ServiceTokenListed { request_id, .. }
-            | Self::ServiceTokenRevoked { request_id, .. }
-            | Self::ServiceTokenError { request_id, .. }
             | Self::PrincipalSent { request_id, .. }
             | Self::PrincipalSentChunk { request_id, .. }
             | Self::PrincipalSentIteration { request_id, .. }
@@ -2404,9 +2423,7 @@ impl ResponsePacket {
             | Self::Status { request_id, .. }
             | Self::QuotaStatus { request_id, .. }
             | Self::PrincipalInviteMinted { request_id, .. }
-            | Self::PrincipalInviteRevoked { request_id, .. }
-            | Self::ApprovalDecided { request_id, .. }
-            | Self::ApprovalError { request_id, .. } => *request_id,
+            | Self::PrincipalInviteRevoked { request_id, .. } => *request_id,
         }
     }
 
@@ -2426,6 +2443,7 @@ impl ResponsePacket {
             Self::CronRemoved { .. } => "CronRemoved",
             Self::CronRunStarted { .. } => "CronRunStarted",
             Self::CronHistory { .. } => "CronHistory",
+            Self::AuditEvents { .. } => "AuditEvents",
             Self::ExtStarted { .. } => "ExtStarted",
             Self::ExtStopped { .. } => "ExtStopped",
             Self::ExtRestarted { .. } => "ExtRestarted",
@@ -2473,11 +2491,6 @@ impl ResponsePacket {
             Self::AuthApiKeyList { .. } => "AuthApiKeyList",
             Self::AuthApiKeyRevoked { .. } => "AuthApiKeyRevoked",
             Self::AuthStatus { .. } => "AuthStatus",
-            Self::AuthSubmitted { .. } => "AuthSubmitted",
-            Self::ServiceTokenCreated { .. } => "ServiceTokenCreated",
-            Self::ServiceTokenListed { .. } => "ServiceTokenListed",
-            Self::ServiceTokenRevoked { .. } => "ServiceTokenRevoked",
-            Self::ServiceTokenError { .. } => "ServiceTokenError",
             Self::PrincipalSent { .. } => "PrincipalSent",
             Self::PrincipalSentChunk { .. } => "PrincipalSentChunk",
             Self::PrincipalSentIteration { .. } => "PrincipalSentIteration",
@@ -2501,8 +2514,6 @@ impl ResponsePacket {
             Self::QuotaStatus { .. } => "QuotaStatus",
             Self::PrincipalInviteMinted { .. } => "PrincipalInviteMinted",
             Self::PrincipalInviteRevoked { .. } => "PrincipalInviteRevoked",
-            Self::ApprovalDecided { .. } => "ApprovalDecided",
-            Self::ApprovalError { .. } => "ApprovalError",
         }
     }
 
@@ -2669,69 +2680,6 @@ mod tests {
                 assert_eq!(request_id, 42);
                 assert_eq!(seq, 7);
                 assert_eq!(chunk, "hello world");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    /// `AuthSubmit` round-trips with the wire shape `"auth_submit"`
-    /// (ADR-045 PR #2). Guards the request-id extraction arm and the
-    /// `#[serde(rename)]` discriminator in one shot.
-    #[test]
-    fn test_auth_submit_roundtrip() {
-        let req = RequestPacket::AuthSubmit {
-            request_id: 91,
-            code: "alpha bridge cloud drift eagle forest".to_string(),
-        };
-        assert_eq!(req.request_id(), 91);
-
-        let bytes = req.to_bytes().unwrap();
-        assert!(
-            bytes.windows(11).any(|w| w == b"auth_submit"),
-            "wire payload must contain the snake_case discriminator; got: {}",
-            String::from_utf8_lossy(&bytes)
-        );
-
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::AuthSubmit { request_id, code } => {
-                assert_eq!(request_id, 91);
-                assert_eq!(code, "alpha bridge cloud drift eagle forest");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    /// `AuthSubmitted` round-trips with the wire shape `"auth_submitted"`
-    /// (ADR-045 PR #2). The `token` and `expires_in_secs` fields are
-    /// what the CLI persists to `~/.peko/run/auth-token-<sid>`.
-    #[test]
-    fn test_auth_submitted_roundtrip() {
-        let resp = ResponsePacket::AuthSubmitted {
-            request_id: 92,
-            token: "pst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-            expires_in_secs: 28800,
-        };
-        assert_eq!(resp.request_id(), 92);
-        assert_eq!(resp.variant_name(), "AuthSubmitted");
-
-        let bytes = resp.to_bytes().unwrap();
-        assert!(
-            bytes.windows(14).any(|w| w == b"auth_submitted"),
-            "wire payload must contain the snake_case discriminator; got: {}",
-            String::from_utf8_lossy(&bytes)
-        );
-
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::AuthSubmitted {
-                request_id,
-                token,
-                expires_in_secs,
-            } => {
-                assert_eq!(request_id, 92);
-                assert_eq!(token, "pst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-                assert_eq!(expires_in_secs, 28800);
             }
             _ => panic!("Wrong variant"),
         }
@@ -3477,6 +3425,7 @@ mod tests {
                 requires_key: true,
                 is_local: false,
                 enabled: true,
+                spec: None,
             },
         };
         let bytes = resp.to_bytes().unwrap();
@@ -3809,6 +3758,8 @@ mod tests {
                     last_tested_at: Some("2026-07-15T11:48:00Z".to_string()),
                     last_tested_ok: Some(true),
                     system_owned: false,
+                    is_referenced: false,
+                    referenced_by: Vec::new(),
                 },
                 CredentialRow {
                     id: "id-openai".to_string(),
@@ -3819,6 +3770,8 @@ mod tests {
                     last_tested_at: None,
                     last_tested_ok: None,
                     system_owned: false,
+                    is_referenced: false,
+                    referenced_by: Vec::new(),
                 },
             ],
         };
@@ -4032,6 +3985,7 @@ mod tests {
             kind: "api_key".to_string(),
             material: "sk-test-123".to_string(),
             metadata: Some(serde_json::json!({ "foo": "bar" })),
+            replace_on: None,
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -4066,6 +4020,7 @@ mod tests {
                 kind,
                 material,
                 metadata,
+                replace_on,
             } => {
                 assert_eq!(request_id, 921);
                 assert_eq!(namespace, "provider:minimax");
@@ -4078,6 +4033,7 @@ mod tests {
                         .and_then(|m| m.get("foo").and_then(|v| v.as_str())),
                     Some("bar")
                 );
+                assert!(replace_on.is_none());
             }
             _ => panic!("Wrong variant"),
         }
@@ -4092,6 +4048,7 @@ mod tests {
         let resp = ResponsePacket::CredentialSetDone {
             request_id: 922,
             id: "id-minimax".to_string(),
+            rewired_models: 0,
         };
         let bytes = resp.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -4104,9 +4061,14 @@ mod tests {
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::CredentialSetDone { request_id, id } => {
+            ResponsePacket::CredentialSetDone {
+                request_id,
+                id,
+                rewired_models,
+            } => {
                 assert_eq!(request_id, 922);
                 assert_eq!(id, "id-minimax");
+                assert_eq!(rewired_models, 0);
             }
             _ => panic!("Wrong variant"),
         }
@@ -4121,6 +4083,7 @@ mod tests {
         let req = RequestPacket::CredentialDelete {
             request_id: 931,
             id: "id-minimax".to_string(),
+            force: false,
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -4133,9 +4096,14 @@ mod tests {
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::CredentialDelete { request_id, id } => {
+            RequestPacket::CredentialDelete {
+                request_id,
+                id,
+                force,
+            } => {
                 assert_eq!(request_id, 931);
                 assert_eq!(id, "id-minimax");
+                assert!(!force);
             }
             _ => panic!("Wrong variant"),
         }
@@ -4147,6 +4115,7 @@ mod tests {
         let resp = ResponsePacket::CredentialDeleted {
             request_id: 932,
             id: "id-minimax".to_string(),
+            broken_references: 0,
         };
         let bytes = resp.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -4159,9 +4128,14 @@ mod tests {
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::CredentialDeleted { request_id, id } => {
+            ResponsePacket::CredentialDeleted {
+                request_id,
+                id,
+                broken_references,
+            } => {
                 assert_eq!(request_id, 932);
                 assert_eq!(id, "id-minimax");
+                assert_eq!(broken_references, 0);
             }
             _ => panic!("Wrong variant"),
         }

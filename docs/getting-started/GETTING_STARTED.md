@@ -49,8 +49,8 @@ export KIMI_API_KEY="your-kimi-key"
 ### 3. Add a Provider
 
 ```bash
-./target/release/peko provider add --template anthropic \
-    --key "$ANTHROPIC_API_KEY" --default
+./target/release/peko model add --template anthropic --model claude-sonnet-4-5 \
+    --key "$ANTHROPIC_API_KEY"
 ```
 
 This stores the provider wiring in the runtime catalog and the API key in the

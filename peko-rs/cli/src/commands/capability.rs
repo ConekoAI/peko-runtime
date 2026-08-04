@@ -13,6 +13,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use peko_core::ipc::{DaemonClient, ResponsePacket};
+use peko_extension_api::Capability;
 
 /// Subcommands for `peko capability`.
 #[derive(Subcommand)]
@@ -67,10 +68,31 @@ pub async fn handle_capability(command: CapabilityCommands, json: bool) -> Resul
                                 "capability": capability,
                                 "principal": principal,
                                 "message": message,
+                                "is_high_power": Capability::new(&capability).is_high_power(),
                             })
                         );
                     } else {
                         println!("✅ {message}");
+                        // ADR-046 trust+audit: print a non-blocking
+                        // warning after the grant lands when the
+                        // capability is high-power. Mirrors the
+                        // daemon's `principal.capability_granted`
+                        // Warn audit event — the warning is the
+                        // user-visible counterpart to the audit
+                        // log entry. No interactive confirm, no
+                        // blocking prompt: agents invoking the
+                        // grant are not stopped.
+                        if Capability::new(&capability).is_high_power() {
+                            eprintln!(
+                                "⚠ Granted high-power capability '{capability}' to '{principal}'."
+                            );
+                            eprintln!(
+                                "  This enables shell/filesystem/egress/cross-principal authority."
+                            );
+                            eprintln!(
+                                "  Review with: peko audit tail --principal {principal}"
+                            );
+                        }
                     }
                 }
                 ResponsePacket::Error { message, .. } => anyhow::bail!(message),

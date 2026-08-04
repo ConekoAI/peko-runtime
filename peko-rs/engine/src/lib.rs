@@ -72,6 +72,7 @@ pub mod funnel;
 pub mod iteration_state;
 pub mod parallel_gate;
 pub mod prompt;
+pub mod spec_gate;
 pub mod stacked_metered_provider;
 pub mod state;
 pub mod stream_buffer;
@@ -118,6 +119,7 @@ pub use peko_session::compaction::{
     CompactionResult, CompactionState, CompactorBackend, ContextUsageEstimate,
 };
 pub use prompt::renderer::PromptRenderer;
+pub use spec_gate::{check as check_spec, SpecGateError};
 pub use prompt::{
     builder::{PromptMode, SystemPromptBuilder},
     context::{IterationBudgetState, QuotaStateView, TurnPromptContext},

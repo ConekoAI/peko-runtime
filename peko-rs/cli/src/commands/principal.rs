@@ -226,6 +226,26 @@ pub enum PrincipalCommands {
     #[command(subcommand)]
     Agent(PrincipalAgentCommands),
 
+    /// Show principals whose `principal.toml` has changed since
+    /// the last daemon boot (ADR-046 drift detection).
+    ///
+    /// Compares each principal's SHA-256 against the baseline file
+    /// the daemon wrote at the previous startup. Outputs the
+    /// drifted principal name(s) — line-level TOML diff is a
+    /// follow-up; this is the "something changed" canary.
+    ///
+    /// Useful in scripts:
+    ///   peko principal diff && echo "config drift detected" || true
+    Diff {
+        /// Restrict to a single principal. Without this flag,
+        /// every principal is checked.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Draft or apply a persona for a Principal via the LLM
     /// (Fix D — guided persona builder; see
     /// scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md
@@ -306,14 +326,15 @@ pub async fn handle_principal(
     json: bool,
 ) -> Result<()> {
     match cmd {
-        PrincipalCommands::Create { name, model, force, yes } => {
-            create_principal(&name, &model, force, yes, paths).await
-        }
+        PrincipalCommands::Create {
+            name,
+            model,
+            force,
+            yes,
+        } => create_principal(&name, &model, force, yes, paths).await,
         PrincipalCommands::List => list_principals(paths, json).await,
         PrincipalCommands::Show { name } => show_principal(&name, paths, json).await,
-        PrincipalCommands::Remove { name, yes } => {
-            remove_principal(&name, yes, paths, json).await
-        }
+        PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths, json).await,
         PrincipalCommands::Export {
             name,
             output,
@@ -363,9 +384,7 @@ pub async fn handle_principal(
             permission,
         } => revoke_permission(&name, &subject, &permission).await,
         PrincipalCommands::Permissions { name } => list_permissions(&name).await,
-        PrincipalCommands::Invite { name, scope, ttl } => {
-            mint_invite(&name, scope, &ttl).await
-        }
+        PrincipalCommands::Invite { name, scope, ttl } => mint_invite(&name, scope, &ttl).await,
         PrincipalCommands::RevokeInvite { name, jti } => revoke_invite(&name, &jti).await,
         PrincipalCommands::Agent(PrincipalAgentCommands::List { name }) => {
             list_principal_agents(&name, paths).await
@@ -382,7 +401,180 @@ pub async fn handle_principal(
         PrincipalCommands::Persona(PersonaCommands::Show { name }) => {
             show_principal_persona(&name, paths, json).await
         }
+        PrincipalCommands::Diff { name, json: cmd_json } => {
+            let use_json = cmd_json || json;
+            show_principal_drift(name.as_deref(), paths, use_json).await
+        }
     }
+}
+
+/// ADR-046: `peko principal diff` — show principals whose
+/// `principal.toml` has drifted since the last daemon boot.
+///
+/// Reads the baseline at `<data_dir>/runtime/principal-hashes.json`,
+/// walks the principals dir, SHA-256s each `principal.toml`, and
+/// reports drifted entries. Empty baseline (first boot) → "no
+/// drift" rather than a flood of false positives.
+///
+/// v1 limitation: line-level TOML diff is a follow-up. This is the
+/// "something changed" canary — the daemon emits the Security
+/// audit event at startup; this command reads the same baseline
+/// to let the user investigate at the CLI without grepping JSONL.
+async fn show_principal_drift(
+    name: Option<&str>,
+    paths: &GlobalPaths,
+    json: bool,
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
+
+    let baseline_path = paths.principal_hashes_file();
+    let principals_root = paths.principals_root_dir();
+
+    // Baseline: `{name: hex_sha256}`. Missing file = empty map
+    // (first boot). Malformed JSON = also empty map + warning —
+    // we don't want a corrupted audit artifact to brick the diff
+    // command.
+    let baseline: BTreeMap<String, String> = match std::fs::read(&baseline_path) {
+        Ok(bytes) if !bytes.is_empty() => match serde_json::from_slice(&bytes) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "(warning: baseline at {} was malformed — {e}; treating as empty)",
+                    baseline_path.display()
+                );
+                BTreeMap::new()
+            }
+        },
+        _ => BTreeMap::new(),
+    };
+
+    // Walk `<root>/<name>/principal.toml`. Same depth bounds as
+    // the daemon-side drift detector — we deliberately mirror that
+    // shape so the CLI and the daemon agree on what's "a
+    // principal". WalkDir over min_depth(2).max_depth(2) skips the
+    // root and any nested junk.
+    let mut current: BTreeMap<String, String> = BTreeMap::new();
+    for entry in walkdir::WalkDir::new(&principals_root)
+        .min_depth(2)
+        .max_depth(2)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.file_name() != "principal.toml" {
+            continue;
+        }
+        let Some(principal_name) = entry.path().parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // Cheap sub-dir sanity: skip hidden / non-portable names.
+        if principal_name.starts_with('.') {
+            continue;
+        }
+        let bytes = match std::fs::read(entry.path()) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let hash = hex::encode(hasher.finalize());
+        current.insert(principal_name.to_string(), hash);
+    }
+
+    // Diff: a principal is drifted iff it's in baseline but the
+    // hash differs, OR (with name filter) the user is asking about
+    // a specific one and it's missing. We intentionally do not
+    // treat "added since baseline" as drift on a *first-boot*
+    // baseline — that's expected growth, not tampering. The
+    // baseline's very existence is the canary that the daemon has
+    // run at least once.
+    //
+    // Owned `String` rows so we can carry both fresh `current`
+    // references and a sentinel `<missing>` token past the BTreeMap
+    // borrows; the alternative is juggling lifetimes through two
+    // collection scopes.
+    #[derive(serde::Serialize)]
+    struct Row {
+        name: String,
+        current_hash: Option<String>,
+        expected_hash: Option<String>,
+    }
+    let mut drifted: Vec<Row> = Vec::new();
+    let filter = |n: &str| name.is_none_or(|q| q == n);
+    for (n, current_hash) in &current {
+        if !filter(n.as_str()) {
+            continue;
+        }
+        if let Some(expected) = baseline.get(n) {
+            if expected != current_hash {
+                drifted.push(Row {
+                    name: n.clone(),
+                    current_hash: Some(current_hash.clone()),
+                    expected_hash: Some(expected.clone()),
+                });
+            }
+        }
+    }
+    // Also: a principal that was in baseline but is now gone. The
+    // user filtered to "alice" and there's no current hash → that's
+    // a removal, not a drift. We surface both kinds.
+    if let Some(q) = name {
+        if !current.contains_key(q) && baseline.contains_key(q) {
+            drifted.push(Row {
+                name: q.to_string(),
+                current_hash: None,
+                expected_hash: baseline.get(q).cloned(),
+            });
+        }
+    }
+
+    if json {
+        let payload = serde_json::json!({
+            "drifted": drifted,
+            "first_boot": baseline.is_empty(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    if drifted.is_empty() {
+        if baseline.is_empty() {
+            println!(
+                "✅ No drift baseline yet — run the daemon once to capture current hashes."
+            );
+        } else {
+            println!("✅ No principal config drift detected.");
+        }
+        return Ok(());
+    }
+
+    println!("⚠️  {} drifted principal(s):", drifted.len());
+    for row in &drifted {
+        match (&row.current_hash, &row.expected_hash) {
+            (None, Some(prev_hash)) => {
+                println!(
+                    "  • {}: removed (baseline had hash {})",
+                    row.name, prev_hash
+                );
+            }
+            (Some(cur), Some(prev_hash)) => {
+                println!("  • {}: hash changed", row.name);
+                println!("      expected: {prev_hash}");
+                println!("      actual:   {cur}");
+            }
+            _ => {
+                println!("  • {}: (no baseline entry, no current file)", row.name);
+            }
+        }
+    }
+    println!(
+        "\nRun `peko audit tail --since 1d` for the daemon's startup-time drift event(s)."
+    );
+
+    Ok(())
 }
 
 async fn create_principal(
@@ -435,10 +627,9 @@ async fn create_principal(
         // is a no-op on an unregistered principal. Then wipe.
         let manager = build_manager(paths);
         let _ = load_principal(name, &manager, paths).await?;
-        manager
-            .remove(name)
-            .await
-            .context("destructive re-create failed; the existing principal may be partially removed")?;
+        manager.remove(name).await.context(
+            "destructive re-create failed; the existing principal may be partially removed",
+        )?;
     }
 
     let manager = build_manager(paths);
@@ -1162,10 +1353,14 @@ fn parse_ttl_duration(s: &str) -> Result<u64> {
     } else {
         (s, 's')
     };
-    let n: u64 = num.parse().map_err(|_| anyhow::anyhow!("Invalid TTL: {s:?}"))?;
+    let n: u64 = num
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid TTL: {s:?}"))?;
     let secs = match unit {
         's' => n,
-        'm' => n.checked_mul(60).ok_or_else(|| anyhow::anyhow!("TTL overflow: {s:?}"))?,
+        'm' => n
+            .checked_mul(60)
+            .ok_or_else(|| anyhow::anyhow!("TTL overflow: {s:?}"))?,
         'h' => n
             .checked_mul(60 * 60)
             .ok_or_else(|| anyhow::anyhow!("TTL overflow: {s:?}"))?,
@@ -1206,7 +1401,11 @@ async fn mint_invite(name: &str, scope: Vec<String>, ttl: &str) -> Result<()> {
         } => {
             println!("Minted invite for principal '{name}'");
             println!("  jti:  {}", claims.jti);
-            println!("  exp:  {} ({}s from now)", claims.exp, claims.exp.timestamp() - chrono::Utc::now().timestamp());
+            println!(
+                "  exp:  {} ({}s from now)",
+                claims.exp,
+                claims.exp.timestamp() - chrono::Utc::now().timestamp()
+            );
             println!("  scope: {:?}", claims.scope);
             println!();
             println!("Share this URL with one friend:");
@@ -1255,9 +1454,11 @@ async fn revoke_invite(name: &str, jti: &str) -> Result<()> {
 async fn list_principal_agents(name: &str, paths: &GlobalPaths) -> Result<()> {
     let agents_dir = paths
         .authority()
-        .shared_agents_dir(&paths.principal_id_for(name).ok_or_else(|| {
-            anyhow::anyhow!("principal '{name}' not found")
-        })?)
+        .shared_agents_dir(
+            &paths
+                .principal_id_for(name)
+                .ok_or_else(|| anyhow::anyhow!("principal '{name}' not found"))?,
+        )
         .map_err(|e| anyhow::anyhow!("authority error: {e}"))?
         .into_path_buf();
     if !agents_dir.exists() {
@@ -1285,9 +1486,11 @@ async fn list_principal_agents(name: &str, paths: &GlobalPaths) -> Result<()> {
 async fn show_principal_agent(name: &str, agent: &str, paths: &GlobalPaths) -> Result<()> {
     let agents_dir = paths
         .authority()
-        .shared_agents_dir(&paths.principal_id_for(name).ok_or_else(|| {
-            anyhow::anyhow!("principal '{name}' not found")
-        })?)
+        .shared_agents_dir(
+            &paths
+                .principal_id_for(name)
+                .ok_or_else(|| anyhow::anyhow!("principal '{name}' not found"))?,
+        )
         .map_err(|e| anyhow::anyhow!("authority error: {e}"))?
         .into_path_buf();
     let mut candidates = vec![agents_dir.join(format!("{agent}.md"))];
@@ -1319,9 +1522,11 @@ async fn load_principal(
 
     let config_path = paths
         .authority()
-        .shared_config(&paths.principal_id_for(name).ok_or_else(|| {
-            anyhow::anyhow!("principal '{name}' not found")
-        })?)
+        .shared_config(
+            &paths
+                .principal_id_for(name)
+                .ok_or_else(|| anyhow::anyhow!("principal '{name}' not found"))?,
+        )
         .map_err(|e| anyhow::anyhow!("authority error: {e}"))?
         .into_path_buf();
     if !config_path.exists() {
@@ -1346,9 +1551,7 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
 
     PrincipalManager::with_path_resolver(
         resolver.clone(),
-        Arc::new(CliPrincipalMemoryFactory {
-            resolver,
-        }),
+        Arc::new(CliPrincipalMemoryFactory { resolver }),
         Arc::new(DefaultPrincipalRouterFactory),
     )
 }
@@ -1419,9 +1622,7 @@ async fn apply_persona_to_disk(
     name: &str,
     draft: &PersonaDraft,
 ) -> Result<(String, String, String, String)> {
-    use peko_core::principal::config::{
-        PrincipalIdentityConfig, PrincipalIntentConfig,
-    };
+    use peko_core::principal::config::{PrincipalIdentityConfig, PrincipalIntentConfig};
 
     let shared = paths.resolver().principal_layout(name).shared;
     let config_path = shared.config_file.clone();
@@ -1481,7 +1682,8 @@ async fn apply_persona_to_disk(
         b.push_str("\n\n{{memory}}\n");
         b
     };
-    let new_prompt = format!("---\nname: primary\ndescription: \"{name} persona\"\n---\n\n{body}\n");
+    let new_prompt =
+        format!("---\nname: primary\ndescription: \"{name} persona\"\n---\n\n{body}\n");
     let old_prompt = if prompt_path.exists() {
         tokio::fs::read_to_string(&prompt_path).await?
     } else {
@@ -1600,10 +1802,7 @@ async fn handle_persona_set(
 
     if dry_run {
         print!("{}", render_persona_preview(&draft));
-        eprintln!(
-            "(dry-run: principal '{}' was not modified)",
-            name
-        );
+        eprintln!("(dry-run: principal '{}' was not modified)", name);
         return Ok(());
     }
 
@@ -2130,7 +2329,12 @@ mod tests {
         ])
         .expect("should parse principal create with --model");
         match cli.command {
-            Commands::Principal(PrincipalCommands::Create { name, model, force, yes }) => {
+            Commands::Principal(PrincipalCommands::Create {
+                name,
+                model,
+                force,
+                yes,
+            }) => {
                 assert_eq!(name, "alice");
                 assert_eq!(model, "anthropic-haiku");
                 assert!(!force);
@@ -2183,7 +2387,12 @@ mod tests {
         .expect("should parse principal create with --force");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Create { name, model, force, yes }) => {
+            Commands::Principal(PrincipalCommands::Create {
+                name,
+                model,
+                force,
+                yes,
+            }) => {
                 assert_eq!(name, "scout");
                 assert_eq!(model, "anthropic-haiku");
                 assert!(force);
@@ -2460,7 +2669,10 @@ updated_at = "2026-01-01T00:00:00Z"
         let draft = PersonaDraft {
             display_name: Some("Rust Reviewer".to_string()),
             description: Some("Reviews PRs for idiomatic Rust.".to_string()),
-            goals: vec!["Catch lifetime errors".to_string(), "Suggest idiomatic fixes".to_string()],
+            goals: vec![
+                "Catch lifetime errors".to_string(),
+                "Suggest idiomatic fixes".to_string(),
+            ],
             values: vec!["Cite the borrow checker".to_string()],
             style: Some("Concise.".to_string()),
             primary_md_body: Some("You are a senior Rust reviewer.\n\n{{memory}}\n".to_string()),
@@ -2493,8 +2705,7 @@ updated_at = "2026-01-01T00:00:00Z"
             "principal.toml must contain drafted display_name"
         );
 
-        let written_prompt =
-            std::fs::read_to_string(shared.agents_dir.join("primary.md")).unwrap();
+        let written_prompt = std::fs::read_to_string(shared.agents_dir.join("primary.md")).unwrap();
         assert!(
             written_prompt.contains("senior Rust reviewer"),
             "primary.md must contain drafted body"
@@ -2560,19 +2771,11 @@ updated_at = "2026-01-01T00:00:00Z"
     /// Bug F failure mode the v3 field test surfaced.
     #[test]
     fn persona_show_subcommand_parses() {
-        let cli = Cli::try_parse_from([
-            "peko",
-            "principal",
-            "persona",
-            "show",
-            "comms-helper",
-        ])
-        .expect("persona show should parse");
+        let cli = Cli::try_parse_from(["peko", "principal", "persona", "show", "comms-helper"])
+            .expect("persona show should parse");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Persona(PersonaCommands::Show {
-                name,
-            })) => {
+            Commands::Principal(PrincipalCommands::Persona(PersonaCommands::Show { name })) => {
                 assert_eq!(name, "comms-helper");
             }
             _other => panic!("expected Principal persona show command"),

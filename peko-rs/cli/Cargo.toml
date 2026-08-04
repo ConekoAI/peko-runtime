@@ -28,6 +28,7 @@ peko-providers = { path = "../providers" }
 peko-quota = { path = "../quota" }
 peko-identity = { path = "../identity" }
 peko-subject = { path = "../subject" }
+peko-observability = { path = "../observability" }
 
 # External crates
 clap = { version = "4.4", features = ["derive", "env"] }
@@ -49,6 +50,13 @@ async-trait = "0.1"
 urlencoding = "2.1"
 rpassword = "7.3"
 cron = "0.12"
+# ADR-046: `peko principal diff` reads
+# `<data_dir>/runtime/principal-hashes.json` and walks the principals
+# dir; uses sha2 for principal.toml hashing, walkdir to mirror the
+# daemon-side drift detector, and hex to format the digest.
+walkdir = "2"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3.10"

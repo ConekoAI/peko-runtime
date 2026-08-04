@@ -26,7 +26,7 @@ pub const HEARTBEAT_INTERVAL_SECS: u64 = 2;
 /// heartbeats start.
 pub const CLI_TIMEOUT_SECS: u64 = 60;
 
-/// Authentication credential sent with every request (ADR-034, ADR-045).
+/// Authentication credential sent with every request (ADR-034).
 ///
 /// Wire shape is a tagged enum:
 ///
@@ -34,10 +34,8 @@ pub const CLI_TIMEOUT_SECS: u64 = 60;
 /// { "type": "none" }
 /// { "type": "jwt", "token": "..." }
 /// { "type": "api_key", "token": "..." }
-/// { "type": "session_token", "token": "..." }
-/// { "type": "service_token", "token": "..." }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "token")]
 #[derive(Default)]
 pub enum AuthCredential {
@@ -52,20 +50,6 @@ pub enum AuthCredential {
     /// Long-lived programmatic key.
     #[serde(rename = "api_key")]
     ApiKey(String),
-    /// Session token returned by a successful `peko auth submit`
-    /// (ADR-045 PR #2). Bound to a Unix session ID; the daemon
-    /// verifies both the SID and the SHA-256 hash of the token.
-    #[serde(rename = "session_token")]
-    SessionToken(String),
-    /// Named service token (ADR-045 PR #5). The raw token is the
-    /// credential; the daemon looks it up in
-    /// `AuthTable::service_tokens` and, on hit, populates the
-    /// resulting `CallerContext::service_token_caps`. Bound only
-    /// to the token itself (sid-independent) so it survives
-    /// daemon restarts and works for processes whose SID is not
-    /// stable (runtime, cron, persistent agents).
-    #[serde(rename = "service_token")]
-    ServiceToken(String),
 }
 
 /// Mode for a `PrincipalSendControl` request.
@@ -99,8 +83,7 @@ mod tests {
     use super::*;
 
     /// Round-trip for the `AuthCredential` tagged enum. Guards the
-    /// wire shape `"none"`/`"jwt"`/`"api_key"`/`"session_token"`/
-    /// `"service_token"` (ADR-034 + ADR-045 PR #2 + PR #5) so any
+    /// wire shape `"none"`/`"jwt"`/`"api_key"` (ADR-034) so any
     /// future rename surfaces here, not in production CLI↔daemon
     /// framing.
     #[test]
@@ -115,17 +98,9 @@ mod tests {
                 AuthCredential::ApiKey("k".into()),
                 r#"{"type":"api_key","token":"k"}"#,
             ),
-            (
-                AuthCredential::SessionToken("pst_abc123".into()),
-                r#"{"type":"session_token","token":"pst_abc123"}"#,
-            ),
-            (
-                AuthCredential::ServiceToken("svc_64hexchars".into()),
-                r#"{"type":"service_token","token":"svc_64hexchars"}"#,
-            ),
         ] {
             let parsed: AuthCredential = serde_json::from_str(json).unwrap();
-            assert_eq!(variant, parsed);
+            assert_eq!(format!("{variant:?}"), format!("{parsed:?}"));
             let back = serde_json::to_string(&variant).unwrap();
             assert_eq!(back, json);
         }

@@ -7,10 +7,8 @@
 //! - Session maintenance (prune, cap, rotate)
 //! - Graceful shutdown
 
-pub mod api;
-pub mod approval_queue;
-pub mod approval_engine;
 pub(crate) mod background_runtime;
+pub(crate) mod config_drift;
 pub(crate) mod cron_engine;
 pub(crate) mod cron_runtime;
 pub(crate) mod state;
@@ -143,47 +141,6 @@ pub struct Daemon {
     cron_engine: CronEngine,
 }
 
-/// Atomically write a secret file with mode 0600.
-///
-/// Creates the parent directory if missing, writes the file with
-/// `O_CREAT | O_WRONLY | O_TRUNC` and mode `0o600`, then renames into
-/// place so a concurrent reader never sees a half-written file. On
-/// non-Unix platforms the mode is best-effort and the rename is
-/// skipped.
-#[cfg(unix)]
-fn write_secret_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    // Create with restrictive permissions in one syscall to avoid the
-    // brief umask-derived window where `create_new(true)` followed by
-    // `set_permissions` would expose the file.
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true).mode(0o600);
-    let mut f = opts.open(path)?;
-    f.write_all(contents.as_bytes())?;
-    f.sync_all()?;
-    drop(f);
-
-    let meta = std::fs::metadata(path)?;
-    let mut perms = meta.permissions();
-    perms.set_mode(0o600);
-    std::fs::set_permissions(path, perms)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_secret_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, contents)
-}
-
 impl Daemon {
     /// Create a new daemon
     pub fn new(config: DaemonConfig) -> Result<Self> {
@@ -211,11 +168,20 @@ impl Daemon {
             config.data_dir.clone(),
             dirs::cache_dir().map_or_else(|| config.data_dir.join("cache"), |d| d.join("peko")),
         );
+        // ADR-046 trust + audit: extract the audit dir BEFORE moving
+        // the path resolver into the cron engine — JSONL audit
+        // events (cron.execute, cron.result, cron.write) flow
+        // through this observability instance and need a sink to land
+        // in.
+        let cron_audit_dir = cron_path_resolver.audit_dir();
 
         let cron_engine = CronEngine::new(
             cron_path_resolver,
             std::sync::Arc::new(peko_cron::IdleDetector::new()),
-            std::sync::Arc::new(peko_observability::Observability::new("daemon")),
+            std::sync::Arc::new(peko_observability::Observability::with_audit_dir(
+                "daemon",
+                cron_audit_dir,
+            )?),
             None,
             // Placeholder executor for the un-wired constructor — the
             // daemon replaces this in `Daemon::run` with a real one
@@ -252,11 +218,20 @@ impl Daemon {
             config.data_dir.clone(),
             dirs::cache_dir().map_or_else(|| config.data_dir.join("cache"), |d| d.join("peko")),
         );
+        // ADR-046 trust + audit: extract the audit dir BEFORE moving
+        // the path resolver into the cron engine — JSONL audit
+        // events (cron.execute, cron.result, cron.write) flow
+        // through this observability instance and need a sink to land
+        // in.
+        let cron_audit_dir = cron_path_resolver.audit_dir();
 
         let cron_engine = CronEngine::new(
             cron_path_resolver,
             std::sync::Arc::new(peko_cron::IdleDetector::new()),
-            std::sync::Arc::new(peko_observability::Observability::new("daemon")),
+            std::sync::Arc::new(peko_observability::Observability::with_audit_dir(
+                "daemon",
+                cron_audit_dir,
+            )?),
             None,
             std::sync::Arc::new(
                 crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
@@ -340,6 +315,29 @@ impl Daemon {
 
         app_state.set_idle_detector(idle_detector.clone());
 
+        // ADR-046: principal-config drift detection. Hashes every
+        // `principal.toml` and compares against the baseline written
+        // on the previous boot. Drifted principals emit a
+        // `principal.config_drift` Security audit event so operators
+        // see them in `peko audit tail --since 5m`. The check is
+        // startup-only in v1 — see the module doc for the `notify`-
+        // based follow-up. Failures here are non-fatal: a corrupted
+        // baseline logs a warning and the boot proceeds as a
+        // first-boot.
+        match config_drift::run_drift_check(&app_state.path_resolver, app_state.observability())
+            .await
+        {
+            Ok(n) if n > 0 => {
+                warn!("drift: {n} principal(s) drifted since last boot (see JSONL audit log)");
+            }
+            Ok(_) => {
+                debug!("drift: no principal config drift detected");
+            }
+            Err(e) => {
+                warn!("drift: check failed (continuing boot): {e}");
+            }
+        }
+
         // Build the cron engine's `AsyncExecutor` with the daemon's
         // shared `InboxRegistry` so completion events and steer
         // messages land in the same inboxes the in-flight `AgenticLoop`
@@ -363,7 +361,10 @@ impl Daemon {
         self.cron_engine = CronEngine::new(
             cron_path_resolver,
             idle_detector,
-            Arc::new(peko_observability::Observability::new("daemon")),
+            Arc::new(peko_observability::Observability::with_audit_dir(
+                "daemon",
+                app_state.path_resolver.audit_dir(),
+            )?),
             Some(app_state.principal_manager().clone()),
             cron_async_executor,
             cron_extension_core,
@@ -380,149 +381,6 @@ impl Daemon {
             pid_file.display(),
             std::process::id()
         );
-
-        // ADR-045 PR #2 step 2 — generate the diceware code + service
-        // token, write the auth-code file, setsid() to detach from
-        // the launching shell's SID, and preauthorize the daemon's
-        // own SID for service-token internal IPC.
-        //
-        // This happens BEFORE the IPC server binds so the code file
-        // exists by the time any client attempts to authenticate.
-        //
-        // Order is significant:
-        //   1. setsid() — daemon gets its own SID, distinct from any
-        //      shell that launched it. Prevents the foreground-daemon
-        //      / shell SID collision that would otherwise overwrite
-        //      the service entry with the user's interactive entry.
-        //   2. Generate code + service token.
-        //   3. Emit code to stderr + write auth-code file.
-        //   4. Build AuthCodeState from the raw code (the raw string
-        //      is dropped after this; only the SHA-256 hash lives on
-        //      in AppState).
-        //   5. Preauthorize daemon SID with the service token.
-        #[cfg(unix)]
-        {
-            // setsid() — detaches from the controlling terminal /
-            // launching shell's session. Idempotent: if we are
-            // already a session leader, this is a no-op.
-            // SAFETY: setsid() is async-signal-safe.
-            let rc = unsafe { libc::setsid() };
-            if rc < 0 {
-                let e = std::io::Error::last_os_error();
-                tracing::warn!(
-                    "setsid() failed at daemon startup: {e} \
-                     (continuing — service-token plumbing may collide \
-                     with the launching shell's SID)"
-                );
-            } else {
-                tracing::info!(
-                    "Detached into new session (sid={})",
-                    crate::ipc::peer_credentials::getsid_self().unwrap_or(-1)
-                );
-            }
-        }
-
-        use rand::rngs::OsRng;
-        use rand::RngCore;
-
-        let mut osrng = OsRng;
-        let code = crate::ipc::auth_code::generate_auth_code(&mut osrng, 6);
-        let service_token = crate::ipc::auth_code::generate_session_token(&mut osrng);
-
-        // Build the AuthCodeState now so the code hash is in memory
-        // and the raw code can be dropped after we emit it.
-        let auth_state = crate::ipc::auth_bootstrap::AuthCodeState::from_raw_code(
-            &code,
-            crate::ipc::auth_bootstrap::DEFAULT_CODE_TTL,
-            crate::ipc::auth_bootstrap::DEFAULT_MAX_ATTEMPTS,
-        );
-        app_state.set_auth_bootstrap(auth_state);
-        app_state.set_service_token(service_token.clone());
-
-        // Preauthorize the daemon's own SID so internal clients (cron
-        // adapter, runtime-init IPC) can authenticate without going
-        // through the diceware-code flow.
-        #[cfg(unix)]
-        if let Some(self_sid) = crate::ipc::peer_credentials::getsid_self() {
-            app_state
-                .auth_table()
-                .authorize_service(self_sid, service_token.as_bytes());
-            tracing::info!("Preauthorized daemon SID {self_sid} for internal service-token IPC");
-        }
-
-        // ADR-045 PR #5: rehydrate named service tokens from disk into
-        // the in-memory `AuthTable` map. Tokens are persistent — they
-        // survive daemon restarts — so the auth table needs every
-        // entry present before serving the first IPC request.
-        match app_state.service_token_store().load_all() {
-            Ok(loaded) => {
-                let count = loaded.len();
-                for (name, raw_token, meta) in loaded {
-                    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-                    let ttl = match meta.expires_at_secs {
-                        Some(exp_secs) => {
-                            let now = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            // Compute relative TTL, clamped at 0 for
-                            // already-expired tokens (which the table
-                            // will then evict on first access).
-                            i64::try_from(exp_secs)
-                                .ok()
-                                .and_then(|exp| {
-                                    let now_i = i64::try_from(now).ok()?;
-                                    exp.checked_sub(now_i)
-                                })
-                                .and_then(|rel| u64::try_from(rel.max(0)).ok())
-                                .map(Duration::from_secs)
-                        }
-                        None => None,
-                    };
-                    app_state.auth_table().register_service_token(
-                        &name,
-                        crate::ipc::auth::hash_token(raw_token.as_bytes()),
-                        meta.caps,
-                        ttl,
-                    );
-                }
-                tracing::info!(
-                    "Rehydrated {count} named service tokens from disk into AuthTable"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "ServiceTokenStore::load_all failed at startup: {e}; \
-                     no tokens registered"
-                );
-            }
-        }
-
-        // Emit code to stderr. Preserves `PEKO_VERSION=` as line 1
-        // (the desktop supervisor parses that prefix).
-        eprintln!(
-            "\n\x1b[1;36mPeko auth code:\x1b[0m \x1b[1m{}\x1b[0m\n\
-             Run `peko auth submit` from your terminal to authenticate this session.",
-            code
-        );
-
-        // Write the code file with mode 0600 atomically. Failure
-        // here is non-fatal (the user can still type the code from
-        // the stderr output), but we log a warning so missing files
-        // surface in diagnostic output.
-        let code_path = self.config.config_dir.join("run").join("auth-code");
-        if let Some(parent) = code_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match write_secret_file(&code_path, &(code + "\n")) {
-            Ok(()) => tracing::info!("Wrote auth code to {}", code_path.display()),
-            Err(e) => tracing::warn!(
-                "Failed to write auth code file {}: {e} \
-                 (the code is still printed to stderr; you can run \
-                  `peko auth submit --code \"...\"` manually)",
-                code_path.display()
-            ),
-        }
 
         // Mark daemon as ready (server is listening)
         app_state.set_ready(true).await;
@@ -581,11 +439,7 @@ impl Daemon {
         // (pre-extraction) to `src/daemon/cron_runtime.rs` because it
         // depends on `crate::ipc::{DaemonClient, ResponsePacket}` which
         // stays in root.
-        match crate::daemon::cron_runtime::DaemonCronAdapter::connect_with_service_token(
-            app_state.service_token().unwrap_or_default(),
-        )
-        .await
-        {
+        match crate::daemon::cron_runtime::DaemonCronAdapter::connect().await {
             Ok(adapter) => {
                 let adapter = std::sync::Arc::new(adapter);
                 adapter.install_as_global();

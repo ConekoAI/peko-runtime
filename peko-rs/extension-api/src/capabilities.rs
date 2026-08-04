@@ -32,6 +32,43 @@ impl Capability {
         &self.0
     }
 
+    /// ADR-046 trust+audit: classify a capability as "high power"
+    /// — grants the user-visible warning after the grant lands.
+    ///
+    /// Definition (v1, hand-curated):
+    /// - `tool:Bash`, `tool:Write`, `tool:Edit` (filesystem/code
+    ///   mutation — direct disk writes, no gate)
+    /// - `network`, `tunnel:*` (egress authority)
+    /// - `filesystem.*` and `fs.*` (filesystem authority outside the
+    ///   tool-mediated layer)
+    /// - `principal:*`, `runtime:*` (cross-principal / runtime
+    ///   identity authority)
+    ///
+    /// Everything else (tool:Read, skill:*, agent:*) is low-power
+    /// and only emits an Info audit event. This is a coarse,
+    /// readable threshold — the user is asking for "things the
+    /// operator should glance at", not a security model.
+    #[must_use]
+    pub fn is_high_power(&self) -> bool {
+        let s = self.0.as_str();
+        if s == "network" {
+            return true;
+        }
+        let kind = self.kind();
+        // `tool:`-prefixed capabilities: classify by the tool name
+        // (the `value()` half). High-power tools are mutating /
+        // shell-execution ones.
+        if kind == "tool" {
+            return matches!(self.value(), "Bash" | "Write" | "Edit");
+        }
+        // Everything else: a kind prefix that names a wide
+        // authority domain.
+        kind.starts_with("filesystem")
+            || kind.starts_with("tunnel")
+            || kind.starts_with("principal")
+            || kind.starts_with("runtime")
+    }
+
     /// The capability kind, i.e. the part before the first `:`.
     ///
     /// For bare capabilities such as `network` the whole string is returned.
@@ -288,6 +325,32 @@ mod tests {
         assert!(grants.is_granted(&Capability::new("tool:Write")));
         assert!(grants.is_granted(&Capability::new("agent:agency-agents/researcher")));
         assert!(!grants.is_granted(&Capability::new("agent:other/researcher")));
+    }
+
+    /// ADR-046 trust+audit: pin the v1 high-power classification
+    /// so future additions are deliberate. If a new capability
+    /// kind crosses the line, this test fails until the operator
+    /// confirms the user-visible warning should fire.
+    #[test]
+    fn is_high_power_classification_v1() {
+        // Mutating tools + shell exec are high-power.
+        assert!(Capability::new("tool:Bash").is_high_power());
+        assert!(Capability::new("tool:Write").is_high_power());
+        assert!(Capability::new("tool:Edit").is_high_power());
+        // Read-only tool is NOT high-power.
+        assert!(!Capability::new("tool:Read").is_high_power());
+        // Bare egress / authority-domain prefixes are high-power.
+        assert!(Capability::new("network").is_high_power());
+        assert!(Capability::new("tunnel:create").is_high_power());
+        assert!(Capability::new("filesystem.read:/etc").is_high_power());
+        assert!(Capability::new("principal:write_identity").is_high_power());
+        assert!(Capability::new("runtime:trust").is_high_power());
+        // Skill / agent grants are low-power.
+        assert!(!Capability::new("skill:github").is_high_power());
+        assert!(!Capability::new("agent:researcher").is_high_power());
+        // Capability with no `:` separator and not "network" is
+        // low-power (catches the unknown-bare-name case).
+        assert!(!Capability::new("something").is_high_power());
     }
 
     #[test]

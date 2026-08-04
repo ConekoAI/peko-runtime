@@ -163,10 +163,10 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export KIMI_API_KEY="your-kimi-key"
 ```
 
-### 2. Add a Provider
+### 2. Add a Model
 
 ```bash
-./target/release/peko provider add openai --template openai --default
+./target/release/peko model add --template openai --model gpt-4o --key "$OPENAI_API_KEY"
 ```
 
 ### 3. Create a Principal
@@ -364,7 +364,7 @@ For the full option set, see the [CLI Reference](CLI_REFERENCE.md#cron--principa
 **Solution:**
 - Check the Principal exists: `peko principal list`
 - Verify your API key is set: `echo $OPENAI_API_KEY`
-- Check a provider is configured: `peko provider get-default`
+- Check a model is configured: `peko model list`
 - Check the Principal configuration: `peko principal show my-principal`
 
 ### API Key Errors

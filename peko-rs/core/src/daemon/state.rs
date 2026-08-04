@@ -224,40 +224,6 @@ pub(crate) struct AppState {
     /// Rate limiter (ADR-034)
     rate_limiter: Option<peko_auth::rate_limit::RateLimiter>,
 
-    /// Session-group IPC auth table (ADR-045 PR #1).
-    ///
-    /// Maps Unix process session IDs (`getsid(pid)`) to authorization
-    /// entries. When `auth_session_required` is true, an IPC connection
-    /// from a peer whose SID is not in this table is rejected before
-    /// credential resolution. Defaults to false (opportunistic lookup);
-    /// PR #2 introduces `peko auth` and flips the default to true.
-    auth_table: Arc<crate::ipc::auth::AuthTable>,
-
-    /// Whether missing auth-table entries should be rejected.
-    ///
-    /// Defaults to false. When true, the IPC accept path requires the
-    /// connecting peer's session group to be in `auth_table`. Configured
-    /// via `PEKO_AUTH_SESSION_REQUIRED=1` (PR #1 dev flag; PR #2 flips
-    /// the production default).
-    auth_session_required: bool,
-
-    /// Daemon-side bootstrap-code state (ADR-045 PR #2).
-    ///
-    /// Built once at daemon startup from the diceware code emitted
-    /// to stderr + `~/.peko/run/auth-code`. Setter is called from
-    /// `Daemon::run` after the code is generated. The `AuthSubmit`
-    /// handler reads this on every first-time enrollment request.
-    auth_bootstrap: Arc<std::sync::Mutex<Option<crate::ipc::auth_bootstrap::AuthCodeState>>>,
-
-    /// In-memory service token (ADR-045 PR #2 step 2).
-    ///
-    /// Generated at daemon startup and preauthorized for the daemon's
-    /// own SID via `auth_table.authorize_service`. Internal clients
-    /// (cron adapter, etc.) take this token explicitly when
-    /// constructing `DaemonClient`. The token is never persisted to
-    /// disk — daemon restart rotates it.
-    service_token: Arc<std::sync::RwLock<Option<String>>>,
-
     /// Tunnel cancellation token — set when tunnel is active
     tunnel_cancel: Arc<RwLock<Option<tokio_util::sync::CancellationToken>>>,
 
@@ -296,33 +262,6 @@ pub(crate) struct AppState {
     /// every operation is hash-map-only, no `.await` is held across
     /// the lock. See `src/tunnel/a2a_pending.rs:53-55`.
     streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>>,
-
-    /// **ADR-045 PR #3.** Durable in-memory queue of self-modification
-    /// requests submitted by agents via the `peko_self` tool. The
-    /// `peko_self` tool calls `request_self_modify` on the
-    /// `DaemonApi` impl below, which delegates here. PR #4 adds the
-    /// `peko pending list/decide` CLI command and wires
-    /// `rehydrate()` into daemon startup.
-    approval_queue: Arc<crate::daemon::approval_queue::ApprovalQueue>,
-    /// ADR-045 PR #4 step 1: executes approved `SelfModifyOp`s.
-    /// Wraps the approval_queue + a narrowed host trait so callers
-    /// (IPC handler in PR #4 step 2, future cron engines) don't
-    /// import `AppState` directly.
-    ///
-    /// Lazy because the host impl needs `&AppState` (chicken-and-egg
-    /// with `Self { ... }`). Populated via `set_approval_engine()`
-    /// at the end of `build_internal`. `approval_engine()` returns
-    /// a `None` placeholder until then; the IPC handler isn't reachable
-    /// until `Daemon::run` starts, by which point the engine is set.
-    approval_engine: Arc<std::sync::OnceLock<Arc<crate::daemon::approval_engine::ApprovalEngine>>>,
-
-    /// **ADR-045 PR #5.** Named, persistent service-token store.
-    /// Wraps `<data_dir>/runtime/service.tokens/<name>/{meta.json,token}`.
-    /// Populated by `build_internal` after `PathResolver::ensure_dirs`.
-    /// Rehydrated at daemon startup (PR #5 step 1); mutations
-    /// (`peko service-token create|revoke`) flow through the IPC
-    /// handler in PR #5 step 2.
-    service_token_store: Arc<crate::storage::service_token_store::ServiceTokenStore>,
 
     /// Slot for the live outbound tunnel handle. The
     /// `TunnelDispatcher` writes the freshest handle on every
@@ -515,7 +454,7 @@ impl AppState {
     }
 
     #[cfg(test)]
-    pub(crate) async fn build_for_test(
+    async fn build_for_test(
         workspace_path: PathBuf,
         host: String,
         port: u16,
@@ -552,18 +491,6 @@ impl AppState {
             data_dir.clone(),
             cache_dir.clone(),
         );
-
-        // ADR-045 PR #3 step 3: eagerly create the on-disk layout so
-        // the pending-requests bucket exists by the time the integration
-        // test inspects it after `DaemonGuard::spawn`. Previously this
-        // was lazy — the bucket appeared only when the first `peko_self`
-        // call hit `ApprovalQueue::insert`, which is too late for tests
-        // asserting the directory shape.
-        if let Err(e) = path_resolver.ensure_dirs() {
-            tracing::warn!(
-                "PathResolver::ensure_dirs failed at startup: {e} (continuing)"
-            );
-        }
 
         // Load the unified credential vault before identity/provider setup.
         // Wrap in Arc so both the daemon's SecretStore (passed to the
@@ -733,33 +660,6 @@ impl AppState {
 
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.
-        //
-        // ADR-045 PR #3 step 3: the `peko_self` tool is registered inside
-        // `ToolRuntime::with_workspace_and_core` via `register_builtins`,
-        // which reads `global_daemon_api()`. The global slot must be
-        // populated BEFORE this call — `AppState` is `let state = Self { ... }`
-        // below, so we wrap the freshly-constructed `ApprovalQueue` in
-        // `ApprovalQueueApi` (an `Arc<ApprovalQueue>`-shaped `DaemonApi`
-        // impl) and seed the slot here.
-        let approval_queue = crate::daemon::approval_queue::ApprovalQueue::new(
-            path_resolver_clone.pending_requests_dir(),
-            crate::daemon::approval_queue::DEFAULT_MAX_PENDING,
-        );
-
-        // ADR-045 PR #5: named, persistent service-token store.
-        // Bucket at `<data_dir>/runtime/service.tokens/`, ensured by
-        // `PathResolver::ensure_dirs()` earlier in `build_internal`.
-        let service_token_store = Arc::new(
-            crate::storage::service_token_store::ServiceTokenStore::new(
-                path_resolver_clone.service_tokens_dir(),
-            ),
-        );
-
-        crate::daemon::api::init_global_daemon_api(Arc::new(
-            crate::daemon::approval_queue::ApprovalQueueApi::new(Arc::clone(&approval_queue)),
-        )
-            as Arc<dyn crate::daemon::api::DaemonApi>);
-
         let tool_runtime = Arc::new(
             ToolRuntime::with_workspace_and_core(
                 path_resolver_clone.clone(),
@@ -848,7 +748,15 @@ impl AppState {
 
         // Observability hub is constructed early so it can be shared with the
         // PrincipalManager and threaded through to subagent spawn audit events.
-        let observability = Arc::new(Observability::new("api"));
+        // ADR-046 trust + audit: write to JSONL sink rooted at
+        // `<data_dir>/runtime/audit` so audit events survive daemon
+        // restarts and are queryable via `peko audit tail`. Construction
+        // is fail-fast: if the audit dir can't be created, the daemon
+        // refuses to start — an un-audited daemon is worse than no daemon.
+        let observability = Arc::new(Observability::with_audit_dir(
+            "api",
+            path_resolver.audit_dir(),
+        )?);
 
         // Initialize the PrincipalManager and load any existing principals.
         // This happens after the extension manager is built so we can inject
@@ -971,7 +879,7 @@ impl AppState {
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
 
-        let state = Self {
+        Ok(Self {
             started_at: SystemTime::now(),
             workspace_path,
             config_dir,
@@ -1031,10 +939,6 @@ impl AppState {
             api_key_verifier,
             jwt_validator,
             rate_limiter,
-            auth_table: crate::ipc::auth::AuthTable::new(),
-            auth_session_required: parse_auth_session_required(),
-            auth_bootstrap: Arc::new(std::sync::Mutex::new(None)),
-            service_token: Arc::new(std::sync::RwLock::new(None)),
             tunnel_cancel: Arc::new(RwLock::new(None)),
             tunnel_connected: Arc::new(RwLock::new(false)),
             tunnel_dispatcher: Arc::new(RwLock::new(None)),
@@ -1048,61 +952,8 @@ impl AppState {
             // the dispatcher's handle-publisher on every reconnect.
             pending_a2a_responses,
             streaming_runs,
-            // ADR-045 PR #3: durable self-modify queue. The
-            // `approval_queue` Arc was constructed earlier (before
-            // `ToolRuntime::with_workspace_and_core`) so the global
-            // `DaemonApi` slot could be seeded with an
-            // `ApprovalQueueApi` adapter. Move the same Arc here.
-            approval_queue,
-            // ADR-045 PR #4 step 1: lazy cell — populated by
-            // `set_approval_engine` below once `state` is fully
-            // built and can hand out `&self` to the host impl.
-            approval_engine: Arc::new(std::sync::OnceLock::new()),
-            service_token_store,
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
-        };
-
-        // ── ADR-045 PR #4 step 1: wire up the engine now that `state`
-        // exists. The host impl needs `&AppState` for capability-grant
-        // delegation; we couldn't pass it during `Self { ... }` above
-        // because Rust's borrow checker won't let us move a half-built
-        // struct into a trait object that's also referenced by a field
-        // of that struct.
-        let host: Arc<dyn crate::daemon::approval_engine::ApprovalExecutionHost> =
-            Arc::new(state.clone());
-        let engine = crate::daemon::approval_engine::ApprovalEngine::new(
-            Arc::clone(&state.approval_queue),
-            host,
-        );
-        // Rehydrate pending requests from disk so user decisions
-        // survive daemon restart (upgrade, crash, etc.). The queue
-        // was constructed above with `persist_root` already on disk;
-        // `rehydrate` is idempotent (re-reads the same files).
-        match state.approval_queue.rehydrate() {
-            Ok(loaded) => tracing::info!(
-                approval_queue_rehydrated = loaded,
-                "ApprovalQueue::rehydrate() loaded pending requests from disk"
-            ),
-            Err(e) => tracing::warn!(
-                error = %e,
-                "ApprovalQueue::rehydrate() failed; in-memory map is empty"
-            ),
-        }
-        state
-            .approval_engine
-            .set(Arc::new(engine))
-            .expect("approval_engine OnceLock unset at end of build_internal");
-
-        Ok(state)
-    }
-
-    /// Internal setter used by `build_internal` only. Public for tests.
-    #[cfg(test)]
-    pub(crate) fn set_approval_engine_for_test(
-        &self,
-        engine: Arc<crate::daemon::approval_engine::ApprovalEngine>,
-    ) {
-        let _ = self.approval_engine.set(engine);
+        })
     }
 
     /// Get the current uptime in seconds
@@ -1386,107 +1237,6 @@ impl AppState {
     #[must_use]
     pub fn rate_limiter(&self) -> Option<peko_auth::rate_limit::RateLimiter> {
         self.rate_limiter.clone()
-    }
-
-    /// Access the session-group auth table (ADR-045 PR #1).
-    pub fn auth_table(&self) -> Arc<crate::ipc::auth::AuthTable> {
-        Arc::clone(&self.auth_table)
-    }
-
-    /// Whether session-group auth is required for IPC connections.
-    /// False in PR #1 (dev-flag opt-in); PR #2 flips to true.
-    pub fn auth_session_required(&self) -> bool {
-        self.auth_session_required
-    }
-
-    /// Access the daemon-side bootstrap-code state (ADR-045 PR #2).
-    ///
-    /// `None` until `Daemon::run` has generated the startup diceware
-    /// code and called `set_auth_bootstrap`. AuthSubmit handler
-    /// reads this on every first-time enrollment request.
-    #[must_use]
-    pub fn auth_bootstrap(
-        &self,
-    ) -> Arc<std::sync::Mutex<Option<crate::ipc::auth_bootstrap::AuthCodeState>>> {
-        Arc::clone(&self.auth_bootstrap)
-    }
-
-    /// Set the daemon-side bootstrap-code state after code generation.
-    ///
-    /// Called from `Daemon::run` once the diceware code has been
-    /// emitted to stderr + `~/.peko/run/auth-code`. Replaces any
-    /// previously-set state (only one code is alive per daemon
-    /// process).
-    pub fn set_auth_bootstrap(&self, state: crate::ipc::auth_bootstrap::AuthCodeState) {
-        *self.auth_bootstrap.lock().expect("auth bootstrap poisoned") = Some(state);
-    }
-
-    /// **ADR-045 PR #3.** Borrow the in-memory approval queue.
-    ///
-    /// Used by the `peko_self` tool to enqueue requests via
-    /// `DaemonApi::request_self_modify` (impl below) and by
-    /// `peko pending list/decide` (PR #4). The accessor returns an
-    /// `Arc` so callers can hold the queue across `.await` without
-    /// borrowing `AppState` for the entire duration.
-    #[must_use]
-    pub fn approval_queue(
-        &self,
-    ) -> Arc<crate::daemon::approval_queue::ApprovalQueue> {
-        Arc::clone(&self.approval_queue)
-    }
-
-    /// Access the `ApprovalEngine` (ADR-045 PR #4 step 1).
-    ///
-    /// The engine owns the post-decision execution flow: it applies
-    /// the queue's decision and then runs the privileged op via the
-    /// narrowed [`ApprovalExecutionHost`] trait.
-    ///
-    /// Returns `None` before `build_internal` finishes wiring the
-    /// lazy cell (i.e. only in pathological pre-startup paths — the
-    /// IPC handler isn't reachable until `Daemon::run` starts, by
-    /// which point this is always set).
-    #[must_use]
-    pub fn approval_engine(
-        &self,
-    ) -> Option<Arc<crate::daemon::approval_engine::ApprovalEngine>> {
-        self.approval_engine.get().cloned()
-    }
-
-    /// Access the named service-token store (ADR-045 PR #5).
-    ///
-    /// The store wraps `<data_dir>/runtime/service.tokens/<name>/`
-    /// and is the source of truth for token metadata on disk. The
-    /// in-memory cache for auth-time lookup lives on
-    /// [`crate::ipc::auth::AuthTable`].
-    #[must_use]
-    pub fn service_token_store(
-        &self,
-    ) -> Arc<crate::storage::service_token_store::ServiceTokenStore> {
-        Arc::clone(&self.service_token_store)
-    }
-
-    /// Access the in-memory service token (ADR-045 PR #2 step 2).
-    ///
-    /// `None` until `Daemon::run` has generated the service token and
-    /// called `set_service_token`. Internal clients take this value
-    /// explicitly when constructing `DaemonClient` to authenticate
-    /// against the daemon's own preauthorized SID.
-    #[must_use]
-    pub fn service_token(&self) -> Option<String> {
-        self.service_token
-            .read()
-            .expect("service token poisoned")
-            .clone()
-    }
-
-    /// Set the in-memory service token (ADR-045 PR #2 step 2).
-    ///
-    /// Called from `Daemon::run` immediately after the token is
-    /// generated. The token is also preauthorized for the daemon's
-    /// own SID via `auth_table.authorize_service` at the same point
-    /// in startup.
-    pub fn set_service_token(&self, token: String) {
-        *self.service_token.write().expect("service token poisoned") = Some(token);
     }
 
     /// Build a `StarterContext` for use by runtime starters.
@@ -2302,44 +2052,6 @@ impl crate::ipc::handlers::auth::AuthHost for AppState {
     }
 }
 
-/// ADR-045 PR #4: the `approval` IPC handler reaches the
-/// `ApprovalEngine` via this narrow port. The handler stays
-/// uninitialized until `AppState::build_internal` finishes wiring;
-/// during that brief window the handler returns `None` to the
-/// caller with a clear "engine not ready" error.
-impl crate::ipc::handlers::approval::ApprovalHost for AppState {
-    fn approval_engine(
-        &self,
-    ) -> Option<Arc<crate::daemon::approval_engine::ApprovalEngine>> {
-        AppState::approval_engine(self)
-    }
-
-    fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry> {
-        &self.inbox_registry
-    }
-}
-
-/// ADR-045 PR #5: the `service_token` IPC handler reaches the
-/// on-disk store + in-memory auth table via this narrow port.
-/// Strict-gate authorization happens *before* the handler runs
-/// (server.rs), so by the time `handle()` is invoked the caller
-/// is already an authorized interactive session.
-impl crate::ipc::handlers::service_token::ServiceTokenHost for AppState {
-    fn service_token_store(
-        &self,
-    ) -> Arc<crate::storage::service_token_store::ServiceTokenStore> {
-        AppState::service_token_store(self)
-    }
-
-    fn auth_table(&self) -> Arc<crate::ipc::auth::AuthTable> {
-        AppState::auth_table(self)
-    }
-
-    fn observability(&self) -> Arc<Observability> {
-        AppState::observability(self)
-    }
-}
-
 /// F7 third narrow handle: the port the `tool` IPC domain handler uses
 /// to reach the async task executor, tool runtime, principal manager,
 /// and extension store. Trait lives in `ipc::handlers::tool`. All
@@ -2363,10 +2075,6 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
     fn async_task_executor(&self) -> Arc<AsyncExecutor> {
         self.async_task_executor.clone()
     }
-
-    fn observability(&self) -> Arc<Observability> {
-        AppState::observability(self)
-    }
 }
 
 /// F7 fifth narrow handle: the port the `capability` IPC domain handler
@@ -2382,6 +2090,15 @@ impl crate::ipc::handlers::capability::CapabilityHost for AppState {
 
     fn extension_store(&self) -> &Arc<ExtensionStore> {
         AppState::extension_store(self)
+    }
+
+    /// ADR-046: grant audit events are emitted from the
+    /// capability handler. Returns the Observability hub by
+    /// cheap Arc clone — same shape as the existing `observability`
+    /// accessor at line 1985, just lifted onto the trait surface
+    /// the handler imports.
+    fn observability(&self) -> Arc<Observability> {
+        AppState::observability(self)
     }
 }
 
@@ -2580,6 +2297,40 @@ fn model_summary_from_config(
         requires_key: entry.requires_key,
         is_local: !entry.requires_key,
         enabled: entry.enabled,
+        // PR 1 / `feature/model-first-config`: forward the
+        // declarative spec so the desktop can gate the image
+        // attachment picker, tool toggle, thinking toggle, JSON
+        // toggle, etc. without hard-coding per-model branches.
+        spec: entry.spec.map(model_spec_to_wire),
+    }
+}
+
+/// PR 1 / `feature/model-first-config`: project the
+/// `peko_providers::spec::ModelSpec` into the IPC mirror. Lives
+/// at module scope so the future gallery rework (PR 4) can reuse it
+/// when shaping "Recommended" / "By facet" lists.
+fn model_spec_to_wire(spec: peko_providers::spec::ModelSpec) -> crate::ipc::packet::ModelSpec {
+    use crate::ipc::packet::{ModelPricingHint, ModelThinkingMode, ModelToolSupport};
+    crate::ipc::packet::ModelSpec {
+        image_input: spec.image_input,
+        audio_input: spec.audio_input,
+        tool_support: match spec.tool_support {
+            peko_providers::spec::ToolSupport::None => ModelToolSupport::None,
+            peko_providers::spec::ToolSupport::FunctionCalling => ModelToolSupport::FunctionCalling,
+            peko_providers::spec::ToolSupport::Full => ModelToolSupport::Full,
+        },
+        streaming: spec.streaming,
+        thinking: match spec.thinking {
+            peko_providers::spec::ThinkingMode::Disabled => ModelThinkingMode::Disabled,
+            peko_providers::spec::ThinkingMode::Optional => ModelThinkingMode::Optional,
+            peko_providers::spec::ThinkingMode::Required => ModelThinkingMode::Required,
+            peko_providers::spec::ThinkingMode::CustomBudget => ModelThinkingMode::CustomBudget,
+        },
+        json_mode: spec.json_mode,
+        pricing: spec.pricing.map(|p| ModelPricingHint {
+            input_per_million: p.input_per_million,
+            output_per_million: p.output_per_million,
+        }),
     }
 }
 
@@ -2736,6 +2487,7 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 compat: None,
+                spec: None,
             }
         } else {
             // Bare-invocation guard. The handler also short-circuits
@@ -2967,6 +2719,18 @@ impl crate::ipc::handlers::persona::PersonaHost for AppState {
     }
 }
 
+/// ADR-046 trust+audit: the port the `audit` IPC domain handler
+/// uses. Sync because reading the in-memory audit ring buffer is
+/// just an Arc clone over the bounded VecDeque — the daemon's
+/// `get_audit_log` is internally cheap. (The handler itself is
+/// async because `RequestHandler::handle` is async, but the host
+/// port here is sync to match the read-only `get_audit_log` API.)
+impl crate::ipc::handlers::audit::AuditHost for AppState {
+    fn observability(&self) -> Arc<Observability> {
+        Arc::clone(&self.observability)
+    }
+}
+
 /// F7 thirteenth narrow handle: the port the `credential` IPC domain
 /// handler uses. Trait lives in `ipc::handlers::credential`. Sync
 /// because reading the in-memory vault (`Vault::list_providers` +
@@ -2975,6 +2739,14 @@ impl crate::ipc::handlers::persona::PersonaHost for AppState {
 /// the generic vault API (`Vault::list_credentials`,
 /// `Vault::set_credential`, `Vault::delete_credential`) and the IPC
 /// wire types in `crate::ipc::packet`.
+///
+/// PR 3 / `feature/model-first-config` adds the catalog join used to
+/// populate `CredentialRow::is_referenced` / `referenced_by`, the
+/// `force` flag on `delete_credential`, and the `replace_on` flag on
+/// `set_credential`. The catalog is read through
+/// `peko_providers::catalog::ModelCatalog` — the same instance the
+/// resolver uses, so any mutation is reflected here without a reload.
+#[async_trait::async_trait]
 impl crate::ipc::handlers::credential::CredentialHost for AppState {
     fn list_credentials(
         &self,
@@ -2999,6 +2771,11 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
                 last_tested_at: summary.last_tested_at.map(|dt| dt.to_rfc3339()),
                 last_tested_ok: summary.last_tested_ok,
                 system_owned: summary.system_owned,
+                // `is_referenced` / `referenced_by` populated by the
+                // handler from `credential_references()` after this
+                // returns, so the row stays "flat" here.
+                is_referenced: false,
+                referenced_by: Vec::new(),
             })
             .collect()
     }
@@ -3024,14 +2801,15 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
         self.vault.get_credential(id).map(|c| c.material)
     }
 
-    fn set_credential(
+    async fn set_credential(
         &self,
         namespace: &str,
         name: &str,
         kind: crate::common::vault::CredentialKind,
         material: &secrecy::SecretString,
         metadata: Option<serde_json::Value>,
-    ) -> anyhow::Result<String> {
+        replace_on: Option<&str>,
+    ) -> anyhow::Result<(String, u32)> {
         // Reuse the existing credential id when overwriting the same
         // (namespace, name) slot so rotation bindings remain valid.
         let mut credential = crate::common::vault::Credential::now(
@@ -3053,17 +2831,101 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
         {
             credential.id = existing.id;
         }
-        let id = credential.id.clone();
+        let new_id = credential.id.clone();
         self.vault.set_credential(&credential).map_err(|e| {
             anyhow::anyhow!("vault refused to store credential '{namespace}/{name}': {e}")
         })?;
-        Ok(id)
+
+        // PR 3: bulk-rewire dependents when `--replace-on` was
+        // supplied. Only count rewires that actually happened;
+        // unknown `old_id` is a no-op (rewired_models = 0).
+        let rewired = if let Some(old_id) = replace_on {
+            if old_id == new_id {
+                0
+            } else {
+                self.resolver
+                    .catalog()
+                    .rewire_credential(old_id, &new_id)
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "vault stored credential but catalog rewire failed: {e}"
+                        )
+                    })?
+            }
+        } else {
+            0
+        };
+
+        Ok((new_id, rewired as u32))
     }
 
-    fn delete_credential(&self, id: &str) -> anyhow::Result<bool> {
+    async fn delete_credential(
+        &self,
+        id: &str,
+        force: bool,
+    ) -> anyhow::Result<crate::ipc::handlers::credential::CredentialDeleteOutcome> {
+        // PR 3: refuse if dependents exist and force is false.
+        let dependents = self
+            .resolver
+            .catalog()
+            .models_referencing(id)
+            .await
+            .into_iter()
+            .map(|e| model_summary_from_config(&e))
+            .collect::<Vec<_>>();
+        if !dependents.is_empty() && !force {
+            return Ok(
+                crate::ipc::handlers::credential::CredentialDeleteOutcome::InUse { dependents },
+            );
+        }
+
+        // Detach dependents (force path) before deleting the vault
+        // record so a partially-failed delete can't strand a model
+        // pointing at a missing credential.
+        let mut detached = 0u32;
+        if !dependents.is_empty() {
+            let entries = self.resolver.catalog().list_all().await;
+            for mut entry in entries {
+                if entry.credential_id.as_deref() == Some(id) {
+                    entry.credential_id = None;
+                    entry.updated_at = chrono::Utc::now();
+                    if let Err(e) = self.resolver.catalog().upsert(entry).await {
+                        // Surface the catalog failure so the caller
+                        // can retry — never silently leak orphans.
+                        return Err(anyhow::anyhow!(
+                            "catalog detach failed during credential delete: {e}"
+                        ));
+                    }
+                    detached += 1;
+                }
+            }
+        }
+
         self.vault
             .delete_credential(id)
-            .map_err(|e| anyhow::anyhow!("vault refused to delete credential '{id}': {e}"))
+            .map_err(|e| anyhow::anyhow!("vault refused to delete credential '{id}': {e}"))?;
+
+        Ok(
+            crate::ipc::handlers::credential::CredentialDeleteOutcome::Removed {
+                broken_references: detached,
+            },
+        )
+    }
+
+    async fn credential_references(&self) -> HashMap<String, Vec<crate::ipc::packet::ModelSummary>> {
+        let mut out: HashMap<String, Vec<crate::ipc::packet::ModelSummary>> = HashMap::new();
+        // Best-effort join: if the catalog is corrupt or unloaded we
+        // just don't decorate rows. The handler will still paint a
+        // list, just without the dependents badge.
+        for entry in self.resolver.catalog().list_all().await {
+            if let Some(cid) = entry.credential_id.clone() {
+                out.entry(cid)
+                    .or_default()
+                    .push(model_summary_from_config(&entry));
+            }
+        }
+        out
     }
 }
 
@@ -3210,330 +3072,10 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
     }
 }
 
-/// Parse `PEKO_AUTH_SESSION_REQUIRED` into a strict-mode boolean.
-///
-/// Read the value via `std::env` and delegate to [`parse_strict_mode`].
-/// `unset` defaults to `true` (PR #2 step 5 flipped the default).
-fn parse_auth_session_required() -> bool {
-    match std::env::var("PEKO_AUTH_SESSION_REQUIRED") {
-        Ok(v) => parse_strict_mode(Some(&v)),
-        Err(_) => parse_strict_mode(None),
-    }
-}
-
-/// Pure parser — given an `Option<&str>` for the env-var value,
-/// return whether strict mode is on. `None` (unset) → strict (true).
-///
-/// Accepted truthy spellings: `1`, `true`, `yes`, `on` (case
-/// insensitive, whitespace tolerant).
-///
-/// Accepted falsey spellings: `0`, `false`, `no`, `off`.
-///
-/// Invalid values warn and fall through to the secure default of
-/// `true` — strict mode is the post-PR #2 baseline and the only
-/// safe behavior when the operator's intent is ambiguous.
-fn parse_strict_mode(value: Option<&str>) -> bool {
-    let raw = match value {
-        Some(v) => v,
-        None => return true, // default ON
-    };
-
-    let normalized = raw.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "0" | "false" | "no" | "off" => false,
-        "1" | "true" | "yes" | "on" => true,
-        other => {
-            tracing::warn!(
-                target: "peko::auth",
-                "PEKO_AUTH_SESSION_REQUIRED={other:?} is unrecognized; \
-                 defaulting to strict (true). Use 0/false/no/off to \
-                 opt out for legacy/dev use."
-            );
-            true
-        }
-    }
-}
-
-// ============================================================================
-// ADR-045 PR #3: `DaemonApi` impl on `AppState`
-// ============================================================================
-//
-// The `peko_self` tool calls into this impl via the in-process
-// `Arc<dyn DaemonApi>` (not via IPC). The runtime thread
-// `CallerContext` carries the principal's identity; we extract the
-// `PrincipalId` and hand the validated op to the in-memory queue.
-//
-// **Meta-capability immutability** (ADR-045 §"Meta-capability
-// immutability") is enforced HERE, before the op reaches the queue:
-//   - `principal:*` / `runtime:*` → categorically rejected; the user
-//     must grant (if at all) from their terminal.
-//   - `tool:*` → categorically rejected; tool capabilities are
-//     user-grantable only — a principal cannot grow its own toolset
-//     via `peko_self`.
-//   - `invalid:format` → rejected (no `<domain>:<action>` colon).
-//
-// PR #4 adds the user-side `peko pending list/decide` command and
-// the `ApprovalEngine::execute(op)` that actually performs the
-// privileged work after the user decides. PR #3 ships the request
-// path only.
-
-#[async_trait::async_trait]
-impl crate::daemon::api::DaemonApi for AppState {
-    async fn request_self_modify(
-        &self,
-        op: crate::daemon::api::SelfModifyOp,
-        ctx: crate::daemon::api::SelfModifyContext,
-    ) -> Result<
-        crate::daemon::api::RequestId,
-        crate::daemon::api::SelfModifyError,
-    > {
-        // Delegate to the same `ApprovalQueueApi` adapter that backs
-        // the process-global `DaemonApi` slot. The meta-capability
-        // gate + queue insertion logic lives in `ApprovalQueueApi`
-        // (see `daemon/approval_queue.rs`) so the process-global
-        // representation and the `AppState` representation can't
-        // drift apart.
-        crate::daemon::approval_queue::ApprovalQueueApi::new(Arc::clone(&self.approval_queue))
-            .request_self_modify(op, ctx)
-            .await
-    }
-}
-
-/// ADR-045 PR #4 step 1 — `AppState` implements the narrowed
-/// `ApprovalExecutionHost` so `ApprovalEngine` can perform approved
-/// ops via `&AppState` without importing `AppState` directly.
-///
-/// **Scope cut**: only `GrantCapability` has a real implementation.
-/// The other three ops return `Err("not implemented yet (PR #4.5)")`
-/// — the engine wraps that as `ExecuteError::OpFailed` and the agent's
-/// session inbox surfaces the message verbatim. The stubs are
-/// intentionally callable so the delivery path can be exercised in
-/// tests; they fail loudly so users see "not implemented" instead of
-/// a silent success.
-#[async_trait::async_trait]
-impl crate::daemon::approval_engine::ApprovalExecutionHost for AppState {
-    async fn grant_capability(
-        &self,
-        _principal_id: peko_subject::PrincipalId,
-        _capability: String,
-    ) -> Result<serde_json::Value, String> {
-        // PR #4 step 1: stub. The real implementation threads through
-        // `principal_manager().update_config(...)` (mirroring
-        // `PrincipalGrantPermission` in `handlers/principal.rs:750`).
-        // That requires (a) the principal's existing config to mutate
-        // in-memory + persist, and (b) the capability to be in a form
-        // the `Capabilities` parser accepts. Both have edge cases
-        // (the principal might not exist yet under `system()` — the
-        // placeholder used by the engine's TODO) and are PR #4.5 work.
-        // For now we return a clearly-not-implemented error so the
-        // delivery path is testable end-to-end.
-        Err("grant_capability: real implementation is PR #4.5 work".into())
-    }
-
-    async fn install_extension(
-        &self,
-        _principal_id: peko_subject::PrincipalId,
-        package_ref: String,
-    ) -> Result<serde_json::Value, String> {
-        Err(format!(
-            "install_extension not implemented yet (PR #4.5); requested package_ref = {package_ref}"
-        ))
-    }
-
-    async fn edit_agent_config(
-        &self,
-        _principal_id: peko_subject::PrincipalId,
-        path: String,
-        _new_content: String,
-    ) -> Result<serde_json::Value, String> {
-        Err(format!(
-            "edit_agent_config not implemented yet (PR #4.5); requested path = {path}"
-        ))
-    }
-
-    async fn edit_cron_schedule(
-        &self,
-        _principal_id: peko_subject::PrincipalId,
-        job_id: String,
-        _new_schedule: String,
-    ) -> Result<serde_json::Value, String> {
-        Err(format!(
-            "edit_cron_schedule not implemented yet (PR #4.5); requested job_id = {job_id}"
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
-
-    /// Pure-parser tests: `parse_strict_mode` doesn't touch the env
-    /// (avoids cross-test races on `PEKO_AUTH_SESSION_REQUIRED`).
-    #[test]
-    fn auth_session_required_default_is_true() {
-        // Unset env → secure default of true.
-        assert!(parse_strict_mode(None));
-    }
-
-    #[test]
-    fn auth_session_required_falsey_spellings() {
-        for v in &["0", "false", "no", "off", "FALSE", " No ", "OFF"] {
-            assert!(!parse_strict_mode(Some(v)), "{v} should disable");
-        }
-    }
-
-    #[test]
-    fn auth_session_required_truthy_spellings() {
-        for v in &["1", "true", "yes", "on", "TRUE", " Yes ", "ON"] {
-            assert!(parse_strict_mode(Some(v)), "{v} should enable");
-        }
-    }
-
-    #[test]
-    fn auth_session_required_invalid_defaults_strict() {
-        // Garbage falls back to strict (fail-closed).
-        assert!(parse_strict_mode(Some("maybe")));
-        assert!(parse_strict_mode(Some("")));
-    }
-
-    // ============================================================
-    // ADR-045 PR #3 — DaemonApi impl on AppState
-    // ============================================================
-    //
-    // The structural defense for meta-capability immutability lives
-    // in `DaemonApi for AppState::request_self_modify`. These tests
-    // pin the contract: `principal:*`, `runtime:*`, `tool:*`, and
-    // malformed capability strings are rejected BEFORE the queue;
-    // a non-meta capability (e.g. `fs:read`) is queued durably.
-
-    use crate::daemon::api::{DaemonApi, SelfModifyContext, SelfModifyOp};
-    use peko_subject::PrincipalId;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-
-    fn principal() -> PrincipalId {
-        PrincipalId::system().clone()
-    }
-
-    fn ctx() -> SelfModifyContext {
-        SelfModifyContext::for_principal(principal())
-    }
-
-    #[tokio::test]
-    async fn daemon_api_rejects_principal_meta_capability() {
-        let state = create_test_state().await;
-        let api: &dyn DaemonApi = &state;
-        let op = SelfModifyOp::GrantCapability {
-            capability: "principal:create".into(),
-            reason: "test".into(),
-        };
-        let err = api.request_self_modify(op, ctx()).await.unwrap_err();
-        assert_eq!(
-            err,
-            crate::daemon::api::SelfModifyError::MetaCapabilityForbidden(
-                "principal:create".into(),
-            ),
-            "principal:* must be categorically rejected",
-        );
-    }
-
-    #[tokio::test]
-    async fn daemon_api_rejects_runtime_meta_capability() {
-        let state = create_test_state().await;
-        let api: &dyn DaemonApi = &state;
-        let op = SelfModifyOp::GrantCapability {
-            capability: "runtime:control".into(),
-            reason: "test".into(),
-        };
-        let err = api.request_self_modify(op, ctx()).await.unwrap_err();
-        assert!(matches!(
-            err,
-            crate::daemon::api::SelfModifyError::MetaCapabilityForbidden(_),
-        ));
-    }
-
-    #[tokio::test]
-    async fn daemon_api_rejects_tool_capability() {
-        let state = create_test_state().await;
-        let api: &dyn DaemonApi = &state;
-        let op = SelfModifyOp::GrantCapability {
-            capability: "tool:Write".into(),
-            reason: "test".into(),
-        };
-        let err = api.request_self_modify(op, ctx()).await.unwrap_err();
-        assert_eq!(
-            err,
-            crate::daemon::api::SelfModifyError::ToolCapabilityNotSelfGrantable(
-                "tool:Write".into(),
-            ),
-        );
-    }
-
-    #[tokio::test]
-    async fn daemon_api_rejects_malformed_capability() {
-        let state = create_test_state().await;
-        let api: &dyn DaemonApi = &state;
-        // No colon.
-        let op = SelfModifyOp::GrantCapability {
-            capability: "badaction".into(),
-            reason: "test".into(),
-        };
-        let err = api.request_self_modify(op, ctx()).await.unwrap_err();
-        assert!(matches!(
-            err,
-            crate::daemon::api::SelfModifyError::InvalidCapabilityFormat(_),
-        ));
-        // Empty domain.
-        let op = SelfModifyOp::GrantCapability {
-            capability: ":action".into(),
-            reason: "test".into(),
-        };
-        let err = api.request_self_modify(op, ctx()).await.unwrap_err();
-        assert!(matches!(
-            err,
-            crate::daemon::api::SelfModifyError::InvalidCapabilityFormat(_),
-        ));
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn daemon_api_queues_non_meta_capability_and_persists() {
-        let state = create_test_state().await;
-        let api: &dyn DaemonApi = &state;
-        let op = SelfModifyOp::GrantCapability {
-            capability: "fs:read".into(),
-            reason: "agent needs file read".into(),
-        };
-        let id = api.request_self_modify(op, ctx()).await.unwrap();
-
-        // In-memory queue has the request.
-        let q = state.approval_queue();
-        let req = q.get(id).expect("request should be in queue");
-        assert_eq!(req.status, crate::daemon::approval_queue::ApprovalStatus::Pending);
-        assert_eq!(req.principal_id, principal());
-
-        // On-disk artifact exists and is mode 0600 (Unix only).
-        let path = q.artifact_path(id);
-        assert!(path.exists(), "artifact file must exist");
-        let meta = std::fs::metadata(&path).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
-    }
-
-    #[tokio::test]
-    async fn daemon_api_queues_install_extension_without_gate() {
-        // Install-extension requests don't pass through the meta-cap
-        // gate (no capability string to validate). They should land
-        // in the queue durably.
-        let state = create_test_state().await;
-        let api: &dyn DaemonApi = &state;
-        let op = SelfModifyOp::InstallExtension {
-            package_ref: "acme/foo@1.2.3".into(),
-            reason: "needs ext".into(),
-        };
-        let id = api.request_self_modify(op, ctx()).await.unwrap();
-        assert!(state.approval_queue().get(id).is_some());
-    }
 
     async fn create_test_state() -> AppState {
         let temp_dir = TempDir::new().unwrap();

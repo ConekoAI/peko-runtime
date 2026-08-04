@@ -28,7 +28,7 @@ use std::sync::Arc;
 // ============================================================================
 
 /// Configuration for built-in tool registration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BuiltinToolRegistrarConfig {
     /// Workspace directory for tools
     pub workspace_dir: PathBuf,
@@ -56,34 +56,6 @@ pub struct BuiltinToolRegistrarConfig {
     pub instance_id: Option<String>,
     /// List of disabled tool names
     pub disabled_tools: Vec<String>,
-    /// **ADR-045 PR #3.** `DaemonApi` handle the `peko_self` tool
-    /// uses to enqueue self-modification requests. `Some` enables
-    /// `peko_self`; `None` disables it (callers that don't need
-    /// self-modification — tests, embedders — set this explicitly).
-    pub daemon_api: Option<Arc<dyn crate::daemon::api::DaemonApi>>,
-}
-
-// Manual `Clone` because `Arc<dyn DaemonApi>` isn't `Clone` via derive.
-// The inner trait object IS `Clone`-able via `Arc::clone`, so this is
-// safe — `peko_self` registration reads from this handle once and the
-// runtime holds its own `Arc` independently.
-impl Clone for BuiltinToolRegistrarConfig {
-    fn clone(&self) -> Self {
-        Self {
-            workspace_dir: self.workspace_dir.clone(),
-            enable_granular_fs: self.enable_granular_fs,
-            enable_granular_write: self.enable_granular_write,
-            enable_shell: self.enable_shell,
-            enable_session_tools: self.enable_session_tools,
-            enable_cron: self.enable_cron,
-            enable_async_tools: self.enable_async_tools,
-            enable_task_tools: self.enable_task_tools,
-            enable_tool_search: self.enable_tool_search,
-            instance_id: self.instance_id.clone(),
-            disabled_tools: self.disabled_tools.clone(),
-            daemon_api: self.daemon_api.clone(),
-        }
-    }
 }
 
 impl Default for BuiltinToolRegistrarConfig {
@@ -100,7 +72,6 @@ impl Default for BuiltinToolRegistrarConfig {
             enable_tool_search: false,
             instance_id: None,
             disabled_tools: Vec::new(),
-            daemon_api: None,
         }
     }
 }
@@ -314,19 +285,6 @@ impl BuiltinToolAdapter {
         // AsyncSpawn and AsyncOutput are also per-agent for the same reason:
         // they depend on per-agent state (AsyncExecutor + ExtensionCore for
         // spawn-side lookups).
-
-        // ADR-045 PR #3: peko_self — agent-driven self-modify request
-        // path. Always-on unless explicitly disabled. The `daemon_api`
-        // handle is supplied via `BuiltinToolRegistrarConfig`; if it's
-        // `None` (tests / embedders that don't need the queue) the
-        // tool isn't registered and `peko_self` calls return a clean
-        // "tool not found" error rather than a half-wired panic.
-        if !disabled_set.contains("peko_self") {
-            if let Some(api) = config.daemon_api.as_ref() {
-                let tool = Arc::new(crate::tools::builtin::PekoSelfTool::new(api.clone()));
-                Self::register_tool_system(core, tool).await?;
-            }
-        }
 
         Ok(())
     }
