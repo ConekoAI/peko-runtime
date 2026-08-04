@@ -325,6 +325,9 @@ mod tests {
             output_tokens: output_limit,
             request_count: request_limit,
             cycle: QuotaCycle::Hourly,
+            // Phase 3 — cost fields default to None.
+            cost_per_call_max: None,
+            budget_per_cycle: None,
         };
         let meter = Arc::new(
             QuotaMeter::load_or_init(cfg, None, Utc::now())
@@ -420,6 +423,9 @@ mod tests {
             output_tokens: None,
             request_count: Some(0), // would trip on the first call
             cycle: QuotaCycle::Hourly,
+            // Phase 3 — cost fields default to None.
+            cost_per_call_max: None,
+            budget_per_cycle: None,
         };
         let meter = Arc::new(
             QuotaMeter::load_or_init(cfg, None, Utc::now())

@@ -278,6 +278,17 @@ impl AgentTool {
                 // `None` means the child inherits the parent's
                 // model — pre-Phase-1 behavior.
                 model_id: model.clone(),
+                // Phase 3 — conservative cost estimate from the
+                // chosen model's `PricingHint` and the 4K-in +
+                // 1K-out token projection. `None` when the
+                // principal has no `cost_per_call_max` or the
+                // model carries no pricing hint. The runtime
+                // knows what model is being spawned; the cost
+                // estimator is centralised on the runtime
+                // adapter so Phase 1's model resolution can
+                // populate this without touching this call
+                // site.
+                cost_estimate_usd: self.runtime.spawn_cost_estimate_usd(),
             })
             .await;
 

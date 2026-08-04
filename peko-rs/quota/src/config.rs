@@ -13,6 +13,11 @@
 //! output_tokens = 500_000
 //! request_count = 10_000
 //! cycle = "daily"
+//!
+//! # Phase 3 of `feature/multi-model-subagents`:
+//! # Per-call ceiling + cycle budget enforced in USD.
+//! cost_per_call_max = 0.50      # refuse spawns whose cost estimate exceeds this
+//! budget_per_cycle = 50.00      # aggregate cap across the cycle window
 //! ```
 //!
 //! ## `QuotaCycle`
@@ -32,7 +37,7 @@ use serde::{Deserialize, Serialize};
 /// All three limits are independent and optional. A `None` field
 /// means "unlimited for this dimension" — the meter will not check
 /// or trip on it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QuotaConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
@@ -42,6 +47,24 @@ pub struct QuotaConfig {
     pub request_count: Option<u64>,
     #[serde(default)]
     pub cycle: QuotaCycle,
+    /// Phase 3 of `feature/multi-model-subagents`: per-spawn cost
+    /// ceiling in USD. When `Some`, the spawn-time pre-flight
+    /// (`SubagentExecutor::execute_and_wait`) refuses any spawn
+    /// whose conservative cost estimate exceeds this. `None`
+    /// (default) ⇒ no per-call cap. `f64` because cost is
+    /// intrinsically fractional (cents/mtok arithmetic).
+    ///
+    /// `Eq`/`PartialEq` removed from the derive above because
+    /// `f64` does not implement `Eq`; comparisons use
+    /// `approx_eq` helpers in tests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_call_max: Option<f64>,
+    /// Phase 3 of `feature/multi-model-subagents`: cycle-window
+    /// USD budget. The meter sums per-call cost alongside the
+    /// existing token / request counters; once the running total
+    /// exceeds this, `try_charge` rejects. `None` ⇒ uncapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_per_cycle: Option<f64>,
 }
 
 impl QuotaConfig {
@@ -50,7 +73,11 @@ impl QuotaConfig {
     /// every call is free.
     #[must_use]
     pub fn has_any_limit(&self) -> bool {
-        self.input_tokens.is_some() || self.output_tokens.is_some() || self.request_count.is_some()
+        self.input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.request_count.is_some()
+            || self.cost_per_call_max.is_some()
+            || self.budget_per_cycle.is_some()
     }
 }
 
@@ -270,23 +297,58 @@ input_tokens = 1000000
 output_tokens = 500000
 request_count = 10000
 cycle = "weekly"
+cost_per_call_max = 0.50
+budget_per_cycle = 50.0
 "#;
         let cfg: QuotaConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.input_tokens, Some(1_000_000));
         assert_eq!(cfg.output_tokens, Some(500_000));
         assert_eq!(cfg.request_count, Some(10_000));
         assert_eq!(cfg.cycle, QuotaCycle::Weekly);
+        assert_eq!(cfg.cost_per_call_max, Some(0.50));
+        assert_eq!(cfg.budget_per_cycle, Some(50.0));
 
-        // Round-trip back to TOML.
+        // Round-trip back to TOML. Field-by-field comparison
+        // because `QuotaConfig` carries `f64` cost fields which
+        // don't implement `Eq`.
         let serialised = toml::to_string(&cfg).unwrap();
         let cfg2: QuotaConfig = toml::from_str(&serialised).unwrap();
-        assert_eq!(cfg, cfg2);
+        assert_eq!(cfg2.input_tokens, cfg.input_tokens);
+        assert_eq!(cfg2.output_tokens, cfg.output_tokens);
+        assert_eq!(cfg2.request_count, cfg.request_count);
+        assert_eq!(cfg2.cycle, cfg.cycle);
+        assert_eq!(cfg2.cost_per_call_max, cfg.cost_per_call_max);
+        assert_eq!(cfg2.budget_per_cycle, cfg.budget_per_cycle);
     }
 
     #[test]
     fn quota_config_toml_round_trip_empty_block_uses_default() {
         let cfg: QuotaConfig = toml::from_str("").unwrap();
-        assert_eq!(cfg, QuotaConfig::default());
+        // Field-by-field comparison for the same reason as above.
+        let default = QuotaConfig::default();
+        assert_eq!(cfg.input_tokens, default.input_tokens);
+        assert_eq!(cfg.output_tokens, default.output_tokens);
+        assert_eq!(cfg.request_count, default.request_count);
+        assert_eq!(cfg.cycle, default.cycle);
+        assert_eq!(cfg.cost_per_call_max, default.cost_per_call_max);
+        assert_eq!(cfg.budget_per_cycle, default.budget_per_cycle);
+    }
+
+    #[test]
+    fn quota_config_pre_phase_3_toml_loads_with_cost_fields_none() {
+        // Pre-Phase-3 configs don't carry the cost fields.
+        // `serde(default, skip_serializing_if = "Option::is_none")`
+        // on each new field means they parse cleanly with
+        // `None` rather than failing the read.
+        let toml_str = r#"
+input_tokens = 1000000
+output_tokens = 500000
+cycle = "daily"
+"#;
+        let cfg: QuotaConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.cost_per_call_max.is_none());
+        assert!(cfg.budget_per_cycle.is_none());
+        assert!(cfg.has_any_limit(), "legacy limits still apply");
     }
 
     #[test]

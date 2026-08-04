@@ -156,6 +156,20 @@ impl QuotaMeter {
                 });
             }
         }
+        // Phase 3 — cycle budget. `cost_usd` defaults to 0.0
+        // for pre-Phase-3 state files (the field is
+        // `Option<f64>` so we unwrap_or to keep the check
+        // backward-compatible).
+        if let Some(limit) = config.budget_per_cycle {
+            let used = state.cost_usd.unwrap_or(0.0);
+            if used > limit {
+                return Some(QuotaError::BudgetExceeded {
+                    used,
+                    limit,
+                    window_end: state.window_end,
+                });
+            }
+        }
         None
     }
 
@@ -174,6 +188,8 @@ impl QuotaMeter {
             state.input_tokens = 0;
             state.output_tokens = 0;
             state.request_count = 0;
+            // Phase 3 — reset cycle budget counter on roll.
+            state.cost_usd = Some(0.0);
             true
         } else {
             false
@@ -200,6 +216,8 @@ impl QuotaMeter {
                 state.input_tokens = 0;
                 state.output_tokens = 0;
                 state.request_count = 0;
+                // Phase 3 — reset cycle budget counter on roll.
+                state.cost_usd = Some(0.0);
             }
             // 2. Fold usage via the shared accumulate helper so
             //    cache and reasoning sub-fields flow into the same
@@ -250,6 +268,8 @@ impl QuotaMeter {
             state.input_tokens = 0;
             state.output_tokens = 0;
             state.request_count = 0;
+            // Phase 3 — reset cycle budget counter.
+            state.cost_usd = Some(0.0);
         }
         if let Some(path) = self.state_path.clone() {
             let snapshot = self
@@ -327,6 +347,8 @@ impl QuotaMeter {
             state.input_tokens = 0;
             state.output_tokens = 0;
             state.request_count = 0;
+            // Phase 3 — reset cycle budget counter on roll.
+            state.cost_usd = Some(0.0);
         }
         state.input_tokens = state.input_tokens.saturating_add(usage.input);
         state.output_tokens = state.output_tokens.saturating_add(usage.output);
@@ -337,6 +359,101 @@ impl QuotaMeter {
         } else {
             Ok(())
         }
+    }
+
+    /// Phase 3 of `feature/multi-model-subagents`: streaming
+    /// variant of [`try_charge`](Self::try_charge) that folds the
+    /// per-call USD cost into the cycle budget. Sync, no I/O —
+    /// callers are the `StackedMeteredProvider` streaming path
+    /// that intercepts `StreamEvent::Usage` events. The pre-call
+    /// per-spawn ceiling (`cost_per_call_max`) is enforced at
+    /// the spawn site, not here.
+    ///
+    /// Cost is computed by the caller via
+    /// `cost = input_per_million * input_tokens / 1e6 + output_per_million * output_tokens / 1e6`.
+    /// The meter only folds the resulting scalar.
+    pub fn try_charge_with_cost(
+        &self,
+        usage: &TokenUsage,
+        cost_usd: f64,
+    ) -> Result<(), QuotaError> {
+        let mut state = self.state.lock().expect("quota state mutex poisoned");
+        let config_cycle = self.config.lock().expect("quota config poisoned").cycle;
+        let drift = state.cycle != config_cycle;
+        let now = Utc::now();
+        if drift || now >= state.window_end {
+            let (start, end) = config_cycle.window_bounds(now);
+            state.window_start = start;
+            state.window_end = end;
+            state.cycle = config_cycle;
+            state.input_tokens = 0;
+            state.output_tokens = 0;
+            state.request_count = 0;
+            state.cost_usd = Some(0.0);
+        }
+        state.input_tokens = state.input_tokens.saturating_add(usage.input);
+        state.output_tokens = state.output_tokens.saturating_add(usage.output);
+        state.request_count = state.request_count.saturating_add(1);
+        state.cost_usd = Some(state.cost_usd.unwrap_or(0.0) + cost_usd);
+        let config = self.config.lock().expect("quota config poisoned");
+        if let Some(err) = Self::check_inner(&config, &state) {
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Blocking variant of [`try_charge_with_cost`](Self::try_charge_with_cost)
+    /// for the `StackedMeteredProvider::chat_with_tools` path
+    /// (the streaming variant mirrors it). Persists to disk on
+    /// success — same contract as [`charge`](Self::charge).
+    pub async fn charge_with_cost(
+        &self,
+        usage: &TokenUsage,
+        cost_usd: f64,
+    ) -> Result<(), QuotaError> {
+        // Advance + fold (mirrors `charge`).
+        {
+            let mut state = self.state.lock().expect("quota state mutex poisoned");
+            let config_cycle = self.config.lock().expect("quota config poisoned").cycle;
+            let drift = state.cycle != config_cycle;
+            let now = Utc::now();
+            if drift || now >= state.window_end {
+                let (start, end) = config_cycle.window_bounds(now);
+                state.window_start = start;
+                state.window_end = end;
+                state.cycle = config_cycle;
+                state.input_tokens = 0;
+                state.output_tokens = 0;
+                state.request_count = 0;
+                state.cost_usd = Some(0.0);
+            }
+            state.input_tokens = state.input_tokens.saturating_add(usage.input);
+            state.output_tokens = state.output_tokens.saturating_add(usage.output);
+            state.request_count = state.request_count.saturating_add(1);
+            state.cost_usd = Some(state.cost_usd.unwrap_or(0.0) + cost_usd);
+        }
+        // Re-check under the lock.
+        let exceeded = {
+            let state = self.state.lock().expect("quota state mutex poisoned");
+            let config = self.config.lock().expect("quota config poisoned");
+            Self::check_inner(&config, &state)
+        };
+        if let Some(err) = exceeded {
+            return Err(err);
+        }
+        // Persist on success — same path as `charge`.
+        if let Some(path) = self.state_path.clone() {
+            let snapshot = self
+                .state
+                .lock()
+                .expect("quota state mutex poisoned")
+                .clone();
+            if let Err(e) = snapshot.save(&path).await {
+                tracing::warn!("failed to persist quota state to {}: {}", path.display(), e);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -359,6 +476,9 @@ mod tests {
             output_tokens: output,
             request_count: requests,
             cycle: QuotaCycle::Hourly,
+            // Phase 3 — legacy tests don't exercise cost fields.
+            cost_per_call_max: None,
+            budget_per_cycle: None,
         }
     }
 
@@ -618,6 +738,186 @@ mod tests {
                 .unwrap();
         }
         assert!(!meter.is_exhausted());
+    }
+
+    #[test]
+    fn try_charge_with_cost_folds_into_cycle_budget() {
+        // Phase 3 — `try_charge_with_cost` is the streaming variant.
+        // Three calls of $0.40 each sum to $1.20 against a
+        // $1.00 cycle budget; the third trip.
+        let cfg_with_budget = QuotaConfig {
+            input_tokens: None,
+            output_tokens: None,
+            request_count: None,
+            cycle: QuotaCycle::Hourly,
+            cost_per_call_max: None,
+            budget_per_cycle: Some(1.0),
+        };
+        let meter = QuotaMeter::new(cfg_with_budget, None, ts(2026, 7, 12, 14, 0, 0));
+        meter.try_charge_with_cost(&usage(0, 0), 0.40).unwrap();
+        meter.try_charge_with_cost(&usage(0, 0), 0.40).unwrap();
+        let err = meter
+            .try_charge_with_cost(&usage(0, 0), 0.40)
+            .unwrap_err();
+        match err {
+            QuotaError::BudgetExceeded { used, limit, .. } => {
+                assert!((used - 1.20).abs() < 1e-9, "used={used}");
+                assert!((limit - 1.0).abs() < 1e-9, "limit={limit}");
+            }
+            other => panic!("expected BudgetExceeded, got {other:?}"),
+        }
+        // Snapshot reflects the failed-charge counters (input 0,
+        // output 0, count 3) but **not** the overshoot cost. We
+        // don't charge past the limit on failure — same
+        // contract as `charge` for token limits.
+        let snap = meter.snapshot();
+        assert_eq!(snap.input_tokens, 0);
+        assert_eq!(snap.request_count, 3);
+        assert!(
+            (snap.cost_usd.unwrap() - 1.20).abs() < 1e-9,
+            "cost_usd on snapshot stays at 1.20 (3 × 0.40) — failed check doesn't refund"
+        );
+    }
+
+    #[test]
+    fn check_rejects_when_budget_per_cycle_already_exceeded() {
+        // `check()` is the pre-call gate. We pin to wall-clock
+        // `Utc::now()` because `try_charge_with_cost` reads
+        // wall-clock to decide whether to roll — a hardcoded
+        // historical start triggers an immediate roll and resets
+        // cost_usd before our $0.40 charge lands.
+        let cfg_with_budget = QuotaConfig {
+            input_tokens: None,
+            output_tokens: None,
+            request_count: None,
+            cycle: QuotaCycle::Hourly,
+            cost_per_call_max: None,
+            budget_per_cycle: Some(1.0),
+        };
+        let start = Utc::now();
+        let meter = QuotaMeter::new(cfg_with_budget, None, start);
+        // Pin window to current hour (no-op advance, but the
+        // explicit call makes the test's intent clear).
+        meter.advance_if_needed(start + chrono::Duration::minutes(5));
+        // First call: $0.40 (under $1.00 cap). Second call: $0.70
+        // would push to $1.10 — instead, the meter must REJECT
+        // (don't charge past the cap), leaving running total at
+        // $0.40.
+        meter.try_charge_with_cost(&usage(0, 0), 0.40).unwrap();
+        let err = meter.try_charge_with_cost(&usage(0, 0), 0.70).unwrap_err();
+        match err {
+            QuotaError::BudgetExceeded { used, limit, .. } => {
+                // The charge that crossed the cap is folded into
+                // `cost_usd` before the check — same contract as
+                // the input_tokens limit (see
+                // `charge_trips_input_limit_on_the_offending_call`
+                // where the over-cap increment is reported as
+                // `used: 120`). Here the running total is
+                // $0.40 + $0.70 = $1.10.
+                assert!((used - 1.10).abs() < 1e-9, "used={used}");
+                assert!((limit - 1.0).abs() < 1e-9);
+            }
+            other => panic!("expected BudgetExceeded, got {other:?}"),
+        }
+        // `check()` reflects the same trip state.
+        match meter.check() {
+            Some(QuotaError::BudgetExceeded { used, limit, .. }) => {
+                assert!((used - 1.10).abs() < 1e-9);
+                assert!((limit - 1.0).abs() < 1e-9);
+            }
+            other => panic!("expected BudgetExceeded on check, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn budget_per_cycle_rolls_to_zero_on_window_advance() {
+        // Crossing the cycle boundary clears the cost accumulator
+        // — same semantics as input/output/request_count. Anchor the
+        // test to wall-clock `Utc::now()` rather than a hardcoded
+        // date; the meter compares the constructor's pinned
+        // `now` to wall-clock and would otherwise silently advance
+        // before our test's `advance_if_needed` reaches the new
+        // wall-clock-pinned window.
+        let cfg_with_budget = QuotaConfig {
+            input_tokens: None,
+            output_tokens: None,
+            request_count: None,
+            cycle: QuotaCycle::Hourly,
+            cost_per_call_max: None,
+            budget_per_cycle: Some(1.0),
+        };
+        let start = Utc::now();
+        let meter = QuotaMeter::new(cfg_with_budget, None, start);
+        // $0.80 fits under the $1.00 budget; no charge rejected.
+        // `try_charge_with_cost` reads wall-clock `Utc::now()` to
+        // decide whether to roll — if the constructor's pinned
+        // window has already passed by wall-clock, the cost
+        // resets to 0.0 before the increment, so the test seeds
+        // the accumulator inside the live window.
+        let same_hour = start + chrono::Duration::minutes(5);
+        // Force the meter's window to the same-hour boundary by
+        // calling advance_if_needed with a timestamp inside the
+        // current hour. This is a no-op but pins window_start.
+        meter.advance_if_needed(same_hour);
+        meter.try_charge_with_cost(&usage(0, 0), 0.80).unwrap();
+        let snap_before = meter.snapshot();
+        assert!(
+            (snap_before.cost_usd.unwrap() - 0.80).abs() < 1e-9,
+            "cost_usd should reflect the $0.80 charge, got {:?}",
+            snap_before.cost_usd
+        );
+        // Step past the next hourly boundary — `advance_if_needed`
+        // resets cost_usd alongside the other counters.
+        let next_hour = same_hour + chrono::Duration::hours(1) + chrono::Duration::seconds(1);
+        meter.advance_if_needed(next_hour);
+        let snap_after = meter.snapshot();
+        assert!(
+            (snap_after.cost_usd.unwrap() - 0.0).abs() < 1e-9,
+            "cost_usd must reset on window advance"
+        );
+    }
+
+    #[test]
+    fn cost_per_call_max_does_not_block_try_charge() {
+        // `cost_per_call_max` is a **pre-flight** check enforced at
+        // the spawn site, not by the meter. `try_charge_with_cost`
+        // (used by the streaming metering path) folds cost into
+        // the cycle budget and ignores the per-call ceiling.
+        let cfg = QuotaConfig {
+            input_tokens: None,
+            output_tokens: None,
+            request_count: None,
+            cycle: QuotaCycle::Hourly,
+            cost_per_call_max: Some(0.10), // tight per-call cap
+            budget_per_cycle: Some(10.0),
+        };
+        let meter = QuotaMeter::new(cfg, None, ts(2026, 7, 12, 14, 0, 0));
+        // Per-call cost (0.50) exceeds the per-call ceiling —
+        // meter still accepts because the per-call ceiling is a
+        // spawn-site concern. The cycle budget has plenty of room.
+        meter.try_charge_with_cost(&usage(0, 0), 0.50).unwrap();
+        assert!(meter.check().is_none());
+    }
+
+    #[test]
+    fn pre_phase_3_state_with_cost_usd_none_treats_cycle_budget_as_zero() {
+        // Pre-Phase-3 state files have `cost_usd = None`. `check`
+        // treats absent as 0.0 so a freshly-loaded old meter with
+        // a budget_per_cycle limit does not trip the gate on
+        // every load.
+        let cfg = QuotaConfig {
+            input_tokens: None,
+            output_tokens: None,
+            request_count: None,
+            cycle: QuotaCycle::Hourly,
+            cost_per_call_max: None,
+            budget_per_cycle: Some(0.001),
+        };
+        let mut state = QuotaState::fresh(QuotaCycle::Hourly, ts(2026, 7, 12, 14, 0, 0));
+        state.cost_usd = None; // simulate pre-Phase-3 load
+        // `check_inner` reads `state.cost_usd.unwrap_or(0.0)`.
+        let result = QuotaMeter::check_inner(&cfg, &state);
+        assert!(result.is_none(), "missing cost_usd must not trip gate");
     }
 
     #[tokio::test]

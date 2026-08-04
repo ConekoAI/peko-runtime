@@ -241,6 +241,16 @@ impl SubagentExecutor {
         self.peer_meter.as_ref()
     }
 
+    /// Phase 3 of `feature/multi-model-subagents`: the bound
+    /// provider's `Arc` for cost estimation. Used by
+    /// `SubagentRuntime::spawn_cost_estimate_usd` to pull the
+    /// `ModelSpec::pricing` field at audit time. Returns `None`
+    /// when no provider has been bound (test paths).
+    #[must_use]
+    pub fn provider_for_cost_estimate(&self) -> Option<&Arc<peko_providers::Provider>> {
+        self.provider.as_ref()
+    }
+
     /// Get the spawning principal's runtime id.
     #[must_use]
     pub fn principal_id(&self) -> &PrincipalId {
@@ -462,6 +472,23 @@ impl SubagentExecutor {
         config: ExecutionConfig,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
+        // Phase 3 — spawn-time pre-flight against
+        // `cost_per_call_max`. Conservative token projection
+        // (4K input + 1K output) multiplied by the chosen
+        // model's `PricingHint`. Refuses the spawn before any
+        // LLM traffic. No pre-flight when:
+        //   * the principal has no quota config (`quota_meter`
+        //     is `None`),
+        //   * `cost_per_call_max` is `None` (no per-call cap),
+        //   * the chosen provider has no `PricingHint` (local
+        //     / unpriced model — can't estimate).
+        if let Some(err) = pre_flight_cost_ceiling(
+            self.quota_meter.as_deref(),
+            self.provider.as_ref(),
+        ) {
+            return Err(anyhow::anyhow!(err));
+        }
+
         // Check depth limits
         let parent_depth = self.get_parent_depth(parent_session_key).await;
         let child_depth = parent_depth + 1;
@@ -1334,6 +1361,42 @@ async fn execute_subagent_task(
     }
 }
 
+/// Phase 3 of `feature/multi-model-subagents`: spawn-time
+/// pre-flight against `cost_per_call_max`. Conservative token
+/// projection (4K input + 1K output) multiplied by the chosen
+/// model's `PricingHint`. Refuses the spawn before any LLM
+/// traffic. Returns `Some(SpawnError::CostCeilingExceeded)` when
+/// the estimate exceeds the ceiling, `None` when the spawn
+/// should proceed or when no pre-flight applies (no `cost_per_call_max`
+/// configured or no `PricingHint` available).
+fn pre_flight_cost_ceiling(
+    quota_meter: Option<&peko_quota::meter::QuotaMeter>,
+    provider: Option<&Arc<peko_providers::Provider>>,
+) -> Option<SpawnError> {
+    let meter = quota_meter?;
+    let ceiling = meter.config().cost_per_call_max?;
+    let provider = provider?;
+    let pricing = provider.spec().and_then(|s| s.pricing)?;
+    const EST_INPUT_TOKENS: u64 = 4_000;
+    const EST_OUTPUT_TOKENS: u64 = 1_000;
+    let input_cost = pricing
+        .input_per_million
+        .map_or(0.0, |rate| rate * EST_INPUT_TOKENS as f64 / 1_000_000.0);
+    let output_cost = pricing
+        .output_per_million
+        .map_or(0.0, |rate| rate * EST_OUTPUT_TOKENS as f64 / 1_000_000.0);
+    let estimated = input_cost + output_cost;
+    if estimated > ceiling {
+        Some(SpawnError::CostCeilingExceeded {
+            estimated,
+            ceiling,
+            model_id: provider.model_id(),
+        })
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1346,6 +1409,146 @@ mod tests {
     use peko_quota::scope::QuotaScope;
     use peko_quota::{QuotaConfig, QuotaCycle, QuotaMeter};
     use peko_session::manager::SessionManager;
+
+    /// Phase 3 — the spawn-time pre-flight heuristic in a
+    /// standalone form so it's unit-testable without wiring the
+    /// full subagent flow. Returns the `SpawnError` the gate
+    /// would emit, or `None` if the spawn should proceed.
+    fn pre_flight_cost_ceiling_for_test(
+        quota_meter: Option<&QuotaMeter>,
+        provider_spec: Option<&peko_providers::spec::ModelSpec>,
+        model_id: &str,
+    ) -> Option<SpawnError> {
+        let ceiling = quota_meter
+            .and_then(|m| m.config().cost_per_call_max)?;
+        let pricing = provider_spec.and_then(|s| s.pricing)?;
+        const EST_INPUT_TOKENS: u64 = 4_000;
+        const EST_OUTPUT_TOKENS: u64 = 1_000;
+        let input_cost = pricing
+            .input_per_million
+            .map_or(0.0, |rate| rate * EST_INPUT_TOKENS as f64 / 1_000_000.0);
+        let output_cost = pricing
+            .output_per_million
+            .map_or(0.0, |rate| rate * EST_OUTPUT_TOKENS as f64 / 1_000_000.0);
+        let estimated = input_cost + output_cost;
+        if estimated > ceiling {
+            Some(SpawnError::CostCeilingExceeded {
+                estimated,
+                ceiling,
+                model_id: model_id.to_string(),
+            })
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn pre_flight_rejects_when_estimated_cost_exceeds_ceiling() {
+        // Opus-priced ($15/M input, $75/M output) — 4K input +
+        // 1K output = 4·15/1000 + 1·75/1000 = $0.060 + $0.075 =
+        // $0.135. A ceiling of $0.10 rejects.
+        let spec = peko_providers::spec::ModelSpec {
+            pricing: Some(peko_providers::spec::PricingHint {
+                input_per_million: Some(15.0),
+                output_per_million: Some(75.0),
+            }),
+            ..Default::default()
+        };
+        let meter = QuotaMeter::new(
+            QuotaConfig {
+                cost_per_call_max: Some(0.10),
+                ..Default::default()
+            },
+            None,
+            Utc::now(),
+        );
+        let err = pre_flight_cost_ceiling_for_test(
+            Some(&meter),
+            Some(&spec),
+            "claude-opus-4-8",
+        )
+        .expect("Opus with $0.10 ceiling must trip");
+        match err {
+            SpawnError::CostCeilingExceeded {
+                estimated,
+                ceiling,
+                model_id,
+            } => {
+                assert!((estimated - 0.135).abs() < 1e-9, "got {estimated}");
+                assert!((ceiling - 0.10).abs() < 1e-9);
+                assert_eq!(model_id, "claude-opus-4-8");
+            }
+            other => panic!("expected CostCeilingExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pre_flight_accepts_when_estimated_cost_under_ceiling() {
+        // Haiku ($1/M input, $5/M output) → 4K in + 1K out =
+        // $0.004 + $0.005 = $0.009. A ceiling of $0.05 accepts.
+        let spec = peko_providers::spec::ModelSpec {
+            pricing: Some(peko_providers::spec::PricingHint {
+                input_per_million: Some(1.0),
+                output_per_million: Some(5.0),
+            }),
+            ..Default::default()
+        };
+        let meter = QuotaMeter::new(
+            QuotaConfig {
+                cost_per_call_max: Some(0.05),
+                ..Default::default()
+            },
+            None,
+            Utc::now(),
+        );
+        assert!(
+            pre_flight_cost_ceiling_for_test(Some(&meter), Some(&spec), "haiku").is_none(),
+            "Haiku under the $0.05 ceiling must pass"
+        );
+    }
+
+    #[test]
+    fn pre_flight_skipped_when_no_ceiling() {
+        // `cost_per_call_max = None` ⇒ no pre-flight. Even
+        // Opus-priced model is accepted.
+        let spec = peko_providers::spec::ModelSpec {
+            pricing: Some(peko_providers::spec::PricingHint {
+                input_per_million: Some(15.0),
+                output_per_million: Some(75.0),
+            }),
+            ..Default::default()
+        };
+        let meter = QuotaMeter::new(QuotaConfig::default(), None, Utc::now());
+        assert!(pre_flight_cost_ceiling_for_test(Some(&meter), Some(&spec), "opus").is_none());
+    }
+
+    #[test]
+    fn pre_flight_skipped_when_no_pricing_hint() {
+        // Local / unpriced model — can't estimate, no pre-flight.
+        let spec = peko_providers::spec::ModelSpec::default(); // pricing: None
+        let meter = QuotaMeter::new(
+            QuotaConfig {
+                cost_per_call_max: Some(0.001), // tight cap
+                ..Default::default()
+            },
+            None,
+            Utc::now(),
+        );
+        assert!(pre_flight_cost_ceiling_for_test(Some(&meter), Some(&spec), "local").is_none());
+    }
+
+    #[test]
+    fn pre_flight_skipped_when_no_meter() {
+        // No `QuotaMeter` ⇒ no `cost_per_call_max` ⇒ no gate.
+        let spec = peko_providers::spec::ModelSpec {
+            pricing: Some(peko_providers::spec::PricingHint {
+                input_per_million: Some(15.0),
+                output_per_million: Some(75.0),
+            }),
+            ..Default::default()
+        };
+        assert!(pre_flight_cost_ceiling_for_test(None, Some(&spec), "opus").is_none());
+    }
 
     /// F39 test fixture: build a `MockAdapter`-backed `Provider` and
     /// a single quota meter (request_count cap = 10 so a successful

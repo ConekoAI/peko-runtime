@@ -191,6 +191,12 @@ async fn set(
             output_tokens: output.or(existing.output_tokens),
             request_count: requests.or(existing.request_count),
             cycle: cycle.unwrap_or(existing.cycle),
+            // Phase 3 — cost fields preserved across edits
+            // (the CLI's `quota set` command doesn't expose
+            // them yet; user-facing setters live in
+            // `peko-rs/quota/src/config.rs`).
+            cost_per_call_max: existing.cost_per_call_max,
+            budget_per_cycle: existing.budget_per_cycle,
         }
     };
 

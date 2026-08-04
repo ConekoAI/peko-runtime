@@ -478,6 +478,9 @@ mod tests {
                 output_tokens: None,
                 request_count: None,
                 cycle: peko_quota::QuotaCycle::Daily,
+                // Phase 3 — cost fields default to None.
+                cost_per_call_max: None,
+                budget_per_cycle: None,
             },
         )
         .await
@@ -500,6 +503,9 @@ mod tests {
             output_tokens: None,
             request_count: None,
             cycle: peko_quota::QuotaCycle::Daily,
+            // Phase 3 — cost fields default to None.
+            cost_per_call_max: None,
+            budget_per_cycle: None,
         });
         peer.quota_meter
             .charge(&peko_message::TokenUsage {
