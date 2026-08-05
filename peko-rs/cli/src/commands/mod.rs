@@ -12,6 +12,7 @@
 pub mod audit;
 pub mod auth;
 pub mod capability;
+pub mod channel;
 pub mod config;
 pub mod credential;
 pub mod cron;
@@ -160,6 +161,18 @@ pub enum Commands {
     /// Cron job management (advanced / hidden)
     #[command(subcommand, hide = true)]
     Cron(cron::CronCommands),
+
+    /// Multi-principal chat primitive (channels) — read/create/post
+    /// events across principals.
+    ///
+    /// Examples:
+    ///   peko channel create alice "team alpha"
+    ///   peko channel invite <chan_id> alice bob
+    ///   peko channel post <chan_id> alice "hello"
+    ///   peko channel peek <chan_id>
+    ///   peko channel members <chan_id>
+    #[command(subcommand)]
+    Channel(channel::ChannelCommands),
 
     /// LLM model management (runtime model catalog)
     #[command(subcommand)]

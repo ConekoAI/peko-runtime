@@ -23,6 +23,8 @@ peko_core = { package = "peko", path = "../core" }
 peko-auth = { path = "../auth" }
 peko-chat-log = { path = "../chat-log" }
 peko-cron = { path = "../cron" }
+peko-channel = { path = "../channel" }
+peko-protocol = { path = "../protocol" }
 peko-extension-api = { path = "../extension-api" }
 peko-providers = { path = "../providers" }
 peko-quota = { path = "../quota" }
