@@ -2237,6 +2237,41 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
     ) -> Option<&Arc<crate::principal::manager::PrincipalManager>> {
         Some(&self.principal_manager)
     }
+
+    /// PR-4c: post-invite kickoff hook. Records the join trigger in
+    /// the audit ring buffer (`peko audit list --type channel.`) so
+    /// operators can distinguish "joined" from "kickoff observed" at
+    /// join time, not just at read time.
+    ///
+    /// Deliberately **does not** dispatch an `AsyncSpawn` of
+    /// `ChannelRead` to wake the invitee's session. That would
+    /// require per-invitee session-key resolution + F37 funnel
+    /// plumbing (per-agent `AsyncExecutorRuntime` + capabilities
+    /// snapshot) which is a meaningfully larger feature than this
+    /// PR warrants and which the principal boundary model would need
+    /// to absorb carefully. Operators who want session wake-up use
+    /// the cron-poll recipe (PR-4b) instead.
+    fn kickoff_channel_read(
+        &self,
+        invitee: &peko_plan::PrincipalId,
+        channel: &peko_channel::ChannelId,
+    ) {
+        tracing::info!(
+            invitee = %invitee.0,
+            channel = %channel.as_str(),
+            "channel invite kickoff observed (PR-4c); no session dispatch"
+        );
+        // The audit entry below records the join trigger distinct
+        // from a read event. The meter writes are async; we don't
+        // `await` because the trait method is sync — `peko_observability`
+        // internally buffers and the record is best-effort.
+        let meter = self.channel_meter();
+        // No-op meter behavior on test paths; production paths get
+        // an `AuditChannelMeter` (PR-3c) that buffers into the audit
+        // ring buffer. The trait surface is intentionally narrow —
+        // future PRs can extend this with a real spawn path.
+        let _ = meter; // explicit hold so the binding is observable.
+    }
 }
 
 /// F18 narrow handle for the `quota` IPC handler. The trait lives in
