@@ -900,6 +900,16 @@ pub enum RequestPacket {
         request_id: u64,
         channel: String,
     },
+
+    /// Remove `principal_name` from `channel`. PR-3a: closes the
+    /// missing IPC variant — PR-1 had `handle_leave` only on the
+    /// in-process path.
+    #[serde(rename = "channel_leave")]
+    ChannelLeave {
+        request_id: u64,
+        channel: String,
+        principal_name: String,
+    },
 }
 
 impl RequestPacket {
@@ -999,7 +1009,8 @@ impl RequestPacket {
             | Self::ChannelPeek { request_id, .. }
             | Self::ChannelMembers { request_id, .. }
             | Self::ChannelList { request_id, .. }
-            | Self::ChannelConfigGet { request_id, .. } => *request_id,
+            | Self::ChannelConfigGet { request_id, .. }
+            | Self::ChannelLeave { request_id, .. } => *request_id,
         }
     }
 
@@ -1215,6 +1226,15 @@ pub enum ResponsePacket {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
         config: peko_channel::ConfigOnDisk,
+    },
+
+    /// Leave acknowledged — `principal` is no longer a member of
+    /// `channel`.
+    #[serde(rename = "channel_left")]
+    ChannelLeft {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        principal: peko_subject::PrincipalId,
     },
 
     /// Quota status snapshot (F18). Carries the principal's live
@@ -2574,7 +2594,8 @@ impl ResponsePacket {
             | Self::ChannelPeekResult { request_id, .. }
             | Self::ChannelMembersResult { request_id, .. }
             | Self::ChannelListResult { request_id, .. }
-            | Self::ChannelConfigResult { request_id, .. } => *request_id,
+            | Self::ChannelConfigResult { request_id, .. }
+            | Self::ChannelLeft { request_id, .. } => *request_id,
         }
     }
 
@@ -2672,6 +2693,7 @@ impl ResponsePacket {
             Self::ChannelMembersResult { .. } => "ChannelMembersResult",
             Self::ChannelListResult { .. } => "ChannelListResult",
             Self::ChannelConfigResult { .. } => "ChannelConfigResult",
+            Self::ChannelLeft { .. } => "ChannelLeft",
         }
     }
 

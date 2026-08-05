@@ -106,6 +106,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelMembers { .. }
                 | RequestPacket::ChannelList { .. }
                 | RequestPacket::ChannelConfigGet { .. }
+                | RequestPacket::ChannelLeave { .. }
         )
     }
 
@@ -361,6 +362,54 @@ impl RequestHandler for ChannelHandler {
                 }
             }
 
+            RequestPacket::ChannelLeave {
+                request_id,
+                channel,
+                principal_name,
+            } => {
+                let principal = match self.resolve_principal(&principal_name) {
+                    Some(p) => p,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!(
+                                "Principal '{principal_name}' is not loaded"
+                            ),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                let ch = match ChannelId::parse(&channel) {
+                    Some(id) => id,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("invalid ChannelId: {channel}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                match self.router().handle_leave(&ch, &principal).await {
+                    Ok(resp) => {
+                        let response = ResponsePacket::ChannelLeft {
+                            request_id,
+                            channel: resp.channel,
+                            principal: resp.principal,
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("channel leave failed: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
+            }
+
             RequestPacket::ChannelConfigGet { request_id, channel } => {
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
@@ -507,6 +556,11 @@ mod tests {
             request_id: 1,
             channel: "chan_x".into(),
             since: None,
+        }));
+        assert!(handler.matches(&RequestPacket::ChannelLeave {
+            request_id: 1,
+            channel: "chan_x".into(),
+            principal_name: "p".into(),
         }));
 
         // Non-channel variants are NOT claimed.
@@ -656,6 +710,86 @@ mod tests {
         assert!(matches!(
             decoded,
             ResponsePacket::ChannelPosted { request_id: 42, .. }
+        ));
+    }
+
+    // PR-3a: `ChannelLeave` IPC variant — when the principal manager
+    // is missing, the arm should emit a clean `ResponsePacket::Error`
+    // naming the unloaded principal rather than panicking. The
+    // happy-path dispatch lives in `ChannelCliRouter::handle_leave`
+    // (covered by `peko-channel` lib tests) — IPC only adds the
+    // dispatcher arm.
+    #[tokio::test]
+    async fn handler_leave_returns_error_when_principal_not_loaded() {
+        let (_tmp, host) = test_host();
+        let handler = ChannelHandler::new(host);
+
+        let req = RequestPacket::ChannelLeave {
+            request_id: 11,
+            channel: "chan_abcdefgh".into(),
+            principal_name: "ghost".into(),
+        };
+        let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
+        let sink: &dyn crate::ipc::response_sink::ResponseSink =
+            &CaptureSink(captured.clone());
+        handler
+            .handle(
+                req,
+                &peko_auth::caller::CallerContext::local(),
+                sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
+            )
+            .await
+            .expect("handle");
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        match &captured[0] {
+            ResponsePacket::Error { request_id, message } => {
+                assert_eq!(*request_id, 11);
+                assert!(
+                    message.contains("'ghost'") && message.contains("not loaded"),
+                    "got {message}"
+                );
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    // PR-3a: `ChannelLeave` request/response round-trip.
+    #[test]
+    fn channel_packets_round_trip_leave_via_json() {
+        let req = RequestPacket::ChannelLeave {
+            request_id: 7,
+            channel: "chan_abcdefgh".into(),
+            principal_name: "prin_alice".into(),
+        };
+        let json = serde_json::to_string(&req).expect("encode");
+        assert!(json.contains("\"channel_leave\""), "got {json}");
+        let decoded: RequestPacket = serde_json::from_str(&json).expect("decode");
+        match decoded {
+            RequestPacket::ChannelLeave {
+                request_id,
+                channel,
+                principal_name,
+            } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(channel, "chan_abcdefgh");
+                assert_eq!(principal_name, "prin_alice");
+            }
+            other => panic!("expected ChannelLeave, got {other:?}"),
+        }
+
+        let resp = ResponsePacket::ChannelLeft {
+            request_id: 7,
+            channel: ChannelId::parse("chan_abcdefgh").expect("valid ChannelId"),
+            principal: peko_subject::PrincipalId::generate(),
+        };
+        let json = serde_json::to_string(&resp).expect("encode");
+        assert!(json.contains("\"channel_left\""), "got {json}");
+        let decoded: ResponsePacket = serde_json::from_str(&json).expect("decode");
+        assert!(matches!(
+            decoded,
+            ResponsePacket::ChannelLeft { request_id: 7, .. }
         ));
     }
 }

@@ -127,6 +127,19 @@ pub enum ChannelCommands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Remove `principal` from `channel`. PR-3a: closes the
+    /// missing IPC variant — PR-1 had `handle_leave` only on the
+    /// in-process path.
+    Leave {
+        /// Channel id.
+        channel: String,
+        /// Principal name (must already be a member).
+        principal: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl ChannelCommands {
@@ -140,7 +153,8 @@ impl ChannelCommands {
             | ChannelCommands::Members { json, .. }
             | ChannelCommands::Ls { json, .. }
             | ChannelCommands::Show { json, .. }
-            | ChannelCommands::Config { json, .. } => *json,
+            | ChannelCommands::Config { json, .. }
+            | ChannelCommands::Leave { json, .. } => *json,
         }
     }
 }
@@ -420,6 +434,47 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             }
             Ok(())
         }
+        ChannelCommands::Leave {
+            channel,
+            principal,
+            ..
+        } => {
+            let packet = RequestPacket::ChannelLeave {
+                request_id: 0,
+                channel: channel.clone(),
+                principal_name: principal.clone(),
+            };
+            let (ch, principal_id) = run_daemon_or(
+                paths,
+                packet,
+                "channel_leave_failed",
+                move |port, paths| Box::pin(async move {
+                    let router = ChannelCliRouter::new(port);
+                    let ch = parse_channel_id(&channel)?;
+                    let principal_id = paths
+                        .resolver()
+                        .lookup_principal_id_by_name(&principal)
+                        .with_context(|| {
+                            format!("Principal '{principal}' not found on disk")
+                        })?;
+                    let resp = router.handle_leave(&ch, &principal_id).await?;
+                    Ok((resp.channel, resp.principal))
+                })
+            )
+            .await?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "channel": ch.to_string(),
+                        "principal": principal_id.to_string(),
+                    })
+                );
+            } else {
+                println!("{principal_id} left {ch}");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -484,7 +539,7 @@ fn print_channel_id(ch: ChannelId, json: bool) -> Result<()> {
 }
 
 // Silence unused-import lints for types referenced only in patterns we
-// may exercise in future subcommands (e.g. `Leave`).
+// may exercise in future subcommands (e.g. `Pin`, `PinToShared`).
 #[allow(dead_code)]
 fn _unused(
     _: ChannelEvent,
