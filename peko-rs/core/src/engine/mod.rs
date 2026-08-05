@@ -59,6 +59,8 @@
 
 pub mod agentic_loop_compat;
 pub mod background_compactor_factory_compat;
+// PR-2b: real `ChannelResponder` impl wrapping subagent dispatch.
+pub mod channel_responder;
 // `extension_core_funnel_compat` was removed in Phase 8a: the
 // `impl ToolFunnel for ExtensionCore` lives next to ExtensionCore in
 // `peko_extension_host::tool_funnel_impl`.
