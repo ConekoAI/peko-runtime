@@ -85,15 +85,48 @@ const META_FILE: &str = "meta.json";
 /// clone (just two paths).
 #[derive(Debug, Clone)]
 pub struct ChannelConfig {
-    /// Runtime-tier root. PR-1 only; PR-3 adds a Shared-root field
-    /// alongside (reuses Phase B RuntimeAuthority seal).
+    /// Runtime-tier root. PR-1 only.
     pub runtime_dir: PathBuf,
+    /// Shared-tier root (PR-3d). `None` means "no Shared support" —
+    /// `pin_to_shared` will return `ChannelError::Adapter`. Production
+    /// (the daemon) populates this from `PathResolver::shared_channels_dir`
+    /// / `RuntimeAuthority::shared_channels_dir`. The CLI fallback may
+    /// also populate it via `paths.resolver().shared_channels_dir(...)`.
+    pub shared_dir: Option<PathBuf>,
 }
 
 impl ChannelConfig {
-    /// `<runtime_dir>/channels` — where every channel directory lives.
+    /// `<runtime_dir>/channels` — where every Runtime-tier channel
+    /// directory lives.
     fn channels_dir(&self) -> PathBuf {
         self.runtime_dir.join(CHANNELS_DIR)
+    }
+
+    /// `<shared_dir>/channels` — where every Shared-tier channel
+    /// directory lives (PR-3d). Returns `None` if `shared_dir` is
+    /// unset so callers can emit a clean `ChannelError::Adapter`
+    /// rather than silently creating `<runtime_dir>/shared/channels`.
+    fn shared_channels_dir(&self) -> Option<PathBuf> {
+        self.shared_dir.as_ref().map(|d| d.join(CHANNELS_DIR))
+    }
+
+    /// Pick the channel dir for the given tier. PR-3d: callers that
+    /// used to call `channel_dir(&ch)` continue to get the Runtime
+    /// path; `create` + `pin_to_shared` use this helper to honor the
+    /// tier argument.
+    fn channel_dir_for(&self, tier: Tier, channel: &ChannelId) -> Result<PathBuf> {
+        match tier {
+            Tier::Runtime => Ok(self.channel_dir(channel)),
+            Tier::Shared => self
+                .shared_channels_dir()
+                .map(|d| d.join(channel.as_str()))
+                .ok_or_else(|| {
+                    ChannelError::Adapter(
+                        "ChannelConfig::shared_dir is None; cannot resolve Shared tier"
+                            .into(),
+                    )
+                }),
+        }
     }
 
     /// `<runtime_dir>/channels/<chan_id>/` — the per-channel sandbox.
@@ -386,13 +419,8 @@ impl ChannelPort for PlanChannelAdapter {
         creator: &peko_plan::PrincipalId,
         opts: CreateOpts,
     ) -> Result<ChannelId> {
-        if !matches!(opts.tier, Tier::Runtime) {
-            return Err(ChannelError::Adapter(
-                "PR-1 only supports Tier::Runtime; Shared opt-in lands in PR-3".into(),
-            ));
-        }
         let channel = ChannelId::generate();
-        let chan_dir = self.cfg.channel_dir(&channel);
+        let chan_dir = self.cfg.channel_dir_for(opts.tier, &channel)?;
         fs::create_dir_all(&chan_dir).await?;
 
         let now = Utc::now();
@@ -645,6 +673,75 @@ impl ChannelPort for PlanChannelAdapter {
         // dirs, which we surface as-is.
         let _ = MetaJson::load(&self.cfg.channel_dir(channel)).await?;
         config.save(&self.cfg.channel_dir(channel)).await
+    }
+
+    async fn pin_to_shared(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<std::path::PathBuf> {
+        // Resolve the Shared destination first so we fail fast if
+        // `shared_dir` is unset (CLI fallback path without
+        // SharedLayout access).
+        let shared_chan_dir = self.cfg.channel_dir_for(Tier::Shared, channel)?;
+        let runtime_chan_dir = self.cfg.channel_dir(channel);
+
+        // Defense-in-depth: source must exist (Runtime tier only —
+        // pinning an already-Shared channel is a no-op-ish error).
+        let _ = MetaJson::load(&runtime_chan_dir).await?;
+
+        // Ensure the destination parent exists.
+        if let Some(parent) = shared_chan_dir.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::create_dir_all(&shared_chan_dir).await?;
+
+        // Copy the three Runtime-tier files: meta.json, config.toml,
+        // and every plan_<id>.jsonl event log. We don't recurse into
+        // subdirectories; PR-1's layout has no nested dirs and PR-3
+        // doesn't introduce any.
+        for filename in [
+            META_FILE,
+            ConfigOnDisk::path_in(&runtime_chan_dir)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("config.toml"),
+        ] {
+            let src = runtime_chan_dir.join(filename);
+            let dst = shared_chan_dir.join(filename);
+            if src.exists() {
+                fs::copy(&src, &dst).await.map_err(|e| {
+                    ChannelError::Adapter(format!(
+                        "copy {} -> {}: {e}",
+                        src.display(),
+                        dst.display()
+                    ))
+                })?;
+            }
+        }
+
+        // Copy every plan_<id>.jsonl — the actual event log. PR-1's
+        // layout is one file per channel; the runtime may have rotated
+        // (today it doesn't, but `read_dir` keeps the loop honest).
+        let mut entries = fs::read_dir(&runtime_chan_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let name = entry.file_name();
+            let Some(name_str) = name.to_str() else {
+                continue;
+            };
+            if name_str.starts_with("plan_") && name_str.ends_with(".jsonl") {
+                let src = entry.path();
+                let dst = shared_chan_dir.join(&name);
+                fs::copy(&src, &dst).await.map_err(|e| {
+                    ChannelError::Adapter(format!(
+                        "copy {} -> {}: {e}",
+                        src.display(),
+                        dst.display()
+                    ))
+                })?;
+            }
+        }
+
+        Ok(shared_chan_dir)
     }
 }
 

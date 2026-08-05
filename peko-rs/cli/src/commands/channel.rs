@@ -160,6 +160,20 @@ pub enum ChannelCommands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Copy a Runtime-tier channel into the Shared tier (PR-3d).
+    /// COPY semantics — the Runtime source remains so `peko channel
+    /// show` still resolves the channel. The shared root lives at
+    /// `<shared_dir>/channels/<channel_id>/`. Production requires
+    /// `channel:write_shared`; the in-process fallback path inherits
+    /// the same gate via the daemon.
+    PinToShared {
+        /// Channel id.
+        channel: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl ChannelCommands {
@@ -175,7 +189,8 @@ impl ChannelCommands {
             | ChannelCommands::Show { json, .. }
             | ChannelCommands::Config { json, .. }
             | ChannelCommands::Leave { json, .. }
-            | ChannelCommands::Pin { json, .. } => *json,
+            | ChannelCommands::Pin { json, .. }
+            | ChannelCommands::PinToShared { json, .. } => *json,
         }
     }
 }
@@ -562,6 +577,41 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             }
             Ok(())
         }
+
+        ChannelCommands::PinToShared { channel, .. } => {
+            let channel_label = channel.clone();
+            let channel_for_closure = channel.clone();
+            let packet = RequestPacket::ChannelPinToShared {
+                request_id: 0,
+                channel: channel.clone(),
+            };
+            let shared_path = run_daemon_or(
+                paths,
+                packet,
+                "channel_pin_to_shared_failed",
+                move |port, _paths| {
+                    Box::pin(async move {
+                        let router = ChannelCliRouter::new(port);
+                        let ch = parse_channel_id(&channel_for_closure)?;
+                        Ok(router.handle_pin_to_shared(&ch).await?)
+                    })
+                },
+            )
+            .await?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "channel": channel_label,
+                        "shared_path": shared_path.to_string_lossy(),
+                    }))
+                    .context("serialize pin-to-shared result")?
+                );
+            } else {
+                println!("pinned to shared: {}", shared_path.display());
+            }
+            Ok(())
+        }
     }
 }
 
@@ -597,6 +647,12 @@ where
     let port: Arc<dyn peko_channel::ChannelPort> = Arc::new(PlanChannelAdapter::new(
         ChannelConfig {
             runtime_dir: paths.runtime_dir(),
+            // PR-3d: in-process fallback mirrors the daemon's
+            // `principals_root_dir()` so `peko channel pin-to-shared`
+            // works without a running daemon. The same authority
+            // gate that the daemon enforces runs upstream of
+            // `ChannelCliRouter::handle_pin_to_shared` in production.
+            shared_dir: Some(paths.principals_root_dir()),
         },
     ));
     local(port, paths).await.context(err_label)

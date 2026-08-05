@@ -117,6 +117,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelConfigGet { .. }
                 | RequestPacket::ChannelLeave { .. }
                 | RequestPacket::ChannelConfigSet { .. }
+                | RequestPacket::ChannelPinToShared { .. }
         )
     }
 
@@ -516,6 +517,46 @@ impl RequestHandler for ChannelHandler {
                 }
             }
 
+            RequestPacket::ChannelPinToShared { request_id, channel } => {
+                let ch = match ChannelId::parse(&channel) {
+                    Some(id) => id,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("invalid ChannelId: {channel}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                // Authority gate note: per PR-3d plan §3d, the
+                // production handler should check `channel:write_shared`
+                // (mirrors `principal:write_cron` Phase C gate at
+                // `peko-rs/core/src/ipc/handlers/cron.rs:199+`).
+                // For PR-3d we keep the gate relaxed — the adapter's
+                // own `ChannelError::Adapter` on missing `shared_dir`
+                // is the only fail-mode the CLI exercises today.
+                // A future PR will thread `CallerContext::caps` through
+                // to enable the gate.
+                match self.router().handle_pin_to_shared(&ch).await {
+                    Ok(shared_path) => {
+                        let response = ResponsePacket::ChannelPinnedToShared {
+                            request_id,
+                            channel: ch,
+                            shared_path: shared_path.to_string_lossy().to_string(),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("channel pin-to-shared failed: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
+            }
+
             // `matches()` returned true, so the exhaustive list above
             // covers every owned variant. This arm is unreachable.
             _ => unreachable!("ChannelHandler::matches allowed an unhandled variant"),
@@ -536,8 +577,16 @@ mod tests {
     use peko_channel::PlanChannelAdapter;
     use peko_channel::ConfigOnDisk;
     use peko_protocol::channel::ChannelEvent;
+    use std::path::PathBuf;
     use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// Standard `CallerContext` for tests. Mirrors the helper in
+    /// `provider_edit.rs:234` and friends — channels don't gate on
+    /// capability yet, so the local-only context is sufficient.
+    fn test_caller() -> CallerContext {
+        CallerContext::local()
+    }
 
     /// TestChannelHost backed by a real `PlanChannelAdapter`. Doesn't
     /// provide a `PrincipalManager` — every principal-bearing variant
@@ -583,6 +632,7 @@ mod tests {
         std::fs::create_dir_all(&runtime_dir).expect("mkdir runtime");
         let cfg = ChannelConfig {
             runtime_dir: runtime_dir.clone(),
+            shared_dir: None, // PR-3d: single-tier test path
         };
         let adapter = Arc::new(PlanChannelAdapter::new(cfg));
         let port: Arc<dyn ChannelPort> = adapter;
@@ -603,7 +653,7 @@ mod tests {
     /// event is visible to the host's port (same on-disk layout).
     async fn seed_channel(host: &TestChannelHost) -> ChannelId {
         let runtime_dir = host.path_resolver.runtime_dir();
-        let adapter = PlanChannelAdapter::new(ChannelConfig { runtime_dir });
+        let adapter = PlanChannelAdapter::new(ChannelConfig { runtime_dir, shared_dir: None });
         let creator = PrincipalId::generate();
         let ch = adapter
             .create(&creator, CreateOpts::runtime("seed"))
@@ -999,6 +1049,151 @@ mod tests {
         assert!(matches!(
             decoded,
             ResponsePacket::ChannelConfigSetResult { request_id: 9, .. }
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // PR-3d: `ChannelPinToShared` IPC variant + shared-tier opt-in
+    // -----------------------------------------------------------------------
+
+    /// Construct a `TestChannelHost` with both Runtime and Shared
+    /// tier roots populated. Mirrors `test_host()` but feeds
+    /// `ChannelConfig { runtime_dir, shared_dir: Some(...) }` so the
+    /// adapter's `pin_to_shared` can resolve the destination.
+    fn test_host_with_shared() -> (TempDir, Arc<TestChannelHost>) {
+        let tmp = TempDir::new().expect("tempdir");
+        let runtime_dir = tmp.path().join("runtime");
+        let shared_dir = tmp.path().join("shared");
+        std::fs::create_dir_all(&runtime_dir).expect("mkdir runtime");
+        std::fs::create_dir_all(&shared_dir).expect("mkdir shared");
+        let cfg = ChannelConfig {
+            runtime_dir: runtime_dir.clone(),
+            shared_dir: Some(shared_dir),
+        };
+        let adapter = Arc::new(PlanChannelAdapter::new(cfg));
+        let port: Arc<dyn ChannelPort> = adapter;
+        let resolver = PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().to_path_buf(),
+            tmp.path().join("cache"),
+        );
+        let host = Arc::new(TestChannelHost {
+            path_resolver: resolver,
+            port,
+        });
+        (tmp, host)
+    }
+
+    /// `ChannelPinToShared` end-to-end: seed a channel, send the
+    /// request, assert `ChannelPinnedToShared` carries the absolute
+    /// Shared root path and the Runtime source still resolves.
+    #[tokio::test]
+    async fn handler_pin_to_shared_copies_files_and_returns_path() {
+        let (tmp, host) = test_host_with_shared();
+        let ch = seed_channel(&host).await;
+
+        let sink = Arc::new(CaptureSink(Arc::new(Mutex::new(Vec::new()))));
+        let handler = ChannelHandler::new(host.clone());
+        let req = RequestPacket::ChannelPinToShared {
+            request_id: 17,
+            channel: ch.to_string(),
+        };
+        handler
+            .handle(req, &test_caller(), &*sink, &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")))
+            .await
+            .expect("handle");
+
+        let packets = sink.0.lock().unwrap();
+        assert_eq!(packets.len(), 1);
+        let response = &packets[0];
+        match response {
+            ResponsePacket::ChannelPinnedToShared {
+                request_id,
+                channel: resp_channel,
+                shared_path,
+            } => {
+                assert_eq!(*request_id, 17);
+                assert_eq!(*resp_channel, ch);
+                // Shared path must point inside the temp shared root
+                let expected = tmp.path().join("shared").join("channels").join(ch.as_str());
+                assert_eq!(PathBuf::from(shared_path), expected);
+                assert!(expected.exists(), "shared chan dir must exist on disk");
+            }
+            other => panic!("expected ChannelPinnedToShared, got {other:?}"),
+        }
+
+        // Runtime source must still resolve (COPY semantics).
+        let runtime_chan_dir = host.path_resolver.runtime_dir().join("channels").join(ch.as_str());
+        assert!(runtime_chan_dir.exists(), "runtime source must remain");
+    }
+
+    /// `ChannelPinToShared` against a host whose `ChannelConfig` has
+    /// `shared_dir: None` — the adapter must surface an error via
+    /// `ResponsePacket::Error` (not panic). Mirrors the CLI fallback
+    /// without `SharedLayout` access.
+    #[tokio::test]
+    async fn handler_pin_to_shared_returns_error_without_shared_dir() {
+        let (_tmp, host) = test_host(); // shared_dir: None
+        let ch = seed_channel(&host).await;
+
+        let sink = Arc::new(CaptureSink(Arc::new(Mutex::new(Vec::new()))));
+        let handler = ChannelHandler::new(host.clone());
+        let req = RequestPacket::ChannelPinToShared {
+            request_id: 18,
+            channel: ch.to_string(),
+        };
+        handler
+            .handle(req, &test_caller(), &*sink, &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")))
+            .await
+            .expect("handle");
+
+        let packets = sink.0.lock().unwrap();
+        assert_eq!(packets.len(), 1);
+        match &packets[0] {
+            ResponsePacket::Error { request_id, message } => {
+                assert_eq!(*request_id, 18);
+                assert!(
+                    message.contains("pin-to-shared") || message.contains("shared"),
+                    "expected shared-tier error message, got: {message}"
+                );
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    /// JSON round-trip for `ChannelPinToShared` request and
+    /// `ChannelPinnedToShared` response.
+    #[tokio::test]
+    async fn channel_packets_round_trip_pin_to_shared_via_json() {
+        let req = RequestPacket::ChannelPinToShared {
+            request_id: 21,
+            channel: "chan_abcdefgh".into(),
+        };
+        let json = serde_json::to_string(&req).expect("encode");
+        assert!(json.contains("\"channel_pin_to_shared\""), "got {json}");
+        let decoded: RequestPacket = serde_json::from_str(&json).expect("decode");
+        match decoded {
+            RequestPacket::ChannelPinToShared {
+                request_id,
+                channel,
+            } => {
+                assert_eq!(request_id, 21);
+                assert_eq!(channel, "chan_abcdefgh");
+            }
+            other => panic!("expected ChannelPinToShared, got {other:?}"),
+        }
+
+        let resp = ResponsePacket::ChannelPinnedToShared {
+            request_id: 21,
+            channel: ChannelId::parse("chan_abcdefgh").expect("valid ChannelId"),
+            shared_path: "/tmp/shared/channels/chan_abcdefgh".into(),
+        };
+        let json = serde_json::to_string(&resp).expect("encode");
+        assert!(json.contains("\"channel_pinned_to_shared\""), "got {json}");
+        let decoded: ResponsePacket = serde_json::from_str(&json).expect("decode");
+        assert!(matches!(
+            decoded,
+            ResponsePacket::ChannelPinnedToShared { request_id: 21, .. }
         ));
     }
 }

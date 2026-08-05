@@ -573,6 +573,17 @@ mod tests {
                 .insert(channel.clone(), config.clone());
             Ok(())
         }
+
+        /// PR-3d: mock impl — return a placeholder path. Used by
+        /// `EngineChannelResponder` tests; production exercises
+        /// `pin_to_shared` via the file-backed `PlanChannelAdapter`.
+        async fn pin_to_shared(
+            &self,
+            channel: &ChannelId,
+        ) -> peko_channel::Result<std::path::PathBuf> {
+            let _ = channel;
+            Ok(std::path::PathBuf::from("/mock/shared"))
+        }
     }
 
     fn chan() -> ChannelId {

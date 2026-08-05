@@ -35,6 +35,9 @@ fn adapter_in_tempdir() -> (TempDir, Arc<PlanChannelAdapter>) {
     let tmp = TempDir::new().expect("tempdir");
     let cfg = ChannelConfig {
         runtime_dir: tmp.path().to_path_buf(),
+        shared_dir: None, // PR-3d: defaults to None for the legacy
+                          // single-tier test path. `pin_to_shared`
+                          // surfaces `ChannelError::Adapter` here.
     };
     let adapter = PlanChannelAdapter::new(cfg);
     (tmp, Arc::new(adapter))
@@ -44,6 +47,23 @@ fn adapter_in_tempdir() -> (TempDir, Arc<PlanChannelAdapter>) {
 /// callers don't depend on the concrete struct).
 fn as_port(a: Arc<PlanChannelAdapter>) -> Arc<dyn ChannelPort> {
     a
+}
+
+/// Build a fresh adapter rooted in a tempdir with both Runtime and
+/// Shared tier roots populated. Mirrors `adapter_in_tempdir()` but
+/// enables `pin_to_shared` + `Tier::Shared` creation paths.
+fn adapter_in_tempdir_with_shared() -> (TempDir, Arc<PlanChannelAdapter>) {
+    let tmp = TempDir::new().expect("tempdir");
+    let runtime_dir = tmp.path().join("runtime");
+    let shared_dir = tmp.path().join("shared");
+    std::fs::create_dir_all(&runtime_dir).expect("mkdir runtime");
+    std::fs::create_dir_all(&shared_dir).expect("mkdir shared");
+    let cfg = ChannelConfig {
+        runtime_dir,
+        shared_dir: Some(shared_dir),
+    };
+    let adapter = PlanChannelAdapter::new(cfg);
+    (tmp, Arc::new(adapter))
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +406,177 @@ async fn save_config_round_trip_then_reload() {
         .expect_err("save_config must reject unknown channel");
     assert!(
         matches!(err, ChannelError::NotFound(_)),
+        "got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test F: PR-3d Shared-tier opt-in
+// ---------------------------------------------------------------------------
+
+/// PR-3d: `pin_to_shared` copies `meta.json` + `config.toml` to the
+/// Shared root. Initial state (no posts) means zero `plan_*.jsonl`
+/// files are present, but the directory + both files must exist on
+/// the Shared side after the call. Runtime source remains intact
+/// (COPY semantics — see PR-3d plan §3d).
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_pin_copies_files_to_shared_root() {
+    let (tmp, adapter) = adapter_in_tempdir_with_shared();
+    let port: Arc<dyn ChannelPort> = as_port(adapter);
+
+    let creator = PrincipalId::generate();
+    let chan = port
+        .create(&creator, CreateOpts::runtime("team"))
+        .await
+        .expect("create");
+
+    let shared_path = port
+        .pin_to_shared(&chan)
+        .await
+        .expect("pin_to_shared");
+
+    // Path returned matches the expected Shared root layout.
+    let expected_root = tmp.path().join("shared").join("channels");
+    assert!(
+        shared_path.starts_with(&expected_root),
+        "shared_path {shared_path:?} must be under {expected_root:?}"
+    );
+    assert!(shared_path.join("meta.json").exists());
+    assert!(shared_path.join("config.toml").exists());
+
+    // Runtime source dir still exists.
+    let runtime_chan_dir = tmp.path().join("runtime").join("channels").join(chan.as_str());
+    assert!(runtime_chan_dir.exists(), "runtime source must remain");
+}
+
+/// PR-3d: pin copies the runtime event log lines (plan_*.jsonl) into
+/// the Shared root after a post. Verifies the COPY semantics actually
+/// transfer bytes — not just the static files.
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_pin_copies_log_lines_after_post() {
+    let (tmp, adapter) = adapter_in_tempdir_with_shared();
+    let port: Arc<dyn ChannelPort> = as_port(adapter);
+
+    let creator = PrincipalId::generate();
+    let chan = port
+        .create(&creator, CreateOpts::runtime("team"))
+        .await
+        .expect("create");
+    let task_id = port
+        .post(&chan, &creator, PostMsg::root("hello"))
+        .await
+        .expect("post");
+
+    let shared_path = port
+        .pin_to_shared(&chan)
+        .await
+        .expect("pin_to_shared");
+
+    // The runtime side has at least one plan_*.jsonl after the post.
+    let runtime_chan_dir = tmp.path().join("runtime").join("channels").join(chan.as_str());
+    let runtime_logs: Vec<_> = std::fs::read_dir(&runtime_chan_dir)
+        .expect("read runtime dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("plan_")
+                && e.file_name().to_string_lossy().ends_with(".jsonl")
+        })
+        .collect();
+    assert!(
+        !runtime_logs.is_empty(),
+        "runtime should have at least one plan_*.jsonl after a post"
+    );
+
+    // The Shared side must mirror the same log files (COPY).
+    let shared_logs: Vec<_> = std::fs::read_dir(&shared_path)
+        .expect("read shared dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("plan_")
+                && e.file_name().to_string_lossy().ends_with(".jsonl")
+        })
+        .collect();
+    assert_eq!(
+        shared_logs.len(),
+        runtime_logs.len(),
+        "shared must mirror runtime log files"
+    );
+
+    // The posted message must be discoverable via `peek` on the
+    // *runtime* side (proves we did not MOVE the source — COPY).
+    let events = port.peek(&chan, &Checkpoint::default()).await.expect("peek");
+    let posted = events
+        .iter()
+        .find_map(|e| match e {
+            peko_protocol::channel::ChannelEvent::Posted { text, .. }
+                if text == "hello" =>
+            {
+                Some(())
+            }
+            _ => None,
+        });
+    assert!(posted.is_some(), "runtime source must still expose the posted message");
+}
+
+/// PR-3d: `create()` with `Tier::Shared` writes the channel dir
+/// directly under the Shared root — no Runtime sibling is created.
+#[tokio::test(flavor = "multi_thread")]
+async fn create_with_shared_tier_writes_to_shared_root() {
+    let (tmp, adapter) = adapter_in_tempdir_with_shared();
+    let port: Arc<dyn ChannelPort> = as_port(adapter);
+
+    let creator = PrincipalId::generate();
+    let chan = port
+        .create(&creator, CreateOpts::shared("direct-shared"))
+        .await
+        .expect("create with shared tier");
+
+    // Shared side has the chan dir.
+    let shared_chan_dir = tmp
+        .path()
+        .join("shared")
+        .join("channels")
+        .join(chan.as_str());
+    assert!(shared_chan_dir.exists());
+    assert!(shared_chan_dir.join("meta.json").exists());
+
+    // Runtime side has NO sibling.
+    let runtime_chan_dir = tmp
+        .path()
+        .join("runtime")
+        .join("channels")
+        .join(chan.as_str());
+    assert!(
+        !runtime_chan_dir.exists(),
+        "shared-tier create must not write to runtime"
+    );
+}
+
+/// PR-3d: `pin_to_shared` against an adapter with `shared_dir: None`
+/// must surface `ChannelError::Adapter` (not panic, not silently
+/// succeed). Mirrors the CLI fallback path that has no
+/// `SharedLayout` access.
+#[tokio::test(flavor = "multi_thread")]
+async fn pin_to_shared_fails_when_shared_dir_is_none() {
+    let (_tmp, adapter) = adapter_in_tempdir(); // no shared_dir
+    let port: Arc<dyn ChannelPort> = as_port(adapter);
+
+    let creator = PrincipalId::generate();
+    let chan = port
+        .create(&creator, CreateOpts::runtime("team"))
+        .await
+        .expect("create");
+
+    let err = port
+        .pin_to_shared(&chan)
+        .await
+        .expect_err("pin_to_shared must fail without shared_dir");
+    assert!(
+        matches!(err, ChannelError::Adapter(_)),
         "got {err:?}"
     );
 }

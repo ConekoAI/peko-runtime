@@ -927,6 +927,16 @@ pub enum RequestPacket {
         #[serde(default)]
         default_subagent_type: Option<String>,
     },
+
+    /// Copy a Runtime-tier channel into the Shared tier (PR-3d).
+    /// Authority gate (`channel:write_shared`) is enforced by the
+    /// daemon handler; the in-process CLI fallback path performs
+    /// the same check via `RuntimeAuthority`.
+    #[serde(rename = "channel_pin_to_shared")]
+    ChannelPinToShared {
+        request_id: u64,
+        channel: String,
+    },
 }
 
 impl RequestPacket {
@@ -1028,7 +1038,8 @@ impl RequestPacket {
             | Self::ChannelList { request_id, .. }
             | Self::ChannelConfigGet { request_id, .. }
             | Self::ChannelLeave { request_id, .. }
-            | Self::ChannelConfigSet { request_id, .. } => *request_id,
+            | Self::ChannelConfigSet { request_id, .. }
+            | Self::ChannelPinToShared { request_id, .. } => *request_id,
         }
     }
 
@@ -1263,6 +1274,16 @@ pub enum ResponsePacket {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
         config: peko_channel::ConfigOnDisk,
+    },
+
+    /// Shared-tier pin acknowledged. `shared_path` is the absolute
+    /// Shared root the channel directory was copied to. The Runtime
+    /// source dir remains (COPY semantics — see PR-3d plan).
+    #[serde(rename = "channel_pinned_to_shared")]
+    ChannelPinnedToShared {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        shared_path: String,
     },
 
     /// Quota status snapshot (F18). Carries the principal's live
@@ -2624,7 +2645,8 @@ impl ResponsePacket {
             | Self::ChannelListResult { request_id, .. }
             | Self::ChannelConfigResult { request_id, .. }
             | Self::ChannelLeft { request_id, .. }
-            | Self::ChannelConfigSetResult { request_id, .. } => *request_id,
+            | Self::ChannelConfigSetResult { request_id, .. }
+            | Self::ChannelPinnedToShared { request_id, .. } => *request_id,
         }
     }
 
@@ -2724,6 +2746,7 @@ impl ResponsePacket {
             Self::ChannelConfigResult { .. } => "ChannelConfigResult",
             Self::ChannelLeft { .. } => "ChannelLeft",
             Self::ChannelConfigSetResult { .. } => "ChannelConfigSetResult",
+            Self::ChannelPinnedToShared { .. } => "ChannelPinnedToShared",
         }
     }
 

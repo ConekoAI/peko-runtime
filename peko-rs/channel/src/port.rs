@@ -164,6 +164,18 @@ pub trait ChannelPort: Send + Sync + 'static {
         channel: &ChannelId,
         config: &ConfigOnDisk,
     ) -> Result<()>;
+
+    /// Copy an existing Runtime-tier channel into the adapter's
+    /// Shared tier (PR-3d). Returns the absolute Shared path on
+    /// success. COPY semantics — the Runtime source remains so the
+    /// channel is still reachable from `peko channel show`. Adapters
+    /// without a Shared dir (CLI fallback that only knows the
+    /// runtime dir) must return `ChannelError::Adapter` with a
+    /// clear message.
+    async fn pin_to_shared(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<std::path::PathBuf>;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,24 +211,40 @@ pub struct CreateOpts {
 }
 
 impl CreateOpts {
-    /// Construct a Runtime-tier `CreateOpts` (the only valid tier in PR-1).
+    /// Construct a Runtime-tier `CreateOpts` (PR-1 default).
     pub fn runtime(name: impl Into<String>) -> Self {
         Self { name: name.into(), tier: Tier::Runtime }
     }
+
+    /// Construct a Shared-tier `CreateOpts` (PR-3d). The caller is
+    /// responsible for the authority gate — the CLI does this via the
+    /// Phase B `RuntimeAuthority::write_shared_channels` check.
+    pub fn shared(name: impl Into<String>) -> Self {
+        Self { name: name.into(), tier: Tier::Shared }
+    }
 }
 
-/// Storage tier. PR-1 only supports [`Tier::Runtime`].
+/// Storage tier. PR-1 supported [`Tier::Runtime`] only.
+///
+/// PR-3d adds [`Tier::Shared`]: a channel created with this tier (or
+/// promoted via [`ChannelPort::pin_to_shared`]) lives under the
+/// principal's shared root (`<shared_dir>/channels/<channel_id>/...`)
+/// so other principals on the same runtime can discover it.
 ///
 /// **DO NOT** introduce a 4th tier — channels live *in* an existing
-/// tier, not as their own. PR-3 will add the `PinToShared` operation
-/// that promotes an existing Runtime channel to the Shared tier (the
-/// Phase B authority gate is reused as-is).
+/// tier, not as their own. The Phase B authority gate (`write_shared`)
+/// is reused as-is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tier {
     /// `<runtime_dir>/channels/<channel_id>/...` — ephemeral,
     /// session-scoped. Default.
     #[default]
     Runtime,
+    /// `<shared_dir>/channels/<channel_id>/...` — visible across
+    /// principals (PR-3d). Must be opted in via `pin_to_shared`; we
+    /// do NOT default-create channels in Shared because that would
+    /// silently leak session state to other principals.
+    Shared,
 }
 
 /// Per-principal per-channel checkpoint — opaque cursor into the

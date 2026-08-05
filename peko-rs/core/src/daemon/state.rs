@@ -504,6 +504,14 @@ impl AppState {
         // The `Arc<PlanChannelAdapter>` constructor needs a concrete
         // `PathBuf`, not a borrow.
         let channel_runtime_dir = path_resolver.runtime_dir();
+        // PR-3d: capture the Shared-tier channel parent. Per-principal
+        // SharedLayout::channels_dir lives under each principal's
+        // shared root; we use the principals root as the parent
+        // because `pin_to_shared` will resolve per-channel inside.
+        // Concrete-per-principal resolution happens at the
+        // `RuntimeAuthority` seam (deferred — PR-3d wires the trait
+        // surface; production auth gate lives in PR-4).
+        let channel_shared_root = path_resolver.principals_root_dir();
 
         // Load the unified credential vault before identity/provider setup.
         // Wrap in Arc so both the daemon's SecretStore (passed to the
@@ -927,6 +935,14 @@ impl AppState {
             channel_port: Arc::new(peko_channel::PlanChannelAdapter::new(
                 peko_channel::ChannelConfig {
                     runtime_dir: channel_runtime_dir.clone(),
+                    // PR-3d: Shared-tier root for `pin_to_shared`.
+                    // The adapter's `channel_dir_for(Tier::Shared, ch)`
+                    // joins `<shared_dir>/channels/<chan_id>/`. Using
+                    // the principals root here means each principal's
+                    // channels/ subdir under their shared layout is
+                    // reachable. Per-principal resolution will land
+                    // when the production authority gate is wired.
+                    shared_dir: Some(channel_shared_root.clone()),
                 },
             )) as Arc<dyn peko_channel::ChannelPort>,
             peer_registry,

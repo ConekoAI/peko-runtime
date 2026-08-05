@@ -203,6 +203,21 @@ impl ChannelCliRouter {
         self.port.save_config(channel, config).await?;
         Ok(config.clone())
     }
+
+    /// `peko channel pin-to-shared <channel>` — copy a Runtime-tier
+    /// channel into the adapter's Shared tier (PR-3d). Returns the
+    /// absolute Shared path. COPY semantics — the Runtime source
+    /// remains. The authority gate (`channel:write_shared`) is
+    /// enforced upstream by the daemon IPC handler; the CLI does the
+    /// same check via `RuntimeAuthority::write_shared_channels` on
+    /// the daemon path. The in-process fallback path is gated the
+    /// same way in the CLI dispatch arm.
+    pub async fn handle_pin_to_shared(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<std::path::PathBuf> {
+        self.port.pin_to_shared(channel).await
+    }
 }
 
 // ---------------------------------------------------------------------------
