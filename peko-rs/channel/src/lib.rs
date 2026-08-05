@@ -83,7 +83,7 @@ pub mod subscription;
 pub use caps::intersect_member_caps;
 pub use cli_handlers::ChannelCliRouter;
 pub use config::ConfigOnDisk;
-pub use cost::NoopChannelMeter;
+pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
 pub use plan_channel::{ChannelConfig, PlanChannelAdapter};
 pub use port::{ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, Result, Tier};

@@ -2204,6 +2204,17 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
         self.channel_port.clone()
     }
 
+    fn channel_meter(&self) -> Arc<dyn peko_channel::ChannelMeter> {
+        // PR-3c: production daemon wires the audit ring buffer so
+        // `peko audit list --type channel.` surfaces channel
+        // observation history. The meter is created once at AppState
+        // construction; the subscription loops clone the Arc into
+        // each per-(principal, channel) ChannelSubscriber.
+        Arc::new(peko_channel::AuditChannelMeter::new(
+            self.observability.clone(),
+        ))
+    }
+
     fn principal_manager(
         &self,
     ) -> Option<&Arc<crate::principal::manager::PrincipalManager>> {

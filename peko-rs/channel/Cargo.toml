@@ -41,6 +41,11 @@ repository = "https://github.com/ConekoAI/peko-runtime"
 peko-plan = { path = "../plan" }
 # Wire types — re-exported through `lib.rs` for ergonomic callers.
 peko-protocol = { path = "../protocol" }
+# Audit ring buffer sink for `AuditChannelMeter` (PR-3c). `peko-observability`
+# only depends on `peko-auth` (Subject for caller attribution) so this
+# doesn't violate the `peko-core` / `peko-engine` / `peko-cron` /
+# `peko-extension-*` forbidden-deps rule.
+peko-observability = { path = "../observability" }
 
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }

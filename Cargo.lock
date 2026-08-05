@@ -2367,6 +2367,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "peko-observability",
  "peko-plan",
  "peko-protocol",
  "serde",

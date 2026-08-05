@@ -46,6 +46,15 @@ pub(crate) trait ChannelHost: Send + Sync {
     /// Channel port for all `ChannelPort` operations.
     fn channel_port(&self) -> Arc<dyn ChannelPort>;
 
+    /// Per-event channel meter (PR-3c). Default returns the no-op
+    /// meter so test hosts don't need to override. Production hosts
+    /// (`AppState`) override to return an `AuditChannelMeter` wired
+    /// to the daemon's `Observability` so `peko audit list --type
+    /// channel.` shows channel observation history.
+    fn channel_meter(&self) -> Arc<dyn peko_channel::ChannelMeter> {
+        peko_channel::cost::noop_meter()
+    }
+
     /// Principal manager (optional — defaults to `None`). When
     /// `None`, principal-name resolution fails for every variant
     /// that carries one.
