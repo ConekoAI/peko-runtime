@@ -69,6 +69,7 @@
 
 pub mod caps;
 pub mod cli_handlers;
+pub mod config;
 pub mod cost;
 pub mod cursors;
 pub mod plan_channel;
@@ -81,6 +82,7 @@ pub mod subscription;
 // `peko-rs/cron/src/lib.rs:53-67`.
 pub use caps::intersect_member_caps;
 pub use cli_handlers::ChannelCliRouter;
+pub use config::ConfigOnDisk;
 pub use cost::NoopChannelMeter;
 pub use cursors::ChannelCursors;
 pub use plan_channel::{ChannelConfig, PlanChannelAdapter};

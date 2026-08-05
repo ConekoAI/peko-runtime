@@ -30,6 +30,7 @@ use peko_plan::PrincipalId;
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
 use serde::{Deserialize, Serialize};
 
+use crate::config::ConfigOnDisk;
 use crate::port::{ChannelPort, Checkpoint, CreateOpts, PostMsg, Result};
 
 // ---------------------------------------------------------------------------
@@ -176,6 +177,16 @@ impl ChannelCliRouter {
         channel: &ChannelId,
     ) -> Result<ChannelMembership> {
         self.port.membership(channel).await
+    }
+
+    /// `peko channel config <channel>` — read the channel's per-channel
+    /// config (model_list, cost_ceiling_usd, default_subagent_type).
+    /// PR-2: read-only — mutation is reserved for PR-3's `pin` op.
+    pub async fn handle_config_get(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<ConfigOnDisk> {
+        self.port.load_config(channel).await
     }
 }
 

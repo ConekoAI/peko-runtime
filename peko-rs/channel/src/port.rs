@@ -19,6 +19,8 @@ use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::config::ConfigOnDisk;
+
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
@@ -137,6 +139,19 @@ pub trait ChannelPort: Send + Sync + 'static {
             created_at,
             last_membership_change: last_change,
         })
+    }
+
+    /// Load the channel's per-channel config. PR-2 introduces this
+    /// alongside `ConfigOnDisk`; the responder (commit 2b) calls it to
+    /// read `model_list` + `cost_ceiling_usd` before dispatching.
+    ///
+    /// Default impl returns `ConfigOnDisk::default()` so callers without
+    /// file-backed storage don't have to override. The file-backed
+    /// [`crate::PlanChannelAdapter`] overrides to actually read the
+    /// `<channel_dir>/config.toml` file.
+    async fn load_config(&self, channel: &ChannelId) -> Result<ConfigOnDisk> {
+        let _ = channel;
+        Ok(ConfigOnDisk::default())
     }
 }
 

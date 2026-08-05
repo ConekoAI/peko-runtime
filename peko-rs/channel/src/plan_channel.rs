@@ -58,6 +58,7 @@ use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
+use crate::config::ConfigOnDisk;
 use crate::port::{
     ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, Result, TaskId, Tier,
 };
@@ -424,6 +425,12 @@ impl ChannelPort for PlanChannelAdapter {
             members: vec![creator.to_string()],
         };
         meta.save(&chan_dir).await?;
+
+        // PR-2: seed config.toml with defaults so the file exists for
+        // the responder to read. PR-3 may add a `pin` op that re-writes
+        // config to a non-default state for Shared-tier channels.
+        ConfigOnDisk::default().save(&chan_dir).await?;
+
         Ok(channel)
     }
 
@@ -619,6 +626,13 @@ impl ChannelPort for PlanChannelAdapter {
             created_at: meta.created_at.to_rfc3339(),
             last_membership_change: last_change,
         })
+    }
+
+    async fn load_config(&self, channel: &ChannelId) -> Result<ConfigOnDisk> {
+        // Defense-in-depth: confirm the channel exists before reading
+        // its config (MetaJson::load returns NotFound for missing dirs).
+        let _ = MetaJson::load(&self.cfg.channel_dir(channel)).await?;
+        ConfigOnDisk::load(&self.cfg.channel_dir(channel)).await
     }
 }
 

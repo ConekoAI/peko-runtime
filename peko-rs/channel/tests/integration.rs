@@ -20,7 +20,7 @@ use peko_channel::port::{Checkpoint, CreateOpts, PostMsg, Tier};
 use peko_channel::responder::{ChannelResponder, RespondCtx};
 use peko_channel::subscription::SubscriptionConfig;
 use peko_channel::{
-    ChannelCliRouter, ChannelConfig, ChannelId, ChannelPort, PlanChannelAdapter,
+    ChannelCliRouter, ChannelConfig, ChannelId, ChannelPort, ConfigOnDisk, PlanChannelAdapter,
 };
 use peko_plan::PrincipalId;
 use peko_protocol::channel::ChannelEvent;
@@ -119,6 +119,14 @@ async fn two_principals_full_lifecycle() {
     assert_eq!(member_strs.len(), 2);
     assert!(member_strs.contains(&alice.to_string()));
     assert!(member_strs.contains(&bob.to_string()));
+
+    // PR-2a: config.toml is seeded with defaults at create() time.
+    let cfg = port.load_config(&chan).await.expect("load_config");
+    assert_eq!(
+        cfg,
+        ConfigOnDisk::default(),
+        "freshly-created channel must have default config"
+    );
 
     // Each principal sees exactly one channel.
     let alice_chans = port.list_for_principal(&alice).await.expect("alice chans");
