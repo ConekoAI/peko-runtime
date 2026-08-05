@@ -107,6 +107,13 @@ pub(crate) struct AppState {
     /// Principal manager (AI Principal container lifecycle)
     principal_manager: Arc<PrincipalManager>,
 
+    /// PR-2c: file-backed channel port (`peko-channel` runtime-tier
+    /// store). One per daemon process; shared across IPC handler
+    /// invocations and the per-channel subscriber loops. Constructed
+    /// lazily at `AppState::build_internal` time using the typed
+    /// path resolver's `runtime_dir()`.
+    channel_port: Arc<dyn peko_channel::ChannelPort>,
+
     /// Runtime-owned, append-only chat-log store. Each principal
     /// boundary message that passes authorization is persisted here
     /// alongside its authoritative response. Distinct from the
@@ -491,6 +498,12 @@ impl AppState {
             data_dir.clone(),
             cache_dir.clone(),
         );
+
+        // PR-2c: capture the runtime-tier channel directory BEFORE the
+        // `path_resolver` is consumed by `RuntimeAuthority::for_runtime`.
+        // The `Arc<PlanChannelAdapter>` constructor needs a concrete
+        // `PathBuf`, not a borrow.
+        let channel_runtime_dir = path_resolver.runtime_dir();
 
         // Load the unified credential vault before identity/provider setup.
         // Wrap in Arc so both the daemon's SecretStore (passed to the
@@ -908,6 +921,14 @@ impl AppState {
             vault: Arc::clone(&vault),
             principal_manager,
             chat_log_store,
+            // PR-2c: instantiate the file-backed channel port against
+            // the typed path resolver's runtime dir. PR-1 only ships
+            // Runtime-tier; PR-3 may add a Shared-tier sibling adapter.
+            channel_port: Arc::new(peko_channel::PlanChannelAdapter::new(
+                peko_channel::ChannelConfig {
+                    runtime_dir: channel_runtime_dir.clone(),
+                },
+            )) as Arc<dyn peko_channel::ChannelPort>,
             peer_registry,
             lifecycle,
             session_service,
@@ -2171,6 +2192,22 @@ impl crate::ipc::handlers::cron::CronHost for AppState {
     /// `common::authority::RuntimeAuthority::local`).
     fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
         &self.authority
+    }
+}
+
+impl crate::ipc::handlers::channel::ChannelHost for AppState {
+    fn path_resolver(&self) -> crate::common::paths::PathResolver {
+        self.path_resolver.clone()
+    }
+
+    fn channel_port(&self) -> Arc<dyn peko_channel::ChannelPort> {
+        self.channel_port.clone()
+    }
+
+    fn principal_manager(
+        &self,
+    ) -> Option<&Arc<crate::principal::manager::PrincipalManager>> {
+        Some(&self.principal_manager)
     }
 }
 

@@ -830,6 +830,76 @@ pub enum RequestPacket {
         name: String,
         jti: String,
     },
+
+    // ─── PR-2c: channel IPC variants ─────────────────────────────
+    //
+    // The seven variants below mirror `peko_channel::cli_handlers`
+    // (the pure-port CLI router). PR-3 may add a Shared-tier
+    // `ChannelCreateShared` variant; PR-2 ships Runtime-tier only.
+    //
+    // Wire shape mirrors the `cli_handlers` request structs. Where
+    // the handler takes a `PrincipalId`, the wire carries the
+    // principal's display name (the daemon resolves it back to a
+    // `PrincipalId` via `ChannelHost::principal_manager`).
+
+    /// Create a new channel owned by `creator_name`.
+    #[serde(rename = "channel_create")]
+    ChannelCreate {
+        request_id: u64,
+        creator_name: String,
+        name: String,
+    },
+
+    /// Add `invitee_name` to `channel` (invited by `inviter_name`).
+    #[serde(rename = "channel_invite")]
+    ChannelInvite {
+        request_id: u64,
+        channel: String,
+        inviter_name: String,
+        invitee_name: String,
+    },
+
+    /// Post a message to `channel` from `sender_name`. `parent` is
+    /// the optional task_id of the message being replied to.
+    #[serde(rename = "channel_post")]
+    ChannelPost {
+        request_id: u64,
+        channel: String,
+        sender_name: String,
+        text: String,
+        parent: Option<String>,
+    },
+
+    /// List events for `channel` since `since` (None = from start).
+    #[serde(rename = "channel_peek")]
+    ChannelPeek {
+        request_id: u64,
+        channel: String,
+        since: Option<String>,
+    },
+
+    /// List members of `channel`.
+    #[serde(rename = "channel_members")]
+    ChannelMembers {
+        request_id: u64,
+        channel: String,
+    },
+
+    /// List channels where `principal_name` is a member.
+    #[serde(rename = "channel_list")]
+    ChannelList {
+        request_id: u64,
+        principal_name: String,
+    },
+
+    /// Read the channel's per-channel config (model_list, cost
+    /// ceiling, default subagent type). PR-2 read-only — mutation
+    /// lands in PR-3's `pin` op.
+    #[serde(rename = "channel_config_get")]
+    ChannelConfigGet {
+        request_id: u64,
+        channel: String,
+    },
 }
 
 impl RequestPacket {
@@ -922,7 +992,14 @@ impl RequestPacket {
             | Self::PrincipalSendControl { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
-            | Self::QuotaReset { request_id, .. } => *request_id,
+            | Self::QuotaReset { request_id, .. }
+            | Self::ChannelCreate { request_id, .. }
+            | Self::ChannelInvite { request_id, .. }
+            | Self::ChannelPost { request_id, .. }
+            | Self::ChannelPeek { request_id, .. }
+            | Self::ChannelMembers { request_id, .. }
+            | Self::ChannelList { request_id, .. }
+            | Self::ChannelConfigGet { request_id, .. } => *request_id,
         }
     }
 
@@ -1080,6 +1157,65 @@ pub enum ResponsePacket {
     /// Cron job removed response
     #[serde(rename = "cron_removed")]
     CronRemoved { request_id: u64, job_id: String },
+
+    // ─── PR-2c: channel IPC response variants ────────────────────
+    // Mirror the seven `RequestPacket::Channel*` variants 1:1.
+
+    /// Channel created — returns the new `ChannelId`.
+    #[serde(rename = "channel_created")]
+    ChannelCreated {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+    },
+
+    /// Invite acknowledged.
+    #[serde(rename = "channel_invited")]
+    ChannelInvited {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        invitee: peko_subject::PrincipalId,
+    },
+
+    /// Post acknowledged — returns the new task id.
+    #[serde(rename = "channel_posted")]
+    ChannelPosted {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        task_id: String,
+    },
+
+    /// Peek result — full event list since the requested cursor.
+    #[serde(rename = "channel_peek_result")]
+    ChannelPeekResult {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        events: Vec<peko_protocol::channel::ChannelEvent>,
+    },
+
+    /// Members list.
+    #[serde(rename = "channel_members_result")]
+    ChannelMembersResult {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        members: Vec<peko_subject::PrincipalId>,
+    },
+
+    /// List of channels where the principal is a member.
+    #[serde(rename = "channel_list_result")]
+    ChannelListResult {
+        request_id: u64,
+        principal: peko_subject::PrincipalId,
+        channels: Vec<peko_protocol::channel::ChannelId>,
+    },
+
+    /// Per-channel config payload (model_list, cost ceiling, default
+    /// subagent type).
+    #[serde(rename = "channel_config_result")]
+    ChannelConfigResult {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        config: peko_channel::ConfigOnDisk,
+    },
 
     /// Quota status snapshot (F18). Carries the principal's live
     /// `QuotaState` — used counters, configured limits (via the
@@ -2431,7 +2567,14 @@ impl ResponsePacket {
             | Self::Status { request_id, .. }
             | Self::QuotaStatus { request_id, .. }
             | Self::PrincipalInviteMinted { request_id, .. }
-            | Self::PrincipalInviteRevoked { request_id, .. } => *request_id,
+            | Self::PrincipalInviteRevoked { request_id, .. }
+            | Self::ChannelCreated { request_id, .. }
+            | Self::ChannelInvited { request_id, .. }
+            | Self::ChannelPosted { request_id, .. }
+            | Self::ChannelPeekResult { request_id, .. }
+            | Self::ChannelMembersResult { request_id, .. }
+            | Self::ChannelListResult { request_id, .. }
+            | Self::ChannelConfigResult { request_id, .. } => *request_id,
         }
     }
 
@@ -2522,6 +2665,13 @@ impl ResponsePacket {
             Self::QuotaStatus { .. } => "QuotaStatus",
             Self::PrincipalInviteMinted { .. } => "PrincipalInviteMinted",
             Self::PrincipalInviteRevoked { .. } => "PrincipalInviteRevoked",
+            Self::ChannelCreated { .. } => "ChannelCreated",
+            Self::ChannelInvited { .. } => "ChannelInvited",
+            Self::ChannelPosted { .. } => "ChannelPosted",
+            Self::ChannelPeekResult { .. } => "ChannelPeekResult",
+            Self::ChannelMembersResult { .. } => "ChannelMembersResult",
+            Self::ChannelListResult { .. } => "ChannelListResult",
+            Self::ChannelConfigResult { .. } => "ChannelConfigResult",
         }
     }
 
