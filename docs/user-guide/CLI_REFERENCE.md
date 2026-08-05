@@ -373,6 +373,85 @@ peko search info acme/researcher
 
 ---
 
+### `channel` — Multi-Principal Channels
+
+Multi-principal chat primitives (PR-1+). A channel is a small fan-out
+chat room: up to 8 members, file-backed event log keyed at the channel
+id. Members can post, reply, and peek; the engine observes every event
+through the audit ring buffer regardless of who reads.
+
+```bash
+peko channel <SUBCOMMAND>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `create <CREATOR> <NAME>` | Create a channel owned by `creator`. |
+| `invite <CHANNEL> <INVITER> <INVITEE>` | Add `invitee` to `channel` (inviter must already be a member). |
+| `post <CHANNEL> <SENDER> <TEXT>` | Post a message (optional `--parent` for replies). |
+| `peek <CHANNEL> [--since CURSOR]` | Read events from the log (JSON). |
+| `members <CHANNEL>` | List current members. |
+| `ls <PRINCIPAL>` | List channels where a principal is a member. |
+| `show <CHANNEL>` | Membership snapshot (display name + members). |
+| `config <CHANNEL>` | Per-channel config (model_list, cost ceiling, default subagent type). |
+| `leave <CHANNEL> <PRINCIPAL>` | Remove `principal` from `channel`. |
+| `pin <CHANNEL>` | Pin a channel for the calling principal. |
+| `pin-to-shared <CHANNEL>` | Copy a Runtime-tier channel into the Shared tier (PR-3d). |
+
+All subcommands accept `--json` for machine-readable output.
+
+#### Examples
+
+```bash
+# Create + post + read
+peko channel create alice "team alpha"
+peko channel invite chan_a1b2c3d4 alice bob
+peko channel post chan_a1b2c3d4 alice "hello team"
+peko channel peek chan_a1b2c3d4 --json
+
+# Read on a cron schedule — see the recipe below.
+```
+
+#### Reading a channel on a schedule (`peko channel poll`)
+
+The `peko_channel_read` built-in tool lets any principal's agentic loop
+read its own channel events on demand. To pull events on an interval
+without the principal being online, schedule the tool via `CronCreate`:
+
+```bash
+# Read chan_xxx every 30 seconds for principal `bob`.
+peko cron add \
+  --principal bob \
+  --tool ChannelRead \
+  --params '{"channel":"chan_a1b2c3d4","limit":50}' \
+  --every 30000
+```
+
+The cron engine loads enabled jobs on its next tick
+(`peko-rs/core/src/daemon/cron_engine/mod.rs`) and dispatches each
+`SpawnTool` job through `AsyncExecutor`, attributing the run to the
+job's `principal_id`. The `ChannelRead` invocation runs under the
+principal's capability snapshot at dispatch time — same boundary model
+as any other async tool run. Add `--wake-on-completion` to surface a
+steer message into `bob`'s root inbox when a non-empty read completes.
+
+Use `peko cron list --principal bob` to confirm the job landed and
+`peko cron delete <JOB_ID>` to remove it.
+
+#### Tools backing `peko channel`
+
+| Tool name | Who invokes it | What it does |
+|-----------|----------------|-------------|
+| `ChannelRead` | Principal's agentic loop (on demand), or `CronCreate`'s `SpawnTool` (scheduled). | Reads the channel's event log via `ChannelPort::peek`, scoped to the calling principal's membership. |
+
+PR-3c observes every channel event (post, invite, leave, pin) in the
+audit ring buffer regardless of whether the tool fires — so the
+principal boundary stays intact even when no one is reading.
+
+---
+
 ### `ext` — Extension Management
 
 Manage extensions (skills, MCP, tools, channels, hooks).
