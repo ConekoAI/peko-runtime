@@ -4,6 +4,48 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Multi-model subagents (PR #346)
+
+All four phases merged as one squashed commit (`ee4895a6`).
+
+#### Added
+- **Per-spawn model choice.** `AgentTool`'s `model: Option<String>`
+  parameter is no longer a no-op — the parent's choice is threaded
+  through `SpawnRequest` → `ExecutionConfig.model_override` →
+  `SubagentRuntime::resolve_agent_config` →
+  `SubagentExecutor::execute_subagent_task`. Pre-flight
+  `SpecGate::check` runs against the override so a parent picking
+  Opus for a tool-using subagent with an opus-without-vision spec
+  is refused **before** any LLM traffic. Refusals surface as
+  `SpawnError::SpecGateFailed { model_id, reason }`.
+- **F39 production quota wiring.** Every `SubagentExecutor::new`
+  site chains `.with_quota_meter()` / `.with_peer_meter()` so
+  subagent LLM calls are attributed to the spawning principal
+  (previously fell open to `unlimited()`).
+- **`model_list` builtin tool.** Parent agents can discover their
+  principal's catalog in-band. Filter args: `filter`
+  (`vision | tools | thinking | priced | json_mode`) AND-combined
+  with `contains <NEEDLE>` (matches `id` case-sensitive,
+  `display_name` and `note` case-insensitive).
+- **Per-model user notes.** `ModelConfig.note: Option<String>` (≤500
+  chars, validated by `upsert()`). CLI: `peko model add --note`,
+  `peko model edit --note` (empty clears), `peko model show` prints
+  the block, `peko model list --detailed` truncates to 80 chars.
+- **Two-gate cost ceiling.**
+  `QuotaConfig.cost_per_call_max` runs at spawn time
+  (`SubagentExecutor::spawn_and_execute`); `budget_per_cycle`
+  runs mid-stream (`QuotaMeter::try_charge_with_cost`). Refusals
+  surface as `SpawnError::CostCeilingExceeded { estimated,
+  ceiling, model_id }`. `QuotaState.cost_usd` persists cycle
+  spend across restarts.
+- **First-use-per-model audit warnings.** `peko-engine` gained an
+  `AuditSink` trait (typed `AuditEventView`; orphan-rule
+  workaround via free `severity_into_obs`). The engine emits a
+  `model.selected` audit event at `Warning` severity the first
+  time `(principal, model)` fires, `Info` thereafter. First-use
+  state persists to `<workspace>/seen_models.json` (atomic write,
+  corrupt-file tolerant).
+
 ### Chat-session separation (PRs forthcoming)
 
 The runtime now keeps two distinct stores of conversation data,

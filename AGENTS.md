@@ -470,6 +470,100 @@ Every `pub mod` in `src/lib.rs` carries an inline `[kept]` or
   `pub(crate)` so the public surface of `peko` (lib) reflects only
   the CLI binary + thin composition.
 
+### Multi-model subagents (merged PR #346, commit `ee4895a6`)
+
+The merged feature ships in 4 layers. None of this is tunable through
+the CLI today — operators edit `principal.toml` directly (or set
+config keys when adding a model) for the new quota knobs.
+
+- **Per-spawn model choice** — `AgentTool`'s `model: Option<String>`
+  JSON schema field is no longer a no-op. Threading:
+  `SpawnRequest.model` → `ExecutionConfig.model_override` →
+  `SubagentRuntime::resolve_agent_config` →
+  `SubagentExecutor::execute_subagent_task`. Pre-flight
+  `SpecGate::check` runs against the override so a parent picking
+  Opus for a tool-using subagent with an opus-without-vision spec
+  is refused **before** any LLM traffic. The `SpecGate` refusal
+  surfaces as `SpawnError::SpecGateFailed { model_id, reason }`
+  (post-merge audit fix) for parity with the other typed
+  `SpawnError` variants.
+- **F39 production quota wiring** — every `SubagentExecutor::new`
+  call site chains `.with_quota_meter(...)` and
+  `.with_peer_meter(...)` from `ctx.quota_meter()` /
+  `ctx.peer_meter()`. Three sites: `agents/agent.rs` (root agent),
+  `principal/agent_runner.rs` (production builder), and
+  `agents/subagent_executor.rs` (recursive sub-subagents inherit
+  parent meters so they charge the spawning principal, not
+  `unlimited()`). Comment at `subagent_executor.rs:1175-1182`
+  spells out the intent.
+- **`ModelConfig.note: Option<String>`** — sibling of `spec`, NOT
+  inside `ModelSpec` (spec stays capability-pure). 500-char cap,
+  validated by `upsert()`. CLI: `peko model add/edit --note "..."`,
+  `peko model edit --note ""` clears, `peko model show` prints the
+  block, `peko model list --detailed` truncates to 80 chars.
+- **`model_list` builtin tool** at
+  `peko-rs/core/src/tools/builtin/model_list.rs`. Mirrors
+  `ToolSearchTool` exactly: `Weak<ModelCatalog>`, exposure
+  `Direct`, `parallelizable() == true`, schema-driven `execute()`.
+  Output shape `{count, entries: [ModelSummary, …]}` is
+  byte-for-byte the same as `peko model list --json` (single
+  source of truth via `model_summary_from_config`).
+  - Filter args: `filter` (`vision|tools|thinking|priced|json_mode`)
+    AND-combined with `contains <NEEDLE>` (case-sensitive on `id`,
+    case-insensitive on `display_name` and `note`). `contains
+    "cron"` finds a model tagged "very cheap, use it for cron"
+    even when the id is unrelated.
+  - Registration funnel: `Agent::init_builtins_async` only
+    instantiates when **both** `enable_model_list: true` (default)
+    AND a bound `Arc<ModelCatalog>` are present. CLI stateless
+    path without a resolver skips registration silently.
+- **Two-gate cost ceiling** in `peko-rs/quota/src/config.rs`:
+  - `cost_per_call_max: Option<f64>` — **spawn-time pre-flight**
+    in `SubagentExecutor::spawn_and_execute`. Conservative 4K-in +
+    1K-out token projection × `PricingHint.input_per_million` /
+    `output_per_million`. Refuses the spawn with
+    `SpawnError::CostCeilingExceeded { estimated, ceiling,
+    model_id }` before any LLM traffic.
+  - `budget_per_cycle: Option<f64>` — **mid-stream rolling cap**
+    via `QuotaMeter::try_charge_with_cost` (called from
+    `StackedMeteredProvider`). Folds `cost = input/1e6 *
+    input_per_million + output/1e6 * output_per_million` alongside
+    token/request counters. The two gates are complementary: spawn
+    pre-flight catches obvious misuse (picking Opus with a $0.001
+    cap), mid-stream catches over-runs of the projection.
+  - Persistence: `QuotaState.cost_usd: Option<f64>` carries the
+    running cycle spend across restarts.
+  - **User-facing CLI gap:** `cost_per_call_max` is the only Phase-3
+    knob requiring hand-edit of `principal.toml` — every other
+    quota field is settable via `peko quota set`. A
+    `peko quota set-cost-ceiling <principal> <usd>` helper is
+    deferred to a follow-up PR.
+- **`AuditSink` trait port** at `peko-rs/engine/src/audit_sink.rs`.
+  The trait carries a typed `AuditEventView` (not the heavier
+  `AuditEvent`) so `peko-engine` stays decoupled from
+  `peko-observability`. Orphan-rule workaround: free function
+  `severity_into_obs(EngineSeverity) -> ObsSeverity` at
+  `peko-rs/core/src/observability/mod.rs` (no `impl From`). The
+  production impl `ObservabilityAuditSink` holds
+  `Arc<peko_observability::Observability>` and dispatches via
+  `tokio::task::spawn` (fire-and-forget; panics surface through
+  the multi-thread runtime's background logging).
+- **`seen_models.json` first-use state** at
+  `peko-rs/core/src/principal/seen_models.rs`. Path:
+  `<workspace_path>/seen_models.json`. Atomic-write pattern
+  (`serialize → .tmp → sync_all → rename`) mirrors
+  `daemon/config_drift.rs:17-21, 274-298`. Shape:
+  `{version: 1, models: [...]}` (`BTreeSet<String>` for stable
+  JSON). Tolerated by `PrincipalContext::init`: corrupt-file ⇒
+  warn + fall open to empty.
+- **`AgenticLoop` emissions** — `model.selected` fires after
+  every successful LLM call. Severity: `Warning` when
+  `audit_first_use_for_model(model_id)` returns `true` (first
+  `(principal, model)` use), `Info` thereafter. `details:
+  {first_use: bool}`. The lookup closure captures
+  `Arc<Mutex<BTreeSet<String>>>` so it stays `'static + Send +
+  Sync`; the engine never holds a `&PrincipalContext` reference.
+
 ### Local quick feedback loop
 
 ```bash
