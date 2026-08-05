@@ -322,3 +322,110 @@ pub enum ChannelError {
 /// Crate-level result alias. Every fallible function in `peko-channel`
 /// returns `Result<T, ChannelError>`.
 pub type Result<T> = std::result::Result<T, ChannelError>;
+
+// ---------------------------------------------------------------------------
+// NoopChannelPort
+// ---------------------------------------------------------------------------
+
+/// A `ChannelPort` that returns `Adapter` for every method. Used by
+/// tests + `ToolRuntime::register_builtins` callers that don't have a
+/// real adapter wired up yet. The `ChannelRead` tool still works through
+/// this — `peek` returns `Adapter`, which surfaces as a hard error to
+/// the LLM (no silent zero events).
+///
+/// Lives here (next to `ChannelPort`) so the test-only registration
+/// sites in `ToolRuntime` don't have to invent their own no-op type.
+#[derive(Debug, Default, Clone)]
+pub struct NoopChannelPort;
+
+#[async_trait]
+impl ChannelPort for NoopChannelPort {
+    async fn create(
+        &self,
+        _creator: &PrincipalId,
+        _opts: CreateOpts,
+    ) -> Result<ChannelId> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn invite(
+        &self,
+        _channel: &ChannelId,
+        _inviter: &PrincipalId,
+        _invitee: &PrincipalId,
+    ) -> Result<()> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn post(
+        &self,
+        _channel: &ChannelId,
+        _sender: &PrincipalId,
+        _msg: PostMsg,
+    ) -> Result<TaskId> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn peek(
+        &self,
+        _channel: &ChannelId,
+        _since: &Checkpoint,
+    ) -> Result<Vec<ChannelEvent>> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn leave(
+        &self,
+        _channel: &ChannelId,
+        _principal: &PrincipalId,
+    ) -> Result<()> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn list_members(
+        &self,
+        _channel: &ChannelId,
+    ) -> Result<Vec<PrincipalId>> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn list_for_principal(
+        &self,
+        _principal: &PrincipalId,
+    ) -> Result<Vec<ChannelId>> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn save_config(
+        &self,
+        _channel: &ChannelId,
+        _config: &ConfigOnDisk,
+    ) -> Result<()> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn pin_to_shared(
+        &self,
+        _channel: &ChannelId,
+    ) -> Result<std::path::PathBuf> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+}

@@ -17,8 +17,9 @@ use crate::common::paths::PathResolver;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::tools::builtin::BashTool;
-use crate::tools::builtin::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
+use crate::tools::builtin::{ChannelReadTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use anyhow::Result;
+use peko_channel::{ChannelPort, NoopChannelPort};
 use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
 use peko_tools_core::Tool;
 use std::path::PathBuf;
@@ -33,11 +34,19 @@ use tracing::info;
 /// - `Agent` (delegated from `init_builtins_async`)
 /// - The daemon (for async task execution)
 /// - Future job runners (cron, webhooks, etc.)
-#[derive(Debug, Clone)]
+///
+/// `Debug` is intentionally not derived: the `channel_port` field is
+/// `Arc<dyn ChannelPort>`, which doesn't implement `Debug`. The
+/// concrete impls (e.g. `PlanChannelAdapter`) may add their own
+/// `Debug` derives later; for now `Clone` is enough — runtime owners
+/// rarely need formatted debug output, and the field-by-field accessors
+/// below cover the diagnostic surfaces.
+#[derive(Clone)]
 pub struct ToolRuntime {
     extension_core: Arc<ExtensionCore>,
     path_resolver: PathResolver,
     workspace: PathBuf,
+    channel_port: Arc<dyn ChannelPort>,
 }
 
 impl ToolRuntime {
@@ -50,38 +59,83 @@ impl ToolRuntime {
         Self::with_workspace(path_resolver, workspace).await
     }
 
-    /// Create with a specific workspace
+    /// Create with a specific workspace. Channel port defaults to
+    /// [`NoopChannelPort`] (calls into `ChannelRead` from this runtime
+    /// will surface `Adapter` errors). Production callers should use
+    /// [`Self::with_workspace_and_core`] (which takes the port) or
+    /// [`Self::with_workspace_channel_port`].
     pub async fn with_workspace(
         path_resolver: PathResolver,
         workspace: impl Into<PathBuf>,
     ) -> Result<Self> {
         let workspace = workspace.into();
-        let extension_core = Arc::new(ExtensionCore::new());
-        Self::register_builtins(&extension_core, &path_resolver).await?;
-
-        Ok(Self {
-            extension_core,
-            path_resolver,
-            workspace,
-        })
+        let channel_port: Arc<dyn ChannelPort> = Arc::new(NoopChannelPort);
+        Self::with_workspace_channel_port(path_resolver, workspace, channel_port).await
     }
 
-    /// Create with a specific workspace and an existing ExtensionCore
+    /// Create with a specific workspace and an existing ExtensionCore.
+    /// Channel port defaults to [`NoopChannelPort`]; production daemon
+    /// code uses [`Self::with_workspace_and_core_and_channel_port`]
+    /// (the three-arg shape) to wire the real adapter in.
     ///
-    /// Used by the daemon to register tools with the global ExtensionCore
-    /// so that agents created later can find them.
+    /// Used by the daemon to register tools with the global
+    /// ExtensionCore so that agents created later can find them.
     pub async fn with_workspace_and_core(
         path_resolver: PathResolver,
         workspace: impl Into<PathBuf>,
         extension_core: Arc<ExtensionCore>,
     ) -> Result<Self> {
+        let channel_port: Arc<dyn ChannelPort> = Arc::new(NoopChannelPort);
+        Self::with_workspace_and_core_and_channel_port(
+            path_resolver,
+            workspace,
+            extension_core,
+            channel_port,
+        )
+        .await
+    }
+
+    /// Three-arg variant that wires a real `ChannelPort` adapter in
+    /// so `ChannelRead` works through this runtime. Production daemon
+    /// start path uses this (`daemon/state.rs:685`).
+    ///
+    /// # Errors
+    /// Returns an error if built-in tool registration fails.
+    pub async fn with_workspace_and_core_and_channel_port(
+        path_resolver: PathResolver,
+        workspace: impl Into<PathBuf>,
+        extension_core: Arc<ExtensionCore>,
+        channel_port: Arc<dyn ChannelPort>,
+    ) -> Result<Self> {
         let workspace = workspace.into();
-        Self::register_builtins(&extension_core, &path_resolver).await?;
+        Self::register_builtins(&extension_core, &path_resolver, channel_port.clone()).await?;
 
         Ok(Self {
             extension_core,
             path_resolver,
             workspace,
+            channel_port,
+        })
+    }
+
+    /// Two-arg variant of [`Self::with_workspace`] with a real port.
+    ///
+    /// # Errors
+    /// Returns an error if built-in tool registration fails.
+    pub async fn with_workspace_channel_port(
+        path_resolver: PathResolver,
+        workspace: impl Into<PathBuf>,
+        channel_port: Arc<dyn ChannelPort>,
+    ) -> Result<Self> {
+        let workspace = workspace.into();
+        let extension_core = Arc::new(ExtensionCore::new());
+        Self::register_builtins(&extension_core, &path_resolver, channel_port.clone()).await?;
+
+        Ok(Self {
+            extension_core,
+            path_resolver,
+            workspace,
+            channel_port,
         })
     }
 
@@ -105,12 +159,14 @@ impl ToolRuntime {
     ) -> Result<Self> {
         let workspace = workspace.into();
         let extension_core = Arc::new(ExtensionCore::with_services(services));
-        Self::register_builtins(&extension_core, &path_resolver).await?;
+        let channel_port: Arc<dyn ChannelPort> = Arc::new(NoopChannelPort);
+        Self::register_builtins(&extension_core, &path_resolver, channel_port.clone()).await?;
 
         Ok(Self {
             extension_core,
             path_resolver,
             workspace,
+            channel_port,
         })
     }
 
@@ -127,6 +183,7 @@ impl ToolRuntime {
     pub async fn register_builtins(
         extension_core: &ExtensionCore,
         path_resolver: &PathResolver,
+        channel_port: Arc<dyn ChannelPort>,
     ) -> Result<()> {
         let workspace = path_resolver
             .agent_workspace(".")
@@ -152,6 +209,13 @@ impl ToolRuntime {
             Arc::new(CronCreateTool::new()),
             Arc::new(CronDeleteTool::new()),
             Arc::new(CronListTool::new()),
+            // PR-4a — channel reading as a tool. The principal's
+            // agentic loop calls this on demand; the daemon-side
+            // audit ring buffer (PR-3c) observes every channel event
+            // regardless of whether the tool fires. The principal
+            // boundary is preserved because the principal invokes the
+            // tool itself.
+            Arc::new(ChannelReadTool::new(channel_port)),
         ];
 
         // Built-in tools are visible to every principal and registered exactly

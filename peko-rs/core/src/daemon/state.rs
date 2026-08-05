@@ -681,11 +681,24 @@ impl AppState {
 
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.
+        // PR-4a: wire the daemon's real `channel_port` so `ChannelRead`
+        // resolves to the file-backed `PlanChannelAdapter` (PR-1) and
+        // can be invoked from any principal's agentic loop. The port
+        // is built first so we can both register it with the tool
+        // runtime and store it on `AppState` (line ~939) without
+        // doubling up the adapter construction.
+        let channel_port: Arc<dyn peko_channel::ChannelPort> =
+            Arc::new(peko_channel::PlanChannelAdapter::new(peko_channel::ChannelConfig {
+                runtime_dir: channel_runtime_dir.clone(),
+                // PR-3d: Shared-tier root for `pin_to_shared`.
+                shared_dir: Some(channel_shared_root.clone()),
+            }));
         let tool_runtime = Arc::new(
-            ToolRuntime::with_workspace_and_core(
+            ToolRuntime::with_workspace_and_core_and_channel_port(
                 path_resolver_clone.clone(),
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 Arc::clone(&global_core),
+                channel_port.clone(),
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create tool runtime: {e}"))?,
@@ -932,19 +945,7 @@ impl AppState {
             // PR-2c: instantiate the file-backed channel port against
             // the typed path resolver's runtime dir. PR-1 only ships
             // Runtime-tier; PR-3 may add a Shared-tier sibling adapter.
-            channel_port: Arc::new(peko_channel::PlanChannelAdapter::new(
-                peko_channel::ChannelConfig {
-                    runtime_dir: channel_runtime_dir.clone(),
-                    // PR-3d: Shared-tier root for `pin_to_shared`.
-                    // The adapter's `channel_dir_for(Tier::Shared, ch)`
-                    // joins `<shared_dir>/channels/<chan_id>/`. Using
-                    // the principals root here means each principal's
-                    // channels/ subdir under their shared layout is
-                    // reachable. Per-principal resolution will land
-                    // when the production authority gate is wired.
-                    shared_dir: Some(channel_shared_root.clone()),
-                },
-            )) as Arc<dyn peko_channel::ChannelPort>,
+            channel_port: channel_port.clone(),
             peer_registry,
             lifecycle,
             session_service,

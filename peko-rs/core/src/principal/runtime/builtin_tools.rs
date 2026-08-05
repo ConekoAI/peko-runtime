@@ -4,10 +4,11 @@
 //! per-principal extension catalog builder) reads these lists to compute
 //! `enabled` flags for the catalog items. The host crate does not own these
 //! names — they are the canonical contract between the framework's
-//! `BuiltinToolAdapter::register_all()` and the principal layer's view of
-//! which built-ins are available.
+//! `ToolRuntime::register_builtins` call (in
+//! `peko-rs/core/src/engine/tool_runtime.rs`) and the principal layer's view
+//! of which built-ins are available.
 
-/// Tools registered once at daemon startup by `BuiltinToolAdapter::register_all()`.
+/// Tools registered once at daemon startup by `ToolRuntime::register_builtins`.
 pub const GLOBAL_TOOL_NAMES: &[&str] = &[
     "Bash",
     "Read",
@@ -23,6 +24,10 @@ pub const GLOBAL_TOOL_NAMES: &[&str] = &[
     "AsyncList",
     "AsyncStop",
     "Skill",
+    // PR-4a — channel reading as a tool. The principal's agentic
+    // loop calls this on demand; principal boundary preserved
+    // because the principal invokes the tool itself.
+    "ChannelRead",
 ];
 
 /// Tools registered per-agent in `Agent::init_builtins_async()`.

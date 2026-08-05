@@ -86,7 +86,7 @@ pub use config::ConfigOnDisk;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
 pub use plan_channel::{ChannelConfig, PlanChannelAdapter};
-pub use port::{ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, Result, Tier};
+pub use port::{ChannelError, ChannelPort, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, Tier};
 pub use responder::{ChannelResponder, NoopChannelResponder, RespondCtx};
 pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 
