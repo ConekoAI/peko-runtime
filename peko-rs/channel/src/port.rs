@@ -153,6 +153,17 @@ pub trait ChannelPort: Send + Sync + 'static {
         let _ = channel;
         Ok(ConfigOnDisk::default())
     }
+
+    /// Persist the channel's per-channel config (PR-3b). The handler
+    /// at `peko-rs/channel/src/cli_handlers.rs::handle_config_set`
+    /// reads the current `ConfigOnDisk`, applies any non-None fields
+    /// from the request, then calls this so adapters persist the new
+    /// value. No default impl — adapters must opt in.
+    async fn save_config(
+        &self,
+        channel: &ChannelId,
+        config: &ConfigOnDisk,
+    ) -> Result<()>;
 }
 
 // ---------------------------------------------------------------------------

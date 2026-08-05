@@ -107,6 +107,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelList { .. }
                 | RequestPacket::ChannelConfigGet { .. }
                 | RequestPacket::ChannelLeave { .. }
+                | RequestPacket::ChannelConfigSet { .. }
         )
     }
 
@@ -435,6 +436,71 @@ impl RequestHandler for ChannelHandler {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("channel config get failed: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::ChannelConfigSet {
+                request_id,
+                channel,
+                model_list,
+                cost_ceiling_usd,
+                default_subagent_type,
+            } => {
+                let ch = match ChannelId::parse(&channel) {
+                    Some(id) => id,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("invalid ChannelId: {channel}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                // Load existing config, then apply non-None fields.
+                // Mirrors the CLI's in-process merge so both paths are
+                // byte-identical. `handle_config_get` returns the
+                // existing `ConfigOnDisk` (or default if file missing);
+                // `handle_config_set` persists and returns the merged
+                // value.
+                let mut merged = match self.router().handle_config_get(&ch).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!(
+                                "channel config set failed (read existing): {e}"
+                            ),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                if let Some(list) = model_list {
+                    merged.model_list = list;
+                }
+                if cost_ceiling_usd.is_some() {
+                    merged.cost_ceiling_usd = cost_ceiling_usd;
+                }
+                if default_subagent_type.is_some() {
+                    merged.default_subagent_type = default_subagent_type;
+                }
+                match self.router().handle_config_set(&ch, &merged).await {
+                    Ok(saved) => {
+                        let response = ResponsePacket::ChannelConfigSetResult {
+                            request_id,
+                            channel: ch,
+                            config: saved,
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("channel config set failed: {e}"),
                         };
                         send_response(sink, response).await?;
                     }
@@ -790,6 +856,140 @@ mod tests {
         assert!(matches!(
             decoded,
             ResponsePacket::ChannelLeft { request_id: 7, .. }
+        ));
+    }
+
+    // PR-3b: `ChannelConfigSet` request/response round-trip with all
+    // three `Option` fields populated, and the merge logic exercised.
+    #[tokio::test]
+    async fn handler_config_set_merges_and_persists() {
+        let (_tmp, host) = test_host();
+        let handler = ChannelHandler::new(host.clone());
+        let ch = seed_channel(&host).await;
+
+        // First pin: only model_list + cost_ceiling_usd.
+        let req = RequestPacket::ChannelConfigSet {
+            request_id: 21,
+            channel: ch.to_string(),
+            model_list: Some(vec!["m_a".into(), "m_b".into()]),
+            cost_ceiling_usd: Some(1.5),
+            default_subagent_type: None,
+        };
+        let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
+        let sink: &dyn crate::ipc::response_sink::ResponseSink =
+            &CaptureSink(captured.clone());
+        handler
+            .handle(
+                req,
+                &peko_auth::caller::CallerContext::local(),
+                sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback")),
+            )
+            .await
+            .expect("handle pin 1");
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        match &captured[0] {
+            ResponsePacket::ChannelConfigSetResult { config, .. } => {
+                assert_eq!(config.model_list, vec!["m_a".to_string(), "m_b".to_string()]);
+                assert_eq!(config.cost_ceiling_usd, Some(1.5));
+                assert!(
+                    config.default_subagent_type.is_none(),
+                    "None default_subagent_type must NOT clobber existing"
+                );
+            }
+            other => panic!("expected ChannelConfigSetResult, got {other:?}"),
+        }
+        drop(captured);
+
+        // Second pin: only default_subagent_type. The other two
+        // fields must be preserved.
+        let req2 = RequestPacket::ChannelConfigSet {
+            request_id: 22,
+            channel: ch.to_string(),
+            model_list: None,
+            cost_ceiling_usd: None,
+            default_subagent_type: Some("writer".into()),
+        };
+        let captured2 = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
+        let sink2: &dyn crate::ipc::response_sink::ResponseSink =
+            &CaptureSink(captured2.clone());
+        handler
+            .handle(
+                req2,
+                &peko_auth::caller::CallerContext::local(),
+                sink2,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback")),
+            )
+            .await
+            .expect("handle pin 2");
+        let captured2 = captured2.lock().unwrap();
+        assert_eq!(captured2.len(), 1);
+        match &captured2[0] {
+            ResponsePacket::ChannelConfigSetResult { config, .. } => {
+                assert_eq!(
+                    config.model_list,
+                    vec!["m_a".to_string(), "m_b".to_string()],
+                    "model_list must be preserved when None is passed"
+                );
+                assert_eq!(config.cost_ceiling_usd, Some(1.5));
+                assert_eq!(
+                    config.default_subagent_type,
+                    Some("writer".to_string())
+                );
+            }
+            other => panic!("expected ChannelConfigSetResult, got {other:?}"),
+        }
+    }
+
+    // PR-3b: `ChannelConfigSet` request/response JSON round-trip.
+    #[test]
+    fn channel_packets_round_trip_config_set_via_json() {
+        let req = RequestPacket::ChannelConfigSet {
+            request_id: 9,
+            channel: "chan_abcdefgh".into(),
+            model_list: Some(vec!["m1".into(), "m2".into()]),
+            cost_ceiling_usd: Some(0.5),
+            default_subagent_type: Some("writer".into()),
+        };
+        let json = serde_json::to_string(&req).expect("encode");
+        assert!(json.contains("\"channel_config_set\""), "got {json}");
+        let decoded: RequestPacket = serde_json::from_str(&json).expect("decode");
+        match decoded {
+            RequestPacket::ChannelConfigSet {
+                request_id,
+                channel,
+                model_list,
+                cost_ceiling_usd,
+                default_subagent_type,
+            } => {
+                assert_eq!(request_id, 9);
+                assert_eq!(channel, "chan_abcdefgh");
+                assert_eq!(
+                    model_list,
+                    Some(vec!["m1".to_string(), "m2".to_string()])
+                );
+                assert_eq!(cost_ceiling_usd, Some(0.5));
+                assert_eq!(default_subagent_type, Some("writer".to_string()));
+            }
+            other => panic!("expected ChannelConfigSet, got {other:?}"),
+        }
+
+        let resp = ResponsePacket::ChannelConfigSetResult {
+            request_id: 9,
+            channel: ChannelId::parse("chan_abcdefgh").expect("valid ChannelId"),
+            config: ConfigOnDisk {
+                model_list: vec!["m1".into()],
+                cost_ceiling_usd: Some(0.5),
+                default_subagent_type: Some("writer".into()),
+            },
+        };
+        let json = serde_json::to_string(&resp).expect("encode");
+        assert!(json.contains("\"channel_config_set_result\""), "got {json}");
+        let decoded: ResponsePacket = serde_json::from_str(&json).expect("decode");
+        assert!(matches!(
+            decoded,
+            ResponsePacket::ChannelConfigSetResult { request_id: 9, .. }
         ));
     }
 }

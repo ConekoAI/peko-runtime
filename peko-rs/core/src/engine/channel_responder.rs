@@ -562,6 +562,17 @@ mod tests {
                 .cloned()
                 .unwrap_or_default())
         }
+        async fn save_config(
+            &self,
+            channel: &ChannelId,
+            config: &ConfigOnDisk,
+        ) -> peko_channel::Result<()> {
+            self.config
+                .lock()
+                .unwrap()
+                .insert(channel.clone(), config.clone());
+            Ok(())
+        }
     }
 
     fn chan() -> ChannelId {

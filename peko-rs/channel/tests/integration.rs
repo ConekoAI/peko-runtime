@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use peko_channel::cursors::ChannelCursors;
-use peko_channel::port::{Checkpoint, CreateOpts, PostMsg, Tier};
+use peko_channel::port::{ChannelError, Checkpoint, CreateOpts, PostMsg, Tier};
 use peko_channel::responder::{ChannelResponder, RespondCtx};
 use peko_channel::subscription::SubscriptionConfig;
 use peko_channel::{
@@ -329,4 +329,63 @@ async fn tier_rule_rejects_non_runtime_in_pr1() {
     };
     let _ = opts; // sanity: Tier::Runtime is the only valid option
     let _ = port.create(&alice, CreateOpts::runtime("ok")).await;
+}
+
+// ---------------------------------------------------------------------------
+// Test E: PR-3b save_config round-trip
+// ---------------------------------------------------------------------------
+
+/// PR-3b: `ChannelPort::save_config` persists `ConfigOnDisk` and
+/// `load_config` returns the same value. Mirrors the lib-level
+/// `ConfigOnDisk::save` round-trip in `config.rs::round_trip_via_disk`
+/// but exercises the trait seam (so a future adapter swap is caught).
+#[tokio::test(flavor = "multi_thread")]
+async fn save_config_round_trip_then_reload() {
+    let (_tmp, adapter) = adapter_in_tempdir();
+    let port: Arc<dyn ChannelPort> = as_port(adapter);
+
+    let creator = PrincipalId::generate();
+    let chan = port
+        .create(&creator, CreateOpts::runtime("pin-test"))
+        .await
+        .expect("create");
+
+    let new_cfg = ConfigOnDisk {
+        model_list: vec!["claude-sonnet-4.6".into(), "claude-haiku-4.5".into()],
+        cost_ceiling_usd: Some(0.25),
+        default_subagent_type: Some("writer".into()),
+    };
+    port.save_config(&chan, &new_cfg)
+        .await
+        .expect("save_config");
+
+    let loaded = port.load_config(&chan).await.expect("load_config");
+    assert_eq!(loaded, new_cfg);
+
+    // Partial overwrite (PR-3b: CLI merge semantics). Save a config
+    // with only `model_list` changed; the other fields stay.
+    let mut merged = loaded.clone();
+    merged.model_list = vec!["claude-opus-4.8".into()];
+    port.save_config(&chan, &merged)
+        .await
+        .expect("save_config overwrite");
+    let reloaded = port.load_config(&chan).await.expect("reload");
+    assert_eq!(reloaded.model_list, vec!["claude-opus-4.8".to_string()]);
+    assert_eq!(reloaded.cost_ceiling_usd, Some(0.25));
+    assert_eq!(
+        reloaded.default_subagent_type,
+        Some("writer".to_string())
+    );
+
+    // Defensive: save_config on a non-existent channel must surface
+    // `ChannelError::NotFound`, not silently create a phantom dir.
+    let bogus = ChannelId::parse("chan_00000000").expect("valid id");
+    let err = port
+        .save_config(&bogus, &ConfigOnDisk::default())
+        .await
+        .expect_err("save_config must reject unknown channel");
+    assert!(
+        matches!(err, ChannelError::NotFound(_)),
+        "got {err:?}"
+    );
 }

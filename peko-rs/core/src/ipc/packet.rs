@@ -910,6 +910,23 @@ pub enum RequestPacket {
         channel: String,
         principal_name: String,
     },
+
+    /// Overwrite the channel's per-channel config (PR-3b). Each field
+    /// is `Option`; the daemon's `ChannelHandler` reads the current
+    /// `ConfigOnDisk`, applies non-None fields, and persists the
+    /// merged result. CLI does the same merge on the in-process
+    /// fallback path so both paths are byte-identical.
+    #[serde(rename = "channel_config_set")]
+    ChannelConfigSet {
+        request_id: u64,
+        channel: String,
+        #[serde(default)]
+        model_list: Option<Vec<String>>,
+        #[serde(default)]
+        cost_ceiling_usd: Option<f64>,
+        #[serde(default)]
+        default_subagent_type: Option<String>,
+    },
 }
 
 impl RequestPacket {
@@ -1010,7 +1027,8 @@ impl RequestPacket {
             | Self::ChannelMembers { request_id, .. }
             | Self::ChannelList { request_id, .. }
             | Self::ChannelConfigGet { request_id, .. }
-            | Self::ChannelLeave { request_id, .. } => *request_id,
+            | Self::ChannelLeave { request_id, .. }
+            | Self::ChannelConfigSet { request_id, .. } => *request_id,
         }
     }
 
@@ -1235,6 +1253,16 @@ pub enum ResponsePacket {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
         principal: peko_subject::PrincipalId,
+    },
+
+    /// Config persisted. Carries the full merged `ConfigOnDisk` (any
+    /// `None` fields in the request were preserved from the existing
+    /// config).
+    #[serde(rename = "channel_config_set_result")]
+    ChannelConfigSetResult {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        config: peko_channel::ConfigOnDisk,
     },
 
     /// Quota status snapshot (F18). Carries the principal's live
@@ -2595,7 +2623,8 @@ impl ResponsePacket {
             | Self::ChannelMembersResult { request_id, .. }
             | Self::ChannelListResult { request_id, .. }
             | Self::ChannelConfigResult { request_id, .. }
-            | Self::ChannelLeft { request_id, .. } => *request_id,
+            | Self::ChannelLeft { request_id, .. }
+            | Self::ChannelConfigSetResult { request_id, .. } => *request_id,
         }
     }
 
@@ -2694,6 +2723,7 @@ impl ResponsePacket {
             Self::ChannelListResult { .. } => "ChannelListResult",
             Self::ChannelConfigResult { .. } => "ChannelConfigResult",
             Self::ChannelLeft { .. } => "ChannelLeft",
+            Self::ChannelConfigSetResult { .. } => "ChannelConfigSetResult",
         }
     }
 

@@ -188,6 +188,21 @@ impl ChannelCliRouter {
     ) -> Result<ConfigOnDisk> {
         self.port.load_config(channel).await
     }
+
+    /// `peko channel pin <channel>` — overwrite the channel's
+    /// per-channel config (PR-3b). Caller is responsible for any
+    /// partial-merge semantics (preserving `None` fields); the
+    /// handler treats the passed `ConfigOnDisk` as authoritative and
+    /// persists it via `ChannelPort::save_config`. The CLI does the
+    /// merge so the in-process fallback matches the daemon path.
+    pub async fn handle_config_set(
+        &self,
+        channel: &ChannelId,
+        config: &ConfigOnDisk,
+    ) -> Result<ConfigOnDisk> {
+        self.port.save_config(channel, config).await?;
+        Ok(config.clone())
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -140,6 +140,26 @@ pub enum ChannelCommands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Pin (set) per-channel config (PR-3b). Each `--model`,
+    /// `--ceiling`, `--type` flag is optional; omit to preserve the
+    /// existing value. Pass `--model ""` to clear `model_list`.
+    Pin {
+        /// Channel id.
+        channel: String,
+        /// Replace `model_list` (repeatable). Use `""` to clear.
+        #[arg(long = "model", value_name = "MODEL")]
+        model_list: Vec<String>,
+        /// Set `cost_ceiling_usd` (USD per spawn). Omit to preserve.
+        #[arg(long)]
+        ceiling: Option<f64>,
+        /// Set `default_subagent_type`. Omit to preserve.
+        #[arg(long = "type")]
+        default_subagent_type: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl ChannelCommands {
@@ -154,7 +174,8 @@ impl ChannelCommands {
             | ChannelCommands::Ls { json, .. }
             | ChannelCommands::Show { json, .. }
             | ChannelCommands::Config { json, .. }
-            | ChannelCommands::Leave { json, .. } => *json,
+            | ChannelCommands::Leave { json, .. }
+            | ChannelCommands::Pin { json, .. } => *json,
         }
     }
 }
@@ -472,6 +493,72 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 );
             } else {
                 println!("{principal_id} left {ch}");
+            }
+            Ok(())
+        }
+        ChannelCommands::Pin {
+            channel,
+            model_list,
+            ceiling,
+            default_subagent_type,
+            ..
+        } => {
+            // Wire-shape `Option` semantics:
+            // - `model_list` is present when `--model` flag is given
+            //   (even with empty list, which clears the field). Use
+            //   `Some(model_list)` when the user passed any `--model`
+            //   flag, else `None` to preserve.
+            // - `ceiling` / `default_subagent_type` are inherent
+            //   `Option` from clap; `None` means "not provided".
+            let channel_label = channel.clone();
+            let model_list_opt = if model_list.is_empty() {
+                None
+            } else {
+                Some(model_list.clone())
+            };
+            let default_subagent_type_for_closure = default_subagent_type.clone();
+            let ceiling_for_closure = ceiling;
+            let packet = RequestPacket::ChannelConfigSet {
+                request_id: 0,
+                channel: channel.clone(),
+                model_list: model_list_opt.clone(),
+                cost_ceiling_usd: ceiling_for_closure,
+                default_subagent_type: default_subagent_type.clone(),
+            };
+            let config = run_daemon_or(
+                paths,
+                packet,
+                "channel_pin_failed",
+                move |port, _paths| Box::pin(async move {
+                    let router = ChannelCliRouter::new(port);
+                    let ch = parse_channel_id(&channel)?;
+                    // In-process fallback: mirror the daemon's merge
+                    // so both paths are byte-identical.
+                    let mut merged = router.handle_config_get(&ch).await?;
+                    if let Some(list) = model_list_opt.clone() {
+                        merged.model_list = list;
+                    }
+                    if ceiling_for_closure.is_some() {
+                        merged.cost_ceiling_usd = ceiling_for_closure;
+                    }
+                    if default_subagent_type_for_closure.is_some() {
+                        merged.default_subagent_type =
+                            default_subagent_type_for_closure.clone();
+                    }
+                    Ok(router.handle_config_set(&ch, &merged).await?)
+                })
+            )
+            .await?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&config).context("serialize config")?
+                );
+            } else {
+                println!("pinned {channel_label}");
+                println!("model_list: {:?}", config.model_list);
+                println!("cost_ceiling_usd: {:?}", config.cost_ceiling_usd);
+                println!("default_subagent_type: {:?}", config.default_subagent_type);
             }
             Ok(())
         }

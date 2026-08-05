@@ -634,5 +634,17 @@ impl ChannelPort for PlanChannelAdapter {
         let _ = MetaJson::load(&self.cfg.channel_dir(channel)).await?;
         ConfigOnDisk::load(&self.cfg.channel_dir(channel)).await
     }
+
+    async fn save_config(
+        &self,
+        channel: &ChannelId,
+        config: &ConfigOnDisk,
+    ) -> Result<()> {
+        // Defense-in-depth: confirm the channel exists before writing
+        // its config. `MetaJson::load` returns `NotFound` for missing
+        // dirs, which we surface as-is.
+        let _ = MetaJson::load(&self.cfg.channel_dir(channel)).await?;
+        config.save(&self.cfg.channel_dir(channel)).await
+    }
 }
 
