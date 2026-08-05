@@ -205,13 +205,39 @@ peko daemon check                                 # Trigger immediate check
 #### Model Management
 ```bash
 peko model list                                   # List configured models
-peko model show <MODEL_ID>                        # Detail view (incl. spec)
+peko model list --detailed                        # Include the per-model note column
+peko model show <MODEL_ID>                        # Detail view (incl. spec + note)
 peko model compare <MODEL_ID>...                  # Side-by-side capability matrix
 peko model search --vision --tools --thinking     # Filter by capability predicate
+peko model search --contains cron                 # Substring-match id, display_name, note
 peko model add --template <id> --model <wire-id>  # Add a model (catalog)
+peko model add --note "very cheap, use it for cron"  # Free-text annotation for the agent
+peko model edit <MODEL_ID> --note "..."           # Update note; --note "" clears it
 peko model remove <MODEL_ID>                      # Remove a model from the catalog
 peko model test <MODEL_ID>                        # Live-test a model
 ```
+
+The `note` field on each catalog entry is the standardized way to
+express subjective quality or routing intent that spec flags cannot
+capture. Parent agents can read it via the `model_list` builtin tool
+(`peko send` to a principal will surface these as filterable notes).
+
+#### Cost Controls
+
+Set per-spawn and rolling-cycle ceilings in `principal.toml`:
+
+```toml
+[quota]
+cost_per_call_max = 0.50   # USD; spawn-time pre-flight refuses expensive picks
+budget_per_cycle = 50.00   # USD; rolling cycle cap folds via QuotaMeter
+```
+
+`cost_per_call_max` runs at spawn time (4K-in + 1K-out token projection
+× the chosen model's `PricingHint`); `budget_per_cycle` runs mid-stream
+via `StackedMeteredProvider` and folds per-call cost alongside the
+existing token/request counters. Refusals surface as a typed
+`SpawnError::CostCeilingExceeded` before any LLM traffic. See
+`peko quota list` to inspect current spend.
 
 #### Update
 ```bash

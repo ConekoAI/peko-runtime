@@ -27,6 +27,19 @@ pub enum SpawnError {
         /// Model id of the chosen provider — for the error message.
         model_id: String,
     },
+    /// Phase 1 of `feature/multi-model-subagents` — the chosen
+    /// model's `ModelSpec` cannot serve the subagent the parent
+    /// asked for (e.g. text-only model picked for a tool-using
+    /// subagent). Surfaced from `SpecGate::check` at spawn time so
+    /// the failure is visible *before* any LLM traffic, matching
+    /// the `CostCeilingExceeded` contract.
+    SpecGateFailed {
+        /// Model id of the chosen provider — for the error message.
+        model_id: String,
+        /// Human-readable reason from the spec gate (e.g.
+        /// "model lacks tool support").
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for SpawnError {
@@ -58,6 +71,12 @@ impl std::fmt::Display for SpawnError {
                     estimated, ceiling, model_id
                 )
             }
+            SpawnError::SpecGateFailed { model_id, reason } => {
+                write!(
+                    f,
+                    "Model '{model_id}' cannot serve this subagent: {reason}"
+                )
+            }
         }
     }
 }
@@ -67,6 +86,21 @@ impl std::error::Error for SpawnError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spec_gate_failed_display_cites_model_and_reason() {
+        // The Display impl is the only signal the parent agent
+        // sees when the spec gate refuses a spawn. Round-trip
+        // through `to_string` to confirm both fields surface.
+        let err = SpawnError::SpecGateFailed {
+            model_id: "claude-haiku-4-5".to_string(),
+            reason: "model lacks tool support".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("claude-haiku-4-5"));
+        assert!(msg.contains("model lacks tool support"));
+        assert!(msg.contains("cannot serve this subagent"));
+    }
 
     #[test]
     fn cost_ceiling_display_shows_estimated_and_ceiling() {

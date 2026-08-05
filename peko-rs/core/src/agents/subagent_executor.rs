@@ -1237,17 +1237,11 @@ async fn execute_subagent_task(
             &[],
             &peko_provider_api::ChatOptions::default(),
         ) {
-            warn!(
-                "SpecGate refused subagent '{}' against model '{}': {}",
-                agent_name,
-                provider.model_id(),
-                gate_err
-            );
-            return Err(anyhow::anyhow!(
-                "Model '{model}' cannot serve this subagent: {reason}",
-                model = provider.model_id(),
-                reason = gate_err
-            ));
+            return Err(SpawnError::SpecGateFailed {
+                model_id: provider.model_id().to_string(),
+                reason: gate_err.to_string(),
+            }
+            .into());
         }
     }
 
