@@ -17,4 +17,5 @@
 //! neither side may grow its own private variant of the protocol
 //! types.
 
+pub mod channel;
 pub mod ipc;

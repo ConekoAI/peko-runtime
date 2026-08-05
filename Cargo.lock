@@ -2361,6 +2361,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "peko-channel"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "peko-plan",
+ "peko-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "peko-chat-log"
 version = "0.1.0"
 dependencies = [

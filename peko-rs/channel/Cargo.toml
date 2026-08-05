@@ -1,0 +1,54 @@
+[package]
+name = "peko-channel"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Multi-principal chat primitive (channels) — `ChannelPort` + `PlanChannelAdapter` storage + `ChannelResponder` trait + `ChannelSubscriber` poll loop. PR-1 ships the trait surface and a 2-principal smoke test backed by `peko-plan` storage; PR-2 wires real subagent dispatch + pekohub SSE; PR-3 adds fan-out cap and shared-tier opt-in."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+# Crate boundary (Phase 18.x of the post-migration cleanup, peko-channel
+# extraction). What lives here:
+# - The `ChannelPort` consumer-defined trait (port the CLI/daemon use
+#   via Arc<dyn>).
+# - The `ChannelResponder` consumer-defined trait (port `peko-engine`
+#   implements for live subagent dispatch — PR-2).
+# - `PlanChannelAdapter` (the concrete `ChannelPort` impl backed by
+#   `peko-plan::PlanStorage`, one Plan per channel).
+# - `ChannelSubscriber` (per-member poll loop).
+# - `ChannelCursors` (per-channel runtime-tier "last_read_task_id" map).
+# - Wire types live in `peko-protocol::channel` (peer crate).
+#
+# Forbidden deps:
+# - `peko-engine` — would invert the dispatch/contract direction.
+# - `peko-core` — root composition layer; leaf crates don't reach in.
+# - `peko-cron` — orthogonal domain.
+# - `peko-protocol` may be touched for re-exports but no internal logic.
+# - Any `peko-extension-*` crate.
+#
+# Allowed deps:
+# - `peko-plan` (storage primitive) for the PlanChannelAdapter impl.
+# - `peko-fs-persistence` if we need FileLock directly (we don't yet).
+# - `peko-protocol` for wire types only.
+#
+# `peko-subject` is reachable through `peko_plan::PrincipalId`
+# (re-exported at `peko-rs/plan/src/lib.rs:77`), so we don't list
+# `peko-subject` as a direct dep.
+
+[dependencies]
+# Plan storage primitive — `PlanChannelAdapter` wraps `PlanStorage`
+# directly (one Plan per channel; see lib docs).
+peko-plan = { path = "../plan" }
+# Wire types — re-exported through `lib.rs` for ergonomic callers.
+peko-protocol = { path = "../protocol" }
+
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tokio = { version = "1.35", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.10"
