@@ -131,6 +131,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelInvite { .. }
                 | RequestPacket::ChannelPost { .. }
                 | RequestPacket::ChannelPeek { .. }
+                | RequestPacket::ChannelEventsWatch { .. }
                 | RequestPacket::ChannelMembers { .. }
                 | RequestPacket::ChannelList { .. }
                 | RequestPacket::ChannelLeave { .. }
@@ -960,5 +961,92 @@ mod tests {
             decoded,
             ResponsePacket::ChannelPinnedToShared { request_id: 21, .. }
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // PR-2b: `ChannelEventsWatch` request + `ChannelEventReceived` response
+    // -----------------------------------------------------------------------
+    //
+    // Pin the wire shape so the streaming IPC variant stays
+    // round-trippable. The handler logic itself (replay + subscribe +
+    // forward) is a separate test against the `ChannelEventNotifier`
+    // registry.
+
+    /// JSON round-trip for `ChannelEventsWatch` request and
+    /// `ChannelEventReceived` response. The discriminant strings
+    /// (`channel_events_watch`, `channel_event_received`) are the
+    /// framing the daemon's per-request stream uses — the desktop
+    /// Tauri backend's stream-forwarder matches on these via the
+    /// `packet_type` switch in `ipc/mod.rs:949`.
+    #[tokio::test]
+    async fn channel_packets_round_trip_events_watch_via_json() {
+        let req = RequestPacket::ChannelEventsWatch {
+            request_id: 31,
+            channel: "chan_abcdefgh".into(),
+            since: None,
+        };
+        let json = serde_json::to_string(&req).expect("encode");
+        assert!(
+            json.contains("\"channel_events_watch\""),
+            "got {json}"
+        );
+        let decoded: RequestPacket = serde_json::from_str(&json).expect("decode");
+        match decoded {
+            RequestPacket::ChannelEventsWatch {
+                request_id,
+                channel,
+                since,
+            } => {
+                assert_eq!(request_id, 31);
+                assert_eq!(channel, "chan_abcdefgh");
+                assert_eq!(since, None);
+            }
+            other => panic!("expected ChannelEventsWatch, got {other:?}"),
+        }
+
+        let resp = ResponsePacket::ChannelEventReceived {
+            request_id: 31,
+            channel: ChannelId::parse("chan_abcdefgh").expect("valid ChannelId"),
+            event: ChannelEvent::Posted {
+                channel: ChannelId::parse("chan_abcdefgh").expect("valid ChannelId"),
+                author: "alice".into(),
+                text: "hi".into(),
+                parent: None,
+                at: "2026-08-06T12:00:00Z".into(),
+            },
+        };
+        let json = serde_json::to_string(&resp).expect("encode");
+        assert!(
+            json.contains("\"channel_event_received\""),
+            "got {json}"
+        );
+        let decoded: ResponsePacket = serde_json::from_str(&json).expect("decode");
+        match decoded {
+            ResponsePacket::ChannelEventReceived {
+                request_id,
+                channel,
+                event,
+            } => {
+                assert_eq!(request_id, 31);
+                assert_eq!(channel.as_str(), "chan_abcdefgh");
+                assert!(matches!(event, ChannelEvent::Posted { .. }));
+            }
+            other => panic!("expected ChannelEventReceived, got {other:?}"),
+        }
+    }
+
+    /// `ChannelEventsWatch` claims ownership in `matches()` — without
+    /// this, the dispatcher would let the variant fall through to the
+    /// default no-op handler and the streaming path would silently
+    /// return `Error`.
+    #[tokio::test]
+    async fn handler_matches_claims_channel_events_watch() {
+        let (_tmp, host) = test_host();
+        let handler = ChannelHandler::new(host);
+        assert!(handler.matches(&RequestPacket::ChannelEventsWatch {
+            request_id: 1,
+            channel: "chan_x".into(),
+            since: None,
+        }));
     }
 }

@@ -878,6 +878,24 @@ pub enum RequestPacket {
         since: Option<String>,
     },
 
+    /// PR-2b: subscribe to live events for `channel`. The daemon
+    /// replays events from `since` (None = from start) as a series of
+    /// `ChannelEventReceived` packets, then holds the connection open
+    /// and forwards new events as they arrive (signalled by the
+    /// dispatcher after `append_remote_event` succeeds). The stream
+    /// closes when the client disconnects or the daemon shuts down.
+    ///
+    /// Wire-compatible with the chat's `PrincipalSendStream` shape
+    /// (request → stream of packets → `Done` on close) so the
+    /// desktop Tauri backend can reuse the existing stream-forwarding
+    /// path that already emits `peko-stream` events for the chat.
+    #[serde(rename = "channel_events_watch")]
+    ChannelEventsWatch {
+        request_id: u64,
+        channel: String,
+        since: Option<String>,
+    },
+
     /// List members of `channel`.
     #[serde(rename = "channel_members")]
     ChannelMembers {
@@ -1008,6 +1026,7 @@ impl RequestPacket {
             | Self::ChannelInvite { request_id, .. }
             | Self::ChannelPost { request_id, .. }
             | Self::ChannelPeek { request_id, .. }
+            | Self::ChannelEventsWatch { request_id, .. }
             | Self::ChannelMembers { request_id, .. }
             | Self::ChannelList { request_id, .. }
             | Self::ChannelLeave { request_id, .. }
@@ -1202,6 +1221,18 @@ pub enum ResponsePacket {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
         events: Vec<peko_protocol::channel::ChannelEvent>,
+    },
+
+    /// PR-2b: one event in a `ChannelEventsWatch` stream. The daemon
+    /// emits one of these per event — first replaying events from the
+    /// `since` cursor, then forwarding new events as they arrive. The
+    /// stream closes with `Done { request_id }` when the client
+    /// disconnects or the daemon shuts down.
+    #[serde(rename = "channel_event_received")]
+    ChannelEventReceived {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        event: peko_protocol::channel::ChannelEvent,
     },
 
     /// Members list.
@@ -2594,6 +2625,7 @@ impl ResponsePacket {
             | Self::ChannelInvited { request_id, .. }
             | Self::ChannelPosted { request_id, .. }
             | Self::ChannelPeekResult { request_id, .. }
+            | Self::ChannelEventReceived { request_id, .. }
             | Self::ChannelMembersResult { request_id, .. }
             | Self::ChannelListResult { request_id, .. }
             | Self::ChannelLeft { request_id, .. }
@@ -2692,6 +2724,7 @@ impl ResponsePacket {
             Self::ChannelInvited { .. } => "ChannelInvited",
             Self::ChannelPosted { .. } => "ChannelPosted",
             Self::ChannelPeekResult { .. } => "ChannelPeekResult",
+            Self::ChannelEventReceived { .. } => "ChannelEventReceived",
             Self::ChannelMembersResult { .. } => "ChannelMembersResult",
             Self::ChannelListResult { .. } => "ChannelListResult",
             Self::ChannelLeft { .. } => "ChannelLeft",
