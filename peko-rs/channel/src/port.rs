@@ -243,6 +243,34 @@ impl Checkpoint {
 /// don't need to import from `peko-protocol`.
 pub type TaskId = String;
 
+// ---------------------------------------------------------------------------
+// RemoteMember (PR-B cross-runtime)
+// ---------------------------------------------------------------------------
+
+/// A principal that lives on a different runtime than the one that
+/// owns the channel's source-of-truth JSONL log.
+///
+/// Introduced by peko-channel cross-runtime PR-B. The creator's
+/// runtime writes events to its `events.jsonl` and pushes them to
+/// every other runtime that hosts a remote member of the channel;
+/// those runtimes maintain a local mirror and a member row of this
+/// shape so they know which runtime to send their own writes
+/// through.
+///
+/// The DID forms (`runtime_id` is `did:key:z...`, `principal_id` is
+/// `did:peko:principal:<hash>`) are kept as `String`s for back-compat
+/// with `MembersJson`'s pre-PR-B shape (string-only member rows).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMember {
+    /// The runtime that hosts the member's principal. `did:key:z...`
+    /// form (self-certifying — the public key is derivable).
+    pub runtime_id: String,
+    /// The principal's stable DID on the remote runtime. Stringified
+    /// so the on-disk `MembersJson` shape matches the pre-PR-B
+    /// `members: Vec<String>` convention.
+    pub principal_id: String,
+}
+
 // `Display` is already provided by `String` via the orphan rule; no
 // manual impl needed.
 

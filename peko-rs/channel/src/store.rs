@@ -47,7 +47,8 @@ use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::port::{
-    ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, Result, TaskId, Tier,
+    ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result, TaskId,
+    Tier,
 };
 
 // ---------------------------------------------------------------------------
@@ -200,9 +201,22 @@ impl MetaJson {
 ///
 /// Membership changes are infrequent (≤ FAN_OUT_CAP), so atomic
 /// tmp+rename is fine — see [`Self::save`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+///
+/// ## On-disk back-compat (PR-B cross-runtime)
+///
+/// Pre-PR-B `members.json` files contained just `Vec<String>` of local
+/// principal ids. PR-B adds `remote_members: Vec<RemoteMember>` for
+/// principals that live on other runtimes; the field defaults to `[]`
+/// when absent so legacy files deserialize cleanly without a
+/// migration. New writes always serialize both fields.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MembersJson {
     pub members: Vec<String>,
+    /// Members that live on other runtimes. PR-B cross-runtime.
+    /// `#[serde(default)]` so files written before PR-B deserialize
+    /// as `vec![]` without a migration pass.
+    #[serde(default)]
+    pub remote_members: Vec<RemoteMember>,
 }
 
 impl MembersJson {
@@ -449,6 +463,69 @@ impl ChannelStore {
         }
         Ok(out)
     }
+
+    // -----------------------------------------------------------------
+    // Remote-mirror helpers (PR-B cross-runtime)
+    // -----------------------------------------------------------------
+
+    /// Append a [`ChannelEvent`] that originated from a different
+    /// runtime (peko-hub relayed it via
+    /// `TunnelMessage::TunnelChannelEvent`). The event is appended to
+    /// the local mirror `events.jsonl` **without** the membership /
+    /// parent / sender checks that the local `post` path enforces —
+    /// those guarantees were already provided by the source runtime,
+    /// and the inbound dispatcher verified the signature.
+    ///
+    /// Returns the line number (0-indexed) the event was assigned.
+    /// Line numbers are assigned by the *source* runtime; the
+    /// receiver appends at the tail of its own mirror, accepting that
+    /// the receiver-side line numbers diverge from the source-side
+    /// ones. (PR-1's `peek` is read on the local mirror only — see
+    /// the PR-B tests for the invariant.)
+    ///
+    /// The `source_runtime_id` is currently recorded via the audit
+    /// emitter; it is **not** persisted in `events.jsonl` because the
+    /// `peko_protocol::channel::ChannelEvent` schema doesn't carry it
+    /// (and adding the field would break the wire protocol). Source
+    /// tracking is audit-only.
+    pub async fn append_remote_event(
+        &self,
+        channel: &ChannelId,
+        ev: &ChannelEvent,
+    ) -> Result<TaskId> {
+        let tier = self.resolve_tier(channel).await?;
+        let line = self.append_event(tier, channel, ev).await?;
+        Ok(line.to_string())
+    }
+
+    /// List the `RemoteMember` rows currently registered in this
+    /// channel's `members.json`. Returns an empty Vec if the channel
+    /// has no remote members, or if `members.json` is absent.
+    pub async fn list_remote_members(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<Vec<RemoteMember>> {
+        let tier = self.resolve_tier(channel).await?;
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let members = MembersJson::load(&chan_dir).await?;
+        Ok(members.remote_members)
+    }
+
+    /// Predicate: is the `(runtime_id, principal_id)` pair registered
+    /// as a remote member of `channel`? Reads `members.json` once.
+    pub async fn is_remote_member(
+        &self,
+        channel: &ChannelId,
+        runtime_id: &str,
+        principal_id: &str,
+    ) -> Result<bool> {
+        let tier = self.resolve_tier(channel).await?;
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let members = MembersJson::load(&chan_dir).await?;
+        Ok(members.remote_members.iter().any(|rm| {
+            rm.runtime_id == runtime_id && rm.principal_id == principal_id
+        }))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -480,6 +557,7 @@ impl ChannelPort for ChannelStore {
 
         let members = MembersJson {
             members: vec![creator.to_string()],
+            remote_members: Vec::new(),
         };
         members.save(&chan_dir).await?;
 
@@ -675,3 +753,248 @@ impl ChannelPort for ChannelStore {
 // in the trait surface.
 #[allow(dead_code)]
 fn _ensure_wire_imported(_: ChannelMembership) {}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use peko_protocol::channel::ChannelEvent;
+
+    fn tmp_cfg(label: &str) -> ChannelConfig {
+        let dir = std::env::temp_dir().join(format!("peko-channel-tests-{label}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        ChannelConfig {
+            runtime_dir: dir,
+            shared_dir: None,
+        }
+    }
+
+    /// Helper: a `PrincipalId` is a newtype around `String`; using a
+    /// test-prefix keeps the test outputs readable.
+    fn pid(s: &str) -> PrincipalId {
+        PrincipalId(s.to_string())
+    }
+
+    fn fake_remote(runtime: &str, principal: &str) -> RemoteMember {
+        RemoteMember {
+            runtime_id: runtime.to_string(),
+            principal_id: principal.to_string(),
+        }
+    }
+
+    // -- back-compat -----------------------------------------------------
+
+    /// A pre-PR-B `members.json` (only `members: Vec<String>`,
+    /// `remote_members` absent) deserializes to an empty
+    /// `remote_members` Vec. This is the migration-free on-disk
+    /// invariant that lets existing channel directories keep
+    /// working after PR-B lands.
+    #[test]
+    fn members_json_deserializes_legacy_files_without_migration() {
+        let legacy = r#"{"members":["prin_alice","prin_bob"]}"#;
+        let parsed: MembersJson = serde_json::from_str(legacy).expect("legacy must parse");
+        assert_eq!(parsed.members, vec!["prin_alice", "prin_bob"]);
+        assert!(
+            parsed.remote_members.is_empty(),
+            "missing field must default to empty vec; got {:?}",
+            parsed.remote_members
+        );
+    }
+
+    /// New writes always include `remote_members` (possibly empty),
+    /// so the on-disk shape is consistent going forward.
+    #[test]
+    fn members_json_round_trips_with_remote_members() {
+        let m = MembersJson {
+            members: vec!["prin_alice".into()],
+            remote_members: vec![fake_remote("did:key:zRuntimeB", "prin_bob")],
+        };
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let parsed: MembersJson = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed, m);
+    }
+
+    // -- list_remote_members / is_remote_member -------------------------
+
+    /// `list_remote_members` returns the rows persisted in
+    /// `members.json`. The integration with the on-disk layout is
+    /// what matters here, not the in-memory struct.
+    #[tokio::test]
+    async fn list_remote_members_round_trips_via_disk() {
+        let cfg = tmp_cfg("list-remote");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store.create(&creator, CreateOpts::runtime("team")).await.unwrap();
+
+        // No remote members yet.
+        assert!(store.list_remote_members(&channel).await.unwrap().is_empty());
+
+        // Manually inject a remote member row (the API that adds
+        // remote members lives in commit 2 / 3 of PR-B; here we
+        // verify the read path).
+        let chan_dir = cfg.channel_dir(&channel);
+        let mut members = MembersJson::load(&chan_dir).await.unwrap();
+        members.remote_members.push(fake_remote(
+            "did:key:zRuntimeB",
+            "prin_bob",
+        ));
+        members.save(&chan_dir).await.unwrap();
+
+        let listed = store.list_remote_members(&channel).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], fake_remote("did:key:zRuntimeB", "prin_bob"));
+    }
+
+    /// `is_remote_member` returns true for a registered
+    /// (runtime_id, principal_id) pair and false otherwise.
+    #[tokio::test]
+    async fn is_remote_member_matches_by_runtime_and_principal() {
+        let cfg = tmp_cfg("is-remote");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store.create(&creator, CreateOpts::runtime("team")).await.unwrap();
+
+        let chan_dir = store.config().channel_dir(&channel);
+        let mut members = MembersJson::load(&chan_dir).await.unwrap();
+        members.remote_members.push(fake_remote(
+            "did:key:zRuntimeB",
+            "prin_bob",
+        ));
+        members.save(&chan_dir).await.unwrap();
+
+        assert!(store
+            .is_remote_member(&channel, "did:key:zRuntimeB", "prin_bob")
+            .await
+            .unwrap());
+        // Wrong runtime id for the same principal id.
+        assert!(!store
+            .is_remote_member(&channel, "did:key:zRuntimeC", "prin_bob")
+            .await
+            .unwrap());
+        // Wrong principal id for the same runtime id.
+        assert!(!store
+            .is_remote_member(&channel, "did:key:zRuntimeB", "prin_carol")
+            .await
+            .unwrap());
+    }
+
+    // -- append_remote_event --------------------------------------------
+
+    /// `append_remote_event` writes the event into the local mirror's
+    /// `events.jsonl` without invoking the membership / parent /
+    /// sender checks that the local `post` path enforces. This is
+    /// the test for the "remote events land in the mirror" invariant
+    /// that PR-B's cross-runtime fan-out relies on.
+    #[tokio::test]
+    async fn append_remote_event_writes_into_local_mirror() {
+        let cfg = tmp_cfg("append-remote");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store.create(&creator, CreateOpts::runtime("team")).await.unwrap();
+
+        // Simulate an event relayed from runtime B for a remote principal.
+        let remote_event = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob@runtime-B".to_string(),
+            parent: None,
+            text: "hello from B".to_string(),
+            at: "2026-08-06T00:00:00Z".to_string(),
+        };
+        let line = store
+            .append_remote_event(&channel, &remote_event)
+            .await
+            .expect("append_remote_event must succeed on a created channel");
+
+        // `peek` reads from the same `events.jsonl`, so the remote
+        // event should be visible immediately.
+        let events = store
+            .peek(&channel, &Checkpoint::default())
+            .await
+            .unwrap();
+        let posted: Vec<_> = events
+            .iter()
+            .filter(|ev| matches!(ev, ChannelEvent::Posted { .. }))
+            .collect();
+        assert_eq!(posted.len(), 1, "remote event must show up in peek");
+        assert_eq!(
+            line, "1",
+            "Created is line 0, so the first remote event lands at line 1"
+        );
+    }
+
+    /// `append_remote_event` does NOT enforce sender membership. A
+    /// sender that isn't in the local `members.json` is accepted
+    /// (the membership check was already done by the source
+    /// runtime; we trust the verified event here). This is the
+    /// property that lets a remote principal post to a channel
+    /// without ever being a row in the local mirror's member set.
+    #[tokio::test]
+    async fn append_remote_event_skips_local_membership_check() {
+        let cfg = tmp_cfg("skip-membership");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store.create(&creator, CreateOpts::runtime("team")).await.unwrap();
+
+        // "prin_bob@runtime-B" is NOT in `members.json`.
+        assert!(!store
+            .is_remote_member(&channel, "did:key:zRuntimeB", "prin_bob@runtime-B")
+            .await
+            .unwrap());
+
+        // `post` from a non-member would error — assert that first so
+        // the contrast with append_remote_event is clear.
+        let post_err = store
+            .post(
+                &channel,
+                &pid("prin_bob@runtime-B"),
+                PostMsg::root("hello"),
+            )
+            .await;
+        assert!(
+            matches!(post_err, Err(ChannelError::NotMember)),
+            "local post must reject non-members; got: {post_err:?}"
+        );
+
+        // `append_remote_event` for the same principal succeeds.
+        let remote_event = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob@runtime-B".to_string(),
+            parent: None,
+            text: "hello from B".to_string(),
+            at: "2026-08-06T00:00:00Z".to_string(),
+        };
+        store
+            .append_remote_event(&channel, &remote_event)
+            .await
+            .expect("append_remote_event must accept a non-local-member sender");
+    }
+
+    /// `append_remote_event` on a non-existent channel surfaces
+    /// `NotFound` rather than silently creating an empty channel dir.
+    /// The dispatcher's signature-verify step happens first, so a
+    /// bogus channel id never reaches `append_remote_event` in
+    /// practice — but defense-in-depth: a bad id should still fail
+    /// cleanly.
+    #[tokio::test]
+    async fn append_remote_event_on_unknown_channel_errors_not_found() {
+        let cfg = tmp_cfg("not-found");
+        let store = ChannelStore::new(cfg);
+        let bogus = ChannelId::generate();
+        let ev = ChannelEvent::Posted {
+            channel: bogus.clone(),
+            author: "prin_bob".to_string(),
+            parent: None,
+            text: "should not land".to_string(),
+            at: "2026-08-06T00:00:00Z".to_string(),
+        };
+        let result = store.append_remote_event(&bogus, &ev).await;
+        assert!(
+            matches!(result, Err(ChannelError::NotFound(_))),
+            "unknown channel must surface NotFound; got: {result:?}"
+        );
+    }
+}
