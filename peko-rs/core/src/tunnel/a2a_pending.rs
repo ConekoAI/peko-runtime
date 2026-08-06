@@ -1,9 +1,9 @@
 //! A2A response correlation registry — Slice B of issue #29.
 //!
-//! When the outbound a2a path sends `TunnelMessage::AgentToAgentRequest`
+//! When the outbound a2a path sends `TunnelMessage::PrincipalToPrincipalRequest`
 //! over the tunnel, it parks an `oneshot::Sender` under the request_id
 //! and `await`s on the matching `oneshot::Receiver`. The tunnel
-//! dispatcher, on receiving the matching `AgentToAgentResponse`, looks
+//! dispatcher, on receiving the matching `PrincipalToPrincipalResponse`, looks
 //! up the sender and completes the oneshot so the outbound path
 //! unblocks.
 //!
@@ -11,7 +11,7 @@
 //! inside `PrincipalSendTool`:
 //!
 //!  1. The tunnel dispatcher (lives in `tunnel/dispatcher.rs`) needs to
-//!     consult the registry on inbound `AgentToAgentResponse`. The
+//!     consult the registry on inbound `PrincipalToPrincipalResponse`. The
 //!     dispatcher and the `PrincipalSendTool` are constructed independently
 //!     by the daemon-state bootstrap; sharing the registry through a
 //!     well-typed `Arc<PendingA2aResponses>` is cleaner than digging
@@ -34,7 +34,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 /// The opaque response payload routed back to the caller. Mirrors the
-/// `payload` field of `TunnelMessage::AgentToAgentResponse` — the
+/// `payload` field of `TunnelMessage::PrincipalToPrincipalResponse` — the
 /// receiver of the oneshot decodes it as an IPC `ResponsePacket` (same
 /// codec as `ProxiedResponse`).
 pub type A2aResponsePayload = Vec<u8>;
@@ -83,7 +83,7 @@ impl PendingA2aResponses {
 
     /// Register a oneshot under `request_id` and immediately hand back
     /// the receiver. Slice B's outbound a2a path calls this **before**
-    /// sending the `AgentToAgentRequest` over the tunnel — registering
+    /// sending the `PrincipalToPrincipalRequest` over the tunnel — registering
     /// after the send opens a race window where the response arrives
     /// before the receiver is parked.
     ///
@@ -154,7 +154,7 @@ impl PendingA2aResponses {
     }
 
     /// Complete the oneshot for `request_id` with `payload`. The
-    /// tunnel dispatcher's `AgentToAgentResponse` arm calls this.
+    /// tunnel dispatcher's `PrincipalToPrincipalResponse` arm calls this.
     ///
     /// Returns `true` if a pending entry was found and completed,
     /// `false` if no entry matched (either the caller already timed

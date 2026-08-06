@@ -65,11 +65,11 @@ async fn direct_server_client_handshake_and_message_roundtrip() {
     );
     let known_runtimes = Arc::new(RwLock::new(known));
 
-    // ── simple echo handler: respond to AgentToAgentRequest ───────
+    // ── simple echo handler: respond to PrincipalToPrincipalRequest ───────
     let handler: DirectMessageHandler = Arc::new(
         move |msg: TunnelMessage, handle: peko_core::tunnel::TunnelHandle| {
             Box::pin(async move {
-                if let TunnelMessage::AgentToAgentRequest {
+                if let TunnelMessage::PrincipalToPrincipalRequest {
                     request_id,
                     caller_runtime_id,
                     caller_principal_did,
@@ -78,7 +78,7 @@ async fn direct_server_client_handshake_and_message_roundtrip() {
                     signature: _,
                 } = msg
                 {
-                    let response = TunnelMessage::AgentToAgentResponse {
+                    let response = TunnelMessage::PrincipalToPrincipalResponse {
                         request_id: request_id.clone(),
                         payload: format!("echo:{message}").into_bytes(),
                     };
@@ -126,7 +126,7 @@ async fn direct_server_client_handshake_and_message_roundtrip() {
         .await
         .expect("client connects");
 
-    let request = TunnelMessage::AgentToAgentRequest {
+    let request = TunnelMessage::PrincipalToPrincipalRequest {
         request_id: request_id.clone(),
         caller_runtime_id: client_runtime_id.clone(),
         caller_principal_did: "did:peko:principal:caller".to_string(),

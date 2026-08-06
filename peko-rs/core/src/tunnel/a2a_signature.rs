@@ -1,6 +1,6 @@
 //! Cross-runtime A2A Signature — Slice B of issue #29.
 //!
-//! Slice A landed the `TunnelMessage::AgentToAgentRequest` wire shape with
+//! Slice A landed the `TunnelMessage::PrincipalToPrincipalRequest` wire shape with
 //! a `signature: String` (base64url) field and a rustdoc-only spec of the
 //! canonical pre-image. This module is the concrete implementation: a
 //! deterministic encoding of the request fields, plus thin signer /
@@ -52,7 +52,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 pub const A2A_SIGNATURE_DOMAIN: &str = "a2a:v1";
 
 /// Borrowed view of the fields that are signed in an
-/// `AgentToAgentRequest`. Holding references means callers can build
+/// `PrincipalToPrincipalRequest`. Holding references means callers can build
 /// the view from the `TunnelMessage` variant without cloning every
 /// field; the verifier on the inbound path constructs the same view
 /// from the deserialized message.
@@ -154,7 +154,7 @@ fn push_lp_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
 
 /// Sign the canonical pre-image of `fields` with `signing_key` and
 /// return the base64url-no-pad encoding suitable for the wire-form
-/// `signature: String` field on `TunnelMessage::AgentToAgentRequest`.
+/// `signature: String` field on `TunnelMessage::PrincipalToPrincipalRequest`.
 ///
 /// Base64url-no-pad matches the encoding used for `RuntimeHello.signature`
 /// and `TunnelChallengeAck.signature` already shipping over the tunnel

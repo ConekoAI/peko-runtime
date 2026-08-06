@@ -249,7 +249,7 @@ pub(crate) struct AppState {
     /// Shared between the outbound `PrincipalSendTool` path (which
     /// registers a oneshot under `request_id`) and the inbound
     /// tunnel dispatcher arm (which completes the oneshot when the
-    /// matching `AgentToAgentResponse` arrives). Initialized lazily
+    /// matching `PrincipalToPrincipalResponse` arrives). Initialized lazily
     /// (a fresh `PendingA2aResponses`) so the registry exists even
     /// before the tunnel connects.
     pending_a2a_responses: Arc<crate::tunnel::PendingA2aResponses>,
@@ -1546,7 +1546,7 @@ impl AppState {
 
     /// Cross-runtime a2a response correlation registry (issue #29).
     /// Shared with the `CrossRuntimeA2aCtx` on every `PrincipalSendTool`
-    /// and the inbound `AgentToAgentResponse` arm of the
+    /// and the inbound `PrincipalToPrincipalResponse` arm of the
     /// `TunnelDispatcher`. Returns a clone of the inner `Arc`, so
     /// call sites hold a cheap reference.
     pub fn pending_a2a_responses(&self) -> Arc<crate::tunnel::PendingA2aResponses> {

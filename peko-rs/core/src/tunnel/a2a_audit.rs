@@ -32,7 +32,7 @@ use peko_session::events::{A2aMessageType, A2aReceivedEvent, A2aSentEvent, Event
 
 /// Construct an `A2aSentEvent` for the outbound side — emitted
 /// after `PrincipalSendTool::execute_remote` has successfully sent
-/// the `AgentToAgentRequest` over the tunnel. The event is the
+/// the `PrincipalToPrincipalRequest` over the tunnel. The event is the
 /// call-side audit row for "agent X on runtime R1 sent a message
 /// to agent Y on runtime R2".
 ///
@@ -73,8 +73,8 @@ pub fn build_a2a_sent_outbound(
 }
 
 /// Construct an `A2aReceivedEvent` for the inbound side — emitted
-/// in `dispatcher::handle_inbound_agent_to_agent_request` after
-/// the inbound `AgentToAgentRequest` has been received. The event
+/// in `dispatcher::handle_inbound_principal_to_principal_request` after
+/// the inbound `PrincipalToPrincipalRequest` has been received. The event
 /// is the receiver-side audit row for "agent Y on runtime R2
 /// received a message from agent X on runtime R1".
 #[allow(clippy::too_many_arguments)]
@@ -105,9 +105,9 @@ pub fn build_a2a_received_inbound(
 }
 
 /// Construct an `A2aSentEvent` for the response side — emitted in
-/// `dispatcher::handle_inbound_agent_to_agent_request` after the
+/// `dispatcher::handle_inbound_principal_to_principal_request` after the
 /// target runtime has dispatched and is sending back an
-/// `AgentToAgentResponse` to the caller. Symmetric to
+/// `PrincipalToPrincipalResponse` to the caller. Symmetric to
 /// `build_a2a_sent_outbound` but on the *receiving* runtime, and
 /// with the local agent as the "caller" of the response.
 #[allow(clippy::too_many_arguments)]
@@ -142,7 +142,7 @@ pub fn build_a2a_sent_response(
 
 /// Construct an `A2aReceivedEvent` for the response side — emitted
 /// in `PrincipalSendTool::execute_remote` after the
-/// `AgentToAgentResponse` has been received. Symmetric to
+/// `PrincipalToPrincipalResponse` has been received. Symmetric to
 /// `build_a2a_received_inbound` but on the *calling* runtime.
 #[allow(clippy::too_many_arguments)]
 pub fn build_a2a_received_response(

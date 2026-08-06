@@ -238,8 +238,8 @@ pub struct A2aSentEvent {
     /// response's `runtimeId` field on the outbound side).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id_target: Option<String>,
-    /// `request_id` (UUIDv4) of the `AgentToAgentRequest` /
-    /// `AgentToAgentResponse` pair, when this event is part of
+    /// `request_id` (UUIDv4) of the `PrincipalToPrincipalRequest` /
+    /// `PrincipalToPrincipalResponse` pair, when this event is part of
     /// a cross-runtime round-trip. `None` on the same-runtime
     /// topic-pubsub path (where request correlation is
     /// per-session, not per-message).
@@ -282,8 +282,8 @@ pub struct A2aReceivedEvent {
     pub target_did: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id_target: Option<String>,
-    /// `request_id` of the inbound `AgentToAgentRequest` /
-    /// `AgentToAgentResponse`, when this event is part of a
+    /// `request_id` of the inbound `PrincipalToPrincipalRequest` /
+    /// `PrincipalToPrincipalResponse`, when this event is part of a
     /// cross-runtime round-trip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,

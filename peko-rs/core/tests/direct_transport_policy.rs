@@ -262,13 +262,13 @@ async fn start_echo_direct_server(
     let handler: DirectMessageHandler = Arc::new(
         move |msg: TunnelMessage, handle: peko_core::tunnel::TunnelHandle| {
             Box::pin(async move {
-                if let TunnelMessage::AgentToAgentRequest {
+                if let TunnelMessage::PrincipalToPrincipalRequest {
                     request_id,
                     message,
                     ..
                 } = msg
                 {
-                    let response = TunnelMessage::AgentToAgentResponse {
+                    let response = TunnelMessage::PrincipalToPrincipalResponse {
                         request_id: request_id.clone(),
                         payload: format!("echo:{message}").into_bytes(),
                     };
@@ -381,7 +381,7 @@ async fn direct_preference_uses_directory_endpoint() {
         .await
         .expect("client connects to advertised endpoint");
 
-    let request = TunnelMessage::AgentToAgentRequest {
+    let request = TunnelMessage::PrincipalToPrincipalRequest {
         request_id: request_id.clone(),
         caller_runtime_id,
         caller_principal_did: "did:peko:principal:caller".to_string(),

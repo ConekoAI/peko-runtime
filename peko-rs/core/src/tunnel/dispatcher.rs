@@ -210,8 +210,8 @@ pub struct TunnelDispatcher {
     /// Slot the dispatcher writes the live tunnel handle to on
     /// every inbound message. The `CrossRuntimeA2aCtx` (issue #29)
     /// holds a clone of this `Arc` and reads the handle when
-    /// sending outbound `AgentToAgentRequest` envelopes, so the
-    /// outbound path always uses the most-recent handle without
+    /// sending outbound `PrincipalToPrincipalRequest` envelopes, so
+    /// the outbound path always uses the most-recent handle without
     /// having to be re-built on reconnect. `None` until the first
     /// inbound message lands.
     tunnel_handle_slot: Arc<tokio::sync::RwLock<Option<TunnelHandle>>>,
@@ -566,15 +566,15 @@ impl TunnelDispatcher {
                 info!("Tunnel disconnect: {}", reason);
                 self.mark_disconnected().await;
             }
-            // Issue #29 (Slice C): inbound `AgentToAgentRequest` from
-            // a peer runtime (proxied by pekohub). Verify the caller's
-            // signature against the `caller_runtime_id` they claim,
-            // look up the local agent by `target_principal_did`,
-            // attribute the dispatch under
-            // `Subject::Principal(caller_principal_did)`, run it, and send
-            // back an `AgentToAgentResponse` carrying the
+            // Issue #29 (Slice C): inbound `PrincipalToPrincipalRequest`
+            // from a peer runtime (proxied by pekohub). Verify the
+            // caller's signature against the `caller_runtime_id` they
+            // claim, look up the local principal by
+            // `target_principal_did`, attribute the dispatch under
+            // `Subject::Principal(caller_principal_did)`, run it, and
+            // send back an `PrincipalToPrincipalResponse` carrying the
             // `PrincipalSendResult` payload.
-            TunnelMessage::AgentToAgentRequest {
+            TunnelMessage::PrincipalToPrincipalRequest {
                 request_id,
                 caller_runtime_id,
                 caller_principal_did,
@@ -582,7 +582,7 @@ impl TunnelDispatcher {
                 message,
                 signature,
             } => {
-                self.handle_inbound_agent_to_agent_request(
+                self.handle_inbound_principal_to_principal_request(
                     handle,
                     request_id,
                     caller_runtime_id,
@@ -593,15 +593,15 @@ impl TunnelDispatcher {
                 )
                 .await?;
             }
-            // Inbound `AgentToAgentResponse` for a request the
+            // Inbound `PrincipalToPrincipalResponse` for a request the
             // outbound `PrincipalSendTool` path registered in the pending
             // registry. Complete the oneshot so the outbound
             // `execute_remote` unblocks and decodes the payload.
-            TunnelMessage::AgentToAgentResponse {
+            TunnelMessage::PrincipalToPrincipalResponse {
                 request_id,
                 payload,
             } => {
-                self.handle_inbound_agent_to_agent_response(request_id, payload)
+                self.handle_inbound_principal_to_principal_response(request_id, payload)
                     .await?;
             }
             _ => {
@@ -1158,7 +1158,7 @@ impl TunnelDispatcher {
         Ok(())
     }
 
-    /// Handle an inbound `AgentToAgentRequest` from a peer runtime
+    /// Handle an inbound `PrincipalToPrincipalRequest` from a peer runtime
     /// (proxied by pekohub). Issue #29 Slice C.
     ///
     /// Steps:
@@ -1172,14 +1172,14 @@ impl TunnelDispatcher {
     ///    Subject::Principal(caller_principal_did)` (issue #24 + #28).
     /// 5. Dispatch via `StatelessAgentService`.
     /// 6. Serialize the result to `PrincipalSendResult` and send back via
-    ///    the same tunnel as an `AgentToAgentResponse`.
+    ///    the same tunnel as an `PrincipalToPrincipalResponse`.
     ///
     /// Every error path sends a structured `HubErrorResponse`
     /// back to the caller so the caller can distinguish "target
     /// not found" from "target rejected me" from "I'm broken"
     /// rather than waiting for a timeout.
     #[allow(clippy::too_many_arguments)]
-    async fn handle_inbound_agent_to_agent_request(
+    async fn handle_inbound_principal_to_principal_request(
         &self,
         handle: TunnelHandle,
         request_id: String,
@@ -1194,7 +1194,7 @@ impl TunnelDispatcher {
             Ok(k) => k,
             Err(e) => {
                 warn!(
-                    "inbound AgentToAgentRequest: invalid caller_runtime_id {caller_runtime_id}: {e}"
+                    "inbound PrincipalToPrincipalRequest: invalid caller_runtime_id {caller_runtime_id}: {e}"
                 );
                 return self
                     .send_hub_error(
@@ -1222,7 +1222,7 @@ impl TunnelDispatcher {
         };
         if let Err(e) = verify_request(&verifying_key, signed, &signature) {
             warn!(
-                "inbound AgentToAgentRequest: signature verification failed for caller_runtime_id={caller_runtime_id}: {e}"
+                "inbound PrincipalToPrincipalRequest: signature verification failed for caller_runtime_id={caller_runtime_id}: {e}"
             );
             return self
                 .send_hub_error(
@@ -1348,17 +1348,17 @@ impl TunnelDispatcher {
         );
         a2a_audit::emit_a2a_sent(&sent_response_event);
 
-        handle.send(TunnelMessage::AgentToAgentResponse {
+        handle.send(TunnelMessage::PrincipalToPrincipalResponse {
             request_id,
             payload,
         })?;
         Ok(())
     }
 
-    /// Handle an inbound `AgentToAgentResponse` — the half of the
+    /// Handle an inbound `PrincipalToPrincipalResponse` — the half of the
     /// round-trip that completes the `oneshot::Receiver` the
     /// outbound `PrincipalSendTool` is awaiting on. Issue #29 Slice C.
-    async fn handle_inbound_agent_to_agent_response(
+    async fn handle_inbound_principal_to_principal_response(
         &self,
         request_id: String,
         payload: Vec<u8>,
@@ -1372,7 +1372,7 @@ impl TunnelDispatcher {
             // nonexistent id). Logging as a warn is the right
             // signal — it's a peer contract violation, not a crash.
             warn!(
-                "inbound AgentToAgentResponse: no pending a2a request for request_id={request_id} \
+                "inbound PrincipalToPrincipalResponse: no pending a2a request for request_id={request_id} \
                  (probably already timed out or cancelled)"
             );
         }
@@ -1381,7 +1381,7 @@ impl TunnelDispatcher {
 
     /// Synthesize a `HubErrorResponse` and send it back to the
     /// caller over the live tunnel handle. Used by
-    /// `handle_inbound_agent_to_agent_request` on every error
+    /// `handle_inbound_principal_to_principal_request` on every error
     /// path so the caller's `execute_remote` decodes a structured
     /// error (target_not_found / forbidden / internal_error)
     /// rather than a hang or a generic "remote a2a failed" string.
@@ -1398,7 +1398,7 @@ impl TunnelDispatcher {
             message: message.to_string(),
         })
         .map_err(|e| anyhow::anyhow!("failed to serialize HubErrorResponse: {e}"))?;
-        handle.send(TunnelMessage::AgentToAgentResponse {
+        handle.send(TunnelMessage::PrincipalToPrincipalResponse {
             request_id: request_id.to_string(),
             payload,
         })?;
@@ -2267,20 +2267,20 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // -- Issue #29 (Slice C): inbound AgentToAgentRequest + Response -----
+    // -- Issue #29 (Slice C): inbound PrincipalToPrincipalRequest + Response -----
 
-    /// `handle_inbound_agent_to_agent_request` rejects a request with
+    /// `handle_inbound_principal_to_principal_request` rejects a request with
     /// a malformed caller_runtime_id (cannot be parsed as a did:key)
     /// by sending back an `internal_error` `HubErrorResponse`
     /// rather than crashing the dispatcher.
     #[tokio::test]
-    async fn test_inbound_agent_to_agent_request_rejects_malformed_caller_did() {
+    async fn test_inbound_principal_to_principal_request_rejects_malformed_caller_did() {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, mut rx) = mock_tunnel_handle();
 
         dispatcher
-            .handle_inbound_agent_to_agent_request(
+            .handle_inbound_principal_to_principal_request(
                 handle,
                 "req-malformed".to_string(),
                 "did:peko:agent:not-a-real-did-key".to_string(), // not a did:key form
@@ -2295,12 +2295,12 @@ mod tests {
         // The handler should have sent back a structured
         // HubErrorResponse. Drain the response and check the shape.
         let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::AgentToAgentResponse {
+        let TunnelMessage::PrincipalToPrincipalResponse {
             request_id,
             payload,
         } = response
         else {
-            panic!("expected AgentToAgentResponse, got: {response:?}");
+            panic!("expected PrincipalToPrincipalResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-malformed");
         let err: HubErrorResponse =
@@ -2314,12 +2314,12 @@ mod tests {
         );
     }
 
-    /// `handle_inbound_agent_to_agent_request` rejects a request with
+    /// `handle_inbound_principal_to_principal_request` rejects a request with
     /// an invalid signature (key is well-formed but signature bytes
     /// don't verify) by sending back a `forbidden`
     /// `HubErrorResponse`.
     #[tokio::test]
-    async fn test_inbound_agent_to_agent_request_rejects_bad_signature() {
+    async fn test_inbound_principal_to_principal_request_rejects_bad_signature() {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, mut rx) = mock_tunnel_handle();
@@ -2339,7 +2339,7 @@ mod tests {
         let sig = crate::tunnel::sign_request(&kp_attacker.signing_key, signed);
 
         dispatcher
-            .handle_inbound_agent_to_agent_request(
+            .handle_inbound_principal_to_principal_request(
                 handle,
                 "req-bad-sig".to_string(),
                 caller_did,
@@ -2352,12 +2352,12 @@ mod tests {
             .expect("handler must not panic");
 
         let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::AgentToAgentResponse {
+        let TunnelMessage::PrincipalToPrincipalResponse {
             request_id,
             payload,
         } = response
         else {
-            panic!("expected AgentToAgentResponse, got: {response:?}");
+            panic!("expected PrincipalToPrincipalResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-bad-sig");
         let err: HubErrorResponse = serde_json::from_slice(&payload).expect("payload must decode");
@@ -2369,11 +2369,11 @@ mod tests {
         );
     }
 
-    /// `handle_inbound_agent_to_agent_response` completes the
+    /// `handle_inbound_principal_to_principal_response` completes the
     /// matching pending oneshot on the `PendingA2aResponses`
     /// registry so the outbound `PrincipalSendTool` awaiter unblocks.
     #[tokio::test]
-    async fn test_inbound_agent_to_agent_response_completes_pending() {
+    async fn test_inbound_principal_to_principal_response_completes_pending() {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
         let pending = app_state.pending_a2a_responses();
@@ -2385,7 +2385,7 @@ mod tests {
             .expect("register must succeed for a fresh request_id");
 
         dispatcher
-            .handle_inbound_agent_to_agent_response("req-1".to_string(), b"hello".to_vec())
+            .handle_inbound_principal_to_principal_response("req-1".to_string(), b"hello".to_vec())
             .await
             .expect("handler must not panic");
 
@@ -2393,16 +2393,16 @@ mod tests {
         assert_eq!(delivered, b"hello");
     }
 
-    /// `handle_inbound_agent_to_agent_response` for a request_id with
+    /// `handle_inbound_principal_to_principal_response` for a request_id with
     /// no pending waiter is a no-op (logged as a warn). Catches the
     /// failure mode where a stale or duplicate response would
     /// panic.
     #[tokio::test]
-    async fn test_inbound_agent_to_agent_response_unknown_request_id_is_noop() {
+    async fn test_inbound_principal_to_principal_response_unknown_request_id_is_noop() {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         dispatcher
-            .handle_inbound_agent_to_agent_response(
+            .handle_inbound_principal_to_principal_response(
                 "unknown-request-id".to_string(),
                 b"orphan".to_vec(),
             )
@@ -2531,7 +2531,7 @@ mod tests {
         );
     }
 
-    /// An inbound `AgentToAgentRequest` addressed to a Principal's stable DID
+    /// An inbound `PrincipalToPrincipalRequest` addressed to a Principal's stable DID
     /// is routed to that Principal and a structured response is sent back.
     #[tokio::test]
     async fn inbound_a2a_routes_to_principal_by_did() {
@@ -2568,7 +2568,7 @@ mod tests {
         let sig = crate::tunnel::sign_request(&kp_caller.signing_key, signed);
 
         dispatcher
-            .handle_inbound_agent_to_agent_request(
+            .handle_inbound_principal_to_principal_request(
                 handle,
                 "req-a2a".to_string(),
                 caller_runtime_id,
@@ -2581,12 +2581,12 @@ mod tests {
             .expect("handler must not panic");
 
         let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::AgentToAgentResponse {
+        let TunnelMessage::PrincipalToPrincipalResponse {
             request_id,
             payload,
         } = response
         else {
-            panic!("expected AgentToAgentResponse, got: {response:?}");
+            panic!("expected PrincipalToPrincipalResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-a2a");
         let result: PrincipalSendResult =

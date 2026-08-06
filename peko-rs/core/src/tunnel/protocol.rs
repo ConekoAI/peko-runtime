@@ -282,8 +282,8 @@ pub enum TunnelMessage {
     #[serde(rename = "status_update")]
     StatusUpdate { payload: StatusUpdatePayload },
 
-    // --- Cross-runtime agent-to-agent (issue #29) ---
-    /// Agent-to-agent request from the **caller** runtime to the
+    // --- Cross-runtime principal-to-principal (issue #29) ---
+    /// Principal-to-principal request from the **caller** runtime to the
     /// **target** runtime, proxied through PekoHub. Issue #29 (Slice A —
     /// wire shape).
     ///
@@ -294,7 +294,7 @@ pub enum TunnelMessage {
     /// it to PekoHub which forwards to the target runtime over the
     /// target's existing tunnel. The target verifies the caller's
     /// `caller_runtime_id` against the hub's allowlist (defense in
-    /// depth) before attributing the receiving agent's session to
+    /// depth) before attributing the receiving principal's session to
     /// `Subject::Principal(caller_principal_did)` and dispatching.
     ///
     /// Slice A only defines and round-trips the wire shape. Slice B
@@ -302,10 +302,17 @@ pub enum TunnelMessage {
     /// the canonical pre-image `request_id || caller_runtime_id ||
     /// caller_principal_did || target_principal_did || message`).
     /// Slice C adds the inbound verifier + dispatcher route.
-    #[serde(rename = "agent_to_agent_request", rename_all = "camelCase")]
-    AgentToAgentRequest {
+    ///
+    /// **Wire tag note.** The Rust enum name is
+    /// `PrincipalToPrincipalRequest`; the on-wire tag is
+    /// `principal_to_principal_request` (snake_case). The tag was
+    /// previously `agent_to_agent_request` (pre-ADR-042 name); it was
+    /// renamed to match pekohub's TypeScript decoder and the
+    /// principal-as-container-v2 unification (PR-A commit 1).
+    #[serde(rename = "principal_to_principal_request", rename_all = "camelCase")]
+    PrincipalToPrincipalRequest {
         /// Globally unique request ID. Used to correlate the matching
-        /// `AgentToAgentResponse` and to scope the canonical
+        /// `PrincipalToPrincipalResponse` and to scope the canonical
         /// signature pre-image (replay protection: PekoHub MAY
         /// reject duplicate IDs within a sliding window).
         request_id: String,
@@ -315,21 +322,20 @@ pub enum TunnelMessage {
         /// this DID and rejects the message if the caller is not on
         /// the hub's allowlist.
         caller_runtime_id: String,
-        /// The caller agent's stable DID (issue #28 form:
-        /// `did:peko:agent:<keyhash>`). Projected to
-        /// `Subject::Principal(caller_principal_did)` on the target side
-        /// for session attribution, permission grant lookup, and the
-        /// `AuditEvent.caller` field (issue #26).
+        /// The caller principal's stable DID. Projected to
+        /// `Subject::Principal(caller_principal_did)` on the target
+        /// side for session attribution, permission grant lookup, and
+        /// the `AuditEvent.caller` field (issue #26).
         caller_principal_did: String,
-        /// The **target** agent's stable DID. The target runtime
-        /// resolves this against its local agent table
-        /// (`AgentConfig.agent_did`) to find the agent name to
-        /// dispatch on. A missing target_principal_did on the receiving
-        /// side is a 404 — the hub-side directory should have caught
-        /// this, so it most often indicates a stale resolution
-        /// cached on the caller.
+        /// The **target** principal's stable DID. The target runtime
+        /// resolves this against its local principal table
+        /// (`PrincipalConfig.principal_did`) to find the principal
+        /// name to dispatch on. A missing target_principal_did on
+        /// the receiving side is a 404 — the hub-side directory
+        /// should have caught this, so it most often indicates a
+        /// stale resolution cached on the caller.
         target_principal_did: String,
-        /// The message body to deliver to the target agent.
+        /// The message body to deliver to the target principal.
         message: String,
         /// Ed25519 signature, base64url-encoded, over the canonical
         /// pre-image (see Slice B comment above). The target derives
@@ -344,20 +350,23 @@ pub enum TunnelMessage {
         signature: String,
     },
 
-    /// Agent-to-agent response from the **target** runtime back to the
-    /// **caller**, also proxied through PekoHub. Issue #29 (Slice A —
-    /// wire shape).
+    /// Principal-to-principal response from the **target** runtime back
+    /// to the **caller**, also proxied through PekoHub. Issue #29
+    /// (Slice A — wire shape).
     ///
     /// The `payload` is the serialized form of an IPC `ResponsePacket`
     /// (same as `ProxiedResponse.payload`) so the caller-side decoder
     /// can be the same code path for both user-originated and
-    /// agent-originated proxied responses. Slice C is what actually
+    /// principal-originated proxied responses. Slice C is what actually
     /// emits this; Slice A only pins the shape.
-    #[serde(rename = "agent_to_agent_response", rename_all = "camelCase")]
-    AgentToAgentResponse {
+    ///
+    /// **Wire tag note.** Renamed from `agent_to_agent_response`
+    /// alongside `PrincipalToPrincipalRequest` (PR-A commit 1).
+    #[serde(rename = "principal_to_principal_response", rename_all = "camelCase")]
+    PrincipalToPrincipalResponse {
         /// Matches the `request_id` of the originating
-        /// `AgentToAgentRequest`. PekoHub uses this to route the
-        /// response back to the caller's tunnel.
+        /// `PrincipalToPrincipalRequest`. PekoHub uses this to route
+        /// the response back to the caller's tunnel.
         request_id: String,
         /// Serialized IPC `ResponsePacket` (same encoding as
         /// `ProxiedResponse.payload`). Slice C decides whether the
@@ -810,18 +819,18 @@ mod tests {
         }
     }
 
-    // -- Issue #29 (Slice A): cross-runtime a2a wire shape ------------
+    // -- Issue #29 (Slice A): cross-runtime p2p wire shape ------------
 
-    /// `AgentToAgentRequest` round-trips with all fields populated.
-    /// The on-wire tag is `agent_to_agent_request` (snake_case, to
-    /// match the existing dispatch table on the hub side) and the
-    /// field names are camelCase (matching every other tunnel
-    /// message). Slice B (outbound signer) and Slice C (inbound
-    /// verifier) will read these names verbatim, so pinning them
-    /// here also pins the contract with pekohub#14.
+    /// `PrincipalToPrincipalRequest` round-trips with all fields
+    /// populated. The on-wire tag is `principal_to_principal_request`
+    /// (snake_case — renamed PR-A commit 1 to match pekohub's
+    /// TypeScript decoder + ADR-042) and the field names are camelCase
+    /// (matching every other tunnel message). Slice B (outbound signer)
+    /// and Slice C (inbound verifier) read these names verbatim, so
+    /// pinning them here also pins the contract with pekohub#14.
     #[test]
-    fn test_agent_to_agent_request_roundtrip() {
-        let msg = TunnelMessage::AgentToAgentRequest {
+    fn test_principal_to_principal_request_roundtrip() {
+        let msg = TunnelMessage::PrincipalToPrincipalRequest {
             request_id: "req-abc-123".to_string(),
             caller_runtime_id: "did:key:zRuntime1".to_string(),
             caller_principal_did: "did:peko:agent:caller-hash".to_string(),
@@ -833,8 +842,8 @@ mod tests {
         let json = String::from_utf8(bytes.clone()).unwrap();
 
         assert!(
-            json.contains("\"agent_to_agent_request\""),
-            "tag must be snake_case `agent_to_agent_request`, got: {json}"
+            json.contains("\"principal_to_principal_request\""),
+            "tag must be snake_case `principal_to_principal_request`, got: {json}"
         );
         // Every field is camelCase on the wire.
         assert!(
@@ -864,7 +873,7 @@ mod tests {
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
-            TunnelMessage::AgentToAgentRequest {
+            TunnelMessage::PrincipalToPrincipalRequest {
                 request_id,
                 caller_runtime_id,
                 caller_principal_did,
@@ -879,17 +888,17 @@ mod tests {
                 assert_eq!(message, "review this PR");
                 assert_eq!(signature, "base64url-sig");
             }
-            other => panic!("Expected AgentToAgentRequest, got: {other:?}"),
+            other => panic!("Expected PrincipalToPrincipalRequest, got: {other:?}"),
         }
     }
 
-    /// `AgentToAgentResponse` round-trips with a binary payload (the
-    /// IPC `ResponsePacket` form, opaque at this layer). Field name
-    /// is camelCase on the wire; the tag is snake_case
-    /// `agent_to_agent_response`.
+    /// `PrincipalToPrincipalResponse` round-trips with a binary payload
+    /// (the IPC `ResponsePacket` form, opaque at this layer). Field
+    /// name is camelCase on the wire; the tag is snake_case
+    /// `principal_to_principal_response` (renamed PR-A commit 1).
     #[test]
-    fn test_agent_to_agent_response_roundtrip() {
-        let msg = TunnelMessage::AgentToAgentResponse {
+    fn test_principal_to_principal_response_roundtrip() {
+        let msg = TunnelMessage::PrincipalToPrincipalResponse {
             request_id: "req-abc-123".to_string(),
             payload: vec![0xde, 0xad, 0xbe, 0xef],
         };
@@ -897,8 +906,8 @@ mod tests {
         let json = String::from_utf8(bytes.clone()).unwrap();
 
         assert!(
-            json.contains("\"agent_to_agent_response\""),
-            "tag must be snake_case `agent_to_agent_response`, got: {json}"
+            json.contains("\"principal_to_principal_response\""),
+            "tag must be snake_case `principal_to_principal_response`, got: {json}"
         );
         assert!(
             json.contains("\"requestId\""),
@@ -907,14 +916,14 @@ mod tests {
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
-            TunnelMessage::AgentToAgentResponse {
+            TunnelMessage::PrincipalToPrincipalResponse {
                 request_id,
                 payload,
             } => {
                 assert_eq!(request_id, "req-abc-123");
                 assert_eq!(payload, vec![0xde, 0xad, 0xbe, 0xef]);
             }
-            other => panic!("Expected AgentToAgentResponse, got: {other:?}"),
+            other => panic!("Expected PrincipalToPrincipalResponse, got: {other:?}"),
         }
     }
 

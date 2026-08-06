@@ -13,7 +13,7 @@
 //! 4. Inbound verifies the ack, sends `TunnelReady`.
 //!
 //! The handshake is intentionally simple: per-message authorization is
-//! provided by the A2A signature on every `AgentToAgentRequest`.
+//! provided by the A2A signature on every `PrincipalToPrincipalRequest`.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signer, SigningKey, Verifier};

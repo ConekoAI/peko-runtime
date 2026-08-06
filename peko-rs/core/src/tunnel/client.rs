@@ -658,15 +658,15 @@ impl TunnelClient {
             | TunnelMessage::StatusUpdate { .. }
             // Issue #29 (Slice A): cross-runtime a2a envelopes flow
             // through the same handler seam as proxied requests.
-            // Slice C lands the actual `AgentToAgentRequest`
+            // Slice C lands the actual `PrincipalToPrincipalRequest`
             // dispatcher branch (signature verify → session attribute
-            // → local dispatch → `AgentToAgentResponse`); Slice B
-            // lands the `AgentToAgentResponse` correlation on the
+            // → local dispatch → `PrincipalToPrincipalResponse`); Slice B
+            // lands the `PrincipalToPrincipalResponse` correlation on the
             // caller side. Until then the dispatcher will log a
             // `debug!` and drop, which is the safe default — no
             // surprise local dispatch, no silent send loop.
-            | TunnelMessage::AgentToAgentRequest { .. }
-            | TunnelMessage::AgentToAgentResponse { .. } => {
+            | TunnelMessage::PrincipalToPrincipalRequest { .. }
+            | TunnelMessage::PrincipalToPrincipalResponse { .. } => {
                 if let Some(handler) = request_handler {
                     handler(msg, handle.clone()).await;
                 } else {

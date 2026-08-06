@@ -2,9 +2,9 @@
 //!
 //! Replaces the agent-targeted `a2a_send` tool at the principal level.
 //! The target is a Principal DID (not an agent name in a target
-//! runtime); the inbound receiver (`dispatcher::handle_inbound_agent_to_agent_request`)
+//! runtime); the inbound receiver (`dispatcher::handle_inbound_principal_to_principal_request`)
 //! already routes to the principal directly. The wire envelope
-//! `TunnelMessage::AgentToAgentRequest` is reused verbatim — its fields
+//! `TunnelMessage::PrincipalToPrincipalRequest` is reused verbatim — its fields
 //! are already principal-typed (`caller_principal_did`,
 //! `target_principal_did`).
 //!
@@ -83,7 +83,7 @@ pub struct PrincipalSendArgs {
 /// Result of a `principal_send` execution. Shape mirrors `A2aSendResult`
 /// so any consumer of the legacy tool can deserialize either with a
 /// schema-tolerant adapter. The principal-level receiver
-/// (`dispatcher::handle_inbound_agent_to_agent_request`) produces this
+/// (`dispatcher::handle_inbound_principal_to_principal_request`) produces this
 /// exact shape on its `Ok` branch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalSendResult {
@@ -101,7 +101,7 @@ pub struct PrincipalSendResult {
 }
 
 /// Hub-synthesized error response payload. The hub's forwarding layer
-/// injects this shape into `AgentToAgentResponse.payload` when it
+/// injects this shape into `PrincipalToPrincipalResponse.payload` when it
 /// can't deliver the request (target offline, target unknown, etc.).
 /// Same wire shape used by `a2a_send` so callers can share decoders.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -449,7 +449,7 @@ Send a message to another Principal's root agent and receive its response. This 
         };
         let signature = sign_request(&ctx.signing_key, signed);
 
-        let envelope = TunnelMessage::AgentToAgentRequest {
+        let envelope = TunnelMessage::PrincipalToPrincipalRequest {
             request_id: request_id.clone(),
             caller_runtime_id: ctx.caller_runtime_id.clone(),
             caller_principal_did: self.caller_principal_did.clone(),
@@ -765,7 +765,7 @@ mod tests {
     //    lands the 3 that don't depend on a real `StatelessAgentService`).
     //    The 4th ("remote round-trip via pekohub#17 forwarding") is
     //    covered by the existing `tunnel::dispatcher` tests which
-    //    exercise `handle_inbound_agent_to_agent_request` end-to-end. ──
+    //    exercise `handle_inbound_principal_to_principal_request` end-to-end. ──
 
     /// Build a `CrossRuntimeA2aCtx` for the round-trip tests: real
     /// `KeyPair` (so the caller's `runtime_id` is a valid `did:key`),
@@ -818,7 +818,7 @@ mod tests {
     /// outbound is closed (test cleanup). The synthesized response
     /// runs `verify_request` against the canonical pre-image from
     /// the envelope — same call the production
-    /// `handle_inbound_agent_to_agent_request` makes.
+    /// `handle_inbound_principal_to_principal_request` makes.
     async fn run_principal_send_hub(
         mut caller_outbound: tokio::sync::mpsc::Receiver<TunnelMessage>,
         caller_pending: Arc<PendingA2aResponses>,
@@ -826,7 +826,7 @@ mod tests {
         target_response_text: &'static str,
     ) {
         while let Some(msg) = caller_outbound.recv().await {
-            let TunnelMessage::AgentToAgentRequest {
+            let TunnelMessage::PrincipalToPrincipalRequest {
                 request_id,
                 caller_runtime_id,
                 caller_principal_did,
@@ -1360,7 +1360,7 @@ mod tests {
         let hub_pending = caller_pending.clone();
         let hub_task = tokio::spawn(async move {
             while let Some(msg) = caller_outbound_rx.recv().await {
-                if let TunnelMessage::AgentToAgentRequest { request_id, .. } = msg {
+                if let TunnelMessage::PrincipalToPrincipalRequest { request_id, .. } = msg {
                     let _ = hub_pending.complete(&request_id, b"<<not valid json>>".to_vec());
                 }
             }

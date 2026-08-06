@@ -1,4 +1,4 @@
-//! `did:key:` (W3C) parser for the inbound `AgentToAgentRequest`
+//! `did:key:` (W3C) parser for the inbound `PrincipalToPrincipalRequest`
 //! signature verifier. Issue #29 Slice C.
 //!
 //! The did:key method for Ed25519 is self-certifying: the
@@ -19,7 +19,7 @@
 //! checks that the runtime_id's derived public key is the one
 //! that signed `RuntimeHello`).
 //!
-//! For inbound `AgentToAgentRequest`, the same check applies: the
+//! For inbound `PrincipalToPrincipalRequest`, the same check applies: the
 //! target runtime derives the verifying key from the
 //! `caller_runtime_id` and verifies the signature. This is the
 //! defense-in-depth layer pekohub#16's issue body calls out — the

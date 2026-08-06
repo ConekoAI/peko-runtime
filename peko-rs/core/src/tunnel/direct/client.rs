@@ -68,7 +68,7 @@ impl DirectClient {
     /// and the endpoint does not specify a secure scheme, the connection
     /// is upgraded to `wss://`.
     /// `pending` is the local a2a response correlation registry; incoming
-    /// `AgentToAgentResponse` messages are completed there.
+    /// `PrincipalToPrincipalResponse` messages are completed there.
     pub async fn connect(
         endpoint: &str,
         runtime_id: &str,
@@ -239,7 +239,7 @@ fn decode_message(msg: Message) -> Result<TunnelMessage, DirectConnectionError> 
 /// Background read loop for an outbound direct connection.
 ///
 /// Reads `TunnelMessage`s from the WebSocket and forwards
-/// `AgentToAgentResponse` messages into the local pending registry via
+/// `PrincipalToPrincipalResponse` messages into the local pending registry via
 /// the dispatcher callback. The write side is driven by the returned
 /// `TunnelHandle`.
 ///
@@ -288,7 +288,7 @@ async fn run_client_read_loop(
 
 fn handle_direct_message(bytes: &[u8], pending: &PendingA2aResponses) {
     match TunnelMessage::from_bytes(bytes) {
-        Ok(TunnelMessage::AgentToAgentResponse {
+        Ok(TunnelMessage::PrincipalToPrincipalResponse {
             request_id,
             payload,
         }) => {
@@ -296,7 +296,7 @@ fn handle_direct_message(bytes: &[u8], pending: &PendingA2aResponses) {
             tracing::debug!(
                 request_id = %request_id,
                 completed,
-                "received direct AgentToAgentResponse"
+                "received direct PrincipalToPrincipalResponse"
             );
         }
         Ok(other) => {
