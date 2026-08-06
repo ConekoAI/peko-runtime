@@ -28,6 +28,10 @@ pub const GLOBAL_TOOL_NAMES: &[&str] = &[
     // loop calls this on demand; principal boundary preserved
     // because the principal invokes the tool itself.
     "ChannelRead",
+    // PR-5c — symmetric channel send. `ctx.principal_id` becomes
+    // the `post` sender, so membership + audit attribution stay
+    // correct end-to-end.
+    "ChannelSend",
 ];
 
 /// Tools registered per-agent in `Agent::init_builtins_async()`.

@@ -51,7 +51,7 @@ pub use async_control::{
     SharedAsyncRuntime,
 };
 pub use bash::BashTool;
-pub use channel::ChannelReadTool;
+pub use channel::{ChannelReadTool, ChannelSendTool};
 pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{
     AgentTool, DynamicSessionKeyProvider, SessionKeyProvider, SharedSubagentRuntime,

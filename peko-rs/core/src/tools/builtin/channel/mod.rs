@@ -1,24 +1,27 @@
-//! `peko_channel_read` — read events from a channel the calling principal
-//! is a member of.
+//! `peko_channel_read` / `peko_channel_send` — channel read + send tools.
 //!
-//! This is the agentic-loop entry point for PR-4a. The principal's
-//! agentic loop calls the tool on demand; the audit ring buffer
-//! (PR-3c) observes every event regardless of whether the tool fires.
-//! No daemon-side cross-principal reach — the principal invokes the
-//! tool itself, so the boundary model stays intact.
+//! These are the agentic-loop entry points for PR-4a (read) and PR-5c
+//! (send). The principal's agentic loop calls either on demand; the
+//! audit ring buffer (PR-3c) observes every event regardless of
+//! whether a tool fires. No daemon-side cross-principal reach — the
+//! principal invokes the tool itself, so the boundary model stays
+//! intact.
 //!
 //! ## Implementation
 //!
-//! Thin wrapper around [`peko_channel::ChannelPort::peek`]. Takes
-//! `channel: String` (parsed via [`ChannelId::parse`]) plus optional
-//! `since: String` (opaque `Checkpoint` cursor) + optional
-//! `limit: usize` (post-fetch slice; the port returns everything ≥
-//! `since` and we trim). Returns the events as a JSON array.
+//! Both are thin wrappers around the [`peko_channel::ChannelPort`]
+//! trait (`peek` / `post` respectively). They pull `PrincipalId` out
+//! of the [`ToolContext`] and use it as the `sender` argument, so the
+//! principal boundary is enforced at the port call site (which has
+//! its own `NotMember` check).
 //!
-//! The capability gate is the standard `tool:ChannelRead` grant that
-//! the principal's capability set already enforces through the F37
-//! funnel — this tool itself does not check capabilities, the gate
-//! sits at execute-time on the caller's side.
+//! The capability gate is the standard `tool:ChannelRead` /
+//! `tool:ChannelSend` grant that the principal's capability set
+//! already enforces through the F37 funnel — these tools themselves
+//! do not check capabilities, the gate sits at execute-time on the
+//! caller's side.
 
 pub mod channel_read;
+pub mod channel_send;
 pub use channel_read::ChannelReadTool;
+pub use channel_send::ChannelSendTool;
