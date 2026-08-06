@@ -33,6 +33,7 @@ use super::TunnelHandle;
 use super::{
     a2a_signature::{verify_request, SignedFields},
     did_key::did_key_to_verifying_key,
+    tunnel_channel_audit, tunnel_channel_signature::{verify_channel_event, ChannelSignedFields},
 };
 use crate::tunnel::principal_send_tool::{HubErrorResponse, PrincipalSendResult};
 
@@ -603,6 +604,31 @@ impl TunnelDispatcher {
             } => {
                 self.handle_inbound_principal_to_principal_response(request_id, payload)
                     .await?;
+            }
+            // peko-channel cross-runtime PR-A commit 3: inbound
+            // `TunnelChannelEvent` from a peer runtime (proxied by
+            // pekohub). Verify the source runtime's signature against
+            // the `source_runtime_id` they claim, emit the audit line,
+            // and append the event to the local `events.jsonl` mirror
+            // (the append lands in PR-B alongside
+            // `AppState.channel_port`).
+            TunnelMessage::TunnelChannelEvent {
+                request_id,
+                source_runtime_id,
+                source_principal_did,
+                channel_id,
+                event,
+                signature,
+            } => {
+                self.handle_inbound_tunnel_channel_event(
+                    request_id,
+                    source_runtime_id,
+                    source_principal_did,
+                    channel_id,
+                    event,
+                    signature,
+                )
+                .await?;
             }
             _ => {
                 debug!("Ignoring tunnel message: {:?}", msg);
@@ -1352,6 +1378,112 @@ impl TunnelDispatcher {
             request_id,
             payload,
         })?;
+        Ok(())
+    }
+
+    /// Handle an inbound `TunnelChannelEvent` — a push-only channel
+    /// fan-out from a peer runtime. peko-channel cross-runtime PR-A
+    /// commit 3.
+    ///
+    /// Pipeline:
+    ///
+    /// 1. Derive the verifying key from `source_runtime_id` (the
+    ///    self-certifying `did:key` form). Invalid DIDs are dropped
+    ///    with a warn (same defense-in-depth layer as
+    ///    [`Self::handle_inbound_principal_to_principal_request`]) —
+    ///    the hub's source-allowlist is the primary gate, this is the
+    ///    receiver-side check that catches a hub bug or stale
+    ///    forwarder.
+    /// 2. Re-serialize the `event` to JSON bytes and feed them to
+    ///    [`verify_channel_event`] so the signer and verifier agree
+    ///    on byte-for-byte identical pre-image input. (serde_json
+    ///    emits struct fields in declaration order, so the round-trip
+    ///    is stable; this is documented in
+    ///    `tunnel_channel_signature::ChannelSignedFields`.)
+    /// 3. Emit the `received_inbound` audit line via
+    ///    [`tunnel_channel_audit::emit_received_inbound`].
+    /// 4. **TODO (PR-B):** append the event to the local
+    ///    `events.jsonl` mirror. Requires `AppState.channel_port`
+    ///    (a `TunnelChannelPort`) which is added in PR-B alongside
+    ///    `ChannelStore::append_remote_event`. For now this method
+    ///    verifies-and-audits-and-drops — the verifier catches a
+    ///    malicious peer, the audit row preserves the trail, and
+    ///    PR-B fills in the actual local-mirror write.
+    ///
+    /// No response is sent back to the source runtime — channel
+    /// events are push-only.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_inbound_tunnel_channel_event(
+        &self,
+        request_id: String,
+        source_runtime_id: String,
+        source_principal_did: String,
+        channel_id: String,
+        event: peko_protocol::channel::ChannelEvent,
+        signature: String,
+    ) -> anyhow::Result<()> {
+        // 1. Derive the verifying key.
+        let verifying_key = match did_key_to_verifying_key(&source_runtime_id) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelEvent: invalid source_runtime_id {source_runtime_id}: {e}"
+                );
+                return Ok(()); // drop, do not propagate — channel events have no response.
+            }
+        };
+
+        // 2. Re-serialize the event for the pre-image. We must use the
+        // same byte sequence the source runtime signed; serde_json's
+        // stable declaration-order emission is what guarantees this.
+        let event_bytes = match serde_json::to_vec(&event) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelEvent: failed to re-serialize event for verification (channel_id={channel_id}): {e}"
+                );
+                return Ok(());
+            }
+        };
+
+        let signed = ChannelSignedFields {
+            request_id: &request_id,
+            source_runtime_id: &source_runtime_id,
+            source_principal_did: &source_principal_did,
+            channel_id: &channel_id,
+            event_bytes: &event_bytes,
+        };
+        if let Err(e) = verify_channel_event(&verifying_key, signed, &signature) {
+            warn!(
+                "inbound TunnelChannelEvent: signature verification failed for source_runtime_id={source_runtime_id}: {e}"
+            );
+            return Ok(());
+        }
+
+        // 3. Audit. Always emit a row, regardless of whether PR-B's
+        // local-mirror append lands next; the row documents the
+        // verify-and-drop decision.
+        let event_kind = event.kind();
+        let preview_json = String::from_utf8_lossy(&event_bytes).into_owned();
+        tunnel_channel_audit::emit_received_inbound(
+            &request_id,
+            &source_runtime_id,
+            &source_principal_did,
+            &channel_id,
+            event_kind,
+            &super::tunnel_channel_audit::preview_event_payload(&preview_json),
+        );
+
+        // 4. TODO(PR-B): self.host.channel_port()
+        //    .append_remote_event(&channel_id, event, &source_runtime_id)
+        //    .await
+        //    .map_err(|e| { warn!("failed to append remote event to local mirror: {e}"); e })?;
+        //    For now we just log and drop.
+        debug!(
+            "inbound TunnelChannelEvent: verified + audited; local-mirror append lands in PR-B \
+             (request_id={request_id}, channel_id={channel_id}, kind={event_kind})"
+        );
+
         Ok(())
     }
 
@@ -2594,6 +2726,171 @@ mod tests {
         assert!(
             result.error.is_some() || !result.response.is_empty() || result.success,
             "A2A result should reflect that the Principal was reached; got: {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // peko-channel cross-runtime PR-A commit 3:
+    // `TunnelChannelEvent` inbound handler tests.
+    // -----------------------------------------------------------------
+
+    /// Build a fresh signed `TunnelChannelEvent` envelope for tests.
+    /// Mirrors the production outbound path: serialize the event to
+    /// JSON, build the canonical pre-image, sign with the source
+    /// runtime's key, base64url-encode the signature.
+    fn build_signed_tunnel_channel_event(
+        kp: &peko_identity::keys::KeyPair,
+        request_id: &str,
+        source_runtime_id: &str,
+        source_principal_did: &str,
+        channel_id: &str,
+        event: &peko_protocol::channel::ChannelEvent,
+    ) -> (String, peko_protocol::channel::ChannelEvent) {
+        let event_bytes = serde_json::to_vec(event).expect("event must serialize");
+        let signed = crate::tunnel::ChannelSignedFields {
+            request_id,
+            source_runtime_id,
+            source_principal_did,
+            channel_id,
+            event_bytes: &event_bytes,
+        };
+        let sig = crate::tunnel::sign_channel_event(&kp.signing_key, signed);
+        (sig, event.clone())
+    }
+
+    /// The inbound `handle_inbound_tunnel_channel_event` accepts a
+    /// valid signed envelope and returns Ok. The audit line is
+    /// emitted (we don't capture tracing output here — the `Ok`
+    /// contract is what the dispatcher relies on; the audit row
+    /// emits unconditionally inside the handler).
+    ///
+    /// PR-A commit 3 stops short of the local-mirror append (that
+    /// lands in PR-B), so this test only proves "routing +
+    /// verification + audit emit do not error."
+    #[tokio::test]
+    async fn dispatcher_routes_valid_tunnel_channel_event_to_inbound_handler() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (handle, _rx) = mock_tunnel_handle();
+
+        let kp = peko_identity::keys::KeyPair::generate();
+        let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: peko_protocol::channel::ChannelId("chan_abcdefgh".to_string()),
+            author: "prin_alice".to_string(),
+            parent: None,
+            text: "hello from A".to_string(),
+            at: "2026-08-06T12:00:00Z".to_string(),
+        };
+        let (signature, event) = build_signed_tunnel_channel_event(
+            &kp,
+            "chan-evt-1",
+            &source_runtime_id,
+            "prin_alice",
+            "chan_abcdefgh",
+            &event,
+        );
+
+        // Direct call to the inbound handler (same as
+        // `inbound_a2a_routes_to_principal_by_did` for the DM path).
+        dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-1".to_string(),
+                source_runtime_id,
+                "prin_alice".to_string(),
+                "chan_abcdefgh".to_string(),
+                event,
+                signature,
+            )
+            .await
+            .expect("valid signed envelope must not error");
+    }
+
+    /// A `TunnelChannelEvent` whose signature does not verify (the
+    /// envelope is intact but signed with a key that does not match
+    /// the claimed `source_runtime_id`) is dropped with a warn. The
+    /// handler returns `Ok(())` so the dispatcher does not propagate
+    /// the rejection up the call stack — channel events have no
+    /// response, so there's nothing to error against.
+    #[tokio::test]
+    async fn dispatcher_drops_tunnel_channel_event_with_invalid_signature() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (handle, _rx) = mock_tunnel_handle();
+
+        let kp_signer = peko_identity::keys::KeyPair::generate();
+        let kp_claimed = peko_identity::keys::KeyPair::generate();
+        // Claimed source_runtime_id is derived from a DIFFERENT key
+        // than the one that signed the envelope — signature
+        // verification MUST fail.
+        let claimed_source_runtime_id =
+            crate::tunnel::verifying_key_to_did_key(&kp_claimed.verifying_key);
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: peko_protocol::channel::ChannelId("chan_abcdefgh".to_string()),
+            author: "prin_alice".to_string(),
+            parent: None,
+            text: "tampered".to_string(),
+            at: "2026-08-06T12:00:00Z".to_string(),
+        };
+        let (signature, event) = build_signed_tunnel_channel_event(
+            &kp_signer,
+            "chan-evt-tampered",
+            &claimed_source_runtime_id,
+            "prin_alice",
+            "chan_abcdefgh",
+            &event,
+        );
+
+        let result = dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-tampered".to_string(),
+                claimed_source_runtime_id,
+                "prin_alice".to_string(),
+                "chan_abcdefgh".to_string(),
+                event,
+                signature,
+            )
+            .await;
+        // Returns Ok — the rejection is logged and dropped, not
+        // propagated. Same shape as the DM path's signature-failure
+        // branch (which DOES propagate because there's a hub error
+        // envelope to send back; channels have no such envelope).
+        assert!(
+            result.is_ok(),
+            "invalid-signature rejection must not propagate; got: {result:?}"
+        );
+    }
+
+    /// An invalid `source_runtime_id` (not a valid `did:key:z...`)
+    /// is dropped without panicking. Mirrors the same defense-in-
+    /// depth branch in the DM path.
+    #[tokio::test]
+    async fn dispatcher_drops_tunnel_channel_event_with_invalid_runtime_did() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (handle, _rx) = mock_tunnel_handle();
+
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: peko_protocol::channel::ChannelId("chan_abcdefgh".to_string()),
+            author: "prin_alice".to_string(),
+            parent: None,
+            text: "hello".to_string(),
+            at: "2026-08-06T12:00:00Z".to_string(),
+        };
+
+        let result = dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-bad-did".to_string(),
+                "did:peko:not-a-key".to_string(), // wrong scheme entirely
+                "prin_alice".to_string(),
+                "chan_abcdefgh".to_string(),
+                event,
+                "any-base64url".to_string(),
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "invalid DID rejection must not propagate; got: {result:?}"
         );
     }
 }
