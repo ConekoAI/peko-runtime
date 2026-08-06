@@ -6,9 +6,9 @@
 //! - `subscriber_calls_responder_for_each_new_event` — per-event fan-out
 //!   to the responder, no spurious calls on re-tick.
 //!
-//! Tests run against the file-backed `PlanChannelAdapter` rooted in a
+//! Tests run against the file-backed `ChannelStore` rooted in a
 //! `tempfile::TempDir` so the storage layer is exercised end-to-end
-//! (matches `peko-rs/plan/src/plan_port.rs:340-348` style).
+//! (matches `peko-rs/chat-log/src/store.rs:392-495` style).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -20,9 +20,9 @@ use peko_channel::port::{ChannelError, Checkpoint, CreateOpts, PostMsg, Tier};
 use peko_channel::responder::{ChannelResponder, RespondCtx};
 use peko_channel::subscription::SubscriptionConfig;
 use peko_channel::{
-    ChannelCliRouter, ChannelConfig, ChannelId, ChannelPort, ConfigOnDisk, PlanChannelAdapter,
+    ChannelCliRouter, ChannelConfig, ChannelId, ChannelPort, ChannelStore, ConfigOnDisk,
 };
-use peko_plan::PrincipalId;
+use peko_subject::PrincipalId;
 use peko_protocol::channel::ChannelEvent;
 use tempfile::TempDir;
 
@@ -31,7 +31,7 @@ use tempfile::TempDir;
 // ---------------------------------------------------------------------------
 
 /// Build a fresh adapter rooted in a tempdir.
-fn adapter_in_tempdir() -> (TempDir, Arc<PlanChannelAdapter>) {
+fn adapter_in_tempdir() -> (TempDir, Arc<ChannelStore>) {
     let tmp = TempDir::new().expect("tempdir");
     let cfg = ChannelConfig {
         runtime_dir: tmp.path().to_path_buf(),
@@ -39,20 +39,20 @@ fn adapter_in_tempdir() -> (TempDir, Arc<PlanChannelAdapter>) {
                           // single-tier test path. `pin_to_shared`
                           // surfaces `ChannelError::Adapter` here.
     };
-    let adapter = PlanChannelAdapter::new(cfg);
+    let adapter = ChannelStore::new(cfg);
     (tmp, Arc::new(adapter))
 }
 
 /// Wrap in `Arc<dyn ChannelPort>` (port-trait dispatch seam — proves
 /// callers don't depend on the concrete struct).
-fn as_port(a: Arc<PlanChannelAdapter>) -> Arc<dyn ChannelPort> {
+fn as_port(a: Arc<ChannelStore>) -> Arc<dyn ChannelPort> {
     a
 }
 
 /// Build a fresh adapter rooted in a tempdir with both Runtime and
 /// Shared tier roots populated. Mirrors `adapter_in_tempdir()` but
 /// enables `pin_to_shared` + `Tier::Shared` creation paths.
-fn adapter_in_tempdir_with_shared() -> (TempDir, Arc<PlanChannelAdapter>) {
+fn adapter_in_tempdir_with_shared() -> (TempDir, Arc<ChannelStore>) {
     let tmp = TempDir::new().expect("tempdir");
     let runtime_dir = tmp.path().join("runtime");
     let shared_dir = tmp.path().join("shared");
@@ -62,7 +62,7 @@ fn adapter_in_tempdir_with_shared() -> (TempDir, Arc<PlanChannelAdapter>) {
         runtime_dir,
         shared_dir: Some(shared_dir),
     };
-    let adapter = PlanChannelAdapter::new(cfg);
+    let adapter = ChannelStore::new(cfg);
     (tmp, Arc::new(adapter))
 }
 
@@ -449,8 +449,8 @@ async fn shared_pin_copies_files_to_shared_root() {
     assert!(runtime_chan_dir.exists(), "runtime source must remain");
 }
 
-/// PR-3d: pin copies the runtime event log lines (plan_*.jsonl) into
-/// the Shared root after a post. Verifies the COPY semantics actually
+/// PR-3d / PR-5b: pin copies the runtime `events.jsonl` log into the
+/// Shared root after a post. Verifies the COPY semantics actually
 /// transfer bytes — not just the static files.
 #[tokio::test(flavor = "multi_thread")]
 async fn shared_pin_copies_log_lines_after_post() {
@@ -462,7 +462,7 @@ async fn shared_pin_copies_log_lines_after_post() {
         .create(&creator, CreateOpts::runtime("team"))
         .await
         .expect("create");
-    let task_id = port
+    let _task_id = port
         .post(&chan, &creator, PostMsg::root("hello"))
         .await
         .expect("post");
@@ -472,38 +472,30 @@ async fn shared_pin_copies_log_lines_after_post() {
         .await
         .expect("pin_to_shared");
 
-    // The runtime side has at least one plan_*.jsonl after the post.
+    // The runtime side has events.jsonl after the post.
     let runtime_chan_dir = tmp.path().join("runtime").join("channels").join(chan.as_str());
-    let runtime_logs: Vec<_> = std::fs::read_dir(&runtime_chan_dir)
-        .expect("read runtime dir")
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("plan_")
-                && e.file_name().to_string_lossy().ends_with(".jsonl")
-        })
-        .collect();
+    let runtime_log = runtime_chan_dir.join("events.jsonl");
     assert!(
-        !runtime_logs.is_empty(),
-        "runtime should have at least one plan_*.jsonl after a post"
+        runtime_log.exists(),
+        "runtime should have events.jsonl after a post"
+    );
+    let runtime_bytes = std::fs::read(&runtime_log).expect("read runtime log");
+    assert!(
+        !runtime_bytes.is_empty(),
+        "runtime events.jsonl should not be empty after a post"
     );
 
-    // The Shared side must mirror the same log files (COPY).
-    let shared_logs: Vec<_> = std::fs::read_dir(&shared_path)
-        .expect("read shared dir")
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("plan_")
-                && e.file_name().to_string_lossy().ends_with(".jsonl")
-        })
-        .collect();
+    // The Shared side must mirror the same log file (COPY).
+    let shared_log = shared_path.join("events.jsonl");
+    assert!(
+        shared_log.exists(),
+        "shared must mirror runtime events.jsonl"
+    );
+    let shared_bytes = std::fs::read(&shared_log).expect("read shared log");
     assert_eq!(
-        shared_logs.len(),
-        runtime_logs.len(),
-        "shared must mirror runtime log files"
+        shared_bytes.len(),
+        runtime_bytes.len(),
+        "shared events.jsonl must mirror runtime"
     );
 
     // The posted message must be discoverable via `peek` on the

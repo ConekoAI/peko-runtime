@@ -25,7 +25,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use peko_plan::PrincipalId;
+use peko_subject::PrincipalId;
 use peko_protocol::channel::{ChannelEvent, ChannelId};
 
 use crate::cost::ChannelMeter;
@@ -129,16 +129,15 @@ impl ChannelSubscriber {
     /// needing a real timer. Production callers should use [`Self::spawn`].
     pub async fn tick_once(&mut self) -> Result<Vec<ChannelEvent>> {
         let since = Checkpoint(self.cursor());
-        // `peek_with_ids` carries the underlying `peko_plan::NodeId`
-        // alongside each event. PR-1's cursor semantics are
-        // count-based (the adapter interprets the opaque checkpoint
-        // string as a "drop first N events" offset).
+        // `peek_with_ids` carries the source line number alongside
+        // each event. The cursor semantics are count-based (the
+        // adapter interprets the opaque checkpoint string as a
+        // "drop first N events" offset).
         let items = self.port.peek_with_ids(&self.channel, &since).await?;
 
         let mut delivered: Vec<ChannelEvent> = Vec::with_capacity(items.len());
-        let mut new_count: Option<usize> = None;
         for (task_id, ev) in items {
-            // Meter (no-op in PR-1, real in PR-2).
+            // Meter.
             if let Err(e) = self.meter.record_event(&self.channel, &self.principal.to_string(), &ev).await {
                 tracing::warn!(?e, "channel meter record_event failed");
             }
@@ -152,39 +151,32 @@ impl ChannelSubscriber {
             };
             self.responder.consider_response(ctx).await?;
 
-            // task_id is currently unused — kept in the tuple for PR-3
-            // when node-id-keyed cursors land.
             let _ = task_id;
-            new_count = Some(delivered.len() + 1); // placeholder; fixed below
             delivered.push(ev);
         }
 
         // Compute the new cursor as the prior offset + the number of
-        // events we just delivered. Avoids the non-monotonic lex-order
-        // pitfall in `NodeId::generate()`.
+        // events we just delivered. The JSONL log is append-only, so
+        // line numbers are stable — count-based cursors avoid the
+        // non-monotonic lex-order pitfall of opaque-string ids.
         if !delivered.is_empty() {
-            let prior: usize = since
-                .0
-                .parse()
-                .unwrap_or(0);
+            let prior: usize = since.0.parse().unwrap_or(0);
             let high = (prior + delivered.len()).to_string();
-            self.cursors.set(self.principal.clone(), high.clone());
-            new_count = Some(prior + delivered.len());
+            self.cursors.set(self.principal.clone(), high);
             if let Err(e) = self.cursors.save(&self.channel_dir).await {
                 tracing::warn!(?e, "channel cursor save failed");
             }
         }
-        let _ = new_count; // suppress unused-assignment warning
         Ok(delivered)
     }
 
     /// Spawn the subscription loop on the current tokio runtime.
     /// Returns a `JoinHandle` for the background task; the task exits
-    /// when `stop` (TODO PR-2 — not wired in PR-1) signals cancellation.
+    /// when `stop` (TODO — not wired) signals cancellation.
     ///
-    /// PR-1: callers can ignore the `JoinHandle` and let the loop run
-    /// for the process lifetime. The integration test invokes
-    /// `tick_once` directly and never calls `spawn`.
+    /// Callers can ignore the `JoinHandle` and let the loop run for
+    /// the process lifetime. The integration test invokes `tick_once`
+    /// directly and never calls `spawn`.
     pub fn spawn(mut self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let interval = self.cfg.poll_interval;

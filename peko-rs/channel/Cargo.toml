@@ -3,7 +3,7 @@ name = "peko-channel"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
-description = "Multi-principal chat primitive (channels) — `ChannelPort` + `PlanChannelAdapter` storage + `ChannelSubscriber` poll loop. PR-1 ships the trait surface and a 2-principal smoke test backed by `peko-plan` storage; PR-3 adds fan-out cap and shared-tier opt-in; PR-4a adds the `ChannelRead` tool so principals poll actively rather than relying on a daemon-side responder."
+description = "Multi-principal chat primitive (channels) — `ChannelPort` + `ChannelStore` (append-only JSONL) + `ChannelSubscriber` poll loop. PR-1 shipped the trait surface; PR-3 added fan-out cap + shared-tier opt-in; PR-4a added the `ChannelRead` tool; PR-5b replaced the `peko_plan`-backed DAG with an append-only JSONL log (symmetric with `peko_chat_log::ChatLogStore`)."
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
@@ -14,8 +14,9 @@ repository = "https://github.com/ConekoAI/peko-runtime"
 # - The `ChannelResponder` consumer-defined trait (only `Noop` impl
 #   ships today — agents read channels actively via the `ChannelRead`
 #   tool in peko-core, so there is no daemon-side responder to gate).
-# - `PlanChannelAdapter` (the concrete `ChannelPort` impl backed by
-#   `peko-plan::PlanStorage`, one Plan per channel).
+# - `ChannelStore` (the concrete `ChannelPort` impl backed by an
+#   append-only JSONL event log + member set; PR-5b replaced the
+#   prior `peko_plan`-backed DAG).
 # - `ChannelSubscriber` (per-member poll loop — feeds the audit meter).
 # - `ChannelCursors` (per-channel runtime-tier "last_read_task_id" map).
 # - Wire types live in `peko-protocol::channel` (peer crate).
@@ -26,22 +27,22 @@ repository = "https://github.com/ConekoAI/peko-runtime"
 # - `peko-cron` — orthogonal domain.
 # - `peko-protocol` may be touched for re-exports but no internal logic.
 # - Any `peko-extension-*` crate.
+# - `peko-plan` — PR-5b dropped this; channels are not a planning
+#   surface, just a shared append-only log.
 #
 # Allowed deps:
-# - `peko-plan` (storage primitive) for the PlanChannelAdapter impl.
-# - `peko-fs-persistence` if we need FileLock directly (we don't yet).
 # - `peko-protocol` for wire types only.
-#
-# `peko-subject` is reachable through `peko_plan::PrincipalId`
-# (re-exported at `peko-rs/plan/src/lib.rs:77`), so we don't list
-# `peko-subject` as a direct dep.
+# - `peko-fs-persistence` (`FileLock` + `append_bytes_durable`).
+# - `peko-subject` (`PrincipalId`).
+# - `peko-observability` for the audit ring buffer sink.
 
 [dependencies]
-# Plan storage primitive — `PlanChannelAdapter` wraps `PlanStorage`
-# directly (one Plan per channel; see lib docs).
-peko-plan = { path = "../plan" }
 # Wire types — re-exported through `lib.rs` for ergonomic callers.
 peko-protocol = { path = "../protocol" }
+# Subject (PrincipalId).
+peko-subject = { path = "../subject" }
+# File lock + atomic append helper for the JSONL event log.
+peko-fs-persistence = { path = "../fs-persistence" }
 # Audit ring buffer sink for `AuditChannelMeter` (PR-3c). `peko-observability`
 # only depends on `peko-auth` (Subject for caller attribution) so this
 # doesn't violate the `peko-core` / `peko-engine` / `peko-cron` /

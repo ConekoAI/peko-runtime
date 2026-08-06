@@ -14,8 +14,8 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
-use peko_plan::PrincipalId;
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
+use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -29,9 +29,9 @@ use crate::config::ConfigOnDisk;
 ///
 /// `peko-rs/core` and `peko-rs/cli` hold `Arc<dyn ChannelPort>` on
 /// their respective contexts. The concrete impl is
-/// [`crate::PlanChannelAdapter`] (file-backed, one `peko_plan::PlanRecord`
-/// per channel). Future impls — in-memory for tests, network-backed for
-/// distributed deployments — slot in without changing call sites.
+/// [`crate::ChannelStore`] (file-backed, append-only JSONL event log +
+/// member set). Future impls — in-memory for tests, network-backed
+/// for distributed deployments — slot in without changing call sites.
 #[async_trait]
 pub trait ChannelPort: Send + Sync + 'static {
     /// Create a new channel. The creator is automatically added as the
@@ -49,10 +49,9 @@ pub trait ChannelPort: Send + Sync + 'static {
     ) -> Result<()>;
 
     /// Post a message. The adapter enforces the at-most-one-parent
-    /// convention — `msg.parent` is always mapped to a single
-    /// `peko_plan::NodeId` reference. Returns the new message's
-    /// [`TaskId`] (opaque string, formats to `node_<8 base36>` at
-    /// storage boundaries).
+    /// convention — `msg.parent` references the line number of the
+    /// message being replied to. Returns the new message's [`TaskId`]
+    /// (the line number it was assigned in the channel's event log).
     async fn post(
         &self,
         channel: &ChannelId,
@@ -70,17 +69,18 @@ pub trait ChannelPort: Send + Sync + 'static {
     ) -> Result<Vec<ChannelEvent>>;
 
     /// Like [`Self::peek`] but each item carries its source `TaskId`
-    /// (the underlying `peko_plan::NodeId` string). Used by the
-    /// subscription loop to advance cursors precisely without
-    /// re-decoding the wire event. Has a default impl that re-reads
-    /// the plan via [`Self::peek`] and falls back to opaque cursors
-    /// (one-event-at-a-time), so adapters don't *have* to override.
+    /// (the line number where the event was appended in the channel's
+    /// JSONL log). Used by the subscription loop to advance cursors
+    /// precisely without re-decoding the wire event. Has a default
+    /// impl that re-reads via [`Self::peek`] and falls back to opaque
+    /// cursors (one-event-at-a-time), so adapters don't *have* to
+    /// override.
     async fn peek_with_ids(
         &self,
         channel: &ChannelId,
         since: &Checkpoint,
     ) -> Result<Vec<(TaskId, ChannelEvent)>> {
-        // PR-1 fallback: walk the events; we don't have TaskIds here.
+        // Fallback: walk the events; we don't have TaskIds here.
         // Callers that need precise cursors must override.
         let _ = since;
         let _ = channel;
@@ -234,7 +234,7 @@ impl CreateOpts {
 /// **DO NOT** introduce a 4th tier — channels live *in* an existing
 /// tier, not as their own. The Phase B authority gate (`write_shared`)
 /// is reused as-is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Tier {
     /// `<runtime_dir>/channels/<channel_id>/...` — ephemeral,
     /// session-scoped. Default.
@@ -260,8 +260,9 @@ impl Checkpoint {
     }
 }
 
-/// Opaque message identifier (string alias). Storage-side wrappers
-/// (e.g. `peko_plan::NodeId`) convert at adapter boundaries.
+/// Opaque message identifier (string alias). For the JSONL-backed
+/// [`crate::ChannelStore`], the id is the line number where the event
+/// was appended.
 ///
 /// The wire form (`peko_protocol::channel::ChannelEvent::Posted.parent`)
 /// carries the same string — kept as a type alias here so consumers
@@ -275,8 +276,8 @@ pub type TaskId = String;
 // Errors
 // ---------------------------------------------------------------------------
 
-/// Channel-layer errors. The `Plan` and `Io` variants wrap inner errors
-/// via `#[from]` so callers can use `?` freely.
+/// Channel-layer errors. The `Io` and `Serde` variants wrap inner
+/// errors via `#[from]` so callers can use `?` freely.
 #[derive(Debug, Error)]
 pub enum ChannelError {
     /// Channel id passed to a method that doesn't exist on disk.
@@ -286,10 +287,6 @@ pub enum ChannelError {
     /// Caller isn't a member of the channel they're trying to act in.
     #[error("caller is not a member of the channel")]
     NotMember,
-
-    /// Inner `peko_plan::PlanError` (storage layer rejected the call).
-    #[error("channel storage error: {0}")]
-    Plan(#[from] peko_plan::PlanError),
 
     /// `cursors.json` read/write failure.
     #[error("cursor error: {0}")]

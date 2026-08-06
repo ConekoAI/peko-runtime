@@ -501,7 +501,7 @@ impl AppState {
 
         // PR-2c: capture the runtime-tier channel directory BEFORE the
         // `path_resolver` is consumed by `RuntimeAuthority::for_runtime`.
-        // The `Arc<PlanChannelAdapter>` constructor needs a concrete
+        // The `Arc<ChannelStore>` constructor needs a concrete
         // `PathBuf`, not a borrow.
         let channel_runtime_dir = path_resolver.runtime_dir();
         // PR-3d: capture the Shared-tier channel parent. Per-principal
@@ -682,13 +682,13 @@ impl AppState {
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.
         // PR-4a: wire the daemon's real `channel_port` so `ChannelRead`
-        // resolves to the file-backed `PlanChannelAdapter` (PR-1) and
+        // resolves to the file-backed `ChannelStore` (PR-5b) and
         // can be invoked from any principal's agentic loop. The port
         // is built first so we can both register it with the tool
         // runtime and store it on `AppState` (line ~939) without
         // doubling up the adapter construction.
         let channel_port: Arc<dyn peko_channel::ChannelPort> =
-            Arc::new(peko_channel::PlanChannelAdapter::new(peko_channel::ChannelConfig {
+            Arc::new(peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
                 runtime_dir: channel_runtime_dir.clone(),
                 // PR-3d: Shared-tier root for `pin_to_shared`.
                 shared_dir: Some(channel_shared_root.clone()),
@@ -2256,7 +2256,7 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
     /// the cron-poll recipe (PR-4b) instead.
     fn kickoff_channel_read(
         &self,
-        invitee: &peko_plan::PrincipalId,
+        invitee: &peko_subject::PrincipalId,
         channel: &peko_channel::ChannelId,
     ) {
         tracing::info!(

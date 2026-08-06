@@ -25,12 +25,12 @@ use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use peko_auth::caller::CallerContext;
-use peko_plan::PrincipalId;
+use peko_subject::PrincipalId;
 
 /// Narrow port the `channel` handler uses to reach daemon state.
 ///
 /// `AppState` is the sole production implementor. `channel_port`
-/// wraps `PlanChannelAdapter::new(ChannelConfig { runtime_dir })` in
+/// wraps `ChannelStore::new(ChannelConfig { runtime_dir })` in
 /// production; tests substitute an in-memory fixture.
 ///
 /// `principal_manager` is optional. The default impl returns
@@ -600,7 +600,7 @@ mod tests {
     use super::*;
     use peko_channel::port::{CreateOpts, PostMsg};
     use peko_channel::ChannelConfig;
-    use peko_channel::PlanChannelAdapter;
+    use peko_channel::ChannelStore;
     use peko_channel::ConfigOnDisk;
     use peko_protocol::channel::ChannelEvent;
     use std::path::PathBuf;
@@ -614,7 +614,7 @@ mod tests {
         CallerContext::local()
     }
 
-    /// TestChannelHost backed by a real `PlanChannelAdapter`. Doesn't
+    /// TestChannelHost backed by a real `ChannelStore`. Doesn't
     /// provide a `PrincipalManager` — every principal-bearing variant
     /// returns `ResponsePacket::Error`. The PM-free tests below
     /// exercise peek / config_get paths; the PM-needed tests use
@@ -685,7 +685,7 @@ mod tests {
             runtime_dir: runtime_dir.clone(),
             shared_dir: None, // PR-3d: single-tier test path
         };
-        let adapter = Arc::new(PlanChannelAdapter::new(cfg));
+        let adapter = Arc::new(ChannelStore::new(cfg));
         let port: Arc<dyn ChannelPort> = adapter;
         let resolver = PathResolver::with_dirs(
             tmp.path().to_path_buf(),
@@ -706,7 +706,7 @@ mod tests {
     /// event is visible to the host's port (same on-disk layout).
     async fn seed_channel(host: &TestChannelHost) -> ChannelId {
         let runtime_dir = host.path_resolver.runtime_dir();
-        let adapter = PlanChannelAdapter::new(ChannelConfig { runtime_dir, shared_dir: None });
+        let adapter = ChannelStore::new(ChannelConfig { runtime_dir, shared_dir: None });
         let creator = PrincipalId::generate();
         let ch = adapter
             .create(&creator, CreateOpts::runtime("seed"))
@@ -1210,7 +1210,7 @@ mod tests {
             runtime_dir: runtime_dir.clone(),
             shared_dir: Some(shared_dir),
         };
-        let adapter = Arc::new(PlanChannelAdapter::new(cfg));
+        let adapter = Arc::new(ChannelStore::new(cfg));
         let port: Arc<dyn ChannelPort> = adapter;
         let resolver = PathResolver::with_dirs(
             tmp.path().to_path_buf(),

@@ -16,8 +16,9 @@
 //!   `NoopChannelResponder`; agents read channels actively via the
 //!   `ChannelRead` tool (peko-core) rather than reacting via a daemon
 //!   responder. See `peko-channel-pr4-shipped.md` for the rationale.
-//! - [`plan_channel`] — `PlanChannelAdapter: ChannelPort` (storage impl
-//!   backed by `peko_plan::PlanStorage`).
+//! - [`store`] — `ChannelStore: ChannelPort` (file-backed JSONL event
+//!   log + member set; PR-5b replaces the prior `peko_plan`-backed
+//!   DAG with an append-only log).
 //! - [`subscription`] — `ChannelSubscriber` (per-member poll loop;
 //!   `tick_once` is the test seam).
 //! - [`cursors`] — `ChannelCursors` (per-channel runtime-tier
@@ -59,8 +60,9 @@
 //! - `peko-protocol` for anything other than re-exports.
 //! - Any `peko-extension-*` crate.
 //!
-//! Allowed deps: `peko-plan` (storage), `peko-protocol` (wire types).
-//! `peko-subject` is reachable through `peko_plan::PrincipalId`.
+//! Allowed deps: `peko-protocol` (wire types), `peko-fs-persistence`
+//! (`FileLock` + `append_bytes_durable` for the JSONL log), and
+//! `peko-subject` (PrincipalId).
 
 #![allow(clippy::module_inception)]
 
@@ -68,9 +70,9 @@ pub mod cli_handlers;
 pub mod config;
 pub mod cost;
 pub mod cursors;
-pub mod plan_channel;
 pub mod port;
 pub mod responder;
+pub mod store;
 pub mod subscription;
 
 // Flat re-exports — channel callers should not need to know which
@@ -80,8 +82,8 @@ pub use cli_handlers::ChannelCliRouter;
 pub use config::ConfigOnDisk;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
-pub use plan_channel::{ChannelConfig, PlanChannelAdapter};
 pub use port::{ChannelError, ChannelPort, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, Tier};
+pub use store::{ChannelConfig, ChannelStore};
 pub use responder::{ChannelResponder, NoopChannelResponder, RespondCtx};
 pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 

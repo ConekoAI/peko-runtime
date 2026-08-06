@@ -12,9 +12,12 @@
 //! <runtime_dir>/channels/<chan_id>/config.toml
 //! ```
 //!
-//! PR-1 ships `<channel_dir>/{meta.json, plan_<id>.jsonl, cursors.json}`.
-//! This adds `config.toml` as a fourth sibling. PR-3 may add Shared-tier
-//! copies if/when channels opt into Shared persistence.
+//! PR-5b ships `<channel_dir>/{meta.json, members.json, events.jsonl,
+//! cursors.json}`. This adds `config.toml` as a fourth sibling. The
+//!
+//! `config.toml` file is only read by future per-channel dispatch
+//! policies (e.g. PR-3's pin/config-set flow) — the rest of
+//! `peko-channel` ignores it.
 //!
 //! ## Atomic-write convention
 //!

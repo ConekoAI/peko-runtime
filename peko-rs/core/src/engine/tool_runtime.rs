@@ -37,7 +37,7 @@ use tracing::info;
 ///
 /// `Debug` is intentionally not derived: the `channel_port` field is
 /// `Arc<dyn ChannelPort>`, which doesn't implement `Debug`. The
-/// concrete impls (e.g. `PlanChannelAdapter`) may add their own
+/// concrete impls (e.g. `ChannelStore`) may add their own
 /// `Debug` derives later; for now `Clone` is enough — runtime owners
 /// rarely need formatted debug output, and the field-by-field accessors
 /// below cover the diagnostic surfaces.

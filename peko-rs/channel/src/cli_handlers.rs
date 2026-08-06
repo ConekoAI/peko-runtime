@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use peko_plan::PrincipalId;
+use peko_subject::PrincipalId;
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
 use serde::{Deserialize, Serialize};
 

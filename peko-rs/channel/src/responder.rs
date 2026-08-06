@@ -13,7 +13,7 @@
 //! land as additional impls without touching the trait.
 
 use async_trait::async_trait;
-use peko_plan::PrincipalId;
+use peko_subject::PrincipalId;
 use peko_protocol::channel::{ChannelEvent, ChannelId};
 
 use crate::Result;

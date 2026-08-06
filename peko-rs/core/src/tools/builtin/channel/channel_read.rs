@@ -365,7 +365,7 @@ mod tests {
         let arr = got.as_array().expect("events array");
         // TestChannelPort doesn't actually filter by `since`, so the
         // `limit` cap is the only truncation we exercise here. The
-        // production `PlanChannelAdapter` does the real filtering.
+        // production `ChannelStore` does the real filtering.
         assert_eq!(arr.len(), 2, "limit should truncate to 2 events");
     }
 

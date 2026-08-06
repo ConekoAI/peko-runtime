@@ -152,7 +152,7 @@ pub fn audit_meter(observability: Arc<Observability>) -> Arc<dyn ChannelMeter> {
 mod tests {
     use super::*;
     use peko_observability::Observability;
-    use peko_plan::PrincipalId;
+    use peko_subject::PrincipalId;
 
     fn event_posted(channel: &ChannelId, author: &str) -> ChannelEvent {
         ChannelEvent::Posted {

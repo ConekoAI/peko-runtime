@@ -2367,9 +2367,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "peko-fs-persistence",
  "peko-observability",
- "peko-plan",
  "peko-protocol",
+ "peko-subject",
  "serde",
  "serde_json",
  "tempfile",

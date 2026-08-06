@@ -8,7 +8,7 @@
 //!    can publish events to live subscribers.
 //!
 //! 2. **In-process fallback.** When the daemon is unreachable, build a
-//!    fresh `PlanChannelAdapter` rooted at `paths.runtime_dir()` and
+//!    fresh `ChannelStore` rooted at `paths.runtime_dir()` and
 //!    invoke `ChannelCliRouter` directly. This mirrors
 //!    `peko tunnel status` (`commands/tunnel.rs:223`) — the manual
 //!    smoke test works without a live daemon.
@@ -25,7 +25,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use peko_channel::port::{CreateOpts, PostMsg};
-use peko_channel::{ChannelCliRouter, ChannelConfig, ConfigOnDisk, PlanChannelAdapter};
+use peko_channel::{ChannelCliRouter, ChannelConfig, ChannelStore, ConfigOnDisk};
 use peko_core::ipc::packet::{RequestPacket, ResponsePacket};
 use peko_core::ipc::DaemonClient;
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
@@ -644,7 +644,7 @@ where
             }
         }
     }
-    let port: Arc<dyn peko_channel::ChannelPort> = Arc::new(PlanChannelAdapter::new(
+    let port: Arc<dyn peko_channel::ChannelPort> = Arc::new(ChannelStore::new(
         ChannelConfig {
             runtime_dir: paths.runtime_dir(),
             // PR-3d: in-process fallback mirrors the daemon's
