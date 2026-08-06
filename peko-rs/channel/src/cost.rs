@@ -1,12 +1,16 @@
-//! Metering bridge (PR-1 stub; PR-3c: real impl).
+//! Per-event audit bridge for the channel subscription loop.
 //!
-//! PR-2 wires this to `peko_quota::QuotaMeter` + `MeteredProvider` (per
-//! F19 / PR #174). PR-3c adds `AuditChannelMeter` — a real impl that
-//! emits per-event records to the audit ring buffer (ADR-046) so
-//! `peko audit list --type channel.` shows channel observation history.
-//! Per-spawn LLM cost still rides on F39 `QuotaMeter` on
-//! `SubagentExecutor`; this meter is purely for event observation
-//! audit (who saw what, when).
+//! `AuditChannelMeter` (PR-3c) emits one audit record per `ChannelEvent`
+//! the subscriber observes — `peko audit list --type channel.` surfaces
+//! the resulting `channel.<kind>` events (ADR-046). The meter is purely
+//! for event-observation audit (who saw what, when); per-spawn LLM cost
+//! rides on F39 `QuotaMeter` on `SubagentExecutor`, not here.
+//!
+//! The `ChannelMeter` trait is the seam a future quota consumer could
+//! attach to (F19 / PR #174 `peko_quota::QuotaScope`). Nothing in this
+//! crate meters quota today — if we ever need to, the trait shape is
+//! already correct. Until then `AuditChannelMeter` is the only
+//! non-default impl.
 //!
 //! Design: traits live where they are CONSUMED (here), not where they
 //! are produced (`peko-quota`). Mirrors the trait-port discipline
@@ -26,9 +30,10 @@ use crate::Result;
 // Trait
 // ---------------------------------------------------------------------------
 
-/// Records per-event cost attribution for a single member of a single
-/// channel. PR-1: no-op. PR-2: wraps `peko_quota::QuotaScope` and emits
-/// `TokenUsage` records keyed by `(channel, principal, event_kind)`.
+/// Per-event attribution hook for a channel subscription. The
+/// production impl (`AuditChannelMeter`) emits a `channel.<kind>` audit
+/// record per call; future quota work (F19 / PR #174) could attach a
+/// `peko_quota::QuotaScope` consumer here without changing call sites.
 #[async_trait]
 pub trait ChannelMeter: Send + Sync + 'static {
     /// Account for one event the responder observed.
