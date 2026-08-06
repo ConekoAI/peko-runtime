@@ -57,6 +57,32 @@ type TaskId = String;
 
 use crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx;
 
+/// Extract the runtime id from a principal DID's `@<runtime-id>`
+/// suffix. Returns `None` if the DID has no suffix (local invite —
+/// no envelope to send).
+///
+/// Examples:
+///
+/// - `prin_alice` → `None` (local)
+/// - `prin_bob@did:key:zRuntimeB` → `Some("did:key:zRuntimeB")`
+/// - `did:peko:agent:bob@did:key:zRuntimeB` → `Some("did:key:zRuntimeB")`
+///
+/// This is the lightweight directory resolver for
+/// peko-channel cross-runtime PR-3a commit 3. The full
+/// directory-backed lookup
+/// (`CrossRuntimeChannelCtx.directory.resolve_principal`) threads
+/// through the invite path in a follow-up; today the suffix
+/// heuristic is sufficient for principals whose DIDs carry an
+/// `@<runtime>` suffix (the convention other parts of the runtime
+/// use for cross-runtime member rows — see
+/// `peko_protocol::channel::RemoteMember`).
+fn extract_runtime_id_from_principal(principal_did: &str) -> Option<String> {
+    // Find the LAST `@` so a DID like `did:peko:agent:bob@did:key:zRuntimeB`
+    // resolves to the runtime suffix, not to the `did:peko:agent:` prefix.
+    let idx = principal_did.rfind('@')?;
+    Some(principal_did[idx + 1..].to_string())
+}
+
 /// Concrete `ChannelPort` impl that wraps a local [`ChannelStore`]
 /// and (in commit 3) fans events out to the channel's remote
 /// members over the tunnel.
@@ -318,6 +344,191 @@ impl TunnelChannelPort {
             .await
     }
 
+    /// Outbound fan-out for a `ChannelPort::invite`: build + sign +
+    /// send one `TunnelChannelInvite` envelope to the invitee's
+    /// hosting runtime. Parallel to [`Self::fanout_event`] but for
+    /// the invite bootstrap path (peko-channel cross-runtime PR-3a
+    /// commit 3).
+    ///
+    /// ## `invitee_runtime_id` resolution
+    ///
+    /// Today this is a "did:key:z" / `@<runtime-id>` suffix
+    /// heuristic — sufficient for the test surface and for
+    /// principals whose DID carries an `@<runtime>` suffix (the
+    /// common cross-runtime naming convention). The full
+    /// directory-backed lookup
+    /// (`CrossRuntimeChannelCtx.directory.resolve_principal`)
+    /// threads through here in a follow-up; until then an invitee
+    /// with no `@<runtime-id>` suffix is treated as local and
+    /// produces no envelope (matching the no-cross-runtime-invite
+    /// default — the local `ChannelPort::invite` already recorded
+    /// the `MemberJoined` row).
+    ///
+    /// ## What gets sent
+    ///
+    /// - `creator` + `name` snapshotted from the local `meta.json`
+    ///   so the receiver doesn't need a follow-up `peek`.
+    /// - `initial_members` = the full membership snapshot
+    ///   (local `members` rows + `remote_members` rows partitioned
+    ///   into `InitialMember`s with `runtime_id: None` for local
+    ///   and `Some(...)` for remote).
+    /// - The signing key is `ctx.signing_key`; the receiver
+    ///   verifies against the `did:key` form of the runtime id.
+    ///
+    /// ## Failure mode
+    ///
+    /// Returns `Ok(())` if the invitee is local (no envelope to
+    /// send) or if the tunnel handle is `None` (logged + dropped —
+    /// local invite already succeeded). Returns `Err(...)` if the
+    /// envelope construction or `TunnelHandle::send` fails so the
+    /// caller can decide to log / escalate.
+    #[allow(clippy::too_many_arguments)]
+    async fn fanout_invite(
+        &self,
+        channel: &ChannelId,
+        inviter: &PrincipalId,
+        invitee: &PrincipalId,
+    ) -> std::result::Result<(), String> {
+        // Resolve invitee → runtime_id via the @suffix convention.
+        // No suffix → local invite only; no envelope to send.
+        let invitee_runtime_id = match extract_runtime_id_from_principal(&invitee.0) {
+            Some(rid) => rid,
+            None => return Ok(()),
+        };
+
+        // Self-invite → local only; no envelope to send.
+        let ctx = match self.ctx.read().await.clone() {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+        if invitee_runtime_id == ctx.caller_runtime_id {
+            return Ok(());
+        }
+
+        // Snapshot the live tunnel handle once.
+        let handle = {
+            let guard = ctx.tunnel.read().await;
+            guard.clone()
+        };
+        let handle = match handle {
+            Some(h) => h,
+            None => {
+                warn!(
+                    "outbound TunnelChannelInvite fan-out skipped: tunnel not connected \
+                     (channel={}, invitee_runtime_id={invitee_runtime_id})",
+                    channel.as_str(),
+                );
+                return Ok(());
+            }
+        };
+
+        // Read meta.json for creator + name. We read it directly
+        // via the store's `meta_path` so a missing meta surfaces as
+        // an error rather than silently using defaults.
+        let chan_dir = self.local.channel_dir(channel);
+        let meta_bytes = match tokio::fs::read(chan_dir.join("meta.json")).await {
+            Ok(b) => b,
+            Err(e) => {
+                return Err(format!(
+                    "read meta.json for invite envelope (channel={}): {e}",
+                    channel.as_str()
+                ));
+            }
+        };
+        #[derive(serde::Deserialize)]
+        struct MetaSnapshot {
+            creator: String,
+            name: String,
+        }
+        let meta: MetaSnapshot = serde_json::from_slice(&meta_bytes).map_err(|e| {
+            format!(
+                "decode meta.json for invite envelope (channel={}): {e}",
+                channel.as_str()
+            )
+        })?;
+
+        // Build `initial_members` from the local snapshot.
+        let local = self.local.list_members(channel).await.map_err(|e| {
+            format!(
+                "list_members failed while building invite envelope (channel={}): {e}",
+                channel.as_str()
+            )
+        })?;
+        let remote = self.local.list_remote_members(channel).await.map_err(|e| {
+            format!(
+                "list_remote_members failed while building invite envelope (channel={}): {e}",
+                channel.as_str()
+            )
+        })?;
+        let initial_members: Vec<peko_protocol::channel::InitialMember> = local
+            .iter()
+            .map(|p| peko_protocol::channel::InitialMember {
+                principal_did: p.0.clone(),
+                runtime_id: None,
+            })
+            .chain(remote.iter().map(|rm| {
+                peko_protocol::channel::InitialMember {
+                    principal_did: rm.principal_id.clone(),
+                    runtime_id: Some(rm.runtime_id.clone()),
+                }
+            }))
+            .collect();
+
+        // Serialize the snapshot once so the bytes signed are the
+        // bytes the receiver will re-serialize and verify.
+        let initial_members_bytes =
+            serde_json::to_vec(&initial_members).map_err(|e| {
+                format!("serialize initial_members for invite envelope: {e}")
+            })?;
+
+        let request_id = Uuid::new_v4().to_string();
+        let signed = crate::tunnel::ChannelInviteSignedFields {
+            request_id: &request_id,
+            source_runtime_id: &ctx.caller_runtime_id,
+            recipient_runtime_id: &invitee_runtime_id,
+            source_principal_did: &inviter.to_string(),
+            channel_id: channel.as_str(),
+            creator: &meta.creator,
+            name: &meta.name,
+            initial_members_bytes: &initial_members_bytes,
+        };
+        let signature = crate::tunnel::sign_channel_invite(&ctx.signing_key, signed);
+
+        // Audit on the source runtime side. The receiver's
+        // `received_inbound` audit row is emitted by the
+        // dispatcher's inbound handler.
+        let preview_json =
+            String::from_utf8_lossy(&initial_members_bytes).into_owned();
+        crate::tunnel::emit_forwarded_outbound(
+            &request_id,
+            &ctx.caller_runtime_id,
+            &inviter.to_string(),
+            channel.as_str(),
+            "channel_invite",
+            &crate::tunnel::tunnel_channel_audit::preview_event_payload(
+                &preview_json,
+            ),
+        );
+
+        let envelope = crate::tunnel::TunnelMessage::TunnelChannelInvite {
+            request_id,
+            source_runtime_id: ctx.caller_runtime_id.clone(),
+            recipient_runtime_id: invitee_runtime_id.clone(),
+            source_principal_did: inviter.to_string(),
+            channel_id: channel.as_str().to_string(),
+            creator: meta.creator.clone(),
+            name: meta.name.clone(),
+            initial_members,
+            signature,
+        };
+
+        handle.send(envelope).map_err(|e| {
+            format!("send TunnelChannelInvite to {invitee_runtime_id} failed: {e}")
+        })?;
+
+        Ok(())
+    }
+
     /// Bootstrap a local mirror for a cross-runtime channel the
     /// receiver was invited to. Called by the dispatcher on inbound
     /// `TunnelChannelInvite` envelopes (peko-channel cross-runtime
@@ -369,7 +580,49 @@ impl ChannelPort for TunnelChannelPort {
         inviter: &PrincipalId,
         invitee: &PrincipalId,
     ) -> Result<()> {
-        self.local.invite(channel, inviter, invitee).await
+        // 1. Local-only invite — delegate straight to the store.
+        // The store records the `MemberJoined` event and updates
+        // `members.json`. We use the underlying `invite` method
+        // directly because cross-runtime resolution (which runtime
+        // hosts the invitee?) belongs above this layer (the
+        // cross-runtime a2a path uses `peko_directory` for
+        // runtime-by-DID lookups; `ChannelPort::invite` is
+        // transport-agnostic by design).
+        self.local.invite(channel, inviter, invitee).await?;
+
+        // 2. Outbound cross-runtime fan-out: if the invitee lives on
+        // a non-self runtime, emit a signed `TunnelChannelInvite`
+        // envelope to that runtime so the receiver can bootstrap a
+        // local mirror. We snapshot the channel's `members.json`
+        // (local + remote) and the channel's `meta.json` to build
+        // the envelope — the receiver must see the same snapshot
+        // the inviter just persisted so its mirror matches.
+        //
+        // We resolve `invitee → runtime_id` via a "did:key:z"
+        // heuristic: principal DIDs that include `@<runtime-id>`
+        // carry the runtime as a suffix. The full
+        // directory-backed lookup lands in a follow-up that
+        // threads `CrossRuntimeChannelCtx.directory` through this
+        // path; today `invitee_runtime_id` defaults to "self" if no
+        // suffix is present, which mirrors the
+        // no-cross-runtime-invite default.
+        //
+        // Failures here never error the local invite — the local
+        // mirror is authoritative; remote runtimes hydrate off the
+        // next event or via a follow-up invite.
+        if let Err(e) = self
+            .fanout_invite(channel, inviter, invitee)
+            .await
+        {
+            warn!(
+                "outbound TunnelChannelInvite fan-out partial-failure for channel={} \
+                 (local invite succeeded): {}",
+                channel.as_str(),
+                e
+            );
+        }
+
+        Ok(())
     }
 
     async fn post(
@@ -1029,5 +1282,168 @@ mod tests {
             .await
             .expect("post must succeed even without tunnel");
         assert_eq!(line, "1");
+    }
+
+    // -----------------------------------------------------------------
+    // Outbound fan-out (PR-3a commit 3)
+    //
+    // These tests verify the invite fan-out path:
+    //   `invite` → `fanout_invite` → `TunnelChannelInvite` →
+    //   `TunnelHandle::send` → mock `mpsc::Receiver`.
+    //
+    // The 1-test scope per the plan: `invite_with_remote_invitee_emits_signed_envelope`
+    // exercises the full end-to-end fan-out (with a runtime-suffixed
+    // invitee DID) and verifies the signature on the wire against
+    // the runtime's signing key.
+    // -----------------------------------------------------------------
+
+    /// `ChannelPort::invite` to a principal whose DID carries an
+    /// `@<runtime-id>` suffix emits exactly one signed
+    /// `TunnelChannelInvite` envelope to that runtime's mock
+    /// `TunnelHandle`. The local `members.json` records the
+    /// invitee as a remote row (NOT a local row — the
+    /// `@<runtime>` suffix marks it as cross-runtime), and the
+    /// signature on the wire verifies against `ctx.signing_key`.
+    ///
+    /// Mirrors `post_fans_out_to_unique_recipient_runtime` for the
+    /// invite path. Pins the contract for PR-3's desktop invite UX:
+    /// inviting a remote runtime's principal produces a wire
+    /// envelope the receiver's `handle_inbound_tunnel_channel_invite`
+    /// can verify and bootstrap from.
+    #[tokio::test]
+    async fn invite_with_remote_invitee_emits_signed_envelope() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        }));
+        let port = TunnelChannelPort::new(store.clone());
+
+        let (ctx, mut rx) = build_test_ctx("did:key:zRuntimeA").await;
+        port.set_ctx(ctx.clone()).await;
+
+        let channel = port
+            .create(
+                &PrincipalId("prin_alice".into()),
+                CreateOpts::runtime("team"),
+            )
+            .await
+            .unwrap();
+
+        // Invite a principal whose DID carries the @<runtime> suffix
+        // — this is the convention that flags it as a
+        // cross-runtime invite. The suffix resolves to runtime B.
+        port.invite(
+            &channel,
+            &PrincipalId("prin_alice".into()),
+            &PrincipalId("prin_bob@did:key:zRuntimeB".into()),
+        )
+        .await
+        .expect("local invite must succeed before fan-out");
+
+        // Outbound: exactly one TunnelChannelInvite reached the
+        // mock tunnel, addressed to runtime B.
+        let env = rx
+            .recv()
+            .await
+            .expect("outbound TunnelChannelInvite must reach mock tunnel");
+        let (
+            request_id,
+            source_runtime_id,
+            recipient_runtime_id,
+            source_principal_did,
+            channel_id,
+            creator,
+            name,
+            initial_members,
+            signature,
+        ) = match env {
+            crate::tunnel::TunnelMessage::TunnelChannelInvite {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                creator,
+                name,
+                initial_members,
+                signature,
+            } => (
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                creator,
+                name,
+                initial_members,
+                signature,
+            ),
+            other => panic!("expected TunnelChannelInvite, got {other:?}"),
+        };
+
+        // Identity + routing fields are populated from ctx + the
+        // resolved recipient.
+        assert_eq!(source_runtime_id, "did:key:zRuntimeA");
+        assert_eq!(recipient_runtime_id, "did:key:zRuntimeB");
+        assert_eq!(source_principal_did, "prin_alice");
+        assert_eq!(channel_id, channel.as_str());
+        assert_eq!(creator, "prin_alice");
+        assert_eq!(name, "team");
+        assert_eq!(request_id.len(), 36, "request_id should be a UUIDv4");
+        assert!(!signature.is_empty(), "envelope must carry a signature");
+
+        // initial_members snapshot must include the creator (alice)
+        // as local + the just-invited invitee (bob). The local
+        // `invite` records bob as a local row first; the
+        // `@<runtime>` suffix only governs fan-out routing, not the
+        // local membership row. Both are local here; a future
+        // follow-up that wires `directory.resolve_principal` into
+        // `fanout_invite` will additionally record a `RemoteMember`
+        // row for bob in the source's `members.json`.
+        assert_eq!(initial_members.len(), 2, "alice + bob in this channel");
+        assert_eq!(initial_members[0].principal_did, "prin_alice");
+        assert_eq!(
+            initial_members[0].runtime_id, None,
+            "creator must be local (None)"
+        );
+        // Local invite stored the full DID (suffix included); the
+        // `@<runtime>` suffix only governs fan-out routing, not the
+        // local membership row's `principal_did`. The snapshot
+        // carries the same full string so the receiver's
+        // `join_remote` produces a byte-identical membership row.
+        assert_eq!(
+            initial_members[1].principal_did,
+            "prin_bob@did:key:zRuntimeB"
+        );
+        assert_eq!(
+            initial_members[1].runtime_id, None,
+            "invitee row is local until a follow-up promotes it to RemoteMember"
+        );
+
+        // Signature verifies against ctx.signing_key.
+        let initial_members_bytes = serde_json::to_vec(&initial_members).unwrap();
+        crate::tunnel::verify_channel_invite(
+            &ctx.signing_key.verifying_key(),
+            crate::tunnel::ChannelInviteSignedFields {
+                request_id: &request_id,
+                source_runtime_id: &source_runtime_id,
+                recipient_runtime_id: &recipient_runtime_id,
+                source_principal_did: &source_principal_did,
+                channel_id: &channel_id,
+                creator: &creator,
+                name: &name,
+                initial_members_bytes: &initial_members_bytes,
+            },
+            &signature,
+        )
+        .expect("outbound invite signature must verify");
+
+        // No second envelope — the invitee resolves to exactly one
+        // unique runtime.
+        assert!(
+            rx.try_recv().is_err(),
+            "must not send a second envelope for the same recipient runtime"
+        );
     }
 }

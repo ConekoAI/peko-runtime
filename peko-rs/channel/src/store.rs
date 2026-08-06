@@ -276,6 +276,24 @@ impl ChannelStore {
         &self.cfg
     }
 
+    /// Resolve the on-disk directory for `channel` (runtime-tier).
+    /// Used by [`crate::tunnel::TunnelChannelPort::fanout_invite`]
+    /// (peko-channel cross-runtime PR-3a commit 3) to read the
+    /// freshly-written `meta.json` after a local `invite` so the
+    /// outbound `TunnelChannelInvite` envelope carries the same
+    /// `creator` + `name` the receiver will bootstrap from.
+    ///
+    /// Public accessor on top of [`ChannelConfig::channel_dir`] —
+    /// the latter is private to the crate because the `Tier` /
+    /// `Shared`-vs-`Runtime` resolution lives on `ChannelConfig`,
+    /// but the runtime-tier path is the cross-runtime fan-out path
+    /// and exposing it via this thin accessor is the smallest API
+    /// surface for callers that already hold a [`ChannelStore`].
+    #[must_use]
+    pub fn channel_dir(&self, channel: &ChannelId) -> PathBuf {
+        self.cfg.channel_dir(channel)
+    }
+
     // -----------------------------------------------------------------
     // Tier resolution
     // -----------------------------------------------------------------

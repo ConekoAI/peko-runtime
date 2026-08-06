@@ -33,7 +33,10 @@ use super::TunnelHandle;
 use super::{
     a2a_signature::{verify_request, SignedFields},
     did_key::did_key_to_verifying_key,
-    tunnel_channel_audit, tunnel_channel_signature::{verify_channel_event, ChannelSignedFields},
+    tunnel_channel_audit, tunnel_channel_signature::{
+        verify_channel_event, verify_channel_invite, ChannelInviteSignedFields,
+        ChannelSignedFields,
+    },
 };
 use crate::tunnel::principal_send_tool::{HubErrorResponse, PrincipalSendResult};
 
@@ -628,6 +631,39 @@ impl TunnelDispatcher {
                     source_principal_did,
                     channel_id,
                     event,
+                    signature,
+                )
+                .await?;
+            }
+            // peko-channel cross-runtime PR-3a commit 3: inbound
+            // `TunnelChannelInvite` from a peer runtime (the creator
+            // of a cross-runtime channel). Verify the source
+            // runtime's signature against the `source_runtime_id` they
+            // claim, then bootstrap the local mirror via
+            // `TunnelChannelPort::join_remote` (which writes
+            // `meta.json` + `members.json` and seeds `events.jsonl`
+            // with a synthetic `ChannelEvent::Created` so PR-2b's
+            // `peko-stream` listener fires on the desktop).
+            TunnelMessage::TunnelChannelInvite {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                creator,
+                name,
+                initial_members,
+                signature,
+            } => {
+                self.handle_inbound_tunnel_channel_invite(
+                    request_id,
+                    source_runtime_id,
+                    recipient_runtime_id,
+                    source_principal_did,
+                    channel_id,
+                    creator,
+                    name,
+                    initial_members,
                     signature,
                 )
                 .await?;
@@ -1502,6 +1538,136 @@ impl TunnelDispatcher {
         debug!(
             "inbound TunnelChannelEvent: verified + audited + appended to local mirror \
              (request_id={request_id}, channel_id={channel_id}, kind={event_kind})"
+        );
+
+        Ok(())
+    }
+
+    /// Handle an inbound `TunnelChannelInvite` — a one-shot bootstrap
+    /// envelope from a peer runtime that created a cross-runtime
+    /// channel. peko-channel cross-runtime PR-3a commit 3.
+    ///
+    /// Pipeline (mirrors `handle_inbound_tunnel_channel_event`):
+    ///
+    /// 1. Derive the verifying key from `source_runtime_id` (the
+    ///    self-certifying `did:key` form). Invalid DIDs are dropped
+    ///    with a warn — the hub's source-allowlist is the primary
+    ///    gate; this is the receiver-side defense.
+    /// 2. Re-serialize the `initial_members` list to JSON bytes and
+    ///    feed them to [`verify_channel_invite`] so the signer and
+    ///    verifier agree on byte-for-byte identical pre-image input
+    ///    (the `InitialMember` wire type uses
+    ///    `skip_serializing_if = "Option::is_none"` so a round-trip
+    ///    is byte-stable; verified by
+    ///    `peko_protocol::channel::tests::initial_member_skips_none_runtime_id`).
+    /// 3. Emit the `received_inbound` audit line via
+    ///    [`tunnel_channel_audit::emit_received_inbound`] (kind =
+    ///    `"channel_invite"` — the audit kind namespace already
+    ///    accepts arbitrary strings; we keep one row per inbound
+    ///    envelope so the audit trail joins on `request_id`).
+    /// 4. Bootstrap the local mirror via
+    ///    [`crate::tunnel::TunnelChannelPort::join_remote`]. The
+    ///    store writes `meta.json` + `members.json` + seeds
+    ///    `events.jsonl` with a synthetic `ChannelEvent::Created`.
+    ///    `join_remote` is idempotent (meta.json-existence check), so
+    ///    a duplicate envelope is a no-op.
+    ///
+    /// Like the channel-event handler, no response is sent back to
+    /// the source runtime — invites are push-only.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_inbound_tunnel_channel_invite(
+        &self,
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        channel_id: String,
+        creator: String,
+        name: String,
+        initial_members: Vec<peko_protocol::channel::InitialMember>,
+        signature: String,
+    ) -> anyhow::Result<()> {
+        // 1. Derive the verifying key from the claimed
+        // `source_runtime_id`. Same defense-in-depth layer as the
+        // channel-event handler.
+        let verifying_key = match did_key_to_verifying_key(&source_runtime_id) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelInvite: invalid source_runtime_id {source_runtime_id}: {e}"
+                );
+                return Ok(());
+            }
+        };
+
+        // 2. Re-serialize `initial_members` so the pre-image bytes
+        // match what the source runtime signed. `serde_json` emits
+        // vec items in declaration order; round-trip is stable.
+        let initial_members_bytes = match serde_json::to_vec(&initial_members) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelInvite: failed to re-serialize initial_members \
+                     for verification (channel_id={channel_id}): {e}"
+                );
+                return Ok(());
+            }
+        };
+
+        let signed = ChannelInviteSignedFields {
+            request_id: &request_id,
+            source_runtime_id: &source_runtime_id,
+            recipient_runtime_id: &recipient_runtime_id,
+            source_principal_did: &source_principal_did,
+            channel_id: &channel_id,
+            creator: &creator,
+            name: &name,
+            initial_members_bytes: &initial_members_bytes,
+        };
+        if let Err(e) = verify_channel_invite(&verifying_key, signed, &signature) {
+            warn!(
+                "inbound TunnelChannelInvite: signature verification failed for \
+                 source_runtime_id={source_runtime_id}: {e}"
+            );
+            return Ok(());
+        }
+
+        // 3. Audit. Always emit, regardless of whether the
+        // local-mirror bootstrap below succeeds.
+        let preview_json = String::from_utf8_lossy(&initial_members_bytes).into_owned();
+        tunnel_channel_audit::emit_received_inbound(
+            &request_id,
+            &source_runtime_id,
+            &source_principal_did,
+            &channel_id,
+            "channel_invite",
+            &super::tunnel_channel_audit::preview_event_payload(&preview_json),
+        );
+
+        // 4. Bootstrap the local mirror. `join_remote` is idempotent
+        // on the meta.json-existence check, so a duplicate envelope
+        // is a no-op. We log + drop on error rather than
+        // propagating — invites are push-only and there's no caller
+        // to error against.
+        let channel_id_typed = peko_protocol::channel::ChannelId(channel_id.clone());
+        if let Err(e) = self
+            .host
+            .tunnel_channel_port()
+            .join_remote(&channel_id_typed, &creator, &name, &initial_members)
+            .await
+        {
+            warn!(
+                "inbound TunnelChannelInvite: local-mirror bootstrap failed \
+                 (request_id={request_id}, channel_id={channel_id}, creator={creator}): {e}"
+            );
+            return Ok(());
+        }
+
+        debug!(
+            "inbound TunnelChannelInvite: verified + audited + bootstrapped local mirror \
+             (request_id={request_id}, channel_id={channel_id}, creator={creator}, \
+              initial_members={})",
+            initial_members.len()
         );
 
         Ok(())
@@ -3058,5 +3224,133 @@ mod tests {
             result.is_ok(),
             "unknown channel must not propagate as an error (channels are push-only); got: {result:?}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // peko-channel cross-runtime PR-3a commit 3:
+    // `TunnelChannelInvite` inbound handler tests.
+    // -----------------------------------------------------------------
+
+    /// Build a fresh signed `TunnelChannelInvite` envelope for tests.
+    /// Mirrors the production outbound path:
+    /// `fanout_invite` → serialize initial_members → build the
+    /// canonical pre-image → sign with the source runtime's key →
+    /// base64url-encode the signature.
+    fn build_signed_tunnel_channel_invite(
+        kp: &peko_identity::keys::KeyPair,
+        request_id: &str,
+        source_runtime_id: &str,
+        recipient_runtime_id: &str,
+        source_principal_did: &str,
+        channel_id: &str,
+        creator: &str,
+        name: &str,
+        initial_members: &[peko_protocol::channel::InitialMember],
+    ) -> (String, Vec<peko_protocol::channel::InitialMember>) {
+        let initial_members_bytes =
+            serde_json::to_vec(initial_members).expect("initial_members must serialize");
+        let signed = crate::tunnel::ChannelInviteSignedFields {
+            request_id,
+            source_runtime_id,
+            recipient_runtime_id,
+            source_principal_did,
+            channel_id,
+            creator,
+            name,
+            initial_members_bytes: &initial_members_bytes,
+        };
+        let sig = crate::tunnel::sign_channel_invite(&kp.signing_key, signed);
+        (sig, initial_members.to_vec())
+    }
+
+    /// Inbound `TunnelChannelInvite` with a valid signature: the
+    /// handler returns `Ok(())` and the local mirror gets
+    /// bootstrapped (meta.json + members.json + a synthetic Created
+    /// event lands at line 0). This is the receiver-side round-trip
+    /// for PR-3's cross-runtime invite UX — the desktop's
+    /// `peko-stream` listener fires off the synthetic Created event
+    /// (PR-2b).
+    #[tokio::test]
+    async fn inbound_invite_creates_local_mirror_and_emits_created_event() {
+        use peko_channel::ChannelPort;
+        let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (_handle, _rx) = mock_tunnel_handle();
+
+        let kp = peko_identity::keys::KeyPair::generate();
+        let source_runtime_id =
+            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let channel_id = "chan_invite01";
+        let initial_members = vec![
+            peko_protocol::channel::InitialMember {
+                principal_did: "prin_alice".to_string(),
+                runtime_id: None,
+            },
+            peko_protocol::channel::InitialMember {
+                principal_did: "prin_bob".to_string(),
+                runtime_id: Some("did:key:zRuntimeB".to_string()),
+            },
+        ];
+        let (signature, initial_members) = build_signed_tunnel_channel_invite(
+            &kp,
+            "chan-invite-1",
+            &source_runtime_id,
+            &local_runtime_id,
+            "prin_alice",
+            channel_id,
+            "prin_alice",
+            "team-chat",
+            &initial_members,
+        );
+
+        dispatcher
+            .handle_inbound_tunnel_channel_invite(
+                "chan-invite-1".to_string(),
+                source_runtime_id,
+                local_runtime_id,
+                "prin_alice".to_string(),
+                channel_id.to_string(),
+                "prin_alice".to_string(),
+                "team-chat".to_string(),
+                initial_members,
+                signature,
+            )
+            .await
+            .expect("valid signed invite must not error");
+
+        // Verify the local mirror got bootstrapped by reading the
+        // channel events back. The receiver-side AppState is the one
+        // we just constructed (no tunnel), so it has a fresh
+        // ChannelStore rooted at the data dir; the events.jsonl
+        // should have one synthetic Created entry.
+        let store = dispatcher.host.tunnel_channel_port();
+        let local_store: &peko_channel::ChannelStore = &**store.local();
+        let events = local_store
+            .peek(
+                &peko_protocol::channel::ChannelId(channel_id.to_string()),
+                &peko_channel::Checkpoint::default(),
+            )
+            .await
+            .expect("peek must succeed on the bootstrapped mirror");
+        assert_eq!(events.len(), 1, "synthetic Created at line 0");
+        match &events[0] {
+            peko_protocol::channel::ChannelEvent::Created { creator, name, .. } => {
+                assert_eq!(creator, "prin_alice");
+                assert_eq!(name, "team-chat");
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+
+        // Members: alice local (creator), bob remote on B.
+        let remote_members = local_store
+            .list_remote_members(&peko_protocol::channel::ChannelId(
+                channel_id.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(remote_members.len(), 1);
+        assert_eq!(remote_members[0].runtime_id, "did:key:zRuntimeB");
+        assert_eq!(remote_members[0].principal_id, "prin_bob");
     }
 }
