@@ -22,6 +22,7 @@ pub mod local_directory;
 pub mod principal_send_tool;
 pub mod protocol;
 pub mod tunnel_channel_audit;
+pub mod tunnel_channel_port;
 pub mod tunnel_channel_signature;
 
 pub use a2a_pending::{A2aResponsePayload, A2aWaitError, PendingA2aResponses};
@@ -48,6 +49,7 @@ pub use local_directory::LocalFirstAgentDirectory;
 pub use principal_send_tool::{PrincipalSendArgs, PrincipalSendResult, PrincipalSendTool};
 pub use protocol::TunnelMessage;
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
+pub use tunnel_channel_port::TunnelChannelPort;
 pub use tunnel_channel_signature::{
     sign_channel_event, verify_channel_event, ChannelSignedFields, CHANNEL_SIGNATURE_DOMAIN,
 };

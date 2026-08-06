@@ -1402,13 +1402,12 @@ impl TunnelDispatcher {
     ///    `tunnel_channel_signature::ChannelSignedFields`.)
     /// 3. Emit the `received_inbound` audit line via
     ///    [`tunnel_channel_audit::emit_received_inbound`].
-    /// 4. **TODO (PR-B):** append the event to the local
-    ///    `events.jsonl` mirror. Requires `AppState.channel_port`
-    ///    (a `TunnelChannelPort`) which is added in PR-B alongside
-    ///    `ChannelStore::append_remote_event`. For now this method
-    ///    verifies-and-audits-and-drops — the verifier catches a
-    ///    malicious peer, the audit row preserves the trail, and
-    ///    PR-B fills in the actual local-mirror write.
+    /// 4. Append the event to the local `events.jsonl` mirror via
+    ///    [`crate::tunnel::TunnelChannelPort::append_remote_event`].
+    ///    The local mirror write trusts the upstream signature (which
+    ///    steps 1-3 just verified), so it skips the membership / parent
+    ///    / sender checks that the local `post` path enforces — those
+    ///    guarantees were already provided by the source runtime.
     ///
     /// No response is sent back to the source runtime — channel
     /// events are push-only.
@@ -1460,9 +1459,9 @@ impl TunnelDispatcher {
             return Ok(());
         }
 
-        // 3. Audit. Always emit a row, regardless of whether PR-B's
-        // local-mirror append lands next; the row documents the
-        // verify-and-drop decision.
+        // 3. Audit. Always emit a row, regardless of whether the
+        // local-mirror append below succeeds; the row documents the
+        // verify-and-(append-or-drop) decision.
         let event_kind = event.kind();
         let preview_json = String::from_utf8_lossy(&event_bytes).into_owned();
         tunnel_channel_audit::emit_received_inbound(
@@ -1474,13 +1473,30 @@ impl TunnelDispatcher {
             &super::tunnel_channel_audit::preview_event_payload(&preview_json),
         );
 
-        // 4. TODO(PR-B): self.host.channel_port()
-        //    .append_remote_event(&channel_id, event, &source_runtime_id)
-        //    .await
-        //    .map_err(|e| { warn!("failed to append remote event to local mirror: {e}"); e })?;
-        //    For now we just log and drop.
+        // 4. Local-mirror append. The dispatcher is the single source
+        // of truth for signature validity (steps 1-3); the
+        // `append_remote_event` impl deliberately does not re-verify
+        // or re-check membership, since layering a second check here
+        // would either duplicate work or risk drift.
+        let channel_id_typed = peko_protocol::channel::ChannelId(channel_id.clone());
+        if let Err(e) = self
+            .host
+            .tunnel_channel_port()
+            .append_remote_event(&channel_id_typed, &event)
+            .await
+        {
+            warn!(
+                "inbound TunnelChannelEvent: local-mirror append failed (request_id={request_id}, channel_id={channel_id}, kind={event_kind}): {e}"
+            );
+            // Drop the event but do not error — the source runtime
+            // has no way to retry (channels are push-only) and we
+            // don't want a single bad append to backpressure the
+            // dispatcher. The audit row above preserves the trail.
+            return Ok(());
+        }
+
         debug!(
-            "inbound TunnelChannelEvent: verified + audited; local-mirror append lands in PR-B \
+            "inbound TunnelChannelEvent: verified + audited + appended to local mirror \
              (request_id={request_id}, channel_id={channel_id}, kind={event_kind})"
         );
 
@@ -2891,6 +2907,136 @@ mod tests {
         assert!(
             result.is_ok(),
             "invalid DID rejection must not propagate; got: {result:?}"
+        );
+    }
+
+    /// peko-channel cross-runtime PR-B commit 2: the inbound
+    /// `TunnelChannelEvent` appends the event to the local mirror's
+    /// `events.jsonl`. PR-A commit 3 verified-and-audited-and-dropped;
+    /// commit 2 wires `self.host.tunnel_channel_port().append_remote_event(...)`
+    /// so the receiver's local `peek` shows the event.
+    ///
+    /// The test creates the channel locally first (via
+    /// `app_state.channel_port.create(...)`) so the mirror directory
+    /// exists; the dispatcher then appends a Posted event from
+    /// runtime B into runtime A's mirror and the assertion reads back
+    /// via `peek`.
+    #[tokio::test]
+    async fn inbound_tunnel_channel_event_appends_to_local_mirror() {
+        use crate::ipc::handlers::channel::ChannelHost;
+        use peko_channel::ChannelPort;
+        let app_state = create_test_app_state().await;
+        let creator = peko_subject::PrincipalId("prin_alice".into());
+        let channel = app_state
+            .channel_port()
+            .create(&creator, peko_channel::CreateOpts::runtime("team"))
+            .await
+            .expect("local channel create must succeed");
+        let channel_id_str = channel.as_str().to_string();
+
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (_handle, _rx) = mock_tunnel_handle();
+
+        let kp = peko_identity::keys::KeyPair::generate();
+        let source_runtime_id =
+            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob@runtime-B".into(),
+            parent: None,
+            text: "hello from B".into(),
+            at: "2026-08-06T12:00:00Z".into(),
+        };
+        let (signature, event) = build_signed_tunnel_channel_event(
+            &kp,
+            "chan-evt-mirror",
+            &source_runtime_id,
+            "prin_bob@runtime-B",
+            &channel_id_str,
+            &event,
+        );
+
+        dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-mirror".to_string(),
+                source_runtime_id,
+                "prin_bob@runtime-B".to_string(),
+                channel_id_str.clone(),
+                event,
+                signature,
+            )
+            .await
+            .expect("verified envelope must not error");
+
+        // The local mirror's `peek` should now show the remote event.
+        let events = dispatcher
+            .host
+            .tunnel_channel_port()
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .expect("local peek must succeed");
+        let posted: Vec<_> = events
+            .iter()
+            .filter(|ev| matches!(ev, peko_protocol::channel::ChannelEvent::Posted { .. }))
+            .collect();
+        assert_eq!(
+            posted.len(),
+            1,
+            "remote Posted event must be visible in local peek"
+        );
+        match &posted[0] {
+            peko_protocol::channel::ChannelEvent::Posted { author, text, .. } => {
+                assert_eq!(author, "prin_bob@runtime-B");
+                assert_eq!(text, "hello from B");
+            }
+            other => panic!("expected Posted, got: {other:?}"),
+        }
+    }
+
+    /// peko-channel cross-runtime PR-B commit 2: the inbound handler
+    /// surfaces `Ok(())` when the channel id is unknown (defense in
+    /// depth — the hub's source-allowlist + signature check is the
+    /// primary gate; a bogus channel id on a verified envelope
+    /// shouldn't backpressure the dispatcher).
+    #[tokio::test]
+    async fn inbound_tunnel_channel_event_unknown_channel_silently_drops() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (_handle, _rx) = mock_tunnel_handle();
+
+        let kp = peko_identity::keys::KeyPair::generate();
+        let source_runtime_id =
+            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let bogus = peko_protocol::channel::ChannelId("chan_unknown01".into());
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: bogus.clone(),
+            author: "prin_bob".into(),
+            parent: None,
+            text: "should not land".into(),
+            at: "2026-08-06T12:00:00Z".into(),
+        };
+        let (signature, event) = build_signed_tunnel_channel_event(
+            &kp,
+            "chan-evt-unknown",
+            &source_runtime_id,
+            "prin_bob",
+            bogus.as_str(),
+            &event,
+        );
+
+        let result = dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-unknown".to_string(),
+                source_runtime_id,
+                "prin_bob".to_string(),
+                bogus.as_str().to_string(),
+                event,
+                signature,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "unknown channel must not propagate as an error (channels are push-only); got: {result:?}"
         );
     }
 }

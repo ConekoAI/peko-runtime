@@ -114,6 +114,16 @@ pub(crate) struct AppState {
     /// path resolver's `runtime_dir()`.
     channel_port: Arc<dyn peko_channel::ChannelPort>,
 
+    /// peko-channel cross-runtime PR-B commit 2: the concrete
+    /// `TunnelChannelPort` that wraps `channel_port`'s local store.
+    /// The tunnel dispatcher reaches this through
+    /// [`crate::tunnel::TunnelHost::tunnel_channel_port`] so it can
+    /// append inbound `TunnelChannelEvent`s to the local mirror
+    /// after verifying the envelope signature. `Arc<dyn ChannelPort>`
+    /// above stays the trait surface for IPC handlers / tool
+    /// runtime; this field is the cross-runtime-typed accessor.
+    tunnel_channel_port: Arc<crate::tunnel::TunnelChannelPort>,
+
     /// Runtime-owned, append-only chat-log store. Each principal
     /// boundary message that passes authorization is persisted here
     /// alongside its authoritative response. Distinct from the
@@ -550,6 +560,15 @@ impl AppState {
         let peko_config = load_peko_config(&config_dir);
         let pending_a2a_responses = Arc::new(crate::tunnel::PendingA2aResponses::new());
         let invite_revocation_set = Arc::new(crate::tunnel::InviteRevocationSet::new());
+        // peko-channel cross-runtime PR-B commit 2: the concrete
+        // `TunnelChannelPort` field on `AppState` is populated during
+        // channel-port construction (line ~706). The variable holds
+        // `None` until then; the init arm at ~706 swaps it for
+        // `Some(...)` once the local store has been built. `commit
+        // 3` will also assign the `CrossRuntimeChannelCtx` into the
+        // wrapper.
+        #[allow(unused_assignments)]
+        let mut tunnel_channel_port: Option<Arc<crate::tunnel::TunnelChannelPort>> = None;
         let streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
         let direct_manager = Arc::new(crate::tunnel::direct::DirectConnectionManager::new(
@@ -687,12 +706,29 @@ impl AppState {
         // is built first so we can both register it with the tool
         // runtime and store it on `AppState` (line ~939) without
         // doubling up the adapter construction.
-        let channel_port: Arc<dyn peko_channel::ChannelPort> =
-            Arc::new(peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
-                runtime_dir: channel_runtime_dir.clone(),
-                // PR-3d: Shared-tier root for `pin_to_shared`.
-                shared_dir: Some(channel_shared_root.clone()),
-            }));
+        let channel_port: Arc<dyn peko_channel::ChannelPort> = {
+            // peko-channel cross-runtime PR-B commit 2: wrap the
+            // local `ChannelStore` in a `TunnelChannelPort` so the
+            // tunnel dispatcher's `handle_inbound_tunnel_channel_event`
+            // can reach the cross-runtime append path. The wrapper
+            // implements `ChannelPort` via pure delegation, so the
+            // `dyn ChannelPort` surface for the tool runtime / IPC
+            // handlers is unchanged.
+            //
+            // `ctx` is `None` for commit 2 — commit 3 wires the
+            // `CrossRuntimeChannelCtx` so `post` / `invite` can fan
+            // out to remote members.
+            let store = Arc::new(peko_channel::ChannelStore::new(
+                peko_channel::ChannelConfig {
+                    runtime_dir: channel_runtime_dir.clone(),
+                    // PR-3d: Shared-tier root for `pin_to_shared`.
+                    shared_dir: Some(channel_shared_root.clone()),
+                },
+            ));
+            let tcp = crate::tunnel::TunnelChannelPort::new(store, None);
+            tunnel_channel_port = Some(Arc::new(tcp.clone()));
+            Arc::new(tcp) as Arc<dyn peko_channel::ChannelPort>
+        };
         let tool_runtime = Arc::new(
             ToolRuntime::with_workspace_and_core_and_channel_port(
                 path_resolver_clone.clone(),
@@ -946,6 +982,16 @@ impl AppState {
             // the typed path resolver's runtime dir. PR-1 only ships
             // Runtime-tier; PR-3 may add a Shared-tier sibling adapter.
             channel_port: channel_port.clone(),
+            // peko-channel cross-runtime PR-B commit 2: the concrete
+            // `TunnelChannelPort` accessor. Built by the
+            // channel_port construction block above (line ~706); the
+            // `unwrap_or_else` here turns the local `None` default
+            // into a panic if someone reorders the construction
+            // without populating `tunnel_channel_port` — fail loud,
+            // not silent.
+            tunnel_channel_port: tunnel_channel_port
+                .clone()
+                .unwrap_or_else(|| panic!("tunnel_channel_port must be initialized before AppState build")),
             peer_registry,
             lifecycle,
             session_service,
@@ -2034,6 +2080,15 @@ impl crate::tunnel::TunnelHost for AppState {
 
     fn invite_revocation_set(&self) -> Arc<crate::tunnel::InviteRevocationSet> {
         Arc::clone(&self.invite_revocation_set)
+    }
+
+    /// peko-channel cross-runtime PR-B commit 2: typed accessor for
+    /// the concrete `TunnelChannelPort`. The dispatcher's
+    /// `handle_inbound_tunnel_channel_event` calls
+    /// `tunnel_channel_port().append_remote_event(...)` after
+    /// verifying the envelope signature.
+    fn tunnel_channel_port(&self) -> Arc<crate::tunnel::TunnelChannelPort> {
+        Arc::clone(&self.tunnel_channel_port)
     }
 }
 

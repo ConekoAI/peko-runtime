@@ -17,6 +17,7 @@ use tokio::sync::RwLock;
 
 use super::a2a_pending::PendingA2aResponses;
 use super::invite_token::InviteRevocationSet;
+use super::TunnelChannelPort;
 use super::TunnelHandle;
 use crate::principal::PrincipalManager;
 use peko_auth::jwt::JwtValidator;
@@ -64,4 +65,13 @@ pub trait TunnelHost: Send + Sync {
     /// checks this alongside signature/expiry/principal-name before
     /// allowing a token to bypass the exposure-based ACL.
     fn invite_revocation_set(&self) -> Arc<InviteRevocationSet>;
+
+    /// Cross-runtime channel port. The dispatcher's
+    /// `handle_inbound_tunnel_channel_event` calls
+    /// [`TunnelChannelPort::append_remote_event`] on this after
+    /// verifying the envelope signature — peko-channel cross-runtime
+    /// PR-B commit 2 wires this in. The `ChannelStore` underneath
+    /// does the actual mirror append; `TunnelChannelPort` is just the
+    /// typed port the dispatcher reaches through.
+    fn tunnel_channel_port(&self) -> Arc<TunnelChannelPort>;
 }
