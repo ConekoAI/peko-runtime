@@ -30,7 +30,6 @@ use peko_subject::PrincipalId;
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
 use serde::{Deserialize, Serialize};
 
-use crate::config::ConfigOnDisk;
 use crate::port::{ChannelPort, Checkpoint, CreateOpts, PostMsg, Result};
 
 // ---------------------------------------------------------------------------
@@ -177,31 +176,6 @@ impl ChannelCliRouter {
         channel: &ChannelId,
     ) -> Result<ChannelMembership> {
         self.port.membership(channel).await
-    }
-
-    /// `peko channel config <channel>` — read the channel's per-channel
-    /// config (model_list, cost_ceiling_usd, default_subagent_type).
-    /// PR-2: read-only — mutation is reserved for PR-3's `pin` op.
-    pub async fn handle_config_get(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<ConfigOnDisk> {
-        self.port.load_config(channel).await
-    }
-
-    /// `peko channel pin <channel>` — overwrite the channel's
-    /// per-channel config (PR-3b). Caller is responsible for any
-    /// partial-merge semantics (preserving `None` fields); the
-    /// handler treats the passed `ConfigOnDisk` as authoritative and
-    /// persists it via `ChannelPort::save_config`. The CLI does the
-    /// merge so the in-process fallback matches the daemon path.
-    pub async fn handle_config_set(
-        &self,
-        channel: &ChannelId,
-        config: &ConfigOnDisk,
-    ) -> Result<ConfigOnDisk> {
-        self.port.save_config(channel, config).await?;
-        Ok(config.clone())
     }
 
     /// `peko channel pin-to-shared <channel>` — copy a Runtime-tier

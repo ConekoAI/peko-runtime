@@ -7,10 +7,9 @@
 //! <runtime_dir>/
 //!   channels/
 //!     <chan_id>/
-//!       meta.json       # { creator, name, created_at }
+//!       meta.json       # { creator, name, created_at, tier }
 //!       members.json    # { members: [String] }
 //!       events.jsonl    # one ChannelEvent per line, append-only
-//!       config.toml     # ConfigOnDisk
 //! ```
 //!
 //! Symmetric with [`peko_chat_log::ChatLogStore`] — append-only JSONL
@@ -47,7 +46,6 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::config::ConfigOnDisk;
 use crate::port::{
     ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, Result, TaskId, Tier,
 };
@@ -493,10 +491,6 @@ impl ChannelPort for ChannelStore {
         };
         self.append_event(opts.tier, &channel, &event).await?;
 
-        // Seed config.toml with defaults so the file exists for
-        // `load_config` callers.
-        ConfigOnDisk::default().save(&chan_dir).await?;
-
         Ok(channel)
     }
 
@@ -638,22 +632,6 @@ impl ChannelPort for ChannelStore {
         self.list_channels_for_principal(principal).await
     }
 
-    async fn load_config(&self, channel: &ChannelId) -> Result<ConfigOnDisk> {
-        let tier = self.resolve_tier(channel).await?;
-        let chan_dir = self.channel_dir_for_tier(tier, channel);
-        ConfigOnDisk::load(&chan_dir).await
-    }
-
-    async fn save_config(
-        &self,
-        channel: &ChannelId,
-        config: &ConfigOnDisk,
-    ) -> Result<()> {
-        let tier = self.resolve_tier(channel).await?;
-        let chan_dir = self.channel_dir_for_tier(tier, channel);
-        config.save(&chan_dir).await
-    }
-
     async fn pin_to_shared(
         &self,
         channel: &ChannelId,
@@ -671,18 +649,9 @@ impl ChannelPort for ChannelStore {
         }
         fs::create_dir_all(&shared_chan_dir).await?;
 
-        // Copy the four Runtime-tier files: meta.json, members.json,
-        // config.toml, events.jsonl. None are recursive; the layout
-        // is flat.
-        for filename in [
-            META_FILE,
-            MEMBERS_FILE,
-            ConfigOnDisk::path_in(&runtime_chan_dir)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("config.toml"),
-            EVENTS_FILE,
-        ] {
+        // Copy the three Runtime-tier files: meta.json, members.json,
+        // events.jsonl. None are recursive; the layout is flat.
+        for filename in [META_FILE, MEMBERS_FILE, EVENTS_FILE] {
             let src = runtime_chan_dir.join(filename);
             if !src.exists() {
                 continue;

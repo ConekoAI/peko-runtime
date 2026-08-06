@@ -892,15 +892,6 @@ pub enum RequestPacket {
         principal_name: String,
     },
 
-    /// Read the channel's per-channel config (model_list, cost
-    /// ceiling, default subagent type). PR-2 read-only — mutation
-    /// lands in PR-3's `pin` op.
-    #[serde(rename = "channel_config_get")]
-    ChannelConfigGet {
-        request_id: u64,
-        channel: String,
-    },
-
     /// Remove `principal_name` from `channel`. PR-3a: closes the
     /// missing IPC variant — PR-1 had `handle_leave` only on the
     /// in-process path.
@@ -909,23 +900,6 @@ pub enum RequestPacket {
         request_id: u64,
         channel: String,
         principal_name: String,
-    },
-
-    /// Overwrite the channel's per-channel config (PR-3b). Each field
-    /// is `Option`; the daemon's `ChannelHandler` reads the current
-    /// `ConfigOnDisk`, applies non-None fields, and persists the
-    /// merged result. CLI does the same merge on the in-process
-    /// fallback path so both paths are byte-identical.
-    #[serde(rename = "channel_config_set")]
-    ChannelConfigSet {
-        request_id: u64,
-        channel: String,
-        #[serde(default)]
-        model_list: Option<Vec<String>>,
-        #[serde(default)]
-        cost_ceiling_usd: Option<f64>,
-        #[serde(default)]
-        default_subagent_type: Option<String>,
     },
 
     /// Copy a Runtime-tier channel into the Shared tier (PR-3d).
@@ -1036,9 +1010,7 @@ impl RequestPacket {
             | Self::ChannelPeek { request_id, .. }
             | Self::ChannelMembers { request_id, .. }
             | Self::ChannelList { request_id, .. }
-            | Self::ChannelConfigGet { request_id, .. }
             | Self::ChannelLeave { request_id, .. }
-            | Self::ChannelConfigSet { request_id, .. }
             | Self::ChannelPinToShared { request_id, .. } => *request_id,
         }
     }
@@ -1248,15 +1220,6 @@ pub enum ResponsePacket {
         channels: Vec<peko_protocol::channel::ChannelId>,
     },
 
-    /// Per-channel config payload (model_list, cost ceiling, default
-    /// subagent type).
-    #[serde(rename = "channel_config_result")]
-    ChannelConfigResult {
-        request_id: u64,
-        channel: peko_protocol::channel::ChannelId,
-        config: peko_channel::ConfigOnDisk,
-    },
-
     /// Leave acknowledged — `principal` is no longer a member of
     /// `channel`.
     #[serde(rename = "channel_left")]
@@ -1264,16 +1227,6 @@ pub enum ResponsePacket {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
         principal: peko_subject::PrincipalId,
-    },
-
-    /// Config persisted. Carries the full merged `ConfigOnDisk` (any
-    /// `None` fields in the request were preserved from the existing
-    /// config).
-    #[serde(rename = "channel_config_set_result")]
-    ChannelConfigSetResult {
-        request_id: u64,
-        channel: peko_protocol::channel::ChannelId,
-        config: peko_channel::ConfigOnDisk,
     },
 
     /// Shared-tier pin acknowledged. `shared_path` is the absolute
@@ -2643,9 +2596,7 @@ impl ResponsePacket {
             | Self::ChannelPeekResult { request_id, .. }
             | Self::ChannelMembersResult { request_id, .. }
             | Self::ChannelListResult { request_id, .. }
-            | Self::ChannelConfigResult { request_id, .. }
             | Self::ChannelLeft { request_id, .. }
-            | Self::ChannelConfigSetResult { request_id, .. }
             | Self::ChannelPinnedToShared { request_id, .. } => *request_id,
         }
     }
@@ -2743,9 +2694,7 @@ impl ResponsePacket {
             Self::ChannelPeekResult { .. } => "ChannelPeekResult",
             Self::ChannelMembersResult { .. } => "ChannelMembersResult",
             Self::ChannelListResult { .. } => "ChannelListResult",
-            Self::ChannelConfigResult { .. } => "ChannelConfigResult",
             Self::ChannelLeft { .. } => "ChannelLeft",
-            Self::ChannelConfigSetResult { .. } => "ChannelConfigSetResult",
             Self::ChannelPinnedToShared { .. } => "ChannelPinnedToShared",
         }
     }

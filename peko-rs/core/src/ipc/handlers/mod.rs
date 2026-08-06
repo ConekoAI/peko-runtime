@@ -158,7 +158,8 @@ impl RequestDispatcher {
             Arc::new(PersonaHandler::new(host.clone())),
             // PR-2c: the `channel` handler exposes the
             // `peko-channel` runtime-tier port (create / invite /
-            // post / peek / members / list / config_get) over IPC.
+            // post / peek / members / list / leave / pin-to-shared)
+            // over IPC.
             // Lives next to `Cron` because both are persistence
             // handlers behind a narrow port trait.
             Arc::new(ChannelHandler::new(host.clone())),

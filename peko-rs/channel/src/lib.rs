@@ -67,7 +67,6 @@
 #![allow(clippy::module_inception)]
 
 pub mod cli_handlers;
-pub mod config;
 pub mod cost;
 pub mod cursors;
 pub mod port;
@@ -79,7 +78,6 @@ pub mod subscription;
 // submodule a type lives in. Mirrors `peko_cron::lib.rs:59-65` and
 // `peko-rs/cron/src/lib.rs:53-67`.
 pub use cli_handlers::ChannelCliRouter;
-pub use config::ConfigOnDisk;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
 pub use port::{ChannelError, ChannelPort, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, Tier};

@@ -255,14 +255,6 @@ mod tests {
             Ok(Vec::new())
         }
 
-        async fn save_config(
-            &self,
-            _channel: &ChannelId,
-            _config: &peko_channel::ConfigOnDisk,
-        ) -> peko_channel::Result<()> {
-            Ok(())
-        }
-
         async fn pin_to_shared(
             &self,
             _channel: &ChannelId,

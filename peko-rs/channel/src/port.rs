@@ -19,8 +19,6 @@ use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::ConfigOnDisk;
-
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
@@ -140,30 +138,6 @@ pub trait ChannelPort: Send + Sync + 'static {
             last_membership_change: last_change,
         })
     }
-
-    /// Load the channel's per-channel config. PR-2 introduces this
-    /// alongside `ConfigOnDisk`; the responder (commit 2b) calls it to
-    /// read `model_list` + `cost_ceiling_usd` before dispatching.
-    ///
-    /// Default impl returns `ConfigOnDisk::default()` so callers without
-    /// file-backed storage don't have to override. The file-backed
-    /// [`crate::PlanChannelAdapter`] overrides to actually read the
-    /// `<channel_dir>/config.toml` file.
-    async fn load_config(&self, channel: &ChannelId) -> Result<ConfigOnDisk> {
-        let _ = channel;
-        Ok(ConfigOnDisk::default())
-    }
-
-    /// Persist the channel's per-channel config (PR-3b). The handler
-    /// at `peko-rs/channel/src/cli_handlers.rs::handle_config_set`
-    /// reads the current `ConfigOnDisk`, applies any non-None fields
-    /// from the request, then calls this so adapters persist the new
-    /// value. No default impl — adapters must opt in.
-    async fn save_config(
-        &self,
-        channel: &ChannelId,
-        config: &ConfigOnDisk,
-    ) -> Result<()>;
 
     /// Copy an existing Runtime-tier channel into the adapter's
     /// Shared tier (PR-3d). Returns the absolute Shared path on
@@ -407,20 +381,7 @@ impl ChannelPort for NoopChannelPort {
         ))
     }
 
-    async fn save_config(
-        &self,
-        _channel: &ChannelId,
-        _config: &ConfigOnDisk,
-    ) -> Result<()> {
-        Err(ChannelError::Adapter(
-            "no channel port configured (NoopChannelPort)".into(),
-        ))
-    }
-
-    async fn pin_to_shared(
-        &self,
-        _channel: &ChannelId,
-    ) -> Result<std::path::PathBuf> {
+    async fn pin_to_shared(&self, _channel: &ChannelId) -> Result<std::path::PathBuf> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))
