@@ -674,7 +674,17 @@ impl TunnelClient {
             // (signature verify → append to local `events.jsonl`
             // mirror). Until then the dispatcher logs at `debug!`
             // and drops — safe default, no silent send loop.
-            | TunnelMessage::TunnelChannelEvent { .. } => {
+            //
+            // peko-channel cross-runtime PR-3a commit 1: add the
+            // `tunnel_channel_invite` envelope alongside the event
+            // variant. Commit 3 wires the inbound handler (signature
+            // verify → bootstrap local mirror → emit synthetic
+            // `ChannelEvent::Created`). Until then this falls through
+            // to the same handler seam (which currently drops the
+            // envelope at `debug!` because no dispatcher registers
+            // the handler yet) — safe default, no silent bootstrap.
+            | TunnelMessage::TunnelChannelEvent { .. }
+            | TunnelMessage::TunnelChannelInvite { .. } => {
                 if let Some(handler) = request_handler {
                     handler(msg, handle.clone()).await;
                 } else {

@@ -446,7 +446,84 @@ pub enum TunnelMessage {
         /// and the pekohub TypeScript decoder can share a parser.
         signature: String,
     },
+
+    /// Bootstrap envelope for a cross-runtime channel invite.
+    ///
+    /// Sent from the **creator** runtime to each **invitee**'s
+    /// hosting runtime when a non-self principal is invited to a
+    /// channel (peko-channel cross-runtime PR-3a, the pre-req for
+    /// PR-3's desktop invite UX). The receiver uses `join_remote`
+    /// to create a local mirror directory + a synthetic
+    /// `ChannelEvent::Created` event so PR-2b's `peko-stream`
+    /// listener fires on the desktop.
+    ///
+    /// Mirrors `TunnelChannelEvent`'s shape: hub acts as a pure
+    /// relay, source-allowlist + recipient lookup. The `creator`
+    /// and `name` come from the source runtime's `ChannelStore`
+    /// metadata (snapshotted at invite time) so the receiver can
+    /// populate `meta.json` without a second round-trip.
+    #[serde(rename = "tunnel_channel_invite", rename_all = "camelCase")]
+    TunnelChannelInvite {
+        /// Unique-per-fanout id (UUIDv4 from the source runtime).
+        /// Mirrors `TunnelChannelEvent.request_id`; not used for
+        /// response correlation (channel events are push-only).
+        request_id: String,
+        /// Source runtime's `did:key`. The receiver derives the
+        /// verifying key from this DID and rejects the envelope if
+        /// `signature` does not verify against the pre-image built
+        /// from the rest of these fields.
+        source_runtime_id: String,
+        /// The runtime the hub should forward this envelope to. The
+        /// outbound `fanout_invite` loop emits one envelope per
+        /// unique invitee runtime. Without this field the hub has
+        /// no way to route — channel membership tracking is a
+        /// source-runtime concern.
+        recipient_runtime_id: String,
+        /// The local principal on the source runtime that issued
+        /// the invite. Recorded for audit only — the signature is
+        /// over the runtime-level pre-image.
+        source_principal_did: String,
+        /// The channel id (`chan_<8 base36>`). The receiver looks
+        /// up the local mirror directory and calls `join_remote`
+        /// with the rest of the envelope to bootstrap it.
+        channel_id: String,
+        /// The creator's display name (principal DID, e.g.
+        /// `prin_alice`). Mirrors the `creator` field written into
+        /// the local mirror's `meta.json`.
+        creator: String,
+        /// Human-readable channel name (`team`, `general`, etc.).
+        /// Snapshotted from the source runtime's `meta.json` at
+        /// invite time so the receiver doesn't need a follow-up
+        /// `peek` to display the channel.
+        name: String,
+        /// Initial membership snapshot: every principal that
+        /// should appear in the receiver's `members.json` row
+        /// table. Each row pairs a principal DID with the runtime
+        /// that hosts it (`runtime_id: None` = local to the
+        /// source). The receiver builds both the local-members
+        /// (`local_members`) and `remote_members` arrays from this
+        /// list by partitioning on the optional `runtime_id`.
+        initial_members: Vec<InitialMember>,
+        /// Ed25519 signature, base64url-no-pad, over the canonical
+        /// pre-image described in `tunnel_channel_signature`. Same
+        /// shape as `TunnelChannelEvent.signature`.
+        signature: String,
+    },
 }
+
+/// One row of the `initialMembers` list on
+/// `TunnelChannelInvite`. `runtime_id: None` means the principal
+/// is local to the source runtime (will land in `members.json`'s
+/// local array); `Some(runtime_id)` means the principal lives on a
+/// peer runtime and the receiver should record a `RemoteMember`
+/// row in `members.json`.
+///
+/// Canonical home is `peko_protocol::channel::InitialMember`
+/// (mirrors how `TunnelChannelEvent.event` re-uses
+/// `peko_protocol::channel::ChannelEvent`). Defined here as a
+/// type alias so the field on `TunnelChannelInvite` reads naturally
+/// at the call site (`initial_members: Vec<InitialMember>`).
+pub type InitialMember = peko_protocol::channel::InitialMember;
 
 impl TunnelMessage {
     /// Serialize to JSON bytes
@@ -1125,6 +1202,114 @@ mod tests {
                 }
             }
             other => panic!("Expected TunnelChannelEvent, got: {other:?}"),
+        }
+    }
+
+    /// `TunnelChannelInvite` (peko-channel cross-runtime PR-3a
+    /// commit 1) round-trips with a two-member `initialMembers`
+    /// snapshot — one local to the source runtime, one remote.
+    /// Wire tag is `tunnel_channel_invite` (snake_case); fields are
+    /// camelCase. Pins the contract with the `sign_channel_invite`
+    /// helpers and with pekohub's pure-relay forwarding layer
+    /// (mirrors PR-C's `tunnel_channel_event` add).
+    #[test]
+    fn test_tunnel_channel_invite_roundtrip() {
+        let initial_members = vec![
+            InitialMember {
+                principal_did: "prin_alice".to_string(),
+                runtime_id: None,
+            },
+            InitialMember {
+                principal_did: "prin_bob".to_string(),
+                runtime_id: Some("did:key:zRuntimeB".to_string()),
+            },
+        ];
+        let msg = TunnelMessage::TunnelChannelInvite {
+            request_id: "chan-invite-1".to_string(),
+            source_runtime_id: "did:key:zRuntimeA".to_string(),
+            recipient_runtime_id: "did:key:zRuntimeB".to_string(),
+            source_principal_did: "prin_alice".to_string(),
+            channel_id: "chan_abcdefgh".to_string(),
+            creator: "prin_alice".to_string(),
+            name: "team-chat".to_string(),
+            initial_members,
+            signature: "base64url-sig".to_string(),
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+
+        // Wire tag is snake_case.
+        assert!(
+            json.contains("\"tunnel_channel_invite\""),
+            "tag must be snake_case `tunnel_channel_invite`, got: {json}"
+        );
+        // All flat fields are camelCase.
+        assert!(
+            json.contains("\"requestId\""),
+            "field requestId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"sourceRuntimeId\""),
+            "field sourceRuntimeId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"recipientRuntimeId\""),
+            "field recipientRuntimeId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"sourcePrincipalDid\""),
+            "field sourcePrincipalDid must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"channelId\""),
+            "field channelId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"initialMembers\""),
+            "field initialMembers must be camelCase, got: {json}"
+        );
+        // `runtime_id: None` is skipped on the wire (no null leak).
+        assert!(
+            !json.contains("\"runtimeId\":null"),
+            "runtime_id=None must be skipped (not serialized as null), got: {json}"
+        );
+        // The present `runtime_id` is camelCase.
+        assert!(
+            json.contains("\"runtimeId\":\"did:key:zRuntimeB\""),
+            "remote member's runtimeId must be camelCase, got: {json}"
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::TunnelChannelInvite {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                creator,
+                name,
+                initial_members: decoded_members,
+                signature,
+            } => {
+                assert_eq!(request_id, "chan-invite-1");
+                assert_eq!(source_runtime_id, "did:key:zRuntimeA");
+                assert_eq!(recipient_runtime_id, "did:key:zRuntimeB");
+                assert_eq!(source_principal_did, "prin_alice");
+                assert_eq!(channel_id, "chan_abcdefgh");
+                assert_eq!(creator, "prin_alice");
+                assert_eq!(name, "team-chat");
+                assert_eq!(signature, "base64url-sig");
+                assert_eq!(decoded_members.len(), 2);
+                assert_eq!(decoded_members[0].principal_did, "prin_alice");
+                assert_eq!(decoded_members[0].runtime_id, None);
+                assert_eq!(decoded_members[1].principal_did, "prin_bob");
+                assert_eq!(
+                    decoded_members[1].runtime_id.as_deref(),
+                    Some("did:key:zRuntimeB")
+                );
+            }
+            other => panic!("Expected TunnelChannelInvite, got: {other:?}"),
         }
     }
 }

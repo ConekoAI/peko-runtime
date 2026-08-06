@@ -182,6 +182,41 @@ pub struct ChannelMembership {
 }
 
 // ---------------------------------------------------------------------------
+// InitialMember — peko-channel cross-runtime PR-3a commit 1
+// ---------------------------------------------------------------------------
+
+/// One row of the `initialMembers` list on
+/// [`crate::tunnel::TunnelChannelInvite`] (the source runtime's
+/// fan-out of a channel invite to a remote runtime's hosting
+/// runtime). Pairs a principal DID with the runtime that hosts it.
+///
+/// Wire shape:
+///
+/// ```json
+/// {"principalDid":"prin_alice"}
+/// {"principalDid":"prin_bob","runtimeId":"did:key:zRuntimeB"}
+/// ```
+///
+/// `runtime_id: None` means the principal is local to the source
+/// runtime — the receiver should land the row in
+/// `members.json`'s local array. `runtime_id: Some(id)` means the
+/// principal lives on a peer runtime and the receiver should
+/// record a `RemoteMember` row.
+///
+/// `#[serde(skip_serializing_if = "Option::is_none")]` on
+/// `runtime_id` keeps the wire form minimal for the common
+/// (single-runtime) case: a 4-line bootstrap envelope shrinks by
+/// ~22 bytes per local member. Verified by
+/// [`initial_member_skips_none_runtime_id`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitialMember {
+    pub principal_did: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Internal: 8-char lowercase base36 id suffix
 // ---------------------------------------------------------------------------
 
@@ -389,5 +424,55 @@ mod tests {
         assert!(!json.contains("last_membership_change"), "got {json}");
         let back: ChannelMembership = serde_json::from_str(&json).unwrap();
         assert_eq!(back.last_membership_change, None);
+    }
+
+    // ----- InitialMember — peko-channel cross-runtime PR-3a commit 1 -----
+
+    /// `InitialMember` with `runtime_id: Some(...)` round-trips with
+    /// camelCase fields. Pins the contract with the tunnel-protocol
+    /// envelope + the hub-side relay.
+    #[test]
+    fn initial_member_remote_round_trip() {
+        let m = InitialMember {
+            principal_did: "prin_bob".to_string(),
+            runtime_id: Some("did:key:zRuntimeB".to_string()),
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            json.contains("\"principalDid\""),
+            "principalDid must be camelCase; got: {json}"
+        );
+        assert!(
+            json.contains("\"runtimeId\""),
+            "runtimeId must be camelCase; got: {json}"
+        );
+        let back: InitialMember = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+    }
+
+    /// `runtime_id: None` is skipped on the wire — not serialized as
+    /// `null`. This matters for the tunnel pre-image: serde_json
+    /// emits a single canonical byte sequence, so the signer and
+    /// verifier must see the same bytes. Verified by re-serializing
+    /// after a round-trip (the `serde_json::from_str` + `to_string`
+    /// pair must be idempotent for the skipped field).
+    #[test]
+    fn initial_member_skips_none_runtime_id() {
+        let m = InitialMember {
+            principal_did: "prin_alice".to_string(),
+            runtime_id: None,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("runtimeId"),
+            "runtime_id=None must be skipped, got: {json}"
+        );
+        let back: InitialMember = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+        // Re-serializing the round-tripped value must produce the
+        // same bytes (the canonical pre-image the tunnel signature
+        // signs).
+        let re_json = serde_json::to_string(&back).unwrap();
+        assert_eq!(re_json, json, "round-trip must be byte-stable");
     }
 }
