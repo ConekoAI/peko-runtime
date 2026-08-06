@@ -12,19 +12,17 @@
 //!   `create`, `invite`, `post`, `peek`, `leave`, `list_members`,
 //!   `list_for_principal`. Errors via [`port::ChannelError`].
 //! - [`responder`] — `ChannelResponder` trait (also consumer-defined).
-//!   One method: `consider_response(ctx)`. PR-1 ships a `Noop` impl;
-//!   PR-2 wires `peko-engine` subagent dispatch here.
+//!   One method: `consider_response(ctx)`. The shipped impl is the
+//!   `NoopChannelResponder`; agents read channels actively via the
+//!   `ChannelRead` tool (peko-core) rather than reacting via a daemon
+//!   responder. See `peko-channel-pr4-shipped.md` for the rationale.
 //! - [`plan_channel`] — `PlanChannelAdapter: ChannelPort` (storage impl
 //!   backed by `peko_plan::PlanStorage`).
 //! - [`subscription`] — `ChannelSubscriber` (per-member poll loop;
 //!   `tick_once` is the test seam).
 //! - [`cursors`] — `ChannelCursors` (per-channel runtime-tier
 //!   "last_read_task_id" map).
-//! - [`caps`] — `intersect_member_caps` (concrete capability
-//!   intersection, NOT a generic abstraction — see memory note on
-//!   `prefer-concrete-over-speculative-abstraction.md`).
-//! - [`cost`] — metering bridge (PR-1 stub; PR-3 wires
-//!   `peko_quota::MeteredProvider`).
+//! - [`cost`] — metering bridge (PR-3c wires `AuditChannelMeter`).
 //! - [`cli_handlers`] — handler bodies wired into `peko-rs/cli`.
 //!
 //! Wire types (ChannelId, ChannelEvent, ChannelMembership) live in
@@ -39,15 +37,14 @@
 //! - We do NOT introduce a 4th storage tier — channels live *in* an
 //!   existing tier (per `phase-a-three-tier-storage.md`).
 //!
-//! ## Anti-loop inheritance
+//! ## Why no per-channel capability intersection
 //!
-//! Each member's poll hands new events to `ChannelResponder`. The PR-2
-//! impl will wrap `peko-engine` subagent dispatch, inheriting four
-//! existing rails so `peko-channel` doesn't need its own loop control:
-//! - `max_depth = 1` (F33 / PR #237).
-//! - per-poll cost ceiling + typed retry (F40 / PR #243).
-//! - `MeteredProvider` attribution (F19 / PR #174).
-//! - per-spawn `model` / `model_list` (PR #346).
+//! Earlier drafts had a `ChannelResponder` impl wrapping subagent
+//! dispatch plus a `caps::intersect_member_caps` helper to gate it.
+//! That wiring was speculative — agents read actively (PR-4a
+//! `ChannelRead` tool) so there is no daemon-side responder to gate.
+//! Capability is a principal-level concept; channels are just a shared
+//! append-only log. See `peko-channel-pr5-shipped.md` (PR-5a).
 //!
 //! See `multi-model-subagents-phase2-shipped.md` for the recent work
 //! this composes against.
@@ -67,7 +64,6 @@
 
 #![allow(clippy::module_inception)]
 
-pub mod caps;
 pub mod cli_handlers;
 pub mod config;
 pub mod cost;
@@ -80,7 +76,6 @@ pub mod subscription;
 // Flat re-exports — channel callers should not need to know which
 // submodule a type lives in. Mirrors `peko_cron::lib.rs:59-65` and
 // `peko-rs/cron/src/lib.rs:53-67`.
-pub use caps::intersect_member_caps;
 pub use cli_handlers::ChannelCliRouter;
 pub use config::ConfigOnDisk;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};

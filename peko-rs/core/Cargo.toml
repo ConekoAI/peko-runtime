@@ -182,11 +182,6 @@ peko-cron = { path = "../cron" }
 # peko-extension-api / peko-providers / peko-fs-persistence / etc.
 # (see peko-rs/session/Cargo.toml).
 peko-session = { path = "../session" }
-# PR-2b: real `ChannelResponder` impl in `peko-core` (commit 2b)
-# consumes the `peko-channel` crate's `ChannelResponder`,
-# `RespondCtx`, `ChannelPort`, `ConfigOnDisk`, `ChannelError`
-# surfaces. `peko-channel` is a leaf crate (no engine/core/cron/
-# extension-host deps) so this edge is safe.
 peko-channel = { path = "../channel" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the

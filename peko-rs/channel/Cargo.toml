@@ -3,7 +3,7 @@ name = "peko-channel"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
-description = "Multi-principal chat primitive (channels) — `ChannelPort` + `PlanChannelAdapter` storage + `ChannelResponder` trait + `ChannelSubscriber` poll loop. PR-1 ships the trait surface and a 2-principal smoke test backed by `peko-plan` storage; PR-2 wires real subagent dispatch + pekohub SSE; PR-3 adds fan-out cap and shared-tier opt-in."
+description = "Multi-principal chat primitive (channels) — `ChannelPort` + `PlanChannelAdapter` storage + `ChannelSubscriber` poll loop. PR-1 ships the trait surface and a 2-principal smoke test backed by `peko-plan` storage; PR-3 adds fan-out cap and shared-tier opt-in; PR-4a adds the `ChannelRead` tool so principals poll actively rather than relying on a daemon-side responder."
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
@@ -11,11 +11,12 @@ repository = "https://github.com/ConekoAI/peko-runtime"
 # extraction). What lives here:
 # - The `ChannelPort` consumer-defined trait (port the CLI/daemon use
 #   via Arc<dyn>).
-# - The `ChannelResponder` consumer-defined trait (port `peko-engine`
-#   implements for live subagent dispatch — PR-2).
+# - The `ChannelResponder` consumer-defined trait (only `Noop` impl
+#   ships today — agents read channels actively via the `ChannelRead`
+#   tool in peko-core, so there is no daemon-side responder to gate).
 # - `PlanChannelAdapter` (the concrete `ChannelPort` impl backed by
 #   `peko-plan::PlanStorage`, one Plan per channel).
-# - `ChannelSubscriber` (per-member poll loop).
+# - `ChannelSubscriber` (per-member poll loop — feeds the audit meter).
 # - `ChannelCursors` (per-channel runtime-tier "last_read_task_id" map).
 # - Wire types live in `peko-protocol::channel` (peer crate).
 #

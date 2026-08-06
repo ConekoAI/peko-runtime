@@ -178,10 +178,9 @@ mod tests {
     use std::sync::Mutex;
     use tokio::sync::Mutex as AsyncMutex;
 
-    /// In-memory `ChannelPort` for unit tests. Mirrors
-    /// `peko-rs/core/src/engine/channel_responder.rs::MockChannelPort`
-    /// (pub(crate) there) but local to this tool's tests so the tool
-    /// can be tested without leaking the engine's mock.
+    /// In-memory `ChannelPort` for unit tests. Local to this tool's
+    /// tests so the tool can be tested without depending on the
+    /// engine's mock fixture (PR-5a deleted `engine::channel_responder`).
     #[derive(Default)]
     struct TestChannelPort {
         events: Mutex<HashMap<ChannelId, Vec<ChannelEvent>>>,

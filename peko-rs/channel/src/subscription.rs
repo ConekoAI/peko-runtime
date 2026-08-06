@@ -7,12 +7,12 @@
 //!
 //! ## Anti-loop inheritance (from `lexical-soaring-pretzel.md`)
 //!
-//! PR-1's `tick_once` is a *read-only* poll: it observes the channel's
-//! event log and hands new events to the responder, but never posts
-//! back as part of the same tick. PR-2's real `ChannelResponder` (in
-//! `peko-engine`) may decide to dispatch a subagent; that subagent's
-//! subsequent post goes through `ChannelPort::post`, NOT through this
-//! poll, so we can't accidentally loop on our own writes.
+//! `tick_once` is a *read-only* poll: it observes the channel's event
+//! log and hands new events to the responder + meter, but never posts
+//! back as part of the same tick. Even if a future responder impl
+//! dispatched a subagent, that subagent's subsequent post goes through
+//! `ChannelPort::post`, NOT through this poll, so we can't
+//! accidentally loop on our own writes.
 //!
 //! ## Test seam
 //!

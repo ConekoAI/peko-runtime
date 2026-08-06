@@ -4,14 +4,13 @@
 //! the dep direction stays acyclic:
 //!
 //! - `peko-channel` declares the contract;
-//! - `peko-engine` (PR-2) provides a real impl that wraps subagent
-//!   dispatch (`Arc<dyn AgentView>` + `Arc<dyn AsyncInboxLike>` per
-//!   workspace migration phases 9b.N.5b.1 / 9b.N.5b.2);
 //! - `peko-channel::ChannelSubscriber` consumes it via
 //!   `Arc<dyn ChannelResponder>`.
 //!
-//! PR-1 ships only the `Noop` impl. Real impls land in PR-2 alongside
-//! the pekohub SSE consumer (per `lexical-soaring-pretzel.md`).
+//! Only the `Noop` impl ships. Agents read channels actively via the
+//! `ChannelRead` tool (peko-core / PR-4a), so there is no daemon-side
+//! responder to dispatch through. Future per-channel behaviour can
+//! land as additional impls without touching the trait.
 
 use async_trait::async_trait;
 use peko_plan::PrincipalId;
@@ -61,7 +60,8 @@ pub struct RespondCtx {
 // Noop
 // ---------------------------------------------------------------------------
 
-/// `ChannelResponder` impl that does nothing. PR-1 default; tests wrap
+/// `ChannelResponder` impl that does nothing. Production default
+/// (audit observation runs alongside it via `ChannelMeter`); tests wrap
 /// it in a counter to verify per-event fan-out.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopChannelResponder;

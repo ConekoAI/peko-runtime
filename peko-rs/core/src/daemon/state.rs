@@ -2222,11 +2222,14 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
     }
 
     fn channel_meter(&self) -> Arc<dyn peko_channel::ChannelMeter> {
-        // PR-3c: production daemon wires the audit ring buffer so
-        // `peko audit list --type channel.` surfaces channel
+        // PR-3c / PR-5a: production daemon wires the audit ring
+        // buffer so `peko audit list --type channel.` surfaces channel
         // observation history. The meter is created once at AppState
         // construction; the subscription loops clone the Arc into
-        // each per-(principal, channel) ChannelSubscriber.
+        // each per-(principal, channel) ChannelSubscriber. The
+        // companion `ChannelResponder` passed to those subscribers is
+        // permanently `NoopChannelResponder` — agents read actively via
+        // the `ChannelRead` tool (PR-4a).
         Arc::new(peko_channel::AuditChannelMeter::new(
             self.observability.clone(),
         ))

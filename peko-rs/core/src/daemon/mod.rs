@@ -338,15 +338,18 @@ impl Daemon {
             }
         }
 
-        // PR-3c: spawn a per-(principal, channel) `ChannelSubscriber`
-        // for every loaded principal's channels. The audit meter is
-        // the only thing production exercises today — real responder
-        // wiring (PR-4) lands separately. Spawn-and-forget so a
-        // subscriber crash doesn't block daemon boot; the
-        // `ChannelSubscriber::spawn` loop handles transient errors
-        // internally (logs and continues; only `NotFound`/`NotMember`
-        // end the loop, which is the correct signal for "channel
-        // deleted out from under us").
+        // PR-3c / PR-5a: spawn a per-(principal, channel)
+        // `ChannelSubscriber` for every loaded principal's channels.
+        // The audit meter is the only thing the subscriber exercises
+        // in production — agents read channels actively via the
+        // `ChannelRead` tool (PR-4a), so there is no daemon-side
+        // responder to dispatch through. The `NoopChannelResponder`
+        // passed in is permanent (PR-5a deleted `EngineChannelResponder`).
+        // Spawn-and-forget so a subscriber crash doesn't block daemon
+        // boot; the `ChannelSubscriber::spawn` loop handles transient
+        // errors internally (logs and continues; only `NotFound` /
+        // `NotMember` end the loop, which is the correct signal for
+        // "channel deleted out from under us").
         let channel_handles =
             spawn_channel_subscribers(&app_state).await;
         info!(
@@ -670,19 +673,20 @@ mod tests {
 mod e2e_tests;
 
 // ---------------------------------------------------------------------------
-// PR-3c: channel subscriber lifespan
+// PR-3c / PR-5a: channel subscriber lifespan
 // ---------------------------------------------------------------------------
 
 /// Spawn one [`ChannelSubscriber`] per (loaded principal × channel the
 /// principal is a member of). Each subscriber runs the meter against
 /// the audit ring buffer via the `AuditChannelMeter` returned by
-/// `AppState::channel_meter`. The responder is the no-op impl today —
-/// real `EngineChannelResponder` wiring lands in PR-4 alongside the
-/// F39 `QuotaMeter` plumbing that already lives on
-/// `SubagentExecutor`. The lifespan task itself is small, lives once
-/// per daemon boot, and never blocks startup: a failure inside one
-/// subscriber's tick logs and continues; only `NotFound` / `NotMember`
-/// (channel vanished) ends the loop, which is the correct signal.
+/// `AppState::channel_meter`. The responder is the no-op impl
+/// permanently — agents read channels actively via the `ChannelRead`
+/// tool (PR-4a) rather than via a daemon-side responder. PR-5a deleted
+/// `EngineChannelResponder`. The lifespan task itself is small, lives
+/// once per daemon boot, and never blocks startup: a failure inside
+/// one subscriber's tick logs and continues; only `NotFound` /
+/// `NotMember` (channel vanished) ends the loop, which is the correct
+/// signal.
 ///
 /// `app_state` must already be constructed (drift check ran, principals
 /// are loaded). The function returns the `JoinHandle`s so a future
