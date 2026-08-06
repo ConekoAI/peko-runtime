@@ -526,6 +526,85 @@ impl ChannelStore {
             rm.runtime_id == runtime_id && rm.principal_id == principal_id
         }))
     }
+
+    /// Add a [`RemoteMember`] row to this channel's `members.json`,
+    /// idempotent on the `(runtime_id, principal_id)` pair. Used by
+    /// the cross-runtime `invite` path (`TunnelChannelPort`) to
+    /// record the recipient before fan-out so the receiver's local
+    /// mirror has a matching row.
+    pub async fn add_remote_member(
+        &self,
+        channel: &ChannelId,
+        runtime_id: &str,
+        principal_id: &str,
+    ) -> Result<()> {
+        let tier = self.resolve_tier(channel).await?;
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let mut members = MembersJson::load(&chan_dir).await?;
+        let row = RemoteMember {
+            runtime_id: runtime_id.to_string(),
+            principal_id: principal_id.to_string(),
+        };
+        if !members.remote_members.contains(&row) {
+            members.remote_members.push(row);
+            members.save(&chan_dir).await?;
+        }
+        Ok(())
+    }
+
+    /// Like [`ChannelPort::post`] but returns the [`ChannelEvent`]
+    /// that was appended so the caller can fan it out to remote
+    /// subscribers without re-deriving its fields (which would risk
+    /// timestamp / serialization divergence between the local
+    /// on-disk copy and the cross-runtime envelope).
+    ///
+    /// Introduced by peko-channel cross-runtime PR-B commit 3 so the
+    /// `TunnelChannelPort` outbound `post` can sign the **same**
+    /// bytes it just wrote to `events.jsonl`. The trait method
+    /// `ChannelPort::post` delegates here; non-trait call sites
+    /// that need the event for outbound fan-out use this directly.
+    ///
+    /// Membership + parent validation are the same as the trait
+    /// `post`.
+    pub async fn post_with_event(
+        &self,
+        channel: &ChannelId,
+        sender: &PrincipalId,
+        msg: PostMsg,
+    ) -> Result<(TaskId, ChannelEvent)> {
+        let tier = self.resolve_tier(channel).await?;
+        if !self.check_membership(tier, channel, sender).await? {
+            return Err(ChannelError::NotMember);
+        }
+
+        // Validate parent (if any) references an existing line in the
+        // log. The log is append-only, so existing line numbers are
+        // stable until truncation (which we don't do).
+        if let Some(parent_line) = msg.parent.as_ref() {
+            let parent_idx: u64 = parent_line.parse().map_err(|_| {
+                ChannelError::Adapter(format!(
+                    "invalid parent TaskId {parent_line}: not a numeric line offset"
+                ))
+            })?;
+            let events =
+                self.read_events(tier, channel, &Checkpoint::default()).await?;
+            if events.is_empty() || parent_idx >= events.len() as u64 {
+                return Err(ChannelError::Adapter(format!(
+                    "parent line {parent_line} not found in channel log"
+                )));
+            }
+        }
+
+        let ev = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: sender.to_string(),
+            parent: msg.parent.clone(),
+            text: msg.text,
+            at: Utc::now().to_rfc3339(),
+        };
+        let line = self.append_event(tier, channel, &ev).await?;
+        Ok((line.to_string(), ev))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -611,38 +690,8 @@ impl ChannelPort for ChannelStore {
         sender: &PrincipalId,
         msg: PostMsg,
     ) -> Result<TaskId> {
-        let tier = self.resolve_tier(channel).await?;
-        if !self.check_membership(tier, channel, sender).await? {
-            return Err(ChannelError::NotMember);
-        }
-
-        // Validate parent (if any) references an existing line in the
-        // log. The log is append-only, so existing line numbers are
-        // stable until truncation (which we don't do).
-        if let Some(parent_line) = msg.parent.as_ref() {
-            let parent_idx: u64 = parent_line.parse().map_err(|_| {
-                ChannelError::Adapter(format!(
-                    "invalid parent TaskId {parent_line}: not a numeric line offset"
-                ))
-            })?;
-            let events =
-                self.read_events(tier, channel, &Checkpoint::default()).await?;
-            if events.is_empty() || parent_idx >= events.len() as u64 {
-                return Err(ChannelError::Adapter(format!(
-                    "parent line {parent_line} not found in channel log"
-                )));
-            }
-        }
-
-        let ev = ChannelEvent::Posted {
-            channel: channel.clone(),
-            author: sender.to_string(),
-            parent: msg.parent.clone(),
-            text: msg.text,
-            at: Utc::now().to_rfc3339(),
-        };
-        let line = self.append_event(tier, channel, &ev).await?;
-        Ok(line.to_string())
+        let (_line, _ev) = self.post_with_event(channel, sender, msg).await?;
+        Ok(_line)
     }
 
     async fn peek(

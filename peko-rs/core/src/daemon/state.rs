@@ -725,7 +725,12 @@ impl AppState {
                     shared_dir: Some(channel_shared_root.clone()),
                 },
             ));
-            let tcp = crate::tunnel::TunnelChannelPort::new(store, None);
+            // peko-channel cross-runtime PR-B commit 3: the cross-runtime
+            // ctx slot starts as `None`. `install_cross_runtime_channel_ctx`
+            // (called once the tunnel has been provisioned) fills it in
+            // via `TunnelChannelPort::set_ctx` so `post` / `invite` can
+            // fan out to remote members.
+            let tcp = crate::tunnel::TunnelChannelPort::new(store);
             tunnel_channel_port = Some(Arc::new(tcp.clone()));
             Arc::new(tcp) as Arc<dyn peko_channel::ChannelPort>
         };
@@ -1485,6 +1490,17 @@ impl AppState {
                  The local a2a path is unaffected. error: {e:#}"
             );
         }
+        // peko-channel cross-runtime PR-B commit 3: install the
+        // channel ctx (same signing key + directory as the a2a
+        // install). Local-only channels still work without this;
+        // this just unlocks outbound fan-out to remote members.
+        if let Err(e) = self.install_cross_runtime_channel_ctx(&cred, &vault).await {
+            warn!(
+                "Could not install cross-runtime channel ctx (peko-channel PR-B); \
+                 cross-runtime channel fan-out will be unavailable until this is fixed. \
+                 The local channel path is unaffected. error: {e:#}"
+            );
+        }
         {
             let mut td = self.tunnel_dispatcher.write().await;
             *td = Some(dispatcher.clone());
@@ -1633,43 +1649,16 @@ impl AppState {
         vault: &crate::common::vault::Vault,
     ) -> anyhow::Result<()> {
         use crate::tunnel::CrossRuntimeA2aCtx;
-        use base64::engine::general_purpose::STANDARD as BASE64;
-        use base64::Engine as _;
-        use ed25519_dalek::SigningKey;
         use std::time::Duration;
 
-        // 1. Build the directory HTTP client from the credential
-        //    URL. `from_credential` flips wss:// → https:// and
-        //    strips the /v1/tunnel path. Wrap it with the local-first
-        //    directory so same-runtime principals resolve without the
-        //    hub.
-        let hub_directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
-            .map_err(|e| anyhow::anyhow!("HubAgentDirectoryClient::from_credential: {e}"))?;
-        let directory: Arc<dyn crate::tunnel::AgentDirectory> =
-            Arc::new(crate::tunnel::LocalFirstAgentDirectory::new(
-                cred.runtime_id.clone(),
-                self.principal_manager().clone(),
-                Arc::new(hub_directory),
-            ));
+        // 1. Shared directory + signing key + runtime_id. Same
+        //    components the channel ctx consumes; factored out so the
+        //    two install paths cannot drift on credential decoding
+        //    (`peko-channel` cross-runtime PR-B commit 3).
+        let (directory, signing_key, caller_runtime_id) =
+            self.build_cross_runtime_ctx_parts(cred, vault)?;
 
-        // 2. Build the SigningKey from the credential's stored
-        //    private key in the vault. `resolve_private_key` returns the
-        //    base64-encoded raw 32 bytes. Decode and construct.
-        let privkey_b64 = cred.resolve_private_key(vault)?;
-        let privkey_bytes = BASE64.decode(privkey_b64.trim()).map_err(|e| {
-            anyhow::anyhow!("PekoHubCredential private key is not valid base64: {e}")
-        })?;
-        if privkey_bytes.len() != 32 {
-            anyhow::bail!(
-                "PekoHubCredential private key is {} bytes; expected 32",
-                privkey_bytes.len()
-            );
-        }
-        let mut key_arr = [0u8; 32];
-        key_arr.copy_from_slice(&privkey_bytes);
-        let signing_key = Arc::new(SigningKey::from_bytes(&key_arr));
-
-        // 3. Build the ctx. The handle slot is shared with the
+        // 2. Build the ctx. The handle slot is shared with the
         //    `TunnelDispatcher` so the outbound path sees the
         //    freshest handle on every reconnect. The direct manager
         //    and known-runtimes registry enable per-peer transport
@@ -1678,7 +1667,7 @@ impl AppState {
             directory,
             pending: self.pending_a2a_responses(),
             signing_key,
-            caller_runtime_id: cred.runtime_id.clone(),
+            caller_runtime_id,
             tunnel: self.tunnel_handle_slot(),
             direct_manager: self.direct_manager.clone(),
             known_runtimes: self.known_runtimes.clone(),
@@ -1715,6 +1704,98 @@ impl AppState {
             Arc::clone(&principal.router).set_caller_runtime_id(runtime_id.clone());
         }
 
+        Ok(())
+    }
+
+    /// Build the shared parts of every cross-runtime ctx: the
+    /// directory (local-first wrap), the runtime signing key, and the
+    /// `runtime_id` echoed into outbound envelopes. Factored out of
+    /// `install_cross_runtime_a2a_ctx` and
+    /// `install_cross_runtime_channel_ctx` so the two paths cannot
+    /// drift on credential decoding or directory wrap.
+    ///
+    /// `peko-channel` cross-runtime PR-B commit 3 — the channel ctx
+    /// consumes the same components (PR-A already wires the
+    /// `TunnelChannelEvent` envelope signature against this signing
+    /// key, so it must be the same key the a2a path mints invite
+    /// tokens with).
+    fn build_cross_runtime_ctx_parts(
+        &self,
+        cred: &crate::tunnel::PekoHubCredential,
+        vault: &crate::common::vault::Vault,
+    ) -> anyhow::Result<(Arc<dyn crate::tunnel::AgentDirectory>, Arc<ed25519_dalek::SigningKey>, String)>
+    {
+        use base64::engine::general_purpose::STANDARD as BASE64;
+        use base64::Engine as _;
+        use ed25519_dalek::SigningKey;
+
+        // Directory: hub HTTP client + local-first wrap so
+        // same-runtime principals resolve without the hub.
+        let hub_directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
+            .map_err(|e| anyhow::anyhow!("HubAgentDirectoryClient::from_credential: {e}"))?;
+        let directory: Arc<dyn crate::tunnel::AgentDirectory> =
+            Arc::new(crate::tunnel::LocalFirstAgentDirectory::new(
+                cred.runtime_id.clone(),
+                self.principal_manager().clone(),
+                Arc::new(hub_directory),
+            ));
+
+        // Signing key: 32 raw bytes decoded from the credential's
+        // base64-encoded private key in the vault.
+        let privkey_b64 = cred.resolve_private_key(vault)?;
+        let privkey_bytes = BASE64.decode(privkey_b64.trim()).map_err(|e| {
+            anyhow::anyhow!("PekoHubCredential private key is not valid base64: {e}")
+        })?;
+        if privkey_bytes.len() != 32 {
+            anyhow::bail!(
+                "PekoHubCredential private key is {} bytes; expected 32",
+                privkey_bytes.len()
+            );
+        }
+        let mut key_arr = [0u8; 32];
+        key_arr.copy_from_slice(&privkey_bytes);
+        let signing_key = Arc::new(SigningKey::from_bytes(&key_arr));
+
+        Ok((directory, signing_key, cred.runtime_id.clone()))
+    }
+
+    /// Install the cross-runtime channel dispatch context on the
+    /// `TunnelChannelPort` so `post` / `invite` can fan out to remote
+    /// members. `peko-channel` cross-runtime PR-B commit 3.
+    ///
+    /// Built with the same `directory` + `signing_key` as the a2a
+    /// path so the runtime identity is consistent across both
+    /// outbound envelopes (and so the channel signature matches the
+    /// one the hub recognizes from invite-token mints).
+    ///
+    /// Like the a2a install, this is best-effort: if the credential
+    /// is missing or malformed, log a warning and skip — local-only
+    /// channel use stays available.
+    async fn install_cross_runtime_channel_ctx(
+        &self,
+        cred: &crate::tunnel::PekoHubCredential,
+        vault: &crate::common::vault::Vault,
+    ) -> anyhow::Result<()> {
+        use crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx;
+
+        let (directory, signing_key, caller_runtime_id) =
+            self.build_cross_runtime_ctx_parts(cred, vault)?;
+
+        let ctx = Arc::new(CrossRuntimeChannelCtx {
+            directory,
+            signing_key,
+            caller_runtime_id,
+            tunnel: self.tunnel_handle_slot(),
+            known_runtimes: self.known_runtimes.clone(),
+        });
+
+        // Push into the existing `TunnelChannelPort`'s ctx slot. The
+        // `Arc::clone` keeps the `TunnelChannelPort` reachable
+        // (idempotent if called twice — the slot holds the latest
+        // ctx, used by the tunnel-reconnect path so a fresh
+        // `runtime_id` propagates without rebuilding every
+        // `TunnelChannelPort`).
+        self.tunnel_channel_port.set_ctx(ctx).await;
         Ok(())
     }
 
