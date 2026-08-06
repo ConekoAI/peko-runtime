@@ -317,6 +317,36 @@ impl TunnelChannelPort {
             .add_remote_member(channel, runtime_id, principal_id)
             .await
     }
+
+    /// Bootstrap a local mirror for a cross-runtime channel the
+    /// receiver was invited to. Called by the dispatcher on inbound
+    /// `TunnelChannelInvite` envelopes (peko-channel cross-runtime
+    /// PR-3a commit 2) **after** the signature has verified — the
+    /// caller is responsible for that gate.
+    ///
+    /// Thin pass-through to
+    /// [`peko_channel::ChannelStore::join_remote`]. The wrapper does
+    /// not need a `CrossRuntimeChannelCtx` (no outbound fan-out is
+    /// triggered on a join; the synthetic `ChannelEvent::Created`
+    /// the store appends lives entirely on the receiver side and is
+    /// what PR-2b's `peko-stream` listener picks up).
+    ///
+    /// Idempotent: a second call for the same `channel` is a no-op
+    /// (delegates to the store's `meta.json`-existence check). This
+    /// is the contract that makes the dispatcher safe to retry on a
+    /// duplicate envelope.
+    #[allow(dead_code)]
+    pub(crate) async fn join_remote(
+        &self,
+        channel: &ChannelId,
+        creator: &str,
+        name: &str,
+        initial_members: &[peko_protocol::channel::InitialMember],
+    ) -> Result<()> {
+        self.local
+            .join_remote(channel, creator, name, initial_members)
+            .await
+    }
 }
 
 // ---------------------------------------------------------------------------

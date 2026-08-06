@@ -552,6 +552,121 @@ impl ChannelStore {
         Ok(())
     }
 
+    /// Bootstrap a local mirror of a cross-runtime channel the
+    /// receiver was invited to. Called by the dispatcher on inbound
+    /// `TunnelChannelInvite` envelopes (peko-channel cross-runtime
+    /// PR-3a commit 2) **after** the signature verifies — the
+    /// caller is responsible for that gate.
+    ///
+    /// Creates the channel directory under the runtime tier and
+    /// writes:
+    ///
+    /// - `meta.json` — `{ creator, name, created_at: now, tier: Runtime }`
+    /// - `members.json` — partitioned from `initial_members` (the
+    ///   creator is always local; rows with `runtime_id: None` are
+    ///   local; rows with `runtime_id: Some(id)` become
+    ///   `RemoteMember` rows)
+    /// - `events.jsonl` — pre-seeded with a synthetic
+    ///   [`ChannelEvent::Created`] so the receiver's `peko-stream`
+    ///   listener (PR-2b) fires on the desktop the same way it does
+    ///   for a local channel create.
+    ///
+    /// **Idempotent.** If `meta.json` already exists, returns `Ok(())`
+    /// without touching disk. This is the contract that makes the
+    /// dispatcher safe to retry on a duplicate envelope (the hub
+    /// could re-deliver after a partial write, and the source could
+    /// re-emit after a network blip).
+    ///
+    /// Always writes to the **runtime tier** — cross-runtime invites
+    /// are a runtime-scoped concern (peko-channel doesn't have
+    /// shared-tier cross-runtime fan-out today; PR-3d's Shared tier
+    /// is local-only).
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying filesystem / serialization error if
+    /// any of the three writes fail. The meta.json-first check
+    /// prevents partial writes: if `meta.json` write fails, no
+    /// `members.json` or `events.jsonl` is written (the synthetic
+    /// event append goes through `append_event`, which also fails
+    /// fast on missing meta).
+    pub async fn join_remote(
+        &self,
+        channel: &ChannelId,
+        creator: &str,
+        name: &str,
+        initial_members: &[peko_protocol::channel::InitialMember],
+    ) -> Result<()> {
+        let chan_dir = self.cfg.channel_dir(channel);
+        let meta_path = chan_dir.join(META_FILE);
+
+        // Idempotency check: a bootstrapped channel has a meta.json.
+        // If it exists, the previous `join_remote` (or a local
+        // `create`) already completed; do nothing.
+        if meta_path.exists() {
+            return Ok(());
+        }
+
+        fs::create_dir_all(&chan_dir).await.map_err(|e| {
+            ChannelError::Adapter(format!("mkdir {}: {e}", chan_dir.display()))
+        })?;
+
+        // Partition `initial_members` into local + remote. The creator
+        // is always local; de-dup so we don't list the same principal
+        // twice if the source runtime included them in the snapshot.
+        let mut local_members: Vec<String> = vec![creator.to_string()];
+        let mut remote_members: Vec<RemoteMember> = Vec::new();
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        seen.insert(creator);
+        for m in initial_members {
+            if !seen.insert(m.principal_did.as_str()) {
+                continue;
+            }
+            match &m.runtime_id {
+                None => local_members.push(m.principal_did.clone()),
+                Some(rid) => remote_members.push(RemoteMember {
+                    runtime_id: rid.clone(),
+                    principal_id: m.principal_did.clone(),
+                }),
+            }
+        }
+
+        let members = MembersJson {
+            members: local_members,
+            remote_members,
+        };
+        members.save(&chan_dir).await?;
+
+        // Capture `now` once so meta.json's `created_at` and the
+        // synthetic Created event's `at` agree byte-for-byte. Drift
+        // here would be cosmetic but still observable: a user
+        // comparing the two values would see a 1-nanosecond gap.
+        let now = Utc::now();
+        let now_rfc3339 = now.to_rfc3339();
+        let meta = MetaJson {
+            creator: creator.to_string(),
+            name: name.to_string(),
+            created_at: now,
+            tier: Tier::Runtime,
+        };
+        meta.save(&chan_dir).await?;
+
+        // Append the synthetic Created event. `append_event` uses the
+        // durable JSONL append + per-shard FileLock, so a second
+        // `join_remote` (after the idempotency check above returned
+        // early) would not have appended this — the listener only
+        // fires once per channel join.
+        let ev = ChannelEvent::Created {
+            channel: channel.clone(),
+            creator: creator.to_string(),
+            name: name.to_string(),
+            at: now_rfc3339,
+        };
+        self.append_event(Tier::Runtime, channel, &ev).await?;
+
+        Ok(())
+    }
+
     /// Like [`ChannelPort::post`] but returns the [`ChannelEvent`]
     /// that was appended so the caller can fan it out to remote
     /// subscribers without re-deriving its fields (which would risk
@@ -1045,5 +1160,138 @@ mod tests {
             matches!(result, Err(ChannelError::NotFound(_))),
             "unknown channel must surface NotFound; got: {result:?}"
         );
+    }
+
+    // -- join_remote (PR-3a commit 2) -----------------------------------
+
+    /// `join_remote` on an unknown channel id creates the directory,
+    /// writes `meta.json` + `members.json`, and seeds `events.jsonl`
+    /// with a synthetic `ChannelEvent::Created`. Pins the contract
+    /// the dispatcher relies on for the inbound `TunnelChannelInvite`
+    /// bootstrap path: after a successful `join_remote`, `peek` and
+    /// `list_members` work as if the channel had been `create`-d
+    /// locally.
+    #[tokio::test]
+    async fn join_remote_creates_files_for_new_channel() {
+        use peko_protocol::channel::InitialMember;
+        let cfg = tmp_cfg("join-remote-new");
+        let store = ChannelStore::new(cfg.clone());
+        let channel = ChannelId::generate();
+        let initial_members = vec![
+            // Creator is local to the source runtime.
+            InitialMember {
+                principal_did: "prin_alice".to_string(),
+                runtime_id: None,
+            },
+            // Bob lives on runtime B — must land in remote_members.
+            InitialMember {
+                principal_did: "prin_bob".to_string(),
+                runtime_id: Some("did:key:zRuntimeB".to_string()),
+            },
+        ];
+        store
+            .join_remote(&channel, "prin_alice", "team-chat", &initial_members)
+            .await
+            .expect("join_remote must succeed on a new channel");
+
+        // Filesystem layout: meta.json, members.json, events.jsonl.
+        let chan_dir = cfg.channel_dir(&channel);
+        assert!(chan_dir.join(META_FILE).exists(), "meta.json must exist");
+        assert!(chan_dir.join(MEMBERS_FILE).exists(), "members.json must exist");
+        assert!(
+            chan_dir.join(EVENTS_FILE).exists(),
+            "events.jsonl must exist"
+        );
+
+        // meta.json: creator + name + tier = Runtime.
+        let meta = MetaJson::load(&chan_dir).await.unwrap();
+        assert_eq!(meta.creator, "prin_alice");
+        assert_eq!(meta.name, "team-chat");
+        assert_eq!(meta.tier, Tier::Runtime);
+
+        // members.json: alice local (creator), bob remote on B.
+        let members = MembersJson::load(&chan_dir).await.unwrap();
+        assert_eq!(members.members, vec!["prin_alice".to_string()]);
+        assert_eq!(members.remote_members.len(), 1);
+        assert_eq!(members.remote_members[0].runtime_id, "did:key:zRuntimeB");
+        assert_eq!(members.remote_members[0].principal_id, "prin_bob");
+
+        // events.jsonl: synthetic Created at line 0 — exactly the
+        // shape PR-2b's peko-stream listener expects.
+        let events = store.peek(&channel, &Checkpoint::default()).await.unwrap();
+        assert_eq!(events.len(), 1, "synthetic Created event lands at line 0");
+        match &events[0] {
+            ChannelEvent::Created { creator, name, .. } => {
+                assert_eq!(creator, "prin_alice");
+                assert_eq!(name, "team-chat");
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+    }
+
+    /// `join_remote` on a channel that already exists is a no-op:
+    /// the `meta.json`-existence check short-circuits before any
+    /// write. This is the dispatcher-retry contract — a duplicate
+    /// envelope must not corrupt the existing mirror or append a
+    /// second `Created` event.
+    #[tokio::test]
+    async fn join_remote_is_idempotent_when_channel_exists() {
+        use peko_protocol::channel::InitialMember;
+        let cfg = tmp_cfg("join-remote-idem");
+        let store = ChannelStore::new(cfg.clone());
+        let channel = ChannelId::generate();
+        let initial_members = vec![InitialMember {
+            principal_did: "prin_alice".to_string(),
+            runtime_id: None,
+        }];
+        // First call creates the mirror.
+        store
+            .join_remote(&channel, "prin_alice", "team-chat", &initial_members)
+            .await
+            .expect("first join_remote must succeed");
+        let first_meta_mtime = std::fs::metadata(cfg.channel_dir(&channel).join(META_FILE))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let first_events_len = store
+            .peek(&channel, &Checkpoint::default())
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(first_events_len, 1, "Created at line 0 after first join");
+
+        // Sleep one millisecond so mtime can differ (some
+        // filesystems have second-level mtime resolution; the test
+        // is portable because we just need any elapsed time).
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Second call with a different name must NOT clobber the
+        // first meta.json or append a second Created event.
+        store
+            .join_remote(&channel, "prin_alice", "different-name", &initial_members)
+            .await
+            .expect("second join_remote must succeed (no-op)");
+        let second_meta_mtime = std::fs::metadata(cfg.channel_dir(&channel).join(META_FILE))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            first_meta_mtime, second_meta_mtime,
+            "meta.json must not be rewritten on idempotent join"
+        );
+        let second_events_len = store
+            .peek(&channel, &Checkpoint::default())
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(
+            second_events_len, 1,
+            "no synthetic Created event on idempotent join"
+        );
+
+        // The original name survives (the second call did not
+        // overwrite meta.json).
+        let meta = MetaJson::load(&cfg.channel_dir(&channel)).await.unwrap();
+        assert_eq!(meta.name, "team-chat", "original name must survive");
     }
 }
