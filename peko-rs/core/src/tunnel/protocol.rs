@@ -375,6 +375,67 @@ pub enum TunnelMessage {
         /// indifferent.
         payload: Vec<u8>,
     },
+
+    // --- Cross-runtime channel events (peko-channel cross-runtime PR-A) ---
+    /// Channel-event fan-out from the source runtime to the other
+    /// runtimes that host a remote member of the channel. Pure push:
+    /// no `request_id`-correlated response. PekoHub forwards to each
+    /// recipient runtime's tunnel connection verbatim, with the same
+    /// source-allowlist check used for `PrincipalToPrincipalRequest`.
+    ///
+    /// Source of truth: the **creator's** runtime owns the channel's
+    /// `events.jsonl`. Every other runtime that hosts a member of the
+    /// channel keeps a local mirror (`<runtime_dir>/channels/<chan_id>/
+    /// events.jsonl`) that is hydrated by these fan-outs.
+    ///
+    /// The `signature` is an ed25519 signature (base64url-no-pad) over
+    /// the canonical pre-image
+    /// `domain || request_id || source_runtime_id ||
+    /// source_principal_did || channel_id || event_json` (see
+    /// `tunnel_channel_signature`). The receiver derives the
+    /// verifying key from `source_runtime_id` (self-certifying
+    /// `did:key`) — same defense-in-depth layer as the DM path. The
+    /// hub's source-allowlist is the primary gate; signature
+    /// verification is the receiver-side check that catches a hub bug
+    /// or stale forwarder.
+    ///
+    /// `event` carries the full `ChannelEvent` payload (not just the
+    /// `kind` discriminant) so the receiver can write the event
+    /// verbatim into its local mirror — no second round-trip needed.
+    #[serde(rename = "tunnel_channel_event", rename_all = "camelCase")]
+    TunnelChannelEvent {
+        /// Unique-per-fanout id (UUIDv4 from the source runtime).
+        /// Not used for response correlation (channels are
+        /// push-only); exists so a hub can scope replay protection
+        /// and so audit logs can join an outbound `forwarded` row to
+        /// each inbound `received` row.
+        request_id: String,
+        /// The source runtime's `did:key` form (the `runtime_id` it
+        /// presented in `RuntimeHello`). The receiver derives the
+        /// verifying key from this DID and rejects the message if
+        /// `signature` does not verify against the pre-image built
+        /// from the rest of these fields.
+        source_runtime_id: String,
+        /// The local principal on the source runtime that authored
+        /// the underlying event. Carried for audit only — the
+        /// signature itself is over the runtime-level pre-image.
+        source_principal_did: String,
+        /// The channel id (`chan_<8 base36>`). The receiver looks up
+        /// the local mirror directory and appends `event` to
+        /// `events.jsonl` under it.
+        channel_id: String,
+        /// The full `ChannelEvent` payload — `Created`, `Posted`,
+        /// `MemberJoined`, or `MemberLeft`. Carries the timestamp
+        /// assigned by the source runtime (the receiver MUST NOT
+        /// re-stamp it on append).
+        event: peko_protocol::channel::ChannelEvent,
+        /// Ed25519 signature, base64url-encoded, over the canonical
+        /// pre-image described in the module docs. Left as `String`
+        /// (matching `PrincipalToPrincipalRequest.signature`) so the
+        /// wire form matches the existing tunnel signature fields
+        /// and the pekohub TypeScript decoder can share a parser.
+        signature: String,
+    },
 }
 
 impl TunnelMessage {
@@ -960,6 +1021,93 @@ mod tests {
                 assert_eq!(iteration, 3);
             }
             other => panic!("Expected StreamIteration, got: {other:?}"),
+        }
+    }
+
+    /// `TunnelChannelEvent` (peko-channel cross-runtime PR-A commit 2)
+    /// round-trips with a `Posted` payload. The wire tag is
+    /// `tunnel_channel_event` (snake_case); fields are camelCase.
+    /// The nested `event` is the canonical `ChannelEvent` JSON shape
+    /// (its own `tag = "kind"` discriminant) — pinning it here also
+    /// pins the contract with pekohub's forwarding layer.
+    #[test]
+    fn test_tunnel_channel_event_roundtrip() {
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: peko_protocol::channel::ChannelId("chan_abcdefgh".to_string()),
+            author: "prin_alice".to_string(),
+            parent: None,
+            text: "hello from A".to_string(),
+            at: "2026-08-06T12:00:00Z".to_string(),
+        };
+        let msg = TunnelMessage::TunnelChannelEvent {
+            request_id: "chan-evt-1".to_string(),
+            source_runtime_id: "did:key:zRuntimeA".to_string(),
+            source_principal_did: "prin_alice".to_string(),
+            channel_id: "chan_abcdefgh".to_string(),
+            event,
+            signature: "base64url-sig".to_string(),
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+
+        // Wire tag is snake_case.
+        assert!(
+            json.contains("\"tunnel_channel_event\""),
+            "tag must be snake_case `tunnel_channel_event`, got: {json}"
+        );
+        // Fields are camelCase.
+        assert!(
+            json.contains("\"requestId\""),
+            "field requestId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"sourceRuntimeId\""),
+            "field sourceRuntimeId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"sourcePrincipalDid\""),
+            "field sourcePrincipalDid must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"channelId\""),
+            "field channelId must be camelCase, got: {json}"
+        );
+        // The nested event uses its own `kind` discriminant.
+        assert!(
+            json.contains("\"kind\":\"posted\""),
+            "nested ChannelEvent must use its `kind` tag, got: {json}"
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::TunnelChannelEvent {
+                request_id,
+                source_runtime_id,
+                source_principal_did,
+                channel_id,
+                event,
+                signature,
+            } => {
+                assert_eq!(request_id, "chan-evt-1");
+                assert_eq!(source_runtime_id, "did:key:zRuntimeA");
+                assert_eq!(source_principal_did, "prin_alice");
+                assert_eq!(channel_id, "chan_abcdefgh");
+                assert_eq!(signature, "base64url-sig");
+                match event {
+                    peko_protocol::channel::ChannelEvent::Posted {
+                        channel,
+                        author,
+                        text,
+                        ..
+                    } => {
+                        assert_eq!(channel.as_str(), "chan_abcdefgh");
+                        assert_eq!(author, "prin_alice");
+                        assert_eq!(text, "hello from A");
+                    }
+                    other => panic!("Expected Posted, got: {other:?}"),
+                }
+            }
+            other => panic!("Expected TunnelChannelEvent, got: {other:?}"),
         }
     }
 }

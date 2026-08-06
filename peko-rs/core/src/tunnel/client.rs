@@ -666,7 +666,15 @@ impl TunnelClient {
             // `debug!` and drop, which is the safe default — no
             // surprise local dispatch, no silent send loop.
             | TunnelMessage::PrincipalToPrincipalRequest { .. }
-            | TunnelMessage::PrincipalToPrincipalResponse { .. } => {
+            | TunnelMessage::PrincipalToPrincipalResponse { .. }
+            // peko-channel cross-runtime PR-A: tunnel_channel_event
+            // envelopes also flow through the request-handler seam.
+            // Commit 2 lands the wire shape + signer/audit modules +
+            // dispatcher context; commit 3 wires the inbound handler
+            // (signature verify → append to local `events.jsonl`
+            // mirror). Until then the dispatcher logs at `debug!`
+            // and drops — safe default, no silent send loop.
+            | TunnelMessage::TunnelChannelEvent { .. } => {
                 if let Some(handler) = request_handler {
                     handler(msg, handle.clone()).await;
                 } else {
