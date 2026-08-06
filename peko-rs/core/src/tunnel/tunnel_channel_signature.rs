@@ -21,6 +21,7 @@
 //!   [4 bytes BE u32 = len("channel:v1")] || "channel:v1"
 //!   [4 bytes BE u32 = len(request_id)] || request_id
 //!   [4 bytes BE u32 = len(source_runtime_id)] || source_runtime_id
+//!   [4 bytes BE u32 = len(recipient_runtime_id)] || recipient_runtime_id
 //!   [4 bytes BE u32 = len(source_principal_did)] || source_principal_did
 //!   [4 bytes BE u32 = len(channel_id)] || channel_id
 //!   [4 bytes BE u32 = len(event_bytes)] || event_bytes
@@ -72,6 +73,11 @@ pub const CHANNEL_SIGNATURE_DOMAIN: &str = "channel:v1";
 pub struct ChannelSignedFields<'a> {
     pub request_id: &'a str,
     pub source_runtime_id: &'a str,
+    /// Recipient runtime the hub will route the envelope to. Signed
+    /// so a compromised hub cannot silently redirect an event to a
+    /// different runtime than the source intended. Added by
+    /// peko-channel cross-runtime PR-B commit 4.
+    pub recipient_runtime_id: &'a str,
     pub source_principal_did: &'a str,
     pub channel_id: &'a str,
     /// Pre-serialized bytes of the channel event. Caller is
@@ -91,6 +97,7 @@ pub fn canonical_pre_image(fields: ChannelSignedFields<'_>) -> Vec<u8> {
         &[
             ("request_id", fields.request_id.as_bytes()),
             ("source_runtime_id", fields.source_runtime_id.as_bytes()),
+            ("recipient_runtime_id", fields.recipient_runtime_id.as_bytes()),
             (
                 "source_principal_did",
                 fields.source_principal_did.as_bytes(),
@@ -180,6 +187,7 @@ mod tests {
         let fields = ChannelSignedFields {
             request_id: "chan-evt-1",
             source_runtime_id: "did:key:zRuntimeA",
+            recipient_runtime_id: "did:key:zRuntimeB",
             source_principal_did: "prin_alice",
             channel_id: "chan_abcdefgh",
             event_bytes,
@@ -203,6 +211,7 @@ mod tests {
             ChannelSignedFields {
                 request_id: "chan-evt-1",
                 source_runtime_id: "did:key:zRuntimeA",
+                recipient_runtime_id: "did:key:zRuntimeB",
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 event_bytes,
@@ -216,6 +225,7 @@ mod tests {
             ChannelSignedFields {
                 request_id: "chan-evt-1",
                 source_runtime_id: "did:key:zRuntimeA",
+                recipient_runtime_id: "did:key:zRuntimeB",
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 event_bytes: tampered,
@@ -247,6 +257,7 @@ mod tests {
             ChannelSignedFields {
                 request_id: "chan-evt-1",
                 source_runtime_id: "did:key:zRuntimeA",
+                recipient_runtime_id: "did:key:zRuntimeB",
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 event_bytes,
@@ -257,6 +268,7 @@ mod tests {
             ChannelSignedFields {
                 request_id: "chan-evt-1",
                 source_runtime_id: "did:key:zRuntimeA",
+                recipient_runtime_id: "did:key:zRuntimeB",
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 event_bytes,
@@ -277,6 +289,7 @@ mod tests {
             ChannelSignedFields {
                 request_id: "chan-evt-1",
                 source_runtime_id: "did:key:zRuntimeA",
+                recipient_runtime_id: "did:key:zRuntimeB",
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 event_bytes,
@@ -305,6 +318,7 @@ mod tests {
             ChannelSignedFields {
                 request_id: "chan-evt-1",
                 source_runtime_id: "did:key:zRuntimeA",
+                recipient_runtime_id: "did:key:zRuntimeB",
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 event_bytes,

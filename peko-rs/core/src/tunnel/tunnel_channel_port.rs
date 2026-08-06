@@ -253,6 +253,7 @@ impl TunnelChannelPort {
             let signed = crate::tunnel::ChannelSignedFields {
                 request_id: &request_id,
                 source_runtime_id: &ctx.caller_runtime_id,
+                recipient_runtime_id: &recipient_runtime_id,
                 source_principal_did: &source_principal_did.to_string(),
                 channel_id: channel.as_str(),
                 event_bytes: &event_bytes,
@@ -279,6 +280,7 @@ impl TunnelChannelPort {
             let envelope = crate::tunnel::TunnelMessage::TunnelChannelEvent {
                 request_id,
                 source_runtime_id: ctx.caller_runtime_id.clone(),
+                recipient_runtime_id: recipient_runtime_id.clone(),
                 source_principal_did: source_principal_did.to_string(),
                 channel_id: channel.as_str().to_string(),
                 event: ev.clone(),
@@ -734,11 +736,12 @@ mod tests {
             .recv()
             .await
             .expect("outbound TunnelChannelEvent must reach mock tunnel");
-        let (request_id, source_runtime_id, source_principal_did, channel_id, event, signature) =
+        let (request_id, source_runtime_id, recipient_runtime_id, source_principal_did, channel_id, event, signature) =
             match env {
                 crate::tunnel::TunnelMessage::TunnelChannelEvent {
                     request_id,
                     source_runtime_id,
+                    recipient_runtime_id,
                     source_principal_did,
                     channel_id,
                     event,
@@ -746,6 +749,7 @@ mod tests {
                 } => (
                     request_id,
                     source_runtime_id,
+                    recipient_runtime_id,
                     source_principal_did,
                     channel_id,
                     event,
@@ -756,6 +760,7 @@ mod tests {
 
         // Identity fields are populated from ctx.
         assert_eq!(source_runtime_id, "did:key:zRuntimeA");
+        assert_eq!(recipient_runtime_id, "did:key:zRuntimeB");
         assert_eq!(source_principal_did, "prin_alice");
         assert_eq!(channel_id, channel.as_str());
         // request_id is a fresh UUIDv4 (length 36 incl. hyphens).
@@ -773,11 +778,16 @@ mod tests {
 
         // Signature verifies against ctx.signing_key.
         let event_bytes = serde_json::to_vec(&event).unwrap();
+        // Re-derive the recipient runtime id from the outbound path
+        // so this assertion matches the bytes the source runtime
+        // actually signed (the test ctx has a single recipient).
+        let recipient_runtime_id = "did:key:zRuntimeB".to_string();
         crate::tunnel::verify_channel_event(
             &ctx.signing_key.verifying_key(),
             crate::tunnel::ChannelSignedFields {
                 request_id: &request_id,
                 source_runtime_id: &source_runtime_id,
+                recipient_runtime_id: &recipient_runtime_id,
                 source_principal_did: &source_principal_did,
                 channel_id: &channel_id,
                 event_bytes: &event_bytes,

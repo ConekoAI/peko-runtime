@@ -416,6 +416,16 @@ pub enum TunnelMessage {
         /// `signature` does not verify against the pre-image built
         /// from the rest of these fields.
         source_runtime_id: String,
+        /// The runtime the hub should forward this envelope to. The
+        /// outbound `fanout_event` loop emits one envelope per
+        /// unique recipient runtime, with each envelope addressed
+        /// to that runtime's `did:key`. Without this field the hub
+        /// has no way to route — option (a) in the cross-runtime
+        /// plan ("implicit via known-runtimes registry") would
+        /// require the hub to track channel membership, which it
+        /// deliberately doesn't. The field is added here so the
+        /// hub can stay a pure relay.
+        recipient_runtime_id: String,
         /// The local principal on the source runtime that authored
         /// the underlying event. Carried for audit only — the
         /// signature itself is over the runtime-level pre-image.
@@ -1042,6 +1052,7 @@ mod tests {
         let msg = TunnelMessage::TunnelChannelEvent {
             request_id: "chan-evt-1".to_string(),
             source_runtime_id: "did:key:zRuntimeA".to_string(),
+            recipient_runtime_id: "did:key:zRuntimeB".to_string(),
             source_principal_did: "prin_alice".to_string(),
             channel_id: "chan_abcdefgh".to_string(),
             event,
@@ -1065,6 +1076,10 @@ mod tests {
             "field sourceRuntimeId must be camelCase, got: {json}"
         );
         assert!(
+            json.contains("\"recipientRuntimeId\""),
+            "field recipientRuntimeId must be camelCase, got: {json}"
+        );
+        assert!(
             json.contains("\"sourcePrincipalDid\""),
             "field sourcePrincipalDid must be camelCase, got: {json}"
         );
@@ -1083,6 +1098,7 @@ mod tests {
             TunnelMessage::TunnelChannelEvent {
                 request_id,
                 source_runtime_id,
+                recipient_runtime_id,
                 source_principal_did,
                 channel_id,
                 event,
@@ -1090,6 +1106,7 @@ mod tests {
             } => {
                 assert_eq!(request_id, "chan-evt-1");
                 assert_eq!(source_runtime_id, "did:key:zRuntimeA");
+                assert_eq!(recipient_runtime_id, "did:key:zRuntimeB");
                 assert_eq!(source_principal_did, "prin_alice");
                 assert_eq!(channel_id, "chan_abcdefgh");
                 assert_eq!(signature, "base64url-sig");

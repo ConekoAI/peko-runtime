@@ -615,6 +615,7 @@ impl TunnelDispatcher {
             TunnelMessage::TunnelChannelEvent {
                 request_id,
                 source_runtime_id,
+                recipient_runtime_id,
                 source_principal_did,
                 channel_id,
                 event,
@@ -623,6 +624,7 @@ impl TunnelDispatcher {
                 self.handle_inbound_tunnel_channel_event(
                     request_id,
                     source_runtime_id,
+                    recipient_runtime_id,
                     source_principal_did,
                     channel_id,
                     event,
@@ -1416,6 +1418,7 @@ impl TunnelDispatcher {
         &self,
         request_id: String,
         source_runtime_id: String,
+        recipient_runtime_id: String,
         source_principal_did: String,
         channel_id: String,
         event: peko_protocol::channel::ChannelEvent,
@@ -1448,6 +1451,7 @@ impl TunnelDispatcher {
         let signed = ChannelSignedFields {
             request_id: &request_id,
             source_runtime_id: &source_runtime_id,
+            recipient_runtime_id: &recipient_runtime_id,
             source_principal_did: &source_principal_did,
             channel_id: &channel_id,
             event_bytes: &event_bytes,
@@ -2758,6 +2762,7 @@ mod tests {
         kp: &peko_identity::keys::KeyPair,
         request_id: &str,
         source_runtime_id: &str,
+        recipient_runtime_id: &str,
         source_principal_did: &str,
         channel_id: &str,
         event: &peko_protocol::channel::ChannelEvent,
@@ -2766,6 +2771,7 @@ mod tests {
         let signed = crate::tunnel::ChannelSignedFields {
             request_id,
             source_runtime_id,
+            recipient_runtime_id,
             source_principal_did,
             channel_id,
             event_bytes: &event_bytes,
@@ -2786,6 +2792,7 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_routes_valid_tunnel_channel_event_to_inbound_handler() {
         let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, _rx) = mock_tunnel_handle();
 
@@ -2802,6 +2809,7 @@ mod tests {
             &kp,
             "chan-evt-1",
             &source_runtime_id,
+            &local_runtime_id,
             "prin_alice",
             "chan_abcdefgh",
             &event,
@@ -2813,6 +2821,7 @@ mod tests {
             .handle_inbound_tunnel_channel_event(
                 "chan-evt-1".to_string(),
                 source_runtime_id,
+                local_runtime_id,
                 "prin_alice".to_string(),
                 "chan_abcdefgh".to_string(),
                 event,
@@ -2831,6 +2840,7 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_drops_tunnel_channel_event_with_invalid_signature() {
         let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, _rx) = mock_tunnel_handle();
 
@@ -2852,6 +2862,7 @@ mod tests {
             &kp_signer,
             "chan-evt-tampered",
             &claimed_source_runtime_id,
+            &local_runtime_id,
             "prin_alice",
             "chan_abcdefgh",
             &event,
@@ -2861,6 +2872,7 @@ mod tests {
             .handle_inbound_tunnel_channel_event(
                 "chan-evt-tampered".to_string(),
                 claimed_source_runtime_id,
+                local_runtime_id,
                 "prin_alice".to_string(),
                 "chan_abcdefgh".to_string(),
                 event,
@@ -2883,6 +2895,7 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_drops_tunnel_channel_event_with_invalid_runtime_did() {
         let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, _rx) = mock_tunnel_handle();
 
@@ -2898,6 +2911,7 @@ mod tests {
             .handle_inbound_tunnel_channel_event(
                 "chan-evt-bad-did".to_string(),
                 "did:peko:not-a-key".to_string(), // wrong scheme entirely
+                local_runtime_id,
                 "prin_alice".to_string(),
                 "chan_abcdefgh".to_string(),
                 event,
@@ -2926,6 +2940,7 @@ mod tests {
         use crate::ipc::handlers::channel::ChannelHost;
         use peko_channel::ChannelPort;
         let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
         let creator = peko_subject::PrincipalId("prin_alice".into());
         let channel = app_state
             .channel_port()
@@ -2951,6 +2966,7 @@ mod tests {
             &kp,
             "chan-evt-mirror",
             &source_runtime_id,
+            &local_runtime_id,
             "prin_bob@runtime-B",
             &channel_id_str,
             &event,
@@ -2960,6 +2976,7 @@ mod tests {
             .handle_inbound_tunnel_channel_event(
                 "chan-evt-mirror".to_string(),
                 source_runtime_id,
+                local_runtime_id,
                 "prin_bob@runtime-B".to_string(),
                 channel_id_str.clone(),
                 event,
@@ -3001,6 +3018,7 @@ mod tests {
     #[tokio::test]
     async fn inbound_tunnel_channel_event_unknown_channel_silently_drops() {
         let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (_handle, _rx) = mock_tunnel_handle();
 
@@ -3019,6 +3037,7 @@ mod tests {
             &kp,
             "chan-evt-unknown",
             &source_runtime_id,
+            &local_runtime_id,
             "prin_bob",
             bogus.as_str(),
             &event,
@@ -3028,6 +3047,7 @@ mod tests {
             .handle_inbound_tunnel_channel_event(
                 "chan-evt-unknown".to_string(),
                 source_runtime_id,
+                local_runtime_id,
                 "prin_bob".to_string(),
                 bogus.as_str().to_string(),
                 event,
