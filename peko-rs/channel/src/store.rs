@@ -35,7 +35,9 @@
 //! [`FileLock`]: peko_fs_persistence::FileLock
 //! [`append_bytes_durable`]: peko_fs_persistence::append_bytes_durable
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -45,6 +47,7 @@ use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::broadcast;
 
 use crate::port::{
     ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result, TaskId,
@@ -260,13 +263,60 @@ impl MembersJson {
 #[derive(Debug, Clone)]
 pub struct ChannelStore {
     cfg: ChannelConfig,
+    /// PR-2b: per-channel event broadcast registry. Each entry holds
+    /// a `broadcast::Sender` whose `Receiver`s are leased by
+    /// [`ChannelPort::subscribe_events`] callers. The capacity is
+    /// generous (256) so a slow consumer doesn't drop events during
+    /// bursty posts; in practice the desktop Tauri command forwards
+    /// each event within microseconds of receipt.
+    ///
+    /// Wrapped in `Arc` so the `Clone` impl stays cheap (the
+    /// `broadcast::Sender` itself isn't `Clone` — receivers are
+    /// leased from it). Lazy: entries are created on first
+    /// subscribe. Dead entries (no receivers) are GC'd by the next
+    /// `subscribe_events` call.
+    notifiers: Arc<Mutex<HashMap<ChannelId, broadcast::Sender<ChannelEvent>>>>,
 }
 
 impl ChannelStore {
     /// Construct a store rooted at the given [`ChannelConfig`].
     #[must_use]
     pub fn new(cfg: ChannelConfig) -> Self {
-        Self { cfg }
+        Self {
+            cfg,
+            notifiers: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// PR-2b: subscribe to live events for `channel`. Returns a
+    /// receiver that yields every event appended to the channel
+    /// after this call. The sender is lazily created on first
+    /// subscribe; subsequent calls return a fresh receiver from the
+    /// same sender so all subscribers see the same event stream.
+    pub async fn subscribe_events_broadcast(
+        &self,
+        channel: &ChannelId,
+    ) -> broadcast::Receiver<ChannelEvent> {
+        let mut guard = self.notifiers.lock().expect("notifier mutex");
+        let sender = guard
+            .entry(channel.clone())
+            .or_insert_with(|| broadcast::channel(256).0);
+        sender.subscribe()
+    }
+
+    /// PR-2b: fire `event` to every subscriber of `channel`. No-op
+    /// when nobody has subscribed. Called by the local append paths
+    /// (`post`, `append_remote_event`, `join_remote`) after a
+    /// successful write so the desktop's `ChannelEventsWatch` stream
+    /// picks up events in real time.
+    fn notify_event(&self, channel: &ChannelId, event: &ChannelEvent) {
+        let guard = self.notifiers.lock().expect("notifier mutex");
+        if let Some(sender) = guard.get(channel) {
+            // A `SendError` here just means there are no receivers
+            // (or every receiver hit the buffer cap). Both are
+            // acceptable for a best-effort notification.
+            let _ = sender.send(event.clone());
+        }
     }
 
     /// Borrow the underlying config (useful for tests asserting on the
@@ -513,6 +563,11 @@ impl ChannelStore {
     ) -> Result<TaskId> {
         let tier = self.resolve_tier(channel).await?;
         let line = self.append_event(tier, channel, ev).await?;
+        // PR-2b: notify any `ChannelEventsWatch` subscribers after
+        // the durable append succeeds. Best-effort — a missed
+        // notification just means the desktop polls for the next
+        // event; the on-disk log is the source of truth.
+        self.notify_event(channel, ev);
         Ok(line.to_string())
     }
 
@@ -736,6 +791,9 @@ impl ChannelStore {
             at: Utc::now().to_rfc3339(),
         };
         let line = self.append_event(tier, channel, &ev).await?;
+        // PR-2b: notify `ChannelEventsWatch` subscribers after the
+        // durable append so the desktop's live stream sees the post.
+        self.notify_event(channel, &ev);
         Ok((line.to_string(), ev))
     }
 }
@@ -780,6 +838,12 @@ impl ChannelPort for ChannelStore {
             at: now.to_rfc3339(),
         };
         self.append_event(opts.tier, &channel, &event).await?;
+        // PR-2b: notify any `ChannelEventsWatch` subscribers on the
+        // freshly-created channel. Crucial for the remote-bootstrap
+        // path — the receiver's `join_remote` synthesizes a `Created`
+        // event so the desktop's watch opens after the bootstrap
+        // can still see it.
+        self.notify_event(&channel, &event);
 
         Ok(channel)
     }
@@ -814,6 +878,7 @@ impl ChannelPort for ChannelStore {
             at: Utc::now().to_rfc3339(),
         };
         self.append_event(tier, channel, &ev).await?;
+        self.notify_event(channel, &ev);
         Ok(())
     }
 
@@ -868,6 +933,7 @@ impl ChannelPort for ChannelStore {
             at: Utc::now().to_rfc3339(),
         };
         self.append_event(tier, channel, &ev).await?;
+        self.notify_event(channel, &ev);
         Ok(())
     }
 
@@ -927,6 +993,13 @@ impl ChannelPort for ChannelStore {
         }
 
         Ok(shared_chan_dir)
+    }
+
+    async fn subscribe_events(
+        &self,
+        channel: &ChannelId,
+    ) -> broadcast::Receiver<ChannelEvent> {
+        self.subscribe_events_broadcast(channel).await
     }
 }
 

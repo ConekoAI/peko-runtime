@@ -150,6 +150,29 @@ pub trait ChannelPort: Send + Sync + 'static {
         &self,
         channel: &ChannelId,
     ) -> Result<std::path::PathBuf>;
+
+    /// PR-2b: subscribe to live events for `channel`. The returned
+    /// receiver yields every event appended to the channel after this
+    /// call (events appended before subscription are NOT replayed —
+    /// use [`Self::peek`] for the from-cursor history). The default
+    /// impl returns a receiver that never fires, so adapters without
+    /// a broadcast registry (in-memory tests, `NoopChannelPort`)
+    /// don't need to override.
+    async fn subscribe_events(
+        &self,
+        channel: &ChannelId,
+    ) -> tokio::sync::broadcast::Receiver<ChannelEvent> {
+        // Drop the sender so the receiver returns `RecvError::Closed`
+        // immediately on first await. The test impls that use the
+        // default avoid needing a broadcast registry. Note we still
+        // need a `let _ = channel;` to avoid an unused-arg warning
+        // on the default-impl signature.
+        let _ = channel;
+        let (tx, _rx) = tokio::sync::broadcast::channel::<ChannelEvent>(1);
+        drop(tx);
+        let (_tx, rx) = tokio::sync::broadcast::channel::<ChannelEvent>(1);
+        rx
+    }
 }
 
 // ---------------------------------------------------------------------------

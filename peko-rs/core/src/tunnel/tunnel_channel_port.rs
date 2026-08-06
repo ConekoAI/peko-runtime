@@ -712,6 +712,13 @@ impl ChannelPort for TunnelChannelPort {
     ) -> Result<std::path::PathBuf> {
         self.local.pin_to_shared(channel).await
     }
+
+    async fn subscribe_events(
+        &self,
+        channel: &ChannelId,
+    ) -> tokio::sync::broadcast::Receiver<ChannelEvent> {
+        self.local.subscribe_events_broadcast(channel).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -850,6 +857,64 @@ mod tests {
             matches!(result, Err(ChannelError::NotFound(_))),
             "unknown channel must surface NotFound; got: {result:?}"
         );
+    }
+
+    /// PR-2b end-to-end: an inbound remote event delivered via
+    /// `TunnelChannelPort::append_remote_event` (the dispatcher's
+    /// entry point after signature verification) fires the
+    /// `ChannelStore::notify_event` broadcast, so a peer that has
+    /// called `ChannelPort::subscribe_events` receives the event in
+    /// real time. This is the contract that powers the desktop's
+    /// `ChannelEventsWatch` stream — without it, cross-runtime posts
+    /// would only land on a polling refresh.
+    #[tokio::test]
+    async fn append_remote_event_notifies_subscribers() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        }));
+        let port = TunnelChannelPort::new(store);
+
+        // Create the channel locally so `append_remote_event` has a
+        // mirror directory to write into.
+        let channel = port
+            .create(&PrincipalId("prin_alice".into()), CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        // Subscribe BEFORE the inbound event arrives.
+        let mut rx = port.subscribe_events(&channel).await;
+
+        // Simulate the dispatcher handing off a signed inbound
+        // `TunnelChannelEvent` to the local store.
+        let remote_event = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob@runtime-B".into(),
+            parent: None,
+            text: "live from B".into(),
+            at: "2026-08-06T00:00:00Z".into(),
+        };
+        port.append_remote_event(&channel, &remote_event)
+            .await
+            .expect("append_remote_event must succeed");
+
+        // The subscriber must observe the event within a tight
+        // timeout — no polling, no lag.
+        let observed = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rx.recv(),
+        )
+        .await
+        .expect("subscriber must receive the event within 1s")
+        .expect("broadcast must not be closed");
+        match observed {
+            ChannelEvent::Posted { text, author, .. } => {
+                assert_eq!(text, "live from B");
+                assert_eq!(author, "prin_bob@runtime-B");
+            }
+            other => panic!("expected Posted, got {other:?}"),
+        }
     }
 
     /// Pin: a `TunnelChannelPort` without a `ctx` is still safe to
