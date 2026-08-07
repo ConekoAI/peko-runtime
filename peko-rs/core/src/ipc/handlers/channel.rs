@@ -355,6 +355,7 @@ impl RequestHandler for ChannelHandler {
                             request_id,
                             channel: resp.channel,
                             members: resp.members,
+                            member_provenance: resp.member_provenance,
                         };
                         send_response(sink, response).await?;
                     }

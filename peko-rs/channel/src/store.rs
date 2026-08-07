@@ -584,6 +584,45 @@ impl ChannelStore {
         Ok(members.remote_members)
     }
 
+    /// P1.2 attribution: read the authoritative `members.json` for
+    /// `channel` and return each member paired with their runtime
+    /// provenance. Local rows (`members: Vec<String>`) get
+    /// `runtime_id = None`; remote rows (`remote_members:
+    /// Vec<RemoteMember>`) get `runtime_id = Some(...)`.
+    ///
+    /// Returns an empty Vec if the channel has no `members.json` yet
+    /// (e.g. just-bootstrapped remote mirror) — see
+    /// `members_with_attribution_returns_empty_for_unbootstrapped_channel`
+    /// for the test that pins this fallback.
+    pub async fn members_with_attribution(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<Vec<peko_protocol::channel::MemberProvenance>> {
+        use peko_protocol::channel::MemberProvenance;
+        let tier = self.resolve_tier(channel).await?;
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let members = match MembersJson::load(&chan_dir).await {
+            Ok(m) => m,
+            // Channel has no members.json yet (e.g. pre-PR-3a channel
+            // or freshly bootstrapped remote mirror). Treat as empty
+            // membership rather than an error.
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut out: Vec<MemberProvenance> = members
+            .members
+            .into_iter()
+            .map(|p| MemberProvenance {
+                principal: p,
+                runtime_id: None,
+            })
+            .collect();
+        out.extend(members.remote_members.into_iter().map(|rm| MemberProvenance {
+            principal: rm.principal_id,
+            runtime_id: Some(rm.runtime_id),
+        }));
+        Ok(out)
+    }
+
     /// Predicate: is the `(runtime_id, principal_id)` pair registered
     /// as a remote member of `channel`? Reads `members.json` once.
     pub async fn is_remote_member(
@@ -1135,6 +1174,78 @@ mod tests {
             .is_remote_member(&channel, "did:key:zRuntimeB", "prin_carol")
             .await
             .unwrap());
+    }
+
+    // -- members_with_attribution ---------------------------------------
+
+    /// P1.2 attribution: `members_with_attribution` returns local rows
+    /// with `runtime_id = None` and remote rows with their
+    /// `runtime_id`. Local-first ordering matches what `MemberList.tsx`
+    /// expects so it can section the list visually without resorting.
+    #[tokio::test]
+    async fn members_with_attribution_partitions_local_and_remote() {
+        use peko_protocol::channel::MemberProvenance;
+
+        let cfg = tmp_cfg("attribution");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        // Inject a remote member row alongside the local creator.
+        let chan_dir = cfg.channel_dir(&channel);
+        let mut members = MembersJson::load(&chan_dir).await.unwrap();
+        members
+            .remote_members
+            .push(fake_remote("did:key:zRuntimeB", "prin_bob"));
+        members.save(&chan_dir).await.unwrap();
+
+        let attributed = store.members_with_attribution(&channel).await.unwrap();
+
+        // Local creator comes first with no runtime_id.
+        assert_eq!(
+            attributed[0],
+            MemberProvenance {
+                principal: "prin_alice".into(),
+                runtime_id: None,
+            }
+        );
+        // Remote member follows with the persisted runtime_id.
+        assert_eq!(
+            attributed[1],
+            MemberProvenance {
+                principal: "prin_bob".into(),
+                runtime_id: Some("did:key:zRuntimeB".into()),
+            }
+        );
+    }
+
+    /// `members_with_attribution` returns an empty Vec for a channel
+    /// with no `members.json` (e.g. just-bootstrapped remote mirror).
+    /// Matches the `Err(_) -> Ok(vec![])` fallback so callers don't
+    /// have to special-case the bootstrap window.
+    #[tokio::test]
+    async fn members_with_attribution_returns_empty_for_unbootstrapped_channel() {
+        let cfg = tmp_cfg("attribution-empty");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        // Sanity: members.json exists post-create, so explicitly nuke
+        // it to simulate a pre-bootstrap state.
+        let chan_dir = store.config().channel_dir(&channel);
+        let members_path = chan_dir.join("members.json");
+        if members_path.exists() {
+            std::fs::remove_file(&members_path).unwrap();
+        }
+
+        let attributed = store.members_with_attribution(&channel).await.unwrap();
+        assert!(attributed.is_empty(), "got {attributed:?}");
     }
 
     // -- append_remote_event --------------------------------------------

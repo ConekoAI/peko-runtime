@@ -14,7 +14,7 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
-use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
+use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership, MemberProvenance};
 use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -134,9 +134,35 @@ pub trait ChannelPort: Send + Sync + 'static {
             name,
             creator,
             members: joined.into_iter().collect(),
+            member_provenance: Vec::new(),
             created_at,
             last_membership_change: last_change,
         })
+    }
+
+    /// P1.2 attribution: return each member of `channel` paired with
+    /// their runtime provenance (local vs remote). The default impl
+    /// walks the event log and returns an empty `runtime_id` for
+    /// every row, so single-runtime adapters don't need to override.
+    ///
+    /// Adapters backed by an authoritative `members.json`
+    /// (e.g. [`crate::ChannelStore`]) should override this to surface
+    /// remote members with their `runtime_id`.
+    async fn members_with_attribution(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<Vec<MemberProvenance>> {
+        let membership = self.membership(channel).await?;
+        // The default event-log walk can't distinguish local vs
+        // remote — every row is treated as local.
+        Ok(membership
+            .members
+            .into_iter()
+            .map(|p| MemberProvenance {
+                principal: p,
+                runtime_id: None,
+            })
+            .collect())
     }
 
     /// Copy an existing Runtime-tier channel into the adapter's

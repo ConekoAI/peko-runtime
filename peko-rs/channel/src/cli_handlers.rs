@@ -152,9 +152,15 @@ impl ChannelCliRouter {
         channel: &ChannelId,
     ) -> Result<MembersResponse> {
         let members = self.port.list_members(channel).await?;
+        // P1.2 attribution: pull per-member runtime provenance from
+        // `members.json`. The IPC consumer (desktop) reads the flat
+        // `members` for back-compat + `member_provenance` for the
+        // local/remote distinction in `MemberList`.
+        let member_provenance = self.port.members_with_attribution(channel).await?;
         Ok(MembersResponse {
             channel: channel.clone(),
             members,
+            member_provenance,
         })
     }
 
@@ -239,6 +245,12 @@ pub struct LeaveResponse {
 pub struct MembersResponse {
     pub channel: ChannelId,
     pub members: Vec<PrincipalId>,
+    /// P1.2 attribution: per-member runtime provenance. Empty for
+    /// channels with no remote members; legacy pre-PR-3b
+    /// implementations may omit the field entirely
+    /// (`#[serde(default)]`).
+    #[serde(default)]
+    pub member_provenance: Vec<peko_protocol::channel::MemberProvenance>,
 }
 
 /// `--json` output for `peko channel ls`.

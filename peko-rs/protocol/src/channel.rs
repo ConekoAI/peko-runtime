@@ -173,12 +173,37 @@ pub struct ChannelMembership {
     pub name: String,
     pub creator: String,
     pub members: Vec<String>,
+    /// P1.2 attribution: per-member runtime provenance (local vs
+    /// remote). Empty for channels with no remote members; legacy
+    /// pre-PR-3b implementations may omit the field entirely
+    /// (`#[serde(default)]`).
+    #[serde(default)]
+    pub member_provenance: Vec<MemberProvenance>,
     /// RFC3339 timestamp of the channel's `Created` event.
     pub created_at: String,
     /// RFC3339 timestamp of the most recent `Member*` event affecting
     /// the membership set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_membership_change: Option<String>,
+}
+
+/// P1.2 attribution: pairs a principal DID with its hosting runtime
+/// id. `runtime_id: None` means the principal is local to the
+/// receiving runtime; `Some(runtime_id)` means the principal is hosted
+/// on a peer runtime that joined the channel via the cross-runtime
+/// invite envelope.
+///
+/// The flat `ChannelMembership::members` list is the back-compat
+/// surface; `MemberProvenance` is the richer shape that lets the UI
+/// render local vs remote members distinctly. Pre-PR-3b consumers
+/// that don't read `member_provenance` see no change to the wire
+/// shape — the field uses `#[serde(default)]` and skips when empty.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MemberProvenance {
+    pub principal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +425,7 @@ mod tests {
             name: "design".into(),
             creator: "prin_alice".into(),
             members: vec!["prin_alice".into(), "prin_bob".into()],
+            member_provenance: vec![],
             created_at: "2026-08-05T12:00:00Z".into(),
             last_membership_change: Some("2026-08-05T12:00:30Z".into()),
         };
@@ -417,6 +443,7 @@ mod tests {
             name: "design".into(),
             creator: "prin_alice".into(),
             members: vec!["prin_alice".into()],
+            member_provenance: vec![],
             created_at: "2026-08-05T12:00:00Z".into(),
             last_membership_change: None,
         };

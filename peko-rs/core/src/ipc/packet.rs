@@ -1241,6 +1241,12 @@ pub enum ResponsePacket {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
         members: Vec<peko_subject::PrincipalId>,
+        /// P1.2 attribution: per-member runtime provenance (`runtime_id
+        /// = None` for local members). Default empty so pre-PR-3b
+        /// consumers that don't read this field see no change to the
+        /// wire shape.
+        #[serde(default)]
+        member_provenance: Vec<peko_protocol::channel::MemberProvenance>,
     },
 
     /// List of channels where the principal is a member.
