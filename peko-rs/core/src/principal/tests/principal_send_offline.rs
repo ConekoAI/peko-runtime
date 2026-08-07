@@ -120,6 +120,7 @@ async fn same_runtime_principal_send_short_circuits_offline() {
             path_resolver,
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         )
         .with_resolver(resolver),
     );

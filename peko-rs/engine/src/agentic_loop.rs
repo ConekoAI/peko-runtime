@@ -595,7 +595,13 @@ impl AgenticLoop {
         // `PromptRenderer`. We seed `messages` with a placeholder
         // system message that the renderer overwrites on iteration 1;
         // the legacy `add_system` JSONL persistence path is gone.
-        let mut messages = if let Some(h) = history {
+        // Repair loaded history before use: concurrent writers (cron,
+        // steering) can leave orphan tool_results / unpaired tool_calls
+        // / consecutive same-role runs in the JSONL, which providers
+        // reject with 400s — bricking the session (2026-08-07 field
+        // test, finding N1). Storage stays faithful; repair is
+        // consumption-side only and idempotent.
+        let mut messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
             info!("Loaded {} messages from history", h.len());
             // Check if history already has a system message at the start
             let has_system = h
@@ -682,7 +688,13 @@ impl AgenticLoop {
         );
 
         // Phase 1: seed messages the same way as the text-only path.
-        let mut messages = if let Some(h) = history {
+        // Repair loaded history before use: concurrent writers (cron,
+        // steering) can leave orphan tool_results / unpaired tool_calls
+        // / consecutive same-role runs in the JSONL, which providers
+        // reject with 400s — bricking the session (2026-08-07 field
+        // test, finding N1). Storage stays faithful; repair is
+        // consumption-side only and idempotent.
+        let mut messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
             let has_system = h
                 .first()
                 .is_some_and(|m| matches!(m.role, MessageRole::System));
@@ -794,7 +806,8 @@ impl AgenticLoop {
         // Phase 1: placeholder system message; overwritten by the
         // renderer on iteration 1. The legacy `add_system` JSONL
         // persistence path is gone.
-        let messages = if let Some(h) = history {
+        // See the repair note at the streaming intake above (finding N1).
+        let messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
             info!("Loaded {} messages from history", h.len());
             let has_system = h
                 .first()
@@ -1091,11 +1104,16 @@ impl AgenticLoop {
             // - `Completion` events from background async tasks →
             //   folded into a single synthetic user-role message via
             //   `build_async_completion_message` (existing behavior).
-            // - `Steering` messages queued by the user via IPC →
+            // - `Steering` messages queued by the user via IPC, or by
+            //   cron/tunnel turns that found this run's permit held →
             //   delivered as separate user-role turns in arrival
-            //   order. The IPC handler has already persisted them via
-            //   `session.add_user`; this loop only pushes the
-            //   in-memory copy so the LLM sees them this iteration.
+            //   order. Neither queueing branch writes the session
+            //   JSONL, so we persist the user turn here at the
+            //   iteration boundary — a safe append point — before
+            //   pushing the in-memory copy. Without this the
+            //   assistant's reply is persisted with no matching
+            //   question, producing consecutive same-role messages on
+            //   the next load (2026-08-07 field test, finding N1).
             //
             // Runs at the start of every iteration, so events that
             // arrive mid-iteration wait for the next one.
@@ -1122,6 +1140,9 @@ impl AgenticLoop {
                         msg.content.len(),
                         iteration,
                     );
+                    if let Err(e) = session.add_user(msg.content.clone()).await {
+                        warn!("AgenticLoop: failed to persist steering message {}: {e}", msg.id);
+                    }
                     messages.push(LlmMessage::user(msg.content));
                 }
             }
@@ -2443,7 +2464,13 @@ impl AgenticLoop {
         // Phase 1: placeholder system message; overwritten by the
         // renderer on iteration 1. The legacy `add_system` JSONL
         // persistence path is gone.
-        let mut messages = if let Some(h) = history {
+        // Repair loaded history before use: concurrent writers (cron,
+        // steering) can leave orphan tool_results / unpaired tool_calls
+        // / consecutive same-role runs in the JSONL, which providers
+        // reject with 400s — bricking the session (2026-08-07 field
+        // test, finding N1). Storage stays faithful; repair is
+        // consumption-side only and idempotent.
+        let mut messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
             info!("Loaded {} messages from history", h.len());
             // Check if history already has a system message at the start
             let has_system = h

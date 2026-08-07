@@ -354,13 +354,27 @@ impl SessionHandle {
 }
 
 /// Options for creating a new session
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SessionCreateOptions {
     pub parent_session_id: Option<String>,
     pub title: Option<String>,
     pub trigger: String,
     /// Specific session ID to use (if not provided, a UUID will be generated)
     pub session_id: Option<String>,
+}
+
+impl Default for SessionCreateOptions {
+    fn default() -> Self {
+        Self {
+            parent_session_id: None,
+            title: None,
+            // Matches the index entry's default (`SessionEntry::new`) —
+            // a plain `derive(Default)` used to leave this as `""`,
+            // which then leaked into both the metadata and the index.
+            trigger: "user".to_string(),
+            session_id: None,
+        }
+    }
 }
 
 impl SessionCreateOptions {
@@ -1067,15 +1081,23 @@ impl SessionManager {
         // metadata+index sequence eliminates the race at its source
         // (audit M7).
         let mut controller = self.metadata_controller.write().await;
+        // The index entry is built from `SessionEntry::with_peer`, which
+        // hardcodes `parent_session_id: None` / `trigger: "user"` — copy
+        // the values the caller actually supplied so the index matches
+        // the metadata (2026-08-07 field test, Finding 7).
+        let entry_parent = metadata.parent_session_id.clone();
+        let entry_trigger = metadata.trigger.clone();
         controller.create_metadata(metadata).await?;
         if self.index.is_some() {
-            let entry = SessionEntry::with_peer(
+            let mut entry = SessionEntry::with_peer(
                 session_id.clone(),
                 agent.to_string(),
                 format!("{}.jsonl", safe_filename_component(&session_id)),
                 peer.kind().to_string(),
                 peer.subject_id().to_string(),
             );
+            entry.parent_session_id = entry_parent;
+            entry.trigger = entry_trigger;
             controller.create_for_peer(entry, &session_key).await?;
             controller.save_index().await?;
         }
@@ -1573,6 +1595,59 @@ impl SessionManager {
         self.channel_overlays.get(overlay_key).cloned()
     }
 
+    /// Stamp a freshly created spawn child session's index entry with
+    /// its parent linkage. Spawn sessions were otherwise written with
+    /// `parent_session_id: null` and `trigger: "user"`, making them
+    /// indistinguishable from root sessions in sessions.json (2026-08-07
+    /// field test, Finding 7). Best-effort: the overlay holds the same
+    /// linkage in memory, so a patch failure must not fail the spawn.
+    async fn stamp_spawn_parent_linkage(&self, session_id: &str, parent_session_key: &str) {
+        // Resolve the parent's session id. Call sites pass one of two
+        // shapes: the parent session ID itself ("root:user:local" —
+        // `agent_runner.rs` stamps `session.id`), or a session KEY
+        // ("agent:root:peer:user:local"). Accept the id directly; for
+        // keys, prefer the in-memory base session and fall back to the
+        // peer-routing index, because the subagent executor can hold a
+        // SessionManager instance whose `base_sessions` map never saw
+        // the parent's root session.
+        let mut controller = self.metadata_controller.write().await;
+        let parent_id = match controller.get_entry_from_index(parent_session_key).await {
+            Ok(Some(entry)) => Some(entry.session_id),
+            _ => match self.get_parent_base_session(parent_session_key).await {
+                Some(base) => Some(base.read().await.id.clone()),
+                None => {
+                    let peer_key = crate::key::base_key_from_overlay(parent_session_key)
+                        .unwrap_or_else(|| parent_session_key.to_string());
+                    controller
+                        .get_active_session_id(&peer_key)
+                        .await
+                        .unwrap_or(None)
+                }
+            },
+        };
+        let Some(parent_id) = parent_id else {
+            info!("stamp_spawn_parent_linkage: no parent resolved for {session_id} (key={parent_session_key})");
+            return;
+        };
+        match controller.get_entry_from_index(session_id).await {
+            Ok(Some(mut entry)) => {
+                entry.parent_session_id = Some(parent_id.clone());
+                entry.trigger = "spawn".to_string();
+                if let Err(e) = controller.update_entry(entry).await {
+                    tracing::warn!(
+                        "Failed to stamp spawn session {session_id} parent linkage: {e}"
+                    );
+                } else {
+                    info!("stamp_spawn_parent_linkage: stamped {session_id} parent={parent_id}");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!("Failed to load spawn session {session_id} index entry: {e}");
+            }
+        }
+    }
+
     /// Create a spawn overlay
     ///
     /// Creates a new spawn overlay for subagent task execution.
@@ -1617,6 +1692,8 @@ impl SessionManager {
             let base_read = child_base.read().await;
             base_read.id.clone()
         };
+        self.stamp_spawn_parent_linkage(&session_id, parent_session_key)
+            .await;
         Ok(SessionHandle::new(
             session_id,
             child_base,
@@ -1681,6 +1758,8 @@ impl SessionManager {
             let base_read = child_base.read().await;
             base_read.id.clone()
         };
+        self.stamp_spawn_parent_linkage(&session_id, parent_session_key)
+            .await;
         Ok(SessionHandle::new(
             session_id,
             child_base,

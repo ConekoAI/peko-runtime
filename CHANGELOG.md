@@ -4,6 +4,109 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Session-integrity + cron hardening (2026-08-07 findings N1–N3)
+
+Follow-up to the field-test fix pack below, from its verification pass:
+
+#### Fixed
+- **Concurrent writers can no longer brick a session, and already
+  bricked sessions recover.** Two halves (finding N1):
+  - *Prevention:* the daemon's `PrincipalManager` now shares
+    `AppState`'s `InboxRegistry` instead of keeping a private one.
+    The per-session run permit now actually serializes cron/tunnel
+    turns against in-flight CLI turns — previously the two registries
+    were independent permit spaces, so a cron turn could append a user
+    message between an assistant `tool_call` and its `tool_result`,
+    after which Anthropic-style providers reject every request ("tool
+    call result does not follow tool call"). Steering messages drained
+    by a live loop are now also persisted to the session JSONL at the
+    iteration boundary (they were in-memory only, leaving replies
+    without questions on reload).
+  - *Hardened (same day):* the shared registry is now a **required
+    constructor parameter** of `PrincipalManager::{new,
+    with_path_resolver}`, `AsyncExecutor::{new, with_registries}`, and
+    `ExtensionAsyncAdapter::new` — the private defaults and the
+    `with_inbox_registry` builder overrides are gone, so a future
+    construction path cannot silently reintroduce a split permit
+    space; the compiler forces an explicit choice. Components that
+    genuinely own a private registry (placeholders, per-call scopes,
+    tests) use the explicitly-named
+    `extensions::framework::async_exec::executor::standalone_inbox_registry()`.
+  - *Repair:* new `peko_message::repair::repair_history` — a pure,
+    idempotent normaliser applied at the engine's history intake. It
+    re-pairs tool_calls with their (possibly displaced) tool_results,
+    backfills synthetic error results for interrupted calls, drops
+    orphan results, and merges consecutive same-role messages. Storage
+    stays faithful; repair is consumption-side only.
+- **Agents now have a wall clock.** New volatile `{{current_time}}`
+  prompt placeholder ("Current time: <local> / <UTC>") in the per-turn
+  suffix — relative-time requests ("remind me in 2 minutes") no longer
+  require the model to guess the date (finding N2a). Kept out of the
+  cache-stable prefix.
+- **Past one-shot `at` times are rejected at creation.**
+  `CronScheduler::add_job` (the single chokepoint for the CronCreate
+  tool, CLI, and IPC paths) now errors on `at <= now` instead of
+  accepting the job and parking it on the 100-year sentinel where it
+  showed "active" but never fired (finding N2b). **Behavior change:**
+  `peko cron at` with a past timestamp previously fired immediately on
+  the next poll; it is now rejected. The `CronCreate` tool's `at`
+  schema description now tells the model the timestamp must be in the
+  future and points at the system-prompt clock.
+- **`peko cron at` prints the resolved timestamp** in its confirmation
+  instead of echoing the raw `--at` input (finding N3).
+
+### Field-test fix pack (2026-08-07 cron/session/IPC findings)
+
+Fixes from `scripts/e2e/reports/2026-08-07-non-technical-user-cron-session.md`:
+
+#### Fixed
+- **Long tool calls no longer kill streaming turns.** The daemon now
+  emits `ResponsePacket::Heartbeat` every `HEARTBEAT_INTERVAL_SECS`
+  while draining a `PrincipalSendStream` run. Previously any tool call
+  silent for >60s tripped the CLI's per-packet idle timeout
+  (`CLI_TIMEOUT_SECS`), and the daemon then aborted the healthy run
+  with `Connection refused` when the next event couldn't reach the
+  gone CLI (Finding 3). The packet variant and the CLI-side ignore
+  paths predated this emitter, so old clients are wire-compatible.
+- **Failed runs leave a trace in `peko log`.** Both failure exits of
+  the streaming handler (route error; sink-write abort) now record a
+  `⚠ Run failed: …` entry via `record_chat_response` instead of
+  leaving the user's message unanswered in the chat log (Finding 8).
+- **Cron tools granted to new principals.** `Capabilities::starter_bundle()`
+  now includes `tool:CronCreate` / `tool:CronList` / `tool:CronDelete`.
+  The tools were always registered (`ToolRuntime::register_builtins`)
+  and the `principal:write_cron` capability was granted, but the
+  missing `tool:` grants let `is_tool_enabled` filter them out of the
+  LLM's toolset — principals honestly reported "I have no scheduling
+  tool" (Finding 2). Pre-existing principals need a one-time
+  `peko capability grant <principal> tool:CronCreate tool:CronList
+  tool:CronDelete` (or equivalent) to pick the tools up.
+- **One-shot cron history survives auto-delete.** `CronScheduler::delete_job`
+  no longer purges run records, and the IPC cron handler resolves a
+  job's principal via preserved run records when the job itself is
+  gone — `peko cron history <id>` now works for fired one-shots
+  (Finding 4). Run growth stays bounded by the existing 1000-run cap.
+- **Interval cron jobs no longer drift.** `Every` jobs anchor their
+  next fire to the *scheduled* time (new
+  `peko_cron::calculate_next_interval_anchored`) instead of the actual
+  finish time, so poll-tick quantisation no longer accumulates (a 60s
+  job fired every ~75s; Finding 6). Missed slots after downtime are
+  skipped without bursting.
+- **Session index integrity.** `create_session` now copies
+  `parent_session_id` / `trigger` into the `sessions.json` index entry
+  (previously hardcoded to `null` / `"user"`); spawn (subagent)
+  sessions are stamped with their parent session id and
+  `trigger: "spawn"`; `turn_count` is maintained (bumped per user-role
+  message) instead of always reading 0 (Finding 7).
+
+#### Added
+- **Cron CLI ergonomics** (Finding 5): `peko cron every --interval`
+  accepts human durations (`30s`, `5m`, `1h`, `1d`) alongside
+  `--interval-ms`; `peko cron at --at` accepts relative delays
+  (`in 10m`) alongside RFC3339; `cron remove` / `run` / `history`
+  accept `--name <job-name>` (exact match, errors on ambiguity) as an
+  alternative to the hex job ID.
+
 ### Multi-model subagents (PR #346)
 
 All four phases merged as one squashed commit (`ee4895a6`).

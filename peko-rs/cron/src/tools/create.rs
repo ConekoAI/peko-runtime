@@ -157,7 +157,7 @@ impl Tool for CronCreateTool {
                 },
                 "at": {
                     "type": "string",
-                    "description": "ISO 8601 timestamp for a one-shot scheduled job"
+                    "description": "RFC3339 timestamp in the FUTURE for a one-shot scheduled job (past times are rejected). The current date/time is in your system prompt; for 'in N minutes' style delays prefer interval_ms."
                 },
                 "interval_ms": {
                     "type": "integer",

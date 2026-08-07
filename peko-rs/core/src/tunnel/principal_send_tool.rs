@@ -641,6 +641,7 @@ mod tests {
         let principal_manager = Arc::new(PrincipalManager::new(
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         ));
         let chat_log_store = Arc::new(ChatLogStore::new(std::env::temp_dir().join(format!(
             "peko-principal-send-chatlog-{}",
@@ -787,6 +788,7 @@ mod tests {
         let principal_manager = Arc::new(PrincipalManager::new(
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         ));
         let chat_log_store = Arc::new(ChatLogStore::new(std::env::temp_dir().join(format!(
             "peko-principal-send-roundtrip-chatlog-{}",

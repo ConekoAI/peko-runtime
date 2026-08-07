@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 mod tool_call_info;
+pub mod repair;
 
 /// Lightweight tool call DTO with optional result (Phase 9b.1 lift).
 ///

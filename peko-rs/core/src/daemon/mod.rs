@@ -187,7 +187,10 @@ impl Daemon {
             // daemon replaces this in `Daemon::run` with a real one
             // bound to the AppState's `InboxRegistry`.
             std::sync::Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
+                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(
+                    ),
+                ),
             ),
             std::sync::Weak::new(),
         );
@@ -234,7 +237,10 @@ impl Daemon {
             )?),
             None,
             std::sync::Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
+                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(
+                    ),
+                ),
             ),
             std::sync::Weak::new(),
         );
@@ -368,8 +374,9 @@ impl Daemon {
         // `ExtensionCore` (`Arc::downgrade` so the cron engine does not
         // extend the core's lifetime).
         let cron_async_executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
-                .with_inbox_registry(app_state.inbox_registry.clone()),
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
+                app_state.inbox_registry.clone(),
+            ),
         );
         let cron_extension_core = crate::extensions::framework::core::global_core()
             .map(|arc| std::sync::Arc::downgrade(&arc))

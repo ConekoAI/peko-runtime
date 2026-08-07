@@ -33,6 +33,12 @@ pub enum Placeholder {
     SelfUpdate,
     /// Timezone - {{timezone}}
     Timezone,
+    /// Current date/time (local + UTC) - {{current_time}}
+    ///
+    /// Volatile, per-turn. Gives the model a wall clock so
+    /// relative-time requests ("remind me in 2 minutes") can be
+    /// resolved to absolute timestamps (2026-08-07 field test, N2a).
+    CurrentTime,
     /// Agent name inline - {{`agent_name`}}
     AgentName,
     /// Workspace path inline - {{workspace}}
@@ -69,6 +75,7 @@ impl Placeholder {
             Self::ModelAliases => "{{model_aliases}}",
             Self::SelfUpdate => "{{self_update}}",
             Self::Timezone => "{{timezone}}",
+            Self::CurrentTime => "{{current_time}}",
             Self::AgentName => "{{agent_name}}",
             Self::Workspace => "{{workspace}}",
             Self::Channel => "{{channel}}",

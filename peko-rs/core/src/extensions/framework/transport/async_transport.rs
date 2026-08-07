@@ -329,6 +329,7 @@ pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {
         crate::extensions::framework::async_exec::executor::AsyncExecutor::with_registries(
             registry,
             queue_manager,
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         );
     Arc::new(LocalAsyncTransport::from_executor(executor))
 }
@@ -339,7 +340,9 @@ mod tests {
 
     #[test]
     fn test_local_transport_new() {
-        let executor = AsyncExecutor::new();
+        let executor = AsyncExecutor::new(
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        );
         let transport = LocalAsyncTransport::from_executor(executor);
         let _ = transport.executor();
     }

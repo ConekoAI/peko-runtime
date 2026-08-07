@@ -244,7 +244,11 @@ impl MetadataController {
         Ok(())
     }
 
-    /// Update message counts atomically
+    /// Update message counts atomically. `user_turn` bumps `turn_count`
+    /// — pass true when the appended message has role `user`, so the
+    /// index counts conversation turns rather than raw messages
+    /// (2026-08-07 field test, Finding 7: the field was previously
+    /// never maintained and always read 0).
     pub async fn update_message_counts(
         &mut self,
         session_id: &str,
@@ -252,6 +256,7 @@ impl MetadataController {
         last_total_tokens: usize,
         input_tokens: usize,
         output_tokens: usize,
+        user_turn: bool,
     ) -> Result<()> {
         debug!(
             "Updating counts for {}: messages={}, last_total={}, in={}, out={}",
@@ -273,6 +278,9 @@ impl MetadataController {
         entry.last_total_tokens = last_total_tokens;
         entry.total_input_tokens += input_tokens;
         entry.total_output_tokens += output_tokens;
+        if user_turn {
+            entry.turn_count += 1;
+        }
         entry.touch();
 
         // Save
@@ -880,7 +888,7 @@ mod tests {
 
         // Update with (session_id, message_count, last_total_tokens, input_tokens, output_tokens)
         controller
-            .update_message_counts("sess_123", 10, 1000, 100, 50)
+            .update_message_counts("sess_123", 10, 1000, 100, 50, true)
             .await
             .unwrap();
 
@@ -894,6 +902,19 @@ mod tests {
         assert_eq!(retrieved.total_input_tokens, 100);
         assert_eq!(retrieved.total_output_tokens, 50);
         assert_eq!(retrieved.model_context_limit, None);
+        assert_eq!(retrieved.turn_count, 1, "user_turn=true bumps turn_count");
+
+        // Non-user messages (assistant/tool) must not bump turn_count.
+        controller
+            .update_message_counts("sess_123", 11, 1000, 100, 50, false)
+            .await
+            .unwrap();
+        let retrieved = controller
+            .get_metadata_fast("sess_123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retrieved.turn_count, 1);
     }
 
     #[tokio::test]

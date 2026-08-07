@@ -84,7 +84,9 @@ impl AsyncExecutionRouter {
     #[must_use]
     pub fn new() -> Self {
         use crate::extensions::framework::async_exec::executor::AsyncExecutor;
-        let executor = AsyncExecutor::new();
+        let executor = AsyncExecutor::new(
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        );
         Self {
             default_tool_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(executor)),
@@ -95,7 +97,9 @@ impl AsyncExecutionRouter {
     #[must_use]
     pub fn with_default_tool_timeout(secs: u64) -> Self {
         use crate::extensions::framework::async_exec::executor::AsyncExecutor;
-        let executor = AsyncExecutor::new();
+        let executor = AsyncExecutor::new(
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        );
         Self {
             default_tool_timeout: Duration::from_secs(secs),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(executor)),

@@ -511,6 +511,32 @@ pub fn calculate_next_run(schedule: &ScheduleKind, after: DateTime<Utc>) -> Resu
     }
 }
 
+/// Compute the next fire time for an `Every` interval job, anchored to
+/// its *scheduled* time rather than the actual finish time.
+///
+/// `calculate_next_run(Every)` returns `after + every_ms`; when the
+/// caller passes the actual finish time (which the cron engine did), the
+/// tick quantisation slip (up to one poll interval, 15s by default) plus
+/// the execution time accumulate into permanent drift — a 60s job fired
+/// every ~75s (2026-08-07 field test, Finding 6). Anchoring to the
+/// scheduled `next_run` keeps the long-run period at `every_ms`; the
+/// catch-up loop skips past-due slots after downtime without bursting.
+pub fn calculate_next_interval_anchored(
+    scheduled: DateTime<Utc>,
+    every_ms: u64,
+    now: DateTime<Utc>,
+) -> DateTime<Utc> {
+    if every_ms == 0 {
+        return now;
+    }
+    let step = chrono::Duration::milliseconds(every_ms as i64);
+    let mut next = scheduled + step;
+    while next <= now {
+        next += step;
+    }
+    next
+}
+
 /// Render a list of [`CronJob`] values into the canonical `CronList`
 /// return shape shared by the CLI and the `CronList` tool.
 pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
@@ -650,6 +676,51 @@ mod tests {
     //! this module, so deserializing a value through both paths and
     //! asserting equality proves the wire shapes still match.
     use super::*;
+
+    #[test]
+    fn anchored_interval_keeps_schedule_period() {
+        // Scheduled 10:00:00, every 60s, run finished 15s late (tick
+        // quantisation) — the next slot must be 10:01:00, not 10:01:15.
+        let scheduled = DateTime::parse_from_rfc3339("2026-08-07T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-08-07T10:00:15Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let next = calculate_next_interval_anchored(scheduled, 60_000, now);
+        assert_eq!(
+            next,
+            DateTime::parse_from_rfc3339("2026-08-07T10:01:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
+    fn anchored_interval_skips_missed_slots_without_bursting() {
+        // Daemon was down (or the run took) 3.5 periods — the next slot
+        // is the first future multiple of the anchor, not a burst of
+        // catch-up fires and not now+interval.
+        let scheduled = DateTime::parse_from_rfc3339("2026-08-07T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-08-07T10:03:30Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let next = calculate_next_interval_anchored(scheduled, 60_000, now);
+        assert_eq!(
+            next,
+            DateTime::parse_from_rfc3339("2026-08-07T10:04:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
+    fn anchored_interval_zero_ms_does_not_hang() {
+        let now = Utc::now();
+        assert_eq!(calculate_next_interval_anchored(now, 0, now), now);
+    }
 
     #[test]
     fn schedule_kind_roundtrip() {

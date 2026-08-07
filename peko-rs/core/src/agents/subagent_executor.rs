@@ -187,7 +187,11 @@ impl SubagentExecutor {
         let agent_name = agent_name.into();
         let async_registry = get_or_create_registry_for_agent(&agent_name);
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-        let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
+        let unified_executor = AsyncExecutor::with_registries(
+            async_registry,
+            async_queue_manager,
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        );
 
         Self {
             unified_executor,
@@ -324,7 +328,11 @@ impl SubagentExecutor {
         principal_id: PrincipalId,
     ) -> Self {
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-        let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
+        let unified_executor = AsyncExecutor::with_registries(
+            async_registry,
+            async_queue_manager,
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        );
 
         Self {
             unified_executor,
@@ -356,7 +364,11 @@ impl SubagentExecutor {
         max_concurrent: usize,
         principal_id: PrincipalId,
     ) -> Self {
-        let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
+        let unified_executor = AsyncExecutor::with_registries(
+            async_registry,
+            async_queue_manager,
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        );
 
         Self {
             unified_executor,

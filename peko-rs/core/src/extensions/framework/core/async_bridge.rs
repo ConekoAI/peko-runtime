@@ -28,7 +28,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! let adapter = ExtensionAsyncAdapter::new(extension_core);
+//! let adapter = ExtensionAsyncAdapter::new(extension_core, executor);
 //!
 //! // Execute tool asynchronously via extension
 //! let receipt = adapter.execute_async("my_tool", params, session_key).await?;
@@ -81,22 +81,16 @@ struct AsyncCapability {
 }
 
 impl ExtensionAsyncAdapter {
-    /// Create a new async adapter with default executor
+    /// Create a new async adapter bound to the given executor.
+    ///
+    /// The executor is required (no private default) so its
+    /// `InboxRegistry` is an explicit caller choice — see
+    /// [`AsyncExecutor::new`].
     ///
     /// # Note
     /// If the adapter will be used for tool execution that requires workspace
     /// context, chain `.with_workspace(...)` after `new()`.
-    pub fn new(core: Arc<ExtensionCore>) -> Self {
-        Self {
-            core,
-            executor: AsyncExecutor::new(),
-            capability_cache: Arc::new(RwLock::new(HashMap::new())),
-            workspace: None,
-        }
-    }
-
-    /// Create with a custom executor (for sharing registries)
-    pub fn with_executor(core: Arc<ExtensionCore>, executor: AsyncExecutor) -> Self {
+    pub fn new(core: Arc<ExtensionCore>, executor: AsyncExecutor) -> Self {
         Self {
             core,
             executor,
@@ -460,7 +454,12 @@ mod tests {
     #[tokio::test]
     async fn test_extension_async_adapter_creation() {
         let core = Arc::new(ExtensionCore::new());
-        let adapter = ExtensionAsyncAdapter::new(core);
+        let adapter = ExtensionAsyncAdapter::new(
+            core,
+            AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            ),
+        );
 
         assert!(!(adapter.supports_native_async("unknown_tool").await));
     }
@@ -481,7 +480,12 @@ mod tests {
         .await
         .unwrap();
 
-        let adapter = ExtensionAsyncAdapter::new(core);
+        let adapter = ExtensionAsyncAdapter::new(
+            core,
+            AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            ),
+        );
 
         // Execute async
         let receipt = adapter
@@ -522,7 +526,12 @@ mod tests {
         .await
         .unwrap();
 
-        let adapter = ExtensionAsyncAdapter::new(core);
+        let adapter = ExtensionAsyncAdapter::new(
+            core,
+            AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            ),
+        );
 
         // Execute async - should use fallback
         let receipt = adapter

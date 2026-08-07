@@ -453,7 +453,22 @@ impl CronHandler {
             };
             match scheduler.get_job(job_id) {
                 Ok(Some(_)) => return Ok((name, path)),
-                Ok(None) => continue,
+                Ok(None) => {
+                    // Fallback: one-shot (`delete_after_run`) jobs delete
+                    // themselves after firing, but their run history is
+                    // preserved — so resolve via the run records too,
+                    // otherwise `cron history <id>` for a just-fired
+                    // one-shot errors with "Job not found" (2026-08-07
+                    // field test, Finding 4). Downstream ops on the job
+                    // itself (remove/run) still fail cleanly on the
+                    // missing job.
+                    if let Ok(runs) = scheduler.get_run_history(job_id, 1) {
+                        if !runs.is_empty() {
+                            return Ok((name, path));
+                        }
+                    }
+                    continue;
+                }
                 Err(_) => continue,
             }
         }

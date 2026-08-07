@@ -84,7 +84,7 @@ impl CronEngine {
     /// `<resolver>.cron_history(name)`.
     /// `async_executor` is the daemon-shared executor used to fire
     /// `CronJobAction::SpawnTool` jobs. Pass a fresh `Arc<AsyncExecutor>`
-    /// (built with `AsyncExecutor::new().with_inbox_registry(...)`) when
+    /// (built with `AsyncExecutor::new(standalone_inbox_registry())`) when
     /// no daemon-global executor is desired; the cron engine does not
     /// share its executor with any agent's per-call executor today.
     /// `extension_core` is held weakly so the cron engine never keeps
@@ -425,7 +425,18 @@ impl CronEngine {
             )
             .await;
 
-        let next_run = scheduler.calculate_next_run(&job.schedule, finished_at)?;
+        // Interval jobs anchor to the *scheduled* `next_run`, not the
+        // actual finish time — otherwise tick quantisation (up to one
+        // poll interval) plus execution time accumulate into permanent
+        // drift (60s job fired every ~75s; 2026-08-07 field test,
+        // Finding 6). Other schedule kinds compute absolute times and
+        // are immune.
+        let next_run = match &job.schedule {
+            peko_cron::ScheduleKind::Every { every_ms } => {
+                peko_cron::calculate_next_interval_anchored(job.next_run, *every_ms, finished_at)
+            }
+            _ => scheduler.calculate_next_run(&job.schedule, finished_at)?,
+        };
         scheduler.update_job_after_run(&job.id, &status, next_run)?;
 
         // Retry budget enforcement. `update_job_after_run` just bumped
@@ -908,7 +919,9 @@ mod tests {
             idle,
             obs,
             None,
-            Arc::new(AsyncExecutor::new()),
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
             std::sync::Weak::new(),
         )
     }
@@ -935,6 +948,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver),
         )
@@ -1041,7 +1055,9 @@ mod tests {
             idle,
             obs,
             Some(manager.clone()),
-            Arc::new(AsyncExecutor::new()),
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
             std::sync::Weak::new(),
         );
 
@@ -1147,7 +1163,9 @@ mod tests {
 
         // Build a CronEngine with an executor whose registry holds a
         // terminal entry for `shell:abc`.
-        let async_executor = Arc::new(AsyncExecutor::new());
+        let async_executor = Arc::new(AsyncExecutor::new(
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        ));
         let mut entry =
             crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
                 "shell:abc".to_string(),
@@ -1271,7 +1289,9 @@ mod tests {
             })
             .unwrap();
 
-        let async_executor = Arc::new(AsyncExecutor::new());
+        let async_executor = Arc::new(AsyncExecutor::new(
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        ));
         // Phase A: build a path resolver pointing at the test's
         // tmp dir so the cron engine derives per-principal schedule
         // files at `<tmp>/principals/{name}/local/cron/...`.

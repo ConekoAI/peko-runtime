@@ -80,7 +80,8 @@ pub enum CronCommands {
         /// Job name
         #[arg(short, long)]
         name: String,
-        /// ISO timestamp (e.g., "2026-02-25T14:00:00Z")
+        /// RFC3339 timestamp (e.g., "2026-02-25T14:00:00Z") or a
+        /// relative delay like "in 10m" / "in 90s" / "in 2h"
         #[arg(long)]
         at: String,
         /// Principal to run the job as
@@ -100,8 +101,12 @@ pub enum CronCommands {
         #[arg(short, long)]
         name: String,
         /// Interval in milliseconds
-        #[arg(short, long)]
-        interval_ms: u64,
+        #[arg(short, long, conflicts_with = "interval")]
+        interval_ms: Option<u64>,
+        /// Interval as a human duration ("30s", "5m", "1h", "1d");
+        /// alternative to --interval-ms
+        #[arg(long)]
+        interval: Option<String>,
         /// Principal to run the job as
         #[arg(short, long)]
         principal: String,
@@ -116,7 +121,10 @@ pub enum CronCommands {
     /// Remove a cron job
     Remove {
         /// Job ID
-        job_id: String,
+        job_id: Option<String>,
+        /// Job name (exact match; alternative to the positional job ID)
+        #[arg(long)]
+        name: Option<String>,
         /// Skip confirmation
         #[arg(short, long)]
         force: bool,
@@ -125,13 +133,21 @@ pub enum CronCommands {
     /// Run a job immediately (manual execution)
     Run {
         /// Job ID
-        job_id: String,
+        job_id: Option<String>,
+        /// Job name (exact match; alternative to the positional job ID)
+        #[arg(long)]
+        name: Option<String>,
     },
 
     /// Show job run history
     History {
         /// Job ID
-        job_id: String,
+        job_id: Option<String>,
+        /// Job name (exact match against live jobs; alternative to the
+        /// positional job ID). Fired one-shots no longer appear in the
+        /// job list — use their job ID for those.
+        #[arg(long)]
+        name: Option<String>,
         /// Limit results
         #[arg(short, long, default_value = "10")]
         limit: usize,
@@ -318,8 +334,7 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
         } => {
             let client = connect_daemon().await?;
 
-            let at_time = chrono::DateTime::parse_from_rfc3339(&at)
-                .map_err(|e| anyhow::anyhow!("Invalid timestamp (use RFC3339): {e}"))?;
+            let at_time = parse_at_time(&at)?;
 
             let delivery = if announce {
                 DeliveryMode::Announce {
@@ -357,7 +372,9 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
 
             match client.cron_add(job).await? {
                 ResponsePacket::CronAdded { job_id, .. } => {
-                    println!("✅ Added one-shot job {job_id} at {at}");
+                    // Print the resolved UTC timestamp, not the raw
+                    // `--at` input (which may be a relative "in 10m").
+                    println!("✅ Added one-shot job {job_id} at {}", at_time.to_rfc3339());
                     println!("   Principal: {principal}");
                     Ok(())
                 }
@@ -371,11 +388,21 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
         CronCommands::Every {
             name,
             interval_ms,
+            interval,
             principal,
             message,
             announce,
         } => {
             let client = connect_daemon().await?;
+
+            let interval_ms = match (interval_ms, interval) {
+                (Some(ms), None) => ms,
+                (None, Some(dur)) => parse_duration_ms(&dur)?,
+                (None, None) => {
+                    anyhow::bail!("either --interval-ms or --interval is required")
+                }
+                (Some(_), Some(_)) => unreachable!("clap enforces conflicts_with"),
+            };
 
             let delivery = if announce {
                 DeliveryMode::Announce {
@@ -435,11 +462,16 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             }
         }
 
-        CronCommands::Remove { job_id, force } => {
+        CronCommands::Remove {
+            job_id,
+            name,
+            force,
+        } => {
+            let client = connect_daemon().await?;
+            let job_id = resolve_job_id(&client, job_id, name).await?;
             if !force {
                 println!("🗑️  Removing job '{job_id}'... (use --force to skip confirmation)");
             }
-            let client = connect_daemon().await?;
             match client.cron_remove(&job_id).await? {
                 ResponsePacket::CronRemoved {
                     job_id: removed_id, ..
@@ -454,8 +486,9 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             }
         }
 
-        CronCommands::Run { job_id } => {
+        CronCommands::Run { job_id, name } => {
             let client = connect_daemon().await?;
+            let job_id = resolve_job_id(&client, job_id, name).await?;
             match client.cron_run(&job_id).await? {
                 ResponsePacket::CronRunStarted {
                     job_id: run_job_id,
@@ -473,8 +506,13 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             }
         }
 
-        CronCommands::History { job_id, limit } => {
+        CronCommands::History {
+            job_id,
+            name,
+            limit,
+        } => {
             let client = connect_daemon().await?;
+            let job_id = resolve_job_id(&client, job_id, name).await?;
             match client.cron_history(&job_id, limit).await? {
                 ResponsePacket::CronHistory { runs, .. } => {
                     if runs.is_empty() {
@@ -625,5 +663,120 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 other => Err(peko_core::ipc::unexpected_response(&other)),
             }
         }
+    }
+}
+
+/// Parse a human duration into milliseconds. Accepts a bare number
+/// (milliseconds, matching `--interval-ms`) or a number with a single
+/// `s`/`m`/`h`/`d` suffix ("30s", "5m", "1h", "1d"). Hand-rolled to
+/// avoid a new dependency — the workspace has no humantime-style crate.
+fn parse_duration_ms(input: &str) -> Result<u64> {
+    let input = input.trim();
+    let (digits, mult) = match input.chars().last() {
+        Some('s') => (&input[..input.len() - 1], 1_000u64),
+        Some('m') => (&input[..input.len() - 1], 60_000),
+        Some('h') => (&input[..input.len() - 1], 3_600_000),
+        Some('d') => (&input[..input.len() - 1], 86_400_000),
+        _ => (input, 1),
+    };
+    let value: u64 = digits.trim().parse().map_err(|_| {
+        anyhow::anyhow!("Invalid duration '{input}' (use e.g. 60000, 30s, 5m, 1h, 1d)")
+    })?;
+    Ok(value * mult)
+}
+
+/// Parse `--at`: an RFC3339 timestamp, or a relative delay like
+/// "in 10m" / "in 90s" resolved against the local clock (stored UTC).
+fn parse_at_time(input: &str) -> Result<chrono::DateTime<Utc>> {
+    let input = input.trim();
+    if let Some(rest) = input.strip_prefix("in ") {
+        let ms = parse_duration_ms(rest)?;
+        return Ok(Utc::now() + chrono::Duration::milliseconds(ms as i64));
+    }
+    chrono::DateTime::parse_from_rfc3339(input)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| anyhow::anyhow!("Invalid timestamp (use RFC3339 or 'in 10m'): {e}"))
+}
+
+/// Resolve the target job id from either the positional job ID or
+/// `--name` (exact match over live jobs, resolved client-side — mirrors
+/// the LLM-facing `CronDelete` tool's `resolve_id_by_label`). Errors on
+/// zero or multiple matches.
+async fn resolve_job_id(
+    client: &DaemonClient,
+    job_id: Option<String>,
+    name: Option<String>,
+) -> Result<String> {
+    match (job_id, name) {
+        (Some(id), None) => Ok(id),
+        (None, Some(name)) => {
+            let jobs = match client.cron_list(true, None).await? {
+                ResponsePacket::CronList { jobs, .. } => jobs,
+                ResponsePacket::Error { message, .. } => {
+                    anyhow::bail!("Failed to list jobs: {message}")
+                }
+                other => return Err(peko_core::ipc::unexpected_response(&other)),
+            };
+            let matches: Vec<_> = jobs.into_iter().filter(|j| j.name == name).collect();
+            match matches.len() {
+                0 => anyhow::bail!("No cron job named '{name}'"),
+                1 => Ok(matches[0].id.clone()),
+                _ => {
+                    let ids: Vec<_> = matches.iter().map(|j| j.id.as_str()).collect();
+                    anyhow::bail!(
+                        "Multiple cron jobs named '{name}' ({}); use the job ID",
+                        ids.join(", ")
+                    )
+                }
+            }
+        }
+        (None, None) => anyhow::bail!("provide a job ID or --name"),
+        (Some(_), Some(_)) => anyhow::bail!("provide either a job ID or --name, not both"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_at_time, parse_duration_ms};
+    use chrono::Utc;
+
+    #[test]
+    fn duration_bare_number_is_ms() {
+        assert_eq!(parse_duration_ms("60000").unwrap(), 60_000);
+    }
+
+    #[test]
+    fn duration_suffixes() {
+        assert_eq!(parse_duration_ms("30s").unwrap(), 30_000);
+        assert_eq!(parse_duration_ms("5m").unwrap(), 300_000);
+        assert_eq!(parse_duration_ms("1h").unwrap(), 3_600_000);
+        assert_eq!(parse_duration_ms("1d").unwrap(), 86_400_000);
+    }
+
+    #[test]
+    fn duration_rejects_garbage() {
+        assert!(parse_duration_ms("soon").is_err());
+        assert!(parse_duration_ms("").is_err());
+        assert!(parse_duration_ms("10x").is_err());
+    }
+
+    #[test]
+    fn at_time_rfc3339_passthrough() {
+        let dt = parse_at_time("2026-02-25T14:00:00Z").unwrap();
+        assert_eq!(dt.to_rfc3339(), "2026-02-25T14:00:00+00:00");
+    }
+
+    #[test]
+    fn at_time_relative() {
+        let before = Utc::now();
+        let dt = parse_at_time("in 10m").unwrap();
+        let after = Utc::now();
+        assert!(dt >= before + chrono::Duration::minutes(10));
+        assert!(dt <= after + chrono::Duration::minutes(10));
+    }
+
+    #[test]
+    fn at_time_rejects_garbage() {
+        assert!(parse_at_time("next tuesday").is_err());
     }
 }

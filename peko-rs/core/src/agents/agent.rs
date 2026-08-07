@@ -1620,18 +1620,19 @@ impl Agent {
         let async_inbox_registry = if let Some(ref reg) = self.inbox_registry {
             Arc::clone(reg)
         } else {
-            Arc::new(peko_session::InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
-            ))
+            // No shared registry bound (CLI one-shots, tests): a
+            // per-call standalone registry stays consistent because
+            // the executor below and the loop both read from it.
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry()
         };
         let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
         let async_completion_queue = async_inbox_registry.get_or_create(&async_inbox_key).await;
 
         // 2. Per-call AsyncExecutor wired to the same registry.
         let async_executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
-                .with_inbox_registry(async_inbox_registry.clone()),
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
+                async_inbox_registry.clone(),
+            ),
         );
 
         // 3. Per-call AsyncSpawn and AsyncOutput tools bound to executor +

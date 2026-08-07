@@ -755,7 +755,7 @@ impl AppState {
         )));
 
         let async_task_executor =
-            Arc::new(AsyncExecutor::new().with_inbox_registry(Arc::clone(&inbox_registry)));
+            Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
 
         // ADR-025: Initialize BackgroundRuntimeManager and GatewayRouter
         let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
@@ -858,6 +858,7 @@ impl AppState {
                     resolver: path_resolver.clone(),
                 }),
                 Arc::new(DefaultPrincipalRouterFactory),
+                Arc::clone(&inbox_registry),
             )
             .with_resolver(resolver.clone())
             .with_slash_dispatcher(slash_dispatcher)

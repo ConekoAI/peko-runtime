@@ -13,12 +13,26 @@ use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::inbox::SessionInbox;
 use peko_session::InboxRegistry;
 
-/// Default `InboxFactory` used by [`AsyncExecutor::new`] and
-/// [`AsyncExecutor::with_registries`] when the caller doesn't
-/// supply one. Constructs an empty `SessionInbox` per session key.
+/// Default `InboxFactory` for [`InboxRegistry`] construction.
+/// Constructs an empty `SessionInbox` per session key.
 #[must_use]
 pub fn default_inbox_factory() -> peko_session::InboxFactory {
     Arc::new(|| -> Arc<dyn peko_extension_api::AsyncInboxLike> { Arc::new(SessionInbox::new()) })
+}
+
+/// Construct a standalone `InboxRegistry` backed by the default
+/// `SessionInbox` factory.
+///
+/// For components that genuinely own a private registry — per-call
+/// scopes, placeholder wiring, tests. The daemon composition root
+/// must NOT use this: it shares ONE registry across the IPC server,
+/// `PrincipalManager`, `AsyncExecutor`, and cron engine so the
+/// per-session run permit lives in a single permit space (splitting
+/// it let two turns run concurrently on one session JSONL — finding
+/// N1, 2026-08-07 field test).
+#[must_use]
+pub fn standalone_inbox_registry() -> Arc<InboxRegistry> {
+    Arc::new(InboxRegistry::new(default_inbox_factory()))
 }
 use anyhow::Result;
 use peko_tools_core::ToolResult;
@@ -71,11 +85,15 @@ impl AsyncExecutor {
         self.registry.clone()
     }
 
-    /// Create a new unified async executor with a default
-    /// `InboxRegistry`. Use [`Self::with_inbox_registry`] to share
-    /// a registry with the rest of the daemon (the common case).
+    /// Create a new unified async executor.
+    ///
+    /// `inbox_registry` is required (no private default): completion
+    /// events and steer messages must land in the same inboxes the
+    /// in-flight `AgenticLoop` drains, so production callers pass the
+    /// daemon-shared registry. Use [`standalone_inbox_registry`] for
+    /// per-call scopes, placeholders, and tests.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(inbox_registry: Arc<InboxRegistry>) -> Self {
         let task_file_writer = crate::extensions::framework::paths::default_data_dir()
             .join("async_tasks")
             .into();
@@ -85,15 +103,17 @@ impl AsyncExecutor {
             deliveries: Arc::new(RwLock::new(HashMap::new())),
             default_delivery: DeliveryTarget::AsyncQueue,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
-            inbox_registry: Arc::new(InboxRegistry::new(default_inbox_factory())),
+            inbox_registry,
         }
     }
 
-    /// Create with existing registries (for sharing with other components)
+    /// Create with existing registries (for sharing with other components).
+    /// `inbox_registry` is required for the same reason as in [`Self::new`].
     #[must_use]
     pub fn with_registries(
         registry: SharedAsyncTaskRegistry,
         queue_manager: SharedAsyncResultQueueManager,
+        inbox_registry: Arc<InboxRegistry>,
     ) -> Self {
         let task_file_writer = crate::extensions::framework::paths::default_data_dir()
             .join("async_tasks")
@@ -104,7 +124,7 @@ impl AsyncExecutor {
             deliveries: Arc::new(RwLock::new(HashMap::new())),
             default_delivery: DeliveryTarget::AsyncQueue,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
-            inbox_registry: Arc::new(InboxRegistry::new(default_inbox_factory())),
+            inbox_registry,
         }
     }
 
@@ -122,16 +142,6 @@ impl AsyncExecutor {
     #[must_use]
     pub fn with_default_delivery(mut self, target: DeliveryTarget) -> Self {
         self.default_delivery = target;
-        self
-    }
-
-    /// Inject the shared `InboxRegistry` used for per-session
-    /// completion delivery. The daemon's `AppState` calls this
-    /// during startup so that completion events land in the same
-    /// inboxes the in-flight `AgenticLoop` drains from.
-    #[must_use]
-    pub fn with_inbox_registry(mut self, registry: Arc<InboxRegistry>) -> Self {
-        self.inbox_registry = registry;
         self
     }
 
@@ -804,12 +814,6 @@ impl std::fmt::Debug for AsyncExecutor {
     }
 }
 
-impl Default for AsyncExecutor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod completion_queue_fan_out_tests {
     use super::*;
@@ -821,7 +825,7 @@ mod completion_queue_fan_out_tests {
         let registry = Arc::new(InboxRegistry::new(
             super::super::executor::default_inbox_factory(),
         ));
-        let exec = AsyncExecutor::new().with_inbox_registry(registry.clone());
+        let exec = AsyncExecutor::new(registry.clone());
         (exec, registry)
     }
 
@@ -1156,7 +1160,7 @@ mod dispatch_tool_tests {
         core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
             .await;
 
-        let executor = Arc::new(AsyncExecutor::new());
+        let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context = ToolDispatchContext::builder("stub_tool", serde_json::json!({}), "session_x")
             .with_principal_id("system".to_string());
         // Empty capabilities — gate must reject.
@@ -1214,7 +1218,7 @@ mod dispatch_tool_tests {
         core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
             .await;
 
-        let executor = Arc::new(AsyncExecutor::new());
+        let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context = ToolDispatchContext::builder("stub_tool", serde_json::json!({}), "session_x")
             .for_principal("system".to_string(), vec!["tool:stub_tool".to_string()]);
 
@@ -1263,7 +1267,7 @@ mod dispatch_tool_tests {
         )
         .await;
 
-        let executor = Arc::new(AsyncExecutor::new());
+        let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context =
             ToolDispatchContext::builder("abortable_stub", serde_json::json!({}), "session_x")
                 .for_principal(
@@ -1310,7 +1314,7 @@ mod dispatch_tool_tests {
         core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
             .await;
 
-        let executor = Arc::new(AsyncExecutor::new());
+        let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context = ToolDispatchContext::builder("stub_tool", serde_json::json!({}), "session_x")
             .for_principal("system".to_string(), vec!["tool:stub_tool".to_string()]);
 

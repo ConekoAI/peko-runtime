@@ -1553,6 +1553,7 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
         resolver.clone(),
         Arc::new(CliPrincipalMemoryFactory { resolver }),
         Arc::new(DefaultPrincipalRouterFactory),
+        peko_core::extensions::framework::async_exec::executor::standalone_inbox_registry(),
     )
 }
 
