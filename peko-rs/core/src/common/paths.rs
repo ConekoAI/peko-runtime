@@ -118,6 +118,12 @@ pub struct SharedLayout {
     pub memory_snapshots_dir: PathBuf,
     /// `…/mcps/` — principal-owned MCP server configs.
     pub mcps_dir: PathBuf,
+    /// `…/channels/` — `pin_to_shared`'d channel dirs (PR-3d).
+    /// Replicated from `<runtime_dir>/channels/<chan_id>/` so other
+    /// principals sharing the same shared root can discover them
+    /// via `discover_shared`. Empty until a channel is explicitly
+    /// pinned.
+    pub channels_dir: PathBuf,
 }
 
 /// All typed paths for a single principal. The `name` is stored so
@@ -418,6 +424,7 @@ impl PathResolver {
                 agents_dir: shared_root.join("agents"),
                 memory_snapshots_dir: shared_root.join("memory").join("snapshots"),
                 mcps_dir: shared_root.join("mcps"),
+                channels_dir: shared_root.join("channels"),
             },
         }
     }

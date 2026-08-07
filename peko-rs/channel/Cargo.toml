@@ -1,0 +1,62 @@
+[package]
+name = "peko-channel"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peko <peko@coneko.ai>"]
+description = "Multi-principal chat primitive (channels) — `ChannelPort` + `ChannelStore` (append-only JSONL) + `ChannelSubscriber` poll loop. PR-1 shipped the trait surface; PR-3 added fan-out cap + shared-tier opt-in; PR-4a added the `ChannelRead` tool; PR-5b replaced the `peko_plan`-backed DAG with an append-only JSONL log (symmetric with `peko_chat_log::ChatLogStore`)."
+license = "MIT"
+repository = "https://github.com/ConekoAI/peko-runtime"
+
+# Crate boundary (Phase 18.x of the post-migration cleanup, peko-channel
+# extraction). What lives here:
+# - The `ChannelPort` consumer-defined trait (port the CLI/daemon use
+#   via Arc<dyn>).
+# - The `ChannelResponder` consumer-defined trait (only `Noop` impl
+#   ships today — agents read channels actively via the `ChannelRead`
+#   tool in peko-core, so there is no daemon-side responder to gate).
+# - `ChannelStore` (the concrete `ChannelPort` impl backed by an
+#   append-only JSONL event log + member set; PR-5b replaced the
+#   prior `peko_plan`-backed DAG).
+# - `ChannelSubscriber` (per-member poll loop — feeds the audit meter).
+# - `ChannelCursors` (per-channel runtime-tier "last_read_task_id" map).
+# - Wire types live in `peko-protocol::channel` (peer crate).
+#
+# Forbidden deps:
+# - `peko-engine` — would invert the dispatch/contract direction.
+# - `peko-core` — root composition layer; leaf crates don't reach in.
+# - `peko-cron` — orthogonal domain.
+# - `peko-protocol` may be touched for re-exports but no internal logic.
+# - Any `peko-extension-*` crate.
+# - `peko-plan` — PR-5b dropped this; channels are not a planning
+#   surface, just a shared append-only log.
+#
+# Allowed deps:
+# - `peko-protocol` for wire types only.
+# - `peko-fs-persistence` (`FileLock` + `append_bytes_durable`).
+# - `peko-subject` (`PrincipalId`).
+# - `peko-observability` for the audit ring buffer sink.
+
+[dependencies]
+# Wire types — re-exported through `lib.rs` for ergonomic callers.
+peko-protocol = { path = "../protocol" }
+# Subject (PrincipalId).
+peko-subject = { path = "../subject" }
+# File lock + atomic append helper for the JSONL event log.
+peko-fs-persistence = { path = "../fs-persistence" }
+# Audit ring buffer sink for `AuditChannelMeter` (PR-3c). `peko-observability`
+# only depends on `peko-auth` (Subject for caller attribution) so this
+# doesn't violate the `peko-core` / `peko-engine` / `peko-cron` /
+# `peko-extension-*` forbidden-deps rule.
+peko-observability = { path = "../observability" }
+
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tokio = { version = "1.35", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+toml = "0.8"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.10"

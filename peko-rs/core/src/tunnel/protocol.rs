@@ -282,8 +282,8 @@ pub enum TunnelMessage {
     #[serde(rename = "status_update")]
     StatusUpdate { payload: StatusUpdatePayload },
 
-    // --- Cross-runtime agent-to-agent (issue #29) ---
-    /// Agent-to-agent request from the **caller** runtime to the
+    // --- Cross-runtime principal-to-principal (issue #29) ---
+    /// Principal-to-principal request from the **caller** runtime to the
     /// **target** runtime, proxied through PekoHub. Issue #29 (Slice A —
     /// wire shape).
     ///
@@ -294,7 +294,7 @@ pub enum TunnelMessage {
     /// it to PekoHub which forwards to the target runtime over the
     /// target's existing tunnel. The target verifies the caller's
     /// `caller_runtime_id` against the hub's allowlist (defense in
-    /// depth) before attributing the receiving agent's session to
+    /// depth) before attributing the receiving principal's session to
     /// `Subject::Principal(caller_principal_did)` and dispatching.
     ///
     /// Slice A only defines and round-trips the wire shape. Slice B
@@ -302,10 +302,17 @@ pub enum TunnelMessage {
     /// the canonical pre-image `request_id || caller_runtime_id ||
     /// caller_principal_did || target_principal_did || message`).
     /// Slice C adds the inbound verifier + dispatcher route.
-    #[serde(rename = "agent_to_agent_request", rename_all = "camelCase")]
-    AgentToAgentRequest {
+    ///
+    /// **Wire tag note.** The Rust enum name is
+    /// `PrincipalToPrincipalRequest`; the on-wire tag is
+    /// `principal_to_principal_request` (snake_case). The tag was
+    /// previously `agent_to_agent_request` (pre-ADR-042 name); it was
+    /// renamed to match pekohub's TypeScript decoder and the
+    /// principal-as-container-v2 unification (PR-A commit 1).
+    #[serde(rename = "principal_to_principal_request", rename_all = "camelCase")]
+    PrincipalToPrincipalRequest {
         /// Globally unique request ID. Used to correlate the matching
-        /// `AgentToAgentResponse` and to scope the canonical
+        /// `PrincipalToPrincipalResponse` and to scope the canonical
         /// signature pre-image (replay protection: PekoHub MAY
         /// reject duplicate IDs within a sliding window).
         request_id: String,
@@ -315,21 +322,20 @@ pub enum TunnelMessage {
         /// this DID and rejects the message if the caller is not on
         /// the hub's allowlist.
         caller_runtime_id: String,
-        /// The caller agent's stable DID (issue #28 form:
-        /// `did:peko:agent:<keyhash>`). Projected to
-        /// `Subject::Principal(caller_principal_did)` on the target side
-        /// for session attribution, permission grant lookup, and the
-        /// `AuditEvent.caller` field (issue #26).
+        /// The caller principal's stable DID. Projected to
+        /// `Subject::Principal(caller_principal_did)` on the target
+        /// side for session attribution, permission grant lookup, and
+        /// the `AuditEvent.caller` field (issue #26).
         caller_principal_did: String,
-        /// The **target** agent's stable DID. The target runtime
-        /// resolves this against its local agent table
-        /// (`AgentConfig.agent_did`) to find the agent name to
-        /// dispatch on. A missing target_principal_did on the receiving
-        /// side is a 404 — the hub-side directory should have caught
-        /// this, so it most often indicates a stale resolution
-        /// cached on the caller.
+        /// The **target** principal's stable DID. The target runtime
+        /// resolves this against its local principal table
+        /// (`PrincipalConfig.principal_did`) to find the principal
+        /// name to dispatch on. A missing target_principal_did on
+        /// the receiving side is a 404 — the hub-side directory
+        /// should have caught this, so it most often indicates a
+        /// stale resolution cached on the caller.
         target_principal_did: String,
-        /// The message body to deliver to the target agent.
+        /// The message body to deliver to the target principal.
         message: String,
         /// Ed25519 signature, base64url-encoded, over the canonical
         /// pre-image (see Slice B comment above). The target derives
@@ -344,20 +350,23 @@ pub enum TunnelMessage {
         signature: String,
     },
 
-    /// Agent-to-agent response from the **target** runtime back to the
-    /// **caller**, also proxied through PekoHub. Issue #29 (Slice A —
-    /// wire shape).
+    /// Principal-to-principal response from the **target** runtime back
+    /// to the **caller**, also proxied through PekoHub. Issue #29
+    /// (Slice A — wire shape).
     ///
     /// The `payload` is the serialized form of an IPC `ResponsePacket`
     /// (same as `ProxiedResponse.payload`) so the caller-side decoder
     /// can be the same code path for both user-originated and
-    /// agent-originated proxied responses. Slice C is what actually
+    /// principal-originated proxied responses. Slice C is what actually
     /// emits this; Slice A only pins the shape.
-    #[serde(rename = "agent_to_agent_response", rename_all = "camelCase")]
-    AgentToAgentResponse {
+    ///
+    /// **Wire tag note.** Renamed from `agent_to_agent_response`
+    /// alongside `PrincipalToPrincipalRequest` (PR-A commit 1).
+    #[serde(rename = "principal_to_principal_response", rename_all = "camelCase")]
+    PrincipalToPrincipalResponse {
         /// Matches the `request_id` of the originating
-        /// `AgentToAgentRequest`. PekoHub uses this to route the
-        /// response back to the caller's tunnel.
+        /// `PrincipalToPrincipalRequest`. PekoHub uses this to route
+        /// the response back to the caller's tunnel.
         request_id: String,
         /// Serialized IPC `ResponsePacket` (same encoding as
         /// `ProxiedResponse.payload`). Slice C decides whether the
@@ -366,7 +375,155 @@ pub enum TunnelMessage {
         /// indifferent.
         payload: Vec<u8>,
     },
+
+    // --- Cross-runtime channel events (peko-channel cross-runtime PR-A) ---
+    /// Channel-event fan-out from the source runtime to the other
+    /// runtimes that host a remote member of the channel. Pure push:
+    /// no `request_id`-correlated response. PekoHub forwards to each
+    /// recipient runtime's tunnel connection verbatim, with the same
+    /// source-allowlist check used for `PrincipalToPrincipalRequest`.
+    ///
+    /// Source of truth: the **creator's** runtime owns the channel's
+    /// `events.jsonl`. Every other runtime that hosts a member of the
+    /// channel keeps a local mirror (`<runtime_dir>/channels/<chan_id>/
+    /// events.jsonl`) that is hydrated by these fan-outs.
+    ///
+    /// The `signature` is an ed25519 signature (base64url-no-pad) over
+    /// the canonical pre-image
+    /// `domain || request_id || source_runtime_id ||
+    /// source_principal_did || channel_id || event_json` (see
+    /// `tunnel_channel_signature`). The receiver derives the
+    /// verifying key from `source_runtime_id` (self-certifying
+    /// `did:key`) — same defense-in-depth layer as the DM path. The
+    /// hub's source-allowlist is the primary gate; signature
+    /// verification is the receiver-side check that catches a hub bug
+    /// or stale forwarder.
+    ///
+    /// `event` carries the full `ChannelEvent` payload (not just the
+    /// `kind` discriminant) so the receiver can write the event
+    /// verbatim into its local mirror — no second round-trip needed.
+    #[serde(rename = "tunnel_channel_event", rename_all = "camelCase")]
+    TunnelChannelEvent {
+        /// Unique-per-fanout id (UUIDv4 from the source runtime).
+        /// Not used for response correlation (channels are
+        /// push-only); exists so a hub can scope replay protection
+        /// and so audit logs can join an outbound `forwarded` row to
+        /// each inbound `received` row.
+        request_id: String,
+        /// The source runtime's `did:key` form (the `runtime_id` it
+        /// presented in `RuntimeHello`). The receiver derives the
+        /// verifying key from this DID and rejects the message if
+        /// `signature` does not verify against the pre-image built
+        /// from the rest of these fields.
+        source_runtime_id: String,
+        /// The runtime the hub should forward this envelope to. The
+        /// outbound `fanout_event` loop emits one envelope per
+        /// unique recipient runtime, with each envelope addressed
+        /// to that runtime's `did:key`. Without this field the hub
+        /// has no way to route — option (a) in the cross-runtime
+        /// plan ("implicit via known-runtimes registry") would
+        /// require the hub to track channel membership, which it
+        /// deliberately doesn't. The field is added here so the
+        /// hub can stay a pure relay.
+        recipient_runtime_id: String,
+        /// The local principal on the source runtime that authored
+        /// the underlying event. Carried for audit only — the
+        /// signature itself is over the runtime-level pre-image.
+        source_principal_did: String,
+        /// The channel id (`chan_<8 base36>`). The receiver looks up
+        /// the local mirror directory and appends `event` to
+        /// `events.jsonl` under it.
+        channel_id: String,
+        /// The full `ChannelEvent` payload — `Created`, `Posted`,
+        /// `MemberJoined`, or `MemberLeft`. Carries the timestamp
+        /// assigned by the source runtime (the receiver MUST NOT
+        /// re-stamp it on append).
+        event: peko_protocol::channel::ChannelEvent,
+        /// Ed25519 signature, base64url-encoded, over the canonical
+        /// pre-image described in the module docs. Left as `String`
+        /// (matching `PrincipalToPrincipalRequest.signature`) so the
+        /// wire form matches the existing tunnel signature fields
+        /// and the pekohub TypeScript decoder can share a parser.
+        signature: String,
+    },
+
+    /// Bootstrap envelope for a cross-runtime channel invite.
+    ///
+    /// Sent from the **creator** runtime to each **invitee**'s
+    /// hosting runtime when a non-self principal is invited to a
+    /// channel (peko-channel cross-runtime PR-3a, the pre-req for
+    /// PR-3's desktop invite UX). The receiver uses `join_remote`
+    /// to create a local mirror directory + a synthetic
+    /// `ChannelEvent::Created` event so PR-2b's `peko-stream`
+    /// listener fires on the desktop.
+    ///
+    /// Mirrors `TunnelChannelEvent`'s shape: hub acts as a pure
+    /// relay, source-allowlist + recipient lookup. The `creator`
+    /// and `name` come from the source runtime's `ChannelStore`
+    /// metadata (snapshotted at invite time) so the receiver can
+    /// populate `meta.json` without a second round-trip.
+    #[serde(rename = "tunnel_channel_invite", rename_all = "camelCase")]
+    TunnelChannelInvite {
+        /// Unique-per-fanout id (UUIDv4 from the source runtime).
+        /// Mirrors `TunnelChannelEvent.request_id`; not used for
+        /// response correlation (channel events are push-only).
+        request_id: String,
+        /// Source runtime's `did:key`. The receiver derives the
+        /// verifying key from this DID and rejects the envelope if
+        /// `signature` does not verify against the pre-image built
+        /// from the rest of these fields.
+        source_runtime_id: String,
+        /// The runtime the hub should forward this envelope to. The
+        /// outbound `fanout_invite` loop emits one envelope per
+        /// unique invitee runtime. Without this field the hub has
+        /// no way to route — channel membership tracking is a
+        /// source-runtime concern.
+        recipient_runtime_id: String,
+        /// The local principal on the source runtime that issued
+        /// the invite. Recorded for audit only — the signature is
+        /// over the runtime-level pre-image.
+        source_principal_did: String,
+        /// The channel id (`chan_<8 base36>`). The receiver looks
+        /// up the local mirror directory and calls `join_remote`
+        /// with the rest of the envelope to bootstrap it.
+        channel_id: String,
+        /// The creator's display name (principal DID, e.g.
+        /// `prin_alice`). Mirrors the `creator` field written into
+        /// the local mirror's `meta.json`.
+        creator: String,
+        /// Human-readable channel name (`team`, `general`, etc.).
+        /// Snapshotted from the source runtime's `meta.json` at
+        /// invite time so the receiver doesn't need a follow-up
+        /// `peek` to display the channel.
+        name: String,
+        /// Initial membership snapshot: every principal that
+        /// should appear in the receiver's `members.json` row
+        /// table. Each row pairs a principal DID with the runtime
+        /// that hosts it (`runtime_id: None` = local to the
+        /// source). The receiver builds both the local-members
+        /// (`local_members`) and `remote_members` arrays from this
+        /// list by partitioning on the optional `runtime_id`.
+        initial_members: Vec<InitialMember>,
+        /// Ed25519 signature, base64url-no-pad, over the canonical
+        /// pre-image described in `tunnel_channel_signature`. Same
+        /// shape as `TunnelChannelEvent.signature`.
+        signature: String,
+    },
 }
+
+/// One row of the `initialMembers` list on
+/// `TunnelChannelInvite`. `runtime_id: None` means the principal
+/// is local to the source runtime (will land in `members.json`'s
+/// local array); `Some(runtime_id)` means the principal lives on a
+/// peer runtime and the receiver should record a `RemoteMember`
+/// row in `members.json`.
+///
+/// Canonical home is `peko_protocol::channel::InitialMember`
+/// (mirrors how `TunnelChannelEvent.event` re-uses
+/// `peko_protocol::channel::ChannelEvent`). Defined here as a
+/// type alias so the field on `TunnelChannelInvite` reads naturally
+/// at the call site (`initial_members: Vec<InitialMember>`).
+pub type InitialMember = peko_protocol::channel::InitialMember;
 
 impl TunnelMessage {
     /// Serialize to JSON bytes
@@ -810,18 +967,18 @@ mod tests {
         }
     }
 
-    // -- Issue #29 (Slice A): cross-runtime a2a wire shape ------------
+    // -- Issue #29 (Slice A): cross-runtime p2p wire shape ------------
 
-    /// `AgentToAgentRequest` round-trips with all fields populated.
-    /// The on-wire tag is `agent_to_agent_request` (snake_case, to
-    /// match the existing dispatch table on the hub side) and the
-    /// field names are camelCase (matching every other tunnel
-    /// message). Slice B (outbound signer) and Slice C (inbound
-    /// verifier) will read these names verbatim, so pinning them
-    /// here also pins the contract with pekohub#14.
+    /// `PrincipalToPrincipalRequest` round-trips with all fields
+    /// populated. The on-wire tag is `principal_to_principal_request`
+    /// (snake_case — renamed PR-A commit 1 to match pekohub's
+    /// TypeScript decoder + ADR-042) and the field names are camelCase
+    /// (matching every other tunnel message). Slice B (outbound signer)
+    /// and Slice C (inbound verifier) read these names verbatim, so
+    /// pinning them here also pins the contract with pekohub#14.
     #[test]
-    fn test_agent_to_agent_request_roundtrip() {
-        let msg = TunnelMessage::AgentToAgentRequest {
+    fn test_principal_to_principal_request_roundtrip() {
+        let msg = TunnelMessage::PrincipalToPrincipalRequest {
             request_id: "req-abc-123".to_string(),
             caller_runtime_id: "did:key:zRuntime1".to_string(),
             caller_principal_did: "did:peko:agent:caller-hash".to_string(),
@@ -833,8 +990,8 @@ mod tests {
         let json = String::from_utf8(bytes.clone()).unwrap();
 
         assert!(
-            json.contains("\"agent_to_agent_request\""),
-            "tag must be snake_case `agent_to_agent_request`, got: {json}"
+            json.contains("\"principal_to_principal_request\""),
+            "tag must be snake_case `principal_to_principal_request`, got: {json}"
         );
         // Every field is camelCase on the wire.
         assert!(
@@ -864,7 +1021,7 @@ mod tests {
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
-            TunnelMessage::AgentToAgentRequest {
+            TunnelMessage::PrincipalToPrincipalRequest {
                 request_id,
                 caller_runtime_id,
                 caller_principal_did,
@@ -879,17 +1036,17 @@ mod tests {
                 assert_eq!(message, "review this PR");
                 assert_eq!(signature, "base64url-sig");
             }
-            other => panic!("Expected AgentToAgentRequest, got: {other:?}"),
+            other => panic!("Expected PrincipalToPrincipalRequest, got: {other:?}"),
         }
     }
 
-    /// `AgentToAgentResponse` round-trips with a binary payload (the
-    /// IPC `ResponsePacket` form, opaque at this layer). Field name
-    /// is camelCase on the wire; the tag is snake_case
-    /// `agent_to_agent_response`.
+    /// `PrincipalToPrincipalResponse` round-trips with a binary payload
+    /// (the IPC `ResponsePacket` form, opaque at this layer). Field
+    /// name is camelCase on the wire; the tag is snake_case
+    /// `principal_to_principal_response` (renamed PR-A commit 1).
     #[test]
-    fn test_agent_to_agent_response_roundtrip() {
-        let msg = TunnelMessage::AgentToAgentResponse {
+    fn test_principal_to_principal_response_roundtrip() {
+        let msg = TunnelMessage::PrincipalToPrincipalResponse {
             request_id: "req-abc-123".to_string(),
             payload: vec![0xde, 0xad, 0xbe, 0xef],
         };
@@ -897,8 +1054,8 @@ mod tests {
         let json = String::from_utf8(bytes.clone()).unwrap();
 
         assert!(
-            json.contains("\"agent_to_agent_response\""),
-            "tag must be snake_case `agent_to_agent_response`, got: {json}"
+            json.contains("\"principal_to_principal_response\""),
+            "tag must be snake_case `principal_to_principal_response`, got: {json}"
         );
         assert!(
             json.contains("\"requestId\""),
@@ -907,14 +1064,14 @@ mod tests {
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
-            TunnelMessage::AgentToAgentResponse {
+            TunnelMessage::PrincipalToPrincipalResponse {
                 request_id,
                 payload,
             } => {
                 assert_eq!(request_id, "req-abc-123");
                 assert_eq!(payload, vec![0xde, 0xad, 0xbe, 0xef]);
             }
-            other => panic!("Expected AgentToAgentResponse, got: {other:?}"),
+            other => panic!("Expected PrincipalToPrincipalResponse, got: {other:?}"),
         }
     }
 
@@ -951,6 +1108,208 @@ mod tests {
                 assert_eq!(iteration, 3);
             }
             other => panic!("Expected StreamIteration, got: {other:?}"),
+        }
+    }
+
+    /// `TunnelChannelEvent` (peko-channel cross-runtime PR-A commit 2)
+    /// round-trips with a `Posted` payload. The wire tag is
+    /// `tunnel_channel_event` (snake_case); fields are camelCase.
+    /// The nested `event` is the canonical `ChannelEvent` JSON shape
+    /// (its own `tag = "kind"` discriminant) — pinning it here also
+    /// pins the contract with pekohub's forwarding layer.
+    #[test]
+    fn test_tunnel_channel_event_roundtrip() {
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: peko_protocol::channel::ChannelId("chan_abcdefgh".to_string()),
+            author: "prin_alice".to_string(),
+            parent: None,
+            text: "hello from A".to_string(),
+            at: "2026-08-06T12:00:00Z".to_string(),
+        };
+        let msg = TunnelMessage::TunnelChannelEvent {
+            request_id: "chan-evt-1".to_string(),
+            source_runtime_id: "did:key:zRuntimeA".to_string(),
+            recipient_runtime_id: "did:key:zRuntimeB".to_string(),
+            source_principal_did: "prin_alice".to_string(),
+            channel_id: "chan_abcdefgh".to_string(),
+            event,
+            signature: "base64url-sig".to_string(),
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+
+        // Wire tag is snake_case.
+        assert!(
+            json.contains("\"tunnel_channel_event\""),
+            "tag must be snake_case `tunnel_channel_event`, got: {json}"
+        );
+        // Fields are camelCase.
+        assert!(
+            json.contains("\"requestId\""),
+            "field requestId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"sourceRuntimeId\""),
+            "field sourceRuntimeId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"recipientRuntimeId\""),
+            "field recipientRuntimeId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"sourcePrincipalDid\""),
+            "field sourcePrincipalDid must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"channelId\""),
+            "field channelId must be camelCase, got: {json}"
+        );
+        // The nested event uses its own `kind` discriminant.
+        assert!(
+            json.contains("\"kind\":\"posted\""),
+            "nested ChannelEvent must use its `kind` tag, got: {json}"
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::TunnelChannelEvent {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                event,
+                signature,
+            } => {
+                assert_eq!(request_id, "chan-evt-1");
+                assert_eq!(source_runtime_id, "did:key:zRuntimeA");
+                assert_eq!(recipient_runtime_id, "did:key:zRuntimeB");
+                assert_eq!(source_principal_did, "prin_alice");
+                assert_eq!(channel_id, "chan_abcdefgh");
+                assert_eq!(signature, "base64url-sig");
+                match event {
+                    peko_protocol::channel::ChannelEvent::Posted {
+                        channel,
+                        author,
+                        text,
+                        ..
+                    } => {
+                        assert_eq!(channel.as_str(), "chan_abcdefgh");
+                        assert_eq!(author, "prin_alice");
+                        assert_eq!(text, "hello from A");
+                    }
+                    other => panic!("Expected Posted, got: {other:?}"),
+                }
+            }
+            other => panic!("Expected TunnelChannelEvent, got: {other:?}"),
+        }
+    }
+
+    /// `TunnelChannelInvite` (peko-channel cross-runtime PR-3a
+    /// commit 1) round-trips with a two-member `initialMembers`
+    /// snapshot — one local to the source runtime, one remote.
+    /// Wire tag is `tunnel_channel_invite` (snake_case); fields are
+    /// camelCase. Pins the contract with the `sign_channel_invite`
+    /// helpers and with pekohub's pure-relay forwarding layer
+    /// (mirrors PR-C's `tunnel_channel_event` add).
+    #[test]
+    fn test_tunnel_channel_invite_roundtrip() {
+        let initial_members = vec![
+            InitialMember {
+                principal_did: "prin_alice".to_string(),
+                runtime_id: None,
+            },
+            InitialMember {
+                principal_did: "prin_bob".to_string(),
+                runtime_id: Some("did:key:zRuntimeB".to_string()),
+            },
+        ];
+        let msg = TunnelMessage::TunnelChannelInvite {
+            request_id: "chan-invite-1".to_string(),
+            source_runtime_id: "did:key:zRuntimeA".to_string(),
+            recipient_runtime_id: "did:key:zRuntimeB".to_string(),
+            source_principal_did: "prin_alice".to_string(),
+            channel_id: "chan_abcdefgh".to_string(),
+            creator: "prin_alice".to_string(),
+            name: "team-chat".to_string(),
+            initial_members,
+            signature: "base64url-sig".to_string(),
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+
+        // Wire tag is snake_case.
+        assert!(
+            json.contains("\"tunnel_channel_invite\""),
+            "tag must be snake_case `tunnel_channel_invite`, got: {json}"
+        );
+        // All flat fields are camelCase.
+        assert!(
+            json.contains("\"requestId\""),
+            "field requestId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"sourceRuntimeId\""),
+            "field sourceRuntimeId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"recipientRuntimeId\""),
+            "field recipientRuntimeId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"sourcePrincipalDid\""),
+            "field sourcePrincipalDid must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"channelId\""),
+            "field channelId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"initialMembers\""),
+            "field initialMembers must be camelCase, got: {json}"
+        );
+        // `runtime_id: None` is skipped on the wire (no null leak).
+        assert!(
+            !json.contains("\"runtimeId\":null"),
+            "runtime_id=None must be skipped (not serialized as null), got: {json}"
+        );
+        // The present `runtime_id` is camelCase.
+        assert!(
+            json.contains("\"runtimeId\":\"did:key:zRuntimeB\""),
+            "remote member's runtimeId must be camelCase, got: {json}"
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::TunnelChannelInvite {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                creator,
+                name,
+                initial_members: decoded_members,
+                signature,
+            } => {
+                assert_eq!(request_id, "chan-invite-1");
+                assert_eq!(source_runtime_id, "did:key:zRuntimeA");
+                assert_eq!(recipient_runtime_id, "did:key:zRuntimeB");
+                assert_eq!(source_principal_did, "prin_alice");
+                assert_eq!(channel_id, "chan_abcdefgh");
+                assert_eq!(creator, "prin_alice");
+                assert_eq!(name, "team-chat");
+                assert_eq!(signature, "base64url-sig");
+                assert_eq!(decoded_members.len(), 2);
+                assert_eq!(decoded_members[0].principal_did, "prin_alice");
+                assert_eq!(decoded_members[0].runtime_id, None);
+                assert_eq!(decoded_members[1].principal_did, "prin_bob");
+                assert_eq!(
+                    decoded_members[1].runtime_id.as_deref(),
+                    Some("did:key:zRuntimeB")
+                );
+            }
+            other => panic!("Expected TunnelChannelInvite, got: {other:?}"),
         }
     }
 }

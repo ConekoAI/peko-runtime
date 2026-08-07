@@ -338,6 +338,29 @@ impl Daemon {
             }
         }
 
+        // PR-3c / PR-5a: spawn a per-(principal, channel)
+        // `ChannelSubscriber` for every loaded principal's channels.
+        // The audit meter is the only thing the subscriber exercises
+        // in production — agents read channels actively via the
+        // `ChannelRead` tool (PR-4a), so there is no daemon-side
+        // responder to dispatch through. The `NoopChannelResponder`
+        // passed in is permanent (PR-5a deleted `EngineChannelResponder`).
+        // Spawn-and-forget so a subscriber crash doesn't block daemon
+        // boot; the `ChannelSubscriber::spawn` loop handles transient
+        // errors internally (logs and continues; only `NotFound` /
+        // `NotMember` end the loop, which is the correct signal for
+        // "channel deleted out from under us").
+        let channel_handles =
+            spawn_channel_subscribers(&app_state).await;
+        info!(
+            "channel subscribers: spawned {} poll task(s)",
+            channel_handles.len()
+        );
+        // Stash the handles so a future shutdown hook can abort
+        // them; today daemon shutdown is a process kill so we don't
+        // need to drive them.
+        let _channel_handles = channel_handles;
+
         // Build the cron engine's `AsyncExecutor` with the daemon's
         // shared `InboxRegistry` so completion events and steer
         // messages land in the same inboxes the in-flight `AgenticLoop`
@@ -648,3 +671,78 @@ mod tests {
 // to be reachable from a top-level `tests/*.rs` integration harness.
 #[cfg(all(test, feature = "test-utils"))]
 mod e2e_tests;
+
+// ---------------------------------------------------------------------------
+// PR-3c / PR-5a: channel subscriber lifespan
+// ---------------------------------------------------------------------------
+
+/// Spawn one [`ChannelSubscriber`] per (loaded principal × channel the
+/// principal is a member of). Each subscriber runs the meter against
+/// the audit ring buffer via the `AuditChannelMeter` returned by
+/// `AppState::channel_meter`. The responder is the no-op impl
+/// permanently — agents read channels actively via the `ChannelRead`
+/// tool (PR-4a) rather than via a daemon-side responder. PR-5a deleted
+/// `EngineChannelResponder`. The lifespan task itself is small, lives
+/// once per daemon boot, and never blocks startup: a failure inside
+/// one subscriber's tick logs and continues; only `NotFound` /
+/// `NotMember` (channel vanished) ends the loop, which is the correct
+/// signal.
+///
+/// `app_state` must already be constructed (drift check ran, principals
+/// are loaded). The function returns the `JoinHandle`s so a future
+/// shutdown hook can abort them; today's shutdown is a process kill,
+/// so callers are free to drop them.
+async fn spawn_channel_subscribers(
+    app_state: &crate::daemon::state::AppState,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    use peko_channel::responder::NoopChannelResponder;
+    use peko_channel::{ChannelSubscriber, SubscriptionConfig};
+
+    // Access `channel_port` / `channel_meter` through the
+    // `ChannelHost` trait — they're trait methods, not inherent
+    // methods. The handler module owns the trait definition
+    // (consumer-defined pattern, per F6/F7).
+    let host: &dyn crate::ipc::handlers::channel::ChannelHost = app_state;
+    let port: Arc<dyn peko_channel::ChannelPort> = host.channel_port();
+    let meter = host.channel_meter();
+    let runtime_dir = app_state.path_resolver.runtime_dir();
+    // `principal_manager()` returns `&Arc<PrincipalManager>` — always
+    // present on a fully-constructed `AppState`. The `principal_manager`
+    // field is private, so we go through the public accessor.
+    let principal_manager = app_state.principal_manager().clone();
+
+    let principals = principal_manager.list_all().await;
+    let mut handles = Vec::new();
+    let cfg = SubscriptionConfig::default();
+
+    for principal in principals {
+        let principal_id = principal.id.clone();
+        let channels = match port.list_for_principal(&principal_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    principal = %principal_id,
+                    ?e,
+                    "channel subscribers: list_for_principal failed; skipping"
+                );
+                continue;
+            }
+        };
+
+        for channel in channels {
+            let channel_dir = runtime_dir.join("channels").join(channel.as_str());
+            let sub = ChannelSubscriber::new(
+                channel.clone(),
+                principal_id.clone(),
+                channel_dir,
+                port.clone(),
+                Arc::new(NoopChannelResponder),
+                meter.clone(),
+                peko_channel::ChannelCursors::new(),
+                cfg.clone(),
+            );
+            handles.push(sub.spawn());
+        }
+    }
+    handles
+}

@@ -28,6 +28,7 @@
 // Lifted in Phase F4:
 pub mod async_control;
 pub mod bash;
+pub mod channel;
 pub mod fs;
 pub mod messaging;
 pub mod paths;
@@ -50,6 +51,7 @@ pub use async_control::{
     SharedAsyncRuntime,
 };
 pub use bash::BashTool;
+pub use channel::{ChannelReadTool, ChannelSendTool};
 pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{
     AgentTool, DynamicSessionKeyProvider, SessionKeyProvider, SharedSubagentRuntime,

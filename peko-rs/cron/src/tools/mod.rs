@@ -700,4 +700,69 @@ mod tests {
         let back: CronJob = serde_json::from_str(&json).unwrap();
         assert_eq!(format!("{:?}", job), format!("{:?}", back));
     }
+
+    /// PR-4b — `peko channel poll` cron recipe. A `SpawnTool` job
+    /// targeting `ChannelRead` must round-trip through the on-disk
+    /// cron schedule (which is what the CLI and daemon both parse),
+    /// so the recipe documented in `docs/user-guide/CLI_REFERENCE.md`
+    /// is wire-compatible with the cron engine.
+    #[test]
+    fn cron_channel_poll_recipe_roundtrips_as_spawn_tool() {
+        // The exact CLI invocation from the recipe doc:
+        //   peko cron add --principal bob --tool ChannelRead \
+        //     --params '{"channel":"chan_a1b2c3d4","limit":50}' \
+        //     --every 30000
+        let job = CronJob {
+            id: "test-channel-poll".into(),
+            name: "channel-poll-bob".into(),
+            principal_id: PrincipalId("bob".into()),
+            schedule: ScheduleKind::Every { every_ms: 30_000 },
+            action: CronJobAction::SpawnTool {
+                tool_name: "ChannelRead".into(),
+                tool_params: serde_json::json!({
+                    "channel": "chan_a1b2c3d4",
+                    "limit": 50,
+                }),
+                wake_on_completion: Some(true),
+                timeout_secs: None,
+                description: Some("poll chan_a1b2c3d4 for new events".into()),
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            next_run: chrono::Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+
+        let json = serde_json::to_string(&job).unwrap();
+        let back: CronJob = serde_json::from_str(&json).unwrap();
+
+        // The dispatch surface must name `ChannelRead` exactly so the
+        // engine can resolve it through `ExtensionCore::list_tools`.
+        let CronJobAction::SpawnTool {
+            tool_name,
+            tool_params,
+            ..
+        } = &back.action
+        else {
+            panic!("expected SpawnTool action, got {:?}", back.action.kind_label())
+        };
+        assert_eq!(tool_name, "ChannelRead", "tool name must be ChannelRead");
+        assert_eq!(tool_params["channel"], "chan_a1b2c3d4");
+        assert_eq!(tool_params["limit"], 50);
+
+        // And the recipe should also be reachable through the
+        // canonical `render_job_list` shape the CLI displays.
+        let rendered = render_job_list(vec![back]);
+        let entry = &rendered["jobs"][0];
+        assert_eq!(entry["tool"], "ChannelRead");
+        assert_eq!(entry["action"], "spawn_tool");
+        assert_eq!(entry["principal"], "bob");
+        assert_eq!(entry["params"]["channel"], "chan_a1b2c3d4");
+    }
 }

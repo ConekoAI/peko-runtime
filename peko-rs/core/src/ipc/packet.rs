@@ -830,6 +830,105 @@ pub enum RequestPacket {
         name: String,
         jti: String,
     },
+
+    // ─── PR-2c: channel IPC variants ─────────────────────────────
+    //
+    // The seven variants below mirror `peko_channel::cli_handlers`
+    // (the pure-port CLI router). PR-3 may add a Shared-tier
+    // `ChannelCreateShared` variant; PR-2 ships Runtime-tier only.
+    //
+    // Wire shape mirrors the `cli_handlers` request structs. Where
+    // the handler takes a `PrincipalId`, the wire carries the
+    // principal's display name (the daemon resolves it back to a
+    // `PrincipalId` via `ChannelHost::principal_manager`).
+
+    /// Create a new channel owned by `creator_name`.
+    #[serde(rename = "channel_create")]
+    ChannelCreate {
+        request_id: u64,
+        creator_name: String,
+        name: String,
+    },
+
+    /// Add `invitee_name` to `channel` (invited by `inviter_name`).
+    #[serde(rename = "channel_invite")]
+    ChannelInvite {
+        request_id: u64,
+        channel: String,
+        inviter_name: String,
+        invitee_name: String,
+    },
+
+    /// Post a message to `channel` from `sender_name`. `parent` is
+    /// the optional task_id of the message being replied to.
+    #[serde(rename = "channel_post")]
+    ChannelPost {
+        request_id: u64,
+        channel: String,
+        sender_name: String,
+        text: String,
+        parent: Option<String>,
+    },
+
+    /// List events for `channel` since `since` (None = from start).
+    #[serde(rename = "channel_peek")]
+    ChannelPeek {
+        request_id: u64,
+        channel: String,
+        since: Option<String>,
+    },
+
+    /// PR-2b: subscribe to live events for `channel`. The daemon
+    /// replays events from `since` (None = from start) as a series of
+    /// `ChannelEventReceived` packets, then holds the connection open
+    /// and forwards new events as they arrive (signalled by the
+    /// dispatcher after `append_remote_event` succeeds). The stream
+    /// closes when the client disconnects or the daemon shuts down.
+    ///
+    /// Wire-compatible with the chat's `PrincipalSendStream` shape
+    /// (request → stream of packets → `Done` on close) so the
+    /// desktop Tauri backend can reuse the existing stream-forwarding
+    /// path that already emits `peko-stream` events for the chat.
+    #[serde(rename = "channel_events_watch")]
+    ChannelEventsWatch {
+        request_id: u64,
+        channel: String,
+        since: Option<String>,
+    },
+
+    /// List members of `channel`.
+    #[serde(rename = "channel_members")]
+    ChannelMembers {
+        request_id: u64,
+        channel: String,
+    },
+
+    /// List channels where `principal_name` is a member.
+    #[serde(rename = "channel_list")]
+    ChannelList {
+        request_id: u64,
+        principal_name: String,
+    },
+
+    /// Remove `principal_name` from `channel`. PR-3a: closes the
+    /// missing IPC variant — PR-1 had `handle_leave` only on the
+    /// in-process path.
+    #[serde(rename = "channel_leave")]
+    ChannelLeave {
+        request_id: u64,
+        channel: String,
+        principal_name: String,
+    },
+
+    /// Copy a Runtime-tier channel into the Shared tier (PR-3d).
+    /// Authority gate (`channel:write_shared`) is enforced by the
+    /// daemon handler; the in-process CLI fallback path performs
+    /// the same check via `RuntimeAuthority`.
+    #[serde(rename = "channel_pin_to_shared")]
+    ChannelPinToShared {
+        request_id: u64,
+        channel: String,
+    },
 }
 
 impl RequestPacket {
@@ -922,7 +1021,16 @@ impl RequestPacket {
             | Self::PrincipalSendControl { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
-            | Self::QuotaReset { request_id, .. } => *request_id,
+            | Self::QuotaReset { request_id, .. }
+            | Self::ChannelCreate { request_id, .. }
+            | Self::ChannelInvite { request_id, .. }
+            | Self::ChannelPost { request_id, .. }
+            | Self::ChannelPeek { request_id, .. }
+            | Self::ChannelEventsWatch { request_id, .. }
+            | Self::ChannelMembers { request_id, .. }
+            | Self::ChannelList { request_id, .. }
+            | Self::ChannelLeave { request_id, .. }
+            | Self::ChannelPinToShared { request_id, .. } => *request_id,
         }
     }
 
@@ -1080,6 +1188,93 @@ pub enum ResponsePacket {
     /// Cron job removed response
     #[serde(rename = "cron_removed")]
     CronRemoved { request_id: u64, job_id: String },
+
+    // ─── PR-2c: channel IPC response variants ────────────────────
+    // Mirror the seven `RequestPacket::Channel*` variants 1:1.
+
+    /// Channel created — returns the new `ChannelId`.
+    #[serde(rename = "channel_created")]
+    ChannelCreated {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+    },
+
+    /// Invite acknowledged.
+    #[serde(rename = "channel_invited")]
+    ChannelInvited {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        invitee: peko_subject::PrincipalId,
+    },
+
+    /// Post acknowledged — returns the new task id.
+    #[serde(rename = "channel_posted")]
+    ChannelPosted {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        task_id: String,
+    },
+
+    /// Peek result — full event list since the requested cursor.
+    #[serde(rename = "channel_peek_result")]
+    ChannelPeekResult {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        events: Vec<peko_protocol::channel::ChannelEvent>,
+    },
+
+    /// PR-2b: one event in a `ChannelEventsWatch` stream. The daemon
+    /// emits one of these per event — first replaying events from the
+    /// `since` cursor, then forwarding new events as they arrive. The
+    /// stream closes with `Done { request_id }` when the client
+    /// disconnects or the daemon shuts down.
+    #[serde(rename = "channel_event_received")]
+    ChannelEventReceived {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        event: peko_protocol::channel::ChannelEvent,
+    },
+
+    /// Members list.
+    #[serde(rename = "channel_members_result")]
+    ChannelMembersResult {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        members: Vec<peko_subject::PrincipalId>,
+        /// P1.2 attribution: per-member runtime provenance (`runtime_id
+        /// = None` for local members). Default empty so pre-PR-3b
+        /// consumers that don't read this field see no change to the
+        /// wire shape.
+        #[serde(default)]
+        member_provenance: Vec<peko_protocol::channel::MemberProvenance>,
+    },
+
+    /// List of channels where the principal is a member.
+    #[serde(rename = "channel_list_result")]
+    ChannelListResult {
+        request_id: u64,
+        principal: peko_subject::PrincipalId,
+        channels: Vec<peko_protocol::channel::ChannelId>,
+    },
+
+    /// Leave acknowledged — `principal` is no longer a member of
+    /// `channel`.
+    #[serde(rename = "channel_left")]
+    ChannelLeft {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        principal: peko_subject::PrincipalId,
+    },
+
+    /// Shared-tier pin acknowledged. `shared_path` is the absolute
+    /// Shared root the channel directory was copied to. The Runtime
+    /// source dir remains (COPY semantics — see PR-3d plan).
+    #[serde(rename = "channel_pinned_to_shared")]
+    ChannelPinnedToShared {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        shared_path: String,
+    },
 
     /// Quota status snapshot (F18). Carries the principal's live
     /// `QuotaState` — used counters, configured limits (via the
@@ -2431,7 +2626,16 @@ impl ResponsePacket {
             | Self::Status { request_id, .. }
             | Self::QuotaStatus { request_id, .. }
             | Self::PrincipalInviteMinted { request_id, .. }
-            | Self::PrincipalInviteRevoked { request_id, .. } => *request_id,
+            | Self::PrincipalInviteRevoked { request_id, .. }
+            | Self::ChannelCreated { request_id, .. }
+            | Self::ChannelInvited { request_id, .. }
+            | Self::ChannelPosted { request_id, .. }
+            | Self::ChannelPeekResult { request_id, .. }
+            | Self::ChannelEventReceived { request_id, .. }
+            | Self::ChannelMembersResult { request_id, .. }
+            | Self::ChannelListResult { request_id, .. }
+            | Self::ChannelLeft { request_id, .. }
+            | Self::ChannelPinnedToShared { request_id, .. } => *request_id,
         }
     }
 
@@ -2522,6 +2726,15 @@ impl ResponsePacket {
             Self::QuotaStatus { .. } => "QuotaStatus",
             Self::PrincipalInviteMinted { .. } => "PrincipalInviteMinted",
             Self::PrincipalInviteRevoked { .. } => "PrincipalInviteRevoked",
+            Self::ChannelCreated { .. } => "ChannelCreated",
+            Self::ChannelInvited { .. } => "ChannelInvited",
+            Self::ChannelPosted { .. } => "ChannelPosted",
+            Self::ChannelPeekResult { .. } => "ChannelPeekResult",
+            Self::ChannelEventReceived { .. } => "ChannelEventReceived",
+            Self::ChannelMembersResult { .. } => "ChannelMembersResult",
+            Self::ChannelListResult { .. } => "ChannelListResult",
+            Self::ChannelLeft { .. } => "ChannelLeft",
+            Self::ChannelPinnedToShared { .. } => "ChannelPinnedToShared",
         }
     }
 

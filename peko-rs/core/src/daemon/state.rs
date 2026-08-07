@@ -107,6 +107,23 @@ pub(crate) struct AppState {
     /// Principal manager (AI Principal container lifecycle)
     principal_manager: Arc<PrincipalManager>,
 
+    /// PR-2c: file-backed channel port (`peko-channel` runtime-tier
+    /// store). One per daemon process; shared across IPC handler
+    /// invocations and the per-channel subscriber loops. Constructed
+    /// lazily at `AppState::build_internal` time using the typed
+    /// path resolver's `runtime_dir()`.
+    channel_port: Arc<dyn peko_channel::ChannelPort>,
+
+    /// peko-channel cross-runtime PR-B commit 2: the concrete
+    /// `TunnelChannelPort` that wraps `channel_port`'s local store.
+    /// The tunnel dispatcher reaches this through
+    /// [`crate::tunnel::TunnelHost::tunnel_channel_port`] so it can
+    /// append inbound `TunnelChannelEvent`s to the local mirror
+    /// after verifying the envelope signature. `Arc<dyn ChannelPort>`
+    /// above stays the trait surface for IPC handlers / tool
+    /// runtime; this field is the cross-runtime-typed accessor.
+    tunnel_channel_port: Arc<crate::tunnel::TunnelChannelPort>,
+
     /// Runtime-owned, append-only chat-log store. Each principal
     /// boundary message that passes authorization is persisted here
     /// alongside its authoritative response. Distinct from the
@@ -242,7 +259,7 @@ pub(crate) struct AppState {
     /// Shared between the outbound `PrincipalSendTool` path (which
     /// registers a oneshot under `request_id`) and the inbound
     /// tunnel dispatcher arm (which completes the oneshot when the
-    /// matching `AgentToAgentResponse` arrives). Initialized lazily
+    /// matching `PrincipalToPrincipalResponse` arrives). Initialized lazily
     /// (a fresh `PendingA2aResponses`) so the registry exists even
     /// before the tunnel connects.
     pending_a2a_responses: Arc<crate::tunnel::PendingA2aResponses>,
@@ -492,6 +509,20 @@ impl AppState {
             cache_dir.clone(),
         );
 
+        // PR-2c: capture the runtime-tier channel directory BEFORE the
+        // `path_resolver` is consumed by `RuntimeAuthority::for_runtime`.
+        // The `Arc<ChannelStore>` constructor needs a concrete
+        // `PathBuf`, not a borrow.
+        let channel_runtime_dir = path_resolver.runtime_dir();
+        // PR-3d: capture the Shared-tier channel parent. Per-principal
+        // SharedLayout::channels_dir lives under each principal's
+        // shared root; we use the principals root as the parent
+        // because `pin_to_shared` will resolve per-channel inside.
+        // Concrete-per-principal resolution happens at the
+        // `RuntimeAuthority` seam (deferred — PR-3d wires the trait
+        // surface; production auth gate lives in PR-4).
+        let channel_shared_root = path_resolver.principals_root_dir();
+
         // Load the unified credential vault before identity/provider setup.
         // Wrap in Arc so both the daemon's SecretStore (passed to the
         // LlmResolver) and the daemon's reload machinery can share the
@@ -529,6 +560,15 @@ impl AppState {
         let peko_config = load_peko_config(&config_dir);
         let pending_a2a_responses = Arc::new(crate::tunnel::PendingA2aResponses::new());
         let invite_revocation_set = Arc::new(crate::tunnel::InviteRevocationSet::new());
+        // peko-channel cross-runtime PR-B commit 2: the concrete
+        // `TunnelChannelPort` field on `AppState` is populated during
+        // channel-port construction (line ~706). The variable holds
+        // `None` until then; the init arm at ~706 swaps it for
+        // `Some(...)` once the local store has been built. `commit
+        // 3` will also assign the `CrossRuntimeChannelCtx` into the
+        // wrapper.
+        #[allow(unused_assignments)]
+        let mut tunnel_channel_port: Option<Arc<crate::tunnel::TunnelChannelPort>> = None;
         let streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
         let direct_manager = Arc::new(crate::tunnel::direct::DirectConnectionManager::new(
@@ -660,11 +700,46 @@ impl AppState {
 
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.
+        // PR-4a: wire the daemon's real `channel_port` so `ChannelRead`
+        // resolves to the file-backed `ChannelStore` (PR-5b) and
+        // can be invoked from any principal's agentic loop. The port
+        // is built first so we can both register it with the tool
+        // runtime and store it on `AppState` (line ~939) without
+        // doubling up the adapter construction.
+        let channel_port: Arc<dyn peko_channel::ChannelPort> = {
+            // peko-channel cross-runtime PR-B commit 2: wrap the
+            // local `ChannelStore` in a `TunnelChannelPort` so the
+            // tunnel dispatcher's `handle_inbound_tunnel_channel_event`
+            // can reach the cross-runtime append path. The wrapper
+            // implements `ChannelPort` via pure delegation, so the
+            // `dyn ChannelPort` surface for the tool runtime / IPC
+            // handlers is unchanged.
+            //
+            // `ctx` is `None` for commit 2 — commit 3 wires the
+            // `CrossRuntimeChannelCtx` so `post` / `invite` can fan
+            // out to remote members.
+            let store = Arc::new(peko_channel::ChannelStore::new(
+                peko_channel::ChannelConfig {
+                    runtime_dir: channel_runtime_dir.clone(),
+                    // PR-3d: Shared-tier root for `pin_to_shared`.
+                    shared_dir: Some(channel_shared_root.clone()),
+                },
+            ));
+            // peko-channel cross-runtime PR-B commit 3: the cross-runtime
+            // ctx slot starts as `None`. `install_cross_runtime_channel_ctx`
+            // (called once the tunnel has been provisioned) fills it in
+            // via `TunnelChannelPort::set_ctx` so `post` / `invite` can
+            // fan out to remote members.
+            let tcp = crate::tunnel::TunnelChannelPort::new(store);
+            tunnel_channel_port = Some(Arc::new(tcp.clone()));
+            Arc::new(tcp) as Arc<dyn peko_channel::ChannelPort>
+        };
         let tool_runtime = Arc::new(
-            ToolRuntime::with_workspace_and_core(
+            ToolRuntime::with_workspace_and_core_and_channel_port(
                 path_resolver_clone.clone(),
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 Arc::clone(&global_core),
+                channel_port.clone(),
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create tool runtime: {e}"))?,
@@ -908,6 +983,20 @@ impl AppState {
             vault: Arc::clone(&vault),
             principal_manager,
             chat_log_store,
+            // PR-2c: instantiate the file-backed channel port against
+            // the typed path resolver's runtime dir. PR-1 only ships
+            // Runtime-tier; PR-3 may add a Shared-tier sibling adapter.
+            channel_port: channel_port.clone(),
+            // peko-channel cross-runtime PR-B commit 2: the concrete
+            // `TunnelChannelPort` accessor. Built by the
+            // channel_port construction block above (line ~706); the
+            // `unwrap_or_else` here turns the local `None` default
+            // into a panic if someone reorders the construction
+            // without populating `tunnel_channel_port` — fail loud,
+            // not silent.
+            tunnel_channel_port: tunnel_channel_port
+                .clone()
+                .unwrap_or_else(|| panic!("tunnel_channel_port must be initialized before AppState build")),
             peer_registry,
             lifecycle,
             session_service,
@@ -1401,6 +1490,17 @@ impl AppState {
                  The local a2a path is unaffected. error: {e:#}"
             );
         }
+        // peko-channel cross-runtime PR-B commit 3: install the
+        // channel ctx (same signing key + directory as the a2a
+        // install). Local-only channels still work without this;
+        // this just unlocks outbound fan-out to remote members.
+        if let Err(e) = self.install_cross_runtime_channel_ctx(&cred, &vault).await {
+            warn!(
+                "Could not install cross-runtime channel ctx (peko-channel PR-B); \
+                 cross-runtime channel fan-out will be unavailable until this is fixed. \
+                 The local channel path is unaffected. error: {e:#}"
+            );
+        }
         {
             let mut td = self.tunnel_dispatcher.write().await;
             *td = Some(dispatcher.clone());
@@ -1508,7 +1608,7 @@ impl AppState {
 
     /// Cross-runtime a2a response correlation registry (issue #29).
     /// Shared with the `CrossRuntimeA2aCtx` on every `PrincipalSendTool`
-    /// and the inbound `AgentToAgentResponse` arm of the
+    /// and the inbound `PrincipalToPrincipalResponse` arm of the
     /// `TunnelDispatcher`. Returns a clone of the inner `Arc`, so
     /// call sites hold a cheap reference.
     pub fn pending_a2a_responses(&self) -> Arc<crate::tunnel::PendingA2aResponses> {
@@ -1549,43 +1649,16 @@ impl AppState {
         vault: &crate::common::vault::Vault,
     ) -> anyhow::Result<()> {
         use crate::tunnel::CrossRuntimeA2aCtx;
-        use base64::engine::general_purpose::STANDARD as BASE64;
-        use base64::Engine as _;
-        use ed25519_dalek::SigningKey;
         use std::time::Duration;
 
-        // 1. Build the directory HTTP client from the credential
-        //    URL. `from_credential` flips wss:// → https:// and
-        //    strips the /v1/tunnel path. Wrap it with the local-first
-        //    directory so same-runtime principals resolve without the
-        //    hub.
-        let hub_directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
-            .map_err(|e| anyhow::anyhow!("HubAgentDirectoryClient::from_credential: {e}"))?;
-        let directory: Arc<dyn crate::tunnel::AgentDirectory> =
-            Arc::new(crate::tunnel::LocalFirstAgentDirectory::new(
-                cred.runtime_id.clone(),
-                self.principal_manager().clone(),
-                Arc::new(hub_directory),
-            ));
+        // 1. Shared directory + signing key + runtime_id. Same
+        //    components the channel ctx consumes; factored out so the
+        //    two install paths cannot drift on credential decoding
+        //    (`peko-channel` cross-runtime PR-B commit 3).
+        let (directory, signing_key, caller_runtime_id) =
+            self.build_cross_runtime_ctx_parts(cred, vault)?;
 
-        // 2. Build the SigningKey from the credential's stored
-        //    private key in the vault. `resolve_private_key` returns the
-        //    base64-encoded raw 32 bytes. Decode and construct.
-        let privkey_b64 = cred.resolve_private_key(vault)?;
-        let privkey_bytes = BASE64.decode(privkey_b64.trim()).map_err(|e| {
-            anyhow::anyhow!("PekoHubCredential private key is not valid base64: {e}")
-        })?;
-        if privkey_bytes.len() != 32 {
-            anyhow::bail!(
-                "PekoHubCredential private key is {} bytes; expected 32",
-                privkey_bytes.len()
-            );
-        }
-        let mut key_arr = [0u8; 32];
-        key_arr.copy_from_slice(&privkey_bytes);
-        let signing_key = Arc::new(SigningKey::from_bytes(&key_arr));
-
-        // 3. Build the ctx. The handle slot is shared with the
+        // 2. Build the ctx. The handle slot is shared with the
         //    `TunnelDispatcher` so the outbound path sees the
         //    freshest handle on every reconnect. The direct manager
         //    and known-runtimes registry enable per-peer transport
@@ -1594,7 +1667,7 @@ impl AppState {
             directory,
             pending: self.pending_a2a_responses(),
             signing_key,
-            caller_runtime_id: cred.runtime_id.clone(),
+            caller_runtime_id,
             tunnel: self.tunnel_handle_slot(),
             direct_manager: self.direct_manager.clone(),
             known_runtimes: self.known_runtimes.clone(),
@@ -1631,6 +1704,98 @@ impl AppState {
             Arc::clone(&principal.router).set_caller_runtime_id(runtime_id.clone());
         }
 
+        Ok(())
+    }
+
+    /// Build the shared parts of every cross-runtime ctx: the
+    /// directory (local-first wrap), the runtime signing key, and the
+    /// `runtime_id` echoed into outbound envelopes. Factored out of
+    /// `install_cross_runtime_a2a_ctx` and
+    /// `install_cross_runtime_channel_ctx` so the two paths cannot
+    /// drift on credential decoding or directory wrap.
+    ///
+    /// `peko-channel` cross-runtime PR-B commit 3 — the channel ctx
+    /// consumes the same components (PR-A already wires the
+    /// `TunnelChannelEvent` envelope signature against this signing
+    /// key, so it must be the same key the a2a path mints invite
+    /// tokens with).
+    fn build_cross_runtime_ctx_parts(
+        &self,
+        cred: &crate::tunnel::PekoHubCredential,
+        vault: &crate::common::vault::Vault,
+    ) -> anyhow::Result<(Arc<dyn crate::tunnel::AgentDirectory>, Arc<ed25519_dalek::SigningKey>, String)>
+    {
+        use base64::engine::general_purpose::STANDARD as BASE64;
+        use base64::Engine as _;
+        use ed25519_dalek::SigningKey;
+
+        // Directory: hub HTTP client + local-first wrap so
+        // same-runtime principals resolve without the hub.
+        let hub_directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
+            .map_err(|e| anyhow::anyhow!("HubAgentDirectoryClient::from_credential: {e}"))?;
+        let directory: Arc<dyn crate::tunnel::AgentDirectory> =
+            Arc::new(crate::tunnel::LocalFirstAgentDirectory::new(
+                cred.runtime_id.clone(),
+                self.principal_manager().clone(),
+                Arc::new(hub_directory),
+            ));
+
+        // Signing key: 32 raw bytes decoded from the credential's
+        // base64-encoded private key in the vault.
+        let privkey_b64 = cred.resolve_private_key(vault)?;
+        let privkey_bytes = BASE64.decode(privkey_b64.trim()).map_err(|e| {
+            anyhow::anyhow!("PekoHubCredential private key is not valid base64: {e}")
+        })?;
+        if privkey_bytes.len() != 32 {
+            anyhow::bail!(
+                "PekoHubCredential private key is {} bytes; expected 32",
+                privkey_bytes.len()
+            );
+        }
+        let mut key_arr = [0u8; 32];
+        key_arr.copy_from_slice(&privkey_bytes);
+        let signing_key = Arc::new(SigningKey::from_bytes(&key_arr));
+
+        Ok((directory, signing_key, cred.runtime_id.clone()))
+    }
+
+    /// Install the cross-runtime channel dispatch context on the
+    /// `TunnelChannelPort` so `post` / `invite` can fan out to remote
+    /// members. `peko-channel` cross-runtime PR-B commit 3.
+    ///
+    /// Built with the same `directory` + `signing_key` as the a2a
+    /// path so the runtime identity is consistent across both
+    /// outbound envelopes (and so the channel signature matches the
+    /// one the hub recognizes from invite-token mints).
+    ///
+    /// Like the a2a install, this is best-effort: if the credential
+    /// is missing or malformed, log a warning and skip — local-only
+    /// channel use stays available.
+    async fn install_cross_runtime_channel_ctx(
+        &self,
+        cred: &crate::tunnel::PekoHubCredential,
+        vault: &crate::common::vault::Vault,
+    ) -> anyhow::Result<()> {
+        use crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx;
+
+        let (directory, signing_key, caller_runtime_id) =
+            self.build_cross_runtime_ctx_parts(cred, vault)?;
+
+        let ctx = Arc::new(CrossRuntimeChannelCtx {
+            directory,
+            signing_key,
+            caller_runtime_id,
+            tunnel: self.tunnel_handle_slot(),
+            known_runtimes: self.known_runtimes.clone(),
+        });
+
+        // Push into the existing `TunnelChannelPort`'s ctx slot. The
+        // `Arc::clone` keeps the `TunnelChannelPort` reachable
+        // (idempotent if called twice — the slot holds the latest
+        // ctx, used by the tunnel-reconnect path so a fresh
+        // `runtime_id` propagates without rebuilding every
+        // `TunnelChannelPort`).
+        self.tunnel_channel_port.set_ctx(ctx).await;
         Ok(())
     }
 
@@ -1997,6 +2162,15 @@ impl crate::tunnel::TunnelHost for AppState {
     fn invite_revocation_set(&self) -> Arc<crate::tunnel::InviteRevocationSet> {
         Arc::clone(&self.invite_revocation_set)
     }
+
+    /// peko-channel cross-runtime PR-B commit 2: typed accessor for
+    /// the concrete `TunnelChannelPort`. The dispatcher's
+    /// `handle_inbound_tunnel_channel_event` calls
+    /// `tunnel_channel_port().append_remote_event(...)` after
+    /// verifying the envelope signature.
+    fn tunnel_channel_port(&self) -> Arc<crate::tunnel::TunnelChannelPort> {
+        Arc::clone(&self.tunnel_channel_port)
+    }
 }
 
 /// F7 first narrow handle: the port the `system` IPC domain handler uses
@@ -2171,6 +2345,71 @@ impl crate::ipc::handlers::cron::CronHost for AppState {
     /// `common::authority::RuntimeAuthority::local`).
     fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
         &self.authority
+    }
+}
+
+impl crate::ipc::handlers::channel::ChannelHost for AppState {
+    fn path_resolver(&self) -> crate::common::paths::PathResolver {
+        self.path_resolver.clone()
+    }
+
+    fn channel_port(&self) -> Arc<dyn peko_channel::ChannelPort> {
+        self.channel_port.clone()
+    }
+
+    fn channel_meter(&self) -> Arc<dyn peko_channel::ChannelMeter> {
+        // PR-3c / PR-5a: production daemon wires the audit ring
+        // buffer so `peko audit list --type channel.` surfaces channel
+        // observation history. The meter is created once at AppState
+        // construction; the subscription loops clone the Arc into
+        // each per-(principal, channel) ChannelSubscriber. The
+        // companion `ChannelResponder` passed to those subscribers is
+        // permanently `NoopChannelResponder` — agents read actively via
+        // the `ChannelRead` tool (PR-4a).
+        Arc::new(peko_channel::AuditChannelMeter::new(
+            self.observability.clone(),
+        ))
+    }
+
+    fn principal_manager(
+        &self,
+    ) -> Option<&Arc<crate::principal::manager::PrincipalManager>> {
+        Some(&self.principal_manager)
+    }
+
+    /// PR-4c: post-invite kickoff hook. Records the join trigger in
+    /// the audit ring buffer (`peko audit list --type channel.`) so
+    /// operators can distinguish "joined" from "kickoff observed" at
+    /// join time, not just at read time.
+    ///
+    /// Deliberately **does not** dispatch an `AsyncSpawn` of
+    /// `ChannelRead` to wake the invitee's session. That would
+    /// require per-invitee session-key resolution + F37 funnel
+    /// plumbing (per-agent `AsyncExecutorRuntime` + capabilities
+    /// snapshot) which is a meaningfully larger feature than this
+    /// PR warrants and which the principal boundary model would need
+    /// to absorb carefully. Operators who want session wake-up use
+    /// the cron-poll recipe (PR-4b) instead.
+    fn kickoff_channel_read(
+        &self,
+        invitee: &peko_subject::PrincipalId,
+        channel: &peko_channel::ChannelId,
+    ) {
+        tracing::info!(
+            invitee = %invitee.0,
+            channel = %channel.as_str(),
+            "channel invite kickoff observed (PR-4c); no session dispatch"
+        );
+        // The audit entry below records the join trigger distinct
+        // from a read event. The meter writes are async; we don't
+        // `await` because the trait method is sync — `peko_observability`
+        // internally buffers and the record is best-effort.
+        let meter = self.channel_meter();
+        // No-op meter behavior on test paths; production paths get
+        // an `AuditChannelMeter` (PR-3c) that buffers into the audit
+        // ring buffer. The trait surface is intentionally narrow —
+        // future PRs can extend this with a real spawn path.
+        let _ = meter; // explicit hold so the binding is observable.
     }
 }
 

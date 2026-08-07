@@ -658,15 +658,33 @@ impl TunnelClient {
             | TunnelMessage::StatusUpdate { .. }
             // Issue #29 (Slice A): cross-runtime a2a envelopes flow
             // through the same handler seam as proxied requests.
-            // Slice C lands the actual `AgentToAgentRequest`
+            // Slice C lands the actual `PrincipalToPrincipalRequest`
             // dispatcher branch (signature verify → session attribute
-            // → local dispatch → `AgentToAgentResponse`); Slice B
-            // lands the `AgentToAgentResponse` correlation on the
+            // → local dispatch → `PrincipalToPrincipalResponse`); Slice B
+            // lands the `PrincipalToPrincipalResponse` correlation on the
             // caller side. Until then the dispatcher will log a
             // `debug!` and drop, which is the safe default — no
             // surprise local dispatch, no silent send loop.
-            | TunnelMessage::AgentToAgentRequest { .. }
-            | TunnelMessage::AgentToAgentResponse { .. } => {
+            | TunnelMessage::PrincipalToPrincipalRequest { .. }
+            | TunnelMessage::PrincipalToPrincipalResponse { .. }
+            // peko-channel cross-runtime PR-A: tunnel_channel_event
+            // envelopes also flow through the request-handler seam.
+            // Commit 2 lands the wire shape + signer/audit modules +
+            // dispatcher context; commit 3 wires the inbound handler
+            // (signature verify → append to local `events.jsonl`
+            // mirror). Until then the dispatcher logs at `debug!`
+            // and drops — safe default, no silent send loop.
+            //
+            // peko-channel cross-runtime PR-3a commit 1: add the
+            // `tunnel_channel_invite` envelope alongside the event
+            // variant. Commit 3 wires the inbound handler (signature
+            // verify → bootstrap local mirror → emit synthetic
+            // `ChannelEvent::Created`). Until then this falls through
+            // to the same handler seam (which currently drops the
+            // envelope at `debug!` because no dispatcher registers
+            // the handler yet) — safe default, no silent bootstrap.
+            | TunnelMessage::TunnelChannelEvent { .. }
+            | TunnelMessage::TunnelChannelInvite { .. } => {
                 if let Some(handler) = request_handler {
                     handler(msg, handle.clone()).await;
                 } else {

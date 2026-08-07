@@ -33,6 +33,10 @@ use super::TunnelHandle;
 use super::{
     a2a_signature::{verify_request, SignedFields},
     did_key::did_key_to_verifying_key,
+    tunnel_channel_audit, tunnel_channel_signature::{
+        verify_channel_event, verify_channel_invite, ChannelInviteSignedFields,
+        ChannelSignedFields,
+    },
 };
 use crate::tunnel::principal_send_tool::{HubErrorResponse, PrincipalSendResult};
 
@@ -210,8 +214,8 @@ pub struct TunnelDispatcher {
     /// Slot the dispatcher writes the live tunnel handle to on
     /// every inbound message. The `CrossRuntimeA2aCtx` (issue #29)
     /// holds a clone of this `Arc` and reads the handle when
-    /// sending outbound `AgentToAgentRequest` envelopes, so the
-    /// outbound path always uses the most-recent handle without
+    /// sending outbound `PrincipalToPrincipalRequest` envelopes, so
+    /// the outbound path always uses the most-recent handle without
     /// having to be re-built on reconnect. `None` until the first
     /// inbound message lands.
     tunnel_handle_slot: Arc<tokio::sync::RwLock<Option<TunnelHandle>>>,
@@ -566,15 +570,15 @@ impl TunnelDispatcher {
                 info!("Tunnel disconnect: {}", reason);
                 self.mark_disconnected().await;
             }
-            // Issue #29 (Slice C): inbound `AgentToAgentRequest` from
-            // a peer runtime (proxied by pekohub). Verify the caller's
-            // signature against the `caller_runtime_id` they claim,
-            // look up the local agent by `target_principal_did`,
-            // attribute the dispatch under
-            // `Subject::Principal(caller_principal_did)`, run it, and send
-            // back an `AgentToAgentResponse` carrying the
+            // Issue #29 (Slice C): inbound `PrincipalToPrincipalRequest`
+            // from a peer runtime (proxied by pekohub). Verify the
+            // caller's signature against the `caller_runtime_id` they
+            // claim, look up the local principal by
+            // `target_principal_did`, attribute the dispatch under
+            // `Subject::Principal(caller_principal_did)`, run it, and
+            // send back an `PrincipalToPrincipalResponse` carrying the
             // `PrincipalSendResult` payload.
-            TunnelMessage::AgentToAgentRequest {
+            TunnelMessage::PrincipalToPrincipalRequest {
                 request_id,
                 caller_runtime_id,
                 caller_principal_did,
@@ -582,7 +586,7 @@ impl TunnelDispatcher {
                 message,
                 signature,
             } => {
-                self.handle_inbound_agent_to_agent_request(
+                self.handle_inbound_principal_to_principal_request(
                     handle,
                     request_id,
                     caller_runtime_id,
@@ -593,16 +597,76 @@ impl TunnelDispatcher {
                 )
                 .await?;
             }
-            // Inbound `AgentToAgentResponse` for a request the
+            // Inbound `PrincipalToPrincipalResponse` for a request the
             // outbound `PrincipalSendTool` path registered in the pending
             // registry. Complete the oneshot so the outbound
             // `execute_remote` unblocks and decodes the payload.
-            TunnelMessage::AgentToAgentResponse {
+            TunnelMessage::PrincipalToPrincipalResponse {
                 request_id,
                 payload,
             } => {
-                self.handle_inbound_agent_to_agent_response(request_id, payload)
+                self.handle_inbound_principal_to_principal_response(request_id, payload)
                     .await?;
+            }
+            // peko-channel cross-runtime PR-A commit 3: inbound
+            // `TunnelChannelEvent` from a peer runtime (proxied by
+            // pekohub). Verify the source runtime's signature against
+            // the `source_runtime_id` they claim, emit the audit line,
+            // and append the event to the local `events.jsonl` mirror
+            // (the append lands in PR-B alongside
+            // `AppState.channel_port`).
+            TunnelMessage::TunnelChannelEvent {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                event,
+                signature,
+            } => {
+                self.handle_inbound_tunnel_channel_event(
+                    request_id,
+                    source_runtime_id,
+                    recipient_runtime_id,
+                    source_principal_did,
+                    channel_id,
+                    event,
+                    signature,
+                )
+                .await?;
+            }
+            // peko-channel cross-runtime PR-3a commit 3: inbound
+            // `TunnelChannelInvite` from a peer runtime (the creator
+            // of a cross-runtime channel). Verify the source
+            // runtime's signature against the `source_runtime_id` they
+            // claim, then bootstrap the local mirror via
+            // `TunnelChannelPort::join_remote` (which writes
+            // `meta.json` + `members.json` and seeds `events.jsonl`
+            // with a synthetic `ChannelEvent::Created` so PR-2b's
+            // `peko-stream` listener fires on the desktop).
+            TunnelMessage::TunnelChannelInvite {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                creator,
+                name,
+                initial_members,
+                signature,
+            } => {
+                self.handle_inbound_tunnel_channel_invite(
+                    request_id,
+                    source_runtime_id,
+                    recipient_runtime_id,
+                    source_principal_did,
+                    channel_id,
+                    creator,
+                    name,
+                    initial_members,
+                    signature,
+                )
+                .await?;
             }
             _ => {
                 debug!("Ignoring tunnel message: {:?}", msg);
@@ -1158,7 +1222,7 @@ impl TunnelDispatcher {
         Ok(())
     }
 
-    /// Handle an inbound `AgentToAgentRequest` from a peer runtime
+    /// Handle an inbound `PrincipalToPrincipalRequest` from a peer runtime
     /// (proxied by pekohub). Issue #29 Slice C.
     ///
     /// Steps:
@@ -1172,14 +1236,14 @@ impl TunnelDispatcher {
     ///    Subject::Principal(caller_principal_did)` (issue #24 + #28).
     /// 5. Dispatch via `StatelessAgentService`.
     /// 6. Serialize the result to `PrincipalSendResult` and send back via
-    ///    the same tunnel as an `AgentToAgentResponse`.
+    ///    the same tunnel as an `PrincipalToPrincipalResponse`.
     ///
     /// Every error path sends a structured `HubErrorResponse`
     /// back to the caller so the caller can distinguish "target
     /// not found" from "target rejected me" from "I'm broken"
     /// rather than waiting for a timeout.
     #[allow(clippy::too_many_arguments)]
-    async fn handle_inbound_agent_to_agent_request(
+    async fn handle_inbound_principal_to_principal_request(
         &self,
         handle: TunnelHandle,
         request_id: String,
@@ -1194,7 +1258,7 @@ impl TunnelDispatcher {
             Ok(k) => k,
             Err(e) => {
                 warn!(
-                    "inbound AgentToAgentRequest: invalid caller_runtime_id {caller_runtime_id}: {e}"
+                    "inbound PrincipalToPrincipalRequest: invalid caller_runtime_id {caller_runtime_id}: {e}"
                 );
                 return self
                     .send_hub_error(
@@ -1222,7 +1286,7 @@ impl TunnelDispatcher {
         };
         if let Err(e) = verify_request(&verifying_key, signed, &signature) {
             warn!(
-                "inbound AgentToAgentRequest: signature verification failed for caller_runtime_id={caller_runtime_id}: {e}"
+                "inbound PrincipalToPrincipalRequest: signature verification failed for caller_runtime_id={caller_runtime_id}: {e}"
             );
             return self
                 .send_hub_error(
@@ -1348,17 +1412,271 @@ impl TunnelDispatcher {
         );
         a2a_audit::emit_a2a_sent(&sent_response_event);
 
-        handle.send(TunnelMessage::AgentToAgentResponse {
+        handle.send(TunnelMessage::PrincipalToPrincipalResponse {
             request_id,
             payload,
         })?;
         Ok(())
     }
 
-    /// Handle an inbound `AgentToAgentResponse` — the half of the
+    /// Handle an inbound `TunnelChannelEvent` — a push-only channel
+    /// fan-out from a peer runtime. peko-channel cross-runtime PR-A
+    /// commit 3.
+    ///
+    /// Pipeline:
+    ///
+    /// 1. Derive the verifying key from `source_runtime_id` (the
+    ///    self-certifying `did:key` form). Invalid DIDs are dropped
+    ///    with a warn (same defense-in-depth layer as
+    ///    [`Self::handle_inbound_principal_to_principal_request`]) —
+    ///    the hub's source-allowlist is the primary gate, this is the
+    ///    receiver-side check that catches a hub bug or stale
+    ///    forwarder.
+    /// 2. Re-serialize the `event` to JSON bytes and feed them to
+    ///    [`verify_channel_event`] so the signer and verifier agree
+    ///    on byte-for-byte identical pre-image input. (serde_json
+    ///    emits struct fields in declaration order, so the round-trip
+    ///    is stable; this is documented in
+    ///    `tunnel_channel_signature::ChannelSignedFields`.)
+    /// 3. Emit the `received_inbound` audit line via
+    ///    [`tunnel_channel_audit::emit_received_inbound`].
+    /// 4. Append the event to the local `events.jsonl` mirror via
+    ///    [`crate::tunnel::TunnelChannelPort::append_remote_event`].
+    ///    The local mirror write trusts the upstream signature (which
+    ///    steps 1-3 just verified), so it skips the membership / parent
+    ///    / sender checks that the local `post` path enforces — those
+    ///    guarantees were already provided by the source runtime.
+    ///
+    /// No response is sent back to the source runtime — channel
+    /// events are push-only.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_inbound_tunnel_channel_event(
+        &self,
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        channel_id: String,
+        event: peko_protocol::channel::ChannelEvent,
+        signature: String,
+    ) -> anyhow::Result<()> {
+        // 1. Derive the verifying key.
+        let verifying_key = match did_key_to_verifying_key(&source_runtime_id) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelEvent: invalid source_runtime_id {source_runtime_id}: {e}"
+                );
+                return Ok(()); // drop, do not propagate — channel events have no response.
+            }
+        };
+
+        // 2. Re-serialize the event for the pre-image. We must use the
+        // same byte sequence the source runtime signed; serde_json's
+        // stable declaration-order emission is what guarantees this.
+        let event_bytes = match serde_json::to_vec(&event) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelEvent: failed to re-serialize event for verification (channel_id={channel_id}): {e}"
+                );
+                return Ok(());
+            }
+        };
+
+        let signed = ChannelSignedFields {
+            request_id: &request_id,
+            source_runtime_id: &source_runtime_id,
+            recipient_runtime_id: &recipient_runtime_id,
+            source_principal_did: &source_principal_did,
+            channel_id: &channel_id,
+            event_bytes: &event_bytes,
+        };
+        if let Err(e) = verify_channel_event(&verifying_key, signed, &signature) {
+            warn!(
+                "inbound TunnelChannelEvent: signature verification failed for source_runtime_id={source_runtime_id}: {e}"
+            );
+            return Ok(());
+        }
+
+        // 3. Audit. Always emit a row, regardless of whether the
+        // local-mirror append below succeeds; the row documents the
+        // verify-and-(append-or-drop) decision.
+        let event_kind = event.kind();
+        let preview_json = String::from_utf8_lossy(&event_bytes).into_owned();
+        tunnel_channel_audit::emit_received_inbound(
+            &request_id,
+            &source_runtime_id,
+            &source_principal_did,
+            &channel_id,
+            event_kind,
+            &super::tunnel_channel_audit::preview_event_payload(&preview_json),
+        );
+
+        // 4. Local-mirror append. The dispatcher is the single source
+        // of truth for signature validity (steps 1-3); the
+        // `append_remote_event` impl deliberately does not re-verify
+        // or re-check membership, since layering a second check here
+        // would either duplicate work or risk drift.
+        let channel_id_typed = peko_protocol::channel::ChannelId(channel_id.clone());
+        if let Err(e) = self
+            .host
+            .tunnel_channel_port()
+            .append_remote_event(&channel_id_typed, &event)
+            .await
+        {
+            warn!(
+                "inbound TunnelChannelEvent: local-mirror append failed (request_id={request_id}, channel_id={channel_id}, kind={event_kind}): {e}"
+            );
+            // Drop the event but do not error — the source runtime
+            // has no way to retry (channels are push-only) and we
+            // don't want a single bad append to backpressure the
+            // dispatcher. The audit row above preserves the trail.
+            return Ok(());
+        }
+
+        debug!(
+            "inbound TunnelChannelEvent: verified + audited + appended to local mirror \
+             (request_id={request_id}, channel_id={channel_id}, kind={event_kind})"
+        );
+
+        Ok(())
+    }
+
+    /// Handle an inbound `TunnelChannelInvite` — a one-shot bootstrap
+    /// envelope from a peer runtime that created a cross-runtime
+    /// channel. peko-channel cross-runtime PR-3a commit 3.
+    ///
+    /// Pipeline (mirrors `handle_inbound_tunnel_channel_event`):
+    ///
+    /// 1. Derive the verifying key from `source_runtime_id` (the
+    ///    self-certifying `did:key` form). Invalid DIDs are dropped
+    ///    with a warn — the hub's source-allowlist is the primary
+    ///    gate; this is the receiver-side defense.
+    /// 2. Re-serialize the `initial_members` list to JSON bytes and
+    ///    feed them to [`verify_channel_invite`] so the signer and
+    ///    verifier agree on byte-for-byte identical pre-image input
+    ///    (the `InitialMember` wire type uses
+    ///    `skip_serializing_if = "Option::is_none"` so a round-trip
+    ///    is byte-stable; verified by
+    ///    `peko_protocol::channel::tests::initial_member_skips_none_runtime_id`).
+    /// 3. Emit the `received_inbound` audit line via
+    ///    [`tunnel_channel_audit::emit_received_inbound`] (kind =
+    ///    `"channel_invite"` — the audit kind namespace already
+    ///    accepts arbitrary strings; we keep one row per inbound
+    ///    envelope so the audit trail joins on `request_id`).
+    /// 4. Bootstrap the local mirror via
+    ///    [`crate::tunnel::TunnelChannelPort::join_remote`]. The
+    ///    store writes `meta.json` + `members.json` + seeds
+    ///    `events.jsonl` with a synthetic `ChannelEvent::Created`.
+    ///    `join_remote` is idempotent (meta.json-existence check), so
+    ///    a duplicate envelope is a no-op.
+    ///
+    /// Like the channel-event handler, no response is sent back to
+    /// the source runtime — invites are push-only.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_inbound_tunnel_channel_invite(
+        &self,
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        channel_id: String,
+        creator: String,
+        name: String,
+        initial_members: Vec<peko_protocol::channel::InitialMember>,
+        signature: String,
+    ) -> anyhow::Result<()> {
+        // 1. Derive the verifying key from the claimed
+        // `source_runtime_id`. Same defense-in-depth layer as the
+        // channel-event handler.
+        let verifying_key = match did_key_to_verifying_key(&source_runtime_id) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelInvite: invalid source_runtime_id {source_runtime_id}: {e}"
+                );
+                return Ok(());
+            }
+        };
+
+        // 2. Re-serialize `initial_members` so the pre-image bytes
+        // match what the source runtime signed. `serde_json` emits
+        // vec items in declaration order; round-trip is stable.
+        let initial_members_bytes = match serde_json::to_vec(&initial_members) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelInvite: failed to re-serialize initial_members \
+                     for verification (channel_id={channel_id}): {e}"
+                );
+                return Ok(());
+            }
+        };
+
+        let signed = ChannelInviteSignedFields {
+            request_id: &request_id,
+            source_runtime_id: &source_runtime_id,
+            recipient_runtime_id: &recipient_runtime_id,
+            source_principal_did: &source_principal_did,
+            channel_id: &channel_id,
+            creator: &creator,
+            name: &name,
+            initial_members_bytes: &initial_members_bytes,
+        };
+        if let Err(e) = verify_channel_invite(&verifying_key, signed, &signature) {
+            warn!(
+                "inbound TunnelChannelInvite: signature verification failed for \
+                 source_runtime_id={source_runtime_id}: {e}"
+            );
+            return Ok(());
+        }
+
+        // 3. Audit. Always emit, regardless of whether the
+        // local-mirror bootstrap below succeeds.
+        let preview_json = String::from_utf8_lossy(&initial_members_bytes).into_owned();
+        tunnel_channel_audit::emit_received_inbound(
+            &request_id,
+            &source_runtime_id,
+            &source_principal_did,
+            &channel_id,
+            "channel_invite",
+            &super::tunnel_channel_audit::preview_event_payload(&preview_json),
+        );
+
+        // 4. Bootstrap the local mirror. `join_remote` is idempotent
+        // on the meta.json-existence check, so a duplicate envelope
+        // is a no-op. We log + drop on error rather than
+        // propagating — invites are push-only and there's no caller
+        // to error against.
+        let channel_id_typed = peko_protocol::channel::ChannelId(channel_id.clone());
+        if let Err(e) = self
+            .host
+            .tunnel_channel_port()
+            .join_remote(&channel_id_typed, &creator, &name, &initial_members)
+            .await
+        {
+            warn!(
+                "inbound TunnelChannelInvite: local-mirror bootstrap failed \
+                 (request_id={request_id}, channel_id={channel_id}, creator={creator}): {e}"
+            );
+            return Ok(());
+        }
+
+        debug!(
+            "inbound TunnelChannelInvite: verified + audited + bootstrapped local mirror \
+             (request_id={request_id}, channel_id={channel_id}, creator={creator}, \
+              initial_members={})",
+            initial_members.len()
+        );
+
+        Ok(())
+    }
+
+    /// Handle an inbound `PrincipalToPrincipalResponse` — the half of the
     /// round-trip that completes the `oneshot::Receiver` the
     /// outbound `PrincipalSendTool` is awaiting on. Issue #29 Slice C.
-    async fn handle_inbound_agent_to_agent_response(
+    async fn handle_inbound_principal_to_principal_response(
         &self,
         request_id: String,
         payload: Vec<u8>,
@@ -1372,7 +1690,7 @@ impl TunnelDispatcher {
             // nonexistent id). Logging as a warn is the right
             // signal — it's a peer contract violation, not a crash.
             warn!(
-                "inbound AgentToAgentResponse: no pending a2a request for request_id={request_id} \
+                "inbound PrincipalToPrincipalResponse: no pending a2a request for request_id={request_id} \
                  (probably already timed out or cancelled)"
             );
         }
@@ -1381,7 +1699,7 @@ impl TunnelDispatcher {
 
     /// Synthesize a `HubErrorResponse` and send it back to the
     /// caller over the live tunnel handle. Used by
-    /// `handle_inbound_agent_to_agent_request` on every error
+    /// `handle_inbound_principal_to_principal_request` on every error
     /// path so the caller's `execute_remote` decodes a structured
     /// error (target_not_found / forbidden / internal_error)
     /// rather than a hang or a generic "remote a2a failed" string.
@@ -1398,7 +1716,7 @@ impl TunnelDispatcher {
             message: message.to_string(),
         })
         .map_err(|e| anyhow::anyhow!("failed to serialize HubErrorResponse: {e}"))?;
-        handle.send(TunnelMessage::AgentToAgentResponse {
+        handle.send(TunnelMessage::PrincipalToPrincipalResponse {
             request_id: request_id.to_string(),
             payload,
         })?;
@@ -2267,20 +2585,20 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // -- Issue #29 (Slice C): inbound AgentToAgentRequest + Response -----
+    // -- Issue #29 (Slice C): inbound PrincipalToPrincipalRequest + Response -----
 
-    /// `handle_inbound_agent_to_agent_request` rejects a request with
+    /// `handle_inbound_principal_to_principal_request` rejects a request with
     /// a malformed caller_runtime_id (cannot be parsed as a did:key)
     /// by sending back an `internal_error` `HubErrorResponse`
     /// rather than crashing the dispatcher.
     #[tokio::test]
-    async fn test_inbound_agent_to_agent_request_rejects_malformed_caller_did() {
+    async fn test_inbound_principal_to_principal_request_rejects_malformed_caller_did() {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, mut rx) = mock_tunnel_handle();
 
         dispatcher
-            .handle_inbound_agent_to_agent_request(
+            .handle_inbound_principal_to_principal_request(
                 handle,
                 "req-malformed".to_string(),
                 "did:peko:agent:not-a-real-did-key".to_string(), // not a did:key form
@@ -2295,12 +2613,12 @@ mod tests {
         // The handler should have sent back a structured
         // HubErrorResponse. Drain the response and check the shape.
         let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::AgentToAgentResponse {
+        let TunnelMessage::PrincipalToPrincipalResponse {
             request_id,
             payload,
         } = response
         else {
-            panic!("expected AgentToAgentResponse, got: {response:?}");
+            panic!("expected PrincipalToPrincipalResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-malformed");
         let err: HubErrorResponse =
@@ -2314,12 +2632,12 @@ mod tests {
         );
     }
 
-    /// `handle_inbound_agent_to_agent_request` rejects a request with
+    /// `handle_inbound_principal_to_principal_request` rejects a request with
     /// an invalid signature (key is well-formed but signature bytes
     /// don't verify) by sending back a `forbidden`
     /// `HubErrorResponse`.
     #[tokio::test]
-    async fn test_inbound_agent_to_agent_request_rejects_bad_signature() {
+    async fn test_inbound_principal_to_principal_request_rejects_bad_signature() {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (handle, mut rx) = mock_tunnel_handle();
@@ -2339,7 +2657,7 @@ mod tests {
         let sig = crate::tunnel::sign_request(&kp_attacker.signing_key, signed);
 
         dispatcher
-            .handle_inbound_agent_to_agent_request(
+            .handle_inbound_principal_to_principal_request(
                 handle,
                 "req-bad-sig".to_string(),
                 caller_did,
@@ -2352,12 +2670,12 @@ mod tests {
             .expect("handler must not panic");
 
         let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::AgentToAgentResponse {
+        let TunnelMessage::PrincipalToPrincipalResponse {
             request_id,
             payload,
         } = response
         else {
-            panic!("expected AgentToAgentResponse, got: {response:?}");
+            panic!("expected PrincipalToPrincipalResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-bad-sig");
         let err: HubErrorResponse = serde_json::from_slice(&payload).expect("payload must decode");
@@ -2369,11 +2687,11 @@ mod tests {
         );
     }
 
-    /// `handle_inbound_agent_to_agent_response` completes the
+    /// `handle_inbound_principal_to_principal_response` completes the
     /// matching pending oneshot on the `PendingA2aResponses`
     /// registry so the outbound `PrincipalSendTool` awaiter unblocks.
     #[tokio::test]
-    async fn test_inbound_agent_to_agent_response_completes_pending() {
+    async fn test_inbound_principal_to_principal_response_completes_pending() {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
         let pending = app_state.pending_a2a_responses();
@@ -2385,7 +2703,7 @@ mod tests {
             .expect("register must succeed for a fresh request_id");
 
         dispatcher
-            .handle_inbound_agent_to_agent_response("req-1".to_string(), b"hello".to_vec())
+            .handle_inbound_principal_to_principal_response("req-1".to_string(), b"hello".to_vec())
             .await
             .expect("handler must not panic");
 
@@ -2393,16 +2711,16 @@ mod tests {
         assert_eq!(delivered, b"hello");
     }
 
-    /// `handle_inbound_agent_to_agent_response` for a request_id with
+    /// `handle_inbound_principal_to_principal_response` for a request_id with
     /// no pending waiter is a no-op (logged as a warn). Catches the
     /// failure mode where a stale or duplicate response would
     /// panic.
     #[tokio::test]
-    async fn test_inbound_agent_to_agent_response_unknown_request_id_is_noop() {
+    async fn test_inbound_principal_to_principal_response_unknown_request_id_is_noop() {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         dispatcher
-            .handle_inbound_agent_to_agent_response(
+            .handle_inbound_principal_to_principal_response(
                 "unknown-request-id".to_string(),
                 b"orphan".to_vec(),
             )
@@ -2531,7 +2849,7 @@ mod tests {
         );
     }
 
-    /// An inbound `AgentToAgentRequest` addressed to a Principal's stable DID
+    /// An inbound `PrincipalToPrincipalRequest` addressed to a Principal's stable DID
     /// is routed to that Principal and a structured response is sent back.
     #[tokio::test]
     async fn inbound_a2a_routes_to_principal_by_did() {
@@ -2568,7 +2886,7 @@ mod tests {
         let sig = crate::tunnel::sign_request(&kp_caller.signing_key, signed);
 
         dispatcher
-            .handle_inbound_agent_to_agent_request(
+            .handle_inbound_principal_to_principal_request(
                 handle,
                 "req-a2a".to_string(),
                 caller_runtime_id,
@@ -2581,12 +2899,12 @@ mod tests {
             .expect("handler must not panic");
 
         let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::AgentToAgentResponse {
+        let TunnelMessage::PrincipalToPrincipalResponse {
             request_id,
             payload,
         } = response
         else {
-            panic!("expected AgentToAgentResponse, got: {response:?}");
+            panic!("expected PrincipalToPrincipalResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-a2a");
         let result: PrincipalSendResult =
@@ -2595,5 +2913,444 @@ mod tests {
             result.error.is_some() || !result.response.is_empty() || result.success,
             "A2A result should reflect that the Principal was reached; got: {result:?}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // peko-channel cross-runtime PR-A commit 3:
+    // `TunnelChannelEvent` inbound handler tests.
+    // -----------------------------------------------------------------
+
+    /// Build a fresh signed `TunnelChannelEvent` envelope for tests.
+    /// Mirrors the production outbound path: serialize the event to
+    /// JSON, build the canonical pre-image, sign with the source
+    /// runtime's key, base64url-encode the signature.
+    fn build_signed_tunnel_channel_event(
+        kp: &peko_identity::keys::KeyPair,
+        request_id: &str,
+        source_runtime_id: &str,
+        recipient_runtime_id: &str,
+        source_principal_did: &str,
+        channel_id: &str,
+        event: &peko_protocol::channel::ChannelEvent,
+    ) -> (String, peko_protocol::channel::ChannelEvent) {
+        let event_bytes = serde_json::to_vec(event).expect("event must serialize");
+        let signed = crate::tunnel::ChannelSignedFields {
+            request_id,
+            source_runtime_id,
+            recipient_runtime_id,
+            source_principal_did,
+            channel_id,
+            event_bytes: &event_bytes,
+        };
+        let sig = crate::tunnel::sign_channel_event(&kp.signing_key, signed);
+        (sig, event.clone())
+    }
+
+    /// The inbound `handle_inbound_tunnel_channel_event` accepts a
+    /// valid signed envelope and returns Ok. The audit line is
+    /// emitted (we don't capture tracing output here — the `Ok`
+    /// contract is what the dispatcher relies on; the audit row
+    /// emits unconditionally inside the handler).
+    ///
+    /// PR-A commit 3 stops short of the local-mirror append (that
+    /// lands in PR-B), so this test only proves "routing +
+    /// verification + audit emit do not error."
+    #[tokio::test]
+    async fn dispatcher_routes_valid_tunnel_channel_event_to_inbound_handler() {
+        let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (handle, _rx) = mock_tunnel_handle();
+
+        let kp = peko_identity::keys::KeyPair::generate();
+        let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: peko_protocol::channel::ChannelId("chan_abcdefgh".to_string()),
+            author: "prin_alice".to_string(),
+            parent: None,
+            text: "hello from A".to_string(),
+            at: "2026-08-06T12:00:00Z".to_string(),
+        };
+        let (signature, event) = build_signed_tunnel_channel_event(
+            &kp,
+            "chan-evt-1",
+            &source_runtime_id,
+            &local_runtime_id,
+            "prin_alice",
+            "chan_abcdefgh",
+            &event,
+        );
+
+        // Direct call to the inbound handler (same as
+        // `inbound_a2a_routes_to_principal_by_did` for the DM path).
+        dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-1".to_string(),
+                source_runtime_id,
+                local_runtime_id,
+                "prin_alice".to_string(),
+                "chan_abcdefgh".to_string(),
+                event,
+                signature,
+            )
+            .await
+            .expect("valid signed envelope must not error");
+    }
+
+    /// A `TunnelChannelEvent` whose signature does not verify (the
+    /// envelope is intact but signed with a key that does not match
+    /// the claimed `source_runtime_id`) is dropped with a warn. The
+    /// handler returns `Ok(())` so the dispatcher does not propagate
+    /// the rejection up the call stack — channel events have no
+    /// response, so there's nothing to error against.
+    #[tokio::test]
+    async fn dispatcher_drops_tunnel_channel_event_with_invalid_signature() {
+        let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (handle, _rx) = mock_tunnel_handle();
+
+        let kp_signer = peko_identity::keys::KeyPair::generate();
+        let kp_claimed = peko_identity::keys::KeyPair::generate();
+        // Claimed source_runtime_id is derived from a DIFFERENT key
+        // than the one that signed the envelope — signature
+        // verification MUST fail.
+        let claimed_source_runtime_id =
+            crate::tunnel::verifying_key_to_did_key(&kp_claimed.verifying_key);
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: peko_protocol::channel::ChannelId("chan_abcdefgh".to_string()),
+            author: "prin_alice".to_string(),
+            parent: None,
+            text: "tampered".to_string(),
+            at: "2026-08-06T12:00:00Z".to_string(),
+        };
+        let (signature, event) = build_signed_tunnel_channel_event(
+            &kp_signer,
+            "chan-evt-tampered",
+            &claimed_source_runtime_id,
+            &local_runtime_id,
+            "prin_alice",
+            "chan_abcdefgh",
+            &event,
+        );
+
+        let result = dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-tampered".to_string(),
+                claimed_source_runtime_id,
+                local_runtime_id,
+                "prin_alice".to_string(),
+                "chan_abcdefgh".to_string(),
+                event,
+                signature,
+            )
+            .await;
+        // Returns Ok — the rejection is logged and dropped, not
+        // propagated. Same shape as the DM path's signature-failure
+        // branch (which DOES propagate because there's a hub error
+        // envelope to send back; channels have no such envelope).
+        assert!(
+            result.is_ok(),
+            "invalid-signature rejection must not propagate; got: {result:?}"
+        );
+    }
+
+    /// An invalid `source_runtime_id` (not a valid `did:key:z...`)
+    /// is dropped without panicking. Mirrors the same defense-in-
+    /// depth branch in the DM path.
+    #[tokio::test]
+    async fn dispatcher_drops_tunnel_channel_event_with_invalid_runtime_did() {
+        let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (handle, _rx) = mock_tunnel_handle();
+
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: peko_protocol::channel::ChannelId("chan_abcdefgh".to_string()),
+            author: "prin_alice".to_string(),
+            parent: None,
+            text: "hello".to_string(),
+            at: "2026-08-06T12:00:00Z".to_string(),
+        };
+
+        let result = dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-bad-did".to_string(),
+                "did:peko:not-a-key".to_string(), // wrong scheme entirely
+                local_runtime_id,
+                "prin_alice".to_string(),
+                "chan_abcdefgh".to_string(),
+                event,
+                "any-base64url".to_string(),
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "invalid DID rejection must not propagate; got: {result:?}"
+        );
+    }
+
+    /// peko-channel cross-runtime PR-B commit 2: the inbound
+    /// `TunnelChannelEvent` appends the event to the local mirror's
+    /// `events.jsonl`. PR-A commit 3 verified-and-audited-and-dropped;
+    /// commit 2 wires `self.host.tunnel_channel_port().append_remote_event(...)`
+    /// so the receiver's local `peek` shows the event.
+    ///
+    /// The test creates the channel locally first (via
+    /// `app_state.channel_port.create(...)`) so the mirror directory
+    /// exists; the dispatcher then appends a Posted event from
+    /// runtime B into runtime A's mirror and the assertion reads back
+    /// via `peek`.
+    #[tokio::test]
+    async fn inbound_tunnel_channel_event_appends_to_local_mirror() {
+        use crate::ipc::handlers::channel::ChannelHost;
+        use peko_channel::ChannelPort;
+        let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
+        let creator = peko_subject::PrincipalId("prin_alice".into());
+        let channel = app_state
+            .channel_port()
+            .create(&creator, peko_channel::CreateOpts::runtime("team"))
+            .await
+            .expect("local channel create must succeed");
+        let channel_id_str = channel.as_str().to_string();
+
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (_handle, _rx) = mock_tunnel_handle();
+
+        let kp = peko_identity::keys::KeyPair::generate();
+        let source_runtime_id =
+            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob@runtime-B".into(),
+            parent: None,
+            text: "hello from B".into(),
+            at: "2026-08-06T12:00:00Z".into(),
+        };
+        let (signature, event) = build_signed_tunnel_channel_event(
+            &kp,
+            "chan-evt-mirror",
+            &source_runtime_id,
+            &local_runtime_id,
+            "prin_bob@runtime-B",
+            &channel_id_str,
+            &event,
+        );
+
+        dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-mirror".to_string(),
+                source_runtime_id,
+                local_runtime_id,
+                "prin_bob@runtime-B".to_string(),
+                channel_id_str.clone(),
+                event,
+                signature,
+            )
+            .await
+            .expect("verified envelope must not error");
+
+        // The local mirror's `peek` should now show the remote event.
+        let events = dispatcher
+            .host
+            .tunnel_channel_port()
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .expect("local peek must succeed");
+        let posted: Vec<_> = events
+            .iter()
+            .filter(|ev| matches!(ev, peko_protocol::channel::ChannelEvent::Posted { .. }))
+            .collect();
+        assert_eq!(
+            posted.len(),
+            1,
+            "remote Posted event must be visible in local peek"
+        );
+        match &posted[0] {
+            peko_protocol::channel::ChannelEvent::Posted { author, text, .. } => {
+                assert_eq!(author, "prin_bob@runtime-B");
+                assert_eq!(text, "hello from B");
+            }
+            other => panic!("expected Posted, got: {other:?}"),
+        }
+    }
+
+    /// peko-channel cross-runtime PR-B commit 2: the inbound handler
+    /// surfaces `Ok(())` when the channel id is unknown (defense in
+    /// depth — the hub's source-allowlist + signature check is the
+    /// primary gate; a bogus channel id on a verified envelope
+    /// shouldn't backpressure the dispatcher).
+    #[tokio::test]
+    async fn inbound_tunnel_channel_event_unknown_channel_silently_drops() {
+        let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (_handle, _rx) = mock_tunnel_handle();
+
+        let kp = peko_identity::keys::KeyPair::generate();
+        let source_runtime_id =
+            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let bogus = peko_protocol::channel::ChannelId("chan_unknown01".into());
+        let event = peko_protocol::channel::ChannelEvent::Posted {
+            channel: bogus.clone(),
+            author: "prin_bob".into(),
+            parent: None,
+            text: "should not land".into(),
+            at: "2026-08-06T12:00:00Z".into(),
+        };
+        let (signature, event) = build_signed_tunnel_channel_event(
+            &kp,
+            "chan-evt-unknown",
+            &source_runtime_id,
+            &local_runtime_id,
+            "prin_bob",
+            bogus.as_str(),
+            &event,
+        );
+
+        let result = dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-unknown".to_string(),
+                source_runtime_id,
+                local_runtime_id,
+                "prin_bob".to_string(),
+                bogus.as_str().to_string(),
+                event,
+                signature,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "unknown channel must not propagate as an error (channels are push-only); got: {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // peko-channel cross-runtime PR-3a commit 3:
+    // `TunnelChannelInvite` inbound handler tests.
+    // -----------------------------------------------------------------
+
+    /// Build a fresh signed `TunnelChannelInvite` envelope for tests.
+    /// Mirrors the production outbound path:
+    /// `fanout_invite` → serialize initial_members → build the
+    /// canonical pre-image → sign with the source runtime's key →
+    /// base64url-encode the signature.
+    fn build_signed_tunnel_channel_invite(
+        kp: &peko_identity::keys::KeyPair,
+        request_id: &str,
+        source_runtime_id: &str,
+        recipient_runtime_id: &str,
+        source_principal_did: &str,
+        channel_id: &str,
+        creator: &str,
+        name: &str,
+        initial_members: &[peko_protocol::channel::InitialMember],
+    ) -> (String, Vec<peko_protocol::channel::InitialMember>) {
+        let initial_members_bytes =
+            serde_json::to_vec(initial_members).expect("initial_members must serialize");
+        let signed = crate::tunnel::ChannelInviteSignedFields {
+            request_id,
+            source_runtime_id,
+            recipient_runtime_id,
+            source_principal_did,
+            channel_id,
+            creator,
+            name,
+            initial_members_bytes: &initial_members_bytes,
+        };
+        let sig = crate::tunnel::sign_channel_invite(&kp.signing_key, signed);
+        (sig, initial_members.to_vec())
+    }
+
+    /// Inbound `TunnelChannelInvite` with a valid signature: the
+    /// handler returns `Ok(())` and the local mirror gets
+    /// bootstrapped (meta.json + members.json + a synthetic Created
+    /// event lands at line 0). This is the receiver-side round-trip
+    /// for PR-3's cross-runtime invite UX — the desktop's
+    /// `peko-stream` listener fires off the synthetic Created event
+    /// (PR-2b).
+    #[tokio::test]
+    async fn inbound_invite_creates_local_mirror_and_emits_created_event() {
+        use peko_channel::ChannelPort;
+        let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (_handle, _rx) = mock_tunnel_handle();
+
+        let kp = peko_identity::keys::KeyPair::generate();
+        let source_runtime_id =
+            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let channel_id = "chan_invite01";
+        let initial_members = vec![
+            peko_protocol::channel::InitialMember {
+                principal_did: "prin_alice".to_string(),
+                runtime_id: None,
+            },
+            peko_protocol::channel::InitialMember {
+                principal_did: "prin_bob".to_string(),
+                runtime_id: Some("did:key:zRuntimeB".to_string()),
+            },
+        ];
+        let (signature, initial_members) = build_signed_tunnel_channel_invite(
+            &kp,
+            "chan-invite-1",
+            &source_runtime_id,
+            &local_runtime_id,
+            "prin_alice",
+            channel_id,
+            "prin_alice",
+            "team-chat",
+            &initial_members,
+        );
+
+        dispatcher
+            .handle_inbound_tunnel_channel_invite(
+                "chan-invite-1".to_string(),
+                source_runtime_id,
+                local_runtime_id,
+                "prin_alice".to_string(),
+                channel_id.to_string(),
+                "prin_alice".to_string(),
+                "team-chat".to_string(),
+                initial_members,
+                signature,
+            )
+            .await
+            .expect("valid signed invite must not error");
+
+        // Verify the local mirror got bootstrapped by reading the
+        // channel events back. The receiver-side AppState is the one
+        // we just constructed (no tunnel), so it has a fresh
+        // ChannelStore rooted at the data dir; the events.jsonl
+        // should have one synthetic Created entry.
+        let store = dispatcher.host.tunnel_channel_port();
+        let local_store: &peko_channel::ChannelStore = &**store.local();
+        let events = local_store
+            .peek(
+                &peko_protocol::channel::ChannelId(channel_id.to_string()),
+                &peko_channel::Checkpoint::default(),
+            )
+            .await
+            .expect("peek must succeed on the bootstrapped mirror");
+        assert_eq!(events.len(), 1, "synthetic Created at line 0");
+        match &events[0] {
+            peko_protocol::channel::ChannelEvent::Created { creator, name, .. } => {
+                assert_eq!(creator, "prin_alice");
+                assert_eq!(name, "team-chat");
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+
+        // Members: alice local (creator), bob remote on B.
+        let remote_members = local_store
+            .list_remote_members(&peko_protocol::channel::ChannelId(
+                channel_id.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(remote_members.len(), 1);
+        assert_eq!(remote_members[0].runtime_id, "did:key:zRuntimeB");
+        assert_eq!(remote_members[0].principal_id, "prin_bob");
     }
 }

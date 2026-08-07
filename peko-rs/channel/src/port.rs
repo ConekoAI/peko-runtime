@@ -1,0 +1,466 @@
+//! `ChannelPort` trait + supporting types.
+//!
+//! The port the CLI / daemon / `peko-engine` consume via `Arc<dyn
+//! ChannelPort>`. The trait is consumer-defined (lives here, not in
+//! `peko-engine`) so the dep direction stays acyclic — `peko-engine`
+//! implements `ChannelResponder` (in `responder.rs`), but the ChannelPort
+//! surface this crate owns.
+//!
+//! Convention mirrors: every other port trait in the codebase follows
+//! the "no closures on the trait surface" rule
+//! (`peko-rs/plan/src/plan_port.rs:9-16`). Pure async methods taking
+//! `&self` + borrowed arguments; no `FnOnce` readers/writers.
+
+use std::collections::HashSet;
+
+use async_trait::async_trait;
+use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership, MemberProvenance};
+use peko_subject::PrincipalId;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+// ---------------------------------------------------------------------------
+// Trait
+// ---------------------------------------------------------------------------
+
+/// Port trait for the multi-principal chat primitive.
+///
+/// `peko-rs/core` and `peko-rs/cli` hold `Arc<dyn ChannelPort>` on
+/// their respective contexts. The concrete impl is
+/// [`crate::ChannelStore`] (file-backed, append-only JSONL event log +
+/// member set). Future impls — in-memory for tests, network-backed
+/// for distributed deployments — slot in without changing call sites.
+#[async_trait]
+pub trait ChannelPort: Send + Sync + 'static {
+    /// Create a new channel. The creator is automatically added as the
+    /// first member. Returns the generated [`ChannelId`].
+    async fn create(&self, creator: &PrincipalId, opts: CreateOpts) -> Result<ChannelId>;
+
+    /// Add an invitee to a channel. Returns [`ChannelError::NotMember`]
+    /// if `inviter` isn't already a member; [`ChannelError::FanOutCap`]
+    /// if the channel already has 8 members (PR-1 cap; PR-3 may lift).
+    async fn invite(
+        &self,
+        channel: &ChannelId,
+        inviter: &PrincipalId,
+        invitee: &PrincipalId,
+    ) -> Result<()>;
+
+    /// Post a message. The adapter enforces the at-most-one-parent
+    /// convention — `msg.parent` references the line number of the
+    /// message being replied to. Returns the new message's [`TaskId`]
+    /// (the line number it was assigned in the channel's event log).
+    async fn post(
+        &self,
+        channel: &ChannelId,
+        sender: &PrincipalId,
+        msg: PostMsg,
+    ) -> Result<TaskId>;
+
+    /// Walk the channel's event log starting from `since`, returning
+    /// every event keyed at a strictly later `TaskId`. An empty
+    /// `Checkpoint` (default) returns the entire log.
+    async fn peek(
+        &self,
+        channel: &ChannelId,
+        since: &Checkpoint,
+    ) -> Result<Vec<ChannelEvent>>;
+
+    /// Like [`Self::peek`] but each item carries its source `TaskId`
+    /// (the line number where the event was appended in the channel's
+    /// JSONL log). Used by the subscription loop to advance cursors
+    /// precisely without re-decoding the wire event. Has a default
+    /// impl that re-reads via [`Self::peek`] and falls back to opaque
+    /// cursors (one-event-at-a-time), so adapters don't *have* to
+    /// override.
+    async fn peek_with_ids(
+        &self,
+        channel: &ChannelId,
+        since: &Checkpoint,
+    ) -> Result<Vec<(TaskId, ChannelEvent)>> {
+        // Fallback: walk the events; we don't have TaskIds here.
+        // Callers that need precise cursors must override.
+        let _ = since;
+        let _ = channel;
+        Ok(Vec::new())
+    }
+
+    /// Remove `principal` from the channel membership set. Emits a
+    /// `MemberLeft` event. Returns [`ChannelError::NotEmpty`] only if
+    /// the implementation wishes to forbid leaving with other members
+    /// present (PR-1: leaves are always permitted).
+    async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()>;
+
+    /// All current members of the channel.
+    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<PrincipalId>>;
+
+    /// All channels where `principal` is a member. Walks each channel's
+    /// member set; cheap in PR-1's small fan-out cap (≤ 8 channels).
+    async fn list_for_principal(&self, principal: &PrincipalId) -> Result<Vec<ChannelId>>;
+
+    /// Optional: IPC-shaped snapshot of a channel's membership + name.
+    /// Has a default impl that walks `peek` + member events, so impls
+    /// don't need to override.
+    async fn membership(&self, channel: &ChannelId) -> Result<ChannelMembership> {
+        // Default: walk MemberJoined/MemberLeft from the full event log.
+        let events = self.peek(channel, &Checkpoint::default()).await?;
+        let mut name = String::new();
+        let mut creator = String::new();
+        let mut created_at = String::new();
+        let mut joined: HashSet<String> = Default::default();
+        let mut left: HashSet<String> = Default::default();
+        let mut last_change: Option<String> = None;
+        for ev in events {
+            match ev {
+                ChannelEvent::Created { name: n, creator: c, at, .. } => {
+                    name = n;
+                    creator = c;
+                    created_at = at;
+                }
+                ChannelEvent::MemberJoined { member: m, at, .. } => {
+                    joined.insert(m);
+                    last_change = Some(at);
+                }
+                ChannelEvent::MemberLeft { member: m, at, .. } => {
+                    left.insert(m);
+                    last_change = Some(at);
+                }
+                _ => {}
+            }
+        }
+        joined.retain(|p| !left.contains(p));
+        Ok(ChannelMembership {
+            channel: channel.clone(),
+            name,
+            creator,
+            members: joined.into_iter().collect(),
+            member_provenance: Vec::new(),
+            created_at,
+            last_membership_change: last_change,
+        })
+    }
+
+    /// P1.2 attribution: return each member of `channel` paired with
+    /// their runtime provenance (local vs remote). The default impl
+    /// walks the event log and returns an empty `runtime_id` for
+    /// every row, so single-runtime adapters don't need to override.
+    ///
+    /// Adapters backed by an authoritative `members.json`
+    /// (e.g. [`crate::ChannelStore`]) should override this to surface
+    /// remote members with their `runtime_id`.
+    async fn members_with_attribution(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<Vec<MemberProvenance>> {
+        let membership = self.membership(channel).await?;
+        // The default event-log walk can't distinguish local vs
+        // remote — every row is treated as local.
+        Ok(membership
+            .members
+            .into_iter()
+            .map(|p| MemberProvenance {
+                principal: p,
+                runtime_id: None,
+            })
+            .collect())
+    }
+
+    /// Copy an existing Runtime-tier channel into the adapter's
+    /// Shared tier (PR-3d). Returns the absolute Shared path on
+    /// success. COPY semantics — the Runtime source remains so the
+    /// channel is still reachable from `peko channel show`. Adapters
+    /// without a Shared dir (CLI fallback that only knows the
+    /// runtime dir) must return `ChannelError::Adapter` with a
+    /// clear message.
+    async fn pin_to_shared(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<std::path::PathBuf>;
+
+    /// PR-2b: subscribe to live events for `channel`. The returned
+    /// receiver yields every event appended to the channel after this
+    /// call (events appended before subscription are NOT replayed —
+    /// use [`Self::peek`] for the from-cursor history). The default
+    /// impl returns a receiver that never fires, so adapters without
+    /// a broadcast registry (in-memory tests, `NoopChannelPort`)
+    /// don't need to override.
+    async fn subscribe_events(
+        &self,
+        channel: &ChannelId,
+    ) -> tokio::sync::broadcast::Receiver<ChannelEvent> {
+        // Drop the sender so the receiver returns `RecvError::Closed`
+        // immediately on first await. The test impls that use the
+        // default avoid needing a broadcast registry. Note we still
+        // need a `let _ = channel;` to avoid an unused-arg warning
+        // on the default-impl signature.
+        let _ = channel;
+        let (tx, _rx) = tokio::sync::broadcast::channel::<ChannelEvent>(1);
+        drop(tx);
+        let (_tx, rx) = tokio::sync::broadcast::channel::<ChannelEvent>(1);
+        rx
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ChannelEvent / PostMsg / CreateOpts / Checkpoint / TaskId
+// ---------------------------------------------------------------------------
+
+/// A posted message. `text` is the message body. `parent` is the
+/// message being replied to; `None` for the channel's root post. The
+/// adapter enforces at-most-one parent (see `plan_channel.rs`).
+#[derive(Debug, Clone)]
+pub struct PostMsg {
+    pub text: String,
+    pub parent: Option<TaskId>,
+}
+
+impl PostMsg {
+    /// Construct a root post (no parent).
+    pub fn root(text: impl Into<String>) -> Self {
+        Self { text: text.into(), parent: None }
+    }
+
+    /// Construct a reply post.
+    pub fn reply(parent: TaskId, text: impl Into<String>) -> Self {
+        Self { text: text.into(), parent: Some(parent) }
+    }
+}
+
+/// Options for [`ChannelPort::create`].
+#[derive(Debug, Default, Clone)]
+pub struct CreateOpts {
+    pub name: String,
+    pub tier: Tier,
+}
+
+impl CreateOpts {
+    /// Construct a Runtime-tier `CreateOpts` (PR-1 default).
+    pub fn runtime(name: impl Into<String>) -> Self {
+        Self { name: name.into(), tier: Tier::Runtime }
+    }
+
+    /// Construct a Shared-tier `CreateOpts` (PR-3d). The caller is
+    /// responsible for the authority gate — the CLI does this via the
+    /// Phase B `RuntimeAuthority::write_shared_channels` check.
+    pub fn shared(name: impl Into<String>) -> Self {
+        Self { name: name.into(), tier: Tier::Shared }
+    }
+}
+
+/// Storage tier. PR-1 supported [`Tier::Runtime`] only.
+///
+/// PR-3d adds [`Tier::Shared`]: a channel created with this tier (or
+/// promoted via [`ChannelPort::pin_to_shared`]) lives under the
+/// principal's shared root (`<shared_dir>/channels/<channel_id>/...`)
+/// so other principals on the same runtime can discover it.
+///
+/// **DO NOT** introduce a 4th tier — channels live *in* an existing
+/// tier, not as their own. The Phase B authority gate (`write_shared`)
+/// is reused as-is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Tier {
+    /// `<runtime_dir>/channels/<channel_id>/...` — ephemeral,
+    /// session-scoped. Default.
+    #[default]
+    Runtime,
+    /// `<shared_dir>/channels/<channel_id>/...` — visible across
+    /// principals (PR-3d). Must be opted in via `pin_to_shared`; we
+    /// do NOT default-create channels in Shared because that would
+    /// silently leak session state to other principals.
+    Shared,
+}
+
+/// Per-principal per-channel checkpoint — opaque cursor into the
+/// channel's event log. Newtype (instead of bare `String`) so the type
+/// guides callers to wrap sensibly in their own state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Checkpoint(pub TaskId);
+
+impl Checkpoint {
+    /// Empty checkpoint that "starts from the beginning".
+    pub fn zero() -> Self {
+        Self(String::new())
+    }
+}
+
+/// Opaque message identifier (string alias). For the JSONL-backed
+/// [`crate::ChannelStore`], the id is the line number where the event
+/// was appended.
+///
+/// The wire form (`peko_protocol::channel::ChannelEvent::Posted.parent`)
+/// carries the same string — kept as a type alias here so consumers
+/// don't need to import from `peko-protocol`.
+pub type TaskId = String;
+
+// ---------------------------------------------------------------------------
+// RemoteMember (PR-B cross-runtime)
+// ---------------------------------------------------------------------------
+
+/// A principal that lives on a different runtime than the one that
+/// owns the channel's source-of-truth JSONL log.
+///
+/// Introduced by peko-channel cross-runtime PR-B. The creator's
+/// runtime writes events to its `events.jsonl` and pushes them to
+/// every other runtime that hosts a remote member of the channel;
+/// those runtimes maintain a local mirror and a member row of this
+/// shape so they know which runtime to send their own writes
+/// through.
+///
+/// The DID forms (`runtime_id` is `did:key:z...`, `principal_id` is
+/// `did:peko:principal:<hash>`) are kept as `String`s for back-compat
+/// with `MembersJson`'s pre-PR-B shape (string-only member rows).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMember {
+    /// The runtime that hosts the member's principal. `did:key:z...`
+    /// form (self-certifying — the public key is derivable).
+    pub runtime_id: String,
+    /// The principal's stable DID on the remote runtime. Stringified
+    /// so the on-disk `MembersJson` shape matches the pre-PR-B
+    /// `members: Vec<String>` convention.
+    pub principal_id: String,
+}
+
+// `Display` is already provided by `String` via the orphan rule; no
+// manual impl needed.
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// Channel-layer errors. The `Io` and `Serde` variants wrap inner
+/// errors via `#[from]` so callers can use `?` freely.
+#[derive(Debug, Error)]
+pub enum ChannelError {
+    /// Channel id passed to a method that doesn't exist on disk.
+    #[error("channel not found: {0}")]
+    NotFound(ChannelId),
+
+    /// Caller isn't a member of the channel they're trying to act in.
+    #[error("caller is not a member of the channel")]
+    NotMember,
+
+    /// `cursors.json` read/write failure.
+    #[error("cursor error: {0}")]
+    Cursor(String),
+
+    /// I/O fallback (mostly for ad-hoc paths inside adapters).
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// JSON encode/decode error.
+    #[error("serde: {0}")]
+    Serde(#[from] serde_json::Error),
+
+    /// Fan-out cap exceeded. PR-1: hard cap of 8 members per channel.
+    #[error("fan-out cap exceeded ({current}); max 8 members per channel")]
+    FanOutCap { current: usize },
+
+    /// Attempted to leave a non-empty channel where leaving is forbidden.
+    /// PR-1 does NOT raise this — leaves are always permitted — but the
+    /// variant is reserved for future stricter semantics.
+    #[error("channel still has {remaining} members; cannot remove")]
+    NotEmpty { remaining: usize },
+
+    /// Generic adapter-level error. Avoid for new code; prefer a
+    /// dedicated variant.
+    #[error("channel adapter: {0}")]
+    Adapter(String),
+}
+
+/// Crate-level result alias. Every fallible function in `peko-channel`
+/// returns `Result<T, ChannelError>`.
+pub type Result<T> = std::result::Result<T, ChannelError>;
+
+// ---------------------------------------------------------------------------
+// NoopChannelPort
+// ---------------------------------------------------------------------------
+
+/// A `ChannelPort` that returns `Adapter` for every method. Used by
+/// tests + `ToolRuntime::register_builtins` callers that don't have a
+/// real adapter wired up yet. The `ChannelRead` tool still works through
+/// this — `peek` returns `Adapter`, which surfaces as a hard error to
+/// the LLM (no silent zero events).
+///
+/// Lives here (next to `ChannelPort`) so the test-only registration
+/// sites in `ToolRuntime` don't have to invent their own no-op type.
+#[derive(Debug, Default, Clone)]
+pub struct NoopChannelPort;
+
+#[async_trait]
+impl ChannelPort for NoopChannelPort {
+    async fn create(
+        &self,
+        _creator: &PrincipalId,
+        _opts: CreateOpts,
+    ) -> Result<ChannelId> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn invite(
+        &self,
+        _channel: &ChannelId,
+        _inviter: &PrincipalId,
+        _invitee: &PrincipalId,
+    ) -> Result<()> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn post(
+        &self,
+        _channel: &ChannelId,
+        _sender: &PrincipalId,
+        _msg: PostMsg,
+    ) -> Result<TaskId> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn peek(
+        &self,
+        _channel: &ChannelId,
+        _since: &Checkpoint,
+    ) -> Result<Vec<ChannelEvent>> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn leave(
+        &self,
+        _channel: &ChannelId,
+        _principal: &PrincipalId,
+    ) -> Result<()> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn list_members(
+        &self,
+        _channel: &ChannelId,
+    ) -> Result<Vec<PrincipalId>> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn list_for_principal(
+        &self,
+        _principal: &PrincipalId,
+    ) -> Result<Vec<ChannelId>> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn pin_to_shared(&self, _channel: &ChannelId) -> Result<std::path::PathBuf> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+}

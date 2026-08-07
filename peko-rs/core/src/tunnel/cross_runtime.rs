@@ -41,11 +41,11 @@ pub struct CrossRuntimeA2aCtx {
     pub directory: Arc<dyn AgentDirectory>,
 
     /// Response correlation registry. Shared with the inbound
-    /// `AgentToAgentResponse` arm of the `TunnelDispatcher`.
+    /// `PrincipalToPrincipalResponse` arm of the `TunnelDispatcher`.
     pub pending: Arc<PendingA2aResponses>,
 
     /// The runtime's own `PekoHubCredential` signing key. Used to
-    /// sign the `AgentToAgentRequest` envelope so the target
+    /// sign the `PrincipalToPrincipalRequest` envelope so the target
     /// runtime can verify the caller's runtime identity end-to-end.
     pub signing_key: Arc<SigningKey>,
 
@@ -88,7 +88,7 @@ pub struct CrossRuntimeA2aCtx {
     /// `ChannelKind::A2a`, so each side keeps its own shard.
     pub chat_log_store: Arc<ChatLogStore>,
 
-    /// How long to wait for the matching `AgentToAgentResponse`
+    /// How long to wait for the matching `PrincipalToPrincipalResponse`
     /// before surfacing a `Timeout` error to the calling agent.
     /// Production default is 60s (configurable via daemon config
     /// in Slice B'); tests use sub-second values.

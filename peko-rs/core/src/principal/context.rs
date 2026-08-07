@@ -437,10 +437,23 @@ impl PrincipalContext {
             // the Shared tier root, so the agents dir is exactly
             // `workspace_path.join("agents")`.
             let agents_dir = self.workspace_path.join("agents");
+            // PR-4a: principal contexts don't hold their own channel
+            // port — the daemon's `AppState` does, and the global core
+            // is registered against that real port at daemon init. The
+            // re-registration here is idempotent for the tool *name*
+            // (`register_tool_system` keys on `PrincipalId::system()`);
+            // the port payload on the new `ChannelRead` instance is
+            // unused because the global-core registration already
+            // took the real port. We pass `NoopChannelPort` to keep
+            // this function dependency-free of the principal
+            // configuration plumbing.
+            let channel_port: Arc<dyn peko_channel::ChannelPort> =
+                Arc::new(peko_channel::NoopChannelPort);
             if let Err(e) = install_principal_tool_bag(
                 Arc::clone(&core),
                 &agents_dir,
                 &self.principal_id,
+                channel_port,
             )
             .await
             {
@@ -496,15 +509,26 @@ impl PrincipalContext {
 /// Phase A: caller passes the typed `SharedLayout::agents_dir`
 /// directly so the hand-rolled `workspace_path.join("agents")`
 /// join inside this function is gone.
+///
+/// `channel_port` is the per-principal `ChannelPort` used for the
+/// `ChannelRead` tool registration. Pass `Arc::new(NoopChannelPort)`
+/// for tests that don't have a real adapter wired up — `ChannelRead`
+/// will surface `Adapter` errors instead of silently zero-returning.
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
     agents_dir: &Path,
     principal_id: &peko_subject::PrincipalId,
+    channel_port: Arc<dyn peko_channel::ChannelPort>,
 ) -> anyhow::Result<()> {
     // Built-in tools.
     let path_resolver = crate::common::paths::PathResolver::new();
     if let Err(e) =
-        crate::engine::tool_runtime::ToolRuntime::register_builtins(&core, &path_resolver).await
+        crate::engine::tool_runtime::ToolRuntime::register_builtins(
+            &core,
+            &path_resolver,
+            channel_port,
+        )
+        .await
     {
         tracing::warn!("ToolRuntime::register_builtins failed during core build: {e}");
     }

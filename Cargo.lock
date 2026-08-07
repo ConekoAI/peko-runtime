@@ -2291,6 +2291,7 @@ dependencies = [
  "keyring",
  "libc",
  "peko-auth",
+ "peko-channel",
  "peko-chat-log",
  "peko-cron",
  "peko-engine",
@@ -2361,6 +2362,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "peko-channel"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "peko-fs-persistence",
+ "peko-observability",
+ "peko-protocol",
+ "peko-subject",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "peko-chat-log"
 version = "0.1.0"
 dependencies = [
@@ -2392,11 +2412,13 @@ dependencies = [
  "hex",
  "peko",
  "peko-auth",
+ "peko-channel",
  "peko-chat-log",
  "peko-cron",
  "peko-extension-api",
  "peko-identity",
  "peko-observability",
+ "peko-protocol",
  "peko-providers",
  "peko-quota",
  "peko-subject",
