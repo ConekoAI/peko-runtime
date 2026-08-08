@@ -242,3 +242,68 @@ Token comparison, reminder turn: round 3 = 67.9k input / 8 iterations → round 
 
 Daemon stopped; `/tmp/peko/field4-*` tempdir, `/tmp/peko-field4-setup.sh`,
 and `/tmp/peko-field4-env.sh` removed. Host `~/.peko` untouched.
+
+---
+
+## Addendum 2 (2026-08-08): `send_peer` unification + `delay` + cron Notify
+
+Implemented on `fix/field-test-cron-session-hardening` (after `8afc67b4`)
+from the "Remaining observations" proposals, extended per user direction:
+`principal_send` was **unified** into a single `send_peer` tool whose
+`target` is any `Subject` — `user:<id>` (fire-and-forget note) or a
+Principal DID (the legacy synchronous RPC). Cron `message` jobs are now
+`CronJobAction::Notify` — pure delivery, no agent turn.
+
+### Live verification (real MiniMax-M3, isolated env, 2s poll)
+
+| Check | Result |
+|---|---|
+| "remind me in 60 seconds to water the plants" | 5.5s, 2 iterations, `tools_failed=0`. Model used the new **`delay: "60s"`** arg on the first try — zero clock arithmetic (round 4: 2 failed `at` attempts, 44k tokens). |
+| Job shape | `notify` action, one-shot by default; reaped after firing (cron list empty). |
+| Note content | `⏰ [cron job '…' fired] 🌱 Time to water the plants!` — **the message text itself**, not a model reply (observation #2 fixed). No `root:cron:*` session created (0-token delivery). |
+| Subagent `send_peer` | Root → `Agent(primary)` → subagent called `send_peer(target="user:local", label="Multiplication Result")` → note `📨 [Multiplication Result] 17 × 23 = 391` landed in `root:user:local` with `role_metadata.User.source = "agent"`. Originating-peer resolution walked the spawn-overlay `parent_session_id` linkage correctly. |
+| Note recall | "What answer did the helper send me?" → nova read the note from history and confirmed delivery (1 iteration, 10.3k tokens). |
+
+### Two integration bugs found by the field test (fixed same session)
+
+1. **Tool gated on cross-runtime ctx.** `principal_send` only
+   registered when `CrossRuntimeA2aCtx` existed (tunnel up), which a
+   local daemon never has — so even the root agent never saw it.
+   Registration now needs only the caller principal DID; principal
+   targets without the ctx return a structured error.
+2. **Starter capability bundle missing the tool.** `principal create`
+   persists an explicit grant list (not `tool:*`); it never included
+   `principal_send`/`send_peer`, so the capability filter silently
+   dropped the tool from the LLM's toolset even when registered.
+   `Capabilities::starter_bundle()` now includes `tool:send_peer`;
+   existing principals can `peko capability grant --principal <name>
+   tool:send_peer`.
+
+### Prompting observation (not a bug)
+
+- **Stale capability beliefs anchor in history.** After turn 3's "no
+  send_peer" claim was in the session, nova kept disbelieving the tool
+  existed in turn 4 even with `send_peer` present in the tool defs;
+  one user pushback ("check your available tools") fixed it. Worth
+  knowing for future capability changes: the model trusts its own
+  history over the schema list.
+
+### Regression coverage added
+
+- `principal/messenger.rs`: 6 unit tests for `peer_from_session_key`
+  (root / cron / v2 / subagent-suffix / spawn-pseudo-peer rejection /
+  garbage).
+- `principal_send_tool.rs`: 4 user-branch tests (happy path, cross-user
+  rejection, unresolvable origin, missing conversational session) via a
+  stub `PeerMessenger`; all 12 pre-existing principal-branch tests pass
+  unchanged.
+- `cron_engine`: `test_notify_job_delivers_note_without_turn` (note =
+  message text, no cron session, single success row).
+- `cli_cron.rs`: message-job assertion updated to `kind == "notify"`.
+- Suites: peko lib 1508, peko-cli 116, peko-cron 32, peko-extension-api
+  39 — all green; `check_workspace_deps.py` clean.
+
+### Cleanup (round 5)
+
+Daemon stopped; `/tmp/peko/field5-*` tempdir, `/tmp/peko-field5-setup.sh`,
+`/tmp/peko-field5-env.sh` removed. Host `~/.peko` untouched.

@@ -4,6 +4,53 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### `send_peer` unification, cron `Notify` delivery, and `delay` (2026-08-08)
+
+From the round-4 live-verification observations (addendum in
+`scripts/e2e/reports/2026-08-07-non-technical-user-subagent-cron-principal.md`):
+
+#### Added
+- **`CronCreate` `delay` arg.** Relative one-shot delays (`"90s"`,
+  `"5m"`, `"1h"`) resolved to an absolute `at` at registration time —
+  the model no longer does RFC3339/timezone arithmetic (the top
+  remaining turn-cost driver: two failed `at` attempts burned ~44k
+  input tokens on one reminder turn). Mutually exclusive with explicit
+  schedule fields. `parse_duration_ms` moved from the CLI into
+  `peko-cron` (`peko_cron::tools::parse_duration_ms`) and is shared by
+  both.
+- **`send_peer` tool — `principal_send` renamed and unified.** One
+  tool for messaging any `Subject`: `user:<id>` delivers a
+  fire-and-forget note (`📨 [<label>] …`, `MessageSource::Agent`) to
+  that user's conversational session; a Principal DID runs the legacy
+  synchronous RPC (wire envelope, signing, transport selection all
+  unchanged; result gains `kind: "principal" | "user"`). The user
+  branch is gated to the user who originated the current run —
+  resolved from the calling session id (`root:{peer}` / v2 keys /
+  subagent-suffix stripping / spawn-overlay `parent_session_id`
+  walk), never from the never-populated `ToolContext.peer_id`. The
+  tool registers whenever a caller principal DID is bound — no longer
+  gated on the cross-runtime context — so it works in tunnel-less
+  daemons and for **subagents** (caller DID propagates down the spawn
+  tree via a `OnceLock` on `SubagentExecutor`, set by
+  `Agent::with_caller_principal_did`). The starter capability bundle
+  gains `tool:send_peer` (existing principals: `peko capability grant
+  --principal <name> tool:send_peer`).
+- **`PeerMessenger` port** (`peko-rs/core/src/principal/messenger.rs`):
+  trait + `PrincipalPeerMessenger` impl + global registry (same
+  pattern as `CronRuntime`), installed by the daemon at startup.
+  Shared by the `send_peer` user branch and the cron engine's note
+  delivery.
+- **`CronJobAction::Notify`** — pure delivery: the message text lands
+  in the owner's conversational session as a labeled `⏰` note with NO
+  agent turn (0 tokens, instant). The `CronCreate` tool's `message`
+  arg now builds these. `Send` keeps its deferred-`peko send` turn
+  semantics for CLI compatibility.
+- **`MessageSource::Agent`** for agent-pushed notes.
+
+#### Changed
+- `PrincipalSendTool` → `SendPeerTool`; args `target_principal` →
+  `target` (+ optional `label`). No alias — pre-launch.
+
 ### Cron/session structural fixes (2026-08-07 round-3 field-test findings F1–F5, P1–P2, U1)
 
 From `scripts/e2e/reports/2026-08-07-non-technical-user-subagent-cron-principal.md`:

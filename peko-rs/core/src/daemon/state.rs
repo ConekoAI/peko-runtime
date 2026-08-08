@@ -1697,7 +1697,7 @@ impl AppState {
             .set_cross_runtime_a2a_ctx(ctx);
 
         // Phase 4b: propagate the runtime id into every Principal's
-        // router so `principal_send` is registered on their agents.
+        // router so `send_peer` is registered on their agents.
         // Routers that don't need a runtime id (the default for
         // anything other than `RootRouter`) ignore the call.
         let runtime_id = cred.runtime_id.clone();

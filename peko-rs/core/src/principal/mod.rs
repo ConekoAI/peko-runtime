@@ -24,6 +24,7 @@ pub mod extension_store;
 pub mod factory;
 pub mod manager;
 pub mod memory;
+pub mod messenger;
 pub mod peer;
 pub mod router;
 pub mod routers;
@@ -53,6 +54,9 @@ pub use factory::{
 };
 pub use manager::{PrincipalManager, PrincipalManagerError};
 pub use memory::{DefaultPrincipalMemory, MemoryError, PrincipalMemory, SessionArtifact};
+pub use messenger::{
+    PrincipalPeerMessenger, PeerMessenger, global_messenger, set_global_messenger,
+};
 pub use peer::{Peer, PeerConfig, PeerError, PeerRegistry};
 pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,

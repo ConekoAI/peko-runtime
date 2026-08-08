@@ -176,13 +176,16 @@ impl CronScheduler {
             anyhow::bail!("Cron job with id '{}' already exists", job.id);
         }
 
-        // Validate the action shape. Send requires a non-empty message;
-        // SpawnTool requires a non-empty tool name. Validation happens
-        // here so a malformed job never reaches the on-disk DB.
+        // Validate the action shape. Send/Notify require a non-empty
+        // message; SpawnTool requires a non-empty tool name. Validation
+        // happens here so a malformed job never reaches the on-disk DB.
         match &job.action {
-            CronJobAction::Send { message } => {
+            CronJobAction::Send { message } | CronJobAction::Notify { message } => {
                 if message.trim().is_empty() {
-                    anyhow::bail!("CronJob Send action requires a non-empty 'message'");
+                    anyhow::bail!(
+                        "CronJob {} action requires a non-empty 'message'",
+                        job.action.kind_label()
+                    );
                 }
             }
             CronJobAction::SpawnTool { tool_name, .. } => {

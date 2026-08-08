@@ -71,7 +71,7 @@ pub struct Agent {
     /// core beforehand.
     principal_workspace: Option<std::path::PathBuf>,
     /// Caller principal's stable DID. Bound at construction by
-    /// `with_caller_principal_did` so `principal_send` can attribute
+    /// `with_caller_principal_did` so `send_peer` can attribute
     /// the outbound request under
     /// `Subject::Principal(caller_principal_did)` on the wire.
     /// `None` means the tool is not registered.
@@ -319,43 +319,46 @@ impl Agent {
             );
         }
 
-        // Add principal_send tool for principal-to-principal cross-runtime
-        // messaging. Replaces the legacy `a2a_send` tool (ADR-023 +
-        // root-agent unification): the target is now a Principal DID
-        // (not an agent name on a target runtime), and dispatch flows
-        // through the tunnel even when caller and target share a daemon.
+        // Add the send_peer tool (peer messaging: user notes +
+        // principal-to-principal cross-runtime RPC). Replaces the
+        // legacy `a2a_send` tool (ADR-023 + root-agent unification):
+        // the principal-branch target is a Principal DID (not an agent
+        // name on a target runtime), and dispatch flows through the
+        // tunnel even when caller and target share a daemon.
         //
-        // Both the caller's principal DID and the cross-runtime ctx
-        // must be present; otherwise the tool is intentionally not
-        // registered (no fall-back local-only path — `principal_send`
-        // is exclusively cross-runtime).
-        //
-        // The ctx is pulled from extension services (set by the
-        // daemon-state after `start_tunnel`). For pre-#29 runtimes /
-        // test harnesses without cross-runtime dispatch, the ctx is
-        // `None` and the tool is omitted — same gating as before.
+        // Registration needs only the caller's principal DID. The
+        // cross-runtime ctx is pulled from extension services (set by
+        // the daemon-state after `start_tunnel`); when it is absent
+        // (tunnel down, test harnesses) the tool still registers in
+        // local-only mode — the user branch works, principal targets
+        // return a structured error.
         if let Some(caller_did) = self.caller_principal_did.as_ref() {
             let cross_ctx = self
                 .extension_core
                 .services()
                 .cross_runtime_a2a_ctx()
                 .and_then(|ctx| Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok());
-            if let Some(ctx) = cross_ctx {
-                tools.push(crate::tunnel::principal_send_tool::build_tool(
+            let tool = match cross_ctx {
+                Some(ctx) => crate::tunnel::principal_send_tool::build_tool(
                     caller_did.clone(),
                     ctx,
-                ));
-            } else {
-                tracing::debug!(
-                    "CrossRuntimeA2aCtx not available on ExtensionCore — \
-                     principal_send tool will not be registered for agent {}",
-                    self.config.name
-                );
-            }
+                ),
+                None => {
+                    tracing::debug!(
+                        "CrossRuntimeA2aCtx not available on ExtensionCore — \
+                         send_peer registers local-only (user branch) for agent {}",
+                        self.config.name
+                    );
+                    std::sync::Arc::new(crate::tunnel::principal_send_tool::SendPeerTool::new_local_only(
+                        caller_did.clone(),
+                    )) as std::sync::Arc<dyn peko_tools_core::Tool>
+                }
+            };
+            tools.push(tool);
         } else {
             tracing::debug!(
                 "Caller identity not bound on agent {} — \
-                 principal_send tool will not be registered",
+                 send_peer tool will not be registered",
                 self.config.name
             );
         }
@@ -720,16 +723,24 @@ impl Agent {
         self
     }
 
-    /// Bind the caller's principal identity for `principal_send`.
+    /// Bind the caller's principal identity for `send_peer`.
     ///
     /// `principal_did` is the Principal's stable DID (used as
-    /// `caller_principal_did` on the wire). When `None`, the
-    /// `principal_send` tool is not registered (the agent lacks the
-    /// identity needed to attribute cross-principal calls). The local
-    /// runtime id is taken from `CrossRuntimeA2aCtx::caller_runtime_id`
-    /// at registration time, so this builder does not need it.
+    /// `caller_principal_did` on the wire). When `None`, `send_peer`
+    /// is not registered (the agent lacks the identity needed to
+    /// attribute cross-principal calls). The local runtime id is
+    /// taken from `CrossRuntimeA2aCtx::caller_runtime_id` at
+    /// registration time, so this builder does not need it.
+    ///
+    /// Also propagates the DID into the subagent executor (a
+    /// `OnceLock` set through the `Arc`) so spawned children register
+    /// `send_peer` with the same attribution, recursively down the
+    /// tree.
     #[must_use]
     pub fn with_caller_principal_did(mut self, principal_did: Option<String>) -> Self {
+        if let Some(did) = &principal_did {
+            self.subagent_executor.set_caller_principal_did(did.clone());
+        }
         self.caller_principal_did = principal_did;
         self
     }

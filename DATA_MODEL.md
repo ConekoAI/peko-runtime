@@ -1186,7 +1186,7 @@ their outputs as chat messages would mislead the consumer.
 
 For principal-to-principal exchanges, **both sides record their
 own view** (the recipient via `PrincipalManager::receive` with
-`ChannelKind::A2a`; the caller via `PrincipalSendTool` in
+`ChannelKind::A2a`; the caller via `SendPeerTool` in
 `tunnel::principal_send_tool.rs`). The two views are independent
 shards keyed on each principal's DID; deleting one principal
 removes only its own view.

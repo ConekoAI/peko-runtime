@@ -11,7 +11,7 @@
 //! - explicit `tool` + `params` — schedules any tool run.
 
 use crate::tools::{
-    add_job_via_runtime, build_send_job, build_spawn_tool_job, global_runtime,
+    add_job_via_runtime, build_notify_job, build_spawn_tool_job, global_runtime,
     resolve_delete_after_run,
     resolve_label, resolve_schedule_kind, DeliveryMode,
 };
@@ -79,6 +79,12 @@ pub struct CronCreateArgs {
     /// `idle_ms`, or `event_topic` is provided.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cron: Option<String>,
+    /// Relative delay for a one-shot job (e.g. "90s", "5m", "1h").
+    /// Resolved to an absolute `at` timestamp at registration time, so
+    /// the caller never does clock arithmetic. Cannot be combined with
+    /// explicit schedule fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<String>,
     /// ISO 8601 timestamp for a one-shot scheduled job
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
@@ -135,6 +141,40 @@ fn resolve_one_shot(
     matches!(schedule, crate::ScheduleKind::At { .. })
 }
 
+/// Resolve the job's schedule. `delay` (relative shorthand) wins when
+/// present and is resolved to an absolute one-shot `at` NOW so the
+/// model never does clock arithmetic (the top remaining turn-cost
+/// driver in the 2026-08-08 round-4 verification); it is mutually
+/// exclusive with explicit schedule fields — ambiguity here would
+/// silently schedule the wrong thing. Otherwise delegates to
+/// [`resolve_schedule_kind`].
+fn resolve_schedule(
+    args: &CronCreateArgs,
+    params: &serde_json::Value,
+) -> anyhow::Result<crate::ScheduleKind> {
+    if let Some(delay) = &args.delay {
+        if args.at.is_some()
+            || args.cron.is_some()
+            || args.interval_ms.is_some()
+            || args.idle_ms.is_some()
+            || args.event_topic.is_some()
+        {
+            anyhow::bail!(
+                "`delay` cannot be combined with `at`, `cron`, `interval_ms`, `idle_ms`, or `event_topic`"
+            );
+        }
+        let ms = crate::tools::parse_duration_ms(delay)?;
+        if ms == 0 {
+            anyhow::bail!("`delay` must be a positive duration (e.g. \"90s\", \"5m\")");
+        }
+        let at = chrono::Utc::now() + chrono::Duration::milliseconds(ms as i64);
+        return Ok(crate::ScheduleKind::At {
+            at: at.to_rfc3339(),
+        });
+    }
+    resolve_schedule_kind(params)
+}
+
 #[async_trait]
 impl Tool for CronCreateTool {
     fn name(&self) -> &'static str {
@@ -187,7 +227,11 @@ impl Tool for CronCreateTool {
                 },
                 "at": {
                     "type": "string",
-                    "description": "RFC3339 timestamp in the FUTURE for a one-shot scheduled job (past times are rejected). One-shot by default — the job deletes itself after firing unless recurring=true is passed. The current date/time is in your system prompt; for 'in N minutes' style delays prefer interval_ms."
+                    "description": "RFC3339 timestamp in the FUTURE for a one-shot scheduled job (past times are rejected). One-shot by default — the job deletes itself after firing unless recurring=true is passed. The current date/time is in your system prompt. For 'in N units' style delays prefer `delay` — no timestamp arithmetic needed."
+                },
+                "delay": {
+                    "type": "string",
+                    "description": "PREFERRED for 'in N units' requests: relative delay for a one-shot job (e.g. \"90s\", \"5m\", \"1h\", \"1d\"). Resolved to an absolute timestamp at registration time — no clock arithmetic. Cannot be combined with at/cron/interval_ms/idle_ms/event_topic."
                 },
                 "interval_ms": {
                     "type": "integer",
@@ -296,7 +340,7 @@ impl Tool for CronCreateTool {
             }
         });
 
-        let schedule = resolve_schedule_kind(&params)?;
+        let schedule = resolve_schedule(&args, &params)?;
         let delete_after_run = resolve_one_shot(&params, args.recurring, &schedule);
         let label = resolve_label(&params);
 
@@ -308,10 +352,11 @@ impl Tool for CronCreateTool {
         let next_run = crate::tools::calculate_next_run(&schedule, chrono::Utc::now())?;
 
         let job = if let Some(message_text) = message {
-            // Send path (reminders/notifications): the job delivers the
-            // message to the user as a labeled notification at fire
-            // time — no tool run, no silent background turn.
-            build_send_job(
+            // Notify path (reminders/notifications): pure delivery —
+            // the message text lands in the user's conversational
+            // session as a labeled note at fire time. No agent turn,
+            // no tokens spent (2026-08-08 unification).
+            build_notify_job(
                 job_id,
                 label,
                 peko_subject::PrincipalId(principal_id.clone()),
@@ -422,6 +467,55 @@ mod tests {
             &serde_json::json!({"one_shot": true}),
             Some(true),
             &every
+        ));
+    }
+
+    /// `delay` resolves to an absolute future one-shot `at` at
+    /// registration time (2026-08-08 round-4 finding: model-generated
+    /// RFC3339 arithmetic was the top turn-cost driver).
+    #[test]
+    fn test_resolve_schedule_delay() {
+        // Happy path: future At, one-shot via the At default.
+        let args = CronCreateArgs {
+            delay: Some("90s".to_string()),
+            ..Default::default()
+        };
+        let schedule = resolve_schedule(&args, &serde_json::json!({})).unwrap();
+        let crate::ScheduleKind::At { at } = &schedule else {
+            panic!("delay must resolve to At, got {schedule:?}");
+        };
+        let at = chrono::DateTime::parse_from_rfc3339(at).unwrap();
+        let delta = at.timestamp() - chrono::Utc::now().timestamp();
+        assert!((80..=100).contains(&delta), "expected ~90s out, got {delta}s");
+        assert!(resolve_one_shot(&serde_json::json!({}), None, &schedule));
+
+        // Conflict with an explicit schedule field is rejected.
+        let args = CronCreateArgs {
+            delay: Some("5m".to_string()),
+            interval_ms: Some(60_000),
+            ..Default::default()
+        };
+        assert!(resolve_schedule(&args, &serde_json::json!({})).is_err());
+
+        // Garbage and zero durations are rejected.
+        let args = CronCreateArgs {
+            delay: Some("soon".to_string()),
+            ..Default::default()
+        };
+        assert!(resolve_schedule(&args, &serde_json::json!({})).is_err());
+        let args = CronCreateArgs {
+            delay: Some("0s".to_string()),
+            ..Default::default()
+        };
+        assert!(resolve_schedule(&args, &serde_json::json!({})).is_err());
+
+        // No delay → falls through to the explicit schedule fields.
+        let args = CronCreateArgs::default();
+        let schedule =
+            resolve_schedule(&args, &serde_json::json!({"interval_ms": 60_000})).unwrap();
+        assert!(matches!(
+            schedule,
+            crate::ScheduleKind::Every { every_ms: 60_000 }
         ));
     }
 }

@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Subcommand;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
+use peko_cron::tools::parse_duration_ms;
 use peko_cron::{CronJob, CronJobAction, DeliveryMode, ScheduleKind};
 use peko_subject::PrincipalId;
 use std::str::FromStr;
@@ -677,25 +678,6 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
     }
 }
 
-/// Parse a human duration into milliseconds. Accepts a bare number
-/// (milliseconds, matching `--interval-ms`) or a number with a single
-/// `s`/`m`/`h`/`d` suffix ("30s", "5m", "1h", "1d"). Hand-rolled to
-/// avoid a new dependency — the workspace has no humantime-style crate.
-fn parse_duration_ms(input: &str) -> Result<u64> {
-    let input = input.trim();
-    let (digits, mult) = match input.chars().last() {
-        Some('s') => (&input[..input.len() - 1], 1_000u64),
-        Some('m') => (&input[..input.len() - 1], 60_000),
-        Some('h') => (&input[..input.len() - 1], 3_600_000),
-        Some('d') => (&input[..input.len() - 1], 86_400_000),
-        _ => (input, 1),
-    };
-    let value: u64 = digits.trim().parse().map_err(|_| {
-        anyhow::anyhow!("Invalid duration '{input}' (use e.g. 60000, 30s, 5m, 1h, 1d)")
-    })?;
-    Ok(value * mult)
-}
-
 /// Parse `--at`: an RFC3339 timestamp, or a relative delay like
 /// "in 10m" / "in 90s" resolved against the local clock (stored UTC).
 fn parse_at_time(input: &str) -> Result<chrono::DateTime<Utc>> {
@@ -748,7 +730,8 @@ async fn resolve_job_id(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_at_time, parse_duration_ms};
+    use super::parse_at_time;
+    use peko_cron::tools::parse_duration_ms;
     use chrono::Utc;
 
     #[test]

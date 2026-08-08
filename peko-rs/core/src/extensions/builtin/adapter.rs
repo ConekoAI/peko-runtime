@@ -718,10 +718,10 @@ mod tests {
         assert!(BuiltinToolAdapter::is_builtin("AsyncStop"));
         // Agent-specific tools
         assert!(BuiltinToolAdapter::is_builtin("Agent"));
-        assert!(BuiltinToolAdapter::is_builtin("principal_send"));
+        assert!(BuiltinToolAdapter::is_builtin("send_peer"));
         assert!(BuiltinToolAdapter::is_builtin("AsyncSpawn"));
         assert!(BuiltinToolAdapter::is_builtin("AsyncOutput"));
-        assert!(BuiltinToolAdapter::is_builtin("PRINCIPAL_SEND")); // case insensitive
+        assert!(BuiltinToolAdapter::is_builtin("SEND_PEER")); // case insensitive
                                                                    // Unknown
         assert!(!BuiltinToolAdapter::is_builtin("unknown_tool"));
     }
@@ -732,7 +732,7 @@ mod tests {
         assert!(names.contains(&"Bash"));
         assert!(names.contains(&"Read"));
         assert!(names.contains(&"Agent"));
-        assert!(names.contains(&"principal_send"));
+        assert!(names.contains(&"send_peer"));
         assert!(names.contains(&"AsyncSpawn"));
         assert!(names.contains(&"AsyncOutput"));
         assert!(names.contains(&"AsyncStatus"));
@@ -750,14 +750,14 @@ mod tests {
         assert!(!names.contains(&"AsyncSpawn")); // agent-specific, not global
         assert!(!names.contains(&"AsyncOutput")); // agent-specific, not global
         assert!(!names.contains(&"Agent")); // agent-specific, not global
-        assert!(!names.contains(&"principal_send")); // agent-specific, not global
+        assert!(!names.contains(&"send_peer")); // agent-specific, not global
     }
 
     #[test]
     fn test_agent_specific_tool_names() {
         let names = BuiltinToolAdapter::agent_specific_tool_names();
         assert!(names.contains(&"Agent"));
-        assert!(names.contains(&"principal_send"));
+        assert!(names.contains(&"send_peer"));
         assert!(names.contains(&"AsyncSpawn"));
         assert!(names.contains(&"AsyncOutput"));
         assert!(!names.contains(&"Bash")); // global, not agent-specific
@@ -767,7 +767,7 @@ mod tests {
     fn test_is_agent_specific_builtin() {
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("Agent"));
         assert!(BuiltinToolAdapter::is_agent_specific_builtin(
-            "principal_send"
+            "send_peer"
         ));
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("AGENT")); // case insensitive
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("Bash"));

@@ -288,6 +288,12 @@ impl Capabilities {
             "tool:CronCreate",
             "tool:CronList",
             "tool:CronDelete",
+            // Peer messaging (2026-08-08 `send_peer` unification).
+            // The user branch (notes to the originating human) and the
+            // principal branch (the legacy `principal_send` RPC) share
+            // one tool; without the grant the capability filter drops
+            // it from the LLM's toolset at `init_builtins_async`.
+            "tool:send_peer",
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",

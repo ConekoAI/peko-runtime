@@ -84,7 +84,7 @@ pub struct RootRouter {
     /// Local runtime id (`did:key` form) for outbound
     /// `principal_send` envelopes. Set by the daemon-state bootstrap
     /// post-`start_tunnel` via [`Self::set_caller_runtime_id`].
-    /// When `None`, `principal_send` is not registered.
+    /// When `None`, `send_peer` is not registered.
     caller_runtime_id: StdRwLock<Option<String>>,
     /// Per-Principal plan DAG port (PR #2 wiring). Copied into every
     /// `PrincipalContext` produced by `build_context` so the seven
@@ -174,7 +174,7 @@ impl RootRouter {
             Arc::clone(&self.plan_port),
         );
         principal_ctx.set_root_prompt(self.root_prompt.clone());
-        // Phase 4b: bind caller identity so `principal_send` is
+        // Phase 4b: bind caller identity so `send_peer` is
         // registered on the principal's agents. The DID is the
         // principal's stable identifier (set in the factory from
         // `Principal::did()` / `config.did`); the runtime_id may be

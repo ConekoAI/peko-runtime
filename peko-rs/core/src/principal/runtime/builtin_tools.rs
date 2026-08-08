@@ -37,7 +37,7 @@ pub const GLOBAL_TOOL_NAMES: &[&str] = &[
 /// Tools registered per-agent in `Agent::init_builtins_async()`.
 pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] = &[
     "Agent",
-    "principal_send",
+    "send_peer",
     "AsyncSpawn",
     "AsyncOutput",
     "TaskCreate",

@@ -37,6 +37,11 @@ pub enum MessageSource {
     /// clobber the agent's system prompt. The source tag lets
     /// consumers distinguish automation notes from human input.
     Cron,
+    /// Pushed by an agent (root or subagent) via the `send_peer` tool —
+    /// an agent-originated note to a human peer's conversational
+    /// session. User-role for the same provider-adapter reason as
+    /// [`MessageSource::Cron`].
+    Agent,
 }
 
 /// Role-specific metadata - SRP-compliant separation of concerns

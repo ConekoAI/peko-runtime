@@ -613,7 +613,7 @@ cargo test --all-features
     - `extensions::framework` depends on `tools::core` (one-way, for `Tool`, `ToolContext`, `ContextSource`, and other execution primitives). It does **not** depend on `tools::builtin` or any concrete extension type.
     - `tools::core` does **not** depend on `extensions::framework`. The previous bidirectional loop is broken.
     - `tunnel` depends on `tools::core` (for the `Tool` trait) and **does not** depend on `agents` in production code.
-    - `agents` depends on `tunnel` (for the `AgentMessageService` trait used by `PrincipalSendTool`) and does **not** depend on `tunnel::principal_send_tool`'s concrete types.
+    - `agents` depends on `tunnel` (for the `AgentMessageService` trait used by `SendPeerTool`) and does **not** depend on `tunnel::principal_send_tool`'s concrete types.
     - `extensions::framework` does **not** depend on `agents`, `tunnel`, `daemon`, or `principal` (enforced by `check_module_boundaries.sh` Rules 5 and 6).
   - Cycles 4 (`tools::core ↔ extension::types`) and 5 (`tunnel ↔ agents`) from `PLAN.md` §2.5 are now actually broken (not reshuffled).
   - **F2 / F3 foldback consequence (2026-07-25):** the framework host impl
@@ -651,6 +651,22 @@ cargo test --all-features
     `Cargo.toml` deps from the cron-tools migration: `chrono-tz` was
     already lifted in F4; `uuid` + `async-trait` joined `peko-cron`'s
     direct deps.
+  - **2026-08-08 `send_peer` unification:** `principal_send` was
+    renamed `send_peer` and gained a user branch (fire-and-forget
+    notes to a human peer's conversational session) alongside the
+    principal branch (the legacy sync RPC; wire/IPC names unchanged).
+    Delivery goes through the `PeerMessenger` port
+    (`peko-rs/core/src/principal/messenger.rs` — trait + global
+    registry mirroring the `CronRuntime` pattern, installed by the
+    daemon at startup). Originating-peer resolution derives from the
+    calling session id (`root:{peer}` / v2 keys / subagent-suffix
+    stripping / spawn-overlay `parent_session_id` walk) — NOT from
+    `ToolContext.peer_id`, which is never populated in production.
+    Subagents get the tool via `SubagentExecutor`'s
+    `caller_principal_did` OnceLock, propagated by
+    `Agent::with_caller_principal_did`. Cron `message` jobs are the
+    new `CronJobAction::Notify` (pure delivery, no agent turn);
+    `Send` keeps its deferred-`peko send` turn semantics.
   - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
 - **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.

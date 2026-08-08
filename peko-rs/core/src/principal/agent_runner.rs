@@ -335,9 +335,8 @@ where
         ctx.resolver.as_ref().map(|r| Arc::clone(r.catalog())),
     )
     // ADR-045 (self-modification gate): bind caller DID so the
-    // `principal_send` tool is registered. `None` ⇒ tool is
-    // intentionally omitted (no local-only fallback for
-    // `principal_send`; it is exclusively cross-runtime).
+    // `send_peer` tool is registered. `None` ⇒ tool is intentionally
+    // omitted (no caller identity to attribute sends to).
     .with_caller_principal_did(ctx.caller_principal_did().cloned());
 
     // Phase 4 of `feature/multi-model-subagents`: bind the audit

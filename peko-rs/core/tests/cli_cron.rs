@@ -7,7 +7,7 @@
 //! |-----------------------|----------------------------------------------------------------------------|
 //! | `cron_basics.ps1`     | `cron_*_persists`, `cron_list_*`, `cron_remove_*`, `cron_history_*`         |
 //! | `cron_execution.ps1`  | `cron_run_triggers_due_job`, `cron_announce_writes_file_on_run`            |
-//! | `cron_agent_tool.ps1` | `cron_agent_tool_schedules_and_lists_job`, `cron_agent_tool_schedules_and_cancels_job`, `cron_agent_tool_create_message_makes_send_job` |
+//! | `cron_agent_tool.ps1` | `cron_agent_tool_schedules_and_lists_job`, `cron_agent_tool_schedules_and_cancels_job`, `cron_agent_tool_create_message_makes_notify_job` |
 //! | `cron_idle_event.ps1` | `cron_add_idle_does_not_panic`, `cron_add_event_does_not_panic`            |
 //!
 //! Each test:
@@ -1237,11 +1237,12 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
 /// schedule a user-facing reminder. Before `message` existed the tool
 /// could only build SpawnTool jobs, so "remind me …" requests produced
 /// no user-visible output. The daemon-side assertion checks the stored
-/// job is a `Send` action carrying the reminder text.
+/// job is a `Notify` action carrying the reminder text (pure delivery,
+/// no agent turn — 2026-08-08 `send_peer` unification).
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 #[serial]
-async fn cron_agent_tool_create_message_makes_send_job() {
+async fn cron_agent_tool_create_message_makes_notify_job() {
     if skip_if_no_mock().is_none() {
         return;
     }
@@ -1286,8 +1287,9 @@ async fn cron_agent_tool_create_message_makes_send_job() {
         "agent did not report success after scheduling: stdout={out} stderr={err}"
     );
 
-    // Daemon-side verification: the job exists and is a Send action
-    // carrying the reminder text (not a SpawnTool job).
+    // Daemon-side verification: the job exists and is a Notify action
+    // carrying the reminder text (pure delivery — not a SpawnTool job,
+    // not a turn-running Send job).
     let jobs = list_jobs_json(&cli);
     let scheduled = jobs
         .iter()
@@ -1298,8 +1300,8 @@ async fn cron_agent_tool_create_message_makes_send_job() {
     let action = job.get("action").cloned().unwrap_or_default();
     assert_eq!(
         action.get("kind").and_then(|k| k.as_str()),
-        Some("send"),
-        "message-based CronCreate must store a send action, got: {action}"
+        Some("notify"),
+        "message-based CronCreate must store a notify action, got: {action}"
     );
     assert_eq!(
         action.get("message").and_then(|m| m.as_str()),

@@ -1,7 +1,7 @@
 //! Same-runtime offline `principal_send` integration test.
 //!
 //! Verifies that `LocalFirstAgentDirectory` resolves a target principal
-//! without consulting the hub, and that `PrincipalSendTool::execute`
+//! without consulting the hub, and that `SendPeerTool::execute`
 //! short-circuits locally via `PrincipalManager::receive`. This test is
 //! self-contained and runs in the regular unit/integration job.
 //!
@@ -25,7 +25,7 @@ use crate::tunnel::direct::DirectConnectionManager;
 use crate::tunnel::hub_directory::{AgentDirectory, AgentResolution, DirectoryError};
 use crate::tunnel::known_runtimes::KnownRuntimes;
 use crate::tunnel::local_directory::LocalFirstAgentDirectory;
-use crate::tunnel::principal_send_tool::{PrincipalSendResult, PrincipalSendTool};
+use crate::tunnel::principal_send_tool::{PrincipalSendResult, SendPeerTool};
 use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
 use peko_auth::Subject;
@@ -184,13 +184,13 @@ async fn same_runtime_principal_send_short_circuits_offline() {
         response_timeout: Duration::from_secs(5),
     });
 
-    let tool = PrincipalSendTool::new(caller_did, ctx);
+    let tool = SendPeerTool::new(caller_did, ctx);
 
     adapter.queue_text("mock offline response");
 
     let result = tool
         .execute(serde_json::json!({
-            "target_principal": target_did,
+            "target": target_did,
             "message": "ping"
         }))
         .await

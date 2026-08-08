@@ -481,6 +481,19 @@ impl Daemon {
             info!("🕓 Cron runtime port installed (DaemonCronAdapter, in-process)");
         }
 
+        // Install the peer-messenger port so the `send_peer` tool's
+        // user branch (and the cron engine's note delivery) can append
+        // labeled notes to a peer's conversational session without
+        // importing daemon state. Idempotent like the cron port.
+        {
+            crate::principal::messenger::set_global_messenger(std::sync::Arc::new(
+                crate::principal::messenger::PrincipalPeerMessenger::new(std::sync::Arc::clone(
+                    app_state.principal_manager(),
+                )),
+            ));
+            info!("📨 Peer messenger port installed (PrincipalPeerMessenger)");
+        }
+
         // Create polling intervals
         let mut poll_tick = interval(self.config.poll_interval);
         let mut maintenance_tick = interval(self.config.maintenance_interval);
