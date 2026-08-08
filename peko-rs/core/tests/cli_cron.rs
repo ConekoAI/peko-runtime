@@ -1297,15 +1297,17 @@ async fn cron_agent_tool_create_message_makes_notify_job() {
     let Some(job) = scheduled else {
         panic!("expected daemon cron DB to contain {job_label:?}, got jobs={jobs:?}");
     };
-    let action = job.get("action").cloned().unwrap_or_default();
+    // `CronJobAction` is `#[serde(flatten)]`ed onto `CronJob`, so the
+    // serialized job carries `kind` and `message` at the top level rather
+    // than nested under an `action` key.
     assert_eq!(
-        action.get("kind").and_then(|k| k.as_str()),
+        job.get("kind").and_then(|k| k.as_str()),
         Some("notify"),
-        "message-based CronCreate must store a notify action, got: {action}"
+        "message-based CronCreate must store a notify action, got: {job}"
     );
     assert_eq!(
-        action.get("message").and_then(|m| m.as_str()),
+        job.get("message").and_then(|m| m.as_str()),
         Some(reminder),
-        "send action must carry the reminder text, got: {action}"
+        "notify action must carry the reminder text, got: {job}"
     );
 }
