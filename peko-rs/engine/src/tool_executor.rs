@@ -49,6 +49,60 @@ pub struct ToolExecutionResult {
 #[derive(Clone)]
 pub struct ToolExecutor {
     parallel_gate: ParallelGate,
+    /// P2: per-run identical-failure circuit breaker state. The loop
+    /// creates one executor per run, so counts are turn-scoped.
+    breaker: std::sync::Arc<IdenticalFailureBreaker>,
+}
+
+/// P2 (2026-08-07 field test): identical-failure circuit breaker.
+///
+/// Tracks consecutive failures per (tool, canonical args) within a
+/// single run. After [`MAX_IDENTICAL_FAILURES`] identical failures the
+/// executor refuses to dispatch the same call again — retrying an
+/// unchanged call never produces a different result, and each retry
+/// costs a full history replay (a failing `CronCreate` loop burned
+/// 68k input tokens in one turn during the field test).
+const MAX_IDENTICAL_FAILURES: u8 = 2;
+
+#[derive(Debug, Default)]
+pub(crate) struct IdenticalFailureBreaker {
+    counts: std::sync::Mutex<std::collections::HashMap<String, u8>>,
+}
+
+impl IdenticalFailureBreaker {
+    fn key(name: &str, arguments: &serde_json::Value) -> String {
+        format!("{name}:{arguments}")
+    }
+
+    /// Returns the refusal message when this call has already failed
+    /// [`MAX_IDENTICAL_FAILURES`] times with identical arguments.
+    fn refusal(&self, name: &str, arguments: &serde_json::Value) -> Option<String> {
+        let counts = self.counts.lock().expect("breaker mutex poisoned");
+        let failed = counts
+            .get(&Self::key(name, arguments))
+            .copied()
+            .unwrap_or(0);
+        (failed >= MAX_IDENTICAL_FAILURES).then(|| {
+            format!(
+                "Error: this exact call ({name}) has already failed {failed} times this turn \
+                 with identical arguments. Retrying it unchanged will not produce a different \
+                 result. Stop retrying, explain the failure to the user, and suggest an \
+                 alternative."
+            )
+        })
+    }
+
+    /// Record the outcome of a dispatched call. A success clears the
+    /// counter for that (tool, args) pair.
+    fn record(&self, name: &str, arguments: &serde_json::Value, success: bool) {
+        let mut counts = self.counts.lock().expect("breaker mutex poisoned");
+        let key = Self::key(name, arguments);
+        if success {
+            counts.remove(&key);
+        } else {
+            *counts.entry(key).or_insert(0) += 1;
+        }
+    }
 }
 
 impl Default for ToolExecutor {
@@ -64,6 +118,7 @@ impl ToolExecutor {
     pub fn new() -> Self {
         Self {
             parallel_gate: ParallelGate::new(),
+            breaker: std::sync::Arc::new(IdenticalFailureBreaker::default()),
         }
     }
 
@@ -72,7 +127,10 @@ impl ToolExecutor {
     /// in the same loop iteration shares the same gate.
     #[must_use]
     pub fn with_gate(parallel_gate: ParallelGate) -> Self {
-        Self { parallel_gate }
+        Self {
+            parallel_gate,
+            breaker: std::sync::Arc::new(IdenticalFailureBreaker::default()),
+        }
     }
 
     /// Borrow the underlying gate (used by tests; production code
@@ -152,6 +210,29 @@ impl ToolExecutor {
 
         let start_time = std::time::Instant::now();
 
+        // P2: refuse the 3rd+ identical failing call BEFORE any
+        // dispatch — no hooks, no gate admission, no tool run.
+        if let Some(refusal) = self.breaker.refusal(name, arguments) {
+            warn!(
+                "Tool '{}' short-circuited by the identical-failure breaker",
+                name
+            );
+            session.add_tool_result(id, name, &refusal, true).await?;
+            on_event(AgenticEvent::ToolEnd {
+                run_id: run_id.to_string(),
+                tool_id: id.clone(),
+                result: serde_json::Value::String(refusal.clone()),
+                success: false,
+                duration_ms: 0,
+            });
+            let message = LlmMessage::tool_result(id.clone(), name.clone(), refusal, true)
+                .with_tool_call_id(id.clone());
+            return Ok(ToolExecutionResult {
+                message,
+                success: false,
+            });
+        }
+
         // F33: parallel-execution gate admission. Parallelizable tools
         // take a read-lock (concurrent dispatch OK); non-parallelizable
         // tools (Write, Edit, Bash, cron Create/Delete, task Create/Update)
@@ -224,6 +305,8 @@ impl ToolExecutor {
                 }
             };
 
+        // P2: record the outcome for the identical-failure breaker.
+        self.breaker.record(name, arguments, success);
         // F31x: PostToolUse observe-only hook. Symmetric with PreToolUse
         // — handlers see the executed result's context but their return
         // value is ignored.
@@ -275,6 +358,48 @@ impl ToolExecutor {
 
 #[cfg(test)]
 mod tests {
-    // ToolExecutor tests require a full ExtensionCore + Provider setup,
-    // which is better covered by integration tests in tests/ or e2e_tests/.
+    use super::IdenticalFailureBreaker;
+
+    #[test]
+    fn breaker_allows_first_two_failures_then_refuses() {
+        let b = IdenticalFailureBreaker::default();
+        let args = serde_json::json!({"at": "2020-01-01T00:00:00Z"});
+        assert!(b.refusal("CronCreate", &args).is_none());
+        b.record("CronCreate", &args, false);
+        assert!(b.refusal("CronCreate", &args).is_none());
+        b.record("CronCreate", &args, false);
+        let refusal = b.refusal("CronCreate", &args).expect("third call refused");
+        assert!(refusal.contains("CronCreate"));
+        assert!(refusal.contains("already failed 2 times"));
+    }
+
+    #[test]
+    fn success_resets_the_counter() {
+        let b = IdenticalFailureBreaker::default();
+        let args = serde_json::json!({"x": 1});
+        b.record("Bash", &args, false);
+        b.record("Bash", &args, false);
+        b.record("Bash", &args, true);
+        assert!(b.refusal("Bash", &args).is_none());
+    }
+
+    #[test]
+    fn different_args_are_independent() {
+        let b = IdenticalFailureBreaker::default();
+        let a = serde_json::json!({"x": 1});
+        let c = serde_json::json!({"x": 2});
+        b.record("Bash", &a, false);
+        b.record("Bash", &a, false);
+        assert!(b.refusal("Bash", &a).is_some());
+        assert!(b.refusal("Bash", &c).is_none());
+    }
+
+    #[test]
+    fn different_tools_are_independent() {
+        let b = IdenticalFailureBreaker::default();
+        let args = serde_json::json!({});
+        b.record("CronCreate", &args, false);
+        b.record("CronCreate", &args, false);
+        assert!(b.refusal("CronList", &args).is_none());
+    }
 }

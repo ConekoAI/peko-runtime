@@ -46,7 +46,7 @@ pub use invite_token::{
     MAX_REVOKED_JTIS,
 };
 pub use local_directory::LocalFirstAgentDirectory;
-pub use principal_send_tool::{PrincipalSendArgs, PrincipalSendResult, PrincipalSendTool};
+pub use principal_send_tool::{PrincipalSendResult, SendPeerArgs, SendPeerTool};
 pub use protocol::TunnelMessage;
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
 pub use tunnel_channel_port::TunnelChannelPort;

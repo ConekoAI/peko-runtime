@@ -40,7 +40,9 @@ use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
-use crate::ipc::packet::{PrincipalSendControlMode, RequestPacket, ResponsePacket, RunUsageSummary, ToolErrorEntry};
+use crate::ipc::packet::{
+    PrincipalSendControlMode, RequestPacket, ResponsePacket, RunUsageSummary, ToolErrorEntry,
+};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
@@ -57,6 +59,8 @@ use peko_auth::ownership::{
 use peko_auth::Subject;
 use peko_chat_log::{ChatLogPage, ChatThreadKey};
 use peko_engine::AgenticEvent;
+use peko_protocol::ipc::HEARTBEAT_INTERVAL_SECS;
+use std::time::Duration;
 
 use peko_extension_api::SteeringMessage;
 
@@ -2145,7 +2149,49 @@ async fn run_principal_send(
     // `AgenticEvent::Usage` per run, immediately before
     // `Lifecycle{End}` — so capturing the last seen is sufficient.
     let mut usage: Option<RunUsageSummary> = None;
-    while let Some(event) = event_rx.recv().await {
+    // Heartbeat ticker. The CLI applies a per-packet idle timeout
+    // (`CLI_TIMEOUT_SECS`, 60s) to this stream, and long tool calls emit
+    // no events — so a >60s `Bash`/`curl`/compile would otherwise kill a
+    // healthy run with "Stream closed unexpectedly" (2026-08-07 field
+    // test, Finding 3). Ticking a `Heartbeat` packet every
+    // `HEARTBEAT_INTERVAL_SECS` keeps both the CLI's stream timeout and
+    // the socket-level `recv_timeout` from firing. The packet variant
+    // predates this emitter; CLIs already ignore it, and unknown-variant
+    // fallthroughs keep old clients wire-compatible.
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        let event = tokio::select! {
+            ev = event_rx.recv() => match ev {
+                Some(e) => e,
+                None => break,
+            },
+            _ = heartbeat.tick() => {
+                let beat = ResponsePacket::Heartbeat { request_id };
+                if let Err(e) = send_response(sink, beat).await {
+                    tracing::warn!("failed to send Heartbeat: {e}; aborting stream");
+                    root_agent_handle.abort();
+                    // Finding 8 (2026-08-07 field test): leave a trace of
+                    // the failed run in the chat log so `peko log` doesn't
+                    // show the user's message followed by a silent gap.
+                    host.principal_manager()
+                        .record_chat_response(
+                            &principal,
+                            &peer,
+                            &format!("⚠ Run failed: connection lost mid-run ({e})"),
+                        )
+                        .await;
+                    let done = ResponsePacket::Done {
+                        request_id,
+                        success: false,
+                        error: Some(format!("sink write failed: {e}")),
+                    };
+                    send_response(sink, done).await?;
+                    return Ok(());
+                }
+                continue;
+            }
+        };
         // (packet, debug label) — the label is captured up front so the
         // error log below can refer to it after `packet` has been moved
         // into `send_response`.
@@ -2224,6 +2270,15 @@ async fn run_principal_send(
             if let Err(e) = send_response(sink, packet).await {
                 tracing::warn!("failed to send {packet_label}: {e}; aborting stream");
                 root_agent_handle.abort();
+                // Finding 8 (2026-08-07 field test): same silent-gap
+                // trace as the heartbeat-abort branch above.
+                host.principal_manager()
+                    .record_chat_response(
+                        &principal,
+                        &peer,
+                        &format!("⚠ Run failed: connection lost mid-run ({e})"),
+                    )
+                    .await;
                 let done = ResponsePacket::Done {
                     request_id,
                     success: false,
@@ -2317,6 +2372,11 @@ async fn run_principal_send(
         }
         Err(e) => {
             let message = e.to_string();
+            // Finding 8 (2026-08-07 field test): persist the failure so
+            // `peko log` shows it instead of a question with no answer.
+            host.principal_manager()
+                .record_chat_response(&principal, &peer, &format!("⚠ Run failed: {message}"))
+                .await;
             // Emit any accumulated tool errors + usage even on
             // failure — `--no-stream` users still want to know "did
             // any tools fail?" before they see the failure banner.

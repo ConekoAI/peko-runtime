@@ -100,7 +100,7 @@ pub struct PrincipalContext {
     /// fields are `None` until set via [`Self::set_caller_identity`]
     /// (usually at `RootRouter::build_context` time). When
     /// either is `None`, `Agent::init_builtins_async` skips
-    /// registering `principal_send` — the tool needs a stable caller
+    /// registering `send_peer` — the tool needs a stable caller
     /// identity to attribute outbound requests under
     /// `Subject::Principal(caller_principal_did)`.
     caller_principal_did: OnceLock<String>,

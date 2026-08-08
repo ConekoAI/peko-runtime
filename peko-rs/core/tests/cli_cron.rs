@@ -7,7 +7,7 @@
 //! |-----------------------|----------------------------------------------------------------------------|
 //! | `cron_basics.ps1`     | `cron_*_persists`, `cron_list_*`, `cron_remove_*`, `cron_history_*`         |
 //! | `cron_execution.ps1`  | `cron_run_triggers_due_job`, `cron_announce_writes_file_on_run`            |
-//! | `cron_agent_tool.ps1` | (deferred — requires agent + tool-call driving)    |
+//! | `cron_agent_tool.ps1` | `cron_agent_tool_schedules_and_lists_job`, `cron_agent_tool_schedules_and_cancels_job`, `cron_agent_tool_create_message_makes_notify_job` |
 //! | `cron_idle_event.ps1` | `cron_add_idle_does_not_panic`, `cron_add_event_does_not_panic`            |
 //!
 //! Each test:
@@ -1230,5 +1230,84 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
         "expected {job_label:?} to be cancelled, but daemon cron DB still has it: {jobs:?}\n\
          (agent stdout: {out})\n\
          (agent stderr: {err})"
+    );
+}
+
+/// Agent uses CronCreate's `message` arg (F4, 2026-08-07 field test) to
+/// schedule a user-facing reminder. Before `message` existed the tool
+/// could only build SpawnTool jobs, so "remind me …" requests produced
+/// no user-visible output. The daemon-side assertion checks the stored
+/// job is a `Notify` action carrying the reminder text (pure delivery,
+/// no agent turn — 2026-08-08 `send_peer` unification).
+#[tokio::test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
+#[serial]
+async fn cron_agent_tool_create_message_makes_notify_job() {
+    if skip_if_no_mock().is_none() {
+        return;
+    }
+    let mock_url = std::env::var("MOCK_LLM_URL").expect("MOCK_LLM_URL set");
+
+    let needle = "cron-tool-flow-msg-3";
+    let job_label = "agent-reminder-test";
+    let principal_name = "cron_tool_principal_msg";
+    let reminder = "stand up and stretch";
+
+    let script = serde_json::json!({
+        needle: [
+            { "tool_call": { "name": "CronCreate", "arguments":
+                format!(
+                    r#"{{"interval_ms":3600000,"label":"{job_label}","message":"{reminder}"}}"#
+                )
+            } },
+            "REMINDER_OK",
+        ]
+    })
+    .to_string();
+    configure_mock(&mock_url, &script).await;
+
+    let cli = PekoCli::new();
+    create_cron_principal(&cli, principal_name, &mock_url);
+    let _daemon = CronDaemonGuard::spawn(&cli);
+    remove_jobs_with_prefix(&cli, job_label);
+
+    let prompt = format!(
+        "Schedule a recurring reminder using CronCreate with label \"{job_label}\", \
+         interval_ms 3600000, and message \"{reminder}\". Respond REMINDER_OK once \
+         the job is created, REMINDER_FAILED otherwise. ({needle})"
+    );
+    let (out, err, status) = run(
+        &cli,
+        &["send", principal_name, &prompt, "--no-stream"],
+        Duration::from_secs(30),
+    );
+    assert_ok(&out, &err, &status);
+    assert!(
+        out.contains("REMINDER_OK"),
+        "agent did not report success after scheduling: stdout={out} stderr={err}"
+    );
+
+    // Daemon-side verification: the job exists and is a Notify action
+    // carrying the reminder text (pure delivery — not a SpawnTool job,
+    // not a turn-running Send job).
+    let jobs = list_jobs_json(&cli);
+    let scheduled = jobs
+        .iter()
+        .find(|j| j.get("name").and_then(|n| n.as_str()) == Some(job_label));
+    let Some(job) = scheduled else {
+        panic!("expected daemon cron DB to contain {job_label:?}, got jobs={jobs:?}");
+    };
+    // `CronJobAction` is `#[serde(flatten)]`ed onto `CronJob`, so the
+    // serialized job carries `kind` and `message` at the top level rather
+    // than nested under an `action` key.
+    assert_eq!(
+        job.get("kind").and_then(|k| k.as_str()),
+        Some("notify"),
+        "message-based CronCreate must store a notify action, got: {job}"
+    );
+    assert_eq!(
+        job.get("message").and_then(|m| m.as_str()),
+        Some(reminder),
+        "notify action must carry the reminder text, got: {job}"
     );
 }

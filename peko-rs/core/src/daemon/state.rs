@@ -755,7 +755,7 @@ impl AppState {
         )));
 
         let async_task_executor =
-            Arc::new(AsyncExecutor::new().with_inbox_registry(Arc::clone(&inbox_registry)));
+            Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
 
         // ADR-025: Initialize BackgroundRuntimeManager and GatewayRouter
         let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
@@ -858,6 +858,7 @@ impl AppState {
                     resolver: path_resolver.clone(),
                 }),
                 Arc::new(DefaultPrincipalRouterFactory),
+                Arc::clone(&inbox_registry),
             )
             .with_resolver(resolver.clone())
             .with_slash_dispatcher(slash_dispatcher)
@@ -1696,7 +1697,7 @@ impl AppState {
             .set_cross_runtime_a2a_ctx(ctx);
 
         // Phase 4b: propagate the runtime id into every Principal's
-        // router so `principal_send` is registered on their agents.
+        // router so `send_peer` is registered on their agents.
         // Routers that don't need a runtime id (the default for
         // anything other than `RootRouter`) ignore the call.
         let runtime_id = cred.runtime_id.clone();

@@ -221,8 +221,10 @@ impl Session {
     // Metadata Operations
     // ============================================================
 
-    /// Sync message count to index (lazy-initializes metadata controller)
-    async fn sync_index_message_count(&mut self) -> Result<()> {
+    /// Sync message count to index (lazy-initializes metadata controller).
+    /// `user_turn` marks the appended message as a user-role turn so the
+    /// index `turn_count` tracks conversation turns, not raw messages.
+    async fn sync_index_message_count(&mut self, user_turn: bool) -> Result<()> {
         if self.metadata_controller.is_none() {
             let dir = self.storage.storage_dir().to_path_buf();
             self.metadata_controller = Some(MetadataController::new(dir));
@@ -235,6 +237,7 @@ impl Session {
                     self.last_total_tokens,
                     self.total_input_tokens,
                     self.total_output_tokens,
+                    user_turn,
                 )
                 .await?;
         }
@@ -570,7 +573,37 @@ impl Session {
         self.message_count += 1;
 
         // Update index message count
-        if let Err(e) = self.sync_index_message_count().await {
+        if let Err(e) = self.sync_index_message_count(role_str == "user").await {
+            tracing::warn!("Failed to update index for session {}: {}", self.id, e);
+        }
+
+        Ok(())
+    }
+
+    /// Add a user-role message with an explicit [`MessageSource`] tag.
+    ///
+    /// Used for automation-originated notes (e.g. cron notifications,
+    /// `MessageSource::Cron`) so consumers can distinguish them from
+    /// human input. User-role rather than system-role on purpose: the
+    /// Anthropic-style provider adapter maps ANY system-role message to
+    /// the top-level system parameter (last one wins), so a
+    /// mid-history system note would clobber the agent's system prompt.
+    pub async fn add_user_with_source(
+        &mut self,
+        content: impl Into<String>,
+        source: crate::events::MessageSource,
+    ) -> Result<()> {
+        let message = SessionMessage::user(content.into(), source);
+        let msg_id = message.message_id.clone();
+        let event = SessionEvent::MessageV2(message);
+
+        self.storage.append_event(&self.id, &event).await?;
+        self.last_message_id = Some(msg_id);
+        self.message_count += 1;
+
+        // Update index message count (same bookkeeping as
+        // `add_llm_message`'s user branch).
+        if let Err(e) = self.sync_index_message_count(true).await {
             tracing::warn!("Failed to update index for session {}: {}", self.id, e);
         }
 

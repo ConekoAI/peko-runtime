@@ -277,6 +277,23 @@ impl Capabilities {
             "tool:AsyncStatus",
             "tool:AsyncList",
             "tool:AsyncStop",
+            // Cron scheduling family (auto-granted to match the
+            // `principal:write_cron` grant below). The tools themselves
+            // are registered by `ToolRuntime::register_builtins` and
+            // backed by the daemon-installed `CronRuntime`; without
+            // these `tool:` grants, `is_tool_enabled` filters them out
+            // of the LLM's toolset and the principal can't schedule
+            // reminders conversationally despite holding the write
+            // capability (2026-08-07 field test, Finding 2).
+            "tool:CronCreate",
+            "tool:CronList",
+            "tool:CronDelete",
+            // Peer messaging (2026-08-08 `send_peer` unification).
+            // The user branch (notes to the originating human) and the
+            // principal branch (the legacy `principal_send` RPC) share
+            // one tool; without the grant the capability filter drops
+            // it from the LLM's toolset at `init_builtins_async`.
+            "tool:send_peer",
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",
@@ -379,7 +396,7 @@ mod tests {
             "PlanClose",
         ] {
             assert!(
-                caps.is_granted(&Capability::new(&format!("tool:{tool}"))),
+                caps.is_granted(&Capability::new(format!("tool:{tool}"))),
                 "starter_bundle must include tool:{tool}"
             );
         }
@@ -403,7 +420,25 @@ mod tests {
             "AsyncStop",
         ] {
             assert!(
-                caps.is_granted(&Capability::new(&format!("tool:{tool}"))),
+                caps.is_granted(&Capability::new(format!("tool:{tool}"))),
+                "starter_bundle must include tool:{tool}"
+            );
+        }
+    }
+
+    /// Auto-grant the 3 cron scheduling tools so a fresh principal can
+    /// schedule reminders conversationally. The tools are registered by
+    /// `ToolRuntime::register_builtins` and backed by the daemon's
+    /// `CronRuntime`; without these grants `is_tool_enabled` filters
+    /// them out despite `principal:write_cron` being granted — the
+    /// model then honestly reports "I have no scheduling tool".
+    /// Surfaced in the 2026-08-07 cron/session field test.
+    #[test]
+    fn starter_bundle_includes_cron_tools() {
+        let caps = Capabilities::starter_bundle();
+        for tool in ["CronCreate", "CronList", "CronDelete"] {
+            assert!(
+                caps.is_granted(&Capability::new(format!("tool:{tool}"))),
                 "starter_bundle must include tool:{tool}"
             );
         }

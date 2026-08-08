@@ -1,26 +1,36 @@
-//! Principal Send Tool — principal-to-principal cross-runtime messaging
+//! Send Peer Tool — message a peer, user or principal (2026-08-08
+//! unification of `principal_send` with agent→user notification)
 //!
-//! Replaces the agent-targeted `a2a_send` tool at the principal level.
-//! The target is a Principal DID (not an agent name in a target
-//! runtime); the inbound receiver (`dispatcher::handle_inbound_principal_to_principal_request`)
+//! The principal branch replaces the agent-targeted `a2a_send` tool at
+//! the principal level. The target is a Principal DID (not an agent
+//! name in a target runtime); the inbound receiver
+//! (`dispatcher::handle_inbound_principal_to_principal_request`)
 //! already routes to the principal directly. The wire envelope
 //! `TunnelMessage::PrincipalToPrincipalRequest` is reused verbatim — its fields
 //! are already principal-typed (`caller_principal_did`,
 //! `target_principal_did`).
 //!
+//! The user branch (`target: "user:<id>") is fire-and-forget: the
+//! message becomes a labeled note in the user's conversational session
+//! via the `PeerMessenger` port (`crate::principal::messenger`), gated
+//! to the user who originated the current run. Users never reply
+//! synchronously.
+//!
 //! ## Parameters
 //! ```json
 //! {
-//!   "target_principal": "did:peko:principal:<keyhash>",
+//!   "target": "user:local  |  did:peko:principal:<keyhash>",
 //!   "message": "Please review this code",
-//!   "session_id": "optional-session-to-resume"
+//!   "label": "optional note label (user branch)",
+//!   "session_id": "optional-session-to-resume (principal branch)"
 //! }
 //! ```
 //!
-//! ## Response (blocking)
+//! ## Response (principal branch, blocking)
 //! ```json
 //! {
 //!   "success": true,
+//!   "kind": "principal",
 //!   "response": "Review complete: 3 issues found.",
 //!   "session_id": "principal:<peer>:session:<id>"
 //! }
@@ -31,14 +41,15 @@
 //! - **Same-runtime shortcut.** If the target principal is hosted by the
 //!   caller's own runtime, the call is dispatched locally through
 //!   `PrincipalManager::receive` without touching the tunnel. This keeps
-//!   `principal_send` working when PekoHub is offline. Remote targets still
-//!   flow through the tunnel or a direct connection as selected below.
+//!   the principal branch working when PekoHub is offline. Remote
+//!   targets still flow through the tunnel or a direct connection as
+//!   selected below.
 //! - **Callee preference.** The hub directory returns the target principal's
 //!   `transport_preference` and advertised `direct_endpoint`. The caller
 //!   respects the callee's preference; if direct is requested but unavailable
 //!   the call errors rather than silently falling back to the tunnel.
-//! - **Tool name**: `"principal_send"` (drops the agent-level naming
-//!   the prior `a2a_send` carried).
+//! - **Tool name**: `"send_peer"` (renamed from `principal_send` when
+//!   the user branch landed; wire/IPC names are unchanged).
 //!
 //! Async execution and timeout are handled by the framework-level
 //! `AsyncExecutionRouter` via the reserved `_async` / `_timeout`
@@ -61,23 +72,30 @@ use peko_auth::Subject;
 use peko_chat_log::{ChatLogMessage, ChatThreadKey};
 use peko_subject::PrincipalDID;
 use peko_tools_core::Tool;
+use std::str::FromStr;
 
-/// Arguments for the `principal_send` tool.
+/// Arguments for the `send_peer` tool.
 ///
-/// `target_principal` is the target principal's stable DID
-/// (`did:peko:principal:<keyhash>`). Resolution is handled by the hub
-/// directory on the caller's side; the wire payload carries the DID
-/// directly.
+/// `target` is a [`Subject`] string: `user:<id>` delivers a
+/// fire-and-forget note to that user's conversational session;
+/// `principal:<did>` or a bare `did:peko:…` runs a turn on the target
+/// principal's root agent and returns its response (the legacy
+/// `principal_send` behavior).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrincipalSendArgs {
-    /// Target principal DID (e.g. `did:peko:principal:abc...`).
-    pub target_principal: String,
-    /// Message content to deliver to the target principal's root
-    /// agent.
+pub struct SendPeerArgs {
+    /// Target peer: `user:<id>`, `principal:<did>`, or a bare
+    /// Principal DID (`did:peko:…`).
+    pub target: String,
+    /// Message content. For principal targets it is delivered to the
+    /// target's root agent; for user targets it becomes the note text.
     pub message: String,
-    /// Optional session ID to resume on the target principal.
+    /// Principal branch only: session ID to resume on the target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// User branch only: label for the delivered note
+    /// (`📨 [<label>] <message>`). Defaults to the calling agent's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Result of a `principal_send` execution. Shape mirrors `A2aSendResult`
@@ -90,6 +108,11 @@ pub struct PrincipalSendResult {
     pub success: bool,
     pub response: String,
     pub session_id: String,
+    /// Which branch handled the send: `"principal"` (sync RPC, the
+    /// response is the target root agent's reply) or `"user"`
+    /// (fire-and-forget note; `response` explains the delivery).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iterations: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,32 +134,48 @@ pub struct HubErrorResponse {
     pub message: String,
 }
 
-/// Principal Send tool — send a message to another principal and
-/// receive its root agent's response.
+/// Send Peer tool — message a peer, user or principal.
+///
+/// - `user:<id>`: fire-and-forget note into the user's conversational
+///   session via the peer-messenger port (the note appears in their
+///   next turn; users never reply synchronously).
+/// - `principal:<did>` / bare `did:peko:…`: send a message to another
+///   principal and receive its root agent's response (the legacy
+///   `principal_send` path).
 ///
 /// The tool carries the caller's principal identity (DID) at
 /// construction time; the LLM never sets the caller, only the
 /// target. This eliminates the "caller masquerades as a user" audit
 /// foot-gun the legacy `a2a_send` had when `caller_principal_did`
 /// wasn't set.
-pub struct PrincipalSendTool {
+pub struct SendPeerTool {
     /// The local principal's stable DID. Bound at construction from
     /// the `Agent::principal_id` (resolved via `Principal::did()` at
     /// tool registration).
     caller_principal_did: String,
-    /// The local runtime's `runtime_id` (did:key form) — echoed into
-    /// the wire envelope from `CrossRuntimeA2aCtx::caller_runtime_id`
-    /// so the target runtime can verify the signature.
-    cross_runtime: Arc<CrossRuntimeA2aCtx>,
+    /// The local runtime's cross-runtime context. `None` when the
+    /// tunnel never started (test harnesses, offline daemons): the
+    /// user branch still works — only principal targets need this.
+    cross_runtime: Option<Arc<CrossRuntimeA2aCtx>>,
 }
 
-impl PrincipalSendTool {
-    /// Build a PrincipalSendTool bound to a specific caller principal.
+impl SendPeerTool {
+    /// Build a SendPeerTool bound to a specific caller principal.
     #[must_use]
     pub fn new(caller_principal_did: String, cross_runtime: Arc<CrossRuntimeA2aCtx>) -> Self {
         Self {
             caller_principal_did,
-            cross_runtime,
+            cross_runtime: Some(cross_runtime),
+        }
+    }
+
+    /// Build a user-branch-only SendPeerTool (no cross-runtime
+    /// context). Principal targets return a structured error.
+    #[must_use]
+    pub fn new_local_only(caller_principal_did: String) -> Self {
+        Self {
+            caller_principal_did,
+            cross_runtime: None,
         }
     }
 
@@ -147,6 +186,7 @@ impl PrincipalSendTool {
             success: false,
             response: String::new(),
             session_id: String::new(),
+            kind: None,
             iterations: None,
             tool_calls: None,
             duration_ms: None,
@@ -155,14 +195,102 @@ impl PrincipalSendTool {
         serde_json::to_value(result).expect("PrincipalSendResult must serialize to JSON")
     }
 
+    /// User branch: append a labeled note to a user's conversational
+    /// session via the peer-messenger port. Fire-and-forget — users do
+    /// not reply synchronously; the note appears in their next turn.
+    ///
+    /// Gate (v1): the target must be the user who originated this run
+    /// (derived from `session_id` via the messenger's parentage walk).
+    /// Cross-user sends have no grant model yet and are rejected.
+    ///
+    /// Free-standing over `&dyn PeerMessenger` so unit tests can
+    /// substitute a stub without touching the global registry.
+    async fn execute_user_target(
+        messenger: &dyn crate::principal::messenger::PeerMessenger,
+        principal_id: &str,
+        session_id: &str,
+        agent_label: Option<&str>,
+        label: Option<&str>,
+        target: &Subject,
+        message: &str,
+    ) -> serde_json::Value {
+        let user_error = |err: String| {
+            serde_json::to_value(PrincipalSendResult {
+                success: false,
+                response: String::new(),
+                session_id: String::new(),
+                kind: Some("user".to_string()),
+                iterations: None,
+                tool_calls: None,
+                duration_ms: None,
+                error: Some(err),
+            })
+            .expect("PrincipalSendResult must serialize to JSON")
+        };
+
+        let originating = match messenger.originating_peer(principal_id, session_id).await {
+            Ok(o) => o,
+            Err(e) => return user_error(format!("send_peer: peer resolution failed: {e}")),
+        };
+        match originating {
+            Some(o) if &o == target => {}
+            Some(o) => {
+                return user_error(format!(
+                    "send_peer: can only message the user who started this conversation ({o}); \
+                     cross-user sends to {target} are not permitted"
+                ));
+            }
+            None => {
+                return user_error(
+                    "send_peer: could not resolve the user who started this conversation"
+                        .to_string(),
+                );
+            }
+        }
+
+        let label = label
+            .filter(|l| !l.is_empty())
+            .or(agent_label.filter(|l| !l.is_empty()))
+            .unwrap_or("agent");
+        let note = format!("📨 [{label}] {message}");
+        match messenger
+            .deliver_note(
+                principal_id,
+                target,
+                &note,
+                peko_session::events::MessageSource::Agent,
+            )
+            .await
+        {
+            Ok(true) => serde_json::to_value(PrincipalSendResult {
+                success: true,
+                response: format!(
+                    "Delivered as a note to {target}'s conversational session. Users do not \
+                     reply synchronously — it appears in their next turn."
+                ),
+                session_id: String::new(),
+                kind: Some("user".to_string()),
+                iterations: None,
+                tool_calls: None,
+                duration_ms: None,
+                error: None,
+            })
+            .expect("PrincipalSendResult must serialize to JSON"),
+            Ok(false) => user_error(format!(
+                "send_peer: {target} has no conversational session yet; the note was not delivered"
+            )),
+            Err(e) => user_error(format!("send_peer: note delivery failed: {e}")),
+        }
+    }
+
     /// Dispatch `principal_send` to a target principal on the same runtime.
     async fn execute_local(
         &self,
+        ctx: &CrossRuntimeA2aCtx,
         target_did: &str,
         message: &str,
         session_id: Option<String>,
     ) -> Result<serde_json::Value> {
-        let ctx = &self.cross_runtime;
         let Some(principal) = ctx.principal_manager.find_by_did(target_did).await else {
             return Ok(self.error_value("target principal is not loaded on this runtime"));
         };
@@ -205,6 +333,7 @@ impl PrincipalSendTool {
                     success: true,
                     response: response_text.clone(),
                     session_id: session_id.unwrap_or_default(),
+                    kind: Some("principal".to_string()),
                     iterations: None,
                     tool_calls: None,
                     duration_ms: None,
@@ -245,6 +374,7 @@ impl PrincipalSendTool {
     /// decode errors do NOT produce chat lines.
     async fn record_caller_view(
         &self,
+        ctx: &CrossRuntimeA2aCtx,
         target_did: &str,
         sender: Subject,
         text: &str,
@@ -255,12 +385,7 @@ impl PrincipalSendTool {
             Subject::Principal(PrincipalDID(target_did.to_string())),
         );
         let message = ChatLogMessage::new(sender, text.to_string(), correlation_id);
-        if let Err(error) = self
-            .cross_runtime
-            .chat_log_store
-            .append_message(&key, &message)
-            .await
-        {
+        if let Err(error) = ctx.chat_log_store.append_message(&key, &message).await {
             let caller_did = self.caller_principal_did.as_str();
             tracing::warn!(
                 caller_did = %caller_did,
@@ -272,54 +397,52 @@ impl PrincipalSendTool {
     }
 }
 
-/// Build an `Arc<dyn Tool>` for the `principal_send` extension.
-/// Replaces direct `PrincipalSendTool::new(...)` calls at the
+/// Build an `Arc<dyn Tool>` for the `send_peer` extension.
+/// Replaces direct `SendPeerTool::new(...)` calls at the
 /// registration site so callers don't depend on the concrete type.
 #[must_use]
 pub fn build_tool(
     caller_principal_did: String,
     cross_runtime: Arc<CrossRuntimeA2aCtx>,
 ) -> Arc<dyn Tool> {
-    Arc::new(PrincipalSendTool::new(caller_principal_did, cross_runtime))
+    Arc::new(SendPeerTool::new(caller_principal_did, cross_runtime))
 }
 
 #[async_trait]
-impl Tool for PrincipalSendTool {
+impl Tool for SendPeerTool {
     fn name(&self) -> &'static str {
-        "principal_send"
+        "send_peer"
     }
 
     fn description(&self) -> String {
         r#"## Purpose
-Send a message to another Principal's root agent and receive its response. This is the primary mechanism for principal-to-principal communication across runtime boundaries.
+Send a message to a peer — a human user OR another Principal. The `target` selects the branch:
 
-## When to Use
+- `user:<id>` — deliver a fire-and-forget NOTE to that user's conversational session. The note appears in their next turn. Users do NOT reply synchronously; do not wait for an answer. You may only message the user who started this conversation. Any agent in the tree (root or subagent) can use this to surface findings to the user.
+- `principal:<did>` or a bare `did:peko:…` — send a message to another Principal's root agent and RECEIVE its response (synchronous RPC across runtimes).
+
+## When to Use (principal branch)
 - Delegate a task to another Principal you have access to
 - Request analysis, review, or specialized work from a peer Principal
 - Resume a conversation with another Principal using a known session_id
 
 ## When NOT to Use
 - For human-to-agent communication (use the CLI/API instead)
-- For fire-and-forget notifications (principal_send is request/response)
 - For spawning subagents of the SAME principal (use the Agent tool instead)
 
 ## Parameters
 ```json
 {
-  "target_principal": "did:peko:principal:<keyhash>",
+  "target": "user:local  |  did:peko:principal:<keyhash>",
   "message": "Please review this code for bugs",
-  "session_id": "optional-session-to-resume"
+  "label": "optional note label, user branch only",
+  "session_id": "optional session to resume, principal branch only"
 }
 ```
 
 ## Response
-```json
-{
-  "success": true,
-  "response": "Review complete: 3 issues found.",
-  "session_id": "principal:<peer>:session:<id>"
-}
-```"#
+Principal branch: `{ "success": true, "kind": "principal", "response": "<the principal's reply>", "session_id": "…" }`
+User branch: `{ "success": true, "kind": "user", "response": "Delivered as a note …" }` — no reply follows."#
             .to_string()
     }
 
@@ -327,37 +450,57 @@ Send a message to another Principal's root agent and receive its response. This 
         json!({
             "type": "object",
             "properties": {
-                "target_principal": {
+                "target": {
                     "type": "string",
-                    "description": "Target Principal DID (did:peko:principal:<keyhash>). The hub directory resolves the host runtime; the wire envelope carries the DID directly."
+                    "description": "Peer to message: `user:<id>` (note to a human — fire-and-forget, no reply; must be the user who started this conversation) or a Principal DID `did:peko:…` (synchronous RPC, returns the principal's reply)."
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message content to deliver to the target Principal's root agent"
+                    "description": "Message content. User branch: becomes the note text. Principal branch: delivered to the target's root agent."
+                },
+                "label": {
+                    "type": "string",
+                    "description": "User branch only: short label for the note (shown as 📨 [<label>]). Defaults to your agent name."
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "Optional session ID to resume an existing conversation"
+                    "description": "Principal branch only: optional session ID to resume an existing conversation"
                 }
             },
-            "required": ["target_principal", "message"]
+            "required": ["target", "message"]
         })
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
-        let args: PrincipalSendArgs =
+        let args: SendPeerArgs =
             serde_json::from_value(params).map_err(|e| anyhow!("Invalid arguments: {e}"))?;
 
-        // Empty-string guard for the target. The DID is what the wire
-        // carries; an empty string would dispatch to a non-existent
-        // target. Surface a structured error rather than letting
-        // the directory call time out.
-        let target_principal_did = args.target_principal.trim();
-        if target_principal_did.is_empty() {
+        // Normalize the target. Accepted forms: a bare Principal DID
+        // (`did:peko:…`) or the Subject spelling `principal:<did>`.
+        // User targets need a ToolContext (peer gating + messenger
+        // port) and are only reachable via `execute_with_context`.
+        let raw = args.target.trim();
+        if raw.is_empty() {
             return Ok(self.error_value(
-                "principal_send: target_principal is required (Principal DID, e.g. did:peko:principal:<keyhash>)",
+                "send_peer: target is required (\"user:<id>\" or a Principal DID, e.g. did:peko:…)",
             ));
         }
+        if raw.starts_with("user:") || raw == "public" {
+            return Ok(self.error_value(
+                "send_peer: user targets require a principal runtime context",
+            ));
+        }
+        let target_principal_did = raw.strip_prefix("principal:").unwrap_or(raw);
+
+        // The principal branch needs the cross-runtime context. The
+        // tool also registers without one (user branch only), so guard
+        // here rather than at registration.
+        let Some(ctx) = self.cross_runtime.as_deref() else {
+            return Ok(self.error_value(
+                "send_peer: principal targets require the cross-runtime context \
+                 (the tunnel is not running on this daemon)",
+            ));
+        };
 
         // Resolve the host runtime via the directory. The directory
         // is the same one the legacy `a2a_send` uses — it returns an
@@ -367,12 +510,7 @@ Send a message to another Principal's root agent and receive its response. This 
         // surface the directory's structured errors verbatim so the
         // LLM caller sees precise reasons (not_found / forbidden /
         // transport).
-        let resolution = match self
-            .cross_runtime
-            .directory
-            .resolve_by_did(target_principal_did)
-            .await
-        {
+        let resolution = match ctx.directory.resolve_by_did(target_principal_did).await {
             Ok(r) => r,
             Err(err) => {
                 return Ok(self.error_value(&match err {
@@ -414,13 +552,11 @@ Send a message to another Principal's root agent and receive its response. This 
             ));
         }
 
-        let ctx = &self.cross_runtime;
-
         // Same-runtime shortcut: if the directory resolves to the caller's
         // own runtime, dispatch locally without the tunnel.
         if resolution.runtime_id == ctx.caller_runtime_id {
             return self
-                .execute_local(target_principal_did, &args.message, args.session_id)
+                .execute_local(ctx, target_principal_did, &args.message, args.session_id)
                 .await;
         }
 
@@ -524,6 +660,7 @@ Send a message to another Principal's root agent and receive its response. This 
         // caller's runtime). A persistence fault here is logged but
         // does not poison the in-flight call.
         self.record_caller_view(
+            ctx,
             target_principal_did,
             Subject::Principal(PrincipalDID(self.caller_principal_did.clone())),
             &args.message,
@@ -599,6 +736,7 @@ Send a message to another Principal's root agent and receive its response. This 
                 // a chat line because no consumer-visible reply
                 // arrived.
                 self.record_caller_view(
+                    ctx,
                     target_principal_did,
                     Subject::Principal(PrincipalDID(target_principal_did.to_string())),
                     &result.response,
@@ -611,6 +749,44 @@ Send a message to another Principal's root agent and receive its response. This 
                 "remote principal_send response payload could not be decoded: {decode_err}"
             ))),
         }
+    }
+
+    /// Context-aware dispatch: `user:<id>` targets go through the
+    /// peer-messenger port (fire-and-forget note, gated to the
+    /// originating user of this run); principal targets delegate to
+    /// [`Self::execute`] (the legacy `principal_send` path).
+    async fn execute_with_context(
+        &self,
+        params: serde_json::Value,
+        ctx: &peko_tools_core::exec::ToolContext,
+    ) -> Result<serde_json::Value> {
+        let args: SendPeerArgs = serde_json::from_value(params.clone())
+            .map_err(|e| anyhow!("Invalid arguments: {e}"))?;
+        let raw = args.target.trim();
+        if raw.starts_with("user:") {
+            let target = Subject::from_str(raw)
+                .map_err(|e| anyhow!("send_peer: invalid target '{raw}': {e}"))?;
+            let principal_id = ctx
+                .principal_id
+                .clone()
+                .ok_or_else(|| anyhow!("send_peer: user targets require a principal context"))?;
+            let Some(messenger) = crate::principal::messenger::global_messenger() else {
+                return Ok(self.error_value(
+                    "send_peer: peer messenger is not installed (daemon not running?)",
+                ));
+            };
+            return Ok(Self::execute_user_target(
+                messenger.as_ref(),
+                &principal_id,
+                ctx.session_id.as_deref().unwrap_or(""),
+                ctx.agent_id.as_deref(),
+                args.label.as_deref(),
+                &target,
+                &args.message,
+            )
+            .await);
+        }
+        self.execute(params).await
     }
 }
 
@@ -641,6 +817,7 @@ mod tests {
         let principal_manager = Arc::new(PrincipalManager::new(
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         ));
         let chat_log_store = Arc::new(ChatLogStore::new(std::env::temp_dir().join(format!(
             "peko-principal-send-chatlog-{}",
@@ -668,12 +845,12 @@ mod tests {
     #[test]
     fn test_principal_send_args_parsing() {
         let json = r#"{
-            "target_principal": "did:peko:principal:abc",
+            "target": "did:peko:principal:abc",
             "message": "Hello",
             "session_id": "sess_xyz"
         }"#;
-        let args: PrincipalSendArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.target_principal, "did:peko:principal:abc");
+        let args: SendPeerArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.target, "did:peko:principal:abc");
         assert_eq!(args.message, "Hello");
         assert_eq!(args.session_id, Some("sess_xyz".to_string()));
     }
@@ -681,11 +858,11 @@ mod tests {
     #[test]
     fn test_principal_send_args_minimal() {
         let json = r#"{
-            "target_principal": "did:peko:principal:xyz",
+            "target": "did:peko:principal:xyz",
             "message": "Hi"
         }"#;
-        let args: PrincipalSendArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.target_principal, "did:peko:principal:xyz");
+        let args: SendPeerArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.target, "did:peko:principal:xyz");
         assert_eq!(args.session_id, None);
     }
 
@@ -695,6 +872,7 @@ mod tests {
             success: true,
             response: "OK".to_string(),
             session_id: "principal:abc:session:xyz".to_string(),
+            kind: Some("principal".to_string()),
             iterations: Some(2),
             tool_calls: Some(vec![json!({"name": "Read"})]),
             duration_ms: Some(1234),
@@ -711,10 +889,10 @@ mod tests {
     #[tokio::test]
     async fn test_empty_target_errors_structured() {
         let ctx = make_test_ctx();
-        let tool = PrincipalSendTool::new("did:peko:principal:caller".into(), ctx);
+        let tool = SendPeerTool::new("did:peko:principal:caller".into(), ctx);
         let v = tool
             .execute(json!({
-                "target_principal": "",
+                "target": "",
                 "message": "test"
             }))
             .await
@@ -727,10 +905,10 @@ mod tests {
     #[tokio::test]
     async fn test_target_not_found_returns_structured_error() {
         let ctx = make_test_ctx();
-        let tool = PrincipalSendTool::new("did:peko:principal:caller".into(), ctx);
+        let tool = SendPeerTool::new("did:peko:principal:caller".into(), ctx);
         let v = tool
             .execute(json!({
-                "target_principal": "did:peko:principal:missing",
+                "target": "did:peko:principal:missing",
                 "message": "test"
             }))
             .await
@@ -749,10 +927,10 @@ mod tests {
         // shape; a follow-up can wire a populated FakeAgentDirectory
         // to exercise the tunnel-disconnected branch.
         let ctx = make_test_ctx();
-        let tool = PrincipalSendTool::new("did:peko:principal:caller".into(), ctx);
+        let tool = SendPeerTool::new("did:peko:principal:caller".into(), ctx);
         let v = tool
             .execute(json!({
-                "target_principal": "did:peko:principal:noresolve",
+                "target": "did:peko:principal:noresolve",
                 "message": "test"
             }))
             .await
@@ -787,6 +965,7 @@ mod tests {
         let principal_manager = Arc::new(PrincipalManager::new(
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         ));
         let chat_log_store = Arc::new(ChatLogStore::new(std::env::temp_dir().join(format!(
             "peko-principal-send-roundtrip-chatlog-{}",
@@ -882,6 +1061,7 @@ mod tests {
                     tool_calls: None,
                     duration_ms: Some(10),
                     error: None,
+                    kind: None,
                 };
                 serde_json::to_vec(&result).expect("serialize result")
             };
@@ -890,7 +1070,7 @@ mod tests {
         }
     }
 
-    /// Build the "caller runtime" with a real `PrincipalSendTool`
+    /// Build the "caller runtime" with a real `SendPeerTool`
     /// wired to a real `CrossRuntimeA2aCtx`, a populated
     /// `FakeAgentDirectory`, and a `TunnelHandle` whose outbound
     /// sinks into the test hub.
@@ -900,7 +1080,7 @@ mod tests {
         outbound_tx: tokio::sync::mpsc::Sender<TunnelMessage>,
         caller_principal_did: String,
     ) -> (
-        PrincipalSendTool,
+        SendPeerTool,
         Arc<SigningKey>, // for the hub to derive the caller's verifying key
     ) {
         // Use a real KeyPair so the caller's `runtime_id` is a valid
@@ -918,7 +1098,7 @@ mod tests {
             caller_runtime_id,
             outbound_tx,
         );
-        let tool = PrincipalSendTool::new(caller_principal_did, ctx);
+        let tool = SendPeerTool::new(caller_principal_did, ctx);
         (tool, signing_key)
     }
 
@@ -979,10 +1159,11 @@ mod tests {
         .await;
 
         // ── run principal_send ─────────────────────────────────
-        let args = PrincipalSendArgs {
-            target_principal: "did:peko:principal:target-keyhash".to_string(),
+        let args = SendPeerArgs {
+            target: "did:peko:principal:target-keyhash".to_string(),
             message: "review this PR".to_string(),
             session_id: None,
+            label: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1077,10 +1258,11 @@ mod tests {
         )
         .await;
 
-        let args = PrincipalSendArgs {
-            target_principal: "did:peko:principal:registered-but-hub-rejects".to_string(),
+        let args = SendPeerArgs {
+            target: "did:peko:principal:registered-but-hub-rejects".to_string(),
             message: "hi".to_string(),
             session_id: None,
+            label: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1158,10 +1340,11 @@ mod tests {
         .await;
 
         // Drive the call.
-        let args = PrincipalSendArgs {
-            target_principal: "did:peko:principal:target-keyhash".to_string(),
+        let args = SendPeerArgs {
+            target: "did:peko:principal:target-keyhash".to_string(),
             message: "verify me".to_string(),
             session_id: None,
+            label: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1273,12 +1456,13 @@ mod tests {
                 caller_outbound_tx,
             )
         };
-        let tool = PrincipalSendTool::new(caller_did.clone(), ctx);
+        let tool = SendPeerTool::new(caller_did.clone(), ctx);
 
-        let args = PrincipalSendArgs {
-            target_principal: target_did.clone(),
+        let args = SendPeerArgs {
+            target: target_did.clone(),
             message: "review this PR".to_string(),
             session_id: None,
+            label: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1381,12 +1565,13 @@ mod tests {
                 caller_outbound_tx,
             )
         };
-        let tool = PrincipalSendTool::new(caller_did.clone(), ctx);
+        let tool = SendPeerTool::new(caller_did.clone(), ctx);
 
-        let args = PrincipalSendArgs {
-            target_principal: target_did.clone(),
+        let args = SendPeerArgs {
+            target: target_did.clone(),
             message: "review this PR".to_string(),
             session_id: None,
+            label: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1458,12 +1643,13 @@ mod tests {
                 caller_outbound_tx,
             )
         };
-        let tool = PrincipalSendTool::new(caller_did.clone(), ctx);
+        let tool = SendPeerTool::new(caller_did.clone(), ctx);
 
-        let args = PrincipalSendArgs {
-            target_principal: target_did.clone(),
+        let args = SendPeerArgs {
+            target: target_did.clone(),
             message: "hi".to_string(),
             session_id: None,
+            label: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1483,5 +1669,149 @@ mod tests {
 
         drop(tool);
         let _ = hub_task.await;
+    }
+
+    // ------------------------------------------------------------------
+    // User branch (send_peer → note via PeerMessenger port)
+    // ------------------------------------------------------------------
+
+    struct StubMessenger {
+        origin: Option<Subject>,
+        deliver_ok: bool,
+        delivered: std::sync::Mutex<Vec<(Subject, String)>>,
+    }
+
+    impl StubMessenger {
+        fn new(origin: Option<Subject>, deliver_ok: bool) -> Self {
+            Self {
+                origin,
+                deliver_ok,
+                delivered: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl crate::principal::messenger::PeerMessenger for StubMessenger {
+        async fn deliver_note(
+            &self,
+            _principal_id: &str,
+            target: &Subject,
+            note: &str,
+            _source: peko_session::events::MessageSource,
+        ) -> anyhow::Result<bool> {
+            self.delivered
+                .lock()
+                .unwrap()
+                .push((target.clone(), note.to_string()));
+            Ok(self.deliver_ok)
+        }
+
+        async fn originating_peer(
+            &self,
+            _principal_id: &str,
+            _session_id: &str,
+        ) -> anyhow::Result<Option<Subject>> {
+            Ok(self.origin.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn user_branch_delivers_note_to_originating_user() {
+        let stub = StubMessenger::new(Some(Subject::User("local".to_string())), true);
+        let value = SendPeerTool::execute_user_target(
+            &stub,
+            "prin_test",
+            "root:user:local",
+            Some("research-helper"),
+            None,
+            &Subject::User("local".to_string()),
+            "the backup failed",
+        )
+        .await;
+        let result: PrincipalSendResult = serde_json::from_value(value).unwrap();
+        assert!(result.success, "delivery should succeed: {result:?}");
+        assert_eq!(result.kind.as_deref(), Some("user"));
+        assert!(
+            result.response.contains("do not"),
+            "response must set no-reply expectations: {}",
+            result.response
+        );
+        let delivered = stub.delivered.lock().unwrap();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(
+            delivered[0].1,
+            "📨 [research-helper] the backup failed",
+            "note is labeled with the calling agent by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_branch_rejects_cross_user_target() {
+        let stub = StubMessenger::new(Some(Subject::User("local".to_string())), true);
+        let value = SendPeerTool::execute_user_target(
+            &stub,
+            "prin_test",
+            "root:user:local",
+            Some("root"),
+            None,
+            &Subject::User("mallory".to_string()),
+            "hi",
+        )
+        .await;
+        let result: PrincipalSendResult = serde_json::from_value(value).unwrap();
+        assert!(!result.success);
+        assert!(
+            result.error.as_deref().unwrap_or_default().contains("not permitted"),
+            "cross-user send must be rejected: {result:?}"
+        );
+        assert!(stub.delivered.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn user_branch_errors_when_origin_unresolvable() {
+        let stub = StubMessenger::new(None, true);
+        let value = SendPeerTool::execute_user_target(
+            &stub,
+            "prin_test",
+            "mystery-session",
+            None,
+            Some("cron"),
+            &Subject::User("local".to_string()),
+            "hi",
+        )
+        .await;
+        let result: PrincipalSendResult = serde_json::from_value(value).unwrap();
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("could not resolve"));
+        // The explicit label wins when delivery is attempted — not here,
+        // so just assert nothing was delivered.
+        assert!(stub.delivered.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn user_branch_reports_missing_conversational_session() {
+        let stub = StubMessenger::new(Some(Subject::User("local".to_string())), false);
+        let value = SendPeerTool::execute_user_target(
+            &stub,
+            "prin_test",
+            "root:user:local",
+            Some("root"),
+            None,
+            &Subject::User("local".to_string()),
+            "hi",
+        )
+        .await;
+        let result: PrincipalSendResult = serde_json::from_value(value).unwrap();
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no conversational session"));
     }
 }

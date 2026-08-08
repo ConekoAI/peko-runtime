@@ -40,6 +40,27 @@ pub fn root_session_id(peer: &peko_auth::Subject) -> String {
     format!("root:{peer}")
 }
 
+/// Root-agent session id for a peer, adjusted for the channel.
+///
+/// Automation traffic (`ChannelKind::Cron`) gets its own per-peer
+/// session (`root:cron:{peer}`) so scheduled turns never interleave
+/// with — or hijack — the human's conversational session: a cron
+/// message draining at an iteration boundary is indistinguishable from
+/// human input, and the model answers the newest one, dropping the
+/// user's pending request (2026-08-07 field test, F2). The cron
+/// session gives recurring jobs continuity at low token cost; the
+/// conversational session stays human/peer-only.
+#[must_use]
+pub fn root_session_id_for_channel(
+    peer: &peko_auth::Subject,
+    kind: &crate::principal::router::ChannelKind,
+) -> String {
+    match kind {
+        crate::principal::router::ChannelKind::Cron => format!("root:cron:{peer}"),
+        _ => root_session_id(peer),
+    }
+}
+
 /// A Principal router powered by a root-agent agentic loop.
 ///
 /// Holds a cached `PrincipalContext` for the principal's lifetime; the
@@ -63,7 +84,7 @@ pub struct RootRouter {
     /// Local runtime id (`did:key` form) for outbound
     /// `principal_send` envelopes. Set by the daemon-state bootstrap
     /// post-`start_tunnel` via [`Self::set_caller_runtime_id`].
-    /// When `None`, `principal_send` is not registered.
+    /// When `None`, `send_peer` is not registered.
     caller_runtime_id: StdRwLock<Option<String>>,
     /// Per-Principal plan DAG port (PR #2 wiring). Copied into every
     /// `PrincipalContext` produced by `build_context` so the seven
@@ -153,7 +174,7 @@ impl RootRouter {
             Arc::clone(&self.plan_port),
         );
         principal_ctx.set_root_prompt(self.root_prompt.clone());
-        // Phase 4b: bind caller identity so `principal_send` is
+        // Phase 4b: bind caller identity so `send_peer` is
         // registered on the principal's agents. The DID is the
         // principal's stable identifier (set in the factory from
         // `Principal::did()` / `config.did`); the runtime_id may be
@@ -205,7 +226,7 @@ impl PrincipalRouter for RootRouter {
     }
     async fn route(&self, ctx: RouterContext) -> Result<RouteDecision, RouterError> {
         let peer = ctx.peer.clone();
-        let session_id = root_session_id(&peer);
+        let session_id = root_session_id_for_channel(&peer, &ctx.channel.kind);
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
         let user_text = ctx.message.clone();
         let pre_user_messages = recalled_context_messages(&ctx.recalled_context);
@@ -254,7 +275,7 @@ impl PrincipalRouter for RootRouter {
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<RouteDecision, RouterError> {
         let peer = ctx.peer.clone();
-        let session_id = root_session_id(&peer);
+        let session_id = root_session_id_for_channel(&peer, &ctx.channel.kind);
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
         let user_text = ctx.message.clone();
         let pre_user_messages = recalled_context_messages(&ctx.recalled_context);

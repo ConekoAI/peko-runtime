@@ -124,7 +124,12 @@ impl BashTool {
             .get_or_init(|| {
                 let registry = get_or_create_registry_for_agent("Bash");
                 let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-                Arc::new(AsyncExecutor::with_registries(registry, queue_manager))
+                Arc::new(AsyncExecutor::with_registries(
+                    registry,
+                    queue_manager,
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(
+                    ),
+                ))
             })
             .clone()
     }

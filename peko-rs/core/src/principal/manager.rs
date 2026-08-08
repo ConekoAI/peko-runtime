@@ -70,6 +70,16 @@ pub struct PrincipalManager {
     /// Shared inbox registry used by root agents and the Principal
     /// boundary to queue steering messages for sessions that already have
     /// a run in flight.
+    ///
+    /// This is a required constructor input (no private default): with
+    /// two registries, the per-session run permit lives in two
+    /// independent permit spaces, so a cron/tunnel turn via `receive`
+    /// runs fully concurrent with an in-flight CLI turn on the same
+    /// session JSONL — interleaved appends then break
+    /// tool_call/tool_result adjacency and brick the session for
+    /// Anthropic-style providers (2026-08-07 field test, finding N1).
+    /// The daemon MUST wire its `AppState` registry in; tests and
+    /// offline CLI contexts build a standalone one.
     inbox_registry: Arc<InboxRegistry>,
     /// Per-principal lock guarding first-time session creation/open so
     /// concurrent peers do not race on shared metadata/index writes.
@@ -105,11 +115,13 @@ impl PrincipalManager {
     pub fn new(
         memory_factory: Arc<dyn PrincipalMemoryFactory>,
         router_factory: Arc<dyn PrincipalRouterFactory>,
+        inbox_registry: Arc<InboxRegistry>,
     ) -> Self {
         Self::with_path_resolver(
             PathResolver::new(),
             memory_factory,
             router_factory,
+            inbox_registry,
         )
     }
 
@@ -117,6 +129,7 @@ impl PrincipalManager {
         path_resolver: PathResolver,
         memory_factory: Arc<dyn PrincipalMemoryFactory>,
         router_factory: Arc<dyn PrincipalRouterFactory>,
+        inbox_registry: Arc<InboxRegistry>,
     ) -> Self {
         Self {
             principals: RwLock::new(HashMap::new()),
@@ -125,10 +138,7 @@ impl PrincipalManager {
             memory_factory,
             router_factory,
             resolver: None,
-            inbox_registry: Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
-            )),
+            inbox_registry,
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
             slash_dispatcher: Arc::new(RwLock::new(None)),
             extension_store: None,
@@ -909,7 +919,8 @@ impl PrincipalManager {
         // root agent is already running, queue it as a steering message in the
         // same session inbox; the active run will drain it on its next
         // iteration.
-        let session_id = super::routers::root::root_session_id(&response_peer);
+        let session_id =
+            super::routers::root::root_session_id_for_channel(&response_peer, &ctx.channel.kind);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
                 let decision = principal.router.route(ctx).await?;
@@ -982,7 +993,8 @@ impl PrincipalManager {
         // run may be active per peer/session. A message arriving while a
         // run is active is queued as a steering message (no streaming
         // events for the queued case).
-        let session_id = super::routers::root::root_session_id(&response_peer);
+        let session_id =
+            super::routers::root::root_session_id_for_channel(&response_peer, &ctx.channel.kind);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
                 let decision = principal
@@ -1195,6 +1207,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver),
         );
@@ -1852,6 +1865,7 @@ mod tests {
             path_resolver,
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         )
         .with_resolver(resolver)
         .with_chat_log_store(store.clone());

@@ -279,6 +279,17 @@ impl SessionHandle {
         base.add_user(content).await
     }
 
+    /// Add a user-role message with an explicit [`crate::events::MessageSource`]
+    /// tag (e.g. `Cron` for automation notes).
+    pub async fn add_user_with_source(
+        &self,
+        content: impl Into<String>,
+        source: crate::events::MessageSource,
+    ) -> Result<()> {
+        let mut base = self.base.write().await;
+        base.add_user_with_source(content, source).await
+    }
+
     /// Add an assistant message to the session
     ///
     /// Note: Metadata updates are handled by `MetadataController` at turn boundary
@@ -354,13 +365,27 @@ impl SessionHandle {
 }
 
 /// Options for creating a new session
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SessionCreateOptions {
     pub parent_session_id: Option<String>,
     pub title: Option<String>,
     pub trigger: String,
     /// Specific session ID to use (if not provided, a UUID will be generated)
     pub session_id: Option<String>,
+}
+
+impl Default for SessionCreateOptions {
+    fn default() -> Self {
+        Self {
+            parent_session_id: None,
+            title: None,
+            // Matches the index entry's default (`SessionEntry::new`) —
+            // a plain `derive(Default)` used to leave this as `""`,
+            // which then leaked into both the metadata and the index.
+            trigger: "user".to_string(),
+            session_id: None,
+        }
+    }
 }
 
 impl SessionCreateOptions {
@@ -1021,13 +1046,23 @@ impl SessionManager {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let session_key = derive_base_session_key(agent, peer);
 
-        // 1. Create JSONL file directly using SessionStorage
+        // 1. Create JSONL file directly using SessionStorage. The
+        // header carries the same trigger/parent linkage the metadata
+        // and index get below, so the file's first line agrees with
+        // the index entry (F5).
         let storage = SessionStorage::new(sessions_dir.clone());
         tokio::fs::create_dir_all(&sessions_dir).await?;
         let cwd = std::env::current_dir()
             .ok()
             .map(|p| p.to_string_lossy().to_string());
-        storage.create_session(&session_id, cwd).await?;
+        storage
+            .create_session_with_header(
+                &session_id,
+                cwd,
+                crate::events::SessionTrigger::from_label(&options.trigger),
+                options.parent_session_id.clone(),
+            )
+            .await?;
 
         // 2. Create Session from components
         let session = Session::from_components(
@@ -1067,15 +1102,23 @@ impl SessionManager {
         // metadata+index sequence eliminates the race at its source
         // (audit M7).
         let mut controller = self.metadata_controller.write().await;
+        // The index entry is built from `SessionEntry::with_peer`, which
+        // hardcodes `parent_session_id: None` / `trigger: "user"` — copy
+        // the values the caller actually supplied so the index matches
+        // the metadata (2026-08-07 field test, Finding 7).
+        let entry_parent = metadata.parent_session_id.clone();
+        let entry_trigger = metadata.trigger.clone();
         controller.create_metadata(metadata).await?;
         if self.index.is_some() {
-            let entry = SessionEntry::with_peer(
+            let mut entry = SessionEntry::with_peer(
                 session_id.clone(),
                 agent.to_string(),
                 format!("{}.jsonl", safe_filename_component(&session_id)),
                 peer.kind().to_string(),
                 peer.subject_id().to_string(),
             );
+            entry.parent_session_id = entry_parent;
+            entry.trigger = entry_trigger;
             controller.create_for_peer(entry, &session_key).await?;
             controller.save_index().await?;
         }
@@ -1406,6 +1449,20 @@ impl SessionManager {
         agent: &str,
         peer: &Subject,
     ) -> Result<Arc<RwLock<Session>>> {
+        self.get_or_create_base_with_trigger(agent, peer, crate::events::SessionTrigger::User)
+            .await
+    }
+
+    /// [`get_or_create_base`](Self::get_or_create_base) with an explicit
+    /// trigger for the JSONL `session.created` header when a NEW session
+    /// file is created (spawn overlays pass `SessionTrigger::Spawn` so
+    /// the header agrees with the index linkage stamping).
+    pub async fn get_or_create_base_with_trigger(
+        &mut self,
+        agent: &str,
+        peer: &Subject,
+        trigger: crate::events::SessionTrigger,
+    ) -> Result<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
 
         // Check cache first
@@ -1456,7 +1513,9 @@ impl SessionManager {
                 let cwd = std::env::current_dir()
                     .ok()
                     .map(|p| p.to_string_lossy().to_string());
-                storage.create_session(&session_id, cwd).await?;
+                storage
+                    .create_session_with_header(&session_id, cwd, trigger.clone(), None)
+                    .await?;
 
                 // Create Session from components
                 Session::from_components(
@@ -1573,6 +1632,59 @@ impl SessionManager {
         self.channel_overlays.get(overlay_key).cloned()
     }
 
+    /// Stamp a freshly created spawn child session's index entry with
+    /// its parent linkage. Spawn sessions were otherwise written with
+    /// `parent_session_id: null` and `trigger: "user"`, making them
+    /// indistinguishable from root sessions in sessions.json (2026-08-07
+    /// field test, Finding 7). Best-effort: the overlay holds the same
+    /// linkage in memory, so a patch failure must not fail the spawn.
+    async fn stamp_spawn_parent_linkage(&self, session_id: &str, parent_session_key: &str) {
+        // Resolve the parent's session id. Call sites pass one of two
+        // shapes: the parent session ID itself ("root:user:local" —
+        // `agent_runner.rs` stamps `session.id`), or a session KEY
+        // ("agent:root:peer:user:local"). Accept the id directly; for
+        // keys, prefer the in-memory base session and fall back to the
+        // peer-routing index, because the subagent executor can hold a
+        // SessionManager instance whose `base_sessions` map never saw
+        // the parent's root session.
+        let mut controller = self.metadata_controller.write().await;
+        let parent_id = match controller.get_entry_from_index(parent_session_key).await {
+            Ok(Some(entry)) => Some(entry.session_id),
+            _ => match self.get_parent_base_session(parent_session_key).await {
+                Some(base) => Some(base.read().await.id.clone()),
+                None => {
+                    let peer_key = crate::key::base_key_from_overlay(parent_session_key)
+                        .unwrap_or_else(|| parent_session_key.to_string());
+                    controller
+                        .get_active_session_id(&peer_key)
+                        .await
+                        .unwrap_or(None)
+                }
+            },
+        };
+        let Some(parent_id) = parent_id else {
+            info!("stamp_spawn_parent_linkage: no parent resolved for {session_id} (key={parent_session_key})");
+            return;
+        };
+        match controller.get_entry_from_index(session_id).await {
+            Ok(Some(mut entry)) => {
+                entry.parent_session_id = Some(parent_id.clone());
+                entry.trigger = "spawn".to_string();
+                if let Err(e) = controller.update_entry(entry).await {
+                    tracing::warn!(
+                        "Failed to stamp spawn session {session_id} parent linkage: {e}"
+                    );
+                } else {
+                    info!("stamp_spawn_parent_linkage: stamped {session_id} parent={parent_id}");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!("Failed to load spawn session {session_id} index entry: {e}");
+            }
+        }
+    }
+
     /// Create a spawn overlay
     ///
     /// Creates a new spawn overlay for subagent task execution.
@@ -1589,7 +1701,9 @@ impl SessionManager {
         // Always create a new base session for the child
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
         let spawn_peer = Subject::Principal(spawn_id.into());
-        let child_base = self.get_or_create_base(agent, &spawn_peer).await?;
+        let child_base = self
+            .get_or_create_base_with_trigger(agent, &spawn_peer, crate::events::SessionTrigger::Spawn)
+            .await?;
 
         // If not isolated, copy parent's context to child's session
         if !isolated {
@@ -1617,6 +1731,8 @@ impl SessionManager {
             let base_read = child_base.read().await;
             base_read.id.clone()
         };
+        self.stamp_spawn_parent_linkage(&session_id, parent_session_key)
+            .await;
         Ok(SessionHandle::new(
             session_id,
             child_base,
@@ -1643,7 +1759,9 @@ impl SessionManager {
         // Always create a new base session for the child (no shared JSONL file)
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
         let spawn_peer = Subject::Principal(spawn_id.into());
-        let child_base = self.get_or_create_base(agent, &spawn_peer).await?;
+        let child_base = self
+            .get_or_create_base_with_trigger(agent, &spawn_peer, crate::events::SessionTrigger::Spawn)
+            .await?;
 
         // If not isolated, copy parent's context to child's session
         if !isolated {
@@ -1681,6 +1799,8 @@ impl SessionManager {
             let base_read = child_base.read().await;
             base_read.id.clone()
         };
+        self.stamp_spawn_parent_linkage(&session_id, parent_session_key)
+            .await;
         Ok(SessionHandle::new(
             session_id,
             child_base,

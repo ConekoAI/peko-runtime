@@ -10,6 +10,7 @@
 pub(crate) mod background_runtime;
 pub(crate) mod config_drift;
 pub(crate) mod cron_engine;
+pub(crate) mod cron_ops;
 pub(crate) mod cron_runtime;
 pub(crate) mod state;
 
@@ -187,7 +188,10 @@ impl Daemon {
             // daemon replaces this in `Daemon::run` with a real one
             // bound to the AppState's `InboxRegistry`.
             std::sync::Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
+                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(
+                    ),
+                ),
             ),
             std::sync::Weak::new(),
         );
@@ -234,7 +238,10 @@ impl Daemon {
             )?),
             None,
             std::sync::Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
+                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(
+                    ),
+                ),
             ),
             std::sync::Weak::new(),
         );
@@ -368,8 +375,9 @@ impl Daemon {
         // `ExtensionCore` (`Arc::downgrade` so the cron engine does not
         // extend the core's lifetime).
         let cron_async_executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
-                .with_inbox_registry(app_state.inbox_registry.clone()),
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
+                app_state.inbox_registry.clone(),
+            ),
         );
         let cron_extension_core = crate::extensions::framework::core::global_core()
             .map(|arc| std::sync::Arc::downgrade(&arc))
@@ -453,27 +461,37 @@ impl Daemon {
 
         // Phase 10b: install the cron runtime port so the
         // `Cron{Create,Delete,List}Tool`s (which live in
-        // `peko-tools-builtin` and cannot import daemon state directly)
-        // can dispatch through the F37 capability-gated funnel. The
-        // adapter wraps a fresh `DaemonClient` connected back to the
-        // IPC server we just spawned above. Idempotent — repeated calls
-        // with the same adapter are a no-op.
-        // Phase 14.b: the adapter moved from `src/cron/daemon_adapter.rs`
-        // (pre-extraction) to `src/daemon/cron_runtime.rs` because it
-        // depends on `crate::ipc::{DaemonClient, ResponsePacket}` which
-        // stays in root.
-        match crate::daemon::cron_runtime::DaemonCronAdapter::connect().await {
-            Ok(adapter) => {
-                let adapter = std::sync::Arc::new(adapter);
-                adapter.install_as_global();
-                info!("🕓 Cron runtime port installed (DaemonCronAdapter)");
-            }
-            Err(e) => warn!(
-                "Failed to install cron runtime port: {e}. \
-                 CronCreate/CronDelete/CronList tools will fail until the \
-                 IPC server is reachable; the daemon cron engine itself \
-                 still runs."
-            ),
+        // `peko-cron` and cannot import daemon state directly)
+        // can dispatch through the F37 capability-gated funnel.
+        // F1b (2026-08-07 field test): the adapter dispatches to the
+        // in-process `CronOps` — no IPC loopback over the daemon's own
+        // socket (a latent receiver bug made every conversational cron
+        // tool call hang 60s and then fail while silently adding the
+        // job). Idempotent — repeated installs with the same adapter
+        // are a no-op.
+        {
+            let cron_ops = std::sync::Arc::new(crate::daemon::cron_ops::CronOps::new(
+                app_state.path_resolver.clone(),
+                std::sync::Arc::clone(app_state.principal_manager()),
+                std::sync::Arc::clone(&app_state.authority),
+            ));
+            let adapter =
+                std::sync::Arc::new(crate::daemon::cron_runtime::DaemonCronAdapter::new(cron_ops));
+            adapter.install_as_global();
+            info!("🕓 Cron runtime port installed (DaemonCronAdapter, in-process)");
+        }
+
+        // Install the peer-messenger port so the `send_peer` tool's
+        // user branch (and the cron engine's note delivery) can append
+        // labeled notes to a peer's conversational session without
+        // importing daemon state. Idempotent like the cron port.
+        {
+            crate::principal::messenger::set_global_messenger(std::sync::Arc::new(
+                crate::principal::messenger::PrincipalPeerMessenger::new(std::sync::Arc::clone(
+                    app_state.principal_manager(),
+                )),
+            ));
+            info!("📨 Peer messenger port installed (PrincipalPeerMessenger)");
         }
 
         // Create polling intervals

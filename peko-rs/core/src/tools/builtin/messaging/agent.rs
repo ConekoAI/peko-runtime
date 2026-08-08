@@ -693,6 +693,13 @@ Examples:
 
         let parent_session_key = if let Some(key) = args.parent_session_key {
             key
+        } else if let Some(ref sid) = ctx.session_id {
+            // The engine's tool executor always supplies the real
+            // session id here; prefer it over the session-key provider,
+            // whose daemon-path placeholder ("agent:<name>:cli:default")
+            // names no session and breaks parent linkage in the session
+            // index (2026-08-07 field test, Finding 7).
+            sid.clone()
         } else if let Some(ref provider) = self.session_provider {
             provider.current_session_key()
         } else {

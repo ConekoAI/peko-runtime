@@ -109,7 +109,12 @@ mod tests {
     #[test]
     fn test_extension_async_tool_creation() {
         let core = Arc::new(ExtensionCore::new());
-        let adapter = ExtensionAsyncAdapter::new(core);
+        let adapter = ExtensionAsyncAdapter::new(
+            core,
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            ),
+        );
 
         let tool = ExtensionAsyncTool::new(
             adapter,

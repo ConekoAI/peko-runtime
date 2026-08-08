@@ -165,6 +165,12 @@ pub struct SubagentExecutor {
     /// manage plans on behalf of their spawning principal). `None`
     /// means unbound — subagents do not register `Plan*` tools.
     principal_plan_port: Option<Arc<dyn peko_plan::PlanPort>>,
+    /// The spawning principal's DID, set post-construction from the
+    /// parent Agent's `with_caller_principal_did` binding (a
+    /// `OnceLock` so the set works through the `Arc` the parent
+    /// holds). Bound onto each spawned child Agent so `send_peer`
+    /// registers down the whole tree with correct caller attribution.
+    caller_principal_did: std::sync::OnceLock<String>,
 }
 
 impl SubagentExecutor {
@@ -187,7 +193,11 @@ impl SubagentExecutor {
         let agent_name = agent_name.into();
         let async_registry = get_or_create_registry_for_agent(&agent_name);
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-        let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
+        let unified_executor = AsyncExecutor::with_registries(
+            async_registry,
+            async_queue_manager,
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        );
 
         Self {
             unified_executor,
@@ -206,6 +216,7 @@ impl SubagentExecutor {
             quota_meter: None,
             peer_meter: None,
             principal_plan_port: None,
+            caller_principal_did: std::sync::OnceLock::new(),
         }
     }
 
@@ -255,6 +266,19 @@ impl SubagentExecutor {
     #[must_use]
     pub fn principal_id(&self) -> &PrincipalId {
         &self.principal_id
+    }
+
+    /// Bind the spawning principal's DID (post-construction; set
+    /// through the `Arc` the parent Agent holds). Idempotent — later
+    /// sets are ignored, matching `PrincipalContext::set_caller_principal_did`.
+    pub fn set_caller_principal_did(&self, did: String) {
+        let _ = self.caller_principal_did.set(did);
+    }
+
+    /// The spawning principal's DID, if bound.
+    #[must_use]
+    pub fn caller_principal_did(&self) -> Option<&String> {
+        self.caller_principal_did.get()
     }
 
     /// Get the spawning principal's human-readable name, if known.
@@ -324,7 +348,11 @@ impl SubagentExecutor {
         principal_id: PrincipalId,
     ) -> Self {
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-        let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
+        let unified_executor = AsyncExecutor::with_registries(
+            async_registry,
+            async_queue_manager,
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        );
 
         Self {
             unified_executor,
@@ -343,6 +371,7 @@ impl SubagentExecutor {
             quota_meter: None,
             peer_meter: None,
             principal_plan_port: None,
+            caller_principal_did: std::sync::OnceLock::new(),
         }
     }
 
@@ -356,7 +385,11 @@ impl SubagentExecutor {
         max_concurrent: usize,
         principal_id: PrincipalId,
     ) -> Self {
-        let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
+        let unified_executor = AsyncExecutor::with_registries(
+            async_registry,
+            async_queue_manager,
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        );
 
         Self {
             unified_executor,
@@ -375,6 +408,7 @@ impl SubagentExecutor {
             quota_meter: None,
             peer_meter: None,
             principal_plan_port: None,
+            caller_principal_did: std::sync::OnceLock::new(),
         }
     }
 
@@ -580,6 +614,10 @@ impl SubagentExecutor {
         // cross `tokio::spawn`).
         let parent_quota_meter_clone = self.quota_meter.clone();
         let parent_peer_meter_clone = self.peer_meter.clone();
+        // Propagate the caller principal DID so the child Agent (and,
+        // via its executor, deeper descendants) registers `send_peer`
+        // with the principal's attribution.
+        let caller_principal_did_clone = self.caller_principal_did().cloned();
         // Derive a child token inside the closure so the sub-agent
         // observes the parent's cancel via `child_cancel` without
         // extending the parent's lifetime past the closure's
@@ -654,6 +692,7 @@ impl SubagentExecutor {
                         child_cancel_for_closure.clone(),
                         parent_quota_meter_clone,
                         parent_peer_meter_clone,
+                        caller_principal_did_clone,
                     );
                     let result = if timeout > 0 {
                         match tokio::time::timeout(
@@ -1070,6 +1109,9 @@ async fn execute_subagent_task(
     // along with `parent_quota_meter` so both meters charge when
     // nested. `None` skips peer attribution.
     parent_peer_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
+    // The spawning principal's DID, bound onto the child Agent so
+    // `send_peer` registers down the tree with correct attribution.
+    caller_principal_did: Option<String>,
 ) -> Result<String> {
     info!(
         "Executing subagent task: agent={} session={}",
@@ -1250,6 +1292,11 @@ async fn execute_subagent_task(
     if let Some(ws) = principal_workspace {
         subagent = subagent.with_principal_workspace(ws);
     }
+
+    // Bind the caller principal DID so `send_peer` registers for the
+    // child — and, via the executor propagation inside
+    // `with_caller_principal_did`, for deeper descendants too.
+    subagent = subagent.with_caller_principal_did(caller_principal_did);
 
     // Update the subagent's session key provider so nested spawns know their parent
     subagent.session_key_provider().set_session_key(session_key);

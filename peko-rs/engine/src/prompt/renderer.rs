@@ -47,7 +47,7 @@ use super::context::{
     TurnPromptContext,
 };
 use super::placeholder::{replace_placeholders, Placeholder};
-use chrono::Local;
+use chrono::{Local, Utc};
 use peko_extension_api::session::SessionSnapshot;
 use peko_extension_api::ToolFunnel;
 use std::collections::HashMap;
@@ -128,7 +128,8 @@ impl PromptRenderer {
     /// iterations within a session unless the profile mutates.
     /// Excludes per-iteration fields like `{{iteration_budget}}`,
     /// `{{quota_state}}`, `{{session_context}}`, `{{memory}}`,
-    /// `{{timezone}}`, `{{soft_cancel}}`, and `{{capability_diff}}`
+    /// `{{current_time}}`, `{{timezone}}`, `{{soft_cancel}}`, and
+    /// `{{capability_diff}}`
     /// (those go in [`render_per_turn`]). Tool catalogs are not part of
     /// the prefix; they reach the model on the wire as the `tools[]`
     /// JSON-schema array.
@@ -159,7 +160,8 @@ impl PromptRenderer {
     ///
     /// Complements [`render_cache_stable`]: produces the trailing
     /// section of the system prompt that changes every iteration
-    /// (`{{timezone}}`, `{{memory}}`, `{{session_context}}`,
+    /// (`{{current_time}}`, `{{timezone}}`, `{{memory}}`,
+    /// `{{session_context}}`,
     /// `{{iteration_budget}}`, `{{quota_state}}`, `{{soft_cancel}}`,
     /// `{{capability_diff}}`). The engine loop concatenates this with
     /// the cached prefix via [`assemble_system_prompt`]; the result is
@@ -179,6 +181,7 @@ impl PromptRenderer {
         // The synthetic body lists each volatile placeholder on its
         // own line so each section is delimited.
         const VOLATILE_BODY: &str = "\
+            {{current_time}}\n\
             {{timezone}}\n\
             {{memory}}\n\
             {{session_context}}\n\
@@ -420,6 +423,14 @@ fn build_per_turn_placeholder_values(
 ) -> HashMap<Placeholder, String> {
     let mut values = HashMap::new();
 
+    values.insert(
+        Placeholder::CurrentTime,
+        format!(
+            "Current time: {} (local) / {} (UTC)",
+            Local::now().to_rfc3339(),
+            Utc::now().to_rfc3339()
+        ),
+    );
     values.insert(
         Placeholder::Timezone,
         Local::now().format("%:z").to_string(),
@@ -980,5 +991,19 @@ mod tests {
 
         assert!(suffix_first.contains("Iteration 1 of 10"));
         assert!(suffix_second.contains("Approaching limit"));
+    }
+
+    #[tokio::test]
+    async fn render_per_turn_includes_current_time() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let ctx = empty_ctx();
+        let suffix = renderer.render_per_turn(&ctx).await;
+        assert!(suffix.contains("Current time:"), "suffix was: {suffix}");
+        assert!(suffix.contains("(UTC)"), "suffix was: {suffix}");
+        // The clock is volatile — it must NOT leak into the
+        // cache-stable prefix (provider prefix caching depends on the
+        // prefix being byte-stable across turns).
+        let prefix = renderer.render_cache_stable(&ctx).await;
+        assert!(!prefix.contains("Current time:"), "prefix was: {prefix}");
     }
 }

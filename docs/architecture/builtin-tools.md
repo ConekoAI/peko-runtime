@@ -304,7 +304,7 @@ parity program:
 - `glob`, `grep` — peko-specific filesystem helpers.
 - `session` — peko-specific session introspection.
 - `message` — peko-specific channel messaging.
-- `principal_send` — peko cross-runtime principal-to-principal messaging. (Replaces the legacy `a2a_send` tool from ADR-023.)
+- `send_peer` — peko peer messaging: fire-and-forget notes to a human user (`user:<id>`, delivered as a labeled session note by the originating agent or any subagent) and synchronous cross-runtime principal-to-principal RPC (`did:peko:…`). (Renamed from `principal_send` when the user branch landed; replaces the legacy `a2a_send` tool from ADR-023.)
 - MCP-provided tools (`web_search`, `fetch`, etc.) — provided via MCP servers.
 - Skills — still prompt-injected via the `prompt:skills` hook.
 

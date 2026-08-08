@@ -57,10 +57,11 @@ use tracing::info;
 // IPC handlers) imports from `peko_cron::*` directly.
 #[allow(unused_imports)]
 pub use tools::{
-    build_send_job, build_spawn_tool_job, calculate_next_run, global_runtime, normalize_cron_expr,
-    render_job_list, resolve_delete_after_run, resolve_label, resolve_prompt,
-    resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool, CronJob,
-    CronJobAction, CronListTool, CronRuntime, DEFAULT_MAX_RETRIES, DeliveryMode, ScheduleKind,
+    build_send_job, build_spawn_tool_job, calculate_next_interval_anchored, calculate_next_run,
+    global_runtime, normalize_cron_expr, render_job_list, resolve_delete_after_run, resolve_label,
+    resolve_prompt, resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool,
+    CronJob, CronJobAction, CronListTool, CronRuntime, DeliveryMode, ScheduleKind,
+    DEFAULT_MAX_RETRIES,
 };
 
 pub use idle::IdleDetector;
@@ -175,19 +176,40 @@ impl CronScheduler {
             anyhow::bail!("Cron job with id '{}' already exists", job.id);
         }
 
-        // Validate the action shape. Send requires a non-empty message;
-        // SpawnTool requires a non-empty tool name. Validation happens
-        // here so a malformed job never reaches the on-disk DB.
+        // Validate the action shape. Send/Notify require a non-empty
+        // message; SpawnTool requires a non-empty tool name. Validation
+        // happens here so a malformed job never reaches the on-disk DB.
         match &job.action {
-            CronJobAction::Send { message } => {
+            CronJobAction::Send { message } | CronJobAction::Notify { message } => {
                 if message.trim().is_empty() {
-                    anyhow::bail!("CronJob Send action requires a non-empty 'message'");
+                    anyhow::bail!(
+                        "CronJob {} action requires a non-empty 'message'",
+                        job.action.kind_label()
+                    );
                 }
             }
             CronJobAction::SpawnTool { tool_name, .. } => {
                 if tool_name.trim().is_empty() {
                     anyhow::bail!("CronJob SpawnTool action requires a non-empty 'tool_name'");
                 }
+            }
+        }
+
+        // Reject one-shot jobs scheduled in the past. Without this they
+        // are accepted and then parked on the `now + 100 years` sentinel
+        // by `calculate_next_run`, showing "active" but never firing —
+        // a silent zombie (2026-08-07 field test, N2b). All creation
+        // surfaces (CronCreate tool, CLI `cron at`, IPC `CronAdd`)
+        // funnel through this function. Note this also changes the
+        // legacy CLI behavior where a past `--at` fired immediately on
+        // the next poll — that immediacy was accidental.
+        if let ScheduleKind::At { at } = &job.schedule {
+            let dt = chrono::DateTime::parse_from_rfc3339(at)
+                .map_err(|e| anyhow::anyhow!("Invalid 'at' timestamp (use RFC3339): {e}"))?;
+            if dt.with_timezone(&Utc) <= Utc::now() {
+                anyhow::bail!(
+                    "'at' time {at} is in the past; use a future timestamp or interval_ms"
+                );
             }
         }
 
@@ -316,7 +338,11 @@ impl CronScheduler {
         Ok(Some(calculate_next_run(&job.schedule, Utc::now())?))
     }
 
-    /// Delete a job
+    /// Delete a job. Run history is intentionally preserved: one-shot
+    /// (`delete_after_run`) jobs delete themselves after firing, and
+    /// purging their runs made `cron history <id>` unanswerable for a
+    /// job that had just successfully run (2026-08-07 field test,
+    /// Finding 4). Growth is bounded by `record_run`'s 1000-run cap.
     pub fn delete_job(&self, job_id: &str) -> Result<bool> {
         let mut db = self.read_db()?;
         let before = db.jobs.len();
@@ -324,8 +350,6 @@ impl CronScheduler {
         let deleted = db.jobs.len() < before;
 
         if deleted {
-            // Also clean up associated runs
-            db.runs.retain(|r| r.job_id != job_id);
             self.write_db(&db)?;
             info!("Deleted cron job {}", job_id);
         }
@@ -360,9 +384,34 @@ impl CronScheduler {
         Ok(())
     }
 
+    /// Attach the async `output` (e.g. a spawned task id) and/or `error`
+    /// to an OPEN run row without closing it. Used by the SpawnTool fire
+    /// path: the task id is only known after the fire returns, and the
+    /// run must stay `running` (unfinished) until the janitor reconciles
+    /// the task's terminal state via [`Self::finalize_run`]. Keeps one
+    /// row per run — the fire path must not `record_run` twice with the
+    /// same id (2026-08-07 field test, F3).
+    pub fn attach_run_output(
+        &self,
+        run_id: &str,
+        output: Option<String>,
+        error: Option<String>,
+    ) -> Result<bool> {
+        let mut db = self.read_db()?;
+        let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) else {
+            return Ok(false);
+        };
+        if run.finished_at.is_some() {
+            return Ok(false);
+        }
+        run.output = output;
+        run.error = error;
+        self.write_db(&db)?;
+        Ok(true)
+    }
+
     /// Get run history for a job
-    pub fn get_run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>> {
-        let db = self.read_db()?;
+    pub fn get_run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>> {        let db = self.read_db()?;
         let mut runs: Vec<CronRun> = db.runs.into_iter().filter(|r| r.job_id == job_id).collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
         runs.truncate(limit);
@@ -473,6 +522,137 @@ mod tests {
         assert_eq!(jobs[0].name, "Test Job");
         assert!(jobs[0].is_send());
         assert!(!jobs[0].is_spawn_tool());
+    }
+
+    /// One-shot (`delete_after_run`) jobs delete themselves after a
+    /// successful fire, but their run history must survive so
+    /// `cron history <id>` stays answerable (2026-08-07 field test,
+    /// Finding 4).
+    #[test]
+    fn test_delete_job_preserves_run_history() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("cron.json");
+        let scheduler = CronScheduler::new(&db_path).unwrap();
+
+        let job_id = Uuid::new_v4().to_string();
+        let job = CronJob {
+            id: job_id.clone(),
+            name: "One Shot".to_string(),
+            schedule: ScheduleKind::At {
+                at: (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            },
+            principal_id: PrincipalId("prin_test_principal".to_string()),
+            action: CronJobAction::Send {
+                message: "Test".to_string(),
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: true,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 1,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+        scheduler
+            .record_run(&CronRun {
+                id: Uuid::new_v4().to_string(),
+                job_id: job_id.clone(),
+                started_at: Utc::now(),
+                finished_at: Some(Utc::now()),
+                status: "success".to_string(),
+                output: None,
+                error: None,
+            })
+            .unwrap();
+
+        assert!(scheduler.delete_job(&job_id).unwrap());
+        assert!(scheduler.get_job(&job_id).unwrap().is_none());
+        let history = scheduler.get_run_history(&job_id, 10).unwrap();
+        assert_eq!(history.len(), 1, "run history must survive delete_job");
+        assert_eq!(history[0].status, "success");
+    }
+
+    /// The SpawnTool fire path keeps ONE row per run: `record_run`
+    /// opens it, `attach_run_output` hangs the task id on it while it
+    /// stays `running`, and `finalize_run` closes it. A second
+    /// `record_run` with the same id used to append a duplicate row
+    /// stuck on "running" forever (2026-08-07 field test, F3).
+    #[test]
+    fn test_run_row_attach_then_finalize_single_row() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("cron.json");
+        let scheduler = CronScheduler::new(&db_path).unwrap();
+
+        let job_id = Uuid::new_v4().to_string();
+        let job = CronJob {
+            id: job_id.clone(),
+            name: "Spawn One Shot".to_string(),
+            schedule: ScheduleKind::Every { every_ms: 60000 },
+            principal_id: PrincipalId("prin_test_principal".to_string()),
+            action: CronJobAction::SpawnTool {
+                tool_name: "Bash".to_string(),
+                tool_params: serde_json::json!({"command": "true"}),
+                wake_on_completion: Some(false),
+                timeout_secs: Some(60),
+                description: None,
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: true,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        let run_id = Uuid::new_v4().to_string();
+        scheduler
+            .record_run(&CronRun {
+                id: run_id.clone(),
+                job_id: job_id.clone(),
+                started_at: Utc::now(),
+                finished_at: None,
+                status: "running".to_string(),
+                output: None,
+                error: None,
+            })
+            .unwrap();
+
+        // Attach the async task id: row stays open, still one row.
+        assert!(scheduler
+            .attach_run_output(&run_id, Some("task:abc".to_string()), None)
+            .unwrap());
+        let runs = scheduler.get_run_history(&job_id, 10).unwrap();
+        assert_eq!(runs.len(), 1, "attach must not duplicate the row");
+        assert_eq!(runs[0].status, "running");
+        assert!(runs[0].finished_at.is_none());
+        assert_eq!(runs[0].output.as_deref(), Some("task:abc"));
+
+        // A second attach on the still-open row is allowed (id update);
+        // after finalize the row is closed and further attaches refuse.
+        assert!(scheduler
+            .finalize_run(&run_id, "success", Some("done".to_string()), None)
+            .unwrap());
+        assert!(!scheduler
+            .attach_run_output(&run_id, Some("task:xyz".to_string()), None)
+            .unwrap());
+        assert!(!scheduler
+            .finalize_run(&run_id, "success", None, None)
+            .unwrap());
+
+        let runs = scheduler.get_run_history(&job_id, 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "success");
+        assert!(runs[0].finished_at.is_some());
+        assert_eq!(runs[0].output.as_deref(), Some("done"));
     }
 
     #[test]
@@ -654,6 +834,43 @@ mod tests {
         let job = scheduler.get_job("d").unwrap().unwrap();
         assert_eq!(job.consecutive_failures, 0);
         assert_eq!(job.run_count, 0); // set_job_last_status never bumps run_count
+    }
+
+    /// A past `at` must be rejected at creation, not silently parked on
+    /// the 100-year sentinel (2026-08-07 field test, N2b).
+    #[test]
+    fn test_add_job_rejects_past_at() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = CronScheduler::new(tmp.path().join("cron.json")).unwrap();
+        let mut job = CronJob {
+            id: Uuid::new_v4().to_string(),
+            name: "Past One Shot".to_string(),
+            schedule: ScheduleKind::At {
+                at: (Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            },
+            principal_id: PrincipalId("prin_test_principal".to_string()),
+            action: CronJobAction::Send {
+                message: "Test".to_string(),
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: true,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        let err = scheduler.add_job(&job).unwrap_err();
+        assert!(err.to_string().contains("in the past"), "got: {err}");
+
+        // Future timestamps still accepted.
+        job.schedule = ScheduleKind::At {
+            at: (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+        };
+        scheduler.add_job(&job).unwrap();
     }
 
     #[test]

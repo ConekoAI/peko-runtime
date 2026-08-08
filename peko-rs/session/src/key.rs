@@ -64,7 +64,7 @@ pub enum ChatType {
 ///
 /// # Examples
 /// ```
-/// use peko_core::session::key::{derive_session_key, SessionScope, SessionKeyContext, ChatType};
+/// use peko_session::key::{derive_session_key, SessionScope, SessionKeyContext, ChatType};
 ///
 /// // CLI default session
 /// let ctx = SessionKeyContext::default();
@@ -133,7 +133,7 @@ pub fn derive_session_key(agent: &str, scope: SessionScope, ctx: &SessionKeyCont
 ///
 /// # Examples
 /// ```
-/// use peko_core::session::key::parse_session_key;
+/// use peko_session::key::parse_session_key;
 ///
 /// let parts = parse_session_key("agent:myagent:discord:123456");
 /// assert_eq!(parts.agent, "myagent");

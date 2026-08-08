@@ -37,7 +37,7 @@ pub use delivery::{
 };
 pub use dispatch::ToolDispatchContext;
 pub use event_bus::{AsyncTaskCompletionEvent, AsyncTaskEventBus};
-pub use executor::AsyncExecutor;
+pub use executor::{standalone_inbox_registry, AsyncExecutor};
 pub use queue::{AsyncResultQueue, AsyncResultQueueManager, SharedAsyncResultQueueManager};
 pub use registry::{
     cancel_task_across_all_registries, find_run_across_all_registries,

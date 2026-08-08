@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
+use tracing::{trace, warn};
 
 use super::connection::ConnectionHandle;
 use super::packet::ResponsePacket;
@@ -125,52 +125,75 @@ impl StreamRouter {
 /// Spawn a background receiver task that reads from the socket and
 /// routes packets to the appropriate streams.
 ///
-/// Returns a `StreamRouter` that can be used to register new streams.
-pub(crate) fn spawn_receiver(conn: ConnectionHandle) -> StreamRouter {
+/// Returns a `StreamRouter` that can be used to register new streams,
+/// plus a liveness handle for the receiver task. Long-lived clients
+/// (e.g. an in-daemon adapter) should check the handle before sending
+/// so a dead receiver fails fast instead of hanging until the
+/// per-request timeout.
+pub(crate) fn spawn_receiver(
+    conn: ConnectionHandle,
+) -> (StreamRouter, std::sync::Arc<tokio::task::JoinHandle<()>>) {
+    spawn_receiver_with_timeout(conn, Duration::from_secs(CLI_TIMEOUT_SECS))
+}
+
+/// Like [`spawn_receiver`] with a custom idle cadence (test seam).
+///
+/// The idle timeout is NOT a liveness check: an idle datagram
+/// connection is perfectly normal, so on timeout the task simply keeps
+/// listening. It only exits on a genuine socket error (or panic).
+/// (2026-08-07 field test, finding F1: the previous implementation
+/// `break`ed on idle timeout, killing the long-lived in-daemon cron
+/// adapter's receiver 60s after startup. Sends kept working, so jobs
+/// were added but every response was lost — each tool call then hung
+/// for the full per-request timeout.)
+pub(crate) fn spawn_receiver_with_timeout(
+    conn: ConnectionHandle,
+    idle: Duration,
+) -> (StreamRouter, std::sync::Arc<tokio::task::JoinHandle<()>>) {
     let router = StreamRouter::new();
     let router_clone = StreamRouter {
         streams: router.streams.clone(),
     };
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut buf = vec![0u8; 65536];
         loop {
-            match conn
-                .recv_timeout(&mut buf, Duration::from_secs(CLI_TIMEOUT_SECS))
-                .await
-            {
-                Ok(len) => {
-                    if len == 0 {
-                        continue;
-                    }
-                    match ResponsePacket::from_bytes(&buf[..len]) {
-                        Ok(packet) => {
-                            trace!("Received packet: {:?}", packet);
-                            router_clone.route(packet).await;
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse packet: {}", e);
-                        }
-                    }
+            match tokio::time::timeout(idle, conn.recv(&mut buf)).await {
+                Err(_) => {
+                    // Idle silence — keep listening.
+                    trace!("IPC receiver idle for {idle:?}; still listening");
+                    continue;
                 }
-                Err(e) => {
-                    // Timeout — daemon may be dead
-                    debug!("Socket receive timeout: {}", e);
-                    // Notify all active streams that the daemon died
+                Ok(Err(e)) => {
+                    // Genuine socket error: the connection is broken.
+                    // Fail every pending stream loudly, then exit.
+                    warn!("Socket receive error: {e}; IPC receiver exiting");
                     let streams = router_clone.streams.lock().await;
                     for (request_id, tx) in streams.iter() {
                         let _ = tx.send(ResponsePacket::Error {
                             request_id: *request_id,
-                            message: "Daemon connection lost (timeout)".to_string(),
+                            message: format!("Daemon connection lost: {e}"),
                         });
                     }
                     break;
                 }
+                Ok(Ok(0)) => {
+                    continue;
+                }
+                Ok(Ok(len)) => match ResponsePacket::from_bytes(&buf[..len]) {
+                    Ok(packet) => {
+                        trace!("Received packet: {:?}", packet);
+                        router_clone.route(packet).await;
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse packet: {}", e);
+                    }
+                },
             }
         }
     });
 
-    router
+    (router, std::sync::Arc::new(handle))
 }
 
 #[cfg(test)]
@@ -209,5 +232,55 @@ mod tests {
                 chunk: "hello".to_string(),
             })
             .await;
+    }
+
+    /// Finding F1 (2026-08-07 field test): the receiver must survive
+    /// arbitrary idle silence. The pre-fix loop `break`ed after one
+    /// idle timeout, permanently deafening long-lived clients.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_receiver_survives_idle_silence() {
+        let dir = tempfile::tempdir().unwrap();
+        let client_path = dir.path().join("client.sock");
+        let server_path = dir.path().join("server.sock");
+
+        let client_std = std::os::unix::net::UnixDatagram::bind(&client_path).unwrap();
+        client_std.set_nonblocking(true).unwrap();
+        let server_std = std::os::unix::net::UnixDatagram::bind(&server_path).unwrap();
+        server_std.set_nonblocking(true).unwrap();
+
+        let conn = ConnectionHandle::Unix {
+            socket: std::sync::Arc::new(
+                tokio::net::UnixDatagram::from_std(client_std).unwrap(),
+            ),
+            path: client_path.clone(),
+        };
+        let (router, handle) =
+            spawn_receiver_with_timeout(conn, Duration::from_millis(50));
+
+        // Idle for ~4x the cadence: the receiver must NOT exit.
+        tokio::time::sleep(Duration::from_millis(210)).await;
+        assert!(
+            !handle.is_finished(),
+            "receiver exited after idle silence (F1 regression)"
+        );
+
+        // And a late packet must still route to its stream.
+        let mut stream = router.register(7).await;
+        let server = tokio::net::UnixDatagram::from_std(server_std).unwrap();
+        let packet = ResponsePacket::Text {
+            request_id: 7,
+            seq: 0,
+            chunk: "late hello".to_string(),
+        };
+        server
+            .send_to(&packet.to_bytes().unwrap(), &client_path)
+            .await
+            .unwrap();
+        let got = stream.next().await.expect("packet after idle silence");
+        match got {
+            ResponsePacket::Text { chunk, .. } => assert_eq!(chunk, "late hello"),
+            other => panic!("expected Text, got {other:?}"),
+        }
     }
 }

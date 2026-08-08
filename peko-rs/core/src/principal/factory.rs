@@ -80,7 +80,7 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
         let agents_dir = workspace_path.join("agents");
         let prompt = Self::resolve_root_agent_prompt(config, &agents_dir);
         // Phase 4b: copy the principal's stable DID into the router
-        // so `principal_send` is registered on this Principal's
+        // so `send_peer` is registered on this Principal's
         // agents. The runtime_id is left as `None`; the daemon-state
         // bootstrap sets it once `start_tunnel` finishes and the
         // `CrossRuntimeA2aCtx` is installed.
