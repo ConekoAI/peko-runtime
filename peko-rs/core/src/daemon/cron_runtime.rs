@@ -1,49 +1,39 @@
-//! `DaemonCronAdapter` — bridges `DaemonClient` to the
-//! `peko_cron::CronRuntime` port.
+//! `DaemonCronAdapter` — bridges the daemon's in-process cron ops to
+//! the `peko_cron::CronRuntime` port.
 //!
 //! The cron tools in `peko_cron::tools` do not import daemon state.
 //! They speak to a runtime port trait ([`peko_cron::CronRuntime`]),
-//! and the daemon side implements that trait via this adapter — wrapping
-//! `crate::ipc::DaemonClient::cron_add` / `cron_remove` / `cron_list`.
+//! and the daemon side implements that trait via this adapter.
+//!
+//! 2026-08-07 field test, F1b: the adapter used to wrap a
+//! `DaemonClient` looped back over the daemon's own Unix socket — an
+//! entire failure class (auth envelope, datagram routing, receiver
+//! lifecycle) for what is a function call in the same process. It now
+//! calls [`CronOps`] directly; the IPC cron handler shares the same
+//! ops, so the capability gate stays single-sourced.
 //!
 //! Construct at daemon startup and register with
 //! [`peko_cron::set_global_runtime`]. Tools read the
 //! global via [`peko_cron::global_runtime`] at execute time.
-//!
-//! Phase 0.Z-E (2026-07-25): cron port + DTOs + tools moved from
-//! `peko-tools-builtin` into `peko_cron`. The adapter stays in root
-//! because it depends on `DaemonClient` (root-only); it implements
-//! the trait via the orphan rule (trait is foreign to root, adapter
-//! type is local).
 
-use crate::ipc::{DaemonClient, ResponsePacket};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use peko_cron::{set_global_runtime, CronJob, CronRuntime};
 use std::sync::Arc;
 
-/// `CronRuntime` impl that proxies all calls through an IPC-connected
-/// daemon. Holds the `DaemonClient` so a single adapter instance
-/// represents the in-process daemon-side implementation.
+use crate::daemon::cron_ops::CronOps;
+
+/// `CronRuntime` impl that dispatches to the daemon's in-process
+/// [`CronOps`]. A single adapter instance represents the daemon-side
+/// implementation for all cron tools running in this process.
 pub struct DaemonCronAdapter {
-    client: Arc<DaemonClient>,
+    ops: Arc<CronOps>,
 }
 
 impl DaemonCronAdapter {
-    /// Build an adapter over an already-connected `DaemonClient`.
-    #[allow(dead_code)]
-    pub fn new(client: Arc<DaemonClient>) -> Self {
-        Self { client }
-    }
-
-    /// Convenience: connect, then build.
-    pub async fn connect() -> Result<Self> {
-        let client = DaemonClient::connect().await.map_err(|e| {
-            anyhow!("Cannot reach daemon for cron operations. Is it running? ({e})")
-        })?;
-        Ok(Self {
-            client: Arc::new(client),
-        })
+    /// Build an adapter over the daemon's cron ops.
+    pub fn new(ops: Arc<CronOps>) -> Self {
+        Self { ops }
     }
 
     /// Convenience: install this adapter as the global runtime. Idempotent
@@ -56,22 +46,17 @@ impl DaemonCronAdapter {
 #[async_trait]
 impl CronRuntime for DaemonCronAdapter {
     async fn add_job(&self, job: CronJob) -> Result<String> {
-        match self.client.cron_add(job).await? {
-            ResponsePacket::CronAdded { job_id, .. } => Ok(job_id),
-            ResponsePacket::Error { message, .. } => {
-                Err(anyhow!("Failed to register job: {message}"))
-            }
-            other => Err(crate::ipc::unexpected_response(&other)),
-        }
+        self.ops
+            .add_job(job)
+            .await
+            .map_err(|message| anyhow::anyhow!("Failed to register job: {message}"))
     }
 
     async fn delete_job(&self, job_id: &str) -> Result<()> {
-        match self.client.cron_remove(job_id).await? {
-            ResponsePacket::CronRemoved { .. } => Ok(()),
-            ResponsePacket::Error { message, .. } => {
-                Err(anyhow!("Failed to cancel job: {message}"))
-            }
-            other => Err(crate::ipc::unexpected_response(&other)),
+        match self.ops.remove_job(job_id).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(anyhow::anyhow!("Job {job_id} not found")),
+            Err(message) => Err(anyhow::anyhow!("Failed to cancel job: {message}")),
         }
     }
 
@@ -80,10 +65,9 @@ impl CronRuntime for DaemonCronAdapter {
         // filtering (e.g. by principal). The legacy IPC contract
         // distinguished enabled/disabled at the protocol layer; the
         // port trait pushes that policy up to the tool.
-        match self.client.cron_list(true, None).await? {
-            ResponsePacket::CronList { jobs, .. } => Ok(jobs),
-            ResponsePacket::Error { message, .. } => Err(anyhow!("Failed to list jobs: {message}")),
-            other => Err(crate::ipc::unexpected_response(&other)),
-        }
+        self.ops
+            .list_jobs(true, None)
+            .await
+            .map_err(|message| anyhow::anyhow!("Failed to list jobs: {message}"))
     }
 }

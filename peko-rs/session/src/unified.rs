@@ -580,6 +580,36 @@ impl Session {
         Ok(())
     }
 
+    /// Add a user-role message with an explicit [`MessageSource`] tag.
+    ///
+    /// Used for automation-originated notes (e.g. cron notifications,
+    /// `MessageSource::Cron`) so consumers can distinguish them from
+    /// human input. User-role rather than system-role on purpose: the
+    /// Anthropic-style provider adapter maps ANY system-role message to
+    /// the top-level system parameter (last one wins), so a
+    /// mid-history system note would clobber the agent's system prompt.
+    pub async fn add_user_with_source(
+        &mut self,
+        content: impl Into<String>,
+        source: crate::events::MessageSource,
+    ) -> Result<()> {
+        let message = SessionMessage::user(content.into(), source);
+        let msg_id = message.message_id.clone();
+        let event = SessionEvent::MessageV2(message);
+
+        self.storage.append_event(&self.id, &event).await?;
+        self.last_message_id = Some(msg_id);
+        self.message_count += 1;
+
+        // Update index message count (same bookkeeping as
+        // `add_llm_message`'s user branch).
+        if let Err(e) = self.sync_index_message_count(true).await {
+            tracing::warn!("Failed to update index for session {}: {}", self.id, e);
+        }
+
+        Ok(())
+    }
+
     /// Add an assistant message with content blocks
     ///
     /// Advanced method that allows passing tool calls as blocks.

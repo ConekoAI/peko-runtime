@@ -919,7 +919,8 @@ impl PrincipalManager {
         // root agent is already running, queue it as a steering message in the
         // same session inbox; the active run will drain it on its next
         // iteration.
-        let session_id = super::routers::root::root_session_id(&response_peer);
+        let session_id =
+            super::routers::root::root_session_id_for_channel(&response_peer, &ctx.channel.kind);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
                 let decision = principal.router.route(ctx).await?;
@@ -992,7 +993,8 @@ impl PrincipalManager {
         // run may be active per peer/session. A message arriving while a
         // run is active is queued as a steering message (no streaming
         // events for the queued case).
-        let session_id = super::routers::root::root_session_id(&response_peer);
+        let session_id =
+            super::routers::root::root_session_id_for_channel(&response_peer, &ctx.channel.kind);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
                 let decision = principal

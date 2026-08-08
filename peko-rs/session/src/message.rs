@@ -30,6 +30,13 @@ pub enum MessageSource {
     A2a,
     /// From spawning parent
     SpawnParent,
+    /// Appended by the cron engine (fired-job notification note).
+    /// User-role in storage on purpose: the Anthropic-style provider
+    /// adapter maps ANY system-role message to the top-level system
+    /// parameter (last one wins), so a mid-history system note would
+    /// clobber the agent's system prompt. The source tag lets
+    /// consumers distinguish automation notes from human input.
+    Cron,
 }
 
 /// Role-specific metadata - SRP-compliant separation of concerns

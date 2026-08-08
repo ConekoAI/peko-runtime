@@ -124,7 +124,23 @@ impl SessionStorage {
 
     /// Initialize a new session file with a `SessionCreated` event
     pub async fn create_session(&self, session_id: &str, cwd: Option<String>) -> Result<()> {
-        use crate::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
+        self.create_session_with_header(session_id, cwd, crate::events::SessionTrigger::User, None)
+            .await
+    }
+
+    /// Initialize a new session file with an explicit `SessionCreated`
+    /// header (trigger + parent linkage). The metadata/index carry these
+    /// values already; the JSONL header must agree — a spawn session
+    /// whose header says `trigger: "user"` contradicts the index's
+    /// `"spawn"` (2026-08-07 field test, F5).
+    pub async fn create_session_with_header(
+        &self,
+        session_id: &str,
+        cwd: Option<String>,
+        trigger: crate::events::SessionTrigger,
+        parent_session_id: Option<String>,
+    ) -> Result<()> {
+        use crate::events::{EventEnvelope, SessionCreatedEvent};
 
         // Ensure directory exists
         fs::create_dir_all(&self.storage_dir).await?;
@@ -139,8 +155,8 @@ impl SessionStorage {
             },
             instance_id: session_id.to_string(),
             image_digest: String::new(),
-            parent_session_id: None,
-            trigger: SessionTrigger::User,
+            parent_session_id,
+            trigger,
         });
 
         let json = serde_json::to_string(&event)?;

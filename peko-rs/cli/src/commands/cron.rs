@@ -227,6 +227,17 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                             let status = if job.enabled { "✅" } else { "⏸️" };
                             let schedule = job.schedule.display();
                             let action_kind = job.action.kind_label();
+                            // Mask the 100-year "never" sentinel parked on
+                            // one-shot jobs after they fire — a raw 2126
+                            // timestamp reads as nonsense to users
+                            // (2026-08-07 field test, U1).
+                            let next = if job.next_run
+                                > Utc::now() + chrono::Duration::days(365 * 10)
+                            {
+                                "—".to_string()
+                            } else {
+                                job.next_run.to_rfc3339()
+                            };
                             println!(
                                 "  {} {} | {} | {} | principal: {} | next: {}",
                                 status,
@@ -234,7 +245,7 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                                 schedule,
                                 action_kind,
                                 job.principal_id.0,
-                                job.next_run.to_rfc3339()
+                                next
                             );
                             println!("     └─ {}", job.task_description());
                         }

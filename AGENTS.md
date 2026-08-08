@@ -639,9 +639,15 @@ cargo test --all-features
     registry all live natively in `peko-cron` as `cron::tools::*`. The
     `tool_search_metadata` static helpers live natively in
     `peko-engine`. `DaemonCronAdapter` (which implements
-    `CronRuntime` for the daemon side) stays in root because it
-    depends on `peko_core::ipc::DaemonClient`; moving it to `peko-cron`
-    would force `peko-cron → peko_core` (lib→sat cycle). The new root
+    `CronRuntime` for the daemon side) stays in root. It was an
+    IPC-loopback adapter until the 2026-08-07 round-3 field-test fix
+    pack: it now holds `Arc<daemon::cron_ops::CronOps>` (the owner-cap
+    gate + schedule/history writes extracted from the IPC cron
+    handler) and operates in-process — no `DaemonClient`, no socket
+    round trip. It still can't move into `peko-cron`: `CronOps`
+    depends on root's `PathResolver` / `PrincipalManager` /
+    `RuntimeAuthority`, which would force `peko-cron → peko_core`
+    (lib→sat cycle). The new root
     `Cargo.toml` deps from the cron-tools migration: `chrono-tz` was
     already lifted in F4; `uuid` + `async-trait` joined `peko-cron`'s
     direct deps.

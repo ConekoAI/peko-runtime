@@ -4,6 +4,82 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Cron/session structural fixes (2026-08-07 round-3 field-test findings F1–F5, P1–P2, U1)
+
+From `scripts/e2e/reports/2026-08-07-non-technical-user-subagent-cron-principal.md`:
+
+#### Fixed
+- **IPC receiver no longer dies after 60s of silence (F1, critical).**
+  `ipc::stream::spawn_receiver` treated the read timeout as fatal and
+  exited its loop, leaving every long-lived `DaemonClient` deaf while
+  `send_request` kept writing into the void — the in-daemon cron
+  runtime adapter went deaf this way, so conversational
+  CronCreate/CronList added jobs but their responses were lost (60s
+  hangs, duplicate jobs, retry storms). Idle timeouts now `continue`;
+  only genuine socket errors terminate the loop (with an error fan-out
+  to pending streams), and `DaemonClient::send_request` fast-fails
+  with a reconnect hint if the receiver task is dead.
+- **Cron runtime adapter is in-process, not an IPC loopback (F1).**
+  `DaemonCronAdapter` now holds `Arc<daemon::cron_ops::CronOps>` — the
+  owner-cap gate + schedule/history writes extracted verbatim from the
+  IPC handler — instead of a `DaemonClient` connected to its own
+  daemon. The conversational CronCreate path no longer depends on the
+  IPC round trip at all; the IPC handler is a thin packet wrapper over
+  the same `CronOps`.
+- **Cron `Send` jobs no longer hijack the user's conversational turn
+  (F2).** Root session routing is channel-aware: automation traffic
+  (`ChannelKind::Cron`) runs in `root:cron:{peer}` instead of the
+  human's `root:{peer}` session. Previously a cron message draining at
+  an iteration boundary was indistinguishable from human input, and
+  the model answered the cron tick instead of the user's pending
+  request. The fired job's outcome is appended to the conversational
+  session as a labeled `⏰ [cron job '<name>' fired] …` note
+  (`MessageSource::Cron`, user-role on purpose: Anthropic-style
+  adapters map system-role messages to the top-level system parameter,
+  last-one-wins) so the user still sees the result.
+- **One run row per cron run, and one-shot jobs always reap (F3).**
+  `execute_job` opened a run row at fire and `record_run`'d a SECOND
+  row (same id) at completion — duplicate rows, and SpawnTool runs
+  stuck "running" forever. Completion now closes the start row in
+  place (`finalize_run`, or `attach_run_output` for the still-open
+  SpawnTool fire). One-shot (`delete_after_run`) reaping keys on the
+  fire, not `status == "success"` — the old gate parked failed/spawned
+  one-shots on the 100-year sentinel forever.
+- **`CronCreate` has a `message` arg for reminders (F4).** The tool
+  previously built only SpawnTool jobs, so "remind me …" requests ran
+  an Agent turn whose output nobody saw. `message` builds a `Send` job
+  (delivered as the labeled note above); the schema description steers
+  the model: `message` for reminders/notifications, `prompt`/`tool`
+  for background work, and states plainly that `prompt` produces no
+  user-visible output. One-shot derivation was also fixed:
+  `recurring: false` was previously accepted and silently ignored, and
+  `at` jobs (which can only ever fire once) now default to
+  delete-after-run when the caller passes no recurrence hint — a fired
+  `at` job no longer parks on the 100-year sentinel (round-4 live
+  verification finding).
+- **Spawn-session JSONL header matches the index (F5).**
+  `session.created` events for spawn overlays now record
+  `trigger: "spawn"` (was `"user"` while the index said `"spawn"`) via
+  `SessionTrigger::from_label` threaded through
+  `SessionManager::create_session`.
+- **Root prompt honesty (P1).** The root agent prompt no longer claims
+  a roster of "specialist agents" — the catalog it is given is the
+  COMPLETE list, and it must not invent named specialists. Added a
+  tool-use rule: never retry an identical failing call more than once.
+- **Identical-failure circuit breaker (P2).** `peko-engine`'s
+  `ToolExecutor` short-circuits a tool call that repeats the exact
+  same `name + arguments` after 2 consecutive identical failures,
+  returning a stop-retrying tool error instead of burning tokens on an
+  unbounded retry loop.
+- **`peko cron list` masks the 100-year sentinel (U1).** One-shot jobs
+  whose `next_run` is the far-future sentinel now render `—` instead
+  of a raw year-2126 timestamp.
+
+#### Internal
+- `peko-session`: `add_user_with_source` on the unified session +
+  handle; doctest paths fixed (`peko_core::…` → `peko_session::…`,
+  stale from the workspace migration).
+
 ### Session-integrity + cron hardening (2026-08-07 findings N1–N3)
 
 Follow-up to the field-test fix pack below, from its verification pass:

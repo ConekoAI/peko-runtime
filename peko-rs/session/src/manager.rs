@@ -279,6 +279,17 @@ impl SessionHandle {
         base.add_user(content).await
     }
 
+    /// Add a user-role message with an explicit [`crate::events::MessageSource`]
+    /// tag (e.g. `Cron` for automation notes).
+    pub async fn add_user_with_source(
+        &self,
+        content: impl Into<String>,
+        source: crate::events::MessageSource,
+    ) -> Result<()> {
+        let mut base = self.base.write().await;
+        base.add_user_with_source(content, source).await
+    }
+
     /// Add an assistant message to the session
     ///
     /// Note: Metadata updates are handled by `MetadataController` at turn boundary
@@ -1035,13 +1046,23 @@ impl SessionManager {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let session_key = derive_base_session_key(agent, peer);
 
-        // 1. Create JSONL file directly using SessionStorage
+        // 1. Create JSONL file directly using SessionStorage. The
+        // header carries the same trigger/parent linkage the metadata
+        // and index get below, so the file's first line agrees with
+        // the index entry (F5).
         let storage = SessionStorage::new(sessions_dir.clone());
         tokio::fs::create_dir_all(&sessions_dir).await?;
         let cwd = std::env::current_dir()
             .ok()
             .map(|p| p.to_string_lossy().to_string());
-        storage.create_session(&session_id, cwd).await?;
+        storage
+            .create_session_with_header(
+                &session_id,
+                cwd,
+                crate::events::SessionTrigger::from_label(&options.trigger),
+                options.parent_session_id.clone(),
+            )
+            .await?;
 
         // 2. Create Session from components
         let session = Session::from_components(
@@ -1428,6 +1449,20 @@ impl SessionManager {
         agent: &str,
         peer: &Subject,
     ) -> Result<Arc<RwLock<Session>>> {
+        self.get_or_create_base_with_trigger(agent, peer, crate::events::SessionTrigger::User)
+            .await
+    }
+
+    /// [`get_or_create_base`](Self::get_or_create_base) with an explicit
+    /// trigger for the JSONL `session.created` header when a NEW session
+    /// file is created (spawn overlays pass `SessionTrigger::Spawn` so
+    /// the header agrees with the index linkage stamping).
+    pub async fn get_or_create_base_with_trigger(
+        &mut self,
+        agent: &str,
+        peer: &Subject,
+        trigger: crate::events::SessionTrigger,
+    ) -> Result<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
 
         // Check cache first
@@ -1478,7 +1513,9 @@ impl SessionManager {
                 let cwd = std::env::current_dir()
                     .ok()
                     .map(|p| p.to_string_lossy().to_string());
-                storage.create_session(&session_id, cwd).await?;
+                storage
+                    .create_session_with_header(&session_id, cwd, trigger.clone(), None)
+                    .await?;
 
                 // Create Session from components
                 Session::from_components(
@@ -1664,7 +1701,9 @@ impl SessionManager {
         // Always create a new base session for the child
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
         let spawn_peer = Subject::Principal(spawn_id.into());
-        let child_base = self.get_or_create_base(agent, &spawn_peer).await?;
+        let child_base = self
+            .get_or_create_base_with_trigger(agent, &spawn_peer, crate::events::SessionTrigger::Spawn)
+            .await?;
 
         // If not isolated, copy parent's context to child's session
         if !isolated {
@@ -1720,7 +1759,9 @@ impl SessionManager {
         // Always create a new base session for the child (no shared JSONL file)
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
         let spawn_peer = Subject::Principal(spawn_id.into());
-        let child_base = self.get_or_create_base(agent, &spawn_peer).await?;
+        let child_base = self
+            .get_or_create_base_with_trigger(agent, &spawn_peer, crate::events::SessionTrigger::Spawn)
+            .await?;
 
         // If not isolated, copy parent's context to child's session
         if !isolated {

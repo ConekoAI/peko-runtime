@@ -21,6 +21,10 @@ pub struct DaemonClient {
     conn: ConnectionHandle,
     router: StreamRouter,
     next_request_id: Arc<AtomicU64>,
+    /// Liveness handle for the background receiver task. Checked on
+    /// send so a dead receiver (panic, socket error) fails fast instead
+    /// of hanging until the per-request timeout.
+    receiver: Arc<tokio::task::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for DaemonClient {
@@ -49,11 +53,12 @@ impl DaemonClient {
     /// # Errors
     /// Returns error if the connection cannot be cloned for the receiver
     pub async fn with_connection(conn: ConnectionHandle) -> anyhow::Result<Self> {
-        let router = super::stream::spawn_receiver(conn.try_clone().await?);
+        let (router, receiver) = super::stream::spawn_receiver(conn.try_clone().await?);
         Ok(Self {
             conn,
             router,
             next_request_id: Arc::new(AtomicU64::new(1)),
+            receiver,
         })
     }
 
@@ -64,6 +69,15 @@ impl DaemonClient {
 
     /// Send a request packet and return a stream for responses
     async fn send_request(&self, packet: RequestPacket) -> anyhow::Result<PacketStream> {
+        // Fast-fail: if the background receiver is gone (panic, socket
+        // error), no response can ever arrive — error immediately
+        // instead of hanging until the per-request timeout.
+        if self.receiver.is_finished() {
+            anyhow::bail!(
+                "IPC receiver task is dead; responses can no longer arrive. \
+                 Reconnect the client."
+            );
+        }
         let request_id = packet.request_id();
         let stream = self.router.register(request_id).await;
 

@@ -397,16 +397,19 @@ impl CronEngine {
         };
 
         let finished_at = Utc::now();
-        let run = CronRun {
-            id: run_id.clone(),
-            job_id: job.id.clone(),
-            started_at,
-            finished_at: Some(finished_at),
-            status: status.clone(),
-            output: output.clone(),
-            error: error.clone(),
-        };
-        scheduler.record_run(&run)?;
+        if status == "running" {
+            // SpawnTool fire returned immediately with the async task
+            // id: the run stays open until the janitor reconciles the
+            // task's terminal state via `finalize_run`. Attach the task
+            // id to the START row — a second `record_run` with the same
+            // id appended a duplicate row stuck on "running" forever
+            // (2026-08-07 field test, F3).
+            scheduler.attach_run_output(&run_id, output.clone(), error.clone())?;
+        } else {
+            // Terminal outcome (Send path, or an immediate failure):
+            // close the start row in place.
+            scheduler.finalize_run(&run_id, &status, output.clone(), error.clone())?;
+        }
 
         let _ = self
             .observability
@@ -477,10 +480,16 @@ impl CronEngine {
             self.handle_delivery(&job, &status).await?;
         }
 
-        if job.delete_after_run && status == "success" {
+        // One-shot reaping keys on the FIRE, not the run outcome:
+        // "fired" is the lifecycle fact that retires a one-shot job;
+        // the run's status belongs to history (preserved). Gating on
+        // `status == "success"` left SpawnTool one-shots (which return
+        // "running" immediately) parked on the 100-year sentinel
+        // forever (2026-08-07 field test, F3).
+        if job.delete_after_run {
             info!(
-                "🗑️  Deleting one-shot job '{}' after successful run",
-                job.name
+                "🗑️  Deleting one-shot job '{}' after run (status: {})",
+                job.name, status
             );
             scheduler.delete_job(&job.id)?;
         }
@@ -526,7 +535,7 @@ impl CronEngine {
         match pm
             .receive(
                 principal.id.clone(),
-                peer,
+                peer.clone(),
                 job.task_description(),
                 channel,
                 None,
@@ -537,12 +546,58 @@ impl CronEngine {
                 self.idle_detector
                     .record_activity(&principal.name().await)
                     .await;
+                self.deliver_send_job_note(&principal, &peer, &job.name, &response.content)
+                    .await;
                 Ok(("success".to_string(), Some(response.content)))
             }
             Err(e) => Ok((
                 "failed".to_string(),
                 Some(format!("Principal execution error: {e}")),
             )),
+        }
+    }
+
+    /// Append a fired Send job's outcome to the owner's CONVERSATIONAL
+    /// root session as a labeled note (2026-08-07 field test, F2).
+    ///
+    /// The cron turn itself runs in the isolated `root:cron:{peer}`
+    /// session; this note is the only thing that crosses into the
+    /// human's session. It never triggers a turn: if a turn is in
+    /// flight the note lands mid-history and is picked up (and
+    /// shape-repaired if needed) at the next load; if idle, it waits in
+    /// the JSONL for the user's next message. Tagged
+    /// `MessageSource::Cron` so consumers can distinguish it from human
+    /// input; user-role because the Anthropic-style adapter maps
+    /// system-role messages to the top-level system parameter
+    /// (last-one-wins), which would clobber the system prompt.
+    async fn deliver_send_job_note(
+        &self,
+        principal: &Arc<crate::principal::Principal>,
+        peer: &peko_auth::Subject,
+        job_name: &str,
+        outcome: &str,
+    ) {
+        let conv_session_id = crate::principal::routers::root::root_session_id(peer);
+        let excerpt: String = outcome.chars().take(500).collect();
+        let note = format!("⏰ [cron job '{job_name}' fired] {excerpt}");
+
+        let sessions_dir = principal.memory.sessions_dir().clone();
+        let mut session_manager = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir);
+        match session_manager.open_session(&conv_session_id).await {
+            Ok(Some(handle)) => {
+                if let Err(e) = handle
+                    .add_user_with_source(&note, peko_session::events::MessageSource::Cron)
+                    .await
+                {
+                    warn!("cron note append failed for session {conv_session_id}: {e}");
+                }
+            }
+            // No conversational session yet (the user has never
+            // chatted): nothing to attach the note to. The outcome is
+            // still in the cron session and the run history.
+            Ok(None) => {}
+            Err(e) => warn!("cron note: failed to open session {conv_session_id}: {e}"),
         }
     }
 
@@ -1325,5 +1380,233 @@ mod tests {
             .expect("run should still be present");
         assert_eq!(run.status, "success", "missing tasks finalize as success");
         assert!(run.finished_at.is_some());
+    }
+
+    /// Recursively find a file by exact file name under `dir`.
+    fn find_file_named(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()? {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = find_file_named(&path, name) {
+                    return Some(found);
+                }
+            } else if entry.file_name() == name {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    /// F2 regression (2026-08-07 field test): a `Send` cron job must run
+    /// its turn in the isolated `root:cron:{peer}` session — never in the
+    /// human's conversational `root:{peer}` session — and must leave a
+    /// labeled note with the outcome in the conversational session so the
+    /// user actually sees the result.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_send_job_isolates_cron_session_and_delivers_note() {
+        let tmp = TempDir::new().unwrap();
+
+        // Principal manager with a mock resolver; two queued texts:
+        // one for the conversational turn, one for the cron turn.
+        let path_resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), tmp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+        let catalog_path = tmp.path().join("models.toml");
+        let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        adapter.queue_text("conversational reply");
+        adapter.queue_text("cron turn reply");
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_resolver(resolver),
+        );
+
+        let workspace = tmp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+
+        // 1. A conversational (CLI) turn creates the human's root session.
+        manager
+            .receive(
+                principal.id.clone(),
+                Subject::User("test-owner".to_string()),
+                "hello there".to_string(),
+                ChannelContext {
+                    kind: ChannelKind::Cli,
+                    streaming: false,
+                },
+                None,
+            )
+            .await
+            .expect("conversational turn should succeed");
+
+        // 2. A due Send job fires a cron turn.
+        let engine_resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler =
+            Arc::new(CronScheduler::new(engine_resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            engine_resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
+            std::sync::Weak::new(),
+        );
+        let job = CronJob {
+            id: "job-iso".to_string(),
+            name: "test-job".to_string(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::Send {
+                message: "cron tick payload".to_string(),
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() - Duration::minutes(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        engine.check_and_run().await.unwrap();
+
+        // Exactly ONE run row, closed as success (F3: no duplicate
+        // start/completion rows).
+        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
+        assert_eq!(runs.len(), 1, "expected a single run row, got: {runs:?}");
+        assert_eq!(runs[0].status, "success");
+        assert!(runs[0].finished_at.is_some());
+
+        // The cron turn ran in the isolated cron session.
+        let cron_path = find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl")
+            .expect("cron session JSONL should exist");
+        let cron_jsonl = std::fs::read_to_string(&cron_path).unwrap();
+        assert!(
+            cron_jsonl.contains("cron tick payload"),
+            "cron session should contain the cron turn, got: {cron_jsonl}"
+        );
+
+        // The conversational session holds the human turn plus the
+        // labeled cron note — and NOT the raw cron message.
+        let conv_path = find_file_named(tmp.path(), "root:user:test-owner.jsonl")
+            .expect("conversational session JSONL should exist");
+        let conv_jsonl = std::fs::read_to_string(&conv_path).unwrap();
+        assert!(
+            conv_jsonl.contains("hello there"),
+            "conversational session should contain the human turn"
+        );
+        assert!(
+            conv_jsonl.contains("⏰ [cron job 'test-job' fired]"),
+            "conversational session should contain the cron note, got: {conv_jsonl}"
+        );
+        assert!(
+            conv_jsonl.contains("cron turn reply"),
+            "note should carry the cron turn's outcome"
+        );
+        assert!(
+            !conv_jsonl.contains("cron tick payload"),
+            "cron message must NOT leak into the conversational session"
+        );
+
+        drop(principal);
+    }
+
+    /// F3 regression (2026-08-07 field test): a one-shot
+    /// (`delete_after_run`) SpawnTool job must be reaped after its fire
+    /// even though the fire path returns "failed" (here: no
+    /// `ExtensionCore`, so the spawn refuses immediately). The old
+    /// `status == "success"` gate parked such jobs on the 100-year
+    /// sentinel forever.
+    #[tokio::test]
+    async fn test_one_shot_spawn_tool_job_reaped_after_failed_fire() {
+        let tmp = TempDir::new().unwrap();
+        let engine_resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler =
+            Arc::new(CronScheduler::new(engine_resolver.cron_schedule("crony")).unwrap());
+        // No ExtensionCore (Weak::new) and no PrincipalManager: the
+        // spawn refuses immediately with "failed".
+        let engine = CronEngine::new(
+            engine_resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            None,
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
+            std::sync::Weak::new(),
+        );
+
+        let job = CronJob {
+            id: "job-one-shot".to_string(),
+            name: "one-shot".to_string(),
+            principal_id: PrincipalId("crony".to_string()),
+            schedule: peko_cron::ScheduleKind::At {
+                // `add_job` validates `at` is in the future; `next_run`
+                // (what the poll loop keys on) is separately in the past
+                // so the job is due immediately.
+                at: (Utc::now() + Duration::hours(1)).to_rfc3339(),
+            },
+            action: CronJobAction::SpawnTool {
+                tool_name: "Bash".to_string(),
+                tool_params: serde_json::json!({"command": "true"}),
+                wake_on_completion: Some(false),
+                timeout_secs: Some(60),
+                description: None,
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: true,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() - Duration::minutes(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+        // No PrincipalManager in this test: install the scheduler into
+        // the engine's cache so `all_schedulers` (test fallback path)
+        // can see it.
+        engine
+            .install_scheduler_for_test(&PrincipalId("crony".into()), scheduler.clone())
+            .await;
+
+        engine.check_and_run().await.unwrap();
+
+        assert!(
+            scheduler.get_job(&job.id).unwrap().is_none(),
+            "one-shot job must be reaped after its fire regardless of status"
+        );
+        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
+        assert_eq!(runs.len(), 1, "exactly one run row, got: {runs:?}");
+        assert_eq!(runs[0].status, "failed");
+        assert!(runs[0].finished_at.is_some());
     }
 }

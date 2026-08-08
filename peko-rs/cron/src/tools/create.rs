@@ -11,7 +11,8 @@
 //! - explicit `tool` + `params` — schedules any tool run.
 
 use crate::tools::{
-    add_job_via_runtime, build_spawn_tool_job, global_runtime, resolve_delete_after_run,
+    add_job_via_runtime, build_send_job, build_spawn_tool_job, global_runtime,
+    resolve_delete_after_run,
     resolve_label, resolve_schedule_kind, DeliveryMode,
 };
 use async_trait::async_trait;
@@ -39,11 +40,16 @@ impl Default for CronCreateTool {
 /// `CronCreate` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CronCreateArgs {
-    /// Prompt/task/message — required unless `tool` is provided.
+    /// Prompt/task — required unless `tool` or `message` is provided.
     /// When supplied (and no `tool`), it is shorthand for
     /// `tool="Agent", params={ prompt }`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// `Send`-action message for reminders/notifications. When set, the
+    /// job delivers this message to the user (as a labeled
+    /// notification) instead of running a tool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     /// Tool name to invoke at fire time. When provided, the job is a
     /// `SpawnTool` job calling this tool with `params`. When omitted
     /// and `prompt` is non-empty, defaults to `"Agent"`.
@@ -94,9 +100,12 @@ pub struct CronCreateArgs {
     /// Optional filter for event jobs
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_filter: Option<serde_json::Value>,
-    /// Whether the job recurs (default true)
-    #[serde(default = "default_recurring")]
-    pub recurring: bool,
+    /// Whether the job recurs. `Some(false)` creates a one-shot job.
+    /// When omitted, one-shotness is derived from the schedule: `at`
+    /// jobs can only ever fire once, so they default to one-shot;
+    /// everything else recurs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recurring: Option<bool>,
     /// Whether the job persists across restarts (peko extension; default false)
     #[serde(default)]
     pub durable: bool,
@@ -105,8 +114,25 @@ pub struct CronCreateArgs {
     pub task: Option<String>,
 }
 
-fn default_recurring() -> bool {
-    true
+/// Derive `delete_after_run` from the caller's one-shot hints and the
+/// schedule shape. Precedence: explicit `one_shot: true` or
+/// `recurring: false` → one-shot; explicit `recurring: true` →
+/// recurring; otherwise an `at` schedule — which can only ever fire
+/// once — defaults to one-shot (without this a fired `at` job whose
+/// model caller passed no recurrence hint parks on the 100-year
+/// sentinel forever; 2026-08-08 round-4 verification finding).
+fn resolve_one_shot(
+    params: &serde_json::Value,
+    recurring: Option<bool>,
+    schedule: &crate::ScheduleKind,
+) -> bool {
+    if resolve_delete_after_run(params) || matches!(recurring, Some(false)) {
+        return true;
+    }
+    if matches!(recurring, Some(true)) {
+        return false;
+    }
+    matches!(schedule, crate::ScheduleKind::At { .. })
 }
 
 #[async_trait]
@@ -116,16 +142,20 @@ impl Tool for CronCreateTool {
     }
 
     fn description(&self) -> String {
-        "Create a scheduled job. Supports cron expressions, one-shot 'at' times, intervals, idle triggers, and event triggers. Jobs are stored and executed by the daemon.".to_string()
+        "Create a scheduled job. Supports cron expressions, one-shot 'at' times, intervals, idle triggers, and event triggers. For user-facing reminders use `message`; for background work use `prompt` or `tool`. Jobs are stored and executed by the daemon.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "REMINDERS / NOTIFICATIONS: use this for 'remind me …' requests. At fire time the message is delivered to the user as a labeled notification (visible in the next chat turn). For background work (research, edits, checks) use `prompt` or `tool` instead — those produce no user-visible output."
+                },
                 "prompt": {
                     "type": "string",
-                    "description": "Task or message the scheduled job should execute. Shorthand for tool=\"Agent\", params={ prompt }. Required unless `tool` is provided."
+                    "description": "Background task the job executes as an agent turn. Shorthand for tool=\"Agent\", params={ prompt }. Produces NO user-visible output — for reminders use `message`. Required unless `tool` or `message` is provided."
                 },
                 "tool": {
                     "type": "string",
@@ -157,7 +187,7 @@ impl Tool for CronCreateTool {
                 },
                 "at": {
                     "type": "string",
-                    "description": "RFC3339 timestamp in the FUTURE for a one-shot scheduled job (past times are rejected). The current date/time is in your system prompt; for 'in N minutes' style delays prefer interval_ms."
+                    "description": "RFC3339 timestamp in the FUTURE for a one-shot scheduled job (past times are rejected). One-shot by default — the job deletes itself after firing unless recurring=true is passed. The current date/time is in your system prompt; for 'in N minutes' style delays prefer interval_ms."
                 },
                 "interval_ms": {
                     "type": "integer",
@@ -185,8 +215,7 @@ impl Tool for CronCreateTool {
                 },
                 "recurring": {
                     "type": "boolean",
-                    "default": true,
-                    "description": "Whether the job repeats (false creates a one-shot job)"
+                    "description": "Whether the job repeats (false creates a one-shot job). Optional: at-jobs default to one-shot, all other schedules default to recurring."
                 },
                 "durable": {
                     "type": "boolean",
@@ -245,6 +274,13 @@ impl Tool for CronCreateTool {
                     .map(String::from)
             });
 
+        let message = args.message.clone().or_else(|| {
+            params
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+
         let tool = args.tool.clone().or_else(|| {
             params
                 .get("tool")
@@ -261,7 +297,7 @@ impl Tool for CronCreateTool {
         });
 
         let schedule = resolve_schedule_kind(&params)?;
-        let delete_after_run = resolve_delete_after_run(&params);
+        let delete_after_run = resolve_one_shot(&params, args.recurring, &schedule);
         let label = resolve_label(&params);
 
         // Generate the job ID + compute next_run here. `next_run` is
@@ -271,7 +307,21 @@ impl Tool for CronCreateTool {
         let job_id = format!("cron_{}", uuid::Uuid::new_v4().simple());
         let next_run = crate::tools::calculate_next_run(&schedule, chrono::Utc::now())?;
 
-        let job = if let Some(tool_name) = tool {
+        let job = if let Some(message_text) = message {
+            // Send path (reminders/notifications): the job delivers the
+            // message to the user as a labeled notification at fire
+            // time — no tool run, no silent background turn.
+            build_send_job(
+                job_id,
+                label,
+                peko_subject::PrincipalId(principal_id.clone()),
+                schedule,
+                message_text,
+                DeliveryMode::None,
+                delete_after_run,
+                next_run,
+            )
+        } else if let Some(tool_name) = tool {
             // Explicit SpawnTool path.
             let final_params = if prompt.is_some() && args.params.is_none() {
                 // When the caller omits `params` but supplies `prompt`,
@@ -301,8 +351,9 @@ impl Tool for CronCreateTool {
             )
         } else {
             // Shorthand: prompt → SpawnTool{ tool="Agent", params={ prompt } }.
-            let prompt_text = prompt
-                .ok_or_else(|| anyhow::anyhow!("CronCreate requires either `prompt` or `tool`"))?;
+            let prompt_text = prompt.ok_or_else(|| {
+                anyhow::anyhow!("CronCreate requires `message`, `prompt`, or `tool`")
+            })?;
             build_spawn_tool_job(
                 job_id,
                 label,
@@ -347,5 +398,30 @@ mod tests {
         assert!(props.get("tool").is_some());
         assert!(props.get("wake_on_completion").is_some());
         assert!(props.get("timeout_secs").is_some());
+    }
+
+    /// Round-4 verification finding (2026-08-08): `at` jobs must default
+    /// to one-shot when the caller passes no recurrence hint — a fired
+    /// `at` job can never fire again, so a recurring default parks it on
+    /// the 100-year sentinel forever. Explicit hints always win.
+    #[test]
+    fn test_resolve_one_shot_derivation() {
+        let at = crate::ScheduleKind::At {
+            at: "2099-01-01T00:00:00Z".to_string(),
+        };
+        let every = crate::ScheduleKind::Every { every_ms: 60_000 };
+
+        // No hints: at → one-shot, interval → recurring.
+        assert!(resolve_one_shot(&serde_json::json!({}), None, &at));
+        assert!(!resolve_one_shot(&serde_json::json!({}), None, &every));
+
+        // Explicit hints beat the schedule-derived default.
+        assert!(!resolve_one_shot(&serde_json::json!({}), Some(true), &at));
+        assert!(resolve_one_shot(&serde_json::json!({}), Some(false), &every));
+        assert!(resolve_one_shot(
+            &serde_json::json!({"one_shot": true}),
+            Some(true),
+            &every
+        ));
     }
 }

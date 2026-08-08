@@ -66,6 +66,24 @@ pub enum SessionTrigger {
     Spawn,
 }
 
+impl SessionTrigger {
+    /// Parse the free-form trigger label used by `SessionCreateOptions`
+    /// (`"user"`, `"spawn"`, `"cron"`, …; same snake_case as the serde
+    /// representation). Unknown labels fall back to `User`.
+    #[must_use]
+    pub fn from_label(label: &str) -> Self {
+        match label {
+            "cron" => Self::Cron,
+            "webhook" => Self::Webhook,
+            "event" => Self::Event,
+            "file_watch" => Self::FileWatch,
+            "branch" => Self::Branch,
+            "spawn" => Self::Spawn,
+            _ => Self::User,
+        }
+    }
+}
+
 /// session.created - First line of every new session file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionCreatedEvent {

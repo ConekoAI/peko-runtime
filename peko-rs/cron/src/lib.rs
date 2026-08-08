@@ -381,9 +381,34 @@ impl CronScheduler {
         Ok(())
     }
 
+    /// Attach the async `output` (e.g. a spawned task id) and/or `error`
+    /// to an OPEN run row without closing it. Used by the SpawnTool fire
+    /// path: the task id is only known after the fire returns, and the
+    /// run must stay `running` (unfinished) until the janitor reconciles
+    /// the task's terminal state via [`Self::finalize_run`]. Keeps one
+    /// row per run — the fire path must not `record_run` twice with the
+    /// same id (2026-08-07 field test, F3).
+    pub fn attach_run_output(
+        &self,
+        run_id: &str,
+        output: Option<String>,
+        error: Option<String>,
+    ) -> Result<bool> {
+        let mut db = self.read_db()?;
+        let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) else {
+            return Ok(false);
+        };
+        if run.finished_at.is_some() {
+            return Ok(false);
+        }
+        run.output = output;
+        run.error = error;
+        self.write_db(&db)?;
+        Ok(true)
+    }
+
     /// Get run history for a job
-    pub fn get_run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>> {
-        let db = self.read_db()?;
+    pub fn get_run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>> {        let db = self.read_db()?;
         let mut runs: Vec<CronRun> = db.runs.into_iter().filter(|r| r.job_id == job_id).collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
         runs.truncate(limit);
@@ -546,6 +571,85 @@ mod tests {
         let history = scheduler.get_run_history(&job_id, 10).unwrap();
         assert_eq!(history.len(), 1, "run history must survive delete_job");
         assert_eq!(history[0].status, "success");
+    }
+
+    /// The SpawnTool fire path keeps ONE row per run: `record_run`
+    /// opens it, `attach_run_output` hangs the task id on it while it
+    /// stays `running`, and `finalize_run` closes it. A second
+    /// `record_run` with the same id used to append a duplicate row
+    /// stuck on "running" forever (2026-08-07 field test, F3).
+    #[test]
+    fn test_run_row_attach_then_finalize_single_row() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("cron.json");
+        let scheduler = CronScheduler::new(&db_path).unwrap();
+
+        let job_id = Uuid::new_v4().to_string();
+        let job = CronJob {
+            id: job_id.clone(),
+            name: "Spawn One Shot".to_string(),
+            schedule: ScheduleKind::Every { every_ms: 60000 },
+            principal_id: PrincipalId("prin_test_principal".to_string()),
+            action: CronJobAction::SpawnTool {
+                tool_name: "Bash".to_string(),
+                tool_params: serde_json::json!({"command": "true"}),
+                wake_on_completion: Some(false),
+                timeout_secs: Some(60),
+                description: None,
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: true,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        let run_id = Uuid::new_v4().to_string();
+        scheduler
+            .record_run(&CronRun {
+                id: run_id.clone(),
+                job_id: job_id.clone(),
+                started_at: Utc::now(),
+                finished_at: None,
+                status: "running".to_string(),
+                output: None,
+                error: None,
+            })
+            .unwrap();
+
+        // Attach the async task id: row stays open, still one row.
+        assert!(scheduler
+            .attach_run_output(&run_id, Some("task:abc".to_string()), None)
+            .unwrap());
+        let runs = scheduler.get_run_history(&job_id, 10).unwrap();
+        assert_eq!(runs.len(), 1, "attach must not duplicate the row");
+        assert_eq!(runs[0].status, "running");
+        assert!(runs[0].finished_at.is_none());
+        assert_eq!(runs[0].output.as_deref(), Some("task:abc"));
+
+        // A second attach on the still-open row is allowed (id update);
+        // after finalize the row is closed and further attaches refuse.
+        assert!(scheduler
+            .finalize_run(&run_id, "success", Some("done".to_string()), None)
+            .unwrap());
+        assert!(!scheduler
+            .attach_run_output(&run_id, Some("task:xyz".to_string()), None)
+            .unwrap());
+        assert!(!scheduler
+            .finalize_run(&run_id, "success", None, None)
+            .unwrap());
+
+        let runs = scheduler.get_run_history(&job_id, 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "success");
+        assert!(runs[0].finished_at.is_some());
+        assert_eq!(runs[0].output.as_deref(), Some("done"));
     }
 
     #[test]
