@@ -130,4 +130,12 @@ impl SessionCore for Session {
     async fn load_history(session: &Self) -> anyhow::Result<Vec<peko_message::LlmMessage>> {
         Session::load_history(session).await
     }
+
+    async fn peek_compact_request(session: &mut Self) -> bool {
+        Session::peek_compact_request(session).await
+    }
+
+    async fn clear_compact_request(session: &mut Self) {
+        Session::clear_compact_request(session).await;
+    }
 }

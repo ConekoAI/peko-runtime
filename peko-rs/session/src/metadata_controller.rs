@@ -244,6 +244,76 @@ impl MetadataController {
         Ok(())
     }
 
+    /// Set the archived flag on a session
+    ///
+    /// Same update pattern as [`Self::update_metadata`]: load the entry,
+    /// mutate the flag, and write it back through the delta-merge-safe
+    /// index save. Errors when the session does not exist.
+    pub async fn set_archived(&mut self, session_id: &str, archived: bool) -> Result<()> {
+        debug!("Setting archived={} for session {}", archived, session_id);
+
+        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
+            anyhow::anyhow!("Cannot set archived for non-existent session {session_id}")
+        })?;
+
+        if entry.archived != archived {
+            entry.archived = archived;
+            entry.touch();
+            self.update_entry(entry).await?;
+        }
+
+        info!("Set archived={} for session {}", archived, session_id);
+        Ok(())
+    }
+
+    /// Set the compaction-request flag on a session
+    ///
+    /// The compaction orchestrator ORs this flag into its
+    /// `should_request` decision at the session's next run and clears it
+    /// once compaction actually starts. Errors when the session does not
+    /// exist.
+    pub async fn set_compact_requested(
+        &mut self,
+        session_id: &str,
+        compact_requested: bool,
+    ) -> Result<()> {
+        debug!(
+            "Setting compact_requested={} for session {}",
+            compact_requested, session_id
+        );
+
+        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
+            anyhow::anyhow!("Cannot set compact_requested for non-existent session {session_id}")
+        })?;
+
+        if entry.compact_requested != compact_requested {
+            entry.compact_requested = compact_requested;
+            entry.touch();
+            self.update_entry(entry).await?;
+        }
+
+        info!(
+            "Set compact_requested={} for session {}",
+            compact_requested, session_id
+        );
+        Ok(())
+    }
+
+    /// Read the compaction-request flag directly from the on-disk
+    /// index, bypassing both the controller cache and the 30s index
+    /// cache.
+    ///
+    /// The engine peeks this once per iteration; the flag may have
+    /// been written moments earlier by a *different* controller (the
+    /// session tool's adapter), so a cached read would hide it.
+    pub async fn peek_compact_requested(&mut self, session_id: &str) -> Result<bool> {
+        Ok(self
+            .index
+            .get_uncached(session_id)
+            .await?
+            .is_some_and(|e| e.compact_requested))
+    }
+
     /// Update message counts atomically. `user_turn` bumps `turn_count`
     /// — pass true when the appended message has role `user`, so the
     /// index counts conversation turns rather than raw messages
@@ -373,15 +443,19 @@ impl MetadataController {
         }
 
         // DERIVE peer key from session metadata using centralized method
-        // and clear peer routing if this session is still the active one.
-        // This prevents "Session not found" errors when sending without --new flag.
+        // and scrub the session from the peer's routing entry: the id is
+        // removed from `PeerInfo.session_ids`, and the active pointer is
+        // cleared if it pointed at the deleted session. The peer entry
+        // itself survives as long as it has other sessions, so those
+        // stay routable/listable. This prevents "Session not found"
+        // errors when sending without --new flag.
         if let Some(e) = entry {
             use crate::key::derive_base_session_key;
             use peko_subject::Subject;
 
             let peer = match e.peer_type.as_deref() {
                 Some("user") => e.peer_id.as_ref().map(|id| Subject::User(id.clone())),
-                Some("agent") => e
+                Some("agent") | Some("principal") => e
                     .peer_id
                     .as_ref()
                     .map(|id| Subject::Principal(id.clone().into())),
@@ -391,20 +465,14 @@ impl MetadataController {
             if let Some(p) = peer {
                 let peer_key = derive_base_session_key(&e.agent_name, &p);
 
-                if self
-                    .index
-                    .get_active_session_id(&peer_key)
-                    .await?
-                    .as_deref()
-                    == Some(session_id)
-                {
-                    self.index.clear_active_for_peer(&peer_key).await?;
-                    self.index.save().await?;
-                    info!(
-                        "Cleared peer routing for {} after session deletion",
-                        peer_key
-                    );
-                }
+                self.index
+                    .remove_session_from_peer(&peer_key, session_id)
+                    .await?;
+                self.index.save().await?;
+                info!(
+                    "Scrubbed session {} from peer routing {} after deletion",
+                    session_id, peer_key
+                );
             }
         }
 
@@ -930,5 +998,97 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_set_archived_and_compact_requested_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().to_path_buf();
+
+        let mut controller = MetadataController::new(&dir);
+        let metadata = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
+        controller.create_metadata(metadata).await.unwrap();
+
+        controller.set_archived("sess_123", true).await.unwrap();
+        controller
+            .set_compact_requested("sess_123", true)
+            .await
+            .unwrap();
+
+        // Reload through a fresh controller (fresh index + cache) to
+        // prove the flags survived the save/reload round trip.
+        let mut reloaded = MetadataController::new(&dir);
+        let meta = reloaded
+            .get_metadata_fast("sess_123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(meta.archived);
+        assert!(meta.compact_requested);
+
+        // Clearing a flag persists too.
+        reloaded.set_archived("sess_123", false).await.unwrap();
+        let mut third = MetadataController::new(&dir);
+        let meta = third.get_metadata_fast("sess_123").await.unwrap().unwrap();
+        assert!(!meta.archived);
+        assert!(meta.compact_requested);
+
+        // Both setters error on a non-existent session.
+        assert!(third.set_archived("sess_nope", true).await.is_err());
+        assert!(third
+            .set_compact_requested("sess_nope", true)
+            .await
+            .is_err());
+    }
+
+    /// Deleting a session scrubs its id from the peer's `session_ids`
+    /// (not just the active pointer); the peer's other sessions stay
+    /// listable/routable, and the peer entry only disappears once its
+    /// last session is gone.
+    #[tokio::test]
+    async fn test_delete_session_scrubs_peer_session_ids() {
+        let (mut controller, _temp) = setup_controller().await;
+        let peer = Subject::User("alice".to_string());
+        let peer_key = derive_base_session_key("test_agent", &peer);
+
+        for id in ["sess_a", "sess_b"] {
+            let entry = SessionEntry::with_peer(
+                id.to_string(),
+                "test_agent".to_string(),
+                format!("{id}.jsonl"),
+                "user",
+                "alice",
+            );
+            controller.create_for_peer(entry, &peer_key).await.unwrap();
+        }
+        controller.save_index().await.unwrap();
+
+        // Sanity: two sessions routed, the second one active.
+        assert_eq!(
+            controller.get_active_session_id(&peer_key).await.unwrap(),
+            Some("sess_b".to_string())
+        );
+
+        // Delete the ACTIVE session: the active pointer is cleared but
+        // sess_a remains listable/routable under the same peer.
+        controller.delete_session("sess_b").await.unwrap();
+        assert_eq!(
+            controller.get_active_session_id(&peer_key).await.unwrap(),
+            None
+        );
+        let remaining = controller
+            .list_for_peer_from_index(&peer_key)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].session_id, "sess_a");
+
+        // Delete the last session: the peer entry disappears entirely.
+        controller.delete_session("sess_a").await.unwrap();
+        assert!(controller
+            .list_for_peer_from_index(&peer_key)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

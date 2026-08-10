@@ -89,6 +89,19 @@ pub enum NormalizedEntry {
     },
 }
 
+/// A single match from [`SessionStorage::search_transcripts`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TranscriptSearchHit {
+    /// Session the match was found in
+    pub session_id: String,
+    /// Role of the matching message ("user" or "assistant")
+    pub role: String,
+    /// Timestamp of the matching message
+    pub timestamp: DateTime<Utc>,
+    /// ~160 chars of message text centered on the match
+    pub snippet: String,
+}
+
 /// Session storage with atomic writes
 #[derive(Debug, Clone)]
 pub struct SessionStorage {
@@ -790,6 +803,11 @@ impl SessionStorage {
             return Err(anyhow::anyhow!("Source session {source_id} does not exist"));
         }
 
+        // Hold the source's append lock for the duration of the copy so
+        // the branch gets a consistent snapshot — a concurrent
+        // `append_event` blocks instead of landing mid-copy.
+        let _lock = FileLock::acquire(&source_path, SESSION_LOCK_TIMEOUT_MS).await?;
+
         fs::copy(&source_path, &target_path).await?;
 
         info!("Copied session {} to {}", source_id, target_id);
@@ -801,6 +819,11 @@ impl SessionStorage {
         let path = self.session_path(session_id);
         let index_path = self.index_path(session_id);
         let cache_path = self.context_cache_path(session_id);
+
+        // Hold the same cross-process lock `append_event` uses so a
+        // concurrent append (`O_CREAT | O_APPEND`) cannot recreate an
+        // orphan JSONL in the middle of the delete.
+        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
 
         if path.exists() {
             fs::remove_file(&path).await?;
@@ -816,6 +839,102 @@ impl SessionStorage {
 
         info!("Deleted session: {}", session_id);
         Ok(())
+    }
+
+    /// Case-insensitive substring scan over session transcripts.
+    ///
+    /// Scans the text content of user/assistant messages in each listed
+    /// session's JSONL (tool-call JSON noise is skipped — only
+    /// `ContentBlock::Text` content is matched). The caller supplies the
+    /// (ownership-scoped) session id list. Sessions that fail to load
+    /// are skipped with a warning rather than failing the whole search.
+    /// Scanning stops after `max_hits` hits.
+    pub async fn search_transcripts(
+        &self,
+        ids: &[String],
+        needle: &str,
+        max_hits: usize,
+    ) -> Result<Vec<TranscriptSearchHit>> {
+        let mut hits = Vec::new();
+        if needle.is_empty() || max_hits == 0 {
+            return Ok(hits);
+        }
+        let needle_lower = needle.to_lowercase();
+
+        'sessions: for session_id in ids {
+            let events = match self.load_events(session_id).await {
+                Ok(events) => events,
+                Err(e) => {
+                    warn!(
+                        "search_transcripts: skipping session {} that failed to load: {}",
+                        session_id, e
+                    );
+                    continue;
+                }
+            };
+
+            for event in &events {
+                let Some(msg) = event.as_message() else {
+                    continue;
+                };
+                let role = match msg.role() {
+                    peko_message::MessageRole::User => "user",
+                    peko_message::MessageRole::Assistant => "assistant",
+                    _ => continue,
+                };
+
+                let text = msg.text_content();
+                let Some(match_start) = text.to_lowercase().find(&needle_lower) else {
+                    continue;
+                };
+
+                hits.push(TranscriptSearchHit {
+                    session_id: session_id.clone(),
+                    role: role.to_string(),
+                    timestamp: msg.envelope.ts,
+                    snippet: Self::match_snippet(&text, match_start, needle_lower.len()),
+                });
+
+                if hits.len() >= max_hits {
+                    break 'sessions;
+                }
+            }
+        }
+
+        Ok(hits)
+    }
+
+    /// Extract a ~160-char snippet centered on the match at
+    /// `[match_start, match_start + match_len)` (byte offsets snapped
+    /// to char boundaries), marking truncated ends with `…`.
+    fn match_snippet(text: &str, match_start: usize, match_len: usize) -> String {
+        const RADIUS: usize = 80;
+
+        let floor_boundary = |mut i: usize| {
+            while i > 0 && !text.is_char_boundary(i) {
+                i -= 1;
+            }
+            i
+        };
+        let ceil_boundary = |mut i: usize| {
+            while i < text.len() && !text.is_char_boundary(i) {
+                i += 1;
+            }
+            i
+        };
+
+        let start = floor_boundary(match_start.saturating_sub(RADIUS));
+        let end = ceil_boundary((match_start + match_len + RADIUS).min(text.len()));
+
+        let mut snippet = String::new();
+        if start > 0 {
+            snippet.push('…');
+        }
+        snippet.push_str(&text[start..end]);
+        if end < text.len() {
+            snippet.push('…');
+        }
+        snippet
     }
 }
 
@@ -1147,5 +1266,125 @@ mod tests {
         // SessionCreated + optional cwd — create_session may write 1 or 2 lines
         let count = storage.count_jsonl_entries("count_test").await.unwrap();
         assert!(count >= 1);
+    }
+
+    // ============================================================
+    // search_transcripts Tests
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_search_transcripts_finds_needle_case_insensitive() {
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+
+        storage.create_session("sess_one", None).await.unwrap();
+        storage.create_session("sess_two", None).await.unwrap();
+
+        let msg = crate::message::SessionMessage::user(
+            "nothing interesting here",
+            crate::message::MessageSource::User,
+        );
+        storage
+            .append_event("sess_one", &SessionEvent::MessageV2(msg))
+            .await
+            .unwrap();
+        let msg = crate::message::SessionMessage::assistant_text(
+            "the Needle is hidden here",
+            "test",
+            "test-model",
+        );
+        storage
+            .append_event("sess_two", &SessionEvent::MessageV2(msg))
+            .await
+            .unwrap();
+
+        let ids = vec!["sess_one".to_string(), "sess_two".to_string()];
+        // Different casing than the stored text: still matches.
+        let hits = storage
+            .search_transcripts(&ids, "NEEDLE", 10)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "sess_two");
+        assert_eq!(hits[0].role, "assistant");
+        assert!(hits[0].snippet.contains("Needle"));
+
+        // Unknown sessions are skipped, not fatal.
+        let ids = vec!["sess_missing".to_string(), "sess_one".to_string()];
+        let hits = storage
+            .search_transcripts(&ids, "interesting", 10)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "sess_one");
+        assert_eq!(hits[0].role, "user");
+
+        // Empty needle / zero budget short-circuit to no hits.
+        assert!(storage
+            .search_transcripts(&ids, "", 10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(storage
+            .search_transcripts(&ids, "interesting", 0)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_transcripts_respects_max_hits() {
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+
+        storage.create_session("sess_hits", None).await.unwrap();
+        for i in 0..3 {
+            let msg = crate::message::SessionMessage::user(
+                format!("match number {i}"),
+                crate::message::MessageSource::User,
+            );
+            storage
+                .append_event("sess_hits", &SessionEvent::MessageV2(msg))
+                .await
+                .unwrap();
+        }
+
+        let ids = vec!["sess_hits".to_string()];
+        let hits = storage.search_transcripts(&ids, "match", 2).await.unwrap();
+        assert_eq!(hits.len(), 2, "scanning stops after max_hits");
+
+        let hits = storage.search_transcripts(&ids, "match", 10).await.unwrap();
+        assert_eq!(hits.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_search_transcripts_snippet_centered_on_match() {
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+
+        storage.create_session("sess_long", None).await.unwrap();
+        let text = format!("{}needle{}", "a".repeat(200), "b".repeat(200));
+        let msg = crate::message::SessionMessage::user(text, crate::message::MessageSource::User);
+        storage
+            .append_event("sess_long", &SessionEvent::MessageV2(msg))
+            .await
+            .unwrap();
+
+        let ids = vec!["sess_long".to_string()];
+        let hits = storage
+            .search_transcripts(&ids, "needle", 10)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+
+        let snippet = &hits[0].snippet;
+        assert!(snippet.contains("needle"));
+        assert!(
+            snippet.starts_with('…'),
+            "truncated prefix marked: {snippet}"
+        );
+        assert!(snippet.ends_with('…'), "truncated suffix marked: {snippet}");
+        // ~80 chars either side of the 6-char match plus two ellipsis marks.
+        assert!(snippet.chars().count() <= 80 + 6 + 80 + 2);
     }
 }

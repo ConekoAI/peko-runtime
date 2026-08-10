@@ -5,6 +5,10 @@
 //! `src/tools/builtin/session.rs`. Mirrors the same shape: keyed by
 //! session_key, returns pre-loaded `SessionInfo` / `HistoryMessage` /
 //! `SessionStatusResult` records.
+//!
+//! The lifecycle actions (branch / rename / archive / delete / compact
+//! / chapter) are modeled with plain in-memory semantics — no
+//! ownership guards (those are a production-adapter concern).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -12,7 +16,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use super::{
-    HistoryMessage, SessionInfo, SessionRuntime, SessionStatusResult, SharedSessionRuntime,
+    BranchOutcome, ChapterChangeOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage,
+    SessionInfo, SessionRuntime, SessionSearchHit, SessionStatusResult, SharedSessionRuntime,
 };
 
 /// In-memory session cache for testing and placeholder use.
@@ -27,6 +32,12 @@ pub struct SessionCache {
     sessions: Mutex<HashMap<String, SessionInfo>>,
     histories: Mutex<HashMap<String, Vec<HistoryMessage>>>,
     statuses: Mutex<HashMap<String, SessionStatusResult>>,
+    /// Sessions that got a `request_compaction` call (for assertions).
+    compact_requests: Mutex<Vec<String>>,
+    /// Chapter requests as `"new[:title]"` / `"resume:<target>"` strings.
+    chapter_requests: Mutex<Vec<String>>,
+    /// Monotonic counter for deterministic branch ids in tests.
+    branch_counter: Mutex<usize>,
 }
 
 impl SessionCache {
@@ -38,6 +49,9 @@ impl SessionCache {
             sessions: Mutex::new(HashMap::new()),
             histories: Mutex::new(HashMap::new()),
             statuses: Mutex::new(HashMap::new()),
+            compact_requests: Mutex::new(Vec::new()),
+            chapter_requests: Mutex::new(Vec::new()),
+            branch_counter: Mutex::new(0),
         }
     }
 
@@ -63,10 +77,68 @@ impl SessionCache {
             .insert(key, status);
     }
 
+    /// Sessions that received a compaction request (test assertions).
+    #[must_use]
+    pub fn compact_requests(&self) -> Vec<String> {
+        self.compact_requests
+            .lock()
+            .expect("compact_requests mutex poisoned")
+            .clone()
+    }
+
+    /// Chapter requests recorded so far (test assertions).
+    #[must_use]
+    pub fn chapter_requests(&self) -> Vec<String> {
+        self.chapter_requests
+            .lock()
+            .expect("chapter_requests mutex poisoned")
+            .clone()
+    }
+
     /// Wrap into a `SharedSessionRuntime` for tool construction.
     #[must_use]
     pub fn as_shared(self: Arc<Self>) -> SharedSessionRuntime {
         self as Arc<dyn SessionRuntime>
+    }
+
+    /// Peer filter helper shared by `list_sessions` / `search_sessions`.
+    fn peer_matches(info: &SessionInfo, peer_filter: Option<&(String, String)>) -> bool {
+        peer_filter.map_or(true, |(want_kind, want_id)| {
+            let (have_kind, have_id) = match (info.peer_type.as_deref(), info.peer_id.as_deref()) {
+                (Some(k), Some(i)) => (k, i),
+                _ => return false,
+            };
+            have_kind == want_kind.as_str() && have_id == want_id.as_str()
+        })
+    }
+
+    /// ~160-char snippet centered on the match, `…`-marked when
+    /// truncated (simplified mirror of the storage-side helper).
+    fn snippet_around(text: &str, match_start: usize, match_len: usize) -> String {
+        const RADIUS: usize = 80;
+        let floor = |mut i: usize| {
+            while i > 0 && !text.is_char_boundary(i) {
+                i -= 1;
+            }
+            i
+        };
+        let ceil = |mut i: usize| {
+            while i < text.len() && !text.is_char_boundary(i) {
+                i += 1;
+            }
+            i
+        };
+        let start = floor(match_start.saturating_sub(RADIUS));
+        let end = ceil((match_start + match_len + RADIUS).min(text.len()));
+        let mut snippet = String::new();
+        if start > 0 {
+            snippet.push('…');
+        }
+        snippet.push_str(&text[start..end]);
+        if end < text.len() {
+            snippet.push('…');
+        }
+        snippet
     }
 }
 
@@ -79,6 +151,7 @@ impl SessionRuntime for SessionCache {
         agent_id: Option<&str>,
         limit: usize,
         active_minutes: Option<i64>,
+        include_archived: bool,
     ) -> anyhow::Result<Vec<SessionInfo>> {
         let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
         let now = chrono::Utc::now().timestamp_millis() as u64;
@@ -88,6 +161,7 @@ impl SessionRuntime for SessionCache {
         let filtered: Vec<SessionInfo> = sessions
             .values()
             .filter(|s| {
+                let archived_match = include_archived || !s.archived;
                 let kind_match = kinds.map_or(true, |k| k.contains(&s.kind));
                 let agent_match = agent_id.map_or(true, |a| s.agent_id.as_deref() == Some(a));
                 let active_match = cutoff_ms.map_or(true, |_| {
@@ -95,15 +169,11 @@ impl SessionRuntime for SessionCache {
                         .map(|dt| dt.timestamp_millis() as u64 >= cutoff_ms.unwrap_or(0))
                         .unwrap_or(true)
                 });
-                let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
-                    let (have_kind, have_id) = match (s.peer_type.as_deref(), s.peer_id.as_deref())
-                    {
-                        (Some(k), Some(i)) => (k, i),
-                        _ => return false,
-                    };
-                    have_kind == want_kind.as_str() && have_id == want_id.as_str()
-                });
-                kind_match && peer_match && agent_match && active_match
+                archived_match
+                    && kind_match
+                    && Self::peer_matches(s, peer_filter.as_ref())
+                    && agent_match
+                    && active_match
             })
             .take(limit)
             .cloned()
@@ -136,5 +206,422 @@ impl SessionRuntime for SessionCache {
 
     fn current_session_key(&self) -> String {
         self.current_session.clone()
+    }
+
+    async fn search_sessions(
+        &self,
+        query: &str,
+        peer: Option<&peko_subject::Subject>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<SessionSearchHit>> {
+        let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
+        let needle = query.to_lowercase();
+
+        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let histories = self.histories.lock().expect("histories mutex poisoned");
+
+        let mut hits = Vec::new();
+        'outer: for (key, info) in sessions.iter() {
+            if info.archived || !Self::peer_matches(info, peer_filter.as_ref()) {
+                continue;
+            }
+            let Some(history) = histories.get(key) else {
+                continue;
+            };
+            for msg in history {
+                let Some(start) = msg.content.to_lowercase().find(&needle) else {
+                    continue;
+                };
+                hits.push(SessionSearchHit {
+                    session_id: info.session_id.clone(),
+                    role: msg.role.clone(),
+                    timestamp: msg.timestamp.clone(),
+                    snippet: Self::snippet_around(&msg.content, start, needle.len()),
+                });
+                if hits.len() >= limit {
+                    break 'outer;
+                }
+            }
+        }
+        Ok(hits)
+    }
+
+    async fn branch_session(
+        &self,
+        session_key: &str,
+        label: Option<String>,
+    ) -> anyhow::Result<BranchOutcome> {
+        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let parent = sessions
+            .get(session_key)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
+
+        let n = {
+            let mut counter = self.branch_counter.lock().expect("counter mutex poisoned");
+            *counter += 1;
+            *counter
+        };
+        let new_key = format!("{session_key}-branch-{n}");
+
+        let mut info = parent.clone();
+        info.session_key = new_key.clone();
+        info.session_id = new_key.clone();
+        info.kind = "branch".to_string();
+        info.label = label.or(parent.label);
+        sessions.insert(new_key.clone(), info);
+
+        let history = self
+            .histories
+            .lock()
+            .expect("histories mutex poisoned")
+            .get(session_key)
+            .cloned()
+            .unwrap_or_default();
+        self.histories
+            .lock()
+            .expect("histories mutex poisoned")
+            .insert(new_key.clone(), history);
+
+        let status = self
+            .statuses
+            .lock()
+            .expect("statuses mutex poisoned")
+            .get(session_key)
+            .cloned();
+        if let Some(mut status) = status {
+            status.session_id = new_key.clone();
+            status.parent_session = Some(session_key.to_string());
+            self.statuses
+                .lock()
+                .expect("statuses mutex poisoned")
+                .insert(new_key.clone(), status);
+        }
+
+        Ok(BranchOutcome {
+            new_session_id: new_key,
+            parent_session_id: session_key.to_string(),
+        })
+    }
+
+    async fn rename_session(&self, session_key: &str, title: String) -> anyhow::Result<()> {
+        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let info = sessions
+            .get_mut(session_key)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
+        info.label = Some(title.clone());
+        drop(sessions);
+
+        if let Some(status) = self
+            .statuses
+            .lock()
+            .expect("statuses mutex poisoned")
+            .get_mut(session_key)
+        {
+            status.label = Some(title);
+        }
+        Ok(())
+    }
+
+    async fn set_archived(&self, session_key: &str, archived: bool) -> anyhow::Result<()> {
+        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let info = sessions
+            .get_mut(session_key)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
+        info.archived = archived;
+        Ok(())
+    }
+
+    async fn delete_session(
+        &self,
+        session_key: &str,
+        recursive: bool,
+    ) -> anyhow::Result<DeleteOutcome> {
+        // Collect the descendant subtree via `parent_session` chains on
+        // the stored statuses, children first (post-order).
+        let subtree: Vec<String> = {
+            let statuses = self.statuses.lock().expect("statuses mutex poisoned");
+            if !statuses.contains_key(session_key)
+                && !self
+                    .sessions
+                    .lock()
+                    .expect("sessions mutex poisoned")
+                    .contains_key(session_key)
+            {
+                return Err(anyhow::anyhow!("Session not found: {session_key}"));
+            }
+
+            let mut ordered = Vec::new();
+            let mut stack = vec![session_key.to_string()];
+            let mut post_order = Vec::new();
+            while let Some(id) = stack.pop() {
+                post_order.push(id.clone());
+                for (key, status) in statuses.iter() {
+                    if status.parent_session.as_deref() == Some(id.as_str()) {
+                        stack.push(key.clone());
+                    }
+                }
+            }
+            // post_order is parents-first; reverse for children-first.
+            ordered.append(&mut post_order);
+            ordered.reverse();
+            ordered
+        };
+
+        let descendants: Vec<String> = subtree
+            .iter()
+            .filter(|id| id.as_str() != session_key)
+            .cloned()
+            .collect();
+        if !descendants.is_empty() && !recursive {
+            return Err(anyhow::anyhow!(
+                "Session {session_key} has descendants {}; pass recursive:true to delete the whole subtree",
+                descendants.join(", ")
+            ));
+        }
+
+        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let mut histories = self.histories.lock().expect("histories mutex poisoned");
+        let mut statuses = self.statuses.lock().expect("statuses mutex poisoned");
+        for id in &subtree {
+            sessions.remove(id);
+            histories.remove(id);
+            statuses.remove(id);
+        }
+
+        Ok(DeleteOutcome { deleted: subtree })
+    }
+
+    async fn request_compaction(&self, session_key: &str) -> anyhow::Result<CompactRequestOutcome> {
+        if !self
+            .sessions
+            .lock()
+            .expect("sessions mutex poisoned")
+            .contains_key(session_key)
+        {
+            return Err(anyhow::anyhow!("Session not found: {session_key}"));
+        }
+        self.compact_requests
+            .lock()
+            .expect("compact_requests mutex poisoned")
+            .push(session_key.to_string());
+        Ok(CompactRequestOutcome {
+            session_id: session_key.to_string(),
+            message: "Compaction scheduled — fires at the next iteration for the \
+                      current session, at its next run for others"
+                .to_string(),
+        })
+    }
+
+    async fn new_chapter(&self, title: Option<String>) -> anyhow::Result<ChapterChangeOutcome> {
+        let live = self.current_session_key();
+        if live.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No current session to start a new chapter for"
+            ));
+        }
+        self.chapter_requests
+            .lock()
+            .expect("chapter_requests mutex poisoned")
+            .push(match title {
+                Some(t) => format!("new:{t}"),
+                None => "new".to_string(),
+            });
+        Ok(ChapterChangeOutcome {
+            live_session_id: live,
+            message: "New chapter queued — takes effect on the next incoming message".to_string(),
+        })
+    }
+
+    async fn resume_chapter(
+        &self,
+        target_session_id: &str,
+    ) -> anyhow::Result<ChapterChangeOutcome> {
+        let live = self.current_session_key();
+        if live.is_empty() {
+            return Err(anyhow::anyhow!("No current session to resume into"));
+        }
+        if !self
+            .sessions
+            .lock()
+            .expect("sessions mutex poisoned")
+            .contains_key(target_session_id)
+        {
+            return Err(anyhow::anyhow!("Session not found: {target_session_id}"));
+        }
+        self.chapter_requests
+            .lock()
+            .expect("chapter_requests mutex poisoned")
+            .push(format!("resume:{target_session_id}"));
+        Ok(ChapterChangeOutcome {
+            live_session_id: live,
+            message: "Resume queued — takes effect on the next incoming message".to_string(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::builtin::session::UsageStats;
+
+    fn info(key: &str) -> SessionInfo {
+        SessionInfo {
+            session_key: key.to_string(),
+            session_id: key.to_string(),
+            kind: "main".to_string(),
+            agent_id: Some("agent".to_string()),
+            label: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            last_activity: "2024-01-01T01:00:00Z".to_string(),
+            message_count: 1,
+            is_active: true,
+            peer_type: None,
+            peer_id: None,
+            archived: false,
+            run_active: false,
+        }
+    }
+
+    fn status(key: &str, parent: Option<&str>) -> SessionStatusResult {
+        SessionStatusResult {
+            session_id: key.to_string(),
+            agent_name: "agent".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            last_activity: "2024-01-01T01:00:00Z".to_string(),
+            timestamp_utc: String::new(),
+            timestamp: String::new(),
+            message_count: 1,
+            usage: UsageStats {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                last_total_tokens: 0,
+                model_context_limit: None,
+            },
+            peer_type: None,
+            peer_id: None,
+            label: None,
+            parent_session: parent.map(String::from),
+        }
+    }
+
+    #[tokio::test]
+    async fn branch_copies_session_and_records_parentage() {
+        let cache = SessionCache::new("main");
+        let mut parent = info("p1");
+        parent.label = Some("parent".to_string());
+        cache.add_session("p1".to_string(), parent, vec![], status("p1", None));
+
+        let outcome = cache.branch_session("p1", None).await.unwrap();
+        assert_eq!(outcome.parent_session_id, "p1");
+
+        let branch = cache.get_status(&outcome.new_session_id).await.unwrap();
+        assert_eq!(branch.parent_session, Some("p1".to_string()));
+        let branch_info = cache
+            .list_sessions(None, None, None, 10, None, true)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|s| s.session_key == outcome.new_session_id)
+            .unwrap();
+        assert_eq!(branch_info.kind, "branch");
+        // Label inherited when not supplied.
+        assert_eq!(branch_info.label, Some("parent".to_string()));
+
+        assert!(cache.branch_session("missing", None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_refuses_descendants_unless_recursive() {
+        let cache = SessionCache::new("main");
+        cache.add_session("p".to_string(), info("p"), vec![], status("p", None));
+        cache.add_session(
+            "c1".to_string(),
+            info("c1"),
+            vec![],
+            status("c1", Some("p")),
+        );
+        cache.add_session(
+            "g1".to_string(),
+            info("g1"),
+            vec![],
+            status("g1", Some("c1")),
+        );
+
+        let err = cache.delete_session("p", false).await.unwrap_err();
+        assert!(err.to_string().contains("recursive:true"), "{err}");
+
+        let outcome = cache.delete_session("p", true).await.unwrap();
+        // Children first, target last.
+        assert_eq!(
+            outcome.deleted,
+            vec!["g1".to_string(), "c1".to_string(), "p".to_string()]
+        );
+        assert!(cache
+            .list_sessions(None, None, None, 10, None, true)
+            .await
+            .unwrap()
+            .is_empty());
+
+        assert!(cache.delete_session("p", true).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn compact_and_chapters_are_recorded() {
+        let cache = SessionCache::new("live-1");
+        cache.add_session("s1".to_string(), info("s1"), vec![], status("s1", None));
+
+        let outcome = cache.request_compaction("s1").await.unwrap();
+        assert_eq!(outcome.session_id, "s1");
+        assert!(cache.request_compaction("missing").await.is_err());
+        assert_eq!(cache.compact_requests(), vec!["s1".to_string()]);
+
+        let new_outcome = cache
+            .new_chapter(Some("morning".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(new_outcome.live_session_id, "live-1");
+        assert!(new_outcome.message.contains("next incoming message"));
+
+        let resume_outcome = cache.resume_chapter("s1").await.unwrap();
+        assert_eq!(resume_outcome.live_session_id, "live-1");
+        assert!(cache.resume_chapter("missing").await.is_err());
+
+        assert_eq!(
+            cache.chapter_requests(),
+            vec!["new:morning".to_string(), "resume:s1".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn search_skips_archived_and_matches_case_insensitively() {
+        let cache = SessionCache::new("main");
+        let history = vec![HistoryMessage {
+            role: "user".to_string(),
+            content: "the Needle is here".to_string(),
+            tool_calls: None,
+            tool_results: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+        }];
+        cache.add_session("s1".to_string(), info("s1"), history, status("s1", None));
+        cache.add_session(
+            "s2".to_string(),
+            info("s2"),
+            vec![HistoryMessage {
+                role: "assistant".to_string(),
+                content: "another needle here".to_string(),
+                tool_calls: None,
+                tool_results: None,
+                timestamp: "2024-01-01T00:00:01Z".to_string(),
+            }],
+            status("s2", None),
+        );
+        // Archive s2: it must drop out of search results.
+        cache.set_archived("s2", true).await.unwrap();
+
+        let hits = cache.search_sessions("NEEDLE", None, 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "s1");
+        assert!(hits[0].snippet.contains("Needle"));
     }
 }

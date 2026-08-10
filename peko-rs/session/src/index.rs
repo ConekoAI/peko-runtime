@@ -95,6 +95,16 @@ pub struct SessionEntry {
     pub peer_type: Option<String>,
     /// Subject ID - for session identity restoration
     pub peer_id: Option<String>,
+    /// Archived sessions are hidden from default listings and refuse
+    /// resume/compact until unarchived (agent-owned session management).
+    #[serde(default)]
+    pub archived: bool,
+    /// Set when an agent requests compaction of this session. The
+    /// compaction orchestrator ORs this flag into its `should_request`
+    /// decision at the session's next run and clears it once compaction
+    /// actually starts, so the request survives restarts.
+    #[serde(default)]
+    pub compact_requested: bool,
 }
 
 impl SessionEntry {
@@ -123,6 +133,8 @@ impl SessionEntry {
             trigger: "user".to_string(),
             peer_type: None,
             peer_id: None,
+            archived: false,
+            compact_requested: false,
         }
     }
 
@@ -213,8 +225,12 @@ impl SessionEntry {
 /// Subject routing information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
-    /// Currently active session for this peer
-    pub active_session_id: String,
+    /// Currently active session for this peer. `None` after the active
+    /// session was deleted/rotated away — the peer entry (and its
+    /// `session_ids`) survives so the remaining sessions stay
+    /// routable/listable.
+    #[serde(default)]
+    pub active_session_id: Option<String>,
     /// All session IDs for this peer (for switching)
     pub session_ids: Vec<String>,
 }
@@ -225,7 +241,7 @@ impl PeerInfo {
     pub fn new(active_session_id: String) -> Self {
         Self {
             session_ids: vec![active_session_id.clone()],
-            active_session_id,
+            active_session_id: Some(active_session_id),
         }
     }
 
@@ -234,7 +250,7 @@ impl PeerInfo {
         if !self.session_ids.contains(&session_id) {
             self.session_ids.push(session_id.clone());
         }
-        self.active_session_id = session_id;
+        self.active_session_id = Some(session_id);
     }
 
     /// Switch to different session
@@ -242,14 +258,14 @@ impl PeerInfo {
         if !self.session_ids.contains(&session_id.to_string()) {
             return Err(anyhow::anyhow!("Session {session_id} not found for peer"));
         }
-        self.active_session_id = session_id.to_string();
+        self.active_session_id = Some(session_id.to_string());
         Ok(())
     }
 
     /// Get active session ID
     #[must_use]
-    pub fn active_session_id(&self) -> &str {
-        &self.active_session_id
+    pub fn active_session_id(&self) -> Option<&str> {
+        self.active_session_id.as_deref()
     }
 }
 
@@ -354,7 +370,7 @@ impl SessionIndex {
         }
 
         // Load from disk (directory may not exist yet - that's OK)
-        let entries = if self.sessions_path.exists() {
+        let mut entries = if self.sessions_path.exists() {
             let content = fs::read_to_string(&self.sessions_path)
                 .await
                 .with_context(|| {
@@ -378,9 +394,18 @@ impl SessionIndex {
             HashMap::new()
         };
 
+        // Backfill peer attribution for legacy entries. Sessions
+        // branched before `peer_type`/`peer_id` were plumbed through
+        // serialize with both fields as `None`, so the peer's
+        // routing/list view can't see them. Walk up the parent chain
+        // (cycle-safe) and copy the first ancestor's attribution; if
+        // no ancestor has it, leave the entry untouched. Sets
+        // `sessions_modified` if any field was backfilled so the next
+        // `save` persists the fix.
+        let backfilled = backfill_peer_attribution(&mut entries);
         self.sessions_cache = Some(entries);
         self.sessions_loaded_at = Some(SystemTime::now());
-        self.sessions_modified = false;
+        self.sessions_modified = backfilled;
 
         Ok(self.sessions_cache.as_ref().unwrap())
     }
@@ -447,6 +472,18 @@ impl SessionIndex {
         Ok(sessions.get(session_id).cloned())
     }
 
+    /// Get session by ID, reading `sessions.json` directly from disk
+    /// (both caches bypassed).
+    ///
+    /// Used by the engine's per-iteration `compact_requested` peek:
+    /// the flag may have been written moments ago by a *different*
+    /// `MetadataController` (the session tool's adapter), so the 30s
+    /// index cache and the controller cache would both hide it.
+    pub async fn get_uncached(&self, session_id: &str) -> Result<Option<SessionEntry>> {
+        let on_disk = Self::read_sessions_file(&self.sessions_path).await?;
+        Ok(on_disk.get(session_id).cloned())
+    }
+
     /// Insert or update session (O(1))
     pub async fn insert(&mut self, entry: SessionEntry) -> Result<()> {
         let session_id = entry.session_id.clone();
@@ -480,7 +517,7 @@ impl SessionIndex {
         let active_id = peers
             .peers
             .get(peer_key)
-            .map(|p| p.active_session_id.clone());
+            .and_then(|p| p.active_session_id.clone());
         let Some(active_id) = active_id else {
             return Ok(None);
         };
@@ -495,7 +532,7 @@ impl SessionIndex {
         Ok(peers
             .peers
             .get(peer_key)
-            .map(|p| p.active_session_id.clone()))
+            .and_then(|p| p.active_session_id.clone()))
     }
 
     /// List all sessions for a peer (O(N) where N = sessions for peer, typically small)
@@ -531,18 +568,91 @@ impl SessionIndex {
         Ok(())
     }
 
-    /// Clear active session for peer (used when creating new session)
+    /// Clear the active-session pointer for a peer (used when the active
+    /// session goes away). The peer entry itself — and its `session_ids`
+    /// list — survives, so the peer's other sessions remain routable and
+    /// listable.
     pub async fn clear_active_for_peer(&mut self, peer_key: &str) -> Result<()> {
         let peers = self.load_peers_mut().await?;
 
-        if peers.peers.remove(peer_key).is_some() {
-            self.peers_modified = true;
-            self.dirty_peer_keys.remove(peer_key);
-            self.removed_peer_keys.insert(peer_key.to_string());
-            info!("Cleared peer routing for {}", peer_key);
+        if let Some(peer_info) = peers.peers.get_mut(peer_key) {
+            if peer_info.active_session_id.is_some() {
+                peer_info.active_session_id = None;
+                self.peers_modified = true;
+                self.removed_peer_keys.remove(peer_key);
+                self.dirty_peer_keys.insert(peer_key.to_string());
+                info!("Cleared active session pointer for {}", peer_key);
+            }
         }
 
         Ok(())
+    }
+
+    /// Remove a session from a peer's routing entry (used when the
+    /// session is deleted). Scrubs the id from `session_ids` and clears
+    /// the active pointer if it pointed at the removed session. A peer
+    /// left with no sessions at all is dropped entirely.
+    pub async fn remove_session_from_peer(
+        &mut self,
+        peer_key: &str,
+        session_id: &str,
+    ) -> Result<()> {
+        let peers = self.load_peers_mut().await?;
+
+        let Some(peer_info) = peers.peers.get_mut(peer_key) else {
+            return Ok(());
+        };
+
+        let had_session = peer_info.session_ids.iter().any(|id| id == session_id);
+        let was_active = peer_info.active_session_id.as_deref() == Some(session_id);
+        if !had_session && !was_active {
+            return Ok(());
+        }
+
+        peer_info.session_ids.retain(|id| id != session_id);
+        if was_active {
+            peer_info.active_session_id = None;
+        }
+        let now_empty = peer_info.session_ids.is_empty();
+
+        if now_empty {
+            peers.peers.remove(peer_key);
+        }
+        self.peers_modified = true;
+        if now_empty {
+            self.dirty_peer_keys.remove(peer_key);
+            self.removed_peer_keys.insert(peer_key.to_string());
+            info!(
+                "Removed session {} from peer {} and dropped the empty peer entry",
+                session_id, peer_key
+            );
+        } else {
+            self.removed_peer_keys.remove(peer_key);
+            self.dirty_peer_keys.insert(peer_key.to_string());
+            info!("Removed session {} from peer {}", session_id, peer_key);
+        }
+
+        Ok(())
+    }
+
+    /// All peer keys whose routing entry currently references
+    /// `session_id` (in `session_ids` or as `active_session_id`). Used
+    /// by `SessionManager::set_archived` so an archived session is
+    /// scrubbed from every peer that knew about it.
+    #[must_use]
+    pub async fn peer_keys_with_session(&mut self, session_id: &str) -> Vec<String> {
+        let Ok(peers) = self.load_peers().await else {
+            return Vec::new();
+        };
+        peers
+            .peers
+            .iter()
+            .filter_map(|(k, p)| {
+                let in_list = p.session_ids.iter().any(|s| s == session_id);
+                let is_active = p.active_session_id.as_deref() == Some(session_id);
+                if in_list || is_active { Some(k.clone()) } else { None }
+            })
+            .collect()
     }
 
     /// Create new session for peer (O(1))
@@ -570,7 +680,7 @@ impl SessionIndex {
         self.dirty_peer_keys.insert(peer_key.to_string());
 
         info!(
-            "Created session {} for peer {}, active_session_id={}",
+            "Created session {} for peer {}, active_session_id={:?}",
             session_id, peer_key, active_id
         );
         Ok(())
@@ -590,7 +700,7 @@ impl SessionIndex {
         if !peer_info.session_ids.contains(&session_id.to_string()) {
             peer_info.session_ids.push(session_id.to_string());
         }
-        peer_info.active_session_id = session_id.to_string();
+        peer_info.active_session_id = Some(session_id.to_string());
         self.peers_modified = true;
         self.removed_peer_keys.remove(peer_key);
         self.dirty_peer_keys.insert(peer_key.to_string());
@@ -884,9 +994,75 @@ impl SessionIndex {
     }
 }
 
+/// One-shot backfill for legacy entries that predate `peer_type` /
+/// `peer_id`. For each entry where either field is `None`, walk up
+/// the parent chain (cycle-safe) and copy any ancestor field that is
+/// set. Returns `true` if any field was backfilled (caller should
+/// mark the index modified so the next save persists the fix).
+fn backfill_peer_attribution(entries: &mut HashMap<String, SessionEntry>) -> bool {
+    let mut changed = false;
+    // Snapshot ids so we can mutate entries in place without borrowing
+    // the map immutably while we walk the chain.
+    let ids: Vec<String> = entries.keys().cloned().collect();
+    for id in ids {
+        let Some(entry) = entries.get(&id) else {
+            continue;
+        };
+        if entry.peer_type.is_some() && entry.peer_id.is_some() {
+            continue;
+        }
+        // Walk up the parent chain (cycle-safe). Cap at the entry
+        // count so a corrupted chain can't loop forever.
+        let cap = entries.len();
+        let mut cursor = id.clone();
+        let mut visited: HashSet<String> = HashSet::new();
+        visited.insert(cursor.clone());
+        let mut peer_type: Option<String> = None;
+        let mut peer_id: Option<String> = None;
+        for _ in 0..cap {
+            let Some(entry) = entries.get(&cursor) else {
+                break;
+            };
+            if peer_type.is_none() {
+                peer_type = entry.peer_type.clone();
+            }
+            if peer_id.is_none() {
+                peer_id = entry.peer_id.clone();
+            }
+            if peer_type.is_some() && peer_id.is_some() {
+                break;
+            }
+            let Some(parent) = entry.parent_session_id.clone() else {
+                break;
+            };
+            if !visited.insert(parent.clone()) {
+                break;
+            }
+            cursor = parent;
+        }
+        if let Some(entry) = entries.get_mut(&id) {
+            if entry.peer_type.is_none() {
+                if let Some(t) = peer_type.take() {
+                    entry.peer_type = Some(t);
+                    changed = true;
+                }
+            }
+            if entry.peer_id.is_none() {
+                if let Some(i) = peer_id.take() {
+                    entry.peer_id = Some(i);
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use crate::*;
+    use crate::index::backfill_peer_attribution;
+    use std::collections::HashMap;
     use tempfile::TempDir;
 
     /// Regression test for issue #89: concurrent `SessionIndex` instances on
@@ -1051,5 +1227,252 @@ mod tests {
             let found = index.get("sess_123").await.unwrap();
             assert!(found.is_some());
         }
+    }
+
+    /// Backward compatibility: a `sessions.json` entry written before
+    /// the `archived` / `compact_requested` fields existed must
+    /// deserialize with both flags = false (`#[serde(default)]`).
+    #[test]
+    fn test_legacy_entry_without_archive_flags_defaults_false() {
+        let legacy = serde_json::json!({
+            "session_id": "sess_legacy",
+            "agent_name": "testagent",
+            "created_at": 1,
+            "updated_at": 2,
+            "message_count": 3,
+            "turn_count": 1,
+            "last_total_tokens": 100,
+            "total_input_tokens": 80,
+            "total_output_tokens": 20,
+            "transcript_file": "sess_legacy.jsonl",
+            "title": null,
+            "parent_session_id": null,
+            "trigger": "user",
+            "peer_type": "user",
+            "peer_id": "alice"
+        });
+
+        let entry: SessionEntry = serde_json::from_value(legacy).unwrap();
+        assert!(!entry.archived);
+        assert!(!entry.compact_requested);
+
+        // And the flags round-trip through serialization once set.
+        let mut entry = entry;
+        entry.archived = true;
+        entry.compact_requested = true;
+        let json = serde_json::to_value(&entry).unwrap();
+        let reloaded: SessionEntry = serde_json::from_value(json).unwrap();
+        assert!(reloaded.archived);
+        assert!(reloaded.compact_requested);
+    }
+
+    /// `clear_active_for_peer` drops only the active-session pointer;
+    /// the peer entry and its remaining sessions stay listable.
+    #[tokio::test]
+    async fn test_clear_active_for_peer_keeps_peer_entry() {
+        let temp = TempDir::new().unwrap();
+        let mut index = SessionIndex::open(temp.path());
+        let peer_key = "user:alice";
+
+        for id in ["sess_a", "sess_b"] {
+            let entry = SessionEntry::new(
+                id.to_string(),
+                "testagent".to_string(),
+                format!("{id}.jsonl"),
+            );
+            index.create_for_peer(entry, peer_key).await.unwrap();
+        }
+        assert_eq!(
+            index.get_active_session_id(peer_key).await.unwrap(),
+            Some("sess_b".to_string())
+        );
+
+        index.clear_active_for_peer(peer_key).await.unwrap();
+
+        // Active pointer cleared, but the peer entry survives with both
+        // sessions still listable.
+        assert_eq!(index.get_active_session_id(peer_key).await.unwrap(), None);
+        let all = index.list_for_peer(peer_key).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    /// `remove_session_from_peer` scrubs the id from `session_ids`,
+    /// clears the active pointer when it matched, and drops the peer
+    /// entry only when no sessions remain.
+    #[tokio::test]
+    async fn test_remove_session_from_peer() {
+        let temp = TempDir::new().unwrap();
+        let mut index = SessionIndex::open(temp.path());
+        let peer_key = "user:alice";
+
+        for id in ["sess_a", "sess_b"] {
+            let entry = SessionEntry::new(
+                id.to_string(),
+                "testagent".to_string(),
+                format!("{id}.jsonl"),
+            );
+            index.create_for_peer(entry, peer_key).await.unwrap();
+        }
+
+        // Remove the active session: pointer cleared, other session kept.
+        index
+            .remove_session_from_peer(peer_key, "sess_b")
+            .await
+            .unwrap();
+        assert_eq!(index.get_active_session_id(peer_key).await.unwrap(), None);
+        let remaining = index.list_for_peer(peer_key).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].session_id, "sess_a");
+
+        // Remove the last session: the peer entry disappears entirely.
+        index
+            .remove_session_from_peer(peer_key, "sess_a")
+            .await
+            .unwrap();
+        assert!(index.list_for_peer(peer_key).await.unwrap().is_empty());
+        assert_eq!(index.get_active_session_id(peer_key).await.unwrap(), None);
+
+        // Unknown session / unknown peer: no-op, no error.
+        index
+            .remove_session_from_peer(peer_key, "sess_nope")
+            .await
+            .unwrap();
+        index
+            .remove_session_from_peer("user:nobody", "sess_a")
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn backfill_peer_attribution_copies_from_parent_chain() {
+        let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        // Ancestor with full attribution.
+        entries.insert(
+            "root:user:alice".to_string(),
+            SessionEntry::with_peer(
+                "root:user:alice".to_string(),
+                "testagent".to_string(),
+                "root:user:alice.jsonl".to_string(),
+                "user",
+                "alice",
+            ),
+        );
+        // Legacy branch: peer fields None, parent has them.
+        let mut legacy_branch = SessionEntry::new(
+            "branch1".to_string(),
+            "testagent".to_string(),
+            "branch1.jsonl".to_string(),
+        );
+        legacy_branch.parent_session_id = Some("root:user:alice".to_string());
+        entries.insert("branch1".to_string(), legacy_branch);
+        // Legacy branch-of-branch: parent also has None — chain
+        // continues upward and finds the root's attribution.
+        let mut legacy_grandchild = SessionEntry::new(
+            "grand1".to_string(),
+            "testagent".to_string(),
+            "grand1.jsonl".to_string(),
+        );
+        legacy_grandchild.parent_session_id = Some("branch1".to_string());
+        entries.insert("grand1".to_string(), legacy_grandchild);
+
+        let changed = backfill_peer_attribution(&mut entries);
+        assert!(changed);
+        assert_eq!(
+            entries.get("branch1").unwrap().peer_type.as_deref(),
+            Some("user")
+        );
+        assert_eq!(
+            entries.get("branch1").unwrap().peer_id.as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            entries.get("grand1").unwrap().peer_type.as_deref(),
+            Some("user")
+        );
+        assert_eq!(
+            entries.get("grand1").unwrap().peer_id.as_deref(),
+            Some("alice")
+        );
+    }
+
+    #[test]
+    fn backfill_peer_attribution_handles_orphans() {
+        // No ancestor with attribution ⇒ left untouched, no panic.
+        let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        let mut orphan = SessionEntry::new(
+            "orphan".to_string(),
+            "testagent".to_string(),
+            "orphan.jsonl".to_string(),
+        );
+        orphan.parent_session_id = Some("ghost".to_string()); // parent absent
+        entries.insert("orphan".to_string(), orphan);
+
+        let changed = backfill_peer_attribution(&mut entries);
+        assert!(!changed);
+        assert!(entries.get("orphan").unwrap().peer_type.is_none());
+        assert!(entries.get("orphan").unwrap().peer_id.is_none());
+    }
+
+    #[test]
+    fn backfill_peer_attribution_handles_partial_parent() {
+        // Parent has `peer_type` but no `peer_id` — only fill in the
+        // missing fields on the child, do not overwrite existing ones.
+        let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        let mut parent = SessionEntry::new(
+            "parent".to_string(),
+            "testagent".to_string(),
+            "parent.jsonl".to_string(),
+        );
+        parent.peer_type = Some("user".to_string());
+        parent.peer_id = None; // incomplete
+        entries.insert("parent".to_string(), parent);
+        let mut child = SessionEntry::new(
+            "child".to_string(),
+            "testagent".to_string(),
+            "child.jsonl".to_string(),
+        );
+        child.parent_session_id = Some("parent".to_string());
+        entries.insert("child".to_string(), child);
+
+        let changed = backfill_peer_attribution(&mut entries);
+        assert!(changed, "peer_type was copied down");
+        let child = entries.get("child").unwrap();
+        // peer_type came from the partial parent; peer_id stayed None
+        // because no ancestor in the chain has it.
+        assert_eq!(child.peer_type.as_deref(), Some("user"));
+        assert!(child.peer_id.is_none(), "no ancestor had peer_id");
+    }
+
+    #[test]
+    fn backfill_peer_attribution_survives_cycles() {
+        // Cycle: a → b → a. The walk must terminate.
+        let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        let mut a = SessionEntry::new(
+            "a".to_string(),
+            "testagent".to_string(),
+            "a.jsonl".to_string(),
+        );
+        a.parent_session_id = Some("b".to_string());
+        a.peer_type = Some("user".to_string());
+        a.peer_id = Some("alice".to_string());
+        let mut b = SessionEntry::new(
+            "b".to_string(),
+            "testagent".to_string(),
+            "b.jsonl".to_string(),
+        );
+        b.parent_session_id = Some("a".to_string());
+        entries.insert("a".to_string(), a);
+        entries.insert("b".to_string(), b);
+
+        // Should terminate without infinite loop and pick up the
+        // attribution from `a` (first reachable ancestor with both
+        // fields).
+        let changed = backfill_peer_attribution(&mut entries);
+        assert!(changed);
+        assert_eq!(
+            entries.get("b").unwrap().peer_type.as_deref(),
+            Some("user")
+        );
+        assert_eq!(entries.get("b").unwrap().peer_id.as_deref(), Some("alice"));
     }
 }

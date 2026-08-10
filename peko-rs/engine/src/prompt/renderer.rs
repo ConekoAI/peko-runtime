@@ -151,8 +151,7 @@ impl PromptRenderer {
         );
 
         let empty_session = String::new();
-        let values =
-            build_stable_placeholder_values(ctx, &skills, &agents, &mcp, &empty_session);
+        let values = build_stable_placeholder_values(ctx, &skills, &agents, &mcp, &empty_session);
         replace_placeholders(&ctx.body, &values, true)
     }
 
@@ -264,7 +263,9 @@ impl PromptRenderer {
     /// `SessionStart` (now dormant) which only fired once.
     async fn dispatch_session_context(&self, ctx: &TurnPromptContext) -> String {
         let snapshot = SessionSnapshot {
-            session_id: String::new(), // loop owns the real id; renderer's session_id is informational
+            // The real session id — the loop knows it and threads it
+            // through `TurnPromptContext` (previously `String::new()`).
+            session_id: ctx.session_id.clone(),
             message_count: 0,
             context_tokens: 0,
             metadata: HashMap::new(),
@@ -598,9 +599,12 @@ mod tests {
     /// behavior as `ExtensionCore::new()` — an empty registry where no
     /// handlers are registered, so every hook call returns `None`.
     /// That keeps the existing test assertions (placeholder stripping
-    /// with no handlers) valid.
+    /// with no handlers) valid. `SessionContextBuild` snapshots are
+    /// captured for inspection (the session-id plumbing test).
     #[derive(Default)]
-    struct EmptyExtensionCore;
+    struct EmptyExtensionCore {
+        session_context_snapshots: std::sync::Mutex<Vec<SessionSnapshot>>,
+    }
 
     #[async_trait]
     impl ToolFunnel for EmptyExtensionCore {
@@ -702,17 +706,22 @@ mod tests {
             _active_extensions: Option<Vec<String>>,
             _workspace: Option<String>,
         ) -> Option<String> {
+            self.session_context_snapshots
+                .lock()
+                .expect("snapshots mutex poisoned")
+                .push(_snapshot);
             None
         }
     }
 
     fn empty_funnel() -> Arc<dyn ToolFunnel> {
-        Arc::new(EmptyExtensionCore)
+        Arc::new(EmptyExtensionCore::default())
     }
 
     fn empty_ctx() -> TurnPromptContext {
         TurnPromptContext {
             principal_id: "test-principal".to_string(),
+            session_id: "test-session".to_string(),
             agent_name: "test-agent".to_string(),
             body: "You are {{agent_name}} on {{workspace}}.".to_string(),
             capabilities: None,
@@ -1005,5 +1014,27 @@ mod tests {
         // prefix being byte-stable across turns).
         let prefix = renderer.render_cache_stable(&ctx).await;
         assert!(!prefix.contains("Current time:"), "prefix was: {prefix}");
+    }
+
+    /// Prompt identity: the `SessionContextBuild` hook receives the
+    /// real session id threaded through `TurnPromptContext` (it used
+    /// to be a hardcoded `String::new()`).
+    #[tokio::test]
+    async fn session_context_hook_receives_real_session_id() {
+        let core = Arc::new(EmptyExtensionCore::default());
+        let funnel: Arc<dyn ToolFunnel> = core.clone();
+        let renderer = PromptRenderer::new(funnel);
+        let mut ctx = empty_ctx();
+        ctx.session_id = "root:user:alice".to_string();
+        ctx.body = "{{session_context}}".to_string();
+
+        let _ = renderer.render_for_iteration(&ctx).await;
+
+        let snapshots = core
+            .session_context_snapshots
+            .lock()
+            .expect("snapshots mutex poisoned");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].session_id, "root:user:alice");
     }
 }

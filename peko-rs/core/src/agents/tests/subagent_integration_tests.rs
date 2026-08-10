@@ -1151,3 +1151,307 @@ async fn test_max_concurrent_limit() {
         )
         .await;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5b: `resume_session` (persistent subagents) — guards + happy path
+// ---------------------------------------------------------------------------
+
+/// Create a session with explicit id/parent/trigger linkage via the
+/// manager (mirrors what `spawn_session` stamps for real spawns:
+/// `trigger == "spawn"` + `parent_session_id`).
+async fn create_linked_session(
+    session_manager: &Arc<RwLock<SessionManager>>,
+    agent_name: &str,
+    id: &str,
+    parent_id: Option<&str>,
+    trigger: &str,
+) {
+    let peer = Subject::User("alice".to_string());
+    let mut options = peko_session::SessionCreateOptions::new().with_session_id(id);
+    if let Some(parent) = parent_id {
+        options = options.with_parent(parent);
+    }
+    // `with_parent` presets trigger="branch"; the explicit trigger
+    // must be applied after it.
+    options = options.with_trigger(trigger);
+    session_manager
+        .write()
+        .await
+        .create_session(agent_name, &peer, options)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn resume_refuses_nonexistent_target() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager,
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let err = executor
+        .resume_and_execute(
+            "task",
+            "no-such-session",
+            "root-sess",
+            ExecutionConfig::default(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not found"), "{err}");
+}
+
+#[tokio::test]
+async fn resume_refuses_non_spawn_target() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    // A branch/regular session (trigger != "spawn") must refuse.
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "plain-sess",
+        Some("root-sess"),
+        "user",
+    )
+    .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager,
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let err = executor
+        .resume_and_execute(
+            "task",
+            "plain-sess",
+            "root-sess",
+            ExecutionConfig::default(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("only spawned"), "{err}");
+}
+
+#[tokio::test]
+async fn resume_refuses_self_and_ancestor() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager,
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+
+    // Self: target == the session the caller is running in.
+    let err = executor
+        .resume_and_execute(
+            "task",
+            "spawn-a",
+            "spawn-a",
+            ExecutionConfig::default(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("running in"), "{err}");
+
+    // Ancestor: root-sess is spawn-a's parent.
+    let err = executor
+        .resume_and_execute(
+            "task",
+            "root-sess",
+            "spawn-a",
+            ExecutionConfig::default(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("running in"), "{err}");
+}
+
+#[tokio::test]
+async fn resume_refuses_archived_target() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+    session_manager
+        .write()
+        .await
+        .set_archived("spawn-a", true)
+        .await
+        .unwrap();
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager,
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let err = executor
+        .resume_and_execute(
+            "task",
+            "spawn-a",
+            "root-sess",
+            ExecutionConfig::default(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unarchive"), "{err}");
+}
+
+#[tokio::test]
+async fn resume_happy_path_preserves_history() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+
+    // Seed prior history into the spawned session.
+    {
+        let mut manager = session_manager.write().await;
+        let handle = manager.open_session("spawn-a").await.unwrap().unwrap();
+        handle.add_user("earlier context").await.unwrap();
+    }
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+
+    // No provider configured → the task body returns the stub success
+    // string; the point is registration + guard passage + history.
+    let run_id = executor
+        .resume_and_execute(
+            "continue the task",
+            "spawn-a",
+            "root-sess",
+            ExecutionConfig::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(run_id.starts_with("run_"));
+
+    sleep(Duration::from_millis(500)).await;
+    let guard = registry.read().await;
+    let entry = guard.get(&run_id).unwrap();
+    assert!(
+        entry.status.is_terminal(),
+        "resumed run should complete: {:?}",
+        entry.status
+    );
+    drop(guard);
+
+    // The resumed session kept its prior history.
+    let mut manager = session_manager.write().await;
+    let handle = manager.open_session("spawn-a").await.unwrap().unwrap();
+    let history = handle.load_history().await.unwrap();
+    assert!(
+        history.iter().any(|m| m
+            .content
+            .iter()
+            .any(|b| matches!(b, peko_message::ContentBlock::Text { text } if text.contains("earlier context")))),
+        "resumed session must keep its prior history"
+    );
+}
+
+#[tokio::test]
+async fn validate_context_parent_ownership() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-b",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager.clone(),
+        agent_name.clone(),
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+
+    // Default path: caller's own session always passes.
+    executor
+        .validate_context_parent("spawn-a", "spawn-a")
+        .await
+        .unwrap();
+    // Principal-level caller (base session) passes for any target.
+    executor
+        .validate_context_parent("spawn-b", "root-sess")
+        .await
+        .unwrap();
+    // Subtree caller seeding from a sibling subtree → refused.
+    let err = executor
+        .validate_context_parent("spawn-b", "spawn-a")
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("outside your session subtree"),
+        "{err}"
+    );
+    // Subtree caller seeding from inside its own subtree passes.
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "grandchild",
+        Some("spawn-a"),
+        "spawn",
+    )
+    .await;
+    executor
+        .validate_context_parent("grandchild", "spawn-a")
+        .await
+        .unwrap();
+}

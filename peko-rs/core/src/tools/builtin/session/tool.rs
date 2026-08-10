@@ -54,6 +54,17 @@ impl SessionTool {
             "messages": messages,
         })
     }
+
+    /// Extract a required `session_key` param with an actionable error.
+    fn require_session_key<'a>(
+        params: &'a serde_json::Value,
+        action: &str,
+    ) -> anyhow::Result<&'a str> {
+        params
+            .get("session_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("'{action}' requires the 'session_key' parameter"))
+    }
 }
 
 /// Actions supported by the `session` tool.
@@ -63,6 +74,15 @@ enum SessionAction {
     Status,
     List,
     History,
+    Search,
+    Branch,
+    Rename,
+    Archive,
+    Unarchive,
+    Delete,
+    Compact,
+    New,
+    Resume,
 }
 
 #[async_trait]
@@ -72,20 +92,24 @@ impl Tool for SessionTool {
     }
 
     fn description(&self) -> String {
-        r"Manage and introspect sessions: check status, list sessions, or view conversation history.
+        r"Sessions are your persistent memory — every conversation is a persisted session you can inspect and manage here.
 
-Parameters:
-- action: 'status', 'list', or 'history' (required)
-- session_key: Required for 'history'. Optional for 'status' (defaults to current session)
-- kinds: Optional for 'list' — filter by session kinds (e.g., ['main', 'spawned'])
-- peer: Optional for 'list' — filter to a single peer (e.g., 'user:alice', 'principal:<did>', or 'public'). Without it, results span all peers on this principal.
-- agent_id: Optional for 'list' — filter to a single agent name
-- limit: Optional — max results (default: 50 for list, 100 for history)
-- active_minutes: Optional for 'list' — only sessions active in last N minutes
-- include_tools: Optional for 'history' — include tool calls/results (default: true)
-- timezone: Optional for 'status' — timezone for timestamp formatting (e.g., 'America/New_York', 'UTC')
+Actions:
+- status: one session's metadata + token usage (session_key optional, defaults to current)
+- list: query sessions (filters: kinds, peer, agent_id, active_minutes; archived hidden unless include_archived:true)
+- history: messages of a session (session_key, include_tools)
+- search: case-insensitive text search across session transcripts (query required; optional peer filter)
+- branch: copy a session into a new stored branch (session_key required; optional label)
+- rename: retitle a session (session_key + title required)
+- archive / unarchive: hide/show a session in list (session_key required); archived sessions refuse resume/compact
+- delete: remove a session (session_key required; recursive:true also deletes its descendants, children first)
+- compact: schedule summarization (session_key required) — fires at the next iteration for the current session, at its next run for others
+- new: start a fresh chapter for the current conversation (optional title) — the old chapter is kept under '<live-id>#<timestamp>'; takes effect on the NEXT incoming message, not this turn
+- resume: swap a chapter/session back into the live slot (target required); takes effect on the NEXT incoming message
 
-Returns structured data appropriate to the action."
+Kinds: 'main'/'chapter' (your rotated conversation chapters), 'spawned' (subagent sessions), 'branch' (copies).
+
+To RUN work in a session, use the Agent tool instead — spawned sessions appear here as kind 'spawned' and can be re-attached with Agent's resume_session param. You cannot modify the session you are currently running in (use 'new' or 'compact' for that)."
             .to_string()
     }
 
@@ -95,12 +119,38 @@ Returns structured data appropriate to the action."
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "list", "history"],
-                    "description": "What to do: status (get one session), list (query sessions), history (get messages)"
+                    "enum": ["status", "list", "history", "search", "branch", "rename", "archive", "unarchive", "delete", "compact", "new", "resume"],
+                    "description": "What to do: status/list/history read; search finds text; branch/rename/archive/unarchive/delete/compact manage a session; new/resume rotate the current conversation's chapter"
                 },
                 "session_key": {
                     "type": "string",
-                    "description": "Required for 'history'. Optional for 'status' (defaults to current session)"
+                    "description": "Target session. Required for history/branch/rename/archive/unarchive/delete/compact. Optional for status (defaults to current session)"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Required for 'search': case-insensitive substring to find in transcripts"
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Optional for 'branch': label/title for the new branch"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Required for 'rename'; optional for 'new' (labels the archived chapter)"
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Required for 'resume': chapter or session id to swap into the live slot"
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Optional for 'delete': also delete the session's descendants (children first)"
+                },
+                "include_archived": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Optional for 'list': include archived sessions (hidden by default)"
                 },
                 "kinds": {
                     "type": "array",
@@ -109,7 +159,7 @@ Returns structured data appropriate to the action."
                 },
                 "peer": {
                     "type": "string",
-                    "description": "Optional filter for 'list': cross-peer lookup, e.g. 'user:alice' or 'public'. When omitted, results span all peers."
+                    "description": "Optional filter for 'list' and 'search': cross-peer lookup, e.g. 'user:alice' or 'public'. When omitted, results span all peers."
                 },
                 "agent_id": {
                     "type": "string",
@@ -118,7 +168,7 @@ Returns structured data appropriate to the action."
                 "limit": {
                     "type": "integer",
                     "default": 50,
-                    "description": "Max results for 'list' or 'history'"
+                    "description": "Max results for 'list', 'history', or 'search'"
                 },
                 "active_minutes": {
                     "type": "integer",
@@ -152,34 +202,9 @@ Returns structured data appropriate to the action."
                 let session_key = params.get("session_key").and_then(|v| v.as_str());
                 let timezone = params.get("timezone").and_then(|v| v.as_str());
 
-                // Try to get existing status, or create minimal one for time queries
-                let mut status = match self.get_status_action(session_key).await {
-                    Ok(s) => s,
-                    Err(_) => {
-                        let session_id = session_key
-                            .unwrap_or(&self.runtime.current_session_key())
-                            .to_string();
-                        SessionStatusResult {
-                            session_id,
-                            agent_name: "unknown".to_string(),
-                            created_at: chrono::Utc::now().to_rfc3339(),
-                            last_activity: chrono::Utc::now().to_rfc3339(),
-                            timestamp_utc: String::new(),
-                            timestamp: String::new(),
-                            message_count: 0,
-                            usage: super::UsageStats {
-                                prompt_tokens: 0,
-                                completion_tokens: 0,
-                                last_total_tokens: 0,
-                                model_context_limit: None,
-                            },
-                            peer_type: None,
-                            peer_id: None,
-                            label: None,
-                            parent_session: None,
-                        }
-                    }
-                };
+                // A missing/unknown session is a real error — never
+                // fabricate a zeroed status for it.
+                let mut status = self.get_status_action(session_key).await?;
 
                 // Add current timestamps
                 let now_utc = chrono::Utc::now();
@@ -217,11 +242,22 @@ Returns structured data appropriate to the action."
                 let agent_id = params.get("agent_id").and_then(|v| v.as_str());
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
                 let active_minutes = params.get("active_minutes").and_then(|v| v.as_i64());
+                let include_archived = params
+                    .get("include_archived")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 let kinds_ref = kinds.as_deref();
                 let sessions = self
                     .runtime
-                    .list_sessions(kinds_ref, peer.as_ref(), agent_id, limit, active_minutes)
+                    .list_sessions(
+                        kinds_ref,
+                        peer.as_ref(),
+                        agent_id,
+                        limit,
+                        active_minutes,
+                        include_archived,
+                    )
                     .await?;
                 Ok(Self::build_list_response(sessions))
             }
@@ -242,6 +278,96 @@ Returns structured data appropriate to the action."
                     .get_history(&session_key, limit, include_tools)
                     .await?;
                 Ok(Self::build_history_response(&session_key, messages))
+            }
+            SessionAction::Search => {
+                let query = params
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("'search' requires the 'query' parameter"))?;
+                let peer_str = params.get("peer").and_then(|v| v.as_str());
+                let peer = match peer_str {
+                    Some(s) => Some(
+                        s.parse::<peko_subject::Subject>()
+                            .map_err(|e| anyhow::anyhow!("Invalid peer '{s}': {e}"))?,
+                    ),
+                    None => None,
+                };
+                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+                let hits = self
+                    .runtime
+                    .search_sessions(query, peer.as_ref(), limit)
+                    .await?;
+                Ok(json!({
+                    "total": hits.len(),
+                    "hits": hits,
+                }))
+            }
+            SessionAction::Branch => {
+                let session_key = Self::require_session_key(&params, "branch")?;
+                let label = params
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                let outcome = self.runtime.branch_session(session_key, label).await?;
+                Ok(serde_json::to_value(outcome)?)
+            }
+            SessionAction::Rename => {
+                let session_key = Self::require_session_key(&params, "rename")?;
+                let title = params
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("'rename' requires the 'title' parameter"))?
+                    .to_string();
+
+                self.runtime.rename_session(session_key, title).await?;
+                Ok(json!({ "renamed": session_key }))
+            }
+            SessionAction::Archive | SessionAction::Unarchive => {
+                let archived = action == SessionAction::Archive;
+                let verb = if archived { "archive" } else { "unarchive" };
+                let session_key = Self::require_session_key(&params, verb)?;
+
+                self.runtime.set_archived(session_key, archived).await?;
+                Ok(json!({
+                    "session_key": session_key,
+                    "archived": archived,
+                }))
+            }
+            SessionAction::Delete => {
+                let session_key = Self::require_session_key(&params, "delete")?;
+                let recursive = params
+                    .get("recursive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let outcome = self.runtime.delete_session(session_key, recursive).await?;
+                Ok(serde_json::to_value(outcome)?)
+            }
+            SessionAction::Compact => {
+                let session_key = Self::require_session_key(&params, "compact")?;
+
+                let outcome = self.runtime.request_compaction(session_key).await?;
+                Ok(serde_json::to_value(outcome)?)
+            }
+            SessionAction::New => {
+                let title = params
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                let outcome = self.runtime.new_chapter(title).await?;
+                Ok(serde_json::to_value(outcome)?)
+            }
+            SessionAction::Resume => {
+                let target = params
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("'resume' requires the 'target' parameter"))?;
+
+                let outcome = self.runtime.resume_chapter(target).await?;
+                Ok(serde_json::to_value(outcome)?)
             }
         }
     }
@@ -271,6 +397,8 @@ mod tests {
             is_active: true,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
+            archived: false,
+            run_active: false,
         };
 
         let history = vec![
@@ -396,6 +524,8 @@ mod tests {
             is_active: true,
             peer_type: None,
             peer_id: None,
+            archived: false,
+            run_active: false,
         };
 
         cache.add_session("current-session".to_string(), session, vec![], status);
@@ -430,17 +560,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_status_not_found_returns_minimal() {
+    async fn test_session_status_not_found_errors() {
         let cache = Arc::new(SessionCache::new("main"));
         let tool = SessionTool::new(cache.as_shared());
 
-        let result = tool
+        // The old fabricated zeroed status is gone: an unknown session
+        // must surface the runtime's real error.
+        let err = tool
             .execute(json!({"action": "status", "session_key": "missing"}))
             .await
-            .unwrap();
-
-        assert_eq!(result["session_id"], "missing");
-        assert_eq!(result["agent_name"], "unknown");
+            .expect_err("status on an unknown session must error, not fabricate");
+        assert!(err.to_string().contains("missing"), "{err}");
     }
 
     /// Helper: build a registry pre-loaded with three sessions spanning
@@ -461,6 +591,8 @@ mod tests {
             is_active: true,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
+            archived: false,
+            run_active: false,
         };
         let alice_other = SessionInfo {
             session_key: "alice-2".to_string(),
@@ -474,6 +606,8 @@ mod tests {
             is_active: true,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
+            archived: false,
+            run_active: false,
         };
         let bob_main = SessionInfo {
             session_key: "bob-1".to_string(),
@@ -487,6 +621,8 @@ mod tests {
             is_active: true,
             peer_type: Some("user".to_string()),
             peer_id: Some("bob".to_string()),
+            archived: false,
+            run_active: false,
         };
 
         cache.add_session(
@@ -623,5 +759,237 @@ mod tests {
             assert_eq!(s["peer_type"], "user");
             assert_eq!(s["peer_id"], "alice");
         }
+    }
+
+    // ====================================================================================
+    // Phase 3 Tests: lifecycle actions (search/branch/rename/archive/delete/compact/new/resume)
+    // ====================================================================================
+
+    #[tokio::test]
+    async fn test_session_search_happy_path_and_missing_query() {
+        let cache = SessionCache::new("main");
+        let session = SessionInfo {
+            session_key: "s1".to_string(),
+            session_id: "s1".to_string(),
+            kind: "main".to_string(),
+            agent_id: Some("main".to_string()),
+            label: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            last_activity: "2024-01-01T01:00:00Z".to_string(),
+            message_count: 1,
+            is_active: true,
+            peer_type: None,
+            peer_id: None,
+            archived: false,
+            run_active: false,
+        };
+        let history = vec![HistoryMessage {
+            role: "user".to_string(),
+            content: "deploy the frambulator on friday".to_string(),
+            tool_calls: None,
+            tool_results: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+        }];
+        cache.add_session("s1".to_string(), session, history, dummy_status("s1"));
+        let tool = SessionTool::new(Arc::new(cache).as_shared());
+
+        let result = tool
+            .execute(json!({"action": "search", "query": "FRAMBULATOR"}))
+            .await
+            .unwrap();
+        assert_eq!(result["total"], 1);
+        assert_eq!(result["hits"][0]["session_id"], "s1");
+        assert_eq!(result["hits"][0]["role"], "user");
+        assert!(result["hits"][0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("frambulator"));
+
+        let err = tool
+            .execute(json!({"action": "search"}))
+            .await
+            .expect_err("search without query must error");
+        assert!(err.to_string().contains("query"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_session_branch_and_missing_session_key() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let result = tool
+            .execute(
+                json!({"action": "branch", "session_key": "test-session", "label": "experiment"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["parent_session_id"], "test-session");
+        let new_id = result["new_session_id"].as_str().unwrap().to_string();
+
+        // The branch is listable and carries the branch kind + label.
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        let branch = list["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["session_key"] == new_id)
+            .expect("branch listed");
+        assert_eq!(branch["kind"], "branch");
+        assert_eq!(branch["label"], "experiment");
+
+        let err = tool
+            .execute(json!({"action": "branch", "label": "x"}))
+            .await
+            .expect_err("branch without session_key must error");
+        assert!(err.to_string().contains("session_key"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_session_rename_and_missing_title() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        tool.execute(
+            json!({"action": "rename", "session_key": "test-session", "title": "Renamed"}),
+        )
+        .await
+        .unwrap();
+
+        let result = tool
+            .execute(json!({"action": "status", "session_key": "test-session"}))
+            .await
+            .unwrap();
+        assert_eq!(result["label"], "Renamed");
+
+        let err = tool
+            .execute(json!({"action": "rename", "session_key": "test-session"}))
+            .await
+            .expect_err("rename without title must error");
+        assert!(err.to_string().contains("title"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_session_archive_unarchive_and_list_visibility() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        // Archive: hidden from the default list.
+        let result = tool
+            .execute(json!({"action": "archive", "session_key": "test-session"}))
+            .await
+            .unwrap();
+        assert_eq!(result["archived"], true);
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["total"], 0, "archived hidden by default");
+
+        // include_archived: true brings it back, flagged.
+        let list = tool
+            .execute(json!({"action": "list", "include_archived": true}))
+            .await
+            .unwrap();
+        assert_eq!(list["total"], 1);
+        assert_eq!(list["sessions"][0]["archived"], true);
+
+        // Unarchive: visible again.
+        let result = tool
+            .execute(json!({"action": "unarchive", "session_key": "test-session"}))
+            .await
+            .unwrap();
+        assert_eq!(result["archived"], false);
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["total"], 1);
+
+        let err = tool
+            .execute(json!({"action": "archive"}))
+            .await
+            .expect_err("archive without session_key must error");
+        assert!(err.to_string().contains("session_key"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_session_delete_happy_and_missing_key() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let result = tool
+            .execute(json!({"action": "delete", "session_key": "test-session"}))
+            .await
+            .unwrap();
+        assert_eq!(result["deleted"].as_array().unwrap().len(), 1);
+        assert_eq!(result["deleted"][0], "test-session");
+
+        // Gone from the list.
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["total"], 0);
+
+        let err = tool
+            .execute(json!({"action": "delete"}))
+            .await
+            .expect_err("delete without session_key must error");
+        assert!(err.to_string().contains("session_key"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_session_compact_and_missing_key() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let result = tool
+            .execute(json!({"action": "compact", "session_key": "test-session"}))
+            .await
+            .unwrap();
+        assert_eq!(result["session_id"], "test-session");
+        assert!(result["message"].as_str().unwrap().contains("Compaction"));
+
+        let err = tool
+            .execute(json!({"action": "compact"}))
+            .await
+            .expect_err("compact without session_key must error");
+        assert!(err.to_string().contains("session_key"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_session_new_chapter() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let result = tool
+            .execute(json!({"action": "new", "title": "morning"}))
+            .await
+            .unwrap();
+        assert_eq!(result["live_session_id"], "main");
+        assert!(result["message"]
+            .as_str()
+            .unwrap()
+            .contains("next incoming message"));
+    }
+
+    #[tokio::test]
+    async fn test_session_resume_and_missing_target() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let result = tool
+            .execute(json!({"action": "resume", "target": "test-session"}))
+            .await
+            .unwrap();
+        assert_eq!(result["live_session_id"], "main");
+        assert!(result["message"]
+            .as_str()
+            .unwrap()
+            .contains("next incoming message"));
+
+        let err = tool
+            .execute(json!({"action": "resume"}))
+            .await
+            .expect_err("resume without target must error");
+        assert!(err.to_string().contains("target"), "{err}");
+
+        // Unknown target surfaces the runtime error.
+        let err = tool
+            .execute(json!({"action": "resume", "target": "nope"}))
+            .await
+            .expect_err("resume of an unknown target must error");
+        assert!(err.to_string().contains("nope"), "{err}");
     }
 }

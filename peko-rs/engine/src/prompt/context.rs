@@ -178,6 +178,9 @@ impl QuotaStateView {
 pub struct TurnPromptContext {
     /// Principal runtime id (for hook dispatch).
     pub principal_id: String,
+    /// Real session id for this run — stamped onto the
+    /// `SessionSnapshot` the `SessionContextBuild` hook receives.
+    pub session_id: String,
     /// Agent name (for `{{agent_name}}`).
     pub agent_name: String,
     /// Agent prompt body template (Markdown with `{{placeholder}}` tokens).

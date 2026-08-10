@@ -1212,7 +1212,7 @@ impl AgenticLoop {
             // per-turn so cache markers on the prefix can do their
             // job.
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
-                let ctx = self.build_turn_context(iteration, &tool_defs);
+                let ctx = self.build_turn_context(iteration, &tool_defs, &session_id);
                 let renderer = PromptRenderer::new(Arc::clone(&self.extension_core));
 
                 // F36: the prefix no longer references tool names, so
@@ -2168,6 +2168,7 @@ impl AgenticLoop {
         &self,
         iteration: usize,
         tool_defs: &[ToolDefinition],
+        session_id: &str,
     ) -> TurnPromptContext {
         // Body lives on `AgentConfig::prompt` as `Option<String>`. Empty
         // body is supported (renderer falls back to one-line identity).
@@ -2245,6 +2246,7 @@ impl AgenticLoop {
 
         TurnPromptContext {
             principal_id: self.agent_principal_id.clone(),
+            session_id: session_id.to_string(),
             agent_name: self.agent.name().to_string(),
             body,
             capabilities: self.agent.principal_capabilities().cloned(),

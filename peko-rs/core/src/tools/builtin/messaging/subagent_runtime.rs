@@ -154,6 +154,15 @@ pub struct SpawnRequest {
     /// `None` falls back to the parent's model (the historical
     /// behavior).
     pub model: Option<String>,
+    /// Phase 5b: re-attach the run to an existing spawned session
+    /// (persistent subagents) instead of spawning a fresh one.
+    /// Mutually exclusive with `isolated`.
+    pub resume_session: Option<String>,
+    /// The caller's own current session id (auto-detected by the
+    /// tool from `ToolContext` / the session-key provider). Used by
+    /// the adapter to ownership-validate an explicit
+    /// `parent_session_key`; `None` skips that check (test paths).
+    pub caller_session_key: Option<String>,
 }
 
 // ─── SpawnAuditEvent (port input DTO) ─────────────────────────────

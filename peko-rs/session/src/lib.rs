@@ -60,6 +60,7 @@ pub use types::{ChannelType, OverlayType, SpawnCleanupPolicy};
 pub mod context;
 pub mod default_path_resolver;
 pub use default_path_resolver::DefaultPathResolver;
+pub mod chapters;
 pub mod directory;
 pub mod events;
 pub mod inbox_registry;
@@ -85,6 +86,7 @@ pub mod test_config;
 pub mod todos;
 pub mod unified;
 
+pub use chapters::{chapter_id, chapters_path, consume, request, take, ChapterRequest};
 pub use context::SessionContext;
 pub use directory::SessionDirectory;
 pub use events::{
@@ -94,7 +96,7 @@ pub use events::{
 };
 pub use inbox_registry::{InboxFactory, InboxRegistry, RunPermitGuard};
 pub use index::{SessionEntry, SessionIndex};
-pub use jsonl::{NormalizedEntry, SessionStorage};
+pub use jsonl::{NormalizedEntry, SessionStorage, TranscriptSearchHit};
 pub use key::{
     base_key_from_overlay, derive_base_session_key, derive_overlay_key, derive_session_key,
     discord_session_key, parse_session_key, parse_session_key_v2, safe_filename_component,
