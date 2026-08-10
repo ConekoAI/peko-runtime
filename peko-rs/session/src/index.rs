@@ -370,7 +370,7 @@ impl SessionIndex {
         }
 
         // Load from disk (directory may not exist yet - that's OK)
-        let entries = if self.sessions_path.exists() {
+        let mut entries = if self.sessions_path.exists() {
             let content = fs::read_to_string(&self.sessions_path)
                 .await
                 .with_context(|| {
@@ -394,9 +394,18 @@ impl SessionIndex {
             HashMap::new()
         };
 
+        // Backfill peer attribution for legacy entries. Sessions
+        // branched before `peer_type`/`peer_id` were plumbed through
+        // serialize with both fields as `None`, so the peer's
+        // routing/list view can't see them. Walk up the parent chain
+        // (cycle-safe) and copy the first ancestor's attribution; if
+        // no ancestor has it, leave the entry untouched. Sets
+        // `sessions_modified` if any field was backfilled so the next
+        // `save` persists the fix.
+        let backfilled = backfill_peer_attribution(&mut entries);
         self.sessions_cache = Some(entries);
         self.sessions_loaded_at = Some(SystemTime::now());
-        self.sessions_modified = false;
+        self.sessions_modified = backfilled;
 
         Ok(self.sessions_cache.as_ref().unwrap())
     }
@@ -624,6 +633,26 @@ impl SessionIndex {
         }
 
         Ok(())
+    }
+
+    /// All peer keys whose routing entry currently references
+    /// `session_id` (in `session_ids` or as `active_session_id`). Used
+    /// by `SessionManager::set_archived` so an archived session is
+    /// scrubbed from every peer that knew about it.
+    #[must_use]
+    pub async fn peer_keys_with_session(&mut self, session_id: &str) -> Vec<String> {
+        let Ok(peers) = self.load_peers().await else {
+            return Vec::new();
+        };
+        peers
+            .peers
+            .iter()
+            .filter_map(|(k, p)| {
+                let in_list = p.session_ids.iter().any(|s| s == session_id);
+                let is_active = p.active_session_id.as_deref() == Some(session_id);
+                if in_list || is_active { Some(k.clone()) } else { None }
+            })
+            .collect()
     }
 
     /// Create new session for peer (O(1))
@@ -965,9 +994,75 @@ impl SessionIndex {
     }
 }
 
+/// One-shot backfill for legacy entries that predate `peer_type` /
+/// `peer_id`. For each entry where either field is `None`, walk up
+/// the parent chain (cycle-safe) and copy any ancestor field that is
+/// set. Returns `true` if any field was backfilled (caller should
+/// mark the index modified so the next save persists the fix).
+fn backfill_peer_attribution(entries: &mut HashMap<String, SessionEntry>) -> bool {
+    let mut changed = false;
+    // Snapshot ids so we can mutate entries in place without borrowing
+    // the map immutably while we walk the chain.
+    let ids: Vec<String> = entries.keys().cloned().collect();
+    for id in ids {
+        let Some(entry) = entries.get(&id) else {
+            continue;
+        };
+        if entry.peer_type.is_some() && entry.peer_id.is_some() {
+            continue;
+        }
+        // Walk up the parent chain (cycle-safe). Cap at the entry
+        // count so a corrupted chain can't loop forever.
+        let cap = entries.len();
+        let mut cursor = id.clone();
+        let mut visited: HashSet<String> = HashSet::new();
+        visited.insert(cursor.clone());
+        let mut peer_type: Option<String> = None;
+        let mut peer_id: Option<String> = None;
+        for _ in 0..cap {
+            let Some(entry) = entries.get(&cursor) else {
+                break;
+            };
+            if peer_type.is_none() {
+                peer_type = entry.peer_type.clone();
+            }
+            if peer_id.is_none() {
+                peer_id = entry.peer_id.clone();
+            }
+            if peer_type.is_some() && peer_id.is_some() {
+                break;
+            }
+            let Some(parent) = entry.parent_session_id.clone() else {
+                break;
+            };
+            if !visited.insert(parent.clone()) {
+                break;
+            }
+            cursor = parent;
+        }
+        if let Some(entry) = entries.get_mut(&id) {
+            if entry.peer_type.is_none() {
+                if let Some(t) = peer_type.take() {
+                    entry.peer_type = Some(t);
+                    changed = true;
+                }
+            }
+            if entry.peer_id.is_none() {
+                if let Some(i) = peer_id.take() {
+                    entry.peer_id = Some(i);
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use crate::*;
+    use crate::index::backfill_peer_attribution;
+    use std::collections::HashMap;
     use tempfile::TempDir;
 
     /// Regression test for issue #89: concurrent `SessionIndex` instances on
@@ -1246,5 +1341,138 @@ mod tests {
             .remove_session_from_peer("user:nobody", "sess_a")
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn backfill_peer_attribution_copies_from_parent_chain() {
+        let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        // Ancestor with full attribution.
+        entries.insert(
+            "root:user:alice".to_string(),
+            SessionEntry::with_peer(
+                "root:user:alice".to_string(),
+                "testagent".to_string(),
+                "root:user:alice.jsonl".to_string(),
+                "user",
+                "alice",
+            ),
+        );
+        // Legacy branch: peer fields None, parent has them.
+        let mut legacy_branch = SessionEntry::new(
+            "branch1".to_string(),
+            "testagent".to_string(),
+            "branch1.jsonl".to_string(),
+        );
+        legacy_branch.parent_session_id = Some("root:user:alice".to_string());
+        entries.insert("branch1".to_string(), legacy_branch);
+        // Legacy branch-of-branch: parent also has None — chain
+        // continues upward and finds the root's attribution.
+        let mut legacy_grandchild = SessionEntry::new(
+            "grand1".to_string(),
+            "testagent".to_string(),
+            "grand1.jsonl".to_string(),
+        );
+        legacy_grandchild.parent_session_id = Some("branch1".to_string());
+        entries.insert("grand1".to_string(), legacy_grandchild);
+
+        let changed = backfill_peer_attribution(&mut entries);
+        assert!(changed);
+        assert_eq!(
+            entries.get("branch1").unwrap().peer_type.as_deref(),
+            Some("user")
+        );
+        assert_eq!(
+            entries.get("branch1").unwrap().peer_id.as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            entries.get("grand1").unwrap().peer_type.as_deref(),
+            Some("user")
+        );
+        assert_eq!(
+            entries.get("grand1").unwrap().peer_id.as_deref(),
+            Some("alice")
+        );
+    }
+
+    #[test]
+    fn backfill_peer_attribution_handles_orphans() {
+        // No ancestor with attribution ⇒ left untouched, no panic.
+        let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        let mut orphan = SessionEntry::new(
+            "orphan".to_string(),
+            "testagent".to_string(),
+            "orphan.jsonl".to_string(),
+        );
+        orphan.parent_session_id = Some("ghost".to_string()); // parent absent
+        entries.insert("orphan".to_string(), orphan);
+
+        let changed = backfill_peer_attribution(&mut entries);
+        assert!(!changed);
+        assert!(entries.get("orphan").unwrap().peer_type.is_none());
+        assert!(entries.get("orphan").unwrap().peer_id.is_none());
+    }
+
+    #[test]
+    fn backfill_peer_attribution_handles_partial_parent() {
+        // Parent has `peer_type` but no `peer_id` — only fill in the
+        // missing fields on the child, do not overwrite existing ones.
+        let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        let mut parent = SessionEntry::new(
+            "parent".to_string(),
+            "testagent".to_string(),
+            "parent.jsonl".to_string(),
+        );
+        parent.peer_type = Some("user".to_string());
+        parent.peer_id = None; // incomplete
+        entries.insert("parent".to_string(), parent);
+        let mut child = SessionEntry::new(
+            "child".to_string(),
+            "testagent".to_string(),
+            "child.jsonl".to_string(),
+        );
+        child.parent_session_id = Some("parent".to_string());
+        entries.insert("child".to_string(), child);
+
+        let changed = backfill_peer_attribution(&mut entries);
+        assert!(changed, "peer_type was copied down");
+        let child = entries.get("child").unwrap();
+        // peer_type came from the partial parent; peer_id stayed None
+        // because no ancestor in the chain has it.
+        assert_eq!(child.peer_type.as_deref(), Some("user"));
+        assert!(child.peer_id.is_none(), "no ancestor had peer_id");
+    }
+
+    #[test]
+    fn backfill_peer_attribution_survives_cycles() {
+        // Cycle: a → b → a. The walk must terminate.
+        let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        let mut a = SessionEntry::new(
+            "a".to_string(),
+            "testagent".to_string(),
+            "a.jsonl".to_string(),
+        );
+        a.parent_session_id = Some("b".to_string());
+        a.peer_type = Some("user".to_string());
+        a.peer_id = Some("alice".to_string());
+        let mut b = SessionEntry::new(
+            "b".to_string(),
+            "testagent".to_string(),
+            "b.jsonl".to_string(),
+        );
+        b.parent_session_id = Some("a".to_string());
+        entries.insert("a".to_string(), a);
+        entries.insert("b".to_string(), b);
+
+        // Should terminate without infinite loop and pick up the
+        // attribution from `a` (first reachable ancestor with both
+        // fields).
+        let changed = backfill_peer_attribution(&mut entries);
+        assert!(changed);
+        assert_eq!(
+            entries.get("b").unwrap().peer_type.as_deref(),
+            Some("user")
+        );
+        assert_eq!(entries.get("b").unwrap().peer_id.as_deref(), Some("alice"));
     }
 }

@@ -258,74 +258,101 @@ where
         // whatever session follows, so InboxRegistry mappings, queued
         // steering, and subagent completion announcements keyed by the
         // live id are untouched — messages that arrive after the
-        // request land in the new chapter. `chapters::take` does its
-        // file IO *without* the session_manager lock; the renames then
-        // take the manager write lock, keeping the lock order
-        // creation-lock → manager-lock. (`rename_session_id` re-keys
+        // request land in the new chapter. `chapters::consume` does
+        // its file IO *without* the session_manager lock; the renames
+        // then take the manager write lock, keeping the lock order
+        // creation-lock → manager-lock. If a rename fails inside the
+        // closure, `consume` restores the pending request to the file
+        // so the next run retries. (`rename_session_id` re-keys
         // sessions.json only; peers.json routing is left for the fresh
         // create path below, by design.)
-        match peko_session::chapters::take(ctx.sessions_dir.as_path(), &session_id) {
-            Ok(Some(peko_session::chapters::ChapterRequest::New { title })) => {
-                let mut mgr = session_manager.write().await;
-                // Only rotate when the live session actually exists — a
-                // first-contact peer has nothing to archive. A failed
-                // rename is propagated: falling through would let
-                // `create_session` truncate the existing transcript.
-                if mgr.get_session_metadata(&session_id).await.is_ok() {
-                    let chapter =
-                        peko_session::chapters::chapter_id(ctx.sessions_dir.as_path(), &session_id);
-                    mgr.rename_session_id(&session_id, &chapter).await?;
-                    if let Some(title) = title {
-                        // Best-effort label on the archived chapter.
-                        if let Err(e) = mgr.set_session_title(&chapter, Some(title)).await {
-                            tracing::warn!("failed to title chapter {chapter}: {e}");
-                        }
-                    }
-                }
-            }
-            Ok(Some(peko_session::chapters::ChapterRequest::Resume { target })) => {
-                let mut mgr = session_manager.write().await;
-                // Verify the target FIRST: a stale resume request must
-                // not brick the principal's message path — warn and
-                // continue with the current live session unchanged.
-                if mgr.get_session_metadata(&target).await.is_err() {
-                    tracing::warn!(
-                        "chapter resume target '{target}' no longer exists; \
-                         continuing with the current live session"
-                    );
-                } else {
-                    // Archive the current live session (if any), then
-                    // move the target onto the live id.
-                    let mut archived = None;
-                    if mgr.get_session_metadata(&session_id).await.is_ok() {
-                        let chapter = peko_session::chapters::chapter_id(
-                            ctx.sessions_dir.as_path(),
-                            &session_id,
-                        );
-                        mgr.rename_session_id(&session_id, &chapter).await?;
-                        archived = Some(chapter);
-                    }
-                    if let Err(e) = mgr.rename_session_id(&target, &session_id).await {
-                        // Roll back the first rename (best-effort) so
-                        // the pre-resume layout is restored, then fail
-                        // the run startup loudly.
-                        if let Some(chapter) = archived {
-                            if let Err(re) = mgr.rename_session_id(&chapter, &session_id).await {
-                                tracing::warn!(
-                                    "resume rollback rename {chapter} → {session_id} failed: {re}"
-                                );
+        match peko_session::chapters::consume(
+            ctx.sessions_dir.as_path(),
+            &session_id,
+            async |req| {
+                match req {
+                    peko_session::chapters::ChapterRequest::New { title } => {
+                        let mut mgr = session_manager.write().await;
+                        // Only rotate when the live session actually
+                        // exists — a first-contact peer has nothing
+                        // to archive. A failed rename is propagated:
+                        // falling through would let `create_session`
+                        // truncate the existing transcript.
+                        if mgr.get_session_metadata(&session_id).await.is_ok() {
+                            let chapter = peko_session::chapters::chapter_id(
+                                ctx.sessions_dir.as_path(),
+                                &session_id,
+                            );
+                            mgr.rename_session_id(&session_id, &chapter).await?;
+                            if let Some(title) = title {
+                                // Best-effort label on the archived chapter.
+                                if let Err(e) =
+                                    mgr.set_session_title(&chapter, Some(title)).await
+                                {
+                                    tracing::warn!("failed to title chapter {chapter}: {e}");
+                                }
                             }
                         }
-                        return Err(e).context(format!(
-                            "failed to resume chapter '{target}' onto live session '{session_id}'"
-                        ));
+                    }
+                    peko_session::chapters::ChapterRequest::Resume { target } => {
+                        let mut mgr = session_manager.write().await;
+                        // Verify the target FIRST: a stale resume
+                        // request must not brick the principal's
+                        // message path — warn and continue with the
+                        // current live session unchanged.
+                        if mgr.get_session_metadata(&target).await.is_err() {
+                            tracing::warn!(
+                                "chapter resume target '{target}' no longer exists; \
+                                 continuing with the current live session"
+                            );
+                        } else {
+                            // Archive the current live session (if
+                            // any), then move the target onto the
+                            // live id.
+                            let mut archived = None;
+                            if mgr.get_session_metadata(&session_id).await.is_ok() {
+                                let chapter = peko_session::chapters::chapter_id(
+                                    ctx.sessions_dir.as_path(),
+                                    &session_id,
+                                );
+                                mgr.rename_session_id(&session_id, &chapter).await?;
+                                archived = Some(chapter);
+                            }
+                            if let Err(e) = mgr.rename_session_id(&target, &session_id).await {
+                                // Roll back the first rename
+                                // (best-effort) so the pre-resume
+                                // layout is restored, then fail the
+                                // run startup loudly.
+                                if let Some(chapter) = archived {
+                                    if let Err(re) =
+                                        mgr.rename_session_id(&chapter, &session_id).await
+                                    {
+                                        tracing::warn!(
+                                            "resume rollback rename {chapter} → \
+                                             {session_id} failed: {re}"
+                                        );
+                                    }
+                                }
+                                return Err(e).context(format!(
+                                    "failed to resume chapter '{target}' onto \
+                                     live session '{session_id}'"
+                                ));
+                            }
+                        }
                     }
                 }
-            }
-            Ok(None) => {}
+                Ok::<(), anyhow::Error>(())
+            },
+        )
+        .await
+        {
+            Ok(_) => {}
             Err(e) => {
-                // Sidecar IO failure: never brick the message path.
-                tracing::warn!("failed to read pending chapter request: {e}");
+                // Sidecar IO failure (load/save) or rename failure
+                // — never brick the message path. consume<F> has
+                // already restored the entry on closure errors, so
+                // retries are safe.
+                tracing::warn!("failed to apply pending chapter request: {e}");
             }
         }
 

@@ -136,6 +136,44 @@ pub fn take(sessions_dir: &Path, live_id: &str) -> Result<Option<ChapterRequest>
     Ok(req)
 }
 
+/// Transactional `take`: remove the pending chapter change for
+/// `live_id`, hand it to `f`, and only persist the removal if `f`
+/// succeeds. When `f` returns an error the entry is restored to the
+/// sidecar and the error is propagated, so the next run retries the
+/// rotation instead of silently dropping the user's request.
+///
+/// `Ok(None)` ⇒ no pending request (closure not invoked).
+/// `Ok(Some(v))` ⇒ request was consumed and `f` returned `v`.
+/// `Err(e)` ⇒ `f` failed; the entry has been restored to the file.
+pub async fn consume<F, T>(
+    sessions_dir: &Path,
+    live_id: &str,
+    f: F,
+) -> Result<Option<T>>
+where
+    F: AsyncFnOnce(ChapterRequest) -> Result<T>,
+{
+    let path = chapters_path(sessions_dir);
+    let mut map = load(&path);
+    let Some(req) = map.remove(live_id) else {
+        return Ok(None);
+    };
+    // Keep a clone for the rollback path; `f` consumes its argument.
+    let rollback = req.clone();
+    match f(req).await {
+        Ok(v) => {
+            save(&path, &map)?;
+            Ok(Some(v))
+        }
+        Err(e) => {
+            // Rollback: re-insert the entry so the next run retries.
+            map.insert(live_id.to_string(), rollback);
+            save(&path, &map)?;
+            Err(e)
+        }
+    }
+}
+
 /// Derive the chapter id for a live session id being rotated out:
 /// `{live}#{YYYYMMDD-HHMMSS}` in UTC. When that id's transcript file
 /// already exists in `sessions_dir` (two rotations within the same
@@ -286,6 +324,90 @@ mod tests {
             })
         );
         assert_eq!(take(dir.path(), "root:user:alice").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn consume_success_removes_entry() {
+        let dir = TempDir::new().unwrap();
+
+        request(
+            dir.path(),
+            "root:user:alice",
+            ChapterRequest::New {
+                title: Some("morning".to_string()),
+            },
+        )
+        .unwrap();
+
+        // Closure receives the entry and returns Ok — file is rewritten
+        // without it.
+        let observed = consume(dir.path(), "root:user:alice", async |req| {
+            assert_eq!(
+                req,
+                ChapterRequest::New {
+                    title: Some("morning".to_string())
+                }
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(observed, Some(()));
+
+        // The entry is consumed: a second take returns None.
+        assert_eq!(take(dir.path(), "root:user:alice").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn consume_no_entry_is_a_noop() {
+        let dir = TempDir::new().unwrap();
+        // Closure never runs, no file is touched.
+        let observed: Option<()> = consume(dir.path(), "root:user:alice", async |_| -> Result<(), anyhow::Error> {
+            panic!("closure must not run when no entry is pending")
+        })
+        .await
+        .unwrap();
+        assert_eq!(observed, None);
+        // No file should have been created.
+        assert!(!chapters_path(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn consume_failure_restores_entry_for_retry() {
+        let dir = TempDir::new().unwrap();
+
+        request(
+            dir.path(),
+            "root:user:alice",
+            ChapterRequest::Resume {
+                target: "sess_old".to_string(),
+            },
+        )
+        .unwrap();
+
+        // Simulate the rename failing (e.g. cross-device rename, ENOSPC):
+        // the entry must be restored so the next run retries.
+        let err = consume(dir.path(), "root:user:alice", async |req| {
+            // Touch the request to prove the closure received it.
+            assert_eq!(
+                req,
+                ChapterRequest::Resume {
+                    target: "sess_old".to_string()
+                }
+            );
+            Err::<(), _>(anyhow::anyhow!("rename failed"))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err.to_string(), "rename failed");
+
+        // The entry was rolled back; a follow-up take returns it intact.
+        assert_eq!(
+            take(dir.path(), "root:user:alice").unwrap(),
+            Some(ChapterRequest::Resume {
+                target: "sess_old".to_string()
+            })
+        );
     }
 
     #[test]

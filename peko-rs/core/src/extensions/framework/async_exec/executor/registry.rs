@@ -709,3 +709,24 @@ pub async fn list_all_runs_across_all_registries() -> Vec<AsyncTaskEntry> {
         .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
         .collect()
 }
+
+/// True iff any per-agent registry has a non-terminal subagent run
+/// attached to `child_session_id` (or the legacy overlay key form
+/// `child_session_key`). Used by the session-runtime destructive
+/// guards so that a recursive delete of a parent whose child is
+/// mid-iteration in `Agent::run_subagent` is refused — `InboxRegistry`
+/// run permits are only held for root sessions, so the unified
+/// AsyncTaskRegistry is the source of truth for subagent runs.
+pub async fn has_active_subagent_run_across_all_registries(child: &str) -> bool {
+    let registries: Vec<SharedAsyncTaskRegistry> = {
+        let map = global_registries().lock().unwrap();
+        map.values().cloned().collect()
+    };
+    for registry in registries {
+        let reg = registry.read().await;
+        if reg.has_active_subagent_run_for_child(child) {
+            return true;
+        }
+    }
+    false
+}

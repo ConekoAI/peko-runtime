@@ -25,7 +25,19 @@ pub struct CallerContext {
     /// True when the current session has no parent (principal-level
     /// caller; manages the whole store). False ⇒ subtree-level caller
     /// (manages only its own subtree).
+    ///
+    /// A session whose metadata is missing from `metas` is NEVER base:
+    /// the caller is treated as dangling (see [`Self::dangling`]) and
+    /// refused rather than promoted to principal-level. The previous
+    /// "missing = base" default was a privilege-escalation hole — see
+    /// PR review 2026-08-10.
     pub is_base: bool,
+    /// True when the caller's own session metadata is missing from
+    /// `metas`. Guards treat dangling callers like subtree callers
+    /// with an empty ancestor chain — every ownership check fails,
+    /// producing a `dangling` refusal rather than a silent
+    /// privilege grant.
+    pub dangling: bool,
     /// Ancestor chain of the current session, nearest parent first.
     /// Ids stay in the chain even when their metadata is missing
     /// (dangling) — the delete-ancestor guard depends on that.
@@ -34,14 +46,18 @@ pub struct CallerContext {
 
 /// Walk the `parent_session_id` chain from `current` and classify the
 /// caller. The walk ends at the first session whose metadata is
-/// missing or has no parent (missing parent = tree root for
-/// classification). Cycle-safe.
+/// missing or has no parent. Cycle-safe.
 #[must_use]
 pub fn caller_context(current: &str, metas: &[SessionMetadata]) -> CallerContext {
     let find = |id: &str| metas.iter().find(|m| m.session_id == id);
 
-    let first_parent = find(current).and_then(|m| m.parent_session_id.clone());
-    let is_base = first_parent.is_none();
+    let current_meta = find(current);
+    let dangling = current_meta.is_none();
+    let first_parent = current_meta.and_then(|m| m.parent_session_id.clone());
+    // is_base is true ONLY when the caller's metadata is present AND
+    // has no parent recorded. A missing-metadata caller is dangling,
+    // not base.
+    let is_base = first_parent.is_none() && !dangling;
 
     let mut ancestors = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -57,6 +73,7 @@ pub fn caller_context(current: &str, metas: &[SessionMetadata]) -> CallerContext
     CallerContext {
         current_session_id: current.to_string(),
         is_base,
+        dangling,
         ancestors,
     }
 }
@@ -82,18 +99,45 @@ pub fn in_subtree(caller: &CallerContext, target: &str, metas: &[SessionMetadata
 
 /// All sessions whose ancestor chain contains `target` (the target's
 /// descendants, in no particular order).
+///
+/// Implemented as a single BFS over a parent-to-children adjacency
+/// map built once, instead of `metas.len()` calls to `ancestors_of`
+/// (each an O(depth) walk). Total cost: O(N + E) per call, where
+/// E <= N.
 #[must_use]
 pub fn descendants_of(target: &str, metas: &[SessionMetadata]) -> Vec<String> {
-    metas
-        .iter()
-        .filter(|m| {
-            m.session_id != target
-                && ancestors_of(&m.session_id, metas)
-                    .iter()
-                    .any(|a| a == target)
-        })
-        .map(|m| m.session_id.clone())
-        .collect()
+    // Build parent -> direct-children adjacency map in one pass.
+    let mut children: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::with_capacity(metas.len());
+    for m in metas {
+        if let Some(parent) = m.parent_session_id.as_deref() {
+            children.entry(parent).or_default().push(&m.session_id);
+        }
+    }
+    // BFS down from `target`, collecting every reachable node.
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // Seed `seen` with the target so a cycle back to it doesn't push
+    // it into `out` and so the walk terminates.
+    seen.insert(target);
+    let mut stack: Vec<&str> = match children.get(target) {
+        Some(kids) => kids.iter().copied().collect(),
+        None => Vec::new(),
+    };
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        out.push(id.to_string());
+        if let Some(kids) = children.get(id) {
+            for k in kids {
+                if !seen.contains(*k) {
+                    stack.push(k);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Live conversational ids are the deterministic `root:{peer}` /
@@ -238,6 +282,17 @@ pub fn err_context_out_of_tree(target: &str, caller: &str) -> anyhow::Error {
     )
 }
 
+/// Caller's own session metadata is missing from the index (dangling).
+/// Privilege grant is refused rather than silently promoting to base —
+/// the caller cannot prove they belong to any subtree, so the safe
+/// default is to deny.
+pub fn err_dangling(cur: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "cannot act on sessions: your current session '{cur}' has no entry in the session \
+         store — refusing until it is recovered or re-attached"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,10 +333,13 @@ mod tests {
     }
 
     #[test]
-    fn caller_context_missing_metadata_is_base() {
-        // Unknown session: walk ends immediately, classified as base.
+    fn caller_context_missing_metadata_is_dangling() {
+        // Unknown session: classified as dangling, NOT base. The old
+        // "missing = base" default was a privilege-escalation hole;
+        // dangling callers must be refused at the guard site.
         let ctx = caller_context("ghost", &tree());
-        assert!(ctx.is_base);
+        assert!(!ctx.is_base);
+        assert!(ctx.dangling);
         assert!(ctx.ancestors.is_empty());
     }
 
@@ -332,6 +390,74 @@ mod tests {
     }
 
     #[test]
+    fn descendants_of_handles_deep_and_dangling_chains() {
+        // Reference implementation: the old O(N²) form, kept here as a
+        // parity oracle for the BFS rewrite.
+        fn naive_descendants(target: &str, metas: &[SessionMetadata]) -> Vec<String> {
+            fn ancestors_of(id: &str, metas: &[SessionMetadata]) -> Vec<String> {
+                let find = |id: &str| metas.iter().find(|m| m.session_id == id);
+                let mut chain = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                let mut cursor = find(id).and_then(|m| m.parent_session_id.clone());
+                while let Some(id) = cursor {
+                    if !seen.insert(id.clone()) {
+                        break;
+                    }
+                    chain.push(id.clone());
+                    cursor = find(&id).and_then(|m| m.parent_session_id.clone());
+                }
+                chain
+            }
+            metas
+                .iter()
+                .filter(|m| {
+                    m.session_id != target
+                        && ancestors_of(&m.session_id, metas)
+                            .iter()
+                            .any(|a| a == target)
+                })
+                .map(|m| m.session_id.clone())
+                .collect()
+        }
+
+        // 4-level tree under one base + an unrelated branch + a
+        // dangling chain (parent metadata absent).
+        let mut metas = vec![
+            meta("base", None),
+            meta("a", Some("base")),
+            meta("b", Some("a")),
+            meta("c", Some("b")),
+            meta("d", Some("c")),
+            meta("sibling1", Some("base")),
+            meta("sibling2", Some("base")),
+            // dangling: `ghost` is referenced as parent but never exists
+            // in the metadata; the BFS must terminate without panicking.
+            meta("orphan", Some("ghost")),
+        ];
+
+        for target in ["base", "a", "b", "c", "d", "sibling1", "orphan", "ghost"] {
+            let mut naive = naive_descendants(target, &metas);
+            naive.sort();
+            let mut bfs = descendants_of(target, &metas);
+            bfs.sort();
+            assert_eq!(
+                naive, bfs,
+                "target={target}: BFS diverged from naive O(N²)"
+            );
+        }
+
+        // Cycle: x → y → x. Both must be returned when querying x OR y.
+        let mut x = meta("x", Some("y"));
+        let y = meta("y", Some("x"));
+        x.parent_session_id = Some("y".to_string());
+        metas.push(x);
+        metas.push(y);
+        let mut x_desc = descendants_of("x", &metas);
+        x_desc.sort();
+        assert_eq!(x_desc, vec!["y".to_string()]);
+    }
+
+    #[test]
     fn live_base_id_detection() {
         assert!(is_live_base_id("root:user:alice"));
         assert!(is_live_base_id("root:cron:alice"));
@@ -364,6 +490,7 @@ mod tests {
             err_resume_self("s"),
             err_resume_cross_family("s", "c"),
             err_descendants_exist("s", &["d1".to_string()]),
+            err_dangling("c"),
         ] {
             let msg = err.to_string();
             assert!(msg.len() > 20, "refusal too terse: {msg}");

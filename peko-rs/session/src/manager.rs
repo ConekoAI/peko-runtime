@@ -355,16 +355,43 @@ impl SessionHandle {
     ///
     /// Returns true only if the session metadata is actually present in
     /// the metadata store — `Ok(None)` (lookup succeeded, no such
-    /// session) is false, not true.
+    /// session) is false, not true. IO / parse errors are logged at
+    /// `warn` level and treated as "unknown" — callers that need to
+    /// distinguish "definitely missing" from "lookup failed" should use
+    /// [`Self::try_exists`].
     pub async fn exists(&self) -> bool {
-        matches!(
+        match self
+            .metadata
+            .write()
+            .await
+            .get_metadata(&self.session_id, false)
+            .await
+        {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(e) => {
+                tracing::warn!(
+                    "SessionHandle::exists({}) lookup failed; treating as unknown: {e}",
+                    self.session_id
+                );
+                false
+            }
+        }
+    }
+
+    /// Error-returning variant of [`Self::exists`]. Distinguishes
+    /// "definitely no such session" (`Ok(false)`) from "lookup failed"
+    /// (`Err(_)`) so callers can react to transient IO problems instead
+    /// of silently treating them as "the session is gone".
+    pub async fn try_exists(&self) -> Result<bool> {
+        Ok(matches!(
             self.metadata
                 .write()
                 .await
                 .get_metadata(&self.session_id, false)
-                .await,
-            Ok(Some(_))
-        )
+                .await?,
+            Some(_)
+        ))
     }
 }
 
@@ -1408,22 +1435,22 @@ impl SessionManager {
             .clone();
         let storage = SessionStorage::new(sessions_dir.clone());
 
-        // Verify old exists and new does not. The index is
-        // authoritative; the file check guards against an orphan JSONL
-        // squatting on `new_id`.
-        let mut entry = {
-            let mut controller = self.metadata_controller.write().await;
-            let entry = controller
-                .get_entry_from_index(old_id)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Cannot rename non-existent session '{old_id}'"))?;
-            if controller.get_entry_from_index(new_id).await?.is_some() {
-                return Err(anyhow::anyhow!(
-                    "Cannot rename session '{old_id}' to '{new_id}': target id already exists"
-                ));
-            }
-            entry
-        };
+        // Verify old exists and new does not. Hold `metadata_controller.write()`
+        // across the file rename so the index and the jsonl move as one
+        // atomic step — if the lock is dropped between them (the
+        // previous behavior), a crash leaves the index pointing at a
+        // renamed-away transcript. Lock order is
+        // metadata_controller → FileLock everywhere in this crate.
+        let mut controller = self.metadata_controller.write().await;
+        let mut entry = controller
+            .get_entry_from_index(old_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Cannot rename non-existent session '{old_id}'"))?;
+        if controller.get_entry_from_index(new_id).await?.is_some() {
+            return Err(anyhow::anyhow!(
+                "Cannot rename session '{old_id}' to '{new_id}': target id already exists"
+            ));
+        }
         if storage.session_exists(new_id).await {
             return Err(anyhow::anyhow!(
                 "Cannot rename session '{old_id}' to '{new_id}': target transcript file already exists"
@@ -1431,7 +1458,10 @@ impl SessionManager {
         }
 
         // Rename the transcript and any existing sidecars under the
-        // append lock (same lock `append_event` acquires).
+        // append lock (same lock `append_event` acquires). The
+        // metadata_controller lock is held across this block so the
+        // index update below and the file move cannot be split by a
+        // crash.
         let old_jsonl = sessions_dir.join(format!("{}.jsonl", safe_filename_component(old_id)));
         let new_jsonl = sessions_dir.join(format!("{}.jsonl", safe_filename_component(new_id)));
         {
@@ -1461,7 +1491,6 @@ impl SessionManager {
         entry.session_id = new_id.to_string();
         entry.transcript_file = format!("{}.jsonl", safe_filename_component(new_id));
         entry.touch();
-        let mut controller = self.metadata_controller.write().await;
         controller.delete_metadata(old_id).await?;
         controller.update_entry(entry).await?;
         drop(controller);
@@ -1485,13 +1514,36 @@ impl SessionManager {
     }
 
     /// Set the archived flag on a session (passthrough to the
-    /// `MetadataController`). Errors when the session does not exist.
-    pub async fn set_archived(&self, session_id: &str, archived: bool) -> Result<()> {
+    /// `MetadataController`). When `archived == true`, also scrubs the
+    /// session id from any peer routing entry so that archived sessions
+    /// are no longer reachable via `peko send --session <id>` /
+    /// InboxRegistry permits. Errors when the session does not exist.
+    pub async fn set_archived(&mut self, session_id: &str, archived: bool) -> Result<()> {
         self.metadata_controller
             .write()
             .await
             .set_archived(session_id, archived)
-            .await
+            .await?;
+        if archived {
+            // Scrub the peer routing entry. The session index is the
+            // peer-id → routing-entry map; we walk it because peer
+            // attribution is not always 1:1 with session metadata
+            // (chapter rotation can leave stale entries).
+            if let Some(index) = self.index.as_mut() {
+                let peer_keys = index.peer_keys_with_session(session_id).await;
+                for peer_key in peer_keys {
+                    if let Err(e) = index
+                        .remove_session_from_peer(&peer_key, session_id)
+                        .await
+                    {
+                        tracing::warn!(
+                            "set_archived: failed to scrub {session_id} from peer {peer_key}: {e}"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Set the compaction-request flag on a session (passthrough to
@@ -2124,14 +2176,17 @@ impl SessionManager {
             // Remove the base session
             self.remove_base_session(&parsed.agent, &peer);
 
-            // Clear peer from session index if available
+            // Scrub the peer's routing entry: drop the session id from
+            // `session_ids` and clear the active pointer if it pointed
+            // here. `clear_active_for_peer` would leave a stale id in
+            // `session_ids` so the peer's listing kept a tombstone.
             if let Some(ref mut index) = self.index_mut() {
-                if let Err(e) = index.clear_active_for_peer(&base_key).await {
-                    tracing::warn!("Failed to clear peer from index: {}", e);
+                if let Err(e) = index.remove_session_from_peer(&base_key, &base_key).await {
+                    tracing::warn!("Failed to scrub peer from index: {}", e);
                 } else if let Err(e) = index.save_peers().await {
                     tracing::warn!("Failed to save peers index: {}", e);
                 } else {
-                    tracing::info!("Cleared peer from session index: {}", base_key);
+                    tracing::info!("Scrubbed peer from session index: {}", base_key);
                 }
             }
         }

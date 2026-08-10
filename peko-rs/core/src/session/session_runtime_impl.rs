@@ -33,9 +33,10 @@ use serde_json::json;
 
 use crate::session::ownership::{
     caller_context, chapter_family, descendants_of, err_chapters_principal_only,
-    err_compact_archived, err_delete_ancestor, err_descendants_exist, err_live_base_managed,
-    err_not_live_base, err_out_of_tree, err_resume_archived, err_resume_cross_family,
-    err_resume_self, err_run_active, err_self_mutation, in_subtree, is_live_base_id, CallerContext,
+    err_compact_archived, err_dangling, err_delete_ancestor, err_descendants_exist,
+    err_live_base_managed, err_not_live_base, err_out_of_tree, err_resume_archived,
+    err_resume_cross_family, err_resume_self, err_run_active, err_self_mutation, in_subtree,
+    is_live_base_id, CallerContext,
 };
 use crate::tools::builtin::session::{
     BranchOutcome, ChapterChangeOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage,
@@ -123,12 +124,18 @@ impl SessionManagerRuntime {
     }
 
     /// Refuse a subtree (spawned) caller acting outside its subtree.
+    /// Dangling callers (own metadata missing) are refused at this
+    /// site — a caller whose subtree cannot be verified gets no
+    /// privilege, even though `is_base` is also false for them.
     fn guard_tree(
         &self,
         caller: &CallerContext,
         target: &str,
         metas: &[SessionMetadata],
     ) -> anyhow::Result<()> {
+        if caller.dangling {
+            return Err(self.refuse(err_dangling(&caller.current_session_id)));
+        }
         if !caller.is_base && !in_subtree(caller, target, metas) {
             return Err(self.refuse(err_out_of_tree(target, &caller.current_session_id)));
         }
@@ -136,8 +143,13 @@ impl SessionManagerRuntime {
     }
 
     /// Refuse chapter actions for spawned callers and for callers not
-    /// sitting in a live `root:*` slot.
+    /// sitting in a live `root:*` slot. Dangling callers are refused
+    /// at this site too — chapter rotation is a principal-level
+    /// capability and dangling callers can't prove they're base.
     fn guard_chapter_caller(&self, caller: &CallerContext) -> anyhow::Result<()> {
+        if caller.dangling {
+            return Err(self.refuse(err_dangling(&caller.current_session_id)));
+        }
         if !caller.is_base {
             return Err(self.refuse(err_chapters_principal_only()));
         }
@@ -460,7 +472,14 @@ impl SessionRuntime for SessionManagerRuntime {
         }
         let mut post_order = Vec::new();
         let mut stack = vec![session_key.to_string()];
+        // Cycle guard: a corrupt metadata chain (parent↔child loop)
+        // would otherwise push the same id onto `stack` forever. We
+        // already filter on push so the walk terminates.
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
         while let Some(id) = stack.pop() {
+            if !visited.insert(id.clone()) {
+                continue;
+            }
             post_order.push(id.clone());
             for m in &metas {
                 if m.parent_session_id.as_deref() == Some(id.as_str()) {
@@ -489,6 +508,20 @@ impl SessionRuntime for SessionManagerRuntime {
                 tracing::debug!(
                     "no inbox registry bound; deleting {session_key} metadata-only (no run-permit checks)"
                 );
+            }
+        }
+
+        // Subagent runs are NOT tracked by `InboxRegistry` (those are
+        // root-only); they live in the global `AsyncTaskRegistry`
+        // index. A recursive delete on a parent whose child is mid-
+        // iteration in `Agent::run_subagent` must be refused for the
+        // same reason as the InboxRegistry check above — otherwise the
+        // in-flight task's completion announcement lands on a
+        // tombstone session id. See PR review 2026-08-10.
+        use crate::extensions::framework::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
+        for id in std::iter::once(&session_key.to_string()).chain(descendants.iter()) {
+            if has_active_subagent_run_across_all_registries(id).await {
+                return Err(self.refuse(err_run_active(id)));
             }
         }
 

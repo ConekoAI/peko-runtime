@@ -86,7 +86,7 @@ pub mod test_config;
 pub mod todos;
 pub mod unified;
 
-pub use chapters::{chapter_id, chapters_path, ChapterRequest};
+pub use chapters::{chapter_id, chapters_path, consume, request, take, ChapterRequest};
 pub use context::SessionContext;
 pub use directory::SessionDirectory;
 pub use events::{

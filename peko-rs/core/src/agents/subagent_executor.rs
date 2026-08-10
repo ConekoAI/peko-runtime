@@ -1085,7 +1085,7 @@ impl SubagentExecutor {
                         );
                         use crate::tools::builtin::session::SessionRuntime;
                         match guarded_delete
-                            .delete_session(&child_session_id_clone, false)
+                            .delete_session(&child_session_id_clone, true)
                             .await
                         {
                             Ok(outcome) => {
