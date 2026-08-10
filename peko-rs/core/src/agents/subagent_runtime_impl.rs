@@ -78,7 +78,10 @@ impl SubagentExecutorRuntime {
     /// workspace root + a hand-rolled `"agents"` join.
     ///
     /// Errors if neither exists.
-    fn resolve_principal_agent(name: &str, agents_dir: &Path) -> anyhow::Result<BuiltinAgentConfig> {
+    fn resolve_principal_agent(
+        name: &str,
+        agents_dir: &Path,
+    ) -> anyhow::Result<BuiltinAgentConfig> {
         let dir_layout = agents_dir.join(name).join("AGENT.md");
         let flat_layout = agents_dir.join(format!("{name}.md"));
 
@@ -292,18 +295,43 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             model_override,
         };
 
-        let view = self
-            .executor
-            .execute_and_wait(
-                &prompt,
-                None,
-                request.isolated,
-                &parent_session_key,
-                root_config,
-                timeout_seconds,
-                request.parent_cancel,
-            )
-            .await?;
+        let view = if let Some(ref resume_target) = request.resume_session {
+            // Phase 5b: persistent subagents — re-attach to an
+            // existing spawned session. All D4 guards (existence,
+            // spawn-kind, self/ancestor, subtree, archived, active
+            // run) live in `SubagentExecutor::resume_and_execute`.
+            self.executor
+                .resume_and_wait(
+                    &prompt,
+                    resume_target,
+                    &parent_session_key,
+                    root_config,
+                    timeout_seconds,
+                    request.parent_cancel,
+                )
+                .await?
+        } else {
+            // Phase 5b: an explicitly-provided `parent_session_key`
+            // (context seeding) must be the caller's own session or
+            // inside its subtree. The auto-detected default (caller
+            // key == parent key) always passes.
+            if let Some(ref caller) = request.caller_session_key {
+                self.executor
+                    .validate_context_parent(&parent_session_key, caller)
+                    .await?;
+            }
+            self.executor
+                .execute_and_wait(
+                    &prompt,
+                    None,
+                    request.isolated,
+                    &parent_session_key,
+                    root_config,
+                    timeout_seconds,
+                    request.parent_cancel,
+                )
+                .await?
+        };
 
         // Translate the root's `SubagentRunView` to the built-in's.
         // The struct fields are identical by design; this projection

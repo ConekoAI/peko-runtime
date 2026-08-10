@@ -353,14 +353,18 @@ impl SessionHandle {
 
     /// Check if the session exists and is accessible
     ///
-    /// Returns true if the session can be found in the metadata store.
+    /// Returns true only if the session metadata is actually present in
+    /// the metadata store — `Ok(None)` (lookup succeeded, no such
+    /// session) is false, not true.
     pub async fn exists(&self) -> bool {
-        self.metadata
-            .write()
-            .await
-            .get_metadata(&self.session_id, false)
-            .await
-            .is_ok()
+        matches!(
+            self.metadata
+                .write()
+                .await
+                .get_metadata(&self.session_id, false)
+                .await,
+            Ok(Some(_))
+        )
     }
 }
 
@@ -1358,6 +1362,10 @@ impl SessionManager {
         new_metadata.last_total_tokens = parent_metadata.last_total_tokens;
         new_metadata.total_input_tokens = parent_metadata.total_input_tokens;
         new_metadata.total_output_tokens = parent_metadata.total_output_tokens;
+        // Carry the parent's peer attribution onto the branch so the
+        // copy stays attributable to (and manageable by) the same peer.
+        new_metadata.peer_type = parent_metadata.peer_type.clone();
+        new_metadata.peer_id = parent_metadata.peer_id.clone();
 
         // Store metadata
         self.metadata_controller
@@ -1371,6 +1379,141 @@ impl SessionManager {
             new_session_id, parent_session_id
         );
         Ok(new_session_id)
+    }
+
+    /// Rename a session id (rotation primitive)
+    ///
+    /// Moves the JSONL transcript — plus the derived `.index.json` and
+    /// `.context.cache` sidecars when present, mirroring the set
+    /// [`SessionStorage::delete_session`] removes — to the new id, then
+    /// re-keys the index entry (`session_id`, `transcript_file`) via the
+    /// `MetadataController`.
+    ///
+    /// The transcript rename happens under the same cross-process
+    /// `FileLock` that `append_event` uses, so a concurrent appender
+    /// blocks for the duration of the move instead of writing into a
+    /// half-renamed file.
+    ///
+    /// Refuses when `new_id` already exists (index entry or squatting
+    /// JSONL file); errors when `old_id` is unknown.
+    pub async fn rename_session_id(&mut self, old_id: &str, new_id: &str) -> Result<()> {
+        if old_id == new_id {
+            return Err(anyhow::anyhow!("Cannot rename session {old_id} to itself"));
+        }
+
+        let sessions_dir = self
+            .sessions_dir
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?
+            .clone();
+        let storage = SessionStorage::new(sessions_dir.clone());
+
+        // Verify old exists and new does not. The index is
+        // authoritative; the file check guards against an orphan JSONL
+        // squatting on `new_id`.
+        let mut entry = {
+            let mut controller = self.metadata_controller.write().await;
+            let entry = controller
+                .get_entry_from_index(old_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Cannot rename non-existent session '{old_id}'"))?;
+            if controller.get_entry_from_index(new_id).await?.is_some() {
+                return Err(anyhow::anyhow!(
+                    "Cannot rename session '{old_id}' to '{new_id}': target id already exists"
+                ));
+            }
+            entry
+        };
+        if storage.session_exists(new_id).await {
+            return Err(anyhow::anyhow!(
+                "Cannot rename session '{old_id}' to '{new_id}': target transcript file already exists"
+            ));
+        }
+
+        // Rename the transcript and any existing sidecars under the
+        // append lock (same lock `append_event` acquires).
+        let old_jsonl = sessions_dir.join(format!("{}.jsonl", safe_filename_component(old_id)));
+        let new_jsonl = sessions_dir.join(format!("{}.jsonl", safe_filename_component(new_id)));
+        {
+            let _lock = peko_fs_persistence::FileLock::acquire(
+                &old_jsonl,
+                crate::jsonl::SESSION_LOCK_TIMEOUT_MS,
+            )
+            .await?;
+
+            if old_jsonl.exists() {
+                tokio::fs::rename(&old_jsonl, &new_jsonl).await?;
+            }
+            for (old_sidecar, new_sidecar) in [
+                (storage.index_path(old_id), storage.index_path(new_id)),
+                (
+                    storage.context_cache_path(old_id),
+                    storage.context_cache_path(new_id),
+                ),
+            ] {
+                if old_sidecar.exists() {
+                    tokio::fs::rename(&old_sidecar, &new_sidecar).await?;
+                }
+            }
+        }
+
+        // Re-key the index entry via the MetadataController.
+        entry.session_id = new_id.to_string();
+        entry.transcript_file = format!("{}.jsonl", safe_filename_component(new_id));
+        entry.touch();
+        let mut controller = self.metadata_controller.write().await;
+        controller.delete_metadata(old_id).await?;
+        controller.update_entry(entry).await?;
+        drop(controller);
+
+        info!("Renamed session {} to {}", old_id, new_id);
+        Ok(())
+    }
+
+    /// Set the title on a session's metadata
+    ///
+    /// Lightweight convenience used by chapter rotation to label the
+    /// archived chapter. Errors when the session does not exist.
+    pub async fn set_session_title(&self, session_id: &str, title: Option<String>) -> Result<()> {
+        let mut controller = self.metadata_controller.write().await;
+        let mut metadata = controller
+            .get_metadata(session_id, false)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
+        metadata.set_title(title);
+        controller.update_metadata(metadata).await
+    }
+
+    /// Set the archived flag on a session (passthrough to the
+    /// `MetadataController`). Errors when the session does not exist.
+    pub async fn set_archived(&self, session_id: &str, archived: bool) -> Result<()> {
+        self.metadata_controller
+            .write()
+            .await
+            .set_archived(session_id, archived)
+            .await
+    }
+
+    /// Set the compaction-request flag on a session (passthrough to
+    /// the `MetadataController`). Errors when the session does not
+    /// exist.
+    pub async fn set_compact_requested(&self, session_id: &str, requested: bool) -> Result<()> {
+        self.metadata_controller
+            .write()
+            .await
+            .set_compact_requested(session_id, requested)
+            .await
+    }
+
+    /// Delete a session completely (metadata + transcript + sidecars)
+    /// by id (passthrough to the `MetadataController`). Returns
+    /// `Ok(true)` when the session existed.
+    pub async fn delete_session_by_id(&self, session_id: &str) -> Result<bool> {
+        self.metadata_controller
+            .write()
+            .await
+            .delete_session(session_id)
+            .await
     }
 
     /// Switch to a different session (/switch command)
@@ -1702,7 +1845,11 @@ impl SessionManager {
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
         let spawn_peer = Subject::Principal(spawn_id.into());
         let child_base = self
-            .get_or_create_base_with_trigger(agent, &spawn_peer, crate::events::SessionTrigger::Spawn)
+            .get_or_create_base_with_trigger(
+                agent,
+                &spawn_peer,
+                crate::events::SessionTrigger::Spawn,
+            )
             .await?;
 
         // If not isolated, copy parent's context to child's session
@@ -1760,7 +1907,11 @@ impl SessionManager {
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
         let spawn_peer = Subject::Principal(spawn_id.into());
         let child_base = self
-            .get_or_create_base_with_trigger(agent, &spawn_peer, crate::events::SessionTrigger::Spawn)
+            .get_or_create_base_with_trigger(
+                agent,
+                &spawn_peer,
+                crate::events::SessionTrigger::Spawn,
+            )
             .await?;
 
         // If not isolated, copy parent's context to child's session
@@ -2958,5 +3109,273 @@ mod tests {
         let base = result.unwrap();
         let base_guard = base.read().await;
         assert_eq!(base_guard.agent_name, "test_agent");
+    }
+
+    // ====================================================================================
+    // Phase 1 Tests: rename primitive, exists() fix, branch peer attribution
+    // ====================================================================================
+
+    #[tokio::test]
+    async fn test_rename_session_id_happy_path() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Subject::User("alice".to_string());
+
+        let handle = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+        let old_id = handle.session_id().to_string();
+        let new_id = format!("{old_id}#chapter");
+
+        manager.rename_session_id(&old_id, &new_id).await.unwrap();
+
+        // Transcript file moved.
+        let old_path = temp
+            .path()
+            .join(format!("{}.jsonl", safe_filename_component(&old_id)));
+        let new_path = temp
+            .path()
+            .join(format!("{}.jsonl", safe_filename_component(&new_id)));
+        assert!(!old_path.exists(), "old JSONL should be gone");
+        assert!(new_path.exists(), "new JSONL should exist");
+
+        // Index re-keyed: old id gone, new id openable with an updated
+        // transcript_file pointer.
+        assert!(manager.open_session(&old_id).await.unwrap().is_none());
+        let reopened = manager
+            .open_session(&new_id)
+            .await
+            .unwrap()
+            .expect("session should be openable under the new id");
+        assert_eq!(reopened.session_id(), new_id);
+        let meta = reopened.get_metadata().await.unwrap();
+        assert_eq!(
+            meta.transcript_file,
+            format!("{}.jsonl", safe_filename_component(&new_id))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rename_session_id_refuses_existing_target() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Subject::User("alice".to_string());
+
+        let first = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+        let second = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+        let first_id = first.session_id().to_string();
+        let second_id = second.session_id().to_string();
+
+        let err = manager
+            .rename_session_id(&first_id, &second_id)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
+
+        // Source untouched by the refused rename.
+        assert!(manager.open_session(&first_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_rename_session_id_errors_on_missing_source() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+
+        let err = manager
+            .rename_session_id("sess_nope", "sess_other")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("non-existent"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_branch_session_by_id_copies_peer_attribution() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let peer = Subject::User("alice".to_string());
+
+        let parent_id = {
+            let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+            let handle = manager
+                .create_session("test_agent", &peer, SessionCreateOptions::new())
+                .await
+                .unwrap();
+            handle.session_id().to_string()
+        };
+
+        // Branch through a fresh manager (mirrors the per-turn manager
+        // pattern in production, so the metadata cache reloads from the
+        // index and sees the peer-attributed entry).
+        let mut manager = SessionManager::new()
+            .with_sessions_dir_internal(temp.path())
+            .with_agent_name("test_agent");
+        let branch_id = manager
+            .branch_session_by_id(&parent_id, Some("branch".to_string()))
+            .await
+            .unwrap();
+
+        let branch_meta = manager.get_session_metadata(&branch_id).await.unwrap();
+        assert_eq!(branch_meta.peer_type.as_deref(), Some("user"));
+        assert_eq!(branch_meta.peer_id.as_deref(), Some("alice"));
+        assert_eq!(
+            branch_meta.parent_session_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(branch_meta.trigger, "branch");
+    }
+
+    #[tokio::test]
+    async fn test_session_handle_exists_false_for_nonexistent() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Subject::User("alice".to_string());
+
+        let handle = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+        assert!(handle.exists().await);
+
+        // After the metadata is gone, exists() must be false — a
+        // successful lookup returning `None` is not existence.
+        let session_id = handle.session_id().to_string();
+        manager
+            .metadata_controller
+            .write()
+            .await
+            .delete_session(&session_id)
+            .await
+            .unwrap();
+        assert!(
+            !handle.exists().await,
+            "deleted session must report exists() == false"
+        );
+    }
+
+    /// Chapter rotation flow (Phase 2): rename the live id to a
+    /// chapter id, then the normal create path mints a fresh live
+    /// session under the same id. The old chapter keeps its history.
+    #[tokio::test]
+    async fn test_chapter_rotation_flow_via_manager() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Subject::User("alice".to_string());
+        let live_id = "root:user:alice".to_string();
+
+        // Live session with some history.
+        let handle = manager
+            .create_session(
+                "test_agent",
+                &peer,
+                SessionCreateOptions::new().with_session_id(&live_id),
+            )
+            .await
+            .unwrap();
+        handle.add_user("old chapter message").await.unwrap();
+
+        // Rotate: live → chapter id (what `agent_runner` does on a
+        // pending `ChapterRequest::New`).
+        let chapter = crate::chapters::chapter_id(temp.path(), &live_id);
+        manager.rename_session_id(&live_id, &chapter).await.unwrap();
+        manager
+            .set_session_title(&chapter, Some("chapter 1".to_string()))
+            .await
+            .unwrap();
+
+        // The normal create path mints a fresh live session under the
+        // same id — empty history, while the chapter keeps the old one.
+        let fresh = manager
+            .create_session(
+                "test_agent",
+                &peer,
+                SessionCreateOptions::new().with_session_id(&live_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fresh.session_id(), live_id);
+        assert!(
+            fresh.load_history().await.unwrap().is_empty(),
+            "fresh chapter starts empty"
+        );
+
+        let old = manager
+            .open_session(&chapter)
+            .await
+            .unwrap()
+            .expect("chapter openable under its id");
+        assert_eq!(old.load_history().await.unwrap().len(), 1);
+        assert_eq!(
+            old.get_metadata().await.unwrap().title,
+            Some("chapter 1".to_string())
+        );
+    }
+
+    /// Plan D2 plumbing: the persisted `compact_requested` flag is
+    /// visible to (and clearable by) an open `Session` — the engine
+    /// reads it via `SessionView::peek_compact_request`.
+    #[tokio::test]
+    async fn test_session_compact_request_flag_roundtrip() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Subject::User("alice".to_string());
+
+        let handle = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+        let session_id = handle.session_id().to_string();
+
+        // Flag unset → peeks false.
+        {
+            let mut session = handle.base().write().await;
+            assert!(!session.peek_compact_request().await);
+        }
+
+        // Set via the manager (what the session tool's `compact`
+        // action does) → the open session peeks true.
+        manager
+            .set_compact_requested(&session_id, true)
+            .await
+            .unwrap();
+        {
+            let mut session = handle.base().write().await;
+            assert!(session.peek_compact_request().await);
+            // Clear (what the orchestrator does when compaction starts).
+            session.clear_compact_request().await;
+            assert!(!session.peek_compact_request().await);
+        }
+
+        // The clear persisted to the index (read via a fresh manager —
+        // the creating manager's metadata cache is per-instance, see
+        // the per-turn manager pattern in production).
+        let fresh = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let meta = fresh.get_session_metadata(&session_id).await.unwrap();
+        assert!(!meta.compact_requested);
     }
 }

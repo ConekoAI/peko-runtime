@@ -99,6 +99,28 @@ impl Default for ExecutionConfig {
     }
 }
 
+/// Everything [`SubagentExecutor::register_subagent_run`] needs to
+/// register + execute one subagent run, independent of whether the
+/// child session was freshly spawned or re-attached (`resume_session`).
+struct SubagentRunSpec {
+    run_id: String,
+    task: String,
+    /// The caller's current session (announcement target + ownership
+    /// anchor for the guarded cleanup delete).
+    parent_session_key: String,
+    /// Registry-facing child key: the spawn overlay key for spawned
+    /// runs, the plain session id for resumed runs.
+    child_session_key: String,
+    /// The child's plain session id (uuid / live id).
+    child_session_id: String,
+    /// The resolved child session (spawn: the new overlay's base;
+    /// resume: the opened existing session with its prior history).
+    child_base: Arc<RwLock<peko_session::Session>>,
+    child_depth: u32,
+    config: ExecutionConfig,
+    parent_cancel: Option<tokio_util::sync::CancellationToken>,
+}
+
 /// Executor for subagent tasks
 ///
 /// All task state lives in the unified `AsyncTaskRegistry`. This struct
@@ -564,10 +586,225 @@ impl SubagentExecutor {
         };
 
         let child_session_key = spawn_resolved.context.full_session_key.clone();
+        let child_session_id = spawn_resolved.context.session_id.clone();
+        let child_base = spawn_resolved.handle.base().clone();
+
+        info!(
+            "Spawned subagent: run_id={} depth={} isolated={}",
+            run_id, child_depth, isolated
+        );
+
+        self.register_subagent_run(SubagentRunSpec {
+            run_id,
+            task: task.to_string(),
+            parent_session_key: parent_session_key.to_string(),
+            child_session_key,
+            child_session_id,
+            child_base,
+            child_depth,
+            config,
+            parent_cancel,
+        })
+        .await
+    }
+
+    /// Re-attach a new task run to an existing spawned session
+    /// (`Agent` tool's `resume_session` — persistent subagents).
+    ///
+    /// Skips `spawn_session`: the target session is opened as-is, so
+    /// the run continues with its full prior history. All D4 guards
+    /// from the shared ownership module apply (see inline comments).
+    /// The caller's current session is `parent_session_key` (the
+    /// caller's session id on the production path).
+    pub async fn resume_and_execute(
+        &self,
+        task: &str,
+        resume_session_id: &str,
+        parent_session_key: &str,
+        config: ExecutionConfig,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        use crate::session::ownership::{
+            caller_context, err_out_of_tree, err_resume_archived, err_resume_into_own_run,
+            err_resume_not_spawned, err_run_active, in_subtree,
+        };
+
+        // Same spawn-time cost pre-flight as the spawn path — a resume
+        // is still LLM traffic against the principal's meter.
+        if let Some(err) = pre_flight_cost_ceiling(
+            self.quota_meter.as_deref(),
+            self.provider.as_ref(),
+        ) {
+            return Err(anyhow::anyhow!(err));
+        }
+
+        let (caller, metas) = {
+            let mut manager = self.session_manager.write().await;
+            let metas = manager.list_all_sessions(false).await?;
+            (caller_context(parent_session_key, &metas), metas)
+        };
+
+        // Guard: target must exist.
+        let target_meta = metas
+            .iter()
+            .find(|m| m.session_id == resume_session_id)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "session '{resume_session_id}' not found — pass a session id from the \
+                     session tool's list"
+                )
+            })?;
+        // Guard: cannot run inside the caller's own session or an
+        // ancestor (would re-enter the caller's own run).
+        if resume_session_id == caller.current_session_id
+            || caller.ancestors.iter().any(|a| a == resume_session_id)
+        {
+            return Err(err_resume_into_own_run(resume_session_id));
+        }
+        // Guard: only spawned subagent sessions can be re-attached.
+        if target_meta.trigger != "spawn" {
+            return Err(err_resume_not_spawned(resume_session_id));
+        }
+        // Guard: subtree callers stay inside their subtree (principal-
+        // level callers pass automatically).
+        if !caller.is_base && !in_subtree(&caller, resume_session_id, &metas) {
+            return Err(err_out_of_tree(
+                resume_session_id,
+                &caller.current_session_id,
+            ));
+        }
+        // Guard: archived sessions have no business running.
+        if target_meta.archived {
+            return Err(err_resume_archived(resume_session_id));
+        }
+        // Guard: refuse while a run is in flight for the target.
+        // Mechanism: subagent runs do NOT hold `InboxRegistry` run
+        // permits (those are only acquired for root sessions by the
+        // IPC/principal-manager paths); the unified AsyncTaskRegistry
+        // is the source of truth for subagent runs, keyed by
+        // `child_session_key` / `child_session_id` in the task
+        // metadata.
+        {
+            let registry = self.registry().read().await;
+            if registry.has_active_subagent_run_for_child(resume_session_id) {
+                return Err(err_run_active(resume_session_id));
+            }
+        }
+
+        // Depth comes from the target session's OWN persisted parent
+        // chain (count of spawn-triggered strict ancestors + 1), not
+        // caller depth + 1: re-attaching keeps the session's original
+        // spawn depth, so the depth-limit check stays correct for the
+        // sub-tree below it even across daemon restarts and registry
+        // GC (the registry-based `get_parent_depth` answer is lost
+        // when run entries age out; the metadata chain is durable).
+        let child_depth = 1 + caller_context(resume_session_id, &metas)
+            .ancestors
+            .iter()
+            .filter(|a| {
+                metas
+                    .iter()
+                    .any(|m| &m.session_id == *a && m.trigger == "spawn")
+            })
+            .count() as u32;
+        if config.max_depth > 0 && child_depth > config.max_depth {
+            return Err(anyhow::anyhow!(SpawnError::DepthLimitExceeded {
+                current: child_depth,
+                max: config.max_depth,
+            }));
+        }
+
+        // Check concurrent run limits
+        let active_count = self.count_active_runs().await;
+        if active_count >= self.max_concurrent {
+            return Err(anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded {
+                current: active_count,
+                max: self.max_concurrent,
+            }));
+        }
+
+        let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
+
+        // Open the existing session — its prior history is loaded from
+        // its JSONL by the loop, so the resumed subagent continues with
+        // full context.
+        let child_base = {
+            let mut manager = self.session_manager.write().await;
+            manager
+                .open_session(resume_session_id)
+                .await?
+                .expect("metadata existed but session failed to open")
+                .base()
+                .clone()
+        };
+
+        info!(
+            "Resuming subagent session: run_id={} session={} depth={}",
+            run_id, resume_session_id, child_depth
+        );
+
+        self.register_subagent_run(SubagentRunSpec {
+            run_id,
+            task: task.to_string(),
+            parent_session_key: parent_session_key.to_string(),
+            // No spawn overlay exists for a resumed session — register
+            // with the plain session id in both slots.
+            child_session_key: resume_session_id.to_string(),
+            child_session_id: resume_session_id.to_string(),
+            child_base,
+            child_depth,
+            config,
+            parent_cancel,
+        })
+        .await
+    }
+
+    /// Validate an explicitly-provided `parent_session_key` (spawn
+    /// context seeding) against the caller's ownership tree. The
+    /// caller's own session (the auto-detected default) always passes;
+    /// principal-level callers pass for any session.
+    pub async fn validate_context_parent(
+        &self,
+        context_parent: &str,
+        caller_session_key: &str,
+    ) -> Result<()> {
+        use crate::session::ownership::{caller_context, err_context_out_of_tree, in_subtree};
+
+        if context_parent == caller_session_key {
+            return Ok(());
+        }
+        let mut manager = self.session_manager.write().await;
+        let metas = manager.list_all_sessions(false).await?;
+        let caller = caller_context(caller_session_key, &metas);
+        if caller.is_base || in_subtree(&caller, context_parent, &metas) {
+            return Ok(());
+        }
+        Err(err_context_out_of_tree(context_parent, caller_session_key))
+    }
+
+    /// Register and dispatch one subagent run on the unified executor.
+    ///
+    /// Shared by the spawn path (fresh overlay session) and the resume
+    /// path (re-attached existing session). This is the ONLY
+    /// registration point for subagent runs.
+    async fn register_subagent_run(&self, spec: SubagentRunSpec) -> Result<String> {
+        let SubagentRunSpec {
+            run_id,
+            task,
+            parent_session_key,
+            child_session_key,
+            child_session_id,
+            child_base,
+            child_depth,
+            config,
+            parent_cancel,
+        } = spec;
 
         // Build the metadata extension that carries subagent-specific data
         let metadata = TaskMetadata::Subagent(SubagentMetadata {
             child_session_key: child_session_key.clone(),
+            child_session_id: Some(child_session_id.clone()),
             cleanup: match config.cleanup {
                 SpawnCleanupPolicy::Keep => peko_session::types::SpawnCleanupPolicy::Keep,
                 SpawnCleanupPolicy::Delete => peko_session::types::SpawnCleanupPolicy::Delete,
@@ -593,8 +830,9 @@ impl SubagentExecutor {
         let registry_for_task = self.registry().clone();
         let registry_for_completion = self.registry().clone();
         let child_session_key_clone = child_session_key.clone();
-        let parent_session_key_clone = parent_session_key.to_string();
-        let task_clone = task.to_string();
+        let child_session_id_clone = child_session_id.clone();
+        let parent_session_key_clone = parent_session_key.clone();
+        let task_clone = task.clone();
         let label_clone = config.label.clone();
         let run_id_clone = run_id.clone();
         let timeout = config.timeout_seconds;
@@ -638,11 +876,11 @@ impl SubagentExecutor {
                 "Agent",
                 serde_json::json!({
                     "task": task,
-                    "isolated": isolated,
                     "label": &config.label,
                     "child_session_key": &child_session_key,
+                    "child_session_id": &child_session_id,
                 }),
-                parent_session_key.to_string(),
+                parent_session_key.clone(),
                 async_config,
                 metadata,
                 move || async move {
@@ -677,6 +915,7 @@ impl SubagentExecutor {
                     let exec_fut = execute_subagent_task(
                         &agent_name,
                         &child_session_key_clone,
+                        child_base,
                         &system_prompt,
                         &task_message,
                         model_override_clone, // Phase 1
@@ -801,19 +1040,65 @@ impl SubagentExecutor {
                             "Cleaning up subagent session: run_id={} session_key={}",
                             run_id_clone, child_session_key_clone
                         );
-                        let mut manager = session_manager_for_cleanup.write().await;
-                        match manager.cleanup_spawn(&child_session_key_clone).await {
-                            Ok(true) => {
-                                info!("Cleaned up spawn session: {}", child_session_key_clone);
+                        // In-memory hygiene first: drop the spawn
+                        // overlay + base-session cache entry. A no-op
+                        // (Ok(false)) for resumed sessions, which have
+                        // no spawn overlay.
+                        {
+                            let mut manager = session_manager_for_cleanup.write().await;
+                            match manager.cleanup_spawn(&child_session_key_clone).await {
+                                Ok(true) => {
+                                    info!("Cleaned up spawn session: {}", child_session_key_clone);
+                                }
+                                Ok(false) => {
+                                    warn!(
+                                        "Spawn overlay not found for cleanup: {}",
+                                        child_session_key_clone
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!("Failed to clean up spawn session: {}", e);
+                                }
                             }
-                            Ok(false) => {
-                                warn!(
-                                    "Spawn overlay not found for cleanup: {}",
-                                    child_session_key_clone
+                        }
+
+                        // Phase 5b (plan D4): the actual deletion goes
+                        // through the ONE guarded delete implementation
+                        // — the same path the session tool's `delete`
+                        // action uses. The caller's current session is
+                        // the parent, so the child sits in its subtree
+                        // and the ownership guard passes; the run has
+                        // ended by now, so no permit is held. No inbox
+                        // registry is bound here (metadata-only
+                        // degradation — the unified-registry busy check
+                        // already ran before the run started). If the
+                        // guard still refuses (e.g. a descendant run is
+                        // somehow active), keep the session rather than
+                        // failing the completed run.
+                        let guarded_delete = crate::session::session_runtime_impl::SessionManagerRuntime::new(
+                            Arc::clone(&session_manager_for_cleanup),
+                            Arc::new(tokio::sync::RwLock::new(Some(
+                                parent_session_key_clone.clone(),
+                            ))),
+                            agent_name.clone(),
+                            None,
+                        );
+                        use crate::tools::builtin::session::SessionRuntime;
+                        match guarded_delete
+                            .delete_session(&child_session_id_clone, false)
+                            .await
+                        {
+                            Ok(outcome) => {
+                                info!(
+                                    "Guarded cleanup deleted session(s) {:?}",
+                                    outcome.deleted
                                 );
                             }
                             Err(e) => {
-                                warn!("Failed to clean up spawn session: {}", e);
+                                warn!(
+                                    "Guarded cleanup refused/failed for {}: {e} — keeping the session",
+                                    child_session_id_clone
+                                );
                             }
                         }
                     }
@@ -827,11 +1112,6 @@ impl SubagentExecutor {
                 },
             )
             .await?;
-
-        info!(
-            "Spawned subagent: run_id={} depth={} isolated={}",
-            run_id, child_depth, isolated
-        );
 
         Ok(run_id)
     }
@@ -871,6 +1151,38 @@ impl SubagentExecutor {
             )
             .await?;
 
+        self.wait_for_run(&run_id, timeout_secs).await
+    }
+
+    /// Re-attach to an existing spawned session (`resume_session`) and
+    /// wait for completion. Mirror of [`Self::execute_and_wait`] over
+    /// [`Self::resume_and_execute`].
+    pub async fn resume_and_wait(
+        &self,
+        task: &str,
+        resume_session_id: &str,
+        parent_session_key: &str,
+        config: ExecutionConfig,
+        timeout_secs: u64,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<SubagentRunView> {
+        let run_id = self
+            .resume_and_execute(
+                task,
+                resume_session_id,
+                parent_session_key,
+                config,
+                parent_cancel,
+            )
+            .await?;
+
+        self.wait_for_run(&run_id, timeout_secs).await
+    }
+
+    /// Wait for a registered run to reach a terminal status and
+    /// return its final view. Shared by the spawn and resume paths.
+    async fn wait_for_run(&self, run_id: &str, timeout_secs: u64) -> Result<SubagentRunView> {
+        let run_id = run_id.to_string();
         // Wait for completion using the unified registry.
         // IMPORTANT: Do NOT hold the read lock while sleeping, as the background
         // task needs to acquire a write lock to update status. Holding the read
@@ -1076,6 +1388,12 @@ impl SubagentExecutor {
 async fn execute_subagent_task(
     agent_name: &str,
     session_key: &str,
+    // Phase 5b: the already-resolved child session. The spawn path
+    // passes the fresh overlay's base; the resume path passes the
+    // opened existing session (so its prior history stays attached).
+    // Resolution used to happen here by parsing the overlay key, which
+    // cannot work for plain session ids (resume targets).
+    child_session: Arc<RwLock<peko_session::Session>>,
     system_prompt: &str,
     task_message: &str,
     // Phase 1 of `feature/multi-model-subagents`: when the parent
@@ -1153,43 +1471,6 @@ async fn execute_subagent_task(
     // which would make the renderer fall back to the parent's
     // `default_model_id` instead of the chosen override).
     let resolved_model_id_override: Option<String> = model_override.clone();
-
-    // Get the base session key from the session key
-    let base_key = peko_session::key::base_key_from_overlay(session_key)
-        .unwrap_or_else(|| session_key.to_string());
-
-    // Parse to get agent and peer, then find the child session
-    let child_session: Option<Arc<RwLock<peko_session::Session>>> = {
-        let parts: Vec<&str> = base_key.split(':').collect();
-        if parts.len() >= 5 {
-            if let Some(peer_idx) = parts.iter().position(|&p| p == "peer") {
-                let agent = parts.get(1).unwrap_or(&agent_name);
-                let peer_type = parts.get(peer_idx + 1).unwrap_or(&"agent");
-                let peer_id = parts.get(peer_idx + 2).unwrap_or(&"spawn");
-                let peer = match *peer_type {
-                    "agent" => Subject::Principal(peer_id.to_string().into()),
-                    _ => Subject::User(peer_id.to_string()),
-                };
-
-                let manager = session_manager.read().await;
-                manager.get_existing_base(agent, &peer)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    };
-
-    let child_session = match child_session {
-        Some(s) => s,
-        None => {
-            return Err(anyhow::anyhow!(
-                "Could not find child session for key: {}",
-                session_key
-            ));
-        }
-    };
 
     // Build agent config for the subagent
     let config = agent_config.unwrap_or_else(|| {

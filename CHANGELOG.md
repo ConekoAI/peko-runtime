@@ -4,6 +4,69 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Agent-owned session management — the unified session/run framework (2026-08-09)
+
+The "coin model": a **session** is a persisted conversation, a **run**
+is a live agentic process attached to exactly one session. The `Agent`
+tool is the generate side; the `session` tool is the persist side. One
+ownership/guard module, one run-permit protocol, and one guarded delete
+path now govern both.
+
+#### Added
+- **`session` tool mutation actions.** Beyond `status`/`list`/`history`:
+  `search` (case-insensitive transcript scan), `branch`, `rename`,
+  `archive`/`unarchive`, `delete` (subtree-aware, `recursive:true` for
+  descendants, children-first), `compact` (persisted request flag), and
+  the chapter pair `new`/`resume`.
+- **Chapter rotation.** `session new`/`resume` write a durable pending
+  change to `<sessions_dir>/chapters.json`; `agent_runner` consumes it
+  at the next run start (before open/create, under
+  `session_creation_lock`) and rotates the deterministic live id
+  (`root:{peer}`) to `root:{peer}#<YYYYMMDD-HHMMSS>` via
+  `SessionManager::rename_session_id`. The live id is reused, so
+  InboxRegistry mappings, queued steering, and completion announcements
+  are untouched; a daemon restart loses nothing.
+- **Ownership tree + guards.** `peko-rs/core/src/session/ownership.rs`
+  classifies the caller from its session's `parent_session_id` chain:
+  base-session callers manage the whole store, spawned callers only
+  their own subtree (reads are filtered, out-of-tree mutations and
+  `history`/`status` refuse). Self/ancestor deletion, live-`root:*`-id
+  delete/archive, archived compact/resume, and cross-family resume all
+  produce structured, LLM-actionable refusals. Shared by the session
+  tool adapter and the `Agent` tool path.
+- **Run-permit delete protocol (D3).** `session delete`/`archive`
+  acquire `InboxRegistry` run permits for the target and every
+  descendant and hold them across the operation; a busy session
+  produces a refusal naming it. `list` surfaces `run_active`.
+- **`Agent.resume_session` (persistent subagents).** Re-attaches a new
+  task run to an existing spawned session with its full prior history.
+  Guards: target must exist, be `trigger=="spawn"`, not be the caller's
+  own session or an ancestor, be in-subtree for spawned callers, not be
+  archived, and not have an active run — detected via the unified
+  AsyncTaskRegistry (`child_session_id` on `SubagentMetadata`), because
+  subagent runs do not hold InboxRegistry permits. Mutually exclusive
+  with `isolated`. Explicit `parent_session_key` (context seeding) is
+  ownership-validated. `cleanup:"delete"` on both spawn and resume
+  routes through the guarded delete.
+- **Forced compaction (D2).** `compact_requested` on
+  `SessionEntry`/`SessionMetadata` (serde-default `false`, alongside
+  `archived`). The orchestrator ORs `SessionView::peek_compact_request`
+  — read through to disk via `SessionIndex::get_uncached` so a flag set
+  mid-run by the session tool is seen at the next iteration — into the
+  threshold decision and clears it only when compaction genuinely
+  starts; the "Summarizing…" event gets forced-case wording.
+- **Integrity fixes.** `SessionStorage::delete_session`/`copy_session`
+  now hold the append `FileLock` (no orphan-recreate race, consistent
+  branch snapshots); `SessionHandle::exists()` no longer returns true
+  for missing sessions; deleting a session scrubs its id from
+  `PeerInfo.session_ids` and `clear_active_for_peer` drops only the
+  active pointer (`PeerInfo.active_session_id` is now
+  `Option<String>`; other sessions of the peer stay routable);
+  `branch_session_by_id` copies `peer_type`/`peer_id` onto the branch;
+  `session status` on an unknown session returns the real error instead
+  of fabricated zeros; the prompt's `SessionSnapshot` carries the real
+  session id (`TurnPromptContext.session_id`).
+
 ### `send_peer` unification, cron `Notify` delivery, and `delay` (2026-08-08)
 
 From the round-4 live-verification observations (addendum in

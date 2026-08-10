@@ -667,6 +667,39 @@ cargo test --all-features
     `Agent::with_caller_principal_did`. Cron `message` jobs are the
     new `CronJobAction::Notify` (pure delivery, no agent turn);
     `Send` keeps its deferred-`peko send` turn semantics.
+  - **2026-08-09 agent-owned session management (coin model):** a
+    **session** is a persisted conversation; a **run** is a live
+    agentic process attached to exactly one session. The `Agent` tool
+    is the *generate* side (spawn, and `resume_session` to re-attach
+    a run to an existing spawned session); the `session` tool is the
+    *persist* side (12 actions: `status`, `list`, `history`,
+    `search`, `branch`, `rename`, `archive`, `unarchive`, `delete`,
+    `compact`, `new`, `resume`). `new`/`resume` rotate the
+    deterministic live id: the pending change is written to
+    `<sessions_dir>/chapters.json` and consumed at the next run start
+    in `principal/agent_runner.rs`, which renames the live session to
+    `root:{peer}#<YYYYMMDD-HHMMSS>` via
+    `SessionManager::rename_session_id` (the live id is reused, so
+    InboxRegistry/steering keys are untouched). Ownership: a caller
+    in a base session manages the whole store; a spawned (subtree)
+    caller manages only its own subtree — classification + refusal
+    constructors live in `peko-rs/core/src/session/ownership.rs`,
+    shared by the `SessionManagerRuntime` adapter (session tool) and
+    the `SubagentExecutor` (Agent tool). `delete`/`archive` acquire
+    `InboxRegistry` run permits for the target + descendants (D3);
+    `Agent.resume_session` detects active runs via the unified
+    AsyncTaskRegistry (`has_active_subagent_run_for_child`) because
+    subagent runs do NOT hold InboxRegistry permits.
+    `SessionEntry`/`SessionMetadata` gained `archived` +
+    `compact_requested` (serde-default false); the compaction
+    orchestrator ORs the persisted flag into its threshold decision
+    (`SessionView::peek_compact_request`, read through to disk via
+    `SessionIndex::get_uncached` so a flag set mid-run by another
+    controller is seen) and clears it only when compaction genuinely
+    starts. `cleanup:"delete"` on both Agent paths routes through the
+    same guarded delete as `session delete`. The prompt's
+    `SessionSnapshot` now carries the real session id
+    (`TurnPromptContext.session_id`).
   - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
 - **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.

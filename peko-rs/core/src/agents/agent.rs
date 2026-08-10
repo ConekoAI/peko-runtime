@@ -221,9 +221,15 @@ impl Agent {
         // Phase 10d: `SessionTool` lives in peko_tools_builtin and speaks to a
         // `SessionRuntime` port trait; the production adapter is
         // `SessionManagerRuntime` (alias for the legacy `SessionIntrospector`).
+        // Phase 4: the adapter enforces the ownership/self/run-permit
+        // guards (plan D3/D4/D5); it classifies the caller from the
+        // agent's current session and needs the inbox registry for
+        // run-permit checks (None ⇒ metadata-only degradation).
         let session_runtime = crate::session::session_runtime_impl::SessionManagerRuntime::new(
             self.session_manager.clone(),
             self.current_session_id.clone(),
+            self.config.name.clone(),
+            self.inbox_registry.clone(),
         );
         tools.push(Arc::new(SessionTool::new(
             std::sync::Arc::new(session_runtime)

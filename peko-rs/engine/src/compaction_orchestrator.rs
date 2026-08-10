@@ -105,11 +105,14 @@ impl CompactionOrchestrator {
     ///
     /// This method handles:
     /// 1. Token estimation and threshold checking
-    /// 2. Pre-compaction hook invocation
-    /// 3. Background compaction initiation
-    /// 4. Polling for background compaction completion
-    /// 5. Post-compaction hook invocation
-    /// 6. Session recording and cache updates
+    /// 2. Agent-requested compaction via the persisted
+    ///    `compact_requested` flag (plan D2 — OR'd into the threshold
+    ///    decision, cleared once compaction genuinely starts)
+    /// 3. Pre-compaction hook invocation
+    /// 4. Background compaction initiation
+    /// 5. Polling for background compaction completion
+    /// 6. Post-compaction hook invocation
+    /// 7. Session recording and cache updates
     ///
     /// Returns `Ok(true)` if messages were modified by compaction.
     pub async fn check_and_compact<S>(
@@ -131,24 +134,47 @@ impl CompactionOrchestrator {
         let estimated = estimate_context_tokens(messages);
         let estimated_tokens = estimated.tokens;
 
+        // Plan D2: an agent may have requested compaction out-of-band
+        // (the session tool's `compact` action persists a
+        // `compact_requested` flag on the session metadata). The flag
+        // ORs into the threshold decision and is cleared ONLY when
+        // compaction genuinely starts (below), so a crashed run does
+        // not lose the request.
+        let forced = session.peek_compact_request().await;
+
         // Start background compaction if needed and not already running
         if self.pending_compaction.is_none()
-            && self
-                .backend
-                .should_request(estimated_tokens, self.context_window, &self.config)
-                .await
+            && (forced
+                || self
+                    .backend
+                    .should_request(estimated_tokens, self.context_window, &self.config)
+                    .await)
         {
             info!(
                 "Context window approaching limit ({} tokens), checking compaction...",
                 estimated_tokens
             );
-            on_event(AgenticEvent::Thinking {
-                run_id: run_id.to_string(),
-                text: "Session is getting long. Summarizing older messages...".to_string(),
-                is_delta: false,
-                is_final: false,
-                signature: None,
-            });
+            if forced {
+                // Compaction is genuinely starting — consume the
+                // request so it fires exactly once.
+                session.clear_compact_request().await;
+                on_event(AgenticEvent::Thinking {
+                    run_id: run_id.to_string(),
+                    text: "Compacting this session as requested. Summarizing older messages..."
+                        .to_string(),
+                    is_delta: false,
+                    is_final: false,
+                    signature: None,
+                });
+            } else {
+                on_event(AgenticEvent::Thinking {
+                    run_id: run_id.to_string(),
+                    text: "Session is getting long. Summarizing older messages...".to_string(),
+                    is_delta: false,
+                    is_final: false,
+                    signature: None,
+                });
+            }
 
             self.invoke_pre_hook(messages, session, funnel, estimated_tokens)
                 .await;
@@ -557,3 +583,427 @@ fn estimate_tokens(messages: &[LlmMessage]) -> usize {
 // the right home — it already owns the `Config` struct that calls
 // into this loader. The lifted `CompactionOrchestrator` accepts the
 // loaded `CompactionConfig` as a constructor argument.
+
+// ----------------------------------------------------------------------
+// Tests
+// ----------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::oneshot;
+
+    /// Stub `SessionView` with a switchable compact-request flag.
+    /// Everything unrelated to the flag is inert.
+    struct StubSession {
+        requested: Mutex<bool>,
+        clears: AtomicUsize,
+    }
+
+    impl StubSession {
+        fn new(requested: bool) -> Self {
+            Self {
+                requested: Mutex::new(requested),
+                clears: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SessionView for StubSession {
+        async fn add_tool_result(
+            &self,
+            _tool_call_id: &str,
+            _tool_name: &str,
+            _result: &str,
+            _is_error: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn record_compaction(
+            &self,
+            _summary: &str,
+            _messages_compacted: usize,
+            _tokens_before: usize,
+            _tokens_after: usize,
+            _compaction_number: usize,
+            _details: Option<&serde_json::Value>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
+            Ok(None)
+        }
+        async fn update_context_cache(&self, _messages: &[LlmMessage]) -> Result<()> {
+            Ok(())
+        }
+        async fn id(&self) -> String {
+            "stub-session".to_string()
+        }
+        async fn add_user(&self, _content: String) -> Result<()> {
+            Ok(())
+        }
+        async fn set_model(&self, _provider: &str, _model: &str) {}
+        async fn record_model_change(&self, _provider: &str, _model_id: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn set_model_context_limit(&self, _limit: usize) {}
+        async fn add_assistant(
+            &self,
+            _content: String,
+            _tool_calls: Option<Vec<peko_message::ToolCallInfo>>,
+            _usage: Option<peko_message::TokenUsage>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn add_assistant_with_blocks(
+            &self,
+            _content_blocks: Vec<peko_message::ContentBlock>,
+            _tool_calls: Option<Vec<peko_message::ToolCallBlock>>,
+            _thinking: Option<peko_message::ThinkingBlock>,
+            _usage: Option<peko_message::TokenUsage>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn load_history(&self) -> Result<Vec<LlmMessage>> {
+            Ok(vec![])
+        }
+        async fn peek_compact_request(&self) -> bool {
+            *self.requested.lock().expect("requested mutex poisoned")
+        }
+        async fn clear_compact_request(&self) {
+            *self.requested.lock().expect("requested mutex poisoned") = false;
+            self.clears.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Stub `CompactorBackend`: `should_request` returns a fixed gate
+    /// value; `request` records the call and returns a receiver that
+    /// stays pending (the sender is stashed so the channel neither
+    /// resolves nor closes during the orchestrator's 100ms poll).
+    struct StubBackend {
+        gate: bool,
+        request_calls: AtomicUsize,
+        senders: Mutex<Vec<oneshot::Sender<CompactionResponse>>>,
+    }
+
+    impl StubBackend {
+        fn new(gate: bool) -> Self {
+            Self {
+                gate,
+                request_calls: AtomicUsize::new(0),
+                senders: Mutex::new(vec![]),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl CompactorBackend for StubBackend {
+        async fn should_request(
+            &self,
+            _estimated_tokens: usize,
+            _context_window: usize,
+            _config: &CompactionConfig,
+        ) -> bool {
+            self.gate
+        }
+        async fn request(
+            &self,
+            _request: CompactionRequest,
+        ) -> Result<oneshot::Receiver<CompactionResponse>> {
+            self.request_calls.fetch_add(1, Ordering::SeqCst);
+            let (tx, rx) = oneshot::channel();
+            self.senders
+                .lock()
+                .expect("senders mutex poisoned")
+                .push(tx);
+            Ok(rx)
+        }
+    }
+
+    /// No-op `ToolFunnel` (same shape as the renderer's test stub —
+    /// every hook passes through / returns empty).
+    struct EmptyFunnel;
+
+    #[async_trait]
+    impl ToolFunnel for EmptyFunnel {
+        async fn is_parallelizable(&self, _tool_name: &str) -> bool {
+            true
+        }
+        async fn pre_tool_use(
+            &self,
+            _tool_name: &str,
+            _params: serde_json::Value,
+            _workspace: Option<String>,
+            _agent_id: Option<String>,
+            _session_id: Option<String>,
+            _caller_id: Option<String>,
+            _principal_id: Option<String>,
+            _principal_name: Option<String>,
+            _capabilities: Option<Vec<String>>,
+            _active_extensions: Option<Vec<String>>,
+        ) {
+        }
+        async fn post_tool_use(
+            &self,
+            _tool_name: &str,
+            _params: serde_json::Value,
+            _workspace: Option<String>,
+            _agent_id: Option<String>,
+            _session_id: Option<String>,
+            _caller_id: Option<String>,
+            _principal_id: Option<String>,
+            _principal_name: Option<String>,
+            _capabilities: Option<Vec<String>>,
+            _active_extensions: Option<Vec<String>>,
+        ) {
+        }
+        async fn execute_tool_via_hook(
+            &self,
+            _tool_name: &str,
+            _params: serde_json::Value,
+            _workspace: Option<String>,
+            _agent_id: Option<String>,
+            _session_id: Option<String>,
+            _caller_id: Option<String>,
+            _principal_id: Option<String>,
+            _principal_name: Option<String>,
+            _capabilities: Option<Vec<String>>,
+            _active_extensions: Option<Vec<String>>,
+            _abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
+        ) -> Result<(String, serde_json::Value, bool)> {
+            anyhow::bail!("EmptyFunnel::execute_tool_via_hook not implemented")
+        }
+        async fn invoke_session_compaction_pre_hook(
+            &self,
+            _payload: CompactionPreparationPayload,
+        ) -> peko_extension_api::hook_io::HookDecision {
+            peko_extension_api::hook_io::HookDecision::PassThrough
+        }
+        async fn invoke_session_compaction_post_hook(
+            &self,
+            _payload: CompactionResultPayload,
+        ) -> peko_extension_api::hook_io::HookDecision {
+            peko_extension_api::hook_io::HookDecision::PassThrough
+        }
+        async fn invoke_session_state_change_hook(
+            &self,
+            _snapshot: SessionSnapshot,
+        ) -> peko_extension_api::hook_io::HookDecision {
+            peko_extension_api::hook_io::HookDecision::PassThrough
+        }
+        async fn invoke_stop_hook(&self, _merged: serde_json::Value) {}
+        async fn invoke_after_agent_hook(&self, _merged: serde_json::Value) {}
+        async fn set_session_key(&self, _agent_id: &str, _key: Option<String>) {}
+        async fn list_tool_definitions_with_allowlist(
+            &self,
+            _capabilities: &peko_extension_api::Capabilities,
+            _active_extensions: Option<&peko_extension_api::ActiveExtensionSet>,
+            _principal_id: &peko_subject::PrincipalId,
+        ) -> Vec<peko_provider_api::ToolDefinition> {
+            Vec::new()
+        }
+        async fn has_deferred_tools_for(&self, _principal_id: &peko_subject::PrincipalId) -> bool {
+            false
+        }
+        async fn invoke_prompt_section_hook(
+            &self,
+            _section: &str,
+            _priority: i32,
+            _principal_id: Option<&str>,
+            _capabilities: Option<Vec<String>>,
+            _active_extensions: Option<Vec<String>>,
+            _workspace: Option<String>,
+        ) -> Option<String> {
+            None
+        }
+        async fn invoke_session_context_build_hook(
+            &self,
+            _snapshot: SessionSnapshot,
+            _principal_id: Option<&str>,
+            _capabilities: Option<Vec<String>>,
+            _active_extensions: Option<Vec<String>>,
+            _workspace: Option<String>,
+        ) -> Option<String> {
+            None
+        }
+    }
+
+    struct Fixture {
+        orchestrator: CompactionOrchestrator,
+        backend: Arc<StubBackend>,
+        session: StubSession,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    fn fixture(requested: bool, gate: bool) -> Fixture {
+        let backend = Arc::new(StubBackend::new(gate));
+        let orchestrator = CompactionOrchestrator::new(
+            Box::new(ArcBackend(Arc::clone(&backend))),
+            CompactionConfig::default(),
+            200_000,
+        );
+        Fixture {
+            orchestrator,
+            backend,
+            session: StubSession::new(requested),
+            events: Arc::new(Mutex::new(vec![])),
+        }
+    }
+
+    /// The orchestrator owns a `Box<dyn CompactorBackend>`; wrap the
+    /// shared `Arc<StubBackend>` so tests can inspect the calls.
+    struct ArcBackend(Arc<StubBackend>);
+
+    #[async_trait]
+    impl CompactorBackend for ArcBackend {
+        async fn should_request(
+            &self,
+            estimated_tokens: usize,
+            context_window: usize,
+            config: &CompactionConfig,
+        ) -> bool {
+            self.0
+                .should_request(estimated_tokens, context_window, config)
+                .await
+        }
+        async fn request(
+            &self,
+            request: CompactionRequest,
+        ) -> Result<oneshot::Receiver<CompactionResponse>> {
+            self.0.request(request).await
+        }
+    }
+
+    fn small_messages() -> Vec<LlmMessage> {
+        // A couple of tiny messages — far below any threshold.
+        vec![LlmMessage::user("hello"), LlmMessage::assistant("hi")]
+    }
+
+    fn event_sink(events: &Arc<Mutex<Vec<String>>>) -> impl Fn(AgenticEvent) + Send + Sync + '_ {
+        move |event| {
+            if let AgenticEvent::Thinking { text, .. } = event {
+                events.lock().expect("events mutex poisoned").push(text);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn forced_compaction_fires_below_threshold_and_clears_flag() {
+        let mut f = fixture(true, false); // flag set, token gate closed
+        let mut messages = small_messages();
+        let on_event = event_sink(&f.events);
+
+        f.orchestrator
+            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            f.backend.request_calls.load(Ordering::SeqCst),
+            1,
+            "forced flag must start compaction even below threshold"
+        );
+        assert!(
+            f.orchestrator.pending_compaction.is_some(),
+            "background compaction should be pending"
+        );
+        assert!(
+            !f.session.peek_compact_request().await,
+            "flag cleared once compaction starts"
+        );
+        assert_eq!(f.session.clears.load(Ordering::SeqCst), 1);
+        let events = f.events.lock().expect("events mutex poisoned");
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0].contains("as requested"),
+            "forced wording expected, got: {}",
+            events[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn no_flag_below_threshold_does_nothing() {
+        let mut f = fixture(false, false); // no flag, gate closed
+        let mut messages = small_messages();
+        let on_event = event_sink(&f.events);
+
+        f.orchestrator
+            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .await
+            .unwrap();
+
+        assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 0);
+        assert!(f.orchestrator.pending_compaction.is_none());
+        assert_eq!(f.session.clears.load(Ordering::SeqCst), 0);
+        assert!(f.events.lock().expect("events mutex poisoned").is_empty());
+    }
+
+    #[tokio::test]
+    async fn threshold_triggered_compaction_unchanged_without_flag() {
+        let mut f = fixture(false, true); // no flag, gate open (over threshold)
+        let mut messages = small_messages();
+        let on_event = event_sink(&f.events);
+
+        f.orchestrator
+            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .await
+            .unwrap();
+
+        assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            f.orchestrator.pending_compaction.is_some(),
+            "background compaction should be pending"
+        );
+        assert_eq!(
+            f.session.clears.load(Ordering::SeqCst),
+            0,
+            "non-forced start must not touch the flag"
+        );
+        let events = f.events.lock().expect("events mutex poisoned");
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0].contains("Session is getting long"),
+            "threshold wording preserved, got: {}",
+            events[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn forced_flag_survives_while_compaction_already_pending() {
+        let mut f = fixture(true, false);
+        let mut messages = small_messages();
+        let on_event = event_sink(&f.events);
+
+        // First call: forced start consumes the flag.
+        f.orchestrator
+            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .await
+            .unwrap();
+        assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 1);
+
+        // Re-arm the flag while the first compaction is still pending:
+        // the orchestrator must NOT start a second compaction and must
+        // NOT clear the flag (nothing genuinely started for it).
+        *f.session
+            .requested
+            .lock()
+            .expect("requested mutex poisoned") = true;
+        f.orchestrator
+            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .await
+            .unwrap();
+        assert_eq!(
+            f.backend.request_calls.load(Ordering::SeqCst),
+            1,
+            "no second compaction while one is pending"
+        );
+        assert!(
+            f.session.peek_compact_request().await,
+            "flag survives while a compaction is already pending"
+        );
+    }
+}

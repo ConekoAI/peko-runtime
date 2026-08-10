@@ -95,6 +95,16 @@ pub struct SessionEntry {
     pub peer_type: Option<String>,
     /// Subject ID - for session identity restoration
     pub peer_id: Option<String>,
+    /// Archived sessions are hidden from default listings and refuse
+    /// resume/compact until unarchived (agent-owned session management).
+    #[serde(default)]
+    pub archived: bool,
+    /// Set when an agent requests compaction of this session. The
+    /// compaction orchestrator ORs this flag into its `should_request`
+    /// decision at the session's next run and clears it once compaction
+    /// actually starts, so the request survives restarts.
+    #[serde(default)]
+    pub compact_requested: bool,
 }
 
 impl SessionEntry {
@@ -123,6 +133,8 @@ impl SessionEntry {
             trigger: "user".to_string(),
             peer_type: None,
             peer_id: None,
+            archived: false,
+            compact_requested: false,
         }
     }
 
@@ -213,8 +225,12 @@ impl SessionEntry {
 /// Subject routing information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
-    /// Currently active session for this peer
-    pub active_session_id: String,
+    /// Currently active session for this peer. `None` after the active
+    /// session was deleted/rotated away — the peer entry (and its
+    /// `session_ids`) survives so the remaining sessions stay
+    /// routable/listable.
+    #[serde(default)]
+    pub active_session_id: Option<String>,
     /// All session IDs for this peer (for switching)
     pub session_ids: Vec<String>,
 }
@@ -225,7 +241,7 @@ impl PeerInfo {
     pub fn new(active_session_id: String) -> Self {
         Self {
             session_ids: vec![active_session_id.clone()],
-            active_session_id,
+            active_session_id: Some(active_session_id),
         }
     }
 
@@ -234,7 +250,7 @@ impl PeerInfo {
         if !self.session_ids.contains(&session_id) {
             self.session_ids.push(session_id.clone());
         }
-        self.active_session_id = session_id;
+        self.active_session_id = Some(session_id);
     }
 
     /// Switch to different session
@@ -242,14 +258,14 @@ impl PeerInfo {
         if !self.session_ids.contains(&session_id.to_string()) {
             return Err(anyhow::anyhow!("Session {session_id} not found for peer"));
         }
-        self.active_session_id = session_id.to_string();
+        self.active_session_id = Some(session_id.to_string());
         Ok(())
     }
 
     /// Get active session ID
     #[must_use]
-    pub fn active_session_id(&self) -> &str {
-        &self.active_session_id
+    pub fn active_session_id(&self) -> Option<&str> {
+        self.active_session_id.as_deref()
     }
 }
 
@@ -447,6 +463,18 @@ impl SessionIndex {
         Ok(sessions.get(session_id).cloned())
     }
 
+    /// Get session by ID, reading `sessions.json` directly from disk
+    /// (both caches bypassed).
+    ///
+    /// Used by the engine's per-iteration `compact_requested` peek:
+    /// the flag may have been written moments ago by a *different*
+    /// `MetadataController` (the session tool's adapter), so the 30s
+    /// index cache and the controller cache would both hide it.
+    pub async fn get_uncached(&self, session_id: &str) -> Result<Option<SessionEntry>> {
+        let on_disk = Self::read_sessions_file(&self.sessions_path).await?;
+        Ok(on_disk.get(session_id).cloned())
+    }
+
     /// Insert or update session (O(1))
     pub async fn insert(&mut self, entry: SessionEntry) -> Result<()> {
         let session_id = entry.session_id.clone();
@@ -480,7 +508,7 @@ impl SessionIndex {
         let active_id = peers
             .peers
             .get(peer_key)
-            .map(|p| p.active_session_id.clone());
+            .and_then(|p| p.active_session_id.clone());
         let Some(active_id) = active_id else {
             return Ok(None);
         };
@@ -495,7 +523,7 @@ impl SessionIndex {
         Ok(peers
             .peers
             .get(peer_key)
-            .map(|p| p.active_session_id.clone()))
+            .and_then(|p| p.active_session_id.clone()))
     }
 
     /// List all sessions for a peer (O(N) where N = sessions for peer, typically small)
@@ -531,15 +559,68 @@ impl SessionIndex {
         Ok(())
     }
 
-    /// Clear active session for peer (used when creating new session)
+    /// Clear the active-session pointer for a peer (used when the active
+    /// session goes away). The peer entry itself — and its `session_ids`
+    /// list — survives, so the peer's other sessions remain routable and
+    /// listable.
     pub async fn clear_active_for_peer(&mut self, peer_key: &str) -> Result<()> {
         let peers = self.load_peers_mut().await?;
 
-        if peers.peers.remove(peer_key).is_some() {
-            self.peers_modified = true;
+        if let Some(peer_info) = peers.peers.get_mut(peer_key) {
+            if peer_info.active_session_id.is_some() {
+                peer_info.active_session_id = None;
+                self.peers_modified = true;
+                self.removed_peer_keys.remove(peer_key);
+                self.dirty_peer_keys.insert(peer_key.to_string());
+                info!("Cleared active session pointer for {}", peer_key);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Remove a session from a peer's routing entry (used when the
+    /// session is deleted). Scrubs the id from `session_ids` and clears
+    /// the active pointer if it pointed at the removed session. A peer
+    /// left with no sessions at all is dropped entirely.
+    pub async fn remove_session_from_peer(
+        &mut self,
+        peer_key: &str,
+        session_id: &str,
+    ) -> Result<()> {
+        let peers = self.load_peers_mut().await?;
+
+        let Some(peer_info) = peers.peers.get_mut(peer_key) else {
+            return Ok(());
+        };
+
+        let had_session = peer_info.session_ids.iter().any(|id| id == session_id);
+        let was_active = peer_info.active_session_id.as_deref() == Some(session_id);
+        if !had_session && !was_active {
+            return Ok(());
+        }
+
+        peer_info.session_ids.retain(|id| id != session_id);
+        if was_active {
+            peer_info.active_session_id = None;
+        }
+        let now_empty = peer_info.session_ids.is_empty();
+
+        if now_empty {
+            peers.peers.remove(peer_key);
+        }
+        self.peers_modified = true;
+        if now_empty {
             self.dirty_peer_keys.remove(peer_key);
             self.removed_peer_keys.insert(peer_key.to_string());
-            info!("Cleared peer routing for {}", peer_key);
+            info!(
+                "Removed session {} from peer {} and dropped the empty peer entry",
+                session_id, peer_key
+            );
+        } else {
+            self.removed_peer_keys.remove(peer_key);
+            self.dirty_peer_keys.insert(peer_key.to_string());
+            info!("Removed session {} from peer {}", session_id, peer_key);
         }
 
         Ok(())
@@ -570,7 +651,7 @@ impl SessionIndex {
         self.dirty_peer_keys.insert(peer_key.to_string());
 
         info!(
-            "Created session {} for peer {}, active_session_id={}",
+            "Created session {} for peer {}, active_session_id={:?}",
             session_id, peer_key, active_id
         );
         Ok(())
@@ -590,7 +671,7 @@ impl SessionIndex {
         if !peer_info.session_ids.contains(&session_id.to_string()) {
             peer_info.session_ids.push(session_id.to_string());
         }
-        peer_info.active_session_id = session_id.to_string();
+        peer_info.active_session_id = Some(session_id.to_string());
         self.peers_modified = true;
         self.removed_peer_keys.remove(peer_key);
         self.dirty_peer_keys.insert(peer_key.to_string());
@@ -1051,5 +1132,119 @@ mod tests {
             let found = index.get("sess_123").await.unwrap();
             assert!(found.is_some());
         }
+    }
+
+    /// Backward compatibility: a `sessions.json` entry written before
+    /// the `archived` / `compact_requested` fields existed must
+    /// deserialize with both flags = false (`#[serde(default)]`).
+    #[test]
+    fn test_legacy_entry_without_archive_flags_defaults_false() {
+        let legacy = serde_json::json!({
+            "session_id": "sess_legacy",
+            "agent_name": "testagent",
+            "created_at": 1,
+            "updated_at": 2,
+            "message_count": 3,
+            "turn_count": 1,
+            "last_total_tokens": 100,
+            "total_input_tokens": 80,
+            "total_output_tokens": 20,
+            "transcript_file": "sess_legacy.jsonl",
+            "title": null,
+            "parent_session_id": null,
+            "trigger": "user",
+            "peer_type": "user",
+            "peer_id": "alice"
+        });
+
+        let entry: SessionEntry = serde_json::from_value(legacy).unwrap();
+        assert!(!entry.archived);
+        assert!(!entry.compact_requested);
+
+        // And the flags round-trip through serialization once set.
+        let mut entry = entry;
+        entry.archived = true;
+        entry.compact_requested = true;
+        let json = serde_json::to_value(&entry).unwrap();
+        let reloaded: SessionEntry = serde_json::from_value(json).unwrap();
+        assert!(reloaded.archived);
+        assert!(reloaded.compact_requested);
+    }
+
+    /// `clear_active_for_peer` drops only the active-session pointer;
+    /// the peer entry and its remaining sessions stay listable.
+    #[tokio::test]
+    async fn test_clear_active_for_peer_keeps_peer_entry() {
+        let temp = TempDir::new().unwrap();
+        let mut index = SessionIndex::open(temp.path());
+        let peer_key = "user:alice";
+
+        for id in ["sess_a", "sess_b"] {
+            let entry = SessionEntry::new(
+                id.to_string(),
+                "testagent".to_string(),
+                format!("{id}.jsonl"),
+            );
+            index.create_for_peer(entry, peer_key).await.unwrap();
+        }
+        assert_eq!(
+            index.get_active_session_id(peer_key).await.unwrap(),
+            Some("sess_b".to_string())
+        );
+
+        index.clear_active_for_peer(peer_key).await.unwrap();
+
+        // Active pointer cleared, but the peer entry survives with both
+        // sessions still listable.
+        assert_eq!(index.get_active_session_id(peer_key).await.unwrap(), None);
+        let all = index.list_for_peer(peer_key).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    /// `remove_session_from_peer` scrubs the id from `session_ids`,
+    /// clears the active pointer when it matched, and drops the peer
+    /// entry only when no sessions remain.
+    #[tokio::test]
+    async fn test_remove_session_from_peer() {
+        let temp = TempDir::new().unwrap();
+        let mut index = SessionIndex::open(temp.path());
+        let peer_key = "user:alice";
+
+        for id in ["sess_a", "sess_b"] {
+            let entry = SessionEntry::new(
+                id.to_string(),
+                "testagent".to_string(),
+                format!("{id}.jsonl"),
+            );
+            index.create_for_peer(entry, peer_key).await.unwrap();
+        }
+
+        // Remove the active session: pointer cleared, other session kept.
+        index
+            .remove_session_from_peer(peer_key, "sess_b")
+            .await
+            .unwrap();
+        assert_eq!(index.get_active_session_id(peer_key).await.unwrap(), None);
+        let remaining = index.list_for_peer(peer_key).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].session_id, "sess_a");
+
+        // Remove the last session: the peer entry disappears entirely.
+        index
+            .remove_session_from_peer(peer_key, "sess_a")
+            .await
+            .unwrap();
+        assert!(index.list_for_peer(peer_key).await.unwrap().is_empty());
+        assert_eq!(index.get_active_session_id(peer_key).await.unwrap(), None);
+
+        // Unknown session / unknown peer: no-op, no error.
+        index
+            .remove_session_from_peer(peer_key, "sess_nope")
+            .await
+            .unwrap();
+        index
+            .remove_session_from_peer("user:nobody", "sess_a")
+            .await
+            .unwrap();
     }
 }

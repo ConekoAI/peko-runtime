@@ -105,6 +105,10 @@ pub struct AgentArgs {
     pub cleanup: Option<String>,
     /// Parent session key (auto-detected if not provided)
     pub parent_session_key: Option<String>,
+    /// Re-attach the run to an existing spawned session (persistent
+    /// subagents). Mutually exclusive with `isolated`.
+    #[serde(default)]
+    pub resume_session: Option<String>,
 }
 
 /// Agent tool
@@ -249,6 +253,13 @@ impl AgentTool {
         // `SpawnRequest.model` so the adapter can project it onto
         // the root-side `ExecutionConfig.model_override`.
         model: Option<String>,
+        // Phase 5b: re-attach to an existing spawned session instead
+        // of spawning a fresh one (mutually exclusive with `isolated`,
+        // validated by the callers).
+        resume_session: Option<String>,
+        // The caller's own current session id — the adapter uses it
+        // to ownership-validate an explicit `parent_session_key`.
+        caller_session_key: Option<String>,
         ctx: Option<&ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
         let timeout_seconds = config.timeout_seconds;
@@ -319,6 +330,8 @@ impl AgentTool {
                 // lifts it onto `ExecutionConfig.model_override`
                 // before calling `execute_subagent_task`.
                 model: model.clone(),
+                resume_session,
+                caller_session_key,
             })
             .await
         {
@@ -537,7 +550,7 @@ impl Tool for AgentTool {
     }
 
     fn description(&self) -> String {
-        r#"Spawn a sub-agent run in an isolated or shared session.
+        r#"Spawn a sub-agent run in an isolated or shared session, or re-attach a run to a previous spawned session.
 
 The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
@@ -548,7 +561,12 @@ Parameters:
 - model: Optional model override for the subagent (matches Claude Code's Agent schema)
 - isolated: If true, creates isolated session without parent context (default: false)
 - cleanup: "keep" or "delete" - what to do with session after completion (default: "keep")
-- parent_session_key: Parent session key (optional - auto-detected if not provided)
+- parent_session_key: Parent session key for context seeding (optional - auto-detected if not provided; must be your own session or one inside your subtree)
+- resume_session: Re-attach this run to an existing spawned session you own (optional session id, see the session tool's list) — the subagent continues with its full prior history. Mutually exclusive with isolated.
+
+Sessions you spawn appear in the `session` tool as kind "spawned" — use that tool to inspect and manage them (list, history, search, branch, rename, archive, delete, compact). The session tool manages memory; this tool runs work.
+
+resume_session refusals (structured errors naming the session): target must exist, be a spawned session (chapters/branches/live root sessions refuse), not be the session you are running in or an ancestor, not be archived, and not have an active run.
 
 Limits:
 - Spawn depth is capped at 3 levels from the root. Attempting a deeper
@@ -565,7 +583,10 @@ Examples:
 {"prompt": "Use Write to create report.txt with a summary", "subagent_type": "writer"}
 
 // Isolated context - fresh session
-{"prompt": "Analyze confidential data", "subagent_type": "analyst", "isolated": true, "cleanup": "delete"}"#
+{"prompt": "Analyze confidential data", "subagent_type": "analyst", "isolated": true, "cleanup": "delete"}
+
+// Persistent worker - continue a previous spawned session with its history
+{"prompt": "Now update report.txt with the new numbers", "subagent_type": "writer", "resume_session": "<session-id from session list>"}"#
             .to_string()
     }
 
@@ -601,7 +622,11 @@ Examples:
                 },
                 "parent_session_key": {
                     "type": "string",
-                    "description": "Parent session key (auto-detected if not provided)"
+                    "description": "Parent session key for context seeding (auto-detected if not provided; must be your own session or one inside your subtree)"
+                },
+                "resume_session": {
+                    "type": "string",
+                    "description": "Re-attach this run to an existing spawned session you own (session id from the session tool's list) — the subagent continues with its full prior history. Mutually exclusive with isolated."
                 }
             },
             "required": ["prompt", "subagent_type"]
@@ -612,6 +637,13 @@ Examples:
         let args: AgentArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
+        if args.resume_session.is_some() && args.isolated {
+            return Err(anyhow::anyhow!(
+                "'resume_session' and 'isolated: true' are contradictory — resume re-attaches \
+                 to an existing session's history while isolated starts a fresh context"
+            ));
+        }
+
         let cleanup = args.cleanup.map_or(SpawnCleanupPolicy::Keep, |s| {
             match s.to_lowercase().as_str() {
                 "delete" => SpawnCleanupPolicy::Delete,
@@ -619,16 +651,24 @@ Examples:
             }
         });
 
-        // Get parent session key - from params or session provider
-        let parent_session_key = if let Some(key) = args.parent_session_key {
-            key
-        } else if let Some(ref provider) = self.session_provider {
-            provider.current_session_key()
-        } else {
-            return Err(anyhow::anyhow!(
-                "Agent tool requires a parent_session_key parameter or session provider. \
-                Please provide parent_session_key in the tool parameters."
-            ));
+        // The caller's own session (auto-detected) vs an explicit
+        // parent_session_key (context seeding) — the adapter
+        // ownership-validates the explicit one against the caller's.
+        let caller_session_key = self
+            .session_provider
+            .as_ref()
+            .map(|p| p.current_session_key());
+        let parent_session_key = match args.parent_session_key.clone() {
+            Some(key) => key,
+            None => match caller_session_key.clone() {
+                Some(key) => key,
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Agent tool requires a parent_session_key parameter or session provider. \
+                        Please provide parent_session_key in the tool parameters."
+                    ));
+                }
+            },
         };
 
         // Resolve subagent_type to a concrete agent config and apply model override.
@@ -665,6 +705,8 @@ Examples:
             description,
             cleanup,
             args.model.clone(),
+            args.resume_session.clone(),
+            caller_session_key,
             None,
         )
         .await
@@ -684,6 +726,13 @@ Examples:
         let args: AgentArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
+        if args.resume_session.is_some() && args.isolated {
+            return Err(anyhow::anyhow!(
+                "'resume_session' and 'isolated: true' are contradictory — resume re-attaches \
+                 to an existing session's history while isolated starts a fresh context"
+            ));
+        }
+
         let cleanup = args.cleanup.map_or(SpawnCleanupPolicy::Keep, |s| {
             match s.to_lowercase().as_str() {
                 "delete" => SpawnCleanupPolicy::Delete,
@@ -691,7 +740,15 @@ Examples:
             }
         });
 
-        let parent_session_key = if let Some(key) = args.parent_session_key {
+        // The caller's own session id comes from the engine's tool
+        // context on the production path (see below); the session-key
+        // provider is the fallback.
+        let caller_session_key = ctx.session_id.clone().or_else(|| {
+            self.session_provider
+                .as_ref()
+                .map(|p| p.current_session_key())
+        });
+        let parent_session_key = if let Some(key) = args.parent_session_key.clone() {
             key
         } else if let Some(ref sid) = ctx.session_id {
             // The engine's tool executor always supplies the real
@@ -731,6 +788,8 @@ Examples:
             args.description,
             cleanup,
             args.model.clone(),
+            args.resume_session.clone(),
+            caller_session_key,
             Some(ctx),
         )
         .await
@@ -1103,10 +1162,7 @@ mod tests {
             "Subagent failed: Maximum spawn depth exceeded: 4 (max: 3)"
         );
         let response = AgentTool::format_error_response(&stringified_depth).unwrap();
-        assert_eq!(
-            response["error_type"].as_str().unwrap(),
-            "DepthLimitExceeded"
-        );
+        assert_eq!(response["error_type"].as_str().unwrap(), "DepthLimitExceeded");
         assert_eq!(response["current_depth"].as_u64().unwrap(), 4);
         assert_eq!(response["max_depth"].as_u64().unwrap(), 3);
 
@@ -1211,6 +1267,8 @@ mod tests {
                 Some("my-task".into()),
                 SpawnCleanupPolicy::Keep,
                 None, // model override
+                None, // resume_session
+                None, // caller_session_key
                 None,
             )
             .await
@@ -1265,6 +1323,8 @@ mod tests {
                 Some("my-task".into()),
                 SpawnCleanupPolicy::Keep,
                 Some("haiku-4".to_string()),
+                None, // resume_session
+                None, // caller_session_key
                 None,
             )
             .await
@@ -1293,5 +1353,44 @@ mod tests {
             vec![Some("haiku-4".to_string())],
             "resolve must see the model override, got: {seen:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_resume_session_with_isolated_is_contradictory() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.grant("agent:writer");
+        runtime.register_agent(
+            "writer",
+            AgentConfig {
+                name: "writer".into(),
+                ..Default::default()
+            },
+        );
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+
+        // resume_session + isolated is a structured refusal before any
+        // session/provider plumbing runs.
+        let err = tool
+            .execute(serde_json::json!({
+                "prompt": "x",
+                "subagent_type": "writer",
+                "isolated": true,
+                "resume_session": "some-session",
+            }))
+            .await
+            .expect_err("resume_session + isolated must refuse");
+        assert!(err.to_string().contains("contradictory"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_resume_session_schema_param_present() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        let tool = AgentTool::new(runtime as SharedSubagentRuntime);
+        let params = tool.parameters();
+        assert_eq!(params["properties"]["resume_session"]["type"], "string");
+        // Coin-model cross-reference in the description.
+        let desc = tool.description();
+        assert!(desc.contains("resume_session"));
+        assert!(desc.contains("session"));
     }
 }

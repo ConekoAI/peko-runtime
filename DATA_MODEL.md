@@ -1035,6 +1035,63 @@ File operations are tracked across compactions by scanning tool calls in the mes
 
 ---
 
+### 5.8 Agent-Owned Session Management (2026-08-09)
+
+The unified session/run framework ("coin model") adds the following
+format-level changes. Sessions stay blackboxed under the owning
+Principal (ADR-041) and user-invisible (ADR-042); every surface here
+is agent-facing only.
+
+**`SessionEntry` / `SessionMetadata` new fields** (both
+`#[serde(default)]` — pre-2026-08-09 `sessions.json` files load with
+both = `false`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `archived` | bool | Hidden from `session list` unless `include_archived: true`; refuses resume/compact until unarchived |
+| `compact_requested` | bool | Persisted compaction request (the `session` tool's `compact` action). The orchestrator ORs it into the threshold decision at the session's next iteration/run and clears it only when compaction genuinely starts, so a crashed run doesn't lose the request |
+
+**`PeerInfo.active_session_id` is now `Option<String>`**
+(`#[serde(default)]`). Deleting a session scrubs its id from the
+peer's `session_ids` and clears the active pointer only when it
+pointed at the deleted session — the peer entry (and its other
+sessions) survives, staying routable/listable; the entry is dropped
+only when no sessions remain. Pre-change `peers.json` (`String`
+values) deserializes unchanged.
+
+**Chapter ids.** The deterministic live conversational id
+(`root:{peer}`, `root:cron:{peer}`) never changes ownership — chapter
+rotation *renames* it to `{live}#{YYYYMMDD-HHMMSS}` (UTC) at the next
+run start, and the normal create path re-mints the live id. On a
+same-second collision with an existing transcript the id gains a
+`-{8 hex}` suffix. Renames move the `.jsonl` transcript plus the
+`.index.json` / `.context.cache` sidecars under the append
+`FileLock` and re-key the `sessions.json` entry (`session_id`,
+`transcript_file`).
+
+**`<sessions_dir>/chapters.json`** — durable pending chapter changes,
+written by the `session` tool (`new` / `resume`) and consumed
+read-and-clear by `agent_runner` at the next run start under
+`session_creation_lock`. Atomic write (serialize → per-PID `.tmp` →
+fsync → rename); missing/corrupt file loads as an empty map with a
+warning.
+
+```json
+{
+  "root:user:alice": { "kind": "new", "title": "morning chapter" },
+  "root:cron:alice": { "kind": "resume", "target": "root:cron:alice#20260809-071500" }
+}
+```
+
+**Transcript search.** `session search` is a case-insensitive
+substring scan over the text content of user/assistant message events
+in each in-scope session's JSONL (tool-call JSON is not matched).
+Hits are `(session_id, role, timestamp, snippet)` with a ~160-char
+snippet centered on the match. Subtree (spawned) callers are scoped
+to their own subtree; archived sessions are excluded.
+
+---
+
 ## 5½. Chat Log — Consumer-Visible Conversation History
 
 The chat log is the runtime-owned, append-only, **consumer-visible**
@@ -1827,6 +1884,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.1.0 | 2026-08-09 | Agent-owned session management (§5.8): `archived`/`compact_requested` on session entries, `PeerInfo.active_session_id` → `Option<String>` with session-id scrubbing on delete, chapter id rotation format (`root:{peer}#<ts>`), `chapters.json` pending-change sidecar, transcript search scope. |
 | 0.1.0 | 2026-07-20 | Chat-session separation: added §5½ Chat Log (runtime-owned, append-only, consumer-visible conversation history) distinct from §5 Session JSONL (mutable principal-owned working memory). Sharded by `(principal_did, peer)` with BLAKE3-hashed paths, opaque thread-bound cursors, sender-participant validation, durable append under `FileLock`. Deletion tied to `PrincipalManager::remove`. |
 | 0.1.0 | 2026-04-26 | Initial draft. ADR-022: Session compaction — added `compaction` and `model_change` system events (§5.3), context cache file format (§5.5), compaction semantics including dual-threshold triggers, turn boundaries, split-turn handling, and structured summary format (§5.6) |
 | 0.1.0 | 2026-05-08 | Packaging restructure (Phases 1–7): `src/image/` merged into `src/portable/`. Clean manifest — `AgentManifest` stripped of `capabilities`, `tools`, `mcp`, `tool_sources`, `memory`. Added `layers` section with content-addressable digests. Added `.agent` build from directory (`AgentBuilder`). Added registry push/pull with mock server. Added team checksum validation and `team.toml` preservation. Added `.ext` export for extensions. `agent.toml` is the single source of truth for agent behaviour. |

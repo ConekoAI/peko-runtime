@@ -17,6 +17,10 @@
 //!   `SessionRuntime` port trait (consumed by `peko_tools_builtin::session`).
 //! - [`todo_runtime_impl`] — `TodoStorageRuntime` impl of the
 //!   `TodoRuntime` port trait (consumed by `peko_tools_builtin::tasks`).
+//! - [`ownership`] — caller classification + guard refusals for
+//!   agent-owned session management (plan D4/D5), shared by the
+//!   session-tool adapter and the Agent-tool spawn path.
 
+pub mod ownership;
 pub mod session_runtime_impl;
 pub mod todo_runtime_impl;

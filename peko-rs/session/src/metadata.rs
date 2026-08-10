@@ -43,6 +43,12 @@ pub struct SessionMetadata {
     pub peer_type: Option<String>,
     /// Subject ID
     pub peer_id: Option<String>,
+    /// Archived sessions are hidden from default listings and refuse
+    /// resume/compact until unarchived (agent-owned session management).
+    pub archived: bool,
+    /// Set when an agent requests compaction of this session; consumed
+    /// by the compaction orchestrator at the session's next run.
+    pub compact_requested: bool,
 }
 
 impl SessionMetadata {
@@ -74,6 +80,8 @@ impl SessionMetadata {
             trigger: "user".to_string(),
             peer_type: None,
             peer_id: None,
+            archived: false,
+            compact_requested: false,
         }
     }
 
@@ -110,6 +118,8 @@ impl SessionMetadata {
             trigger: entry.trigger,
             peer_type: entry.peer_type,
             peer_id: entry.peer_id,
+            archived: entry.archived,
+            compact_requested: entry.compact_requested,
         }
     }
 
@@ -133,6 +143,8 @@ impl SessionMetadata {
             trigger: self.trigger.clone(),
             peer_type: self.peer_type.clone(),
             peer_id: self.peer_id.clone(),
+            archived: self.archived,
+            compact_requested: self.compact_requested,
         }
     }
 
@@ -302,6 +314,30 @@ mod tests {
         assert_eq!(entry.session_id, entry2.session_id);
         assert_eq!(entry.agent_name, entry2.agent_name);
         assert_eq!(entry.message_count, entry2.message_count);
+    }
+
+    #[test]
+    fn test_archive_flags_roundtrip() {
+        let mut entry = SessionEntry::new(
+            "sess_123".to_string(),
+            "test_agent".to_string(),
+            "sess_123.jsonl".to_string(),
+        );
+        entry.archived = true;
+        entry.compact_requested = true;
+
+        let meta = SessionMetadata::from_entry(entry);
+        assert!(meta.archived);
+        assert!(meta.compact_requested);
+
+        let entry2 = meta.to_entry();
+        assert!(entry2.archived);
+        assert!(entry2.compact_requested);
+
+        // Defaults are false on construction.
+        let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
+        assert!(!meta.archived);
+        assert!(!meta.compact_requested);
     }
 
     #[test]

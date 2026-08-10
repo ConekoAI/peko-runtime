@@ -2153,6 +2153,7 @@ mod tests {
         let renderer = PromptRenderer::new(core);
         let ctx = TurnPromptContext {
             principal_id: "test".into(),
+            session_id: "test-session".into(),
             agent_name: "test-agent".into(),
             body: "{{tools}} {{skills}} {{agents}} {{mcp_context}}".into(),
             capabilities: None,
@@ -2249,6 +2250,7 @@ mod tests {
         let renderer = PromptRenderer::new(core);
         let ctx = TurnPromptContext {
             principal_id: "test".into(),
+            session_id: "test-session".into(),
             agent_name: "test-agent".into(),
             body: "before {{skills}} after".into(),
             capabilities: None,
@@ -2300,6 +2302,7 @@ mod tests {
     fn inert_ctx() -> TurnPromptContext {
         TurnPromptContext {
         principal_id: "test-principal".into(),
+        session_id: "test-session".into(),
         agent_name: "test-agent".into(),
         body: "channel={{channel}} thinking={{thinking_level}} runtime={{runtime}} sandbox={{sandbox}} aliases={{model_aliases}}".into(),
         capabilities: None,
@@ -2494,7 +2497,7 @@ mod tests {
     .await;
 
         // Pin the field: `iteration=3, max=10` → Some(state { 3, 10 }).
-        let ctx = loop_.build_turn_context(3, &[]);
+        let ctx = loop_.build_turn_context(3, &[], "test-session");
         let ib = ctx
             .iteration_budget
             .expect("iteration_budget must be populated each iteration");
@@ -2555,7 +2558,7 @@ mod tests {
     .await
     .with_quota_meter(meter);
 
-        let ctx = loop_.build_turn_context(1, &[]);
+        let ctx = loop_.build_turn_context(1, &[], "test-session");
         let qs = ctx
             .quota_state
             .as_ref()
@@ -2610,7 +2613,7 @@ mod tests {
     .await
     .with_cancel_token(cancel);
 
-        let ctx = loop_.build_turn_context(1, &[]);
+        let ctx = loop_.build_turn_context(1, &[], "test-session");
         assert!(ctx.soft_cancel_pending);
 
         let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
@@ -2663,7 +2666,7 @@ mod tests {
     .await;
 
         // First observation: baseline → diff is `None` (no section).
-        let ctx1 = loop_.build_turn_context(1, &[]);
+        let ctx1 = loop_.build_turn_context(1, &[], "test-session");
         assert!(
             ctx1.capability_diff.is_none(),
             "first observation must be the baseline (no diff)"
@@ -2684,6 +2687,7 @@ mod tests {
         // expected Markdown section.
         let ctx2 = TurnPromptContext {
             principal_id: agent.principal_id().to_string(),
+            session_id: "test-session".into(),
             agent_name: agent.name().to_string(),
             body: "{{capability_diff}}".into(),
             capabilities: Some(expanded_caps),
@@ -2759,6 +2763,7 @@ mod tests {
 
         let ctx = TurnPromptContext {
             principal_id: agent.principal_id().to_string(),
+            session_id: "test-session".into(),
             agent_name: agent.name().to_string(),
             body: "{{capability_diff}}".into(),
             capabilities: Some(shrunk_caps),
@@ -2849,7 +2854,7 @@ mod tests {
         );
 
         // Iteration 1: render with the v1 body.
-        let ctx1 = loop_.build_turn_context(1, &[]);
+        let ctx1 = loop_.build_turn_context(1, &[], "test-session");
         assert_eq!(ctx1.body, "v1: You are {{agent_name}}.");
         let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered1 = renderer.render_for_iteration(&ctx1).await;
@@ -2868,7 +2873,7 @@ mod tests {
             .expect("loop is the unique Arc<AgentView> owner")
             .set_config_prompt_body_for_test(Some("v2: You are {{agent_name}}.".to_string()));
 
-        let ctx2 = loop_.build_turn_context(2, &[]);
+        let ctx2 = loop_.build_turn_context(2, &[], "test-session");
         assert_eq!(
             ctx2.body, "v2: You are {{agent_name}}.",
             "iteration 2 must read the fresh body — no caching"
@@ -2886,7 +2891,7 @@ mod tests {
             .expect("loop is still the unique Arc<AgentView> owner")
             .set_config_prompt_body_for_test(Some("v3: You are {{agent_name}}.".to_string()));
 
-        let ctx3 = loop_.build_turn_context(3, &[]);
+        let ctx3 = loop_.build_turn_context(3, &[], "test-session");
         let rendered3 = renderer.render_for_iteration(&ctx3).await;
         assert!(
             rendered3.starts_with("v3: You are phase4-rebuild-v1."),

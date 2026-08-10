@@ -38,6 +38,12 @@ pub enum TaskMetadata {
 #[derive(Debug, Clone)]
 pub struct SubagentMetadata {
     pub child_session_key: String,
+    /// The child's plain session id (uuid) — the id `session list`
+    /// shows and `Agent.resume_session` consumes. Spawn-registered
+    /// runs store the overlay key in `child_session_key`; this field
+    /// lets busy/depth lookups match on the durable session id.
+    /// `None` only for runs registered before this field existed.
+    pub child_session_id: Option<String>,
     pub cleanup: peko_session::types::SpawnCleanupPolicy,
     pub depth: u32,
     pub announce_completion: bool,
@@ -454,16 +460,43 @@ impl AsyncTaskRegistry {
     }
 
     /// Get the spawn depth of a session by looking up where it was a child.
+    ///
+    /// Matches on both the overlay `child_session_key` and the plain
+    /// `child_session_id` so callers holding either form resolve the
+    /// same depth.
     #[must_use]
     pub fn get_subagent_depth_for_session(&self, session_key: &str) -> u32 {
         self.tasks
             .values()
             .filter_map(|e| match &e.metadata {
-                TaskMetadata::Subagent(m) if m.child_session_key == session_key => Some(m.depth),
+                TaskMetadata::Subagent(m)
+                    if m.child_session_key == session_key
+                        || m.child_session_id.as_deref() == Some(session_key) =>
+                {
+                    Some(m.depth)
+                }
                 _ => None,
             })
             .next()
             .unwrap_or(0)
+    }
+
+    /// Whether a non-terminal subagent run is currently registered for
+    /// the given child session (id or overlay key). The unified
+    /// registry is the active-run source of truth for subagent runs —
+    /// `InboxRegistry` run permits are only held for root sessions.
+    #[must_use]
+    pub fn has_active_subagent_run_for_child(&self, child: &str) -> bool {
+        self.tasks.values().any(|e| {
+            e.tool_name == "Agent"
+                && !e.status.is_terminal()
+                && match &e.metadata {
+                    TaskMetadata::Subagent(m) => {
+                        m.child_session_key == child || m.child_session_id.as_deref() == Some(child)
+                    }
+                    _ => false,
+                }
+        })
     }
 
     /// Get subagent-specific result data (if any).

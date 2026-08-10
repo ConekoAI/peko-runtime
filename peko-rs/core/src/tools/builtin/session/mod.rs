@@ -67,6 +67,15 @@ pub struct SessionInfo {
     /// peer is recorded for the session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_id: Option<String>,
+    /// Archived sessions are hidden from `list` unless
+    /// `include_archived: true` and refuse resume/compact.
+    #[serde(default)]
+    pub archived: bool,
+    /// Whether a run is currently in flight in this session (the
+    /// session — or one of its descendants — cannot be deleted,
+    /// archived, or re-attached while true).
+    #[serde(default)]
+    pub run_active: bool,
 }
 
 /// Message in session history
@@ -148,6 +157,51 @@ pub struct SessionStatusResult {
     pub parent_session: Option<String>,
 }
 
+/// One match from a transcript search (`session` tool `search` action).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSearchHit {
+    pub session_id: String,
+    /// Role of the matching message ("user" or "assistant").
+    pub role: String,
+    /// RFC 3339 timestamp of the matching message.
+    pub timestamp: String,
+    /// ~160 chars of message text centered on the match.
+    pub snippet: String,
+}
+
+/// Result of the `branch` action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchOutcome {
+    pub new_session_id: String,
+    pub parent_session_id: String,
+}
+
+/// Result of the `delete` action: every session id actually removed
+/// (the target plus, with `recursive: true`, its descendants).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteOutcome {
+    pub deleted: Vec<String>,
+}
+
+/// Result of the `compact` action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactRequestOutcome {
+    pub session_id: String,
+    /// When the request fires (next iteration for the current
+    /// session, next run for others).
+    pub message: String,
+}
+
+/// Result of the `new` / `resume` chapter actions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChapterChangeOutcome {
+    /// The live session id the pending chapter change is queued for.
+    pub live_session_id: String,
+    /// Reminder that the change takes effect on the next incoming
+    /// message, not mid-turn.
+    pub message: String,
+}
+
 // ─── SessionRuntime port trait ────────────────────────────────────
 
 /// Runtime port the `SessionTool` uses to talk to session storage.
@@ -168,6 +222,7 @@ pub trait SessionRuntime: Send + Sync {
     /// - `agent_id`: filter to a single agent name.
     /// - `limit`: cap on results returned.
     /// - `active_minutes`: only sessions updated within the last N minutes.
+    /// - `include_archived`: include archived sessions (hidden by default).
     async fn list_sessions(
         &self,
         kinds: Option<&[String]>,
@@ -175,6 +230,7 @@ pub trait SessionRuntime: Send + Sync {
         agent_id: Option<&str>,
         limit: usize,
         active_minutes: Option<i64>,
+        include_archived: bool,
     ) -> anyhow::Result<Vec<SessionInfo>>;
 
     /// Get session history
@@ -190,6 +246,55 @@ pub trait SessionRuntime: Send + Sync {
 
     /// Get current session key
     fn current_session_key(&self) -> String;
+
+    /// Case-insensitive substring search over session transcripts.
+    ///
+    /// - `query`: the needle.
+    /// - `peer`: restrict to one peer's sessions (`None` = all peers).
+    /// - `limit`: cap on hits returned.
+    async fn search_sessions(
+        &self,
+        query: &str,
+        peer: Option<&peko_subject::Subject>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<SessionSearchHit>>;
+
+    /// Branch a session (copy it, stored not running). Returns the new
+    /// session's id alongside the parent's.
+    async fn branch_session(
+        &self,
+        session_key: &str,
+        label: Option<String>,
+    ) -> anyhow::Result<BranchOutcome>;
+
+    /// Rename (retitle) a session.
+    async fn rename_session(&self, session_key: &str, title: String) -> anyhow::Result<()>;
+
+    /// Set or clear the archived flag on a session.
+    async fn set_archived(&self, session_key: &str, archived: bool) -> anyhow::Result<()>;
+
+    /// Delete a session. When the session has descendants (via
+    /// `parent_session_id`), the delete refuses unless `recursive` —
+    /// which deletes the whole subtree, children first.
+    async fn delete_session(
+        &self,
+        session_key: &str,
+        recursive: bool,
+    ) -> anyhow::Result<DeleteOutcome>;
+
+    /// Schedule compaction for a session (next iteration for the
+    /// current session, next run for others).
+    async fn request_compaction(&self, session_key: &str) -> anyhow::Result<CompactRequestOutcome>;
+
+    /// Queue a fresh chapter for the caller's current (live) session.
+    /// Takes effect on the next incoming message.
+    async fn new_chapter(&self, title: Option<String>) -> anyhow::Result<ChapterChangeOutcome>;
+
+    /// Queue resuming `target_session_id` (a chapter or session) into
+    /// the caller's live session slot. Takes effect on the next
+    /// incoming message.
+    async fn resume_chapter(&self, target_session_id: &str)
+        -> anyhow::Result<ChapterChangeOutcome>;
 }
 
 /// Type alias for the shared runtime handle threaded through every
@@ -217,14 +322,38 @@ mod tests {
             is_active: true,
             peer_type: Some("user".into()),
             peer_id: Some("alice".into()),
+            archived: false,
+            run_active: false,
         };
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["session_key"], "alice-1");
         assert_eq!(json["peer_type"], "user");
         assert_eq!(json["agent_id"], "test-agent");
+        assert_eq!(json["archived"], false);
+        assert_eq!(json["run_active"], false);
         let back: SessionInfo = serde_json::from_value(json).unwrap();
         assert_eq!(back.session_id, info.session_id);
         assert_eq!(back.peer_type, info.peer_type);
+        assert!(!back.archived);
+        assert!(!back.run_active);
+    }
+
+    #[test]
+    fn session_info_legacy_json_without_new_fields_defaults_false() {
+        // A `SessionInfo` serialized before `archived` / `run_active`
+        // existed must still deserialize, with both flags = false.
+        let legacy = serde_json::json!({
+            "session_key": "k",
+            "session_id": "k",
+            "kind": "main",
+            "created_at": "2024-01-01T00:00:00Z",
+            "last_activity": "2024-01-01T01:00:00Z",
+            "message_count": 3,
+            "is_active": true
+        });
+        let back: SessionInfo = serde_json::from_value(legacy).unwrap();
+        assert!(!back.archived);
+        assert!(!back.run_active);
     }
 
     #[test]
@@ -290,6 +419,8 @@ mod tests {
             is_active: true,
             peer_type: None,
             peer_id: None,
+            archived: false,
+            run_active: false,
         };
         let json = serde_json::to_value(&info).unwrap();
         let obj = json.as_object().unwrap();
@@ -297,5 +428,58 @@ mod tests {
         assert!(!obj.contains_key("label"));
         assert!(!obj.contains_key("peer_type"));
         assert!(!obj.contains_key("peer_id"));
+    }
+
+    #[test]
+    fn session_search_hit_roundtrip() {
+        let hit = SessionSearchHit {
+            session_id: "s1".into(),
+            role: "user".into(),
+            timestamp: "2024-01-01T00:00:00Z".into(),
+            snippet: "…the needle is here…".into(),
+        };
+        let json = serde_json::to_value(&hit).unwrap();
+        assert_eq!(json["session_id"], "s1");
+        assert_eq!(json["role"], "user");
+        let back: SessionSearchHit = serde_json::from_value(json).unwrap();
+        assert_eq!(back.snippet, hit.snippet);
+    }
+
+    #[test]
+    fn outcome_dtos_roundtrip() {
+        let branch = BranchOutcome {
+            new_session_id: "b1".into(),
+            parent_session_id: "p1".into(),
+        };
+        let json = serde_json::to_value(&branch).unwrap();
+        assert_eq!(json["new_session_id"], "b1");
+        let back: BranchOutcome = serde_json::from_value(json).unwrap();
+        assert_eq!(back.parent_session_id, "p1");
+
+        let delete = DeleteOutcome {
+            deleted: vec!["a".into(), "b".into()],
+        };
+        let json = serde_json::to_value(&delete).unwrap();
+        assert_eq!(json["deleted"].as_array().unwrap().len(), 2);
+        let back: DeleteOutcome = serde_json::from_value(json).unwrap();
+        assert_eq!(back.deleted, vec!["a".to_string(), "b".to_string()]);
+
+        let compact = CompactRequestOutcome {
+            session_id: "s1".into(),
+            message: "fires next run".into(),
+        };
+        let json = serde_json::to_value(&compact).unwrap();
+        assert_eq!(json["session_id"], "s1");
+        let back: CompactRequestOutcome = serde_json::from_value(json).unwrap();
+        assert_eq!(back.message, "fires next run");
+
+        let chapter = ChapterChangeOutcome {
+            live_session_id: "root:user:alice".into(),
+            message: "takes effect on the next incoming message".into(),
+        };
+        let json = serde_json::to_value(&chapter).unwrap();
+        assert_eq!(json["live_session_id"], "root:user:alice");
+        let back: ChapterChangeOutcome = serde_json::from_value(json).unwrap();
+        assert_eq!(back.message, chapter.message);
     }
 }

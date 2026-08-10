@@ -94,6 +94,23 @@ pub trait SessionCore: Send + Sync + 'static {
     ) -> Result<()>;
 
     async fn load_history(session: &Self) -> Result<Vec<peko_message::LlmMessage>>;
+
+    /// Peek the persisted compaction-request flag (agent-owned session
+    /// management, plan D2). The compaction orchestrator ORs this into
+    /// its threshold decision. Default: no request — implementors
+    /// without a persistent flag (test stubs, in-memory sessions)
+    /// compile unchanged.
+    async fn peek_compact_request(session: &mut Self) -> bool {
+        let _ = session;
+        false
+    }
+
+    /// Clear the persisted compaction-request flag. The orchestrator
+    /// calls this only when compaction genuinely starts, so a crashed
+    /// run doesn't lose the request. Default: no-op.
+    async fn clear_compact_request(session: &mut Self) {
+        let _ = session;
+    }
 }
 
 /// Caller-facing facade: takes `&self` (lock-encapsulated).
@@ -153,6 +170,16 @@ pub trait SessionView: Send + Sync + 'static {
     ) -> Result<()>;
 
     async fn load_history(&self) -> Result<Vec<peko_message::LlmMessage>>;
+
+    /// Peek the persisted compaction-request flag (plan D2). Default:
+    /// no request — see [`SessionCore::peek_compact_request`].
+    async fn peek_compact_request(&self) -> bool {
+        false
+    }
+
+    /// Clear the persisted compaction-request flag once compaction
+    /// genuinely starts. Default: no-op.
+    async fn clear_compact_request(&self) {}
 }
 
 #[async_trait]
@@ -254,5 +281,15 @@ where
     async fn load_history(&self) -> Result<Vec<peko_message::LlmMessage>> {
         let guard = self.read().await;
         T::load_history(&*guard).await
+    }
+
+    async fn peek_compact_request(&self) -> bool {
+        let mut guard = self.write().await;
+        T::peek_compact_request(&mut *guard).await
+    }
+
+    async fn clear_compact_request(&self) {
+        let mut guard = self.write().await;
+        T::clear_compact_request(&mut *guard).await;
     }
 }
