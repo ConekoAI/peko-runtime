@@ -134,6 +134,17 @@ impl CompactionOrchestrator {
         let estimated = estimate_context_tokens(messages);
         let estimated_tokens = estimated.tokens;
 
+        // WS1 (implicit session management): also read the persisted
+        // token counter (`Session::last_total_tokens`) so the
+        // threshold decision survives restarts and JSONL reloads
+        // where the in-memory `messages` slice is empty. Use the
+        // more conservative of the two — `estimated_tokens` can
+        // drift low after a long pause / cold load, while
+        // `last_total_tokens` is anchored by every persisted
+        // assistant message's `usage.total_tokens`.
+        let (_, _, last_total) = session.token_usage().await;
+        let effective_tokens = estimated_tokens.max(last_total);
+
         // Plan D2: an agent may have requested compaction out-of-band
         // (the session tool's `compact` action persists a
         // `compact_requested` flag on the session metadata). The flag
@@ -147,12 +158,12 @@ impl CompactionOrchestrator {
             && (forced
                 || self
                     .backend
-                    .should_request(estimated_tokens, self.context_window, &self.config)
+                    .should_request(effective_tokens, self.context_window, &self.config)
                     .await)
         {
             info!(
-                "Context window approaching limit ({} tokens), checking compaction...",
-                estimated_tokens
+                "Context window approaching limit ({} tokens, last_total={}), checking compaction...",
+                effective_tokens, last_total
             );
             if forced {
                 // Compaction is genuinely starting — consume the
@@ -176,7 +187,7 @@ impl CompactionOrchestrator {
                 });
             }
 
-            self.invoke_pre_hook(messages, session, funnel, estimated_tokens)
+            self.invoke_pre_hook(messages, session, funnel, effective_tokens)
                 .await;
         }
 
@@ -601,6 +612,7 @@ mod tests {
     struct StubSession {
         requested: Mutex<bool>,
         clears: AtomicUsize,
+        last_total: AtomicUsize,
     }
 
     impl StubSession {
@@ -608,6 +620,7 @@ mod tests {
             Self {
                 requested: Mutex::new(requested),
                 clears: AtomicUsize::new(0),
+                last_total: AtomicUsize::new(0),
             }
         }
     }
@@ -643,7 +656,17 @@ mod tests {
         async fn id(&self) -> String {
             "stub-session".to_string()
         }
+        async fn token_usage(&self) -> (usize, usize, usize) {
+            (0, 0, self.last_total.load(Ordering::SeqCst))
+        }
         async fn add_user(&self, _content: String) -> Result<()> {
+            Ok(())
+        }
+        async fn add_user_with_source(
+            &self,
+            _content: String,
+            _source: peko_session::events::MessageSource,
+        ) -> Result<()> {
             Ok(())
         }
         async fn set_model(&self, _provider: &str, _model: &str) {}
@@ -970,6 +993,62 @@ mod tests {
             "threshold wording preserved, got: {}",
             events[0]
         );
+    }
+
+    /// WS1 regression: when the in-memory `messages` slice is empty
+    /// (cold reload from JSONL) but the persisted
+    /// `Session::last_total_tokens` is over the threshold, the
+    /// orchestrator must still fire compaction. Before WS1 the
+    /// estimator only saw the empty slice and let the session keep
+    /// growing until `ContextWindowExceeded` recovery fired.
+    #[tokio::test]
+    async fn persisted_last_total_triggers_compaction_with_empty_messages() {
+        let mut f = fixture(false, true); // gate open (would fire if effective_tokens > threshold)
+        // Empty messages — simulates a cold reload where the
+        // estimator has nothing to anchor on.
+        let mut messages: Vec<LlmMessage> = vec![];
+        let on_event = event_sink(&f.events);
+
+        // Pretend the previous run had accumulated 90k tokens.
+        f.session.last_total.store(90_000, Ordering::SeqCst);
+
+        f.orchestrator
+            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .await
+            .unwrap();
+
+        // The orchestrator should call into the backend — proving
+        // `effective_tokens = max(0, 90_000) = 90_000` reached the
+        // gate. Without the WS1 max() this would have been 0 and the
+        // gate would have stayed closed.
+        assert_eq!(
+            f.backend.request_calls.load(Ordering::SeqCst),
+            1,
+            "persisted last_total_tokens must trigger compaction even with empty messages"
+        );
+    }
+
+    /// WS1 symmetry: when the estimator sees a larger number than
+    /// the persisted counter, use the estimator's value (don't
+    /// regress existing behavior). This is the existing happy path
+    /// covered by `threshold_triggered_compaction_unchanged_without_flag`
+    /// but with an explicit zero on `last_total` to lock in the max()
+    /// semantic.
+    #[tokio::test]
+    async fn estimator_wins_when_larger_than_persisted_counter() {
+        let mut f = fixture(false, true);
+        let mut messages = small_messages();
+        let on_event = event_sink(&f.events);
+
+        // last_total is zero; the in-memory messages drive the gate.
+        f.session.last_total.store(0, Ordering::SeqCst);
+
+        f.orchestrator
+            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .await
+            .unwrap();
+
+        assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

@@ -72,8 +72,24 @@ impl SessionCore for Session {
         session.id.clone()
     }
 
+    async fn token_usage(session: &Self) -> (usize, usize, usize) {
+        (
+            session.total_input_tokens,
+            session.total_output_tokens,
+            session.last_total_tokens,
+        )
+    }
+
     async fn add_user(session: &mut Self, content: String) -> anyhow::Result<()> {
         Session::add_user(session, content).await
+    }
+
+    async fn add_user_with_source(
+        session: &mut Self,
+        content: String,
+        source: crate::events::MessageSource,
+    ) -> anyhow::Result<()> {
+        Session::add_user_with_source(session, content, source).await
     }
 
     async fn set_model(session: &mut Self, provider: &str, model: &str) {

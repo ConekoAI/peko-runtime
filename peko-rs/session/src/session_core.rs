@@ -69,7 +69,40 @@ pub trait SessionCore: Send + Sync + 'static {
 
     async fn id(session: &Self) -> String;
 
+    /// Read the persisted token counters: `(total_input, total_output,
+    /// last_total)`. `last_total` is the most recent provider-reported
+    /// cumulative token count for the conversation; it survives
+    /// restarts and JSONL reloads (every assistant message persists
+    /// its `usage.total_tokens` via [`SessionCore::add_assistant`]),
+    /// so it remains authoritative when the in-memory `messages`
+    /// slice is empty.
+    ///
+    /// Default: all zeros — implementors without a persisted counter
+    /// (test stubs, in-memory sessions) compile unchanged.
+    async fn token_usage(session: &Self) -> (usize, usize, usize) {
+        let _ = session;
+        (0, 0, 0)
+    }
+
     async fn add_user(session: &mut Self, content: String) -> Result<()>;
+
+    /// Add a user-role message tagged with an explicit [`MessageSource`].
+    ///
+    /// Distinct from `add_user` so callers can mark automation-originated
+    /// notes (subagent results, cron notifications, A2A deliveries,
+    /// hook injections, peer pushes) without losing the source
+    /// information on the next load. The default impl falls through to
+    /// `add_user` so test stubs compile unchanged — production
+    /// `peko_session::Session` overrides it to persist the source tag
+    /// onto the `SessionMessage`'s `RoleMetadata`.
+    async fn add_user_with_source(
+        session: &mut Self,
+        content: String,
+        source: crate::events::MessageSource,
+    ) -> Result<()> {
+        let _ = source;
+        Self::add_user(session, content).await
+    }
 
     async fn set_model(session: &mut Self, provider: &str, model: &str);
 
@@ -145,7 +178,24 @@ pub trait SessionView: Send + Sync + 'static {
 
     async fn id(&self) -> String;
 
+    /// See [`SessionCore::token_usage`]. Default: all zeros.
+    async fn token_usage(&self) -> (usize, usize, usize) {
+        (0, 0, 0)
+    }
+
     async fn add_user(&self, content: String) -> Result<()>;
+
+    /// Add a user-role message tagged with an explicit [`MessageSource`].
+    ///
+    /// See [`SessionCore::add_user_with_source`] for the source-tag
+    /// semantics. No default impl — callers that don't care about the
+    /// source tag should use [`SessionView::add_user`] instead, so the
+    /// trait surface stays explicit about intent.
+    async fn add_user_with_source(
+        &self,
+        content: String,
+        source: crate::events::MessageSource,
+    ) -> Result<()>;
 
     async fn set_model(&self, provider: &str, model: &str);
 
@@ -236,9 +286,23 @@ where
         T::id(&*guard).await
     }
 
+    async fn token_usage(&self) -> (usize, usize, usize) {
+        let guard = self.read().await;
+        T::token_usage(&*guard).await
+    }
+
     async fn add_user(&self, content: String) -> Result<()> {
         let mut guard = self.write().await;
         T::add_user(&mut *guard, content).await
+    }
+
+    async fn add_user_with_source(
+        &self,
+        content: String,
+        source: crate::events::MessageSource,
+    ) -> Result<()> {
+        let mut guard = self.write().await;
+        T::add_user_with_source(&mut *guard, content, source).await
     }
 
     async fn set_model(&self, provider: &str, model: &str) {

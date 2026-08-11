@@ -12,7 +12,7 @@ use crate::tools::builtin::DynamicSessionKeyProvider;
 use peko_auth::Subject;
 use peko_engine::AgenticEvent;
 use peko_message::LlmMessage;
-use peko_session::manager::SessionManager;
+use peko_session::manager::{SessionManager, SessionManagerRotationSink};
 use peko_session::SessionCreateOptions;
 
 use crate::principal::agent_prompt::AgentPrompt;
@@ -245,6 +245,26 @@ where
         .with_user(&peer.to_string());
     let session_manager = Arc::new(RwLock::new(session_manager));
 
+    // WS2 (implicit session management): startup sweep rotates any
+    // over-threshold live-id JSONL the daemon inherited (e.g. user
+    // re-opens a principal after a deploy that catches a session
+    // mid-life above the auto-paging threshold). Idempotent: chapter
+    // ids (`#`-suffixed) are skipped, so subsequent boots don't double
+    // rotate. Best-effort — log and continue on failure rather than
+    // blocking the boot path.
+    {
+        let mut mgr = session_manager.write().await;
+        match mgr.rotate_oversized_sessions().await {
+            Ok(n) if n > 0 => tracing::info!(
+                "WS2 startup sweep: rotated {n} oversize session(s)"
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(
+                "WS2 startup sweep failed: {e}"
+            ),
+        }
+    }
+
     // Open or create the root agent session.  Hold the per-principal
     // session-creation lock while touching the shared session index so
     // concurrent peers don't corrupt it.
@@ -372,6 +392,20 @@ where
             handle.base().clone()
         }
     };
+    // WS2 (implicit session management): install the rotation sink so
+    // every `add_*` on this session auto-pages when its JSONL crosses
+    // `test_config::rotate_bytes()` (10 MiB default). The sink re-keys
+    // `peers.json` for the rotated sibling (round-5 F3 fix), drops the
+    // in-memory `base_sessions` cache, and invalidates the new id's
+    // context cache. Safe to skip on cold paths (tests, recovery).
+    {
+        let mut session_guard = session.write().await;
+        session_guard.set_rotation_sink(Arc::new(SessionManagerRotationSink::new(
+            Arc::clone(&session_manager),
+            prompt.name.clone(),
+            peer.clone(),
+        )));
+    }
     // SessionStart hook was removed (per-turn rebuild refactor):
     // the bootstrap context is now produced by `SessionContextBuild`
     // hooks fired by `PromptRenderer::render_for_iteration` on every

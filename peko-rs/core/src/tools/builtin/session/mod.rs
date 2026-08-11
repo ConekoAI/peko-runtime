@@ -261,6 +261,14 @@ pub trait SessionRuntime: Send + Sync {
 
     /// Branch a session (copy it, stored not running). Returns the new
     /// session's id alongside the parent's.
+    ///
+    /// WS4 (implicit session management, 2026-08-11): `branch_session`
+    /// was demoted from the `session` tool in the same rollout that
+    /// made rotation + compaction engine-internal. The runtime keeps
+    /// the trait method so future engine-internal callers (e.g. an
+    /// automatic pre-merge snapshot) can still drive it; nothing in
+    /// production calls it today.
+    #[allow(dead_code)]
     async fn branch_session(
         &self,
         session_key: &str,
@@ -271,6 +279,12 @@ pub trait SessionRuntime: Send + Sync {
     async fn rename_session(&self, session_key: &str, title: String) -> anyhow::Result<()>;
 
     /// Set or clear the archived flag on a session.
+    ///
+    /// WS4 (implicit session management): `set_archived` was demoted
+    /// from the `session` tool. Engine-internal archive policies
+    /// (size-based retirement, etc.) may wire it back up; for now
+    /// it's unused but the trait stays for forward compatibility.
+    #[allow(dead_code)]
     async fn set_archived(&self, session_key: &str, archived: bool) -> anyhow::Result<()>;
 
     /// Delete a session. When the session has descendants (via
@@ -284,15 +298,36 @@ pub trait SessionRuntime: Send + Sync {
 
     /// Schedule compaction for a session (next iteration for the
     /// current session, next run for others).
+    ///
+    /// WS4 (implicit session management): `request_compaction` was
+    /// demoted from the `session` tool — the orchestrator now fires
+    /// compaction automatically from the persisted token counter
+    /// (WS1). The trait stays so an admin-level "compact now"
+    /// surface (e.g. a CLI flag) can wire it up later.
+    #[allow(dead_code)]
     async fn request_compaction(&self, session_key: &str) -> anyhow::Result<CompactRequestOutcome>;
 
     /// Queue a fresh chapter for the caller's current (live) session.
     /// Takes effect on the next incoming message.
+    ///
+    /// WS4 (implicit session management): `new_chapter` was demoted
+    /// from the `session` tool — chapter rotation is now driven by
+    /// the size-threshold auto-paging flow (WS2). The trait stays so
+    /// future engine-internal callers (admin tooling, special hooks)
+    /// can still drive a manual rotation.
+    #[allow(dead_code)]
     async fn new_chapter(&self, title: Option<String>) -> anyhow::Result<ChapterChangeOutcome>;
 
     /// Queue resuming `target_session_id` (a chapter or session) into
     /// the caller's live session slot. Takes effect on the next
     /// incoming message.
+    ///
+    /// WS4 (implicit session management): `resume_chapter` was
+    /// demoted from the `session` tool — the engine auto-loads the
+    /// requested chapter via the chapter-consume path at boot. The
+    /// trait stays so future engine-internal callers can still drive
+    /// an explicit resume.
+    #[allow(dead_code)]
     async fn resume_chapter(&self, target_session_id: &str)
         -> anyhow::Result<ChapterChangeOutcome>;
 }

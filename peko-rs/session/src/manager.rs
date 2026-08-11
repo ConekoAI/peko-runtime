@@ -40,7 +40,7 @@
 //! All session listings are verified for consistency.
 
 use crate::index::{SessionEntry, SessionIndex};
-use crate::jsonl::SessionStorage;
+use crate::jsonl::{RotationReason, RotationSink, SessionStorage};
 use crate::key::safe_filename_component;
 use crate::key::{derive_base_session_key, derive_overlay_key};
 use crate::metadata::SessionMetadata;
@@ -50,13 +50,14 @@ use crate::spawn::SpawnOverlay;
 use crate::types::{ChannelType, SpawnCleanupPolicy};
 use crate::unified::Session;
 use anyhow::Result;
+use async_trait::async_trait;
 use peko_subject::PathResolverLike;
 use peko_subject::Subject;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Reference to an overlay
 #[derive(Debug, Clone)]
@@ -2412,6 +2413,144 @@ impl Default for SessionManager {
     }
 }
 
+/// Adapter that lets `SessionStorage::append_event_with_rotation`
+/// invoke the canonical `SessionManager::rename_session_id` flow
+/// (metadata_controller.write + atomic rename of the JSONL and its
+/// sidecars) without coupling `peko-session::jsonl` to
+/// `peko-session::manager`. Holds an `Arc<RwLock<SessionManager>>`
+/// because rotation can race with concurrent `open_session` calls —
+/// the manager write lock is acquired only for the rename step.
+///
+/// WS2 (implicit session management): on rotation we also fix the
+/// round-5 F3 finding by appending the rotated id to every peer's
+/// `session_ids` via `SessionIndex::ensure_peer_active`. Without
+/// this, the archived chapter disappears from `session list peer=…`
+/// queries immediately after the auto-paging event.
+pub struct SessionManagerRotationSink {
+    manager: Arc<RwLock<SessionManager>>,
+    agent: String,
+    peer: Subject,
+}
+
+impl SessionManagerRotationSink {
+    /// Build a rotation sink bound to one (agent, peer) pair.
+    /// Construction requires that the sink know which peer to
+    /// invalidate in `base_sessions` after rotation; pair-level
+    /// binding keeps the public surface explicit.
+    pub fn new(manager: Arc<RwLock<SessionManager>>, agent: String, peer: Subject) -> Self {
+        Self { manager, agent, peer }
+    }
+}
+
+#[async_trait]
+impl RotationSink for SessionManagerRotationSink {
+    async fn request_rotation(
+        &self,
+        session_id: &str,
+        _reason: RotationReason,
+    ) -> Result<String> {
+        let sessions_dir = {
+            let mgr = self.manager.read().await;
+            mgr.sessions_dir
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?
+        };
+        let new_id = crate::chapters::chapter_id(Path::new(&sessions_dir), session_id);
+        {
+            let mut mgr = self.manager.write().await;
+            mgr.rename_session_id(session_id, &new_id).await?;
+            // Round-5 F3 fix: ensure the rotated id is registered on
+            // every peer that owned the source session. Without
+            // this, `session list peer=…` would drop the archived
+            // chapter on rotation.
+            if let Some(index_mut) = mgr.index_mut() {
+                let peer_keys = index_mut.peer_keys_with_session(session_id).await;
+                for peer_key in peer_keys {
+                    index_mut
+                        .ensure_peer_active(&peer_key, &new_id)
+                        .await?;
+                }
+                // Persist the index updates — both `ensure_peer_active`
+                // and `rename_session_id` mutate the in-memory index
+                // but do not flush to disk on their own.
+                if let Err(e) = index_mut.save_peers().await {
+                    tracing::warn!(
+                        "Auto-paging: failed to save peers index after rotation: {e}"
+                    );
+                }
+            }
+            // Invalidate the in-memory `base_sessions` cache so the
+            // next `open_session` rehydrates with the rotated id.
+            // `rename_session_id` does NOT touch this cache.
+            mgr.remove_base_session(&self.agent, &self.peer);
+            // Drop the context cache for the new sibling — its
+            // checksum is for the freshly-renamed file.
+            let storage = SessionStorage::new(sessions_dir.clone());
+            storage.invalidate_context_cache(&new_id).await?;
+        }
+        info!(
+            "Auto-paged session {} -> {} (agent={}, peer={})",
+            session_id, new_id, self.agent, self.peer
+        );
+        Ok(new_id)
+    }
+}
+
+impl SessionManager {
+    /// WS2 (implicit session management): startup sweep that rotates any
+    /// live-id JSONL whose size exceeds [`crate::test_config::rotate_bytes`].
+    ///
+    /// Idempotent: chapter ids (those containing `#`) are skipped on the
+    /// second pass because they're already archived. New events land in
+    /// the freshly-rotated sibling on the next `add_*`.
+    ///
+    /// Returns the number of rotations performed. Caller (recovery pass
+    /// or daemon boot path) should log the count.
+    pub async fn rotate_oversized_sessions(&mut self) -> Result<usize> {
+        let sessions_dir = self
+            .sessions_dir
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
+        let storage = SessionStorage::new(sessions_dir.clone());
+        let ids = storage.list_sessions().await?;
+        let threshold = crate::test_config::rotate_bytes();
+        let mut rotated = 0usize;
+
+        for id in ids {
+            // Skip already-archived chapters — they live on disk as
+            // `<id>#<UTC-ts>.jsonl` and are rotated by definition.
+            if id.contains('#') {
+                continue;
+            }
+            let path = sessions_dir.join(format!("{}.jsonl", safe_filename_component(&id)));
+            let size = match tokio::fs::metadata(&path).await {
+                Ok(m) => m.len(),
+                Err(_) => continue,
+            };
+            if size <= threshold as u64 {
+                continue;
+            }
+            let new_id = crate::chapters::chapter_id(Path::new(&sessions_dir), &id);
+            match self.rename_session_id(&id, &new_id).await {
+                Ok(()) => {
+                    info!(
+                        "Startup sweep: auto-paged oversize session {} ({} bytes) -> {}",
+                        id, size, new_id
+                    );
+                    rotated += 1;
+                }
+                Err(e) => {
+                    warn!(
+                        "Startup sweep: failed to rotate {} ({} bytes): {}",
+                        id, size, e
+                    );
+                }
+            }
+        }
+        Ok(rotated)
+    }
+}
+
 /// Build a `SessionContext` DTO from a `SessionHandle`
 async fn build_session_context(
     handle: &SessionHandle,
@@ -3432,5 +3571,98 @@ mod tests {
         let fresh = SessionManager::new().with_sessions_dir_internal(temp.path());
         let meta = fresh.get_session_metadata(&session_id).await.unwrap();
         assert!(!meta.compact_requested);
+    }
+
+    /// RAII guard that enables `PEKO_TEST_MODE` for the duration of a
+    /// test and restores the previous state on drop. Used by the
+    /// WS2 rotation tests so the `test_config` default-value tests
+    /// don't see leaked env state.
+    struct PekoTestModeGuard {
+        prev: Option<String>,
+    }
+    impl PekoTestModeGuard {
+        fn new() -> Self {
+            let prev = std::env::var("PEKO_TEST_MODE").ok();
+            std::env::set_var("PEKO_TEST_MODE", "1");
+            Self { prev }
+        }
+    }
+    impl Drop for PekoTestModeGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var("PEKO_TEST_MODE", v),
+                None => std::env::remove_var("PEKO_TEST_MODE"),
+            }
+        }
+    }
+
+    /// WS2: `rotate_oversized_sessions` rotates a live JSONL that
+    /// exceeds `test_config::rotate_bytes()` and leaves already-archived
+    /// chapters (`#`-suffixed ids) untouched.
+    #[tokio::test]
+    async fn test_rotate_oversized_sessions_rotates_live_skips_chapters() {
+        use tempfile::TempDir;
+        use tokio::fs;
+
+        let _guard = PekoTestModeGuard::new();
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Subject::User("alice".to_string());
+
+        // Create a base session via the public path so the metadata
+        // controller + peers.json are wired up.
+        let base = manager.get_or_create_base("agent", &peer).await.unwrap();
+        let live_id = base.read().await.id.clone();
+
+        // Fill past the rotation threshold.
+        let oversize = "y".repeat(crate::test_config::rotate_bytes() + 1);
+        fs::write(temp.path().join(format!("{live_id}.jsonl")), oversize)
+            .await
+            .unwrap();
+
+        // Pre-existing chapter (already `#`-suffixed) — should NOT be touched.
+        let chapter = format!("{live_id}#archived");
+        let chapter_path = temp.path().join(format!("{chapter}.jsonl"));
+        fs::write(&chapter_path, "z")
+            .await
+            .unwrap();
+        let chapter_size_before = fs::metadata(&chapter_path).await.unwrap().len();
+
+        let n = manager.rotate_oversized_sessions().await.unwrap();
+        assert_eq!(n, 1, "exactly one live id should rotate");
+
+        // Live file gone, new chapter sibling present, pre-existing
+        // chapter untouched.
+        let live_path = temp.path().join(format!("{live_id}.jsonl"));
+        assert!(
+            !live_path.exists(),
+            "live id should have been renamed away"
+        );
+        let new_chapter_paths: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| {
+                let prefix = format!("{live_id}#");
+                let suffix = ".jsonl";
+                n.starts_with(&prefix)
+                    && n.ends_with(suffix)
+                    && n != &format!("{chapter}.jsonl")
+            })
+            .collect();
+        assert_eq!(
+            new_chapter_paths.len(),
+            1,
+            "exactly one new rotated sibling should exist"
+        );
+
+        // Idempotency: a second sweep does no further rotations.
+        let n2 = manager.rotate_oversized_sessions().await.unwrap();
+        assert_eq!(n2, 0);
+
+        // Pre-existing chapter is left alone.
+        let chapter_size_after = fs::metadata(&chapter_path).await.unwrap().len();
+        assert_eq!(chapter_size_before, chapter_size_after);
     }
 }
