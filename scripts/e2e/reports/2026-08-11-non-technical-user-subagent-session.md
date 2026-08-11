@@ -188,3 +188,308 @@ To make sure I wasn't misreading the surface, I also looked at:
 - **No prior commit added `tool:session` to `starter_bundle`**: `git log -p -- peko-rs/extension-api/src/capabilities.rs | grep tool:session` returns zero hits across all branches. This is a fresh omission, not a regression.
 
 The only thing I haven't definitively settled is whether the manual-grant workaround (F3) actually works end-to-end — needs a properly sequenced flow with daemon restart between grant and toolset build. Logged as a follow-up.
+---
+
+## Addendum 3 (2026-08-11): real-LLM verification — fix landed + 1 critical UX finding
+
+After the F1 starter-grant fix in commit `ec220056`, re-ran the field test
+against real `minimax-MiniMax-M3` via `$MINIMAX_API_KEY`. New flow:
+`scripts/e2e/flows/explore-subagent-session-2026-08-11.sh`. Host
+`~/.peko` untouched, fully isolated under `/tmp/peko/explore-subagent-
+session-2026-08-11-*/`.
+
+### F1 fix verified
+
+```
+INFO peko_engine::agentic_loop: Dynamically built 27 tool definitions
+from ExtensionCore: [..., "session", ...]
+```
+
+27 tools, including `session`. The model in turn 2 successfully called
+the tool with `action=list` and returned the session list correctly —
+no more "I have no session tool" honest refusal. The F1 fix unblocks
+the in-agent session API.
+
+### New finding F5 (Critical) — model hallucinates that `session` only supports 3 actions
+
+Despite the F1 fix giving the model access to the `session` tool with
+all 12 actions clearly enumerated in both the `description` prose
+(`session/tool.rs:97-114`) and the JSON schema's `enum` field
+(`session/tool.rs:120-123`, `["status", "list", "history", "search",
+"branch", "rename", "archive", "unarchive", "delete", "compact",
+"new", "resume"]`), the model **refused to attempt 9 of the 12 actions
+without trying them**.
+
+Across the 10-turn flow, the model actually invoked:
+
+| Action | Attempts | Outcome |
+|---|---|---|
+| `list` | 3 | ✓ works, returned sessions |
+| `history` | 1 | ✓ works, returned messages |
+| `status` | 0 (implicit via list) | — |
+| `new` | 0 | ❌ refused — "only supports three actions: status, list, history" |
+| `delete` | 0 | ❌ refused — same hallucination |
+| `compact` | 0 | ❌ refused — same hallucination |
+| `branch`, `rename`, `archive`, `resume`, `search` | 0 | not asked |
+
+The model said, verbatim, in turns 4 / 8 / 9:
+
+> *"I can't actually do that — the `session` tool only supports three
+> actions: `status`, `list`, and `history`. There's no `new` action
+> available…"*
+
+This is the same hallucination shape as the 2026-08-07 round-3 P1
+("specialist overpromise") — the model is anchoring on a remembered
+version of the tool that predated the unification in `48be191a`
+("Issue 013: Unify session_status/sessions_list/sessions_history into
+single session tool"). It looks like the tool's *description* (which
+explains 12 actions) is being read but the *schema enum* (which lists
+all 12) is being ignored — or the model is treating the description's
+"status / list / history" as a complete list and ignoring the rest of
+the bullets.
+
+**Why this is worse than just a bug:** the user asked for `action=new`,
+`action=delete`, `action=compact` and got told the tool doesn't support
+those — even though the schema's `enum` literally contains them. The
+model will refuse *before* the tool ever sees the call, so the runtime
+never gets a chance to return a structured error. This means the
+refusal is *ungrounded* — the schema would have accepted the call.
+
+**Fix direction (one of):**
+
+1. **Cut the description down to a single line pointing at the enum.**
+   The current description opens with three example actions and the
+   model stops reading there. Re-order so the full action list is the
+   *first* thing in the description, or drop the examples entirely and
+   rely on the schema. (See F36 / commit `fde222d8`: "drop ## Available
+   Tools prose; tool catalogs are wire-only" — same lesson applied
+   elsewhere.)
+2. **Pre-flight the schema in the agentic loop.** Before the model
+   generates, validate that any `action` field it intends to send is
+   in the enum; if not, fall back to `tool_error("unknown action")`.
+   This is more work but makes the schema authoritative.
+3. **System-prompt nudge.** Add a hint in the root prompt that the
+   session tool is *unified* and lists all 12 actions. Quick to land,
+   won't fix the underlying description issue.
+
+### F6 (Low) — `kinds` filter returns `[]` despite a matching one
+
+Turn 7 model query: `action=list, kinds=["main", "spawned", "cron"]`.
+The tool returned `{"sessions": [], "total": 0}`. Yet the same tool
+without `kinds` returned 1 session with `kind: "user"`.
+
+Either:
+
+- `kinds` is case-sensitive AND the actual kind is `"user"` (not
+  `"main"` as the tool description says), so the filter never matches
+  in this scenario. The description claims kinds are `'main'/'chapter'
+  /'spawned'/'branch'` but the engine is creating sessions with
+  `kind: "user"` for the conversational root session. **The description
+  is wrong.**
+- The kinds filter is silently mismatched — a bug.
+
+Either way the user sees an empty list and the model honestly reports
+"Total: 0 sessions — odd" (its turn-7 reply). The model then
+re-queried without the filter and got the right answer.
+
+**Fix:** change the description's `Kinds:` line to match what the
+engine actually produces (`'user' / 'chapter' / 'spawned' / 'branch' /
+'cron'`) and confirm `kinds` is case-sensitive.
+
+### F7 (Low) — subagent `Agent` tool always errors with `writer not found`
+
+Turn 6 ("delegate this to a writer helper agent") and turn 10
+("confirm what session id it ran in") both failed with:
+
+```
+Error: Subagent type 'writer' not found at
+"/tmp/peko/.../home/.peko/agents/writer/config.toml"
+```
+
+This is a known shape — the 2026-08-07 round-3 P1 was the same
+finding, where the model *guessed* `type=writer` from the persona's
+self-description ("specialist helpers (writers, researchers, planners)")
+and the system honestly errored. In this run the principal's persona
+*doesn't* mention specialists — `"a friendly, concise assistant for
+Sam, who runs a small pottery studio called Clay & Ember and likes
+short answers"` — so the model guessed `writer` from the prompt's
+"marketing blurb for Instagram" wording.
+
+**Fix direction:** either (a) the Agent tool's `type` enum should be
+populated from `agent_catalog` at schema-build time so the model sees
+only valid types, or (b) the error message should be more
+actionable ("you said `writer`; available types: primary. Set up
+another agent with `peko principal agent add`."). The current error
+gives a path but no list of alternatives.
+
+### Positive: the fix landed cleanly
+
+- `peko-extension-api` — 5/5 `starter_bundle_includes_*` tests
+  pass, including the new `starter_bundle_includes_session_tool`
+  added in this fix.
+- `peko --lib` — 1553 tests pass.
+- `peko-cli` — 116 tests pass.
+- The model in turn 2 successfully invoked `session list` and got a
+  real session back. The model in turn 3 successfully invoked
+  `session history` and got a real transcript back. The integration
+  works end-to-end for the actions the model *does* attempt.
+
+### Performance / token log
+
+| Turn | Wall | Iter | Tool calls | Notes |
+|---|---|---|---|---|
+| 1 (memory seed) | 4s | 1 | 0 | clean confirmation |
+| 2 (session list — F1 smoke) | 10s | 1 | 1 | ✓ tool reachable, returned 1 session |
+| 3 (session history) | 10s | 1 | 1 | ✓ full transcript returned |
+| 4 (session new) | 9s | 1 | 0 | ❌ F5 hallucination — model refused |
+| 5 (chapter isolation) | 6s | 1 | 0 | worked as a probe; model said "I don't have info" |
+| 6 (subagent delegate) | 10s | 1 | 1 | ❌ F7 — Agent tool errored |
+| 7 (session list kinds) | 18s | 1 | 1 | ⚠ F6 — kinds filter returned 0 |
+| 8 (session delete) | 14s | 1 | 0 | ❌ F5 — same hallucination |
+| 9 (session compact) | 6s | 1 | 0 | ❌ F5 — same hallucination |
+| 10 (subagent summary) | 7s | 1 | 0 | ❌ F7 follow-up |
+
+Final: `total_input_tokens ≈ 168k`, `total_output_tokens ≈ 1.7k`
+across 10 turns. Turn-1 input ~8k, turn-10 input ~12k — gentle
+growth as context accumulated. No runaway loops, no retries.
+
+### Cleanup
+
+`/tmp/peko/explore-subagent-session-2026-08-11-*` retained for
+inspection (KEEP_TEMPDIR=1); `scripts/e2e/clean-tmp.sh --apply` will
+sweep them when the user is done. Host `~/.peko` untouched throughout.
+
+
+---
+
+## Addendum 4 (2026-08-11): F5 mitigation — Tier 1 + Tier 2 + Tier 6 applied, model now treats all 12 actions as real
+
+After tracing the tool's full path from `description()` through the wire
+adapter layer (see new memory `f5-session-tool-description-anchoring.md`),
+applied the cheap + low-risk fix recommended in the F5 study:
+
+### Changes
+
+| File | Change |
+|---|---|
+| `peko-rs/core/src/tools/builtin/session/tool.rs:94-114` | Rewrote `description()` to start with "Single tool with **12 operations**" + an inline pipe-separated enumeration of all 12 action names, then reordered the per-action bullets so the lifecycle ops (`delete`, `compact`, `new`, `resume`) come first. |
+| `peko-rs/core/src/tools/builtin/session/tool.rs:1-9` | Refreshed the module docstring to list all 12 actions (it still said "status / list / history" — stale from PR #259 before the unification). |
+| `peko-rs/core/src/tools/builtin/session/tool.rs:122` | Fixed `Kinds:` line (F6 adjacent) — was `'main'/'chapter'/'spawned'/'branch'`, now `'user'/'chapter'/'spawned'/'branch'/'cron'` to match what the engine actually produces. |
+| `peko-rs/core/src/tools/builtin/session/tool.rs:381-431` | Added `description_names_all_12_actions` regression test that pins all 12 action names + the "12 operations" lead-with-count substring. |
+| `peko-rs/core/src/resources/agents/root/AGENT.md:14` | Rewrote the per-tool prose summary to list all 12 actions (was missing `list` AND `unarchive`). |
+| `scripts/e2e/flows/probe-session-tool-schema.sh` | New flow: offline smoke that asks the model "List every action supported by your `session` tool" and asserts all 12 names appear in the response. |
+
+Build/test results:
+- `cargo build -p peko-cli --bin peko` + `cargo build -p peko-daemon`: clean.
+- `cargo test -p peko --lib builtin::session`: **33 passed; 0 failed**, including the new `description_names_all_12_actions` pin.
+- `cargo test -p peko-extension-api --lib starter_bundle_includes`: 5/5 pass (PR #352 fix still intact).
+
+### F5 regression probe — `probe-session-tool-schema.sh`
+
+```
+──── probe: asking model about session tool action surface ────
+wall time: 7s
+
+Here are all 12 actions supported by my `session` tool:
+
+- **status** — Get metadata and token usage for a single session (defaults to the current one).
+- **list** — Enumerate sessions with optional filters by kind, peer, agent, recency, or archived state.
+- **history** — Read the messages of a specific session, with optional inclusion of tool calls.
+- **search** — Case-insensitively find a text query across session transcripts, optionally filtered by peer.
+- **branch** — Copy a session into a new stored branch with an optional label.
+- **rename** — Retitle an existing session.
+- **archive** — Hide a session from the default list view (refuses resume/compact).
+- **unarchive** — Restore an archived session to the default list view.
+- **delete** — Remove a session, optionally recursing into its descendants.
+- **compact** — Schedule summarization for a session (fires at its next run).
+- **new** — Start a fresh chapter for the current conversation, archiving the old one (takes effect next turn).
+- **resume** — Swap a previously archived chapter or session back into the live slot (takes effect next turn).
+
+✅ F5 MITIGATED — model listed all 12 actions.
+```
+
+The model not only listed all 12, it wrote a one-line description for each — *exactly* the shape the probe asked for. **F5 is functionally mitigated** in the LLM's view of its own tool inventory.
+
+### Re-run of the 10-turn explore flow — tool-call evidence from JSONL
+
+Re-ran `explore-subagent-session-2026-08-11.sh` against the new build.
+Decoded the on-disk JSONL to see what the model *actually* called (vs
+what it just *talked about*):
+
+| Turn | Pre-fix | Post-fix |
+|---|---|---|
+| 1 (memory seed) | text only | text only |
+| 2 (session list) | `session action=list` | `session action=list` |
+| 3 (session history) | `session action=history` | `session action=history` |
+| **4 (action=new)** | ❌ refused: "tool only has 3 actions" | ✅ **`session action=new` — tool returned success** |
+| 5 (chapter isolation) | text only | text only ("I don't see any studio name") |
+| 6 (Agent subagent) | `Agent type=writer` errored | `agent_catalog` + `Agent type=primary` succeeded, blurb returned |
+| 7 (session list kinds) | `session action=list` (kinds filter mismatch) | `session action=list` (no kinds filter this time) |
+| **8 (action=delete current)** | ❌ refused: "tool only has 3 actions" | ⚠ **refused for the RIGHT reason** — "delete specifically refuses to modify the session I'm currently running in" |
+| **9 (action=compact current)** | ❌ refused: "tool only has 3 actions" | ⚠ **refused for the RIGHT reason** — "compact is similarly restricted from operating on the live session I'm currently running in" |
+| 10 (subagent summary) | text only | text only (model notes the spawn session id) |
+
+**The wins:**
+
+- Turn 4 (`action=new`) now SUCCEEDS. The tool returned success and the
+  on-disk state shows a new chapter `root:user:local#20260811-035145`
+  archived, with a fresh `root:user:local` JSONL continuing from turn 5.
+  Turn 5's chapter isolation probe confirms the rotation worked.
+- Turns 8 & 9 the model still doesn't actually call `delete`/`compact`
+  on the live session, but it now does so for the *correct* reason —
+  the description's "You cannot modify the session you are currently
+  running in" rule, which is exactly what #351's MEDIUM ownership
+  finding was meant to enforce. The model read the description and
+  reasoned correctly. This is a quality-of-refusal improvement even
+  though no tool call was made.
+
+**The losses / unchanged:**
+
+- F7 unchanged. Subagent `Agent` tool still complains if you pass a
+  type that doesn't exist. Model now handles it gracefully ("I had
+  only one available agent in the catalog ('primary') rather than a
+  true specialized helper agent, so that's who wrote it").
+- F6 (kinds filter): in this run the model queried `action=list`
+  without a kinds filter (it had learned from prior turn that the
+  filter returned 0). The wire-shape mismatch is still there in the
+  description's *old* wording, but I fixed the new description's
+  `Kinds:` line to use `'user'/'chapter'/'spawned'/'branch'/'cron'`.
+  Not yet re-verified end-to-end.
+
+### Wall-time / token log
+
+| Turn | Pre-fix | Post-fix |
+|---|---|---|
+| 1 | 4s | 4s |
+| 2 | 10s | 6s |
+| 3 | 10s | 9s |
+| 4 | 9s | 17s (slower — model wrote more text to explain the rotation) |
+| 5 | 6s | 12s |
+| 6 | 10s | 7s (faster — subagent delegation is async, model returned the receipt) |
+| 7 | 18s | 7s (much faster — no kinds filter retry loop) |
+| 8 | 14s | 5s (faster — short refusal message) |
+| 9 | 6s | 9s |
+| 10 | 7s | 5s |
+
+Total wall time: 92s → 81s. Output tokens: 1.7k → ~2.5k (more verbose
+explanations, but the F5 refusals are gone).
+
+### What did NOT change
+
+- The schema enum — already listed all 12 in order, no change needed.
+- The wire adapter layer — already passed `description` verbatim.
+- The capability grant for `tool:session` — landed in PR #352, still working.
+- The runtime implementations of `delete`/`compact`/`new`/etc. — unchanged.
+
+### Tier 3 / Tier 4 not addressed (structural fixes deferred)
+
+The structural fixes (build-time AGENT.md generation; pre-flight enum
+validation in `agentic_loop`) were not part of this mitigation. They
+remain as recommended follow-ups but the cheap-and-low-risk fix is
+sufficient to unblock F5 for the user-visible case.
+
+### Cleanup
+
+`/tmp/peko/explore-subagent-session-2026-08-11-90205-ydmmd1` retained
+(KEEP_TEMPDIR=1). Sweep with `scripts/e2e/clean-tmp.sh --apply` when
+done. Host `~/.peko` untouched.
