@@ -337,8 +337,8 @@ impl AsyncExecutor {
             };
 
             if was_cancelled {
-                tracing::debug!(
-                    "Task {} was cancelled, skipping result update",
+                tracing::warn!(
+                    "Task {} was cancelled, skipping result update + inbox push",
                     task_id_clone
                 );
                 return;
@@ -408,6 +408,8 @@ impl AsyncExecutor {
                 if let Err(e) = delivery.deliver(entry).await {
                     tracing::debug!("Delivery result for task {}: {}", task_id_clone, e);
                 }
+            } else {
+                tracing::warn!("executor: task {} not found in registry after completion", task_id_clone);
             }
 
             // NEW: push a completion event to the per-session inbox

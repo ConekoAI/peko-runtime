@@ -27,18 +27,23 @@ flow_main() {
   peko_iso_start_daemon || return 1
 
   # Ask the model to delegate so a 'Helper: Agent' line gets written.
+  # The prompt names the subagent_type explicitly ('primary') so the
+  # tool call succeeds in a single iteration — otherwise the model
+  # wastes turns on agent_catalog lookups and the run ends before the
+  # helper's completion reaches the inbox.
   peko_iso_run send sam \
-      "Use the Agent tool to delegate this: write the one-word answer to 'what colour is the sky on a clear day' and return just that word. Don't answer yourself."
+      "Use the Agent (subagent) tool with subagent_type='primary'. Pass this exact task: 'Write the one-word answer to: what colour is the sky on a clear day, and return just that word.' Don't answer the question yourself — only call the Agent tool with that prompt and report what the helper returned."
   peko_iso_assert_rc_zero
 
   # ── locate the live session JSONL ────────────────────────────────
-  local sessions_dir="$PEKO_DATA_DIR/agents/main/sessions"
   local live_jsonl
-  live_jsonl=$(ls "$sessions_dir"/*.jsonl 2>/dev/null | grep -v '#' | head -1)
+  live_jsonl=$(find "$PEKO_DATA_DIR/principals" -path '*/sessions/*.jsonl' 2>/dev/null \
+      | grep -v '#' | head -1)
   if [[ -z "$live_jsonl" ]]; then
-    echo "❌ no live session JSONL found in $sessions_dir"
+    echo "❌ no live session JSONL found under $PEKO_DATA_DIR/principals"
     return 1
   fi
+  echo "live session: $live_jsonl"
 
   # ── assert a Helper line + source:agent tag exist ────────────────
   echo
@@ -59,8 +64,9 @@ flow_main() {
   # ── stop + restart daemon; verify the line survives ──────────────
   echo
   echo "─── POST: stop+restart daemon, re-scan ───────────────────────"
-  peko_iso_stop_daemon
-  peko_iso_start_daemon
+  peko_iso_run daemon stop
+  peko_iso_assert_rc_zero
+  peko_iso_start_daemon || return 1
   if grep -q "📨 \[Helper: Agent\]" "$live_jsonl"; then
     echo "✓ Helper line persisted across restart (proves JSONL write, not in-memory)"
   else

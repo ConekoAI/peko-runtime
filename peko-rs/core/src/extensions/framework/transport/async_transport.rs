@@ -318,6 +318,22 @@ pub fn create_transport_with(client: Arc<dyn DaemonTransport>) -> Arc<dyn AsyncT
 /// Uses a shared registry from the global cache so the `task` tool
 /// can find async tasks created by the router.
 pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {
+    create_local_transport_with_inbox(
+        crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+    )
+}
+
+/// WS3 (implicit session management, 2026-08-11): same as
+/// [`create_local_transport`] but threads the daemon-shared inbox
+/// registry into the executor so completions pushed by tools
+/// dispatched through this transport actually reach the parent
+/// agentic loop's per-iteration drain. Without this, the
+/// `AsyncExecutionRouter` creates a private registry disconnected
+/// from the loop's drain and WS3's `persist_subagent_completions`
+/// never fires in production.
+pub fn create_local_transport_with_inbox(
+    inbox_registry: Arc<peko_session::InboxRegistry>,
+) -> Arc<dyn AsyncTaskTransport> {
     let registry =
         crate::extensions::framework::async_exec::executor::get_or_create_registry_for_agent(
             "_global",
@@ -329,7 +345,7 @@ pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {
         crate::extensions::framework::async_exec::executor::AsyncExecutor::with_registries(
             registry,
             queue_manager,
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            inbox_registry,
         );
     Arc::new(LocalAsyncTransport::from_executor(executor))
 }

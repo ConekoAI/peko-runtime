@@ -648,7 +648,11 @@ impl Agent {
             config.name.clone(),
             5, // max_concurrent
             principal_id.clone(),
-        );
+        )
+        // WS3 (implicit session management, 2026-08-11): share the
+        // daemon-global inbox registry so subagent completions reach
+        // the parent agentic loop's per-iteration drain.
+        .with_inbox_registry(inbox_registry.clone());
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
                 subagent_executor_base

@@ -658,11 +658,24 @@ impl AppState {
 
         // For tests, always create a fresh core to avoid shared mutable state
         // between concurrent tests.
+        //
+        // WS3 (implicit session management, 2026-08-11): hoist the
+        // daemon-shared inbox registry ABOVE this block so the
+        // AsyncExecutionRouter can be wired to it. The router owns an
+        // executor whose completion pushes must land in the same
+        // registry the agentic loop drains at iteration start —
+        // otherwise subagent results are silently dropped on the
+        // floor and `persist_subagent_completions` never fires.
+        let inbox_registry = Arc::new(InboxRegistry::new(Arc::new(
+            || -> Arc<dyn peko_extension_api::AsyncInboxLike> { Arc::new(SessionInbox::new()) },
+        )));
         let global_core = if for_test {
             use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
             use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
-            use crate::extensions::framework::transport::async_transport::create_local_transport;
-            let router = AsyncExecutionRouter::with_transport(create_local_transport());
+            use crate::extensions::framework::transport::async_transport::create_local_transport_with_inbox;
+            let router = AsyncExecutionRouter::with_transport(
+                create_local_transport_with_inbox(Arc::clone(&inbox_registry)),
+            );
             let services = ExtensionServices::with_async_router_and_principal_message_service(
                 Arc::new(router),
                 Arc::clone(&principal_service_dyn),
@@ -676,8 +689,10 @@ impl AppState {
                 init_global_core, ExtensionCore, ExtensionServices,
             };
             use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
-            use crate::extensions::framework::transport::async_transport::create_local_transport;
-            let router = AsyncExecutionRouter::with_transport(create_local_transport());
+            use crate::extensions::framework::transport::async_transport::create_local_transport_with_inbox;
+            let router = AsyncExecutionRouter::with_transport(
+                create_local_transport_with_inbox(Arc::clone(&inbox_registry)),
+            );
             let services = ExtensionServices::with_async_router_and_principal_message_service(
                 Arc::new(router),
                 Arc::clone(&principal_service_dyn),
@@ -749,11 +764,10 @@ impl AppState {
         // `AsyncExecutor` (which pushes completion events from
         // background tasks), and the in-flight `AgenticLoop` (which
         // drains at iteration start). Lazy-initializes entries on
-        // first access; no explicit cleanup.
-        let inbox_registry = Arc::new(InboxRegistry::new(Arc::new(
-            || -> Arc<dyn peko_extension_api::AsyncInboxLike> { Arc::new(SessionInbox::new()) },
-        )));
-
+        // first access; no explicit cleanup. NOTE: the actual
+        // `inbox_registry` Arc is constructed ABOVE the global_core
+        // block (WS3, 2026-08-11) so the AsyncExecutionRouter can be
+        // wired to it; we just `Arc::clone` it here.
         let async_task_executor =
             Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
 

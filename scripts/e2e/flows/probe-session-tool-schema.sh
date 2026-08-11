@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # scripts/e2e/flows/probe-session-tool-schema.sh
 #
-# F5 regression probe (2026-08-11 round-4 addendum 3): does the model
-# believe the unified `session` tool supports all 12 actions, or does
-# it anchor on the legacy 3 (`status` / `list` / `history`) and refuse
-# the lifecycle ops added in PR #351?
+# WS4 regression probe (2026-08-11 implicit session management):
+# after WS4 demoted the 6 lifecycle actions, verify the model
+# advertises exactly the 6 surviving actions and does NOT mention the
+# demoted ones (`new`/`resume`/`branch`/`archive`/`unarchive`/`compact`).
 #
-# Probes against the real LLM with $MINIMAX_API_KEY. The probe fails
-# (non-zero exit) if any of the 12 expected action names is missing
-# from the model's response.
+# Probes against the real LLM with $MINIMAX_API_KEY. Fails if any
+# surviving action is missing from the response OR any demoted action
+# appears in the response.
 #
 # Usage:
 #   MINIMAX_API_KEY=... scripts/e2e/flows/probe-session-tool-schema.sh
 #
 # Optional env:
 #   KEEP_TEMPDIR=1   retain the tempdir for inspection (default: sweep)
-#   MODEL=...        override the model (default: minimax-MiniMax-M3)
+#   MODEL=...        override the model (default: MiniMax-M3)
 #
 # Exit codes:
-#   0  model listed all 12 actions in its response
-#   1  at least one action missing from the model's response
+#   0  tool surface is exactly the 6 surviving actions
+#   1  surface drift (missing or unexpected actions in the model's response)
 #   64 MINIMAX_API_KEY unset
 #   *  any peko_iso_* assertion failure
 
@@ -48,11 +48,10 @@ flow_main() {
   # ── the probe: ask the model what actions its `session` tool has ──
   echo
   echo "──── probe: asking model about session tool action surface ────"
-  local prompt='List every action supported by your `session` tool. \
-For each action, give one short sentence. Be exhaustive — do not \
-omit any action. Output the actions as a bulleted list, in the order \
-you would call them. Do NOT call any tool; just answer from your \
-description and schema.'
+  local prompt='Output ONLY a JSON array of action names that your `session` tool \
+can be called with. No prose, no markdown, no commentary. Each element \
+must be a single lowercase action verb that is a valid value for the \
+action parameter. Do NOT call any tool; just answer from your schema.'
 
   local t0 dur
   t0=$SECONDS
@@ -65,26 +64,34 @@ description and schema.'
   echo "$_peko_iso_capture_out"
   echo
 
-  # ── assert all 12 actions appear in the response ───────────────────
-  echo "──── F5 assertion: all 12 action names in the model response ──"
+  # ── assert WS4 demote: 6 surviving actions appear, 6 demoted don't ─
+  # WS4 (implicit session management, 2026-08-11) demoted
+  # `new`/`resume`/`branch`/`archive`/`unarchive`/`compact` from the
+  # tool surface — those ops are now engine-internal. The 6 surviving
+  # actions must appear; the 6 demoted must NOT (the model would
+  # otherwise try to invoke them and get a schema-validation error).
+  echo
+  echo "──── WS4 assertion: 6 surviving actions, 6 demoted removed ───"
   local out="$_peko_iso_capture_out"
   local missing=0
+  local unexpected=0
   local expected=(
     status
     list
     history
     search
-    branch
     rename
-    archive
-    unarchive
     delete
-    compact
+  )
+  local demoted=(
     new
     resume
+    branch
+    archive
+    unarchive
+    compact
   )
   for action in "${expected[@]}"; do
-    # Case-insensitive grep; the model may capitalize.
     if echo "$out" | grep -qiE "(^|[^a-z])${action}([^a-z]|$)"; then
       echo "  ✓ ${action}"
     else
@@ -92,16 +99,30 @@ description and schema.'
       missing=$((missing + 1))
     fi
   done
+  for action in "${demoted[@]}"; do
+    # Demoted actions should NOT appear in the model's description. A
+    # stray mention (e.g. in a list of "things you cannot do") still
+    # fails — proves the model isn't confused about which ops it owns.
+    if echo "$out" | grep -qiE "(^|[^a-z])${action}([^a-z]|$)"; then
+      echo "  ❌ ${action}  ← demoted action still surfaces (WS4 regressed)"
+      unexpected=$((unexpected + 1))
+    else
+      echo "  ✓ ${action} (demoted, not surfaced)"
+    fi
+  done
 
-  if (( missing > 0 )); then
+  if (( missing > 0 || unexpected > 0 )); then
     echo
-    echo "❌ F5 NOT MITIGATED — model is still anchoring on legacy 3;"
-    echo "   $missing of 12 actions missing from response."
+    echo "❌ WS4 NOT GREEN — missing=$missing, unexpected=$unexpected"
     peko_iso_done 1
     return 1
   fi
 
   echo
-  echo "✅ F5 MITIGATED — model listed all 12 actions."
+  echo "✅ WS4 GREEN — tool surface is the 6 surviving actions."
   peko_iso_done 0
 }
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  source "$(dirname "$0")/../lib/isolate.sh"
+  flow_main "$@"
+fi

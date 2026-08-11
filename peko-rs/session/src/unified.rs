@@ -848,11 +848,26 @@ impl Session {
     /// installed, otherwise fall back to the plain `append_event` path.
     /// Tests that build `Session` without a `SessionManager` skip
     /// auto-paging; production paths set the sink right after open.
-    async fn append_to_storage(&self, event: &SessionEvent) -> Result<()> {
+    ///
+    /// Takes `&mut self` so a rotation event can re-key `self.id` to the
+    /// new sibling — without this, a second append on the same `Session`
+    /// (e.g. the agentic loop's next message) would still target the
+    /// renamed-away file and the next size check would re-fire the
+    /// sink, racing itself (round-5 test 2026-08-11: "Cannot rename
+    /// non-existent session").
+    async fn append_to_storage(&mut self, event: &SessionEvent) -> Result<()> {
         if let Some(sink) = self.rotation_sink.as_ref() {
-            self.storage
+            let outcome = self
+                .storage
                 .append_event_with_rotation(&self.id, event, sink.as_ref())
                 .await?;
+            if let crate::jsonl::RotationOutcome::Rotated { from: _, to } = outcome {
+                // `append_event_with_rotation` has already written the
+                // event to the rotated sibling. Re-key our local id so
+                // the next append goes to the new file without firing
+                // the sink again.
+                self.id = to;
+            }
         } else {
             self.storage.append_event(&self.id, event).await?;
         }
