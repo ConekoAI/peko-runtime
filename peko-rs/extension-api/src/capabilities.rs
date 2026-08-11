@@ -294,6 +294,17 @@ impl Capabilities {
             // one tool; without the grant the capability filter drops
             // it from the LLM's toolset at `init_builtins_async`.
             "tool:send_peer",
+            // Session management (PR #351 agent-owned session mgmt).
+            // The unified `session` tool exposes 12 actions (status /
+            // list / history / search / branch / rename / archive /
+            // unarchive / delete / compact / new / resume) over the
+            // session store; without this grant the capability filter
+            // (`is_tool_enabled` in tool_registry.rs) drops it from a
+            // default-created principal's toolset even though the tool
+            // itself is wired in BuiltinToolAdapter. Surfaced by the
+            // 2026-08-11 field test (scripts/e2e/reports/2026-08-11-
+            // non-technical-user-subagent-session.md, F1).
+            "tool:session",
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",
@@ -442,6 +453,23 @@ mod tests {
                 "starter_bundle must include tool:{tool}"
             );
         }
+    }
+
+    /// Auto-grant the unified `session` tool (PR #351 agent-owned
+    /// session management, 12 actions) so a fresh principal can
+    /// actually manage sessions conversationally. Without this,
+    /// `is_tool_enabled` filters the session tool out of the LLM's
+    /// available_tools list despite the tool being wired in
+    /// `BuiltinToolAdapter` — the model then honestly reports it has
+    /// no session tool. Surfaced in the 2026-08-11 subagent/session
+    /// field test (F1).
+    #[test]
+    fn starter_bundle_includes_session_tool() {
+        let caps = Capabilities::starter_bundle();
+        assert!(
+            caps.is_granted(&Capability::new("tool:session")),
+            "starter_bundle must include tool:session"
+        );
     }
 }
 

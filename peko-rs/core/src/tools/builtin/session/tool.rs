@@ -1,8 +1,11 @@
 //! Unified `session` tool — single introspection entry point that
-//! dispatches by `action` (`status` / `list` / `history`).
+//! dispatches by `action` over 12 operations
+//! (`status` / `list` / `history` / `search` / `branch` / `rename` /
+//! `archive` / `unarchive` / `delete` / `compact` / `new` / `resume`).
 //!
 //! Replaces the legacy `session_status`, `sessions_list`, `sessions_history`
-//! tools (Issue 013). Speaks to the [`SessionRuntime`] port.
+//! tools (Issue 013, expanded by PR #351 with the 9 lifecycle operations).
+//! Speaks to the [`SessionRuntime`] port.
 
 use async_trait::async_trait;
 use peko_tools_core::traits::Tool;
@@ -92,22 +95,24 @@ impl Tool for SessionTool {
     }
 
     fn description(&self) -> String {
-        r"Sessions are your persistent memory — every conversation is a persisted session you can inspect and manage here.
+        r"Single tool with **12 operations** for inspecting and managing your persisted sessions. The `action` parameter is REQUIRED and MUST be one of:
 
-Actions:
-- status: one session's metadata + token usage (session_key optional, defaults to current)
-- list: query sessions (filters: kinds, peer, agent_id, active_minutes; archived hidden unless include_archived:true)
-- history: messages of a session (session_key, include_tools)
-- search: case-insensitive text search across session transcripts (query required; optional peer filter)
-- branch: copy a session into a new stored branch (session_key required; optional label)
-- rename: retitle a session (session_key + title required)
-- archive / unarchive: hide/show a session in list (session_key required); archived sessions refuse resume/compact
+  delete | compact | new | resume | archive | unarchive | search | branch | rename | status | list | history
+
+Per-action semantics (the action you choose determines which other params apply):
 - delete: remove a session (session_key required; recursive:true also deletes its descendants, children first)
 - compact: schedule summarization (session_key required) — fires at the next iteration for the current session, at its next run for others
 - new: start a fresh chapter for the current conversation (optional title) — the old chapter is kept under '<live-id>#<timestamp>'; takes effect on the NEXT incoming message, not this turn
 - resume: swap a chapter/session back into the live slot (target required); takes effect on the NEXT incoming message
+- archive / unarchive: hide/show a session in list (session_key required); archived sessions refuse resume/compact
+- search: case-insensitive text search across session transcripts (query required; optional peer filter)
+- branch: copy a session into a new stored branch (session_key required; optional label)
+- rename: retitle a session (session_key + title required)
+- status: one session's metadata + token usage (session_key optional, defaults to current)
+- list: query sessions (filters: kinds, peer, agent_id, active_minutes; archived hidden unless include_archived:true)
+- history: messages of a session (session_key, include_tools)
 
-Kinds: 'main'/'chapter' (your rotated conversation chapters), 'spawned' (subagent sessions), 'branch' (copies).
+Kinds (set by the engine, observed via `list`): 'user' (your live session), 'chapter' (rotated conversations), 'spawned' (subagent sessions), 'branch' (copies via `branch`), 'cron' (scheduled-run sessions).
 
 To RUN work in a session, use the Agent tool instead — spawned sessions appear here as kind 'spawned' and can be re-attached with Agent's resume_session param. You cannot modify the session you are currently running in (use 'new' or 'compact' for that)."
             .to_string()
@@ -381,6 +386,60 @@ mod tests {
     };
     use serde_json::json;
     use std::sync::Arc;
+
+    /// F5 (2026-08-11 field test, Addendum 3): the model was anchoring on
+    /// the legacy 3 actions (`status` / `list` / `history`) and refusing
+    /// to call any of the 9 PR #351 lifecycle operations. The schema
+    /// enum listed all 12, but the model wasn't trusting it. Pin the
+    /// description here so any future edit that drops one of the 12
+    /// action names fails the test — defense-in-depth against the
+    /// "register without surfacing in description" omission pattern.
+    #[test]
+    fn description_names_all_12_actions() {
+        let cache = SessionCache::new("test");
+        let tool = SessionTool::new(Arc::new(cache).as_shared());
+        let desc = tool.description();
+
+        // The 12 actions, in the order they appear in `SessionAction`.
+        // If `SessionAction` ever grows, bump this list in lockstep.
+        let expected_actions = [
+            "status",
+            "list",
+            "history",
+            "search",
+            "branch",
+            "rename",
+            "archive",
+            "unarchive",
+            "delete",
+            "compact",
+            "new",
+            "resume",
+        ];
+        assert_eq!(
+            expected_actions.len(),
+            12,
+            "test bug: expected_actions must have 12 entries"
+        );
+
+        for action in expected_actions {
+            assert!(
+                desc.contains(action),
+                "session description must name the `{action}` action (F5: model anchored on \
+                 legacy 3 and refused lifecycle ops; description must surface every action)"
+            );
+        }
+
+        // Lead-with-count: the description must advertise the action
+        // count up front so the model sees all 12 before any per-action
+        // bullet (defeats primacy bias on the legacy 3).
+        assert!(
+            desc.contains("12 operations")
+                || desc.contains("12 actions")
+                || desc.contains("12 op"),
+            "session description must lead with the action count (F5: defeats primacy bias)"
+        );
+    }
 
     fn create_test_cache() -> Arc<SessionCache> {
         let cache = SessionCache::new("main");
