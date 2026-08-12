@@ -17,6 +17,7 @@
 use crate::events::SessionEvent;
 use crate::key::safe_filename_component;
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use peko_fs_persistence::{append_bytes_durable, FileLock};
 use peko_message::LlmMessage;
@@ -27,6 +28,42 @@ use tracing::{debug, info, warn};
 
 /// Default lock timeout for session operations (10 seconds)
 pub const SESSION_LOCK_TIMEOUT_MS: u64 = 10_000;
+
+/// Reason a rotation was triggered. Stored on `RotationOutcome` so
+/// tests / observability can distinguish future causes (cron pressure,
+/// explicit user request, etc.) from the initial size-driven path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RotationReason {
+    /// The session's JSONL crossed `test_config::rotate_bytes()`
+    /// during an append.
+    SizeExceeded,
+}
+
+/// Outcome of `SessionStorage::append_event_with_rotation`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RotationOutcome {
+    /// No rotation happened — the event was appended to the original
+    /// file as in `append_event`.
+    NoRotation,
+    /// Rotation happened; the event was appended to the new sibling
+    /// `to` file (the original file is now archived at `from`).
+    Rotated { from: String, to: String },
+}
+
+/// WS2 (implicit session management): callback invoked from
+/// `SessionStorage::append_event_with_rotation` when the live
+/// session's JSONL crosses the size threshold and needs to roll
+/// over to a `<id>#<UTC-ts>` sibling. The default impl is a
+/// panic — `append_event_with_rotation` requires an explicit sink
+/// so production wiring can't accidentally bypass rotation.
+#[async_trait]
+pub trait RotationSink: Send + Sync {
+    async fn request_rotation(
+        &self,
+        session_id: &str,
+        reason: RotationReason,
+    ) -> Result<String>;
+}
 
 /// Normalized session entry for unified access
 ///
@@ -133,6 +170,74 @@ impl SessionStorage {
         Self::append_bytes(&path, line.as_bytes()).await?;
 
         Ok(())
+    }
+
+    /// Append a Peko event to the session, rotating to a `<id>#<ts>`
+    /// sibling first if the live file would exceed
+    /// `test_config::rotate_bytes()` after the append.
+    ///
+    /// WS2 (implicit session management): the engine keeps the live
+    /// session finite by auto-paging. The flow:
+    ///
+    /// 1. Acquire the `FileLock` for the source file (matches
+    ///    `append_event`'s cross-process serialisation).
+    /// 2. `fs::metadata(&path).len()` under the lock is
+    ///    authoritative — concurrent writers can't race past us.
+    /// 3. If `size + serialized_len > rotate_bytes()`, call
+    ///    `sink.request_rotation(session_id, SizeExceeded)`. The
+    ///    sink is responsible for the atomic rename + index +
+    ///    cache invalidation (see `manager::SessionManagerRotationSink`).
+    /// 4. Drop the source lock, re-acquire on the new sibling path,
+    ///    and append.
+    /// 5. Return `RotationOutcome::Rotated { from, to }` so callers
+    ///    can invalidate any in-memory caches keyed by `from`.
+    ///
+    /// Returns `RotationOutcome::NoRotation` when the append fits in
+    /// the existing file.
+    pub async fn append_event_with_rotation(
+        &self,
+        session_id: &str,
+        event: &SessionEvent,
+        sink: &dyn RotationSink,
+    ) -> Result<RotationOutcome> {
+        let path = self.session_path(session_id);
+        let json = serde_json::to_string(event)?;
+        let line = json + "\n";
+        let threshold = crate::test_config::rotate_bytes();
+
+        // Lock the source file once for the size check + append.
+        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
+        let current_size = match fs::metadata(&path).await {
+            Ok(meta) => meta.len() as usize,
+            // File may not exist yet — treat as zero. The append
+            // below will create it.
+            Err(_) => 0,
+        };
+
+        if current_size + line.len() <= threshold {
+            Self::append_bytes(&path, line.as_bytes()).await?;
+            // Lock released on drop.
+            return Ok(RotationOutcome::NoRotation);
+        }
+
+        // Over threshold — drop the source lock so the sink's
+        // rename_session_id (which acquires `metadata_controller.write()` +
+        // a fresh FileLock on the source path) doesn't see us as
+        // holding the lock during its atomic rename. The source
+        // file is renamed away; once the sink returns the new id,
+        // we re-acquire on the sibling path.
+        drop(_lock);
+
+        let new_id = sink.request_rotation(session_id, RotationReason::SizeExceeded).await?;
+
+        let new_path = self.session_path(&new_id);
+        let _new_lock = FileLock::acquire(&new_path, SESSION_LOCK_TIMEOUT_MS).await?;
+        Self::append_bytes(&new_path, line.as_bytes()).await?;
+
+        Ok(RotationOutcome::Rotated {
+            from: session_id.to_string(),
+            to: new_id,
+        })
     }
 
     /// Initialize a new session file with a `SessionCreated` event
@@ -941,6 +1046,7 @@ impl SessionStorage {
 #[cfg(test)]
 mod tests {
     use crate::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
+    use crate::jsonl::RotationOutcome;
     use crate::*;
     use chrono::Utc;
     use tempfile::TempDir;
@@ -992,6 +1098,139 @@ mod tests {
         // Idempotent: a second call is a no-op.
         storage.cleanup_temp_files("test_session").await.unwrap();
         assert!(!tmp_path.exists());
+    }
+
+    /// RAII guard that enables `PEKO_TEST_MODE` for the duration of a
+    /// test and restores the previous state on drop. Used by the
+    /// WS2 rotation tests so the `test_config` default-value tests
+    /// don't see leaked env state.
+    struct PekoTestModeGuard {
+        prev: Option<String>,
+    }
+    impl PekoTestModeGuard {
+        fn new() -> Self {
+            let prev = std::env::var("PEKO_TEST_MODE").ok();
+            std::env::set_var("PEKO_TEST_MODE", "1");
+            Self { prev }
+        }
+    }
+    impl Drop for PekoTestModeGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var("PEKO_TEST_MODE", v),
+                None => std::env::remove_var("PEKO_TEST_MODE"),
+            }
+        }
+    }
+
+    /// WS2 (implicit session management): when the file fits under the
+    /// rotation threshold the sink is never consulted and the event
+    /// lands in the original file.
+    #[tokio::test]
+    async fn test_append_event_with_rotation_under_threshold_returns_no_rotation() {
+        let _guard = PekoTestModeGuard::new();
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+
+        // Build a real `SessionCreated` event so we exercise the same
+        // serialisation path production uses.
+        let event = SessionEvent::SessionCreated(SessionCreatedEvent {
+            envelope: EventEnvelope {
+                id: "test-1".to_string(),
+                ts: Utc::now(),
+            },
+            instance_id: "instance-1".to_string(),
+            image_digest: "sha256:abc".to_string(),
+            parent_session_id: None,
+            trigger: SessionTrigger::User,
+        });
+
+        // Sink that would panic if invoked — the test verifies it
+        // stays cold under threshold.
+        struct PanicSink;
+        #[async_trait::async_trait]
+        impl RotationSink for PanicSink {
+            async fn request_rotation(
+                &self,
+                _session_id: &str,
+                _reason: RotationReason,
+            ) -> anyhow::Result<String> {
+                panic!("sink must not fire under threshold")
+            }
+        }
+
+        let outcome = storage
+            .append_event_with_rotation("live", &event, &PanicSink)
+            .await
+            .unwrap();
+        assert_eq!(outcome, RotationOutcome::NoRotation);
+        assert!(temp.path().join("live.jsonl").exists());
+    }
+
+    /// WS2: when an append would push the JSONL past `rotate_bytes()`
+    /// the sink is asked for a new id and the event lands in the
+    /// rotated sibling.
+    #[tokio::test]
+    async fn test_append_event_with_rotation_over_threshold_calls_sink() {
+        let _guard = PekoTestModeGuard::new();
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+
+        // Pre-fill the live file past threshold so the next append
+        // crosses it deterministically.
+        let oversize = "x".repeat(crate::test_config::rotate_bytes() + 1);
+        tokio::fs::write(temp.path().join("live.jsonl"), oversize)
+            .await
+            .unwrap();
+
+        // Sink that pretends to rotate to a fixed sibling id.
+        struct CapturingSink {
+            captured: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        }
+        #[async_trait::async_trait]
+        impl RotationSink for CapturingSink {
+            async fn request_rotation(
+                &self,
+                session_id: &str,
+                reason: RotationReason,
+            ) -> anyhow::Result<String> {
+                self.captured.lock().unwrap().replace(session_id.to_string());
+                assert_eq!(reason, RotationReason::SizeExceeded);
+                Ok(format!("{session_id}#rotated"))
+            }
+        }
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = CapturingSink {
+            captured: std::sync::Arc::clone(&captured),
+        };
+
+        let event = SessionEvent::SessionCreated(SessionCreatedEvent {
+            envelope: EventEnvelope {
+                id: "test-2".to_string(),
+                ts: Utc::now(),
+            },
+            instance_id: "instance-2".to_string(),
+            image_digest: "sha256:def".to_string(),
+            parent_session_id: None,
+            trigger: SessionTrigger::User,
+        });
+
+        let outcome = storage
+            .append_event_with_rotation("live", &event, &sink)
+            .await
+            .unwrap();
+        match outcome {
+            RotationOutcome::Rotated { from, to } => {
+                assert_eq!(from, "live");
+                assert_eq!(to, "live#rotated");
+            }
+            other => panic!("expected Rotated outcome, got {other:?}"),
+        }
+        assert_eq!(*captured.lock().unwrap(), Some("live".to_string()));
+        assert!(
+            temp.path().join("live#rotated.jsonl").exists(),
+            "event should land in the rotated sibling"
+        );
     }
 
     /// F30 writes never leave a `.tmp` behind. Verify by writing a

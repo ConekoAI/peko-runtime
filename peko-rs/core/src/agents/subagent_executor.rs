@@ -193,6 +193,14 @@ pub struct SubagentExecutor {
     /// holds). Bound onto each spawned child Agent so `send_peer`
     /// registers down the whole tree with correct caller attribution.
     caller_principal_did: std::sync::OnceLock<String>,
+    /// WS3 (implicit session management, 2026-08-11): the daemon-shared
+    /// inbox registry. Completions pushed by subagent spawns MUST land
+    /// in this registry so the parent agentic loop's per-iteration
+    /// drain sees them; otherwise WS3's `persist_subagent_completions`
+    /// never fires. `None` falls back to a per-executor standalone
+    /// registry (kept for tests and CLI one-shots where no daemon
+    /// state is wired).
+    inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
 }
 
 impl SubagentExecutor {
@@ -239,7 +247,34 @@ impl SubagentExecutor {
             peer_meter: None,
             principal_plan_port: None,
             caller_principal_did: std::sync::OnceLock::new(),
+            inbox_registry: None,
         }
+    }
+
+    /// WS3 (implicit session management, 2026-08-11): bind the
+    /// daemon-shared inbox registry so subagent completions land in
+    /// the same registry the parent agentic loop drains. Without
+    /// this binding the executor's `AsyncExecutor` creates its own
+    /// private registry and WS3's `persist_subagent_completions`
+    /// hook never fires for production runs.
+    #[must_use]
+    pub fn with_inbox_registry(
+        mut self,
+        registry: Option<Arc<peko_session::InboxRegistry>>,
+    ) -> Self {
+        if let Some(reg) = registry {
+            self.inbox_registry = Some(reg.clone());
+            // Rebuild the AsyncExecutor against the shared registry so
+            // completion pushes actually reach the loop's drain site.
+            let async_registry = get_or_create_registry_for_agent(&self.agent_name);
+            let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
+            self.unified_executor = AsyncExecutor::with_registries(
+                async_registry,
+                async_queue_manager,
+                reg,
+            );
+        }
+        self
     }
 
     /// F39: set the spawning principal's `QuotaMeter`. The subagent
@@ -394,6 +429,7 @@ impl SubagentExecutor {
             peer_meter: None,
             principal_plan_port: None,
             caller_principal_did: std::sync::OnceLock::new(),
+            inbox_registry: None,
         }
     }
 
@@ -431,6 +467,7 @@ impl SubagentExecutor {
             peer_meter: None,
             principal_plan_port: None,
             caller_principal_did: std::sync::OnceLock::new(),
+            inbox_registry: None,
         }
     }
 

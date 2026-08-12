@@ -14,9 +14,11 @@
 //! dependencies (`peko_message`, `peko_tools_core`) are already
 //! `peko-engine` deps. No trait ports or session-coupled shims needed.
 
+use crate::SessionView;
 use chrono::Utc;
 use peko_extension_api::AsyncTaskStatus;
 use peko_message::{ContentBlock, LlmMessage, MessageRole};
+use peko_session::events::MessageSource;
 use std::collections::HashMap;
 
 /// View trait over a completed async-task event used to build the
@@ -94,7 +96,10 @@ const TRUNCATION_SUFFIX: &str = "\n\n... (truncated; use `AsyncOutput` for full 
 /// Truncate a result string to `MAX_RESULT_PREVIEW_BYTES`, respecting
 /// UTF-8 char boundaries, and append a suffix pointing the model at
 /// `AsyncOutput` for the full content.
-fn truncate_for_preview(text: &str) -> String {
+///
+/// Public for use from `agentic_loop::run_inner`'s inbox-drain
+/// persistence branch (WS3 — implicit session management).
+pub fn truncate_for_preview(text: &str) -> String {
     if text.len() <= MAX_RESULT_PREVIEW_BYTES {
         return text.to_string();
     }
@@ -167,6 +172,52 @@ pub fn build_async_completion_message<E: AsyncCompletionLike>(
         tool_call_id: None,
         usage: None,
     })
+}
+
+/// Persist subagent completions into the parent's live session JSONL.
+///
+/// WS3 (implicit session management): the agentic loop's inbox drain
+/// injects a synthetic `LlmMessage` for the next LLM turn via
+/// [`build_async_completion_message`], but that message lives only in
+/// memory and is lost on reload. This helper writes the same payload
+/// out — tagged with [`MessageSource::Agent`] — so the helper's output
+/// is part of the parent's permanent transcript. Filtered to events
+/// whose `parent_session_key` matches and whose `tool_name` is the
+/// subagent dispatcher (`Agent`); other completions (cron, shell,
+/// a2a) are out of scope for this hook and continue to live only in
+/// the in-memory `messages` slice.
+///
+/// Returns `Ok(())` even when individual appends fail — log-and-continue
+/// matches the steering-branch behavior in `agentic_loop::run_inner`'s
+/// inbox drain. A torn append is recoverable via the
+/// `torn_last_line_filtered` invariant in `peko_session::jsonl`.
+pub async fn persist_subagent_completions<E: AsyncCompletionLike>(
+    completions: &[E],
+    session: &dyn SessionView,
+    session_id: &str,
+) {
+    for event in completions {
+        if event.parent_session_key() != session_id {
+            continue;
+        }
+        if event.tool_name() != "Agent" {
+            continue;
+        }
+        let persisted = format!(
+            "📨 [Helper: {}] {}",
+            event.tool_name(),
+            truncate_for_preview(&event.result().to_string())
+        );
+        if let Err(e) = session
+            .add_user_with_source(persisted, MessageSource::Agent)
+            .await
+        {
+            tracing::warn!(
+                "AgenticLoop: failed to persist subagent completion (task {}): {e}",
+                event.task_id()
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -432,6 +483,129 @@ mod tests {
         assert!(
             msg.is_none(),
             "events from a different session must be filtered out"
+        );
+    }
+
+    /// WS3 persistence helper: filters to events matching
+    /// `parent_session_key` AND `tool_name == "Agent"`, then writes a
+    /// `📨 [Helper: Agent] <result>` line to the live session tagged
+    /// with `MessageSource::Agent`. The test exercises the public
+    /// helper through `Arc<RwLock<Session>>` (the production wrapper
+    /// type) and verifies the source tag round-trips through the
+    /// native event loader.
+    #[tokio::test]
+    async fn test_persist_subagent_completions_filters_and_tags_source() {
+        use peko_session::events::{MessageSource, SessionEvent, SessionMessage};
+        use peko_session::{Arc as SessionArc, RwLock as SessionRwLock, Session};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = peko_session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-persist-completions";
+
+        storage.create_session(session_id, None).await.unwrap();
+
+        let session: SessionArc<SessionRwLock<Session>> = SessionArc::new(SessionRwLock::new(
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap(),
+        ));
+
+        // Mixed completion set:
+        //   - one matching parent + Agent tool → must persist
+        //   - one matching parent but `shell` tool → must NOT persist
+        //   - one for a different session_key → must NOT persist
+        let events = vec![
+            make_completion_event("agent:x", "Agent", session_id),
+            make_completion_event("shell:y", "shell", session_id),
+            make_completion_event("agent:z", "Agent", "other-session"),
+        ];
+        // The blanket impl `impl<T> SessionView for Arc<tokio::sync::RwLock<T>>`
+        // applies; `&session` is `&Arc<RwLock<Session>>` which coerces to
+        // `&dyn SessionView` via unsized coercion at the function boundary.
+        persist_subagent_completions(&events, &session, session_id).await;
+
+        // Reload raw events and look for our `📨 [Helper: Agent]` line.
+        let events = storage.load_events(session_id).await.unwrap();
+        let agent_persisted: Vec<&SessionMessage> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                SessionEvent::MessageV2(m) => Some(m),
+                _ => None,
+            })
+            .filter(|m| {
+                matches!(
+                    m.role_metadata,
+                    peko_session::message::RoleMetadata::User {
+                        source: MessageSource::Agent
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(
+            agent_persisted.len(),
+            1,
+            "exactly one Agent-source entry should be persisted (Agent+session match), got {agent_persisted:?}"
+        );
+        // And the source tag is Agent (not User).
+        assert!(matches!(
+            agent_persisted[0].role_metadata,
+            peko_session::message::RoleMetadata::User {
+                source: MessageSource::Agent
+            }
+        ));
+        // The body carries the `📨 [Helper: Agent]` prefix.
+        if let peko_message::ContentBlock::Text { text } = &agent_persisted[0].message.content[0] {
+            assert!(
+                text.starts_with("📨 [Helper: Agent]"),
+                "persisted body should carry the 📨 [Helper: Agent] prefix; got: {text}"
+            );
+        } else {
+            panic!("persisted message body should be a Text block");
+        }
+    }
+
+    /// `persist_subagent_completions` is log-and-continue: an append
+    /// failure on one event does not abort the loop. Today this is
+    /// hard to exercise without a failing append sink — covered here
+    /// by a happy-path-only smoke test that asserts no panics on an
+    /// empty event list (the common steady-state at runtime).
+    #[tokio::test]
+    async fn test_persist_subagent_completions_empty_noop() {
+        use peko_session::{Arc as SessionArc, RwLock as SessionRwLock, Session};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = peko_session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-persist-noop";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let session: SessionArc<SessionRwLock<Session>> = SessionArc::new(SessionRwLock::new(
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap(),
+        ));
+        let events: Vec<peko_extension_api::CompletionEvent> = vec![];
+        persist_subagent_completions(&events, &session, session_id).await;
+
+        // Nothing appended on the helper's side. `SessionCreated` /
+        // other lifecycle events emitted by `open_by_id` are not in
+        // scope for this assertion.
+        let events = storage.load_events(session_id).await.unwrap();
+        let message_v2_count = events
+            .iter()
+            .filter(|ev| {
+                matches!(
+                    ev,
+                    peko_session::events::SessionEvent::MessageV2(_)
+                )
+            })
+            .count();
+        assert_eq!(
+            message_v2_count, 0,
+            "persist_subagent_completions must not append any MessageV2 events when the event list is empty"
         );
     }
 }

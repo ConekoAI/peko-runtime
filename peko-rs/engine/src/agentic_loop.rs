@@ -1133,6 +1133,21 @@ impl AgenticLoop {
                 ) {
                     messages.push(msg);
                 }
+                // WS3 (implicit session management): persist each
+                // subagent completion (`tool_name == "Agent"`) into
+                // the parent's live session JSONL as a first-class
+                // user-role entry tagged `MessageSource::Agent`.
+                // Mirrors the `📨 [<agent>]` `send_peer` convention so
+                // we don't introduce a fifth label convention. Without
+                // this append, the next reload would lose the helper's
+                // output — the synthetic `LlmMessage` above only feeds
+                // the in-memory `messages` slice for this iteration.
+                super::async_completion::persist_subagent_completions(
+                    &completions,
+                    session,
+                    &session_id,
+                )
+                .await;
                 for msg in steering {
                     debug!(
                         "AgenticLoop: injecting queued steering message {} ({} bytes) at iteration {}",

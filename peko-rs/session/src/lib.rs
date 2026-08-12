@@ -96,7 +96,7 @@ pub use events::{
 };
 pub use inbox_registry::{InboxFactory, InboxRegistry, RunPermitGuard};
 pub use index::{SessionEntry, SessionIndex};
-pub use jsonl::{NormalizedEntry, SessionStorage, TranscriptSearchHit};
+pub use jsonl::{NormalizedEntry, RotationReason, RotationSink, SessionStorage, TranscriptSearchHit};
 pub use key::{
     base_key_from_overlay, derive_base_session_key, derive_overlay_key, derive_session_key,
     discord_session_key, parse_session_key, parse_session_key_v2, safe_filename_component,

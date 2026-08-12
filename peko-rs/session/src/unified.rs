@@ -43,7 +43,6 @@ use tracing::warn;
 ///
 /// `Session` manages the JSONL file storage for conversation history.
 /// It is created and opened only by `SessionManager`.
-#[derive(Debug)]
 pub struct Session {
     /// Session ID (UUID format)
     pub id: String,
@@ -77,6 +76,36 @@ pub struct Session {
     pub current_model: Option<String>,
     /// Cached metadata controller for index updates
     metadata_controller: Option<MetadataController>,
+    /// WS2 (implicit session management): rotation sink for auto-paging.
+    /// `None` by default — the `SessionManager` owner sets this via
+    /// [`Session::set_rotation_sink`] once it hands the session to the
+    /// engine. When `None`, `add_*` methods fall back to plain
+    /// `append_event` (preserves the previous behaviour for tests
+    /// that construct a `Session` without a manager).
+    /// Manually skipped from Debug because the trait object lacks Debug.
+    rotation_sink: Option<std::sync::Arc<dyn crate::jsonl::RotationSink>>,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("id", &self.id)
+            .field("agent_name", &self.agent_name)
+            .field("session_key", &self.session_key)
+            .field("peer", &self.peer)
+            .field("storage", &self.storage)
+            .field("last_message_id", &self.last_message_id)
+            .field("message_count", &self.message_count)
+            .field("last_total_tokens", &self.last_total_tokens)
+            .field("total_input_tokens", &self.total_input_tokens)
+            .field("total_output_tokens", &self.total_output_tokens)
+            .field("model_context_limit", &self.model_context_limit)
+            .field("current_provider", &self.current_provider)
+            .field("current_model", &self.current_model)
+            .field("metadata_controller", &self.metadata_controller)
+            .field("rotation_sink", &self.rotation_sink.as_ref().map(|_| "<RotationSink>"))
+            .finish()
+    }
 }
 
 impl Session {
@@ -109,6 +138,7 @@ impl Session {
             current_provider: None,
             current_model: None,
             metadata_controller: None,
+            rotation_sink: None,
         }
     }
 
@@ -214,6 +244,7 @@ impl Session {
             current_provider: None,
             current_model: None,
             metadata_controller: None,
+            rotation_sink: None,
         })
     }
 
@@ -610,7 +641,7 @@ impl Session {
 
         let event = SessionEvent::MessageV2(message);
 
-        self.storage.append_event(&self.id, &event).await?;
+        self.append_to_storage(&event).await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
 
@@ -639,7 +670,7 @@ impl Session {
         let msg_id = message.message_id.clone();
         let event = SessionEvent::MessageV2(message);
 
-        self.storage.append_event(&self.id, &event).await?;
+        self.append_to_storage(&event).await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
 
@@ -795,7 +826,51 @@ impl Session {
     /// (`add_user`, `add_assistant`, `record_compaction`, etc.) should
     /// ideally delegate through here for consistency.
     pub async fn append_event(&mut self, event: &SessionEvent) -> Result<()> {
-        self.storage.append_event(&self.id, event).await?;
+        self.append_to_storage(event).await
+    }
+
+    /// WS2 (implicit session management): install a rotation sink so the
+    /// next append will check the on-disk JSONL size and trigger a
+    /// chapter rotation when the new event would push the file past
+    /// [`crate::test_config::rotate_bytes`].
+    ///
+    /// The sink is owned by `SessionManager` (its adapter closes the F3
+    /// "archived chapter invisible to peers" round-5 gap by re-adding the
+    /// rotated sibling to `PeerInfo::session_ids`).
+    ///
+    /// Safe to call more than once — replaces the previous sink. Passing
+    /// `None` disables the auto-paging behaviour (plain `append_event`).
+    pub fn set_rotation_sink(&mut self, sink: std::sync::Arc<dyn crate::jsonl::RotationSink>) {
+        self.rotation_sink = Some(sink);
+    }
+
+    /// WS2 helper: append an event via the rotation sink if one is
+    /// installed, otherwise fall back to the plain `append_event` path.
+    /// Tests that build `Session` without a `SessionManager` skip
+    /// auto-paging; production paths set the sink right after open.
+    ///
+    /// Takes `&mut self` so a rotation event can re-key `self.id` to the
+    /// new sibling — without this, a second append on the same `Session`
+    /// (e.g. the agentic loop's next message) would still target the
+    /// renamed-away file and the next size check would re-fire the
+    /// sink, racing itself (round-5 test 2026-08-11: "Cannot rename
+    /// non-existent session").
+    async fn append_to_storage(&mut self, event: &SessionEvent) -> Result<()> {
+        if let Some(sink) = self.rotation_sink.as_ref() {
+            let outcome = self
+                .storage
+                .append_event_with_rotation(&self.id, event, sink.as_ref())
+                .await?;
+            if let crate::jsonl::RotationOutcome::Rotated { from: _, to } = outcome {
+                // `append_event_with_rotation` has already written the
+                // event to the rotated sibling. Re-key our local id so
+                // the next append goes to the new file without firing
+                // the sink again.
+                self.id = to;
+            }
+        } else {
+            self.storage.append_event(&self.id, event).await?;
+        }
         Ok(())
     }
 
@@ -1334,6 +1409,104 @@ mod tests {
         // Should detect stale cache and rebuild
         let context2 = session.load_context_fast().await.unwrap();
         assert_eq!(context2.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_add_user_with_source_persists_source_tag() {
+        // WS3 (implicit session management): `add_user_with_source`
+        // writes a `SessionMessage::user(content, MessageSource::X)` and
+        // the source must round-trip through the native event loader
+        // so downstream consumers can tell automation notes from
+        // human turns. The blanket `SessionView::add_user_with_source`
+        // forward is exercised in `peko-engine`'s tests (cyclic-dep
+        // boundary — `peko-session` MUST NOT depend on `peko-engine`).
+        use crate::events::{MessageSource, SessionEvent, SessionMessage};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-add-user-with-source";
+
+        storage.create_session(session_id, None).await.unwrap();
+
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        // Append a plain user message via `append_event` so the
+        // session has at least one entry before we test
+        // `add_user_with_source`.
+        session
+            .append_event(&SessionEvent::MessageV2(SessionMessage::user(
+                "human turn",
+                MessageSource::User,
+            )))
+            .await
+            .unwrap();
+
+        // Three automation-originated notes with distinct sources.
+        session
+            .add_user_with_source("cron job X fired", MessageSource::Cron)
+            .await
+            .unwrap();
+        session
+            .add_user_with_source("peer Y sent this", MessageSource::A2a)
+            .await
+            .unwrap();
+        session
+            .add_user_with_source("subagent Z wrote", MessageSource::Agent)
+            .await
+            .unwrap();
+
+        // Reload via the native loader so we see `RoleMetadata` with
+        // the source tag (the public `load_history` collapses
+        // `RoleMetadata`).
+        let events = session.storage.load_events(session_id).await.unwrap();
+        let mut seen_sources: Vec<MessageSource> = Vec::new();
+        for ev in &events {
+            if let SessionEvent::MessageV2(m) = ev {
+                if let crate::message::RoleMetadata::User { source } = &m.role_metadata {
+                    seen_sources.push(*source);
+                }
+            }
+        }
+        assert_eq!(
+            seen_sources,
+            vec![
+                MessageSource::User,
+                MessageSource::Cron,
+                MessageSource::A2a,
+                MessageSource::Agent,
+            ],
+            "source tag must round-trip on reload"
+        );
+
+        // Plain `add_user` (no source) must default to `User` source
+        // — exercised via `Session::add_user`, the concrete fallback
+        // that `SessionCore::add_user_with_source`'s default impl
+        // delegates to.
+        session.add_user("plain human").await.unwrap();
+        let events = session.storage.load_events(session_id).await.unwrap();
+        let last = events
+            .iter()
+            .rev()
+            .find_map(|ev| match ev {
+                SessionEvent::MessageV2(m)
+                    if matches!(m.role_metadata, crate::message::RoleMetadata::User { source: MessageSource::User }) =>
+                {
+                    Some(m)
+                }
+                _ => None,
+            })
+            .expect("plain `add_user` should appear as MessageSource::User");
+        assert!(matches!(
+            last.role_metadata,
+            crate::message::RoleMetadata::User {
+                source: MessageSource::User
+            }
+        ));
     }
 
     #[tokio::test]
