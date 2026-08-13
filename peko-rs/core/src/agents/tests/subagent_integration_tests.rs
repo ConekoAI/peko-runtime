@@ -1153,7 +1153,8 @@ async fn test_max_concurrent_limit() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 5b: `resume_session` (persistent subagents) — guards + happy path
+// Phase 5b: resume (Agent tool `action = "resume"`, persistent
+// subagents) — guards + happy path
 // ---------------------------------------------------------------------------
 
 /// Create a session with explicit id/parent/trigger linkage via the
@@ -1390,6 +1391,148 @@ async fn resume_happy_path_preserves_history() {
             .iter()
             .any(|b| matches!(b, peko_message::ContentBlock::Text { text } if text.contains("earlier context")))),
         "resumed session must keep its prior history"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Round 7: `request_compaction` (Agent tool `action = "compact"`) — guards
+// + happy path. Returns immediately after flagging; no LLM call.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn compact_refuses_nonexistent_target() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager,
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let err = executor
+        .request_compaction("no-such-session", "root-sess")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not found"), "{err}");
+}
+
+#[tokio::test]
+async fn compact_refuses_self_and_ancestor() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager,
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+
+    // Self: the engine compacts the caller's own session automatically.
+    let err = executor
+        .request_compaction("spawn-a", "spawn-a")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("running in"), "{err}");
+
+    // Ancestor: root-sess is spawn-a's parent.
+    let err = executor
+        .request_compaction("root-sess", "spawn-a")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("running in"), "{err}");
+}
+
+#[tokio::test]
+async fn compact_refuses_archived_target() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+    session_manager
+        .write()
+        .await
+        .set_archived("spawn-a", true)
+        .await
+        .unwrap();
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager,
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let err = executor
+        .request_compaction("spawn-a", "root-sess")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unarchive"), "{err}");
+}
+
+#[tokio::test]
+async fn compact_happy_path_flags_session_without_trigger_requirement() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    // Unlike resume, compact does NOT require trigger == "spawn" — a
+    // branch session in the caller's tree is a valid target.
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "branch-a",
+        Some("root-sess"),
+        "branch",
+    )
+    .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let outcome = executor
+        .request_compaction("branch-a", "root-sess")
+        .await
+        .unwrap();
+    assert_eq!(outcome.session_id, "branch-a");
+    assert!(
+        outcome.message.contains("no completion signal") || outcome.message.contains("next run"),
+        "outcome must be honest about deferred semantics: {}",
+        outcome.message
+    );
+
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap();
+    let target = metas
+        .iter()
+        .find(|m| m.session_id == "branch-a")
+        .expect("target metadata present");
+    assert!(
+        target.compact_requested,
+        "compact must set the persisted compact_requested flag"
     );
 }
 

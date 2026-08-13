@@ -23,8 +23,9 @@
 //!   in flight — or start — mid-operation. When no registry is bound
 //!   (stateless CLI), these guards degrade to metadata-only with a
 //!   debug note.
-//! - **Live slots**: `root:*` ids without `#` refuse delete/archive;
-//!   they are managed via chapter rotation (`new` / `resume`) only.
+//! - **Live slots**: `root:*` ids are the principal's continuous
+//!   sessions; they refuse delete/archive — the engine manages their
+//!   lifecycle (paging + compaction).
 
 use std::sync::Arc;
 
@@ -32,16 +33,14 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::session::ownership::{
-    caller_context, chapter_family, descendants_of, err_chapters_principal_only,
-    err_compact_archived, err_dangling, err_delete_ancestor, err_descendants_exist,
-    err_live_base_managed, err_not_live_base, err_out_of_tree, err_resume_archived,
-    err_resume_cross_family, err_resume_self, err_run_active, err_self_mutation, in_subtree,
-    is_live_base_id, CallerContext,
+    caller_context, descendants_of, err_compact_archived, err_dangling, err_delete_ancestor,
+    err_descendants_exist, err_live_base_managed, err_out_of_tree, err_run_active,
+    err_self_mutation, in_subtree, CallerContext,
 };
 use crate::tools::builtin::session::{
-    BranchOutcome, ChapterChangeOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage,
-    SessionInfo, SessionRuntime, SessionSearchHit, SessionStatusResult, ToolCallInfo,
-    ToolResultInfo, UsageStats,
+    BranchOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage, SessionInfo,
+    SessionRuntime, SessionSearchHit, SessionStatusResult, ToolCallInfo, ToolResultInfo,
+    UsageStats,
 };
 use peko_message::LlmMessage;
 use peko_subject::Subject;
@@ -82,18 +81,6 @@ impl SessionManagerRuntime {
             caller_agent_name,
             inbox_registry,
         }
-    }
-
-    /// Resolve the manager's sessions dir for `chapters.json` writes,
-    /// with an actionable error when the manager was built without one
-    /// (stateless/test paths).
-    async fn sessions_dir_for_chapters(&self) -> anyhow::Result<std::path::PathBuf> {
-        self.session_manager
-            .read()
-            .await
-            .sessions_dir()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Sessions directory not set — chapters unavailable"))
     }
 
     /// Load the caller classification + the full metadata snapshot the
@@ -141,30 +128,12 @@ impl SessionManagerRuntime {
         }
         Ok(())
     }
-
-    /// Refuse chapter actions for spawned callers and for callers not
-    /// sitting in a live `root:*` slot. Dangling callers are refused
-    /// at this site too — chapter rotation is a principal-level
-    /// capability and dangling callers can't prove they're base.
-    fn guard_chapter_caller(&self, caller: &CallerContext) -> anyhow::Result<()> {
-        if caller.dangling {
-            return Err(self.refuse(err_dangling(&caller.current_session_id)));
-        }
-        if !caller.is_base {
-            return Err(self.refuse(err_chapters_principal_only()));
-        }
-        if !is_live_base_id(&caller.current_session_id) {
-            return Err(self.refuse(err_not_live_base(&caller.current_session_id)));
-        }
-        Ok(())
-    }
 }
 
 #[async_trait]
 impl SessionRuntime for SessionManagerRuntime {
     async fn list_sessions(
         &self,
-        kinds: Option<&[String]>,
         peer: Option<&Subject>,
         agent_id: Option<&str>,
         limit: usize,
@@ -193,7 +162,6 @@ impl SessionRuntime for SessionManagerRuntime {
             .filter(|m| {
                 let tree_match = caller.is_base || in_subtree(&caller, &m.session_id, &metadatas);
                 let archived_match = include_archived || !m.archived;
-                let kind_match = kinds.map_or(true, |k| k.contains(&m.trigger));
                 let agent_match = agent_id.map_or(true, |a| m.agent_name == a);
                 let active_match = cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
                 let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
@@ -208,7 +176,6 @@ impl SessionRuntime for SessionManagerRuntime {
                 });
                 tree_match
                     && archived_match
-                    && kind_match
                     && peer_match
                     && agent_match
                     && active_match
@@ -217,7 +184,6 @@ impl SessionRuntime for SessionManagerRuntime {
             .map(|m| SessionInfo {
                 session_key: m.session_id.clone(),
                 session_id: m.session_id.clone(),
-                kind: m.trigger.clone(),
                 agent_id: Some(m.agent_name.clone()),
                 label: m.title.clone(),
                 created_at: chrono::DateTime::from_timestamp_millis(m.created_at as i64)
@@ -227,7 +193,6 @@ impl SessionRuntime for SessionManagerRuntime {
                     .map(|dt| dt.to_rfc3339())
                     .unwrap_or_default(),
                 message_count: m.message_count,
-                is_active: true,
                 peer_type: m.peer_type.clone(),
                 peer_id: m.peer_id.clone(),
                 archived: m.archived,
@@ -413,7 +378,9 @@ impl SessionRuntime for SessionManagerRuntime {
         let (caller, metas) = self.caller_and_metas(&mut manager).await?;
         self.guard_not_self(&caller, session_key)?;
         self.guard_tree(&caller, session_key, &metas)?;
-        if archived && is_live_base_id(session_key) {
+        // Live `root:*` sessions are continuous and engine-managed:
+        // archiving one is refused outright.
+        if archived && session_key.starts_with("root:") {
             return Err(self.refuse(err_live_base_managed(session_key)));
         }
 
@@ -460,7 +427,9 @@ impl SessionRuntime for SessionManagerRuntime {
             return Err(self.refuse(err_delete_ancestor(session_key)));
         }
         self.guard_tree(&caller, session_key, &metas)?;
-        if is_live_base_id(session_key) {
+        // Live `root:*` sessions are continuous and engine-managed:
+        // deleting one is refused outright.
+        if session_key.starts_with("root:") {
             return Err(self.refuse(err_live_base_managed(session_key)));
         }
 
@@ -555,88 +524,6 @@ impl SessionRuntime for SessionManagerRuntime {
             message: "Compaction scheduled — fires at the next iteration for the \
                       current session, at its next run for others"
                 .to_string(),
-        })
-    }
-
-    async fn new_chapter(&self, title: Option<String>) -> anyhow::Result<ChapterChangeOutcome> {
-        let live_id = self.current_session_key();
-        if live_id.is_empty() {
-            return Err(anyhow::anyhow!(
-                "No current session to start a new chapter for"
-            ));
-        }
-        let sessions_dir = self.sessions_dir_for_chapters().await?;
-        {
-            let mut manager = self.session_manager.write().await;
-            let (caller, _metas) = self.caller_and_metas(&mut manager).await?;
-            self.guard_chapter_caller(&caller)?;
-        }
-        peko_session::chapters::request(
-            &sessions_dir,
-            &live_id,
-            peko_session::chapters::ChapterRequest::New { title },
-        )?;
-        Ok(ChapterChangeOutcome {
-            live_session_id: live_id,
-            message: "New chapter queued — takes effect on the next incoming message".to_string(),
-        })
-    }
-
-    async fn resume_chapter(
-        &self,
-        target_session_id: &str,
-    ) -> anyhow::Result<ChapterChangeOutcome> {
-        let live_id = self.current_session_key();
-        if live_id.is_empty() {
-            return Err(anyhow::anyhow!("No current session to resume into"));
-        }
-        let sessions_dir = self.sessions_dir_for_chapters().await?;
-        {
-            let mut manager = self.session_manager.write().await;
-            let (caller, metas) = self.caller_and_metas(&mut manager).await?;
-            self.guard_chapter_caller(&caller)?;
-            if target_session_id == live_id {
-                return Err(self.refuse(err_resume_self(target_session_id)));
-            }
-            if chapter_family(target_session_id) != live_id {
-                return Err(self.refuse(err_resume_cross_family(target_session_id, &live_id)));
-            }
-            let target_meta = metas
-                .iter()
-                .find(|m| m.session_id == target_session_id)
-                .ok_or_else(|| anyhow::anyhow!("Session not found: {target_session_id}"))?;
-            if target_meta.archived {
-                return Err(self.refuse(err_resume_archived(target_session_id)));
-            }
-        }
-
-        // Refuse while a run is in flight for the target; hold the
-        // permit across the queue write so it can't start in between.
-        // `None` registry degrades to metadata-only.
-        let _permit = match &self.inbox_registry {
-            Some(registry) => Some(
-                registry
-                    .try_acquire_run(target_session_id)
-                    .await
-                    .ok_or_else(|| self.refuse(err_run_active(target_session_id)))?,
-            ),
-            None => {
-                tracing::debug!(
-                    "no inbox registry bound; queueing resume of {target_session_id} without run-permit check"
-                );
-                None
-            }
-        };
-        peko_session::chapters::request(
-            &sessions_dir,
-            &live_id,
-            peko_session::chapters::ChapterRequest::Resume {
-                target: target_session_id.to_string(),
-            },
-        )?;
-        Ok(ChapterChangeOutcome {
-            live_session_id: live_id,
-            message: "Resume queued — takes effect on the next incoming message".to_string(),
         })
     }
 }
@@ -747,7 +634,9 @@ mod tests {
         manager: Arc<tokio::sync::RwLock<SessionManager>>,
         current: Arc<tokio::sync::RwLock<Option<String>>>,
         registry: Arc<InboxRegistry>,
-        temp: TempDir,
+        /// Held only to keep the tempdir alive for the harness's
+        /// lifetime (the manager reads/writes under it).
+        _temp: TempDir,
     }
 
     impl Harness {
@@ -771,7 +660,7 @@ mod tests {
                 manager,
                 current,
                 registry,
-                temp,
+                _temp: temp,
             }
         }
 
@@ -826,7 +715,7 @@ mod tests {
         // Full list view.
         let all = h
             .runtime
-            .list_sessions(None, None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
         assert_eq!(all.len(), 4);
@@ -853,7 +742,7 @@ mod tests {
         h.runtime.set_archived("spawn2", true).await.unwrap();
         let listed = h
             .runtime
-            .list_sessions(None, None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
         assert_eq!(listed.len(), 3, "archived hidden by default");
@@ -901,20 +790,20 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("currently running in"), "{err}");
 
-        // A second live base id refuses delete/archive (rotation only).
+        // A second live base id refuses delete/archive (engine-managed).
         h.create("root:cron:alice", None).await;
         let err = h
             .runtime
             .delete_session("root:cron:alice", true)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("chapter rotation"), "{err}");
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
         let err = h
             .runtime
             .set_archived("root:cron:alice", true)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("chapter rotation"), "{err}");
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
     }
 
     #[tokio::test]
@@ -969,7 +858,7 @@ mod tests {
         let guard = h.registry.try_acquire_run("child1").await.unwrap();
         let all = h
             .runtime
-            .list_sessions(None, None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
         let child = all.iter().find(|s| s.session_id == "child1").unwrap();
@@ -1055,7 +944,7 @@ mod tests {
         // list: only the subtree is visible.
         let all = h
             .runtime
-            .list_sessions(None, None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
         let ids: Vec<&str> = all.iter().map(|s| s.session_id.as_str()).collect();
@@ -1089,118 +978,35 @@ mod tests {
         h.runtime.get_status("child1").await.unwrap();
     }
 
+    // ─── Tool-surface wiring (SessionTool over the production runtime) ─
+
+    /// The restored `archive` action on the `session` tool routes
+    /// through the production guard layer: a live `root:*` session is
+    /// continuous and engine-managed, so archiving it is refused.
     #[tokio::test]
-    async fn subtree_caller_chapters_refused() {
-        let h = tree_harness("spawn1").await;
+    async fn tool_archive_refuses_root_session() {
+        use crate::tools::builtin::session::{SessionTool, SharedSessionRuntime};
+        use peko_tools_core::traits::Tool;
 
-        let err = h.runtime.new_chapter(None).await.unwrap_err();
-        assert!(err.to_string().contains("principal-level"), "{err}");
-        let err = h.runtime.resume_chapter("child1").await.unwrap_err();
-        assert!(err.to_string().contains("principal-level"), "{err}");
-    }
-
-    // ─── Chapters (principal-level caller) ──────────────────────────
-
-    #[tokio::test]
-    async fn new_chapter_writes_pending_request() {
         let h = tree_harness("root:user:alice").await;
+        h.create("root:cron:alice", None).await;
+        let runtime: SharedSessionRuntime = Arc::new(SessionManagerRuntime::new(
+            Arc::clone(&h.manager),
+            Arc::clone(&h.current),
+            "test-agent".to_string(),
+            Some(Arc::clone(&h.registry)),
+        ));
+        let tool = SessionTool::new(runtime);
 
-        let outcome = h
-            .runtime
-            .new_chapter(Some("morning".to_string()))
+        let err = tool
+            .execute(json!({"action": "archive", "session_key": "root:cron:alice"}))
+            .await
+            .expect_err("archiving a root session must be refused");
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
+
+        // A non-root session archives fine through the same surface.
+        tool.execute(json!({"action": "archive", "session_key": "spawn2"}))
             .await
             .unwrap();
-        assert_eq!(outcome.live_session_id, "root:user:alice");
-        assert!(outcome.message.contains("next incoming message"));
-
-        let pending = peko_session::chapters::take(h.temp.path(), "root:user:alice").unwrap();
-        assert_eq!(
-            pending,
-            Some(peko_session::chapters::ChapterRequest::New {
-                title: Some("morning".to_string())
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn resume_chapter_guards_and_happy_path() {
-        let h = tree_harness("root:user:alice").await;
-        h.create("root:user:alice#c1", Some("root:user:alice"))
-            .await;
-
-        // Self.
-        let err = h
-            .runtime
-            .resume_chapter("root:user:alice")
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("already your current session"),
-            "{err}"
-        );
-
-        // Cross-family (checked before existence, so no fixture needed).
-        let err = h
-            .runtime
-            .resume_chapter("root:cron:alice#c9")
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("different conversation family"),
-            "{err}"
-        );
-
-        // Unknown target.
-        let err = h
-            .runtime
-            .resume_chapter("root:user:alice#nope")
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("not found"), "{err}");
-
-        // Archived target.
-        h.runtime
-            .set_archived("root:user:alice#c1", true)
-            .await
-            .unwrap();
-        let err = h
-            .runtime
-            .resume_chapter("root:user:alice#c1")
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("unarchive"), "{err}");
-        h.runtime
-            .set_archived("root:user:alice#c1", false)
-            .await
-            .unwrap();
-
-        // Run-active target.
-        let guard = h
-            .registry
-            .try_acquire_run("root:user:alice#c1")
-            .await
-            .unwrap();
-        let err = h
-            .runtime
-            .resume_chapter("root:user:alice#c1")
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("active run"), "{err}");
-        drop(guard);
-
-        // Happy path: the pending request lands in chapters.json.
-        let outcome = h
-            .runtime
-            .resume_chapter("root:user:alice#c1")
-            .await
-            .unwrap();
-        assert_eq!(outcome.live_session_id, "root:user:alice");
-        let pending = peko_session::chapters::take(h.temp.path(), "root:user:alice").unwrap();
-        assert_eq!(
-            pending,
-            Some(peko_session::chapters::ChapterRequest::Resume {
-                target: "root:user:alice#c1".to_string()
-            })
-        );
     }
 }

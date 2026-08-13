@@ -1,38 +1,29 @@
-//! `peko_tools_builtin::session` — Session introspection tool surface +
-//! `SessionRuntime` port.
+//! `session` built-in tool surface + the `SessionRuntime` port.
 //!
-//! Phase 10d extracts the unified `SessionTool` plus the six session
-//! DTOs (`SessionInfo`, `HistoryMessage`, `ToolCallInfo`, `ToolResultInfo`,
-//! `UsageStats`, `SessionStatusResult`) out of root. Per the Phase 10
-//! plan rule ("Built-ins must not import daemon state"), the tools here
-//! do NOT call `crate::session::SessionManager` directly. They speak to
-//! a runtime port trait ([`SessionRuntime`]) that the daemon/agent
-//! side implements.
+//! The unified `SessionTool` plus the session DTOs (`SessionInfo`,
+//! `HistoryMessage`, `ToolCallInfo`, `ToolResultInfo`, `UsageStats`,
+//! `SessionStatusResult`, and the outcome DTOs) live here. The tool
+//! does NOT call `crate::session::SessionManager` directly — it speaks
+//! to the [`SessionRuntime`] port trait that the daemon/agent side
+//! implements.
 //!
 //! ## DTOs
 //!
-//! `SessionInfo`, `HistoryMessage`, `ToolCallInfo`, `ToolResultInfo`,
-//! `UsageStats`, and `SessionStatusResult` are serialization-friendly
-//! types shared between the tool side and the daemon/agent side.
-//! peko-tools-builtin is the canonical home; the root re-exports these
-//! from peko-tools-builtin via `pub use crate::tools::builtin::session::{...};`
-//! — single source of truth going forward. A compile-time
-//! JSON-roundtrip test pins the two sides' shapes together.
+//! The DTOs are serialization-friendly types shared between the tool
+//! side and the daemon/agent side; this module is the single source of
+//! truth. A compile-time JSON-roundtrip test pins the wire shape.
 //!
 //! ## Port
 //!
-//! [`SessionRuntime`] is the four-method surface the `SessionTool`
-//! needs: list_sessions / get_history / get_status / current_session_key.
-//! Production wiring uses the `SessionManagerRuntime` adapter in
-//! `src/session/session_runtime_impl.rs`; tests construct a
+//! [`SessionRuntime`] is the full surface the `SessionTool` needs:
+//! reads (`list_sessions` / `get_history` / `get_status` /
+//! `search_sessions` / `current_session_key`) and storage mutations
+//! (`branch_session` / `rename_session` / `set_archived` /
+//! `delete_session`). `request_compaction` rides the same trait but is
+//! engine-facing only — the model-facing `compact` affordance lives on
+//! the Agent tool. Production wiring uses the `SessionManagerRuntime`
+//! adapter in `src/session/session_runtime_impl.rs`; tests construct a
 //! [`SessionCache`] (in this module, an in-memory implementation).
-//!
-//! ## What stays in root
-//!
-//! `SessionIntrospector` (the production `SessionManagerRuntime` adapter)
-//! and `crate::session::SessionManager` stay in root — the manager
-//! depends on root-internal modules (`crate::session::lock::*`,
-//! `peko_extension_host::registry::SimpleRegistry`, etc.) that can't move.
 
 pub mod cache;
 pub mod tool;
@@ -49,7 +40,6 @@ use serde::{Deserialize, Serialize};
 pub struct SessionInfo {
     pub session_key: String,
     pub session_id: String,
-    pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,7 +47,6 @@ pub struct SessionInfo {
     pub created_at: String,
     pub last_activity: String,
     pub message_count: usize,
-    pub is_active: bool,
     /// Subject type ("user", "principal", or "public") — present when
     /// the underlying `SessionMetadata` was written with peer info.
     /// Branched sessions may have `None` here (see `branch_session_by_id`).
@@ -192,16 +181,6 @@ pub struct CompactRequestOutcome {
     pub message: String,
 }
 
-/// Result of the `new` / `resume` chapter actions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChapterChangeOutcome {
-    /// The live session id the pending chapter change is queued for.
-    pub live_session_id: String,
-    /// Reminder that the change takes effect on the next incoming
-    /// message, not mid-turn.
-    pub message: String,
-}
-
 // ─── SessionRuntime port trait ────────────────────────────────────
 
 /// Runtime port the `SessionTool` uses to talk to session storage.
@@ -216,16 +195,20 @@ pub struct ChapterChangeOutcome {
 pub trait SessionRuntime: Send + Sync {
     /// List available sessions, optionally filtered.
     ///
-    /// - `kinds`: filter by `SessionMetadata::trigger` (e.g. `["main", "branch"]`).
     /// - `peer`: filter to a single peer (`user:alice`, `principal:<did>`, or `public`).
     ///   When `None`, results span all peers (the cross-peer view).
     /// - `agent_id`: filter to a single agent name.
     /// - `limit`: cap on results returned.
     /// - `active_minutes`: only sessions updated within the last N minutes.
     /// - `include_archived`: include archived sessions (hidden by default).
+    ///
+    /// To find subagent sessions, the caller filters on
+    /// `parent_session_id is not None` in its own reasoning.
+    /// There is no closed-enum `kinds` filter — those were dropped
+    /// because the description-vs-engine drift (r5/r6 field tests)
+    /// could not be reconciled.
     async fn list_sessions(
         &self,
-        kinds: Option<&[String]>,
         peer: Option<&peko_subject::Subject>,
         agent_id: Option<&str>,
         limit: usize,
@@ -259,16 +242,8 @@ pub trait SessionRuntime: Send + Sync {
         limit: usize,
     ) -> anyhow::Result<Vec<SessionSearchHit>>;
 
-    /// Branch a session (copy it, stored not running). Returns the new
-    /// session's id alongside the parent's.
-    ///
-    /// WS4 (implicit session management, 2026-08-11): `branch_session`
-    /// was demoted from the `session` tool in the same rollout that
-    /// made rotation + compaction engine-internal. The runtime keeps
-    /// the trait method so future engine-internal callers (e.g. an
-    /// automatic pre-merge snapshot) can still drive it; nothing in
-    /// production calls it today.
-    #[allow(dead_code)]
+    /// Branch a session (copy it under a new id, stored not running).
+    /// Returns the new session's id alongside the parent's.
     async fn branch_session(
         &self,
         session_key: &str,
@@ -278,13 +253,9 @@ pub trait SessionRuntime: Send + Sync {
     /// Rename (retitle) a session.
     async fn rename_session(&self, session_key: &str, title: String) -> anyhow::Result<()>;
 
-    /// Set or clear the archived flag on a session.
-    ///
-    /// WS4 (implicit session management): `set_archived` was demoted
-    /// from the `session` tool. Engine-internal archive policies
-    /// (size-based retirement, etc.) may wire it back up; for now
-    /// it's unused but the trait stays for forward compatibility.
-    #[allow(dead_code)]
+    /// Set or clear the archived flag on a session. Archived sessions
+    /// are hidden from `list` (unless `include_archived: true`) and
+    /// refuse resume/compact.
     async fn set_archived(&self, session_key: &str, archived: bool) -> anyhow::Result<()>;
 
     /// Delete a session. When the session has descendants (via
@@ -299,37 +270,15 @@ pub trait SessionRuntime: Send + Sync {
     /// Schedule compaction for a session (next iteration for the
     /// current session, next run for others).
     ///
-    /// WS4 (implicit session management): `request_compaction` was
-    /// demoted from the `session` tool — the orchestrator now fires
-    /// compaction automatically from the persisted token counter
-    /// (WS1). The trait stays so an admin-level "compact now"
-    /// surface (e.g. a CLI flag) can wire it up later.
+    /// Not exposed on the `session` tool: the orchestrator fires
+    /// compaction automatically from the persisted token counter (WS1),
+    /// and the model-facing `compact` affordance lives on the Agent
+    /// tool — its real caller arrives via the `SubagentExecutor` path
+    /// (next phase), sharing the ownership guard helpers in
+    /// `crate::session::ownership`. The trait method stays so that
+    /// caller can route through the same port.
     #[allow(dead_code)]
     async fn request_compaction(&self, session_key: &str) -> anyhow::Result<CompactRequestOutcome>;
-
-    /// Queue a fresh chapter for the caller's current (live) session.
-    /// Takes effect on the next incoming message.
-    ///
-    /// WS4 (implicit session management): `new_chapter` was demoted
-    /// from the `session` tool — chapter rotation is now driven by
-    /// the size-threshold auto-paging flow (WS2). The trait stays so
-    /// future engine-internal callers (admin tooling, special hooks)
-    /// can still drive a manual rotation.
-    #[allow(dead_code)]
-    async fn new_chapter(&self, title: Option<String>) -> anyhow::Result<ChapterChangeOutcome>;
-
-    /// Queue resuming `target_session_id` (a chapter or session) into
-    /// the caller's live session slot. Takes effect on the next
-    /// incoming message.
-    ///
-    /// WS4 (implicit session management): `resume_chapter` was
-    /// demoted from the `session` tool — the engine auto-loads the
-    /// requested chapter via the chapter-consume path at boot. The
-    /// trait stays so future engine-internal callers can still drive
-    /// an explicit resume.
-    #[allow(dead_code)]
-    async fn resume_chapter(&self, target_session_id: &str)
-        -> anyhow::Result<ChapterChangeOutcome>;
 }
 
 /// Type alias for the shared runtime handle threaded through every
@@ -348,13 +297,11 @@ mod tests {
         let info = SessionInfo {
             session_key: "alice-1".into(),
             session_id: "alice-1".into(),
-            kind: "main".into(),
             agent_id: Some("test-agent".into()),
             label: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             last_activity: "2024-01-01T01:00:00Z".into(),
             message_count: 5,
-            is_active: true,
             peer_type: Some("user".into()),
             peer_id: Some("alice".into()),
             archived: false,
@@ -366,6 +313,8 @@ mod tests {
         assert_eq!(json["agent_id"], "test-agent");
         assert_eq!(json["archived"], false);
         assert_eq!(json["run_active"], false);
+        // The old `kind` field is gone — the model now uses
+        // `parent_session_id` (not in SessionInfo) to derive role.
         let back: SessionInfo = serde_json::from_value(json).unwrap();
         assert_eq!(back.session_id, info.session_id);
         assert_eq!(back.peer_type, info.peer_type);
@@ -377,6 +326,9 @@ mod tests {
     fn session_info_legacy_json_without_new_fields_defaults_false() {
         // A `SessionInfo` serialized before `archived` / `run_active`
         // existed must still deserialize, with both flags = false.
+        // The pre-refactor wire also had `kind` and `is_active` fields;
+        // absent in new payloads but tolerated on read (ignored via
+        // the default serde unknown-field behavior).
         let legacy = serde_json::json!({
             "session_key": "k",
             "session_id": "k",
@@ -445,13 +397,11 @@ mod tests {
         let info = SessionInfo {
             session_key: "k".into(),
             session_id: "k".into(),
-            kind: "main".into(),
             agent_id: None,
             label: None,
             created_at: String::new(),
             last_activity: String::new(),
             message_count: 0,
-            is_active: true,
             peer_type: None,
             peer_id: None,
             archived: false,
@@ -507,14 +457,5 @@ mod tests {
         assert_eq!(json["session_id"], "s1");
         let back: CompactRequestOutcome = serde_json::from_value(json).unwrap();
         assert_eq!(back.message, "fires next run");
-
-        let chapter = ChapterChangeOutcome {
-            live_session_id: "root:user:alice".into(),
-            message: "takes effect on the next incoming message".into(),
-        };
-        let json = serde_json::to_value(&chapter).unwrap();
-        assert_eq!(json["live_session_id"], "root:user:alice");
-        let back: ChapterChangeOutcome = serde_json::from_value(json).unwrap();
-        assert_eq!(back.message, chapter.message);
     }
 }

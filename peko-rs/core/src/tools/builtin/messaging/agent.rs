@@ -87,10 +87,23 @@ impl<T: SessionKeyProvider + ?Sized> SessionKeyProvider for std::sync::Arc<T> {
 /// Agent tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentArgs {
-    /// Task description / prompt for the subagent
+    /// Action to perform: "new" (default), "resume", or "compact".
+    /// Per-action parameter requirements are validated in code, not in
+    /// the JSON schema (`new`: prompt+subagent_type; `resume`:
+    /// session_key+prompt+subagent_type; `compact`: session_key only).
+    #[serde(default = "default_action")]
+    pub action: String,
+    /// Task description / prompt for the subagent (required for `new`
+    /// and `resume`; ignored for `compact`).
+    #[serde(default)]
     pub prompt: String,
     /// Subagent type: name of the agent config under ~/.peko/agents/<subagent_type>/config.toml
+    /// (required for `new` and `resume`; ignored for `compact`).
+    #[serde(default)]
     pub subagent_type: String,
+    /// Target session id for `resume` and `compact` (ignored for `new`).
+    #[serde(default)]
+    pub session_key: Option<String>,
     /// Optional description for tracking
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -105,10 +118,103 @@ pub struct AgentArgs {
     pub cleanup: Option<String>,
     /// Parent session key (auto-detected if not provided)
     pub parent_session_key: Option<String>,
-    /// Re-attach the run to an existing spawned session (persistent
-    /// subagents). Mutually exclusive with `isolated`.
-    #[serde(default)]
-    pub resume_session: Option<String>,
+}
+
+/// Serde default for [`AgentArgs::action`]: the historical behavior is
+/// a fresh spawn, so an omitted action means `new`.
+fn default_action() -> String {
+    "new".to_string()
+}
+
+/// The Agent tool's three actions (round-7 action surface).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentAction {
+    /// Spawn a fresh subagent session (default).
+    New,
+    /// Re-attach a run to an existing spawned session.
+    Resume,
+    /// Flag a session for engine-driven compaction at its next run.
+    Compact,
+}
+
+/// Parse the `action` parameter. Unknown values are a structured
+/// validation error naming the valid set.
+fn parse_action(raw: &str) -> anyhow::Result<AgentAction> {
+    match raw {
+        "new" => Ok(AgentAction::New),
+        "resume" => Ok(AgentAction::Resume),
+        "compact" => Ok(AgentAction::Compact),
+        other => Err(anyhow::anyhow!(
+            "unknown action '{other}' — valid actions: \"new\", \"resume\", \"compact\""
+        )),
+    }
+}
+
+/// Parse the `cleanup` parameter via [`SpawnCleanupPolicy::from_str`].
+/// Unknown values are a structured validation error (previously they
+/// silently became `Keep` — round-7 audit fix).
+fn parse_cleanup(cleanup: Option<&str>) -> anyhow::Result<SpawnCleanupPolicy> {
+    match cleanup {
+        None => Ok(SpawnCleanupPolicy::Keep),
+        Some(s) => SpawnCleanupPolicy::from_str(s).ok_or_else(|| {
+            anyhow::anyhow!("invalid cleanup '{s}' — valid values: \"keep\", \"delete\"")
+        }),
+    }
+}
+
+/// Per-action parameter requirements. The JSON schema's `required`
+/// list is intentionally empty — requirements depend on `action`, so
+/// they are validated here instead of in the schema.
+fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result<()> {
+    match action {
+        AgentAction::New => {
+            if args.prompt.is_empty() || args.subagent_type.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "action \"new\" requires 'prompt' and 'subagent_type'"
+                ));
+            }
+        }
+        AgentAction::Resume => {
+            if args.session_key.is_none() {
+                return Err(anyhow::anyhow!(
+                    "action \"resume\" requires 'session_key' — pass a session id from the \
+                     session tool's list"
+                ));
+            }
+            if args.prompt.is_empty() || args.subagent_type.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "action \"resume\" requires 'prompt' and 'subagent_type'"
+                ));
+            }
+            if args.isolated {
+                return Err(anyhow::anyhow!(
+                    "'action \"resume\"' and 'isolated: true' are contradictory — resume \
+                     re-attaches to an existing session's history while isolated starts a \
+                     fresh context"
+                ));
+            }
+        }
+        AgentAction::Compact => {
+            if args.session_key.is_none() {
+                return Err(anyhow::anyhow!(
+                    "action \"compact\" requires 'session_key' — pass a session id from the \
+                     session tool's list"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Map the action surface onto the internal spawn request: `resume`
+/// carries its `session_key` as the re-attach target; `new` (and the
+/// already-dispatched `compact`) carry none.
+fn resume_target(action: AgentAction, args: &AgentArgs) -> Option<String> {
+    if action == AgentAction::Resume {
+        args.session_key.clone()
+    } else {
+        None
+    }
 }
 
 /// Agent tool
@@ -255,7 +361,8 @@ impl AgentTool {
         model: Option<String>,
         // Phase 5b: re-attach to an existing spawned session instead
         // of spawning a fresh one (mutually exclusive with `isolated`,
-        // validated by the callers).
+        // validated by the callers). The tool maps `action = "resume"`
+        // + `session_key` onto this field.
         resume_session: Option<String>,
         // The caller's own current session id — the adapter uses it
         // to ownership-validate an explicit `parent_session_key`.
@@ -503,6 +610,32 @@ impl AgentTool {
             }),
         })
     }
+
+    /// `action = "compact"` — flag the target session for engine-driven
+    /// compaction at its next run and return immediately (no LLM call,
+    /// no completion signal). Guard refusals from the runtime surface
+    /// through the same [`Self::format_error_response`] envelope resume
+    /// refusals use.
+    async fn execute_compact(
+        &self,
+        args: &AgentArgs,
+        caller_session_key: Option<String>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let session_key = args
+            .session_key
+            .clone()
+            .expect("compact requires session_key (validated)");
+        let caller = caller_session_key.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Agent tool action \"compact\" needs the caller's session id — run through the \
+                 engine's tool context or configure a session provider"
+            )
+        })?;
+        match self.runtime.request_compaction(&session_key, &caller).await {
+            Ok(outcome) => Ok(serde_json::to_value(outcome)?),
+            Err(e) => Self::format_error_response(&e),
+        }
+    }
 }
 
 /// Parse two `u32`s from a string of the shape
@@ -550,23 +683,29 @@ impl Tool for AgentTool {
     }
 
     fn description(&self) -> String {
-        r#"Spawn a sub-agent run in an isolated or shared session, or re-attach a run to a previous spawned session.
+        r#"Run LLM work on sessions: spawn a sub-agent run (action "new", the default), re-attach a run to a previous spawned session (action "resume"), or flag a session for compaction (action "compact").
 
 The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
+Actions:
+- new (default): Spawn a sub-agent run in an isolated or shared session. Requires prompt + subagent_type.
+- resume: Re-attach this run to an existing spawned session you own (session_key from the session tool's list) — the subagent continues with its full prior history. Requires session_key + prompt + subagent_type. Mutually exclusive with isolated.
+- compact: Flag a session for engine-driven summarization. Requires session_key only (prompt and subagent_type are ignored if supplied). Returns immediately after flagging the session; the engine summarizes at the target's next run. There is no completion signal; the target's next resume will reflect the compacted history.
+
 Parameters:
-- prompt: Description of the task to execute (required)
-- subagent_type: Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required)
+- action: "new" | "resume" | "compact" (default: "new")
+- prompt: Description of the task to execute (required for new and resume)
+- subagent_type: Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required for new and resume)
+- session_key: Target session id (required for resume and compact; ignored for new)
 - description: Optional description for tracking (matches Claude Code's Agent schema)
 - model: Optional model override for the subagent (matches Claude Code's Agent schema)
 - isolated: If true, creates isolated session without parent context (default: false)
 - cleanup: "keep" or "delete" - what to do with session after completion (default: "keep")
 - parent_session_key: Parent session key for context seeding (optional - auto-detected if not provided; must be your own session or one inside your subtree)
-- resume_session: Re-attach this run to an existing spawned session you own (optional session id, see the session tool's list) — the subagent continues with its full prior history. Mutually exclusive with isolated.
 
-Sessions you spawn appear in the `session` tool as kind "spawned" — use that tool to inspect and manage them (list, history, search, branch, rename, archive, delete, compact). The session tool manages memory; this tool runs work.
+Sessions you spawn have `parent_session_id` set to your session; the `session` tool's `list` action surfaces this. Use that field to find them. The session tool manages memory; this tool runs work.
 
-resume_session refusals (structured errors naming the session): target must exist, be a spawned session (chapters/branches/live root sessions refuse), not be the session you are running in or an ancestor, not be archived, and not have an active run.
+resume refusals (structured errors naming the session): target must exist, be a spawned session (branches/live root sessions refuse), not be the session you are running in or an ancestor, not be archived, and not have an active run. compact refusals: target must exist, not be the session you are running in or an ancestor (the engine compacts those automatically), be inside your subtree, not be archived, and not have an active run.
 
 Limits:
 - Spawn depth is capped at 3 levels from the root. Attempting a deeper
@@ -586,7 +725,10 @@ Examples:
 {"prompt": "Analyze confidential data", "subagent_type": "analyst", "isolated": true, "cleanup": "delete"}
 
 // Persistent worker - continue a previous spawned session with its history
-{"prompt": "Now update report.txt with the new numbers", "subagent_type": "writer", "resume_session": "<session-id from session list>"}"#
+{"action": "resume", "session_key": "<session-id from session list>", "prompt": "Now update report.txt with the new numbers", "subagent_type": "writer"}
+
+// Compact a long transcript before the next resume
+{"action": "compact", "session_key": "<session-id from session list>"}"#
             .to_string()
     }
 
@@ -594,13 +736,23 @@ Examples:
         json!({
             "type": "object",
             "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["new", "resume", "compact"],
+                    "description": "What to do: 'new' spawns a fresh subagent session (default), 'resume' re-attaches a run to an existing spawned session, 'compact' flags a session for engine-driven summarization at its next run",
+                    "default": "new"
+                },
                 "prompt": {
                     "type": "string",
-                    "description": "Description of the task to execute"
+                    "description": "Description of the task to execute (required for new and resume; ignored for compact)"
                 },
                 "subagent_type": {
                     "type": "string",
-                    "description": "Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml"
+                    "description": "Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required for new and resume; ignored for compact)"
+                },
+                "session_key": {
+                    "type": "string",
+                    "description": "Target session id from the session tool's list. Required for resume and compact. Ignored for new."
                 },
                 "description": {
                     "type": "string",
@@ -617,19 +769,15 @@ Examples:
                 },
                 "cleanup": {
                     "type": "string",
+                    "enum": ["keep", "delete"],
                     "description": "What to do with session after completion: 'keep' or 'delete'",
                     "default": "keep"
                 },
                 "parent_session_key": {
                     "type": "string",
                     "description": "Parent session key for context seeding (auto-detected if not provided; must be your own session or one inside your subtree)"
-                },
-                "resume_session": {
-                    "type": "string",
-                    "description": "Re-attach this run to an existing spawned session you own (session id from the session tool's list) — the subagent continues with its full prior history. Mutually exclusive with isolated."
                 }
-            },
-            "required": ["prompt", "subagent_type"]
+            }
         })
     }
 
@@ -637,19 +785,10 @@ Examples:
         let args: AgentArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
-        if args.resume_session.is_some() && args.isolated {
-            return Err(anyhow::anyhow!(
-                "'resume_session' and 'isolated: true' are contradictory — resume re-attaches \
-                 to an existing session's history while isolated starts a fresh context"
-            ));
-        }
-
-        let cleanup = args.cleanup.map_or(SpawnCleanupPolicy::Keep, |s| {
-            match s.to_lowercase().as_str() {
-                "delete" => SpawnCleanupPolicy::Delete,
-                _ => SpawnCleanupPolicy::Keep,
-            }
-        });
+        let action = parse_action(&args.action)?;
+        validate_action_args(action, &args)?;
+        let cleanup = parse_cleanup(args.cleanup.as_deref())?;
+        let resume_session = resume_target(action, &args);
 
         // The caller's own session (auto-detected) vs an explicit
         // parent_session_key (context seeding) — the adapter
@@ -658,6 +797,11 @@ Examples:
             .session_provider
             .as_ref()
             .map(|p| p.current_session_key());
+
+        if action == AgentAction::Compact {
+            return self.execute_compact(&args, caller_session_key).await;
+        }
+
         let parent_session_key = match args.parent_session_key.clone() {
             Some(key) => key,
             None => match caller_session_key.clone() {
@@ -705,7 +849,7 @@ Examples:
             description,
             cleanup,
             args.model.clone(),
-            args.resume_session.clone(),
+            resume_session,
             caller_session_key,
             None,
         )
@@ -726,19 +870,10 @@ Examples:
         let args: AgentArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
-        if args.resume_session.is_some() && args.isolated {
-            return Err(anyhow::anyhow!(
-                "'resume_session' and 'isolated: true' are contradictory — resume re-attaches \
-                 to an existing session's history while isolated starts a fresh context"
-            ));
-        }
-
-        let cleanup = args.cleanup.map_or(SpawnCleanupPolicy::Keep, |s| {
-            match s.to_lowercase().as_str() {
-                "delete" => SpawnCleanupPolicy::Delete,
-                _ => SpawnCleanupPolicy::Keep,
-            }
-        });
+        let action = parse_action(&args.action)?;
+        validate_action_args(action, &args)?;
+        let cleanup = parse_cleanup(args.cleanup.as_deref())?;
+        let resume_session = resume_target(action, &args);
 
         // The caller's own session id comes from the engine's tool
         // context on the production path (see below); the session-key
@@ -748,6 +883,11 @@ Examples:
                 .as_ref()
                 .map(|p| p.current_session_key())
         });
+
+        if action == AgentAction::Compact {
+            return self.execute_compact(&args, caller_session_key).await;
+        }
+
         let parent_session_key = if let Some(key) = args.parent_session_key.clone() {
             key
         } else if let Some(ref sid) = ctx.session_id {
@@ -788,7 +928,7 @@ Examples:
             args.description,
             cleanup,
             args.model.clone(),
-            args.resume_session.clone(),
+            resume_session,
             caller_session_key,
             Some(ctx),
         )
@@ -823,6 +963,8 @@ struct TestSubagentState {
     /// Whether `execute_and_wait` should succeed (true) or fail with
     /// an error (false).
     succeed_on_execute: bool,
+    /// Every `request_compaction(target, caller)` call seen, in order.
+    compaction_requests: Vec<(String, String)>,
     /// Principal id used in audit events.
     principal_id: String,
     /// Principal display name used in audit events.
@@ -841,6 +983,7 @@ impl TestSubagentRuntime {
                 audits: Vec::new(),
                 model_overrides_seen: Vec::new(),
                 succeed_on_execute: true,
+                compaction_requests: Vec::new(),
                 principal_id: String::new(),
                 principal_name: None,
             }),
@@ -898,6 +1041,16 @@ impl TestSubagentRuntime {
             .lock()
             .expect("TestSubagentRuntime mutex poisoned")
             .succeed_on_execute = succeed;
+    }
+
+    /// Every `request_compaction(target, caller)` call seen (cloned).
+    #[must_use]
+    pub fn compaction_requests(&self) -> Vec<(String, String)> {
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .compaction_requests
+            .clone()
     }
 
     /// Set the principal id used for audit events.
@@ -1004,6 +1157,22 @@ impl SubagentRuntime for TestSubagentRuntime {
             result: None,
             depth: request.config.max_depth,
             announce_completion: request.config.announce_completion,
+        })
+    }
+
+    async fn request_compaction(
+        &self,
+        target: &str,
+        caller_session_key: &str,
+    ) -> anyhow::Result<crate::tools::builtin::session::CompactRequestOutcome> {
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .compaction_requests
+            .push((target.to_string(), caller_session_key.to_string()));
+        Ok(crate::tools::builtin::session::CompactRequestOutcome {
+            session_id: target.to_string(),
+            message: "Compaction scheduled".to_string(),
         })
     }
 }
@@ -1356,7 +1525,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resume_session_with_isolated_is_contradictory() {
+    async fn test_resume_with_isolated_is_contradictory() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.grant("agent:writer");
         runtime.register_agent(
@@ -1368,29 +1537,180 @@ mod tests {
         );
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
-        // resume_session + isolated is a structured refusal before any
+        // action=resume + isolated is a structured refusal before any
         // session/provider plumbing runs.
         let err = tool
             .execute(serde_json::json!({
+                "action": "resume",
+                "session_key": "some-session",
                 "prompt": "x",
                 "subagent_type": "writer",
                 "isolated": true,
-                "resume_session": "some-session",
             }))
             .await
-            .expect_err("resume_session + isolated must refuse");
+            .expect_err("action=resume + isolated must refuse");
         assert!(err.to_string().contains("contradictory"), "{err}");
     }
 
     #[tokio::test]
-    async fn test_resume_session_schema_param_present() {
+    async fn test_action_schema_surface() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         let tool = AgentTool::new(runtime as SharedSubagentRuntime);
         let params = tool.parameters();
-        assert_eq!(params["properties"]["resume_session"]["type"], "string");
+        assert_eq!(
+            params["properties"]["action"]["enum"],
+            serde_json::json!(["new", "resume", "compact"])
+        );
+        assert_eq!(params["properties"]["session_key"]["type"], "string");
+        assert_eq!(
+            params["properties"]["cleanup"]["enum"],
+            serde_json::json!(["keep", "delete"])
+        );
+        // The schema `required` list is empty by design — per-action
+        // requirements (new: prompt+subagent_type; resume:
+        // session_key+prompt+subagent_type; compact: session_key) are
+        // validated in code.
+        assert!(params.get("required").is_none());
+        assert!(params["properties"].get("resume_session").is_none());
         // Coin-model cross-reference in the description.
         let desc = tool.description();
-        assert!(desc.contains("resume_session"));
+        assert!(desc.contains("resume"));
+        assert!(desc.contains("compact"));
         assert!(desc.contains("session"));
+    }
+
+    #[test]
+    fn test_action_defaults_to_new_when_omitted() {
+        let args: AgentArgs =
+            serde_json::from_str(r#"{"prompt": "Do something", "subagent_type": "writer"}"#)
+                .unwrap();
+        assert_eq!(args.action, "new");
+        assert_eq!(args.session_key, None);
+    }
+
+    #[tokio::test]
+    async fn test_unknown_action_is_structured_error() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+        let err = tool
+            .execute(serde_json::json!({
+                "action": "purge",
+                "prompt": "x",
+                "subagent_type": "writer",
+            }))
+            .await
+            .expect_err("unknown action must refuse");
+        let msg = err.to_string();
+        assert!(msg.contains("purge"), "{msg}");
+        assert!(msg.contains("\"new\", \"resume\", \"compact\""), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn test_resume_requires_session_key() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+        let err = tool
+            .execute(serde_json::json!({
+                "action": "resume",
+                "prompt": "x",
+                "subagent_type": "writer",
+            }))
+            .await
+            .expect_err("resume without session_key must refuse");
+        assert!(err.to_string().contains("session_key"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_new_requires_prompt_and_subagent_type() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+        let err = tool
+            .execute(serde_json::json!({ "subagent_type": "writer" }))
+            .await
+            .expect_err("new without prompt must refuse");
+        assert!(err.to_string().contains("prompt"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_compact_routes_to_request_compaction() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        let provider = Box::new(StaticSessionKeyProvider::new("caller:sess"));
+        let tool =
+            AgentTool::with_session_provider(runtime.clone() as SharedSubagentRuntime, provider);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "action": "compact",
+                "session_key": "target-sess",
+            }))
+            .await
+            .expect("compact should succeed against the test runtime");
+
+        assert_eq!(result["session_id"], "target-sess");
+        assert!(result["message"].as_str().unwrap().contains("Compaction"));
+        assert_eq!(
+            runtime.compaction_requests(),
+            vec![("target-sess".to_string(), "caller:sess".to_string())],
+            "compact must route to the port with the caller's session id"
+        );
+        // No spawn ran, so nothing was audited.
+        assert!(runtime.audits().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_compact_requires_session_key() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        let provider = Box::new(StaticSessionKeyProvider::new("caller:sess"));
+        let tool =
+            AgentTool::with_session_provider(runtime.clone() as SharedSubagentRuntime, provider);
+        let err = tool
+            .execute(serde_json::json!({ "action": "compact" }))
+            .await
+            .expect_err("compact without session_key must refuse");
+        assert!(err.to_string().contains("session_key"), "{err}");
+        assert!(runtime.compaction_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_unknown_value_errors() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.grant("agent:writer");
+        runtime.register_agent(
+            "writer",
+            AgentConfig {
+                name: "writer".into(),
+                ..Default::default()
+            },
+        );
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+
+        // Round-7 audit fix: an unknown cleanup value used to silently
+        // become Keep; it is now a structured validation error naming
+        // the bad value and the valid set.
+        let err = tool
+            .execute(serde_json::json!({
+                "prompt": "x",
+                "subagent_type": "writer",
+                "cleanup": "purge",
+            }))
+            .await
+            .expect_err("unknown cleanup must refuse");
+        let msg = err.to_string();
+        assert!(msg.contains("purge"), "{msg}");
+        assert!(msg.contains("\"keep\", \"delete\""), "{msg}");
+    }
+
+    #[test]
+    fn test_parse_cleanup_accepts_valid_values_case_insensitively() {
+        assert_eq!(parse_cleanup(None).unwrap(), SpawnCleanupPolicy::Keep);
+        assert_eq!(
+            parse_cleanup(Some("keep")).unwrap(),
+            SpawnCleanupPolicy::Keep
+        );
+        assert_eq!(
+            parse_cleanup(Some("DELETE")).unwrap(),
+            SpawnCleanupPolicy::Delete
+        );
+        assert!(parse_cleanup(Some("purge")).is_err());
     }
 }

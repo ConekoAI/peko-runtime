@@ -74,25 +74,26 @@ flow_main() {
   # ── TURN 3: list sessions, no filter ─────────────────────────────
   _r5_turn "TURN 3 (list — no filter)" send sam "Use the session tool with action=list (no filters) and tell me how many sessions exist right now."
 
-  # ── TURN 4: kinds filter — probe the F6 bug ──────────────────────
-  # Round 4 didn't pin what the kinds filter actually accepts. The
-  # description says 'user'/'chapter'/'spawned'/'branch'/'cron' but
-  # the parameter field at line 163 still says ['main','spawned','cron']
-  # and the engine stores trigger='spawn' (not 'spawned'). Ask for the
-  # filter that round-4 F6 said returned 0 and see what happens now.
-  _r5_turn "TURN 4 (list kinds=['spawned'] — F6 probe)" send sam "Use the session tool with action=list and kinds=['spawned']. Tell me what kinds of sessions you see and how many of each. If you see zero, say so explicitly."
+  # ── TURN 4: post-kinds-removal — ask for subagent sessions ─────
+  # Round-6 F1 fix (2026-08-13): the kinds filter was deleted. The
+  # model now derives "is this a subagent session?" from
+  # `parent_session_id` on the status result. Ask for it directly.
+  _r5_turn "TURN 4 (find subagent sessions — model uses parent_session_id)" send sam "Show me only my subagent sessions (the ones I haven't talked to directly). Use the session tool however you need to."
 
-  # ── TURN 5: try the description's wording — kinds=['chapter'] ──
-  _r5_turn "TURN 5 (list kinds=['chapter'] — does any exist?)" send sam "Now use the session tool with action=list and kinds=['chapter']. Tell me what you see."
+  # ── TURN 5: post-kinds-removal — ask for chapters ──────────────
+  # Round-6 F2 fix: a "chapter" is identified by a `#<timestamp>`
+  # filename suffix on session_id, not by a trigger value. The model
+  # should call list with include_archived=true and grep for `#`.
+  _r5_turn "TURN 5 (find chapters — model uses session_id contains '#')" send sam "Show me any chapters (a chapter is a rotated user session whose id contains '#'). Use the session tool however you need to."
 
-  # ── TURN 6: try kinds=['user'] — should match the live session ──
-  _r5_turn "TURN 6 (list kinds=['user'])" send sam "Now use the session tool with action=list and kinds=['user']. Tell me what you see."
+  # ── TURN 6: post-kinds-removal — ask for the live session only ──
+  _r5_turn "TURN 6 (find the live session — model filters on parent_session_id=None)" send sam "Show me my live (non-subagent, non-chapter) session. Use the session tool however you need to."
 
   # ── TURN 7: delegate to subagent to seed a 'spawned' session ────
   _r5_turn "TURN 7 (Agent subagent — should produce a 'spawn' session)" send sam "Delegate this to a helper agent (use the Agent tool with type=primary): write a one-paragraph marketing blurb for an 'ember-glaze' tea-bowl line, suitable for our Instagram. Don't do it yourself."
 
-  # ── TURN 8: list sessions again — should now have a spawned kind ─
-  _r5_turn "TURN 8 (list — expect a spawned entry now)" send sam "Use the session tool with action=list (no kinds filter) and show me the kind of every session. I want to see if the helper created a new one."
+  # ── TURN 8: list sessions again — should now have a parent_session_id ─
+  _r5_turn "TURN 8 (list — expect a spawned entry now)" send sam "Use the session tool with action=list (no filters) and show me the parent_session_id of every session. I want to see if the helper created a new one with a parent."
 
   # ── TURN 9: history of the spawned session ───────────────────────
   _r5_turn "TURN 9 (history on spawned session)" send sam "From the list above, find the spawned session's key and call action=history on it. Summarise what the helper produced."
@@ -127,8 +128,8 @@ flow_main() {
   # ── TURN 19: probe — does the rotation actually take effect? ─────
   _r5_turn "TURN 19 (post-rotation isolation probe)" send sam "Without looking at any earlier context, what's my studio's name and what line of ceramics am I working on? Reply based only on what's in front of you right now."
 
-  # ── TURN 20: list with kinds=['user'] — only the live one ──────
-  _r5_turn "TURN 20 (list kinds=['user'] post-rotation)" send sam "Use the session tool with action=list and kinds=['user']. Tell me which session is now the live one (just the session_key)."
+  # ── TURN 20: list — find the live session after rotation ──────
+  _r5_turn "TURN 20 (list — find the live session post-rotation)" send sam "Use the session tool with action=list (no filters). Tell me which session is now the live one (the one with no parent_session_id and no '#' in session_id)."
 
   # ── TURN 21: history with include_tools=false on a small one ────
   _r5_turn "TURN 21 (history include_tools=false)" send sam "Use the session tool with action=history on the current session with include_tools=false. Show me just the conversation text, no tool calls."
@@ -137,7 +138,7 @@ flow_main() {
   _r5_turn "TURN 22 (delete spawned session — recursive=false)" send sam "Find the spawned helper session from turn 7 and use action=delete on it (recursive=false, just the leaf). Confirm it's gone from the next list."
 
   # ── TURN 23: final list to see end state ─────────────────────────
-  _r5_turn "TURN 23 (final list — end state)" send sam "Final check: use the session tool with action=list (no filter) and tell me the kinds and counts of everything that's left."
+  _r5_turn "TURN 23 (final list — end state)" send sam "Final check: use the session tool with action=list (no filter) and tell me by parent_session_id which sessions are live, subagent, or chapter."
 
   # ── POST: inspect on-disk state ───────────────────────────────────
   echo
@@ -152,8 +153,11 @@ flow_main() {
     echo "sessions.json:"
     cat "$sessions_dir/sessions.json" 2>/dev/null | head -200
     echo
-    echo "chapters.json (if any):"
-    cat "$sessions_dir/chapters.json" 2>/dev/null
+    # Round 7 (2026-08-13) deleted the chapter concept: chapters.json no
+    # longer exists and session ids never carry a '#' suffix — oversized
+    # JSONLs page in place to <id>.N.jsonl. See probe-no-chapter-suffix.sh.
+    echo "in-place pages <id>.N.jsonl (if any):"
+    find "$sessions_dir" -name '*.jsonl' 2>/dev/null | grep -E '\.[0-9]+\.jsonl$' | sort
   else
     echo "❌ sessions dir missing"
   fi

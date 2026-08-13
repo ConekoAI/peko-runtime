@@ -385,14 +385,13 @@ impl SessionHandle {
     /// (`Err(_)`) so callers can react to transient IO problems instead
     /// of silently treating them as "the session is gone".
     pub async fn try_exists(&self) -> Result<bool> {
-        Ok(matches!(
-            self.metadata
-                .write()
-                .await
-                .get_metadata(&self.session_id, false)
-                .await?,
-            Some(_)
-        ))
+        Ok(self
+            .metadata
+            .write()
+            .await
+            .get_metadata(&self.session_id, false)
+            .await?
+            .is_some())
     }
 }
 
@@ -1409,101 +1408,9 @@ impl SessionManager {
         Ok(new_session_id)
     }
 
-    /// Rename a session id (rotation primitive)
-    ///
-    /// Moves the JSONL transcript — plus the derived `.index.json` and
-    /// `.context.cache` sidecars when present, mirroring the set
-    /// [`SessionStorage::delete_session`] removes — to the new id, then
-    /// re-keys the index entry (`session_id`, `transcript_file`) via the
-    /// `MetadataController`.
-    ///
-    /// The transcript rename happens under the same cross-process
-    /// `FileLock` that `append_event` uses, so a concurrent appender
-    /// blocks for the duration of the move instead of writing into a
-    /// half-renamed file.
-    ///
-    /// Refuses when `new_id` already exists (index entry or squatting
-    /// JSONL file); errors when `old_id` is unknown.
-    pub async fn rename_session_id(&mut self, old_id: &str, new_id: &str) -> Result<()> {
-        if old_id == new_id {
-            return Err(anyhow::anyhow!("Cannot rename session {old_id} to itself"));
-        }
-
-        let sessions_dir = self
-            .sessions_dir
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?
-            .clone();
-        let storage = SessionStorage::new(sessions_dir.clone());
-
-        // Verify old exists and new does not. Hold `metadata_controller.write()`
-        // across the file rename so the index and the jsonl move as one
-        // atomic step — if the lock is dropped between them (the
-        // previous behavior), a crash leaves the index pointing at a
-        // renamed-away transcript. Lock order is
-        // metadata_controller → FileLock everywhere in this crate.
-        let mut controller = self.metadata_controller.write().await;
-        let mut entry = controller
-            .get_entry_from_index(old_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Cannot rename non-existent session '{old_id}'"))?;
-        if controller.get_entry_from_index(new_id).await?.is_some() {
-            return Err(anyhow::anyhow!(
-                "Cannot rename session '{old_id}' to '{new_id}': target id already exists"
-            ));
-        }
-        if storage.session_exists(new_id).await {
-            return Err(anyhow::anyhow!(
-                "Cannot rename session '{old_id}' to '{new_id}': target transcript file already exists"
-            ));
-        }
-
-        // Rename the transcript and any existing sidecars under the
-        // append lock (same lock `append_event` acquires). The
-        // metadata_controller lock is held across this block so the
-        // index update below and the file move cannot be split by a
-        // crash.
-        let old_jsonl = sessions_dir.join(format!("{}.jsonl", safe_filename_component(old_id)));
-        let new_jsonl = sessions_dir.join(format!("{}.jsonl", safe_filename_component(new_id)));
-        {
-            let _lock = peko_fs_persistence::FileLock::acquire(
-                &old_jsonl,
-                crate::jsonl::SESSION_LOCK_TIMEOUT_MS,
-            )
-            .await?;
-
-            if old_jsonl.exists() {
-                tokio::fs::rename(&old_jsonl, &new_jsonl).await?;
-            }
-            for (old_sidecar, new_sidecar) in [
-                (storage.index_path(old_id), storage.index_path(new_id)),
-                (
-                    storage.context_cache_path(old_id),
-                    storage.context_cache_path(new_id),
-                ),
-            ] {
-                if old_sidecar.exists() {
-                    tokio::fs::rename(&old_sidecar, &new_sidecar).await?;
-                }
-            }
-        }
-
-        // Re-key the index entry via the MetadataController.
-        entry.session_id = new_id.to_string();
-        entry.transcript_file = format!("{}.jsonl", safe_filename_component(new_id));
-        entry.touch();
-        controller.delete_metadata(old_id).await?;
-        controller.update_entry(entry).await?;
-        drop(controller);
-
-        info!("Renamed session {} to {}", old_id, new_id);
-        Ok(())
-    }
-
     /// Set the title on a session's metadata
     ///
-    /// Lightweight convenience used by chapter rotation to label the
-    /// archived chapter. Errors when the session does not exist.
+    /// Errors when the session does not exist.
     pub async fn set_session_title(&self, session_id: &str, title: Option<String>) -> Result<()> {
         let mut controller = self.metadata_controller.write().await;
         let mut metadata = controller
@@ -1528,15 +1435,11 @@ impl SessionManager {
         if archived {
             // Scrub the peer routing entry. The session index is the
             // peer-id → routing-entry map; we walk it because peer
-            // attribution is not always 1:1 with session metadata
-            // (chapter rotation can leave stale entries).
+            // attribution is not always 1:1 with session metadata.
             if let Some(index) = self.index.as_mut() {
                 let peer_keys = index.peer_keys_with_session(session_id).await;
                 for peer_key in peer_keys {
-                    if let Err(e) = index
-                        .remove_session_from_peer(&peer_key, session_id)
-                        .await
-                    {
+                    if let Err(e) = index.remove_session_from_peer(&peer_key, session_id).await {
                         tracing::warn!(
                             "set_archived: failed to scrub {session_id} from peer {peer_key}: {e}"
                         );
@@ -2414,95 +2317,79 @@ impl Default for SessionManager {
 }
 
 /// Adapter that lets `SessionStorage::append_event_with_rotation`
-/// invoke the canonical `SessionManager::rename_session_id` flow
-/// (metadata_controller.write + atomic rename of the JSONL and its
-/// sidecars) without coupling `peko-session::jsonl` to
+/// page a session's JSONL in place (rename `<S>.jsonl` →
+/// `<S>.<n>.jsonl`) without coupling `peko-session::jsonl` to
 /// `peko-session::manager`. Holds an `Arc<RwLock<SessionManager>>`
-/// because rotation can race with concurrent `open_session` calls —
-/// the manager write lock is acquired only for the rename step.
+/// only to resolve the sessions directory.
 ///
-/// WS2 (implicit session management): on rotation we also fix the
-/// round-5 F3 finding by appending the rotated id to every peer's
-/// `session_ids` via `SessionIndex::ensure_peer_active`. Without
-/// this, the archived chapter disappears from `session list peer=…`
-/// queries immediately after the auto-paging event.
+/// Paging keeps the session id stable: the index entry and
+/// `transcript_file` (`<S>.jsonl`) are untouched, peers need no
+/// re-registration, and `InboxRegistry`/steering keys stay valid.
 pub struct SessionManagerRotationSink {
     manager: Arc<RwLock<SessionManager>>,
-    agent: String,
-    peer: Subject,
 }
 
 impl SessionManagerRotationSink {
-    /// Build a rotation sink bound to one (agent, peer) pair.
-    /// Construction requires that the sink know which peer to
-    /// invalidate in `base_sessions` after rotation; pair-level
-    /// binding keeps the public surface explicit.
+    /// Build a rotation sink bound to a manager. The `agent`/`peer`
+    /// parameters are accepted (and ignored) for source compatibility
+    /// with the pre-paging constructor — chapter rotation re-registered
+    /// peers and invalidated per-(agent, peer) caches; stable-id paging
+    /// needs neither.
     pub fn new(manager: Arc<RwLock<SessionManager>>, agent: String, peer: Subject) -> Self {
-        Self { manager, agent, peer }
+        let _ = (agent, peer);
+        Self { manager }
     }
+}
+
+/// Rename `<S>.jsonl` to `<S>.<n>.jsonl` (n = max existing page + 1)
+/// under the append `FileLock`, then drop the context cache for `S`.
+/// Returns the page number used.
+async fn page_session_file(sessions_dir: &Path, session_id: &str) -> Result<u32> {
+    let storage = SessionStorage::new(sessions_dir.to_path_buf());
+    let live = sessions_dir.join(format!("{}.jsonl", safe_filename_component(session_id)));
+    let _lock =
+        peko_fs_persistence::FileLock::acquire(&live, crate::jsonl::SESSION_LOCK_TIMEOUT_MS)
+            .await?;
+
+    let n = crate::jsonl::page_numbers(sessions_dir, session_id)
+        .into_iter()
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let page = crate::jsonl::page_path(sessions_dir, session_id, n);
+    if live.exists() {
+        tokio::fs::rename(&live, &page).await?;
+    }
+
+    // The context cache's checksum covers the pre-page transcript;
+    // drop it so the next build re-derives from the stitched pages.
+    storage.invalidate_context_cache(session_id).await?;
+
+    info!("Auto-paged session {} -> page {}", session_id, n);
+    Ok(n)
 }
 
 #[async_trait]
 impl RotationSink for SessionManagerRotationSink {
-    async fn request_rotation(
-        &self,
-        session_id: &str,
-        _reason: RotationReason,
-    ) -> Result<String> {
+    async fn request_rotation(&self, session_id: &str, _reason: RotationReason) -> Result<u32> {
         let sessions_dir = {
             let mgr = self.manager.read().await;
             mgr.sessions_dir
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?
         };
-        let new_id = crate::chapters::chapter_id(Path::new(&sessions_dir), session_id);
-        {
-            let mut mgr = self.manager.write().await;
-            mgr.rename_session_id(session_id, &new_id).await?;
-            // Round-5 F3 fix: ensure the rotated id is registered on
-            // every peer that owned the source session. Without
-            // this, `session list peer=…` would drop the archived
-            // chapter on rotation.
-            if let Some(index_mut) = mgr.index_mut() {
-                let peer_keys = index_mut.peer_keys_with_session(session_id).await;
-                for peer_key in peer_keys {
-                    index_mut
-                        .ensure_peer_active(&peer_key, &new_id)
-                        .await?;
-                }
-                // Persist the index updates — both `ensure_peer_active`
-                // and `rename_session_id` mutate the in-memory index
-                // but do not flush to disk on their own.
-                if let Err(e) = index_mut.save_peers().await {
-                    tracing::warn!(
-                        "Auto-paging: failed to save peers index after rotation: {e}"
-                    );
-                }
-            }
-            // Invalidate the in-memory `base_sessions` cache so the
-            // next `open_session` rehydrates with the rotated id.
-            // `rename_session_id` does NOT touch this cache.
-            mgr.remove_base_session(&self.agent, &self.peer);
-            // Drop the context cache for the new sibling — its
-            // checksum is for the freshly-renamed file.
-            let storage = SessionStorage::new(sessions_dir.clone());
-            storage.invalidate_context_cache(&new_id).await?;
-        }
-        info!(
-            "Auto-paged session {} -> {} (agent={}, peer={})",
-            session_id, new_id, self.agent, self.peer
-        );
-        Ok(new_id)
+        page_session_file(Path::new(&sessions_dir), session_id).await
     }
 }
 
 impl SessionManager {
-    /// WS2 (implicit session management): startup sweep that rotates any
+    /// WS2 (implicit session management): startup sweep that pages any
     /// live-id JSONL whose size exceeds [`crate::test_config::rotate_bytes`].
     ///
-    /// Idempotent: chapter ids (those containing `#`) are skipped on the
-    /// second pass because they're already archived. New events land in
-    /// the freshly-rotated sibling on the next `add_*`.
+    /// Idempotent: after paging, `<id>.jsonl` no longer exists (the
+    /// next append recreates it), so a second sweep finds nothing to
+    /// do. Legacy chapter files (`<id>#<UTC-ts>.jsonl`) are inert and
+    /// never paged.
     ///
     /// Returns the number of rotations performed. Caller (recovery pass
     /// or daemon boot path) should log the count.
@@ -2517,8 +2404,9 @@ impl SessionManager {
         let mut rotated = 0usize;
 
         for id in ids {
-            // Skip already-archived chapters — they live on disk as
-            // `<id>#<UTC-ts>.jsonl` and are rotated by definition.
+            // Legacy chapter ids (`<id>#<UTC-ts>`) are inert on disk —
+            // skip them. (Numbered page files never appear in
+            // `list_sessions` at all.)
             if id.contains('#') {
                 continue;
             }
@@ -2530,18 +2418,17 @@ impl SessionManager {
             if size <= threshold as u64 {
                 continue;
             }
-            let new_id = crate::chapters::chapter_id(Path::new(&sessions_dir), &id);
-            match self.rename_session_id(&id, &new_id).await {
-                Ok(()) => {
+            match page_session_file(Path::new(&sessions_dir), &id).await {
+                Ok(page_n) => {
                     info!(
-                        "Startup sweep: auto-paged oversize session {} ({} bytes) -> {}",
-                        id, size, new_id
+                        "Startup sweep: auto-paged oversize session {} ({} bytes) -> page {}",
+                        id, size, page_n
                     );
                     rotated += 1;
                 }
                 Err(e) => {
                     warn!(
-                        "Startup sweep: failed to rotate {} ({} bytes): {}",
+                        "Startup sweep: failed to page {} ({} bytes): {}",
                         id, size, e
                     );
                 }
@@ -3306,100 +3193,8 @@ mod tests {
     }
 
     // ====================================================================================
-    // Phase 1 Tests: rename primitive, exists() fix, branch peer attribution
+    // Phase 1 Tests: exists() fix, branch peer attribution
     // ====================================================================================
-
-    #[tokio::test]
-    async fn test_rename_session_id_happy_path() {
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
-
-        let handle = manager
-            .create_session("test_agent", &peer, SessionCreateOptions::new())
-            .await
-            .unwrap();
-        let old_id = handle.session_id().to_string();
-        let new_id = format!("{old_id}#chapter");
-
-        manager.rename_session_id(&old_id, &new_id).await.unwrap();
-
-        // Transcript file moved.
-        let old_path = temp
-            .path()
-            .join(format!("{}.jsonl", safe_filename_component(&old_id)));
-        let new_path = temp
-            .path()
-            .join(format!("{}.jsonl", safe_filename_component(&new_id)));
-        assert!(!old_path.exists(), "old JSONL should be gone");
-        assert!(new_path.exists(), "new JSONL should exist");
-
-        // Index re-keyed: old id gone, new id openable with an updated
-        // transcript_file pointer.
-        assert!(manager.open_session(&old_id).await.unwrap().is_none());
-        let reopened = manager
-            .open_session(&new_id)
-            .await
-            .unwrap()
-            .expect("session should be openable under the new id");
-        assert_eq!(reopened.session_id(), new_id);
-        let meta = reopened.get_metadata().await.unwrap();
-        assert_eq!(
-            meta.transcript_file,
-            format!("{}.jsonl", safe_filename_component(&new_id))
-        );
-    }
-
-    #[tokio::test]
-    async fn test_rename_session_id_refuses_existing_target() {
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
-
-        let first = manager
-            .create_session("test_agent", &peer, SessionCreateOptions::new())
-            .await
-            .unwrap();
-        let second = manager
-            .create_session("test_agent", &peer, SessionCreateOptions::new())
-            .await
-            .unwrap();
-        let first_id = first.session_id().to_string();
-        let second_id = second.session_id().to_string();
-
-        let err = manager
-            .rename_session_id(&first_id, &second_id)
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("already exists"),
-            "unexpected error: {err}"
-        );
-
-        // Source untouched by the refused rename.
-        assert!(manager.open_session(&first_id).await.unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn test_rename_session_id_errors_on_missing_source() {
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-
-        let err = manager
-            .rename_session_id("sess_nope", "sess_other")
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("non-existent"),
-            "unexpected error: {err}"
-        );
-    }
 
     #[tokio::test]
     async fn test_branch_session_by_id_copies_peer_attribution() {
@@ -3468,66 +3263,6 @@ mod tests {
         );
     }
 
-    /// Chapter rotation flow (Phase 2): rename the live id to a
-    /// chapter id, then the normal create path mints a fresh live
-    /// session under the same id. The old chapter keeps its history.
-    #[tokio::test]
-    async fn test_chapter_rotation_flow_via_manager() {
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
-        let live_id = "root:user:alice".to_string();
-
-        // Live session with some history.
-        let handle = manager
-            .create_session(
-                "test_agent",
-                &peer,
-                SessionCreateOptions::new().with_session_id(&live_id),
-            )
-            .await
-            .unwrap();
-        handle.add_user("old chapter message").await.unwrap();
-
-        // Rotate: live → chapter id (what `agent_runner` does on a
-        // pending `ChapterRequest::New`).
-        let chapter = crate::chapters::chapter_id(temp.path(), &live_id);
-        manager.rename_session_id(&live_id, &chapter).await.unwrap();
-        manager
-            .set_session_title(&chapter, Some("chapter 1".to_string()))
-            .await
-            .unwrap();
-
-        // The normal create path mints a fresh live session under the
-        // same id — empty history, while the chapter keeps the old one.
-        let fresh = manager
-            .create_session(
-                "test_agent",
-                &peer,
-                SessionCreateOptions::new().with_session_id(&live_id),
-            )
-            .await
-            .unwrap();
-        assert_eq!(fresh.session_id(), live_id);
-        assert!(
-            fresh.load_history().await.unwrap().is_empty(),
-            "fresh chapter starts empty"
-        );
-
-        let old = manager
-            .open_session(&chapter)
-            .await
-            .unwrap()
-            .expect("chapter openable under its id");
-        assert_eq!(old.load_history().await.unwrap().len(), 1);
-        assert_eq!(
-            old.get_metadata().await.unwrap().title,
-            Some("chapter 1".to_string())
-        );
-    }
-
     /// Plan D2 plumbing: the persisted `compact_requested` flag is
     /// visible to (and clearable by) an open `Session` — the engine
     /// reads it via `SessionView::peek_compact_request`.
@@ -3577,14 +3312,21 @@ mod tests {
     /// test and restores the previous state on drop. Used by the
     /// WS2 rotation tests so the `test_config` default-value tests
     /// don't see leaked env state.
+    ///
+    /// Holds `crate::test_config::TEST_MODE_LOCK` so two guard-holding
+    /// tests can't run concurrently (the env var is process-global).
     struct PekoTestModeGuard {
         prev: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
     impl PekoTestModeGuard {
         fn new() -> Self {
+            let lock = crate::test_config::TEST_MODE_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prev = std::env::var("PEKO_TEST_MODE").ok();
             std::env::set_var("PEKO_TEST_MODE", "1");
-            Self { prev }
+            Self { prev, _lock: lock }
         }
     }
     impl Drop for PekoTestModeGuard {
@@ -3596,11 +3338,11 @@ mod tests {
         }
     }
 
-    /// WS2: `rotate_oversized_sessions` rotates a live JSONL that
-    /// exceeds `test_config::rotate_bytes()` and leaves already-archived
-    /// chapters (`#`-suffixed ids) untouched.
+    /// WS2: `rotate_oversized_sessions` pages a live JSONL that
+    /// exceeds `test_config::rotate_bytes()` in place (stable id) and
+    /// leaves legacy `#`-suffixed chapter files untouched.
     #[tokio::test]
-    async fn test_rotate_oversized_sessions_rotates_live_skips_chapters() {
+    async fn test_rotate_oversized_sessions_pages_live_skips_legacy_chapters() {
         use tempfile::TempDir;
         use tokio::fs;
 
@@ -3621,48 +3363,110 @@ mod tests {
             .await
             .unwrap();
 
-        // Pre-existing chapter (already `#`-suffixed) — should NOT be touched.
+        // Pre-existing legacy chapter (already `#`-suffixed) — inert,
+        // should NOT be touched.
         let chapter = format!("{live_id}#archived");
         let chapter_path = temp.path().join(format!("{chapter}.jsonl"));
-        fs::write(&chapter_path, "z")
-            .await
-            .unwrap();
+        fs::write(&chapter_path, "z").await.unwrap();
         let chapter_size_before = fs::metadata(&chapter_path).await.unwrap().len();
 
         let n = manager.rotate_oversized_sessions().await.unwrap();
-        assert_eq!(n, 1, "exactly one live id should rotate");
+        assert_eq!(n, 1, "exactly one live id should page");
 
-        // Live file gone, new chapter sibling present, pre-existing
-        // chapter untouched.
+        // The full file became page 1; the id is stable — the index
+        // entry still points at `<id>.jsonl`.
         let live_path = temp.path().join(format!("{live_id}.jsonl"));
         assert!(
             !live_path.exists(),
-            "live id should have been renamed away"
+            "live file should have been renamed aside to a page"
         );
-        let new_chapter_paths: Vec<_> = std::fs::read_dir(temp.path())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .filter(|n| {
-                let prefix = format!("{live_id}#");
-                let suffix = ".jsonl";
-                n.starts_with(&prefix)
-                    && n.ends_with(suffix)
-                    && n != &format!("{chapter}.jsonl")
-            })
-            .collect();
+        assert!(
+            temp.path().join(format!("{live_id}.1.jsonl")).exists(),
+            "page 1 should exist"
+        );
+        let meta = manager.get_session_metadata(&live_id).await.unwrap();
         assert_eq!(
-            new_chapter_paths.len(),
-            1,
-            "exactly one new rotated sibling should exist"
+            meta.transcript_file,
+            format!("{}.jsonl", safe_filename_component(&live_id))
         );
 
         // Idempotency: a second sweep does no further rotations.
         let n2 = manager.rotate_oversized_sessions().await.unwrap();
         assert_eq!(n2, 0);
 
-        // Pre-existing chapter is left alone.
+        // Legacy chapter file is left alone.
         let chapter_size_after = fs::metadata(&chapter_path).await.unwrap().len();
         assert_eq!(chapter_size_before, chapter_size_after);
+    }
+
+    /// The rotation sink pages in place: the session id never changes,
+    /// page numbers accumulate across rotations, and the full history
+    /// stitches back in order.
+    #[tokio::test]
+    async fn test_rotation_sink_pages_in_place_with_stable_id() {
+        use tempfile::TempDir;
+
+        let _guard = PekoTestModeGuard::new();
+
+        let temp = TempDir::new().unwrap();
+        let manager = Arc::new(RwLock::new(
+            SessionManager::new().with_sessions_dir_internal(temp.path()),
+        ));
+        let peer = Subject::User("alice".to_string());
+        let live_id = "root:user:alice".to_string();
+
+        let handle = {
+            let mut mgr = manager.write().await;
+            mgr.create_session(
+                "test_agent",
+                &peer,
+                SessionCreateOptions::new().with_session_id(&live_id),
+            )
+            .await
+            .unwrap()
+        };
+
+        // Install the production sink, then append events sized so two
+        // fit under the threshold but three do not.
+        {
+            let mut session = handle.base().write().await;
+            session.set_rotation_sink(Arc::new(super::SessionManagerRotationSink::new(
+                Arc::clone(&manager),
+                "test_agent".to_string(),
+                peer.clone(),
+            )));
+        }
+
+        let threshold = crate::test_config::rotate_bytes();
+        let big = "m".repeat(threshold / 3);
+        for i in 0..5 {
+            handle.add_user(format!("{big}-{i}")).await.unwrap();
+        }
+
+        // Session id stability: the live `Session` object still carries
+        // the original id after multiple pages.
+        assert_eq!(handle.session_id(), live_id);
+        assert_eq!(handle.base().read().await.id, live_id);
+
+        // Multiple rotations produced monotonically numbered pages
+        // (exact count depends on header/event sizes).
+        let pages = crate::jsonl::page_numbers(temp.path(), &live_id);
+        assert!(pages.len() >= 2, "expected multiple pages, got {pages:?}");
+        assert_eq!(pages, (1..=pages.len() as u32).collect::<Vec<_>>());
+
+        // Stitched history: all 5 messages in append order.
+        let history = handle.load_history().await.unwrap();
+        assert_eq!(history.len(), 5);
+        for (i, msg) in history.iter().enumerate() {
+            let text: String = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert!(text.ends_with(&format!("-{i}")), "message {i} out of order");
+        }
     }
 }

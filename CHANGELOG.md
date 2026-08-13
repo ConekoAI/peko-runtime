@@ -4,6 +4,56 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Round 7: chapters deleted, stable-id paging, session/Agent tool surface (2026-08-13)
+
+The chapter concept was a category error — a session is one agent.
+Session ids are now stable for life; transcript growth is handled by
+storage-internal paging, and the tool surface is split honestly:
+`session` does pure storage reads/writes, `Agent` drives anything
+that causes LLM work.
+
+#### Changed
+- **Stable-id transcript paging.** Session ids never change. When a
+  JSONL exceeds `rotate_bytes` it pages in place: `<id>.jsonl` →
+  `<id>.N.jsonl` (N chronological, 1 = oldest) and appends continue
+  into a fresh `<id>.jsonl`. `load_events`/`load_normalized` stitch
+  pages 1..N + the current page transparently, so history, context
+  build, compaction, and transcript search all see one continuous
+  transcript. `delete` removes all pages + sidecars; `branch` copies
+  them. Legacy `#`-suffixed JSONLs stay inert on disk.
+- **`session` tool: 9 storage actions.** `status` / `list` /
+  `history` / `search` / `rename` / `delete` / `branch` / `archive` /
+  `unarchive` — no LLM involvement. The root session (`root:*`)
+  refuses delete/archive ("continuous, managed by the engine");
+  self-mutation is refused; `branch` makes a non-running copy (resume
+  it via the `Agent` tool); `archive` hides from `list` unless
+  `include_archived:true`. `limit` schema default is now 100
+  (matching the handler); an invalid IANA timezone is a structured
+  error instead of a silent local-time fallback;
+  `SessionInfo.is_active` was dropped (`run_active` carries the real
+  signal).
+- **`Agent` tool: 3 LLM-driving actions.** New `action` param
+  (default `"new"`): `new` spawns (prompt + subagent_type), `resume`
+  re-attaches a run to an existing spawned session (session_key +
+  prompt + subagent_type), `compact` flags a session for
+  engine-driven summarization at the target's next run (session_key
+  only; returns immediately, no completion signal). `cleanup` is
+  validated — `keep`/`delete`, structured error otherwise.
+- **`trigger` field retained.** The spawn depth check in
+  `agents/subagent_executor.rs` branches on `trigger == "spawn"`;
+  dropping it is deferred to a follow-up.
+
+#### Removed
+- **Chapters.** `peko_session::chapters` (`ChapterRequest`,
+  `chapters.json`, `chapter_id`), `SessionRuntime::{new_chapter,
+  resume_chapter}` + `ChapterChangeOutcome`,
+  `SessionManager::rename_session_id`, and the `Session`-id re-keying
+  in `append_to_storage` are gone. `ownership::is_live_base_id` /
+  `chapter_family` deleted — "live base" is now
+  `id.starts_with("root:")`.
+- **`Agent` tool `resume_session` param** (breaking for tool
+  callers). Use `action:"resume"` + `session_key` instead.
+
 ### Agent-owned session management — the unified session/run framework (2026-08-09)
 
 The "coin model": a **session** is a persisted conversation, a **run**

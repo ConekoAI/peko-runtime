@@ -103,7 +103,10 @@ impl std::fmt::Debug for Session {
             .field("current_provider", &self.current_provider)
             .field("current_model", &self.current_model)
             .field("metadata_controller", &self.metadata_controller)
-            .field("rotation_sink", &self.rotation_sink.as_ref().map(|_| "<RotationSink>"))
+            .field(
+                "rotation_sink",
+                &self.rotation_sink.as_ref().map(|_| "<RotationSink>"),
+            )
             .finish()
     }
 }
@@ -831,12 +834,12 @@ impl Session {
 
     /// WS2 (implicit session management): install a rotation sink so the
     /// next append will check the on-disk JSONL size and trigger a
-    /// chapter rotation when the new event would push the file past
+    /// page rotation when the new event would push the file past
     /// [`crate::test_config::rotate_bytes`].
     ///
-    /// The sink is owned by `SessionManager` (its adapter closes the F3
-    /// "archived chapter invisible to peers" round-5 gap by re-adding the
-    /// rotated sibling to `PeerInfo::session_ids`).
+    /// Paging keeps the session id stable — the full file is renamed
+    /// aside to `<id>.<n>.jsonl` and appends continue into a fresh
+    /// `<id>.jsonl`, so no peer/cache re-registration is needed.
     ///
     /// Safe to call more than once — replaces the previous sink. Passing
     /// `None` disables the auto-paging behaviour (plain `append_event`).
@@ -849,25 +852,15 @@ impl Session {
     /// Tests that build `Session` without a `SessionManager` skip
     /// auto-paging; production paths set the sink right after open.
     ///
-    /// Takes `&mut self` so a rotation event can re-key `self.id` to the
-    /// new sibling — without this, a second append on the same `Session`
-    /// (e.g. the agentic loop's next message) would still target the
-    /// renamed-away file and the next size check would re-fire the
-    /// sink, racing itself (round-5 test 2026-08-11: "Cannot rename
-    /// non-existent session").
+    /// Paging keeps `self.id` stable: the sink renames the full
+    /// `<id>.jsonl` aside to a numbered page and
+    /// `append_event_with_rotation` recreates a fresh `<id>.jsonl`
+    /// for the appended event, so no re-keying is needed.
     async fn append_to_storage(&mut self, event: &SessionEvent) -> Result<()> {
         if let Some(sink) = self.rotation_sink.as_ref() {
-            let outcome = self
-                .storage
+            self.storage
                 .append_event_with_rotation(&self.id, event, sink.as_ref())
                 .await?;
-            if let crate::jsonl::RotationOutcome::Rotated { from: _, to } = outcome {
-                // `append_event_with_rotation` has already written the
-                // event to the rotated sibling. Re-key our local id so
-                // the next append goes to the new file without firing
-                // the sink again.
-                self.id = to;
-            }
         } else {
             self.storage.append_event(&self.id, event).await?;
         }
@@ -1494,7 +1487,12 @@ mod tests {
             .rev()
             .find_map(|ev| match ev {
                 SessionEvent::MessageV2(m)
-                    if matches!(m.role_metadata, crate::message::RoleMetadata::User { source: MessageSource::User }) =>
+                    if matches!(
+                        m.role_metadata,
+                        crate::message::RoleMetadata::User {
+                            source: MessageSource::User
+                        }
+                    ) =>
                 {
                     Some(m)
                 }

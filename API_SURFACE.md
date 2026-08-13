@@ -834,24 +834,27 @@ Context for deriving semantic session keys. Not to be confused with the runtime 
 | `GatewayAdapter` | `extensions::gateway::adapter` | ✅ New | Platform gateways |
 | `GeneralExtensionAdapter` | `extensions::general::adapter` | ✅ New | Multi-hook extensions |
 
-### Agent-Owned Session Management (2026-08-09)
+### Agent-Owned Session Management (2026-08-09; revised 2026-08-13)
 
 The unified session/run framework ("coin model"): `Agent` runs work in
-sessions, the `session` tool manages them. New/changed public items:
+sessions (actions `new` / `resume` / `compact`), the `session` tool
+manages them (9 storage actions). Session ids are stable for life;
+oversized transcripts page in place. New/changed public items:
 
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
-| `SessionRuntime` v2 (adds `search_sessions`, `branch_session`, `rename_session`, `set_archived`, `delete_session`, `request_compaction`, `new_chapter`, `resume_chapter`; `list_sessions` gains `include_archived`) | `tools::builtin::session` | ✅ Extended | Session tool port trait |
-| `SessionInfo` (+`archived`, +`run_active`), `SessionSearchHit`, `BranchOutcome`, `DeleteOutcome`, `CompactRequestOutcome`, `ChapterChangeOutcome` | `tools::builtin::session` | ✅ New | Session tool DTOs |
-| `ownership::{CallerContext, caller_context, in_subtree, descendants_of, is_live_base_id, chapter_family, err_*}` | `session::ownership` | ✅ New | Ownership tree + guard refusals (shared by both tools) |
-| `SessionManager::{rename_session_id, set_archived, set_compact_requested, set_session_title, delete_session_by_id}` | `peko_session::manager` | ✅ New | Rotation primitive + controller passthroughs |
+| `SessionRuntime` v2 (adds `search_sessions`, `branch_session`, `rename_session`, `set_archived`, `delete_session`, `request_compaction`; `list_sessions` gains `include_archived`) | `tools::builtin::session` | ✅ Extended | Session tool port trait |
+| `SessionInfo` (+`archived`, +`run_active`), `SessionSearchHit`, `BranchOutcome`, `DeleteOutcome`, `CompactRequestOutcome` | `tools::builtin::session` | ✅ New | Session tool DTOs |
+| `ownership::{CallerContext, caller_context, in_subtree, descendants_of, err_*}` | `session::ownership` | ✅ New | Ownership tree + guard refusals (shared by both tools) |
+| `SessionManager::{set_archived, set_compact_requested, set_session_title, delete_session_by_id}` | `peko_session::manager` | ✅ New | Controller passthroughs |
 | `SessionStorage::search_transcripts` / `TranscriptSearchHit` | `peko_session::jsonl` | ✅ New | Case-insensitive transcript substring search |
-| `chapters::{ChapterRequest, request, take, chapter_id, chapters_path}` | `peko_session::chapters` | ✅ New | Pending chapter-change sidecar (`chapters.json`) |
+| `RotationOutcome::Paged` / `page_numbers` / `page_path` | `peko_session::jsonl` | ✅ New | Stable-id transcript paging (`<id>.N.jsonl` pages, transparent read-path stitching) |
 | `SessionCore`/`SessionView::{peek_compact_request, clear_compact_request}` (defaulted) | `peko_session::session_core` | ✅ Extended | Forced-compaction flag port (plan D2) |
 | `SessionIndex::get_uncached` | `peko_session::index` | ✅ New | Cache-bypassing entry read (mid-run flag peek) |
 | `MetadataController::{set_archived, set_compact_requested, peek_compact_requested}` | `peko_session::metadata_controller` | ✅ New | Flag writers + read-through peek |
-| `SubagentExecutor::{resume_and_execute, resume_and_wait, validate_context_parent}` | `agents::subagent_executor` | ✅ New | Persistent subagents (`Agent.resume_session`) |
+| `SubagentExecutor::{resume_and_execute, resume_and_wait, request_compaction, validate_context_parent}` | `agents::subagent_executor` | ✅ New | Persistent subagents (`Agent` `action:"resume"`) + deferred compaction flagging (`action:"compact"`) |
 | `SpawnRequest` (+`resume_session`, +`caller_session_key`) | `tools::builtin::messaging` | ✅ Extended | Agent tool port input |
+| `SubagentRuntime::request_compaction` | `tools::builtin::messaging` | ✅ New | Agent tool compact-action port method |
 | `SubagentMetadata.child_session_id` / `AsyncTaskRegistry::has_active_subagent_run_for_child` | `extensions::framework::async_exec::executor` | ✅ New | Subagent active-run detection |
 
 ### Type Aliases for Backward Compatibility

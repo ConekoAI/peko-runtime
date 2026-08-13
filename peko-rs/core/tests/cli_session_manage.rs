@@ -1,15 +1,17 @@
 //! CLI integration tests for agent-owned session management (the
 //! unified session/run framework — Phase 5b of the coin-model plan).
 //!
-//! Covers the `session` tool's chapter rotation and self-delete guard,
-//! and the `Agent` tool's spawn → `session list` → `resume_session` →
-//! `cleanup:"delete"` lifecycle:
+//! Covers the `session` tool's stable-id lifecycle (no chapters: the
+//! live `root:*` id never gains a `#` suffix; paging is
+//! storage-internal) and self-delete guard, and the `Agent` tool's
+//! spawn → `session list` → `action:"resume"` → `cleanup:"delete"`
+//! lifecycle:
 //!
 //! | Test | What it pins |
 //! |------|--------------|
-//! | `session_new_rotates_chapter_on_next_message` | scripted `session new` queues a chapter change; the NEXT `peko send` rotates the live `root:*` session into a `root:*#<ts>` chapter and mints a fresh live session |
+//! | `session_new_refused_live_id_stays_stable` | scripted `session new` returns the demoted-action refusal, writes no `chapters.json`, and the NEXT `peko send` keeps the same live `root:*` id with both turns stitched in one history |
 //! | `session_delete_current_session_refused` | `session delete` on the caller's own live session returns the structured refusal and the session survives |
-//! | `agent_spawn_list_resume_cleanup_delete` | spawn registers a `trigger=="spawn"` session; `resume_session` continues it with history; `cleanup:"delete"` routes through the guarded delete and removes it |
+//! | `agent_spawn_list_resume_cleanup_delete` | spawn registers a `trigger=="spawn"` session; `action:"resume"` + `session_key` continues it with history; `cleanup:"delete"` routes through the guarded delete and removes it |
 //!
 //! Each test drives MULTIPLE sequential `peko send` runs against one
 //! daemon, re-scripting the mock LLM between sends
@@ -114,8 +116,8 @@ fn sessions_index(cli: &PekoCli) -> serde_json::Value {
     serde_json::from_str(&content).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
-/// The live conversational session id: the `root:` key without a `#`
-/// chapter suffix.
+/// The live conversational session id: the `root:` key (ids are
+/// stable — no `#` suffix is ever minted).
 fn live_root_id(cli: &PekoCli) -> String {
     let index = sessions_index(cli);
     let obj = index.as_object().expect("sessions.json is an object");
@@ -148,13 +150,14 @@ fn write_worker_subagent(cli: &PekoCli, principal: &str) {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// `session new` mid-turn queues a chapter change; the NEXT incoming
-/// message rotates the live session into a `root:*#<ts>` chapter and
-/// opens a fresh live session under the same id.
+/// `session new` no longer rotates anything: the action is demoted
+/// (the tool returns a refusal), no `chapters.json` is written, and
+/// the next message keeps the same live `root:*` id — paging is
+/// storage-internal and never changes the session id.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]
-async fn session_new_rotates_chapter_on_next_message() {
+async fn session_new_refused_live_id_stays_stable() {
     if mock_llm_url().is_none() {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
@@ -169,13 +172,14 @@ async fn session_new_rotates_chapter_on_next_message() {
     create_mock_principal_with_tools(&cli, principal, &mock_url, &["session"]);
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // Send #1: the agent calls `session new` and reports.
+    // Send #1: the agent calls `session new` (refused — the action is
+    // demoted) and reports.
     let script = serde_json::json!({
         first_needle: [
             { "tool_call": { "name": "session", "arguments":
                 serde_json::json!({ "action": "new", "title": "first chapter" }).to_string()
             } },
-            "CHAPTER_QUEUED",
+            "NEW_REFUSED",
         ],
     })
     .to_string();
@@ -183,7 +187,7 @@ async fn session_new_rotates_chapter_on_next_message() {
 
     let prompt = format!(
         "Start a fresh chapter of this conversation with the session tool, then \
-         respond with CHAPTER_QUEUED. Use the needle '{first_needle}'."
+         respond with NEW_REFUSED regardless of the outcome. Use the needle '{first_needle}'."
     );
     let (out, err, status) = run(
         &cli,
@@ -192,22 +196,19 @@ async fn session_new_rotates_chapter_on_next_message() {
     );
     assert_ok(&out, &err, &status);
     assert!(
-        out.contains("CHAPTER_QUEUED"),
-        "send #1 did not report CHAPTER_QUEUED: stdout={out} stderr={err}",
+        out.contains("NEW_REFUSED"),
+        "send #1 did not report NEW_REFUSED: stdout={out} stderr={err}",
     );
 
-    // The pending chapter change is durable in chapters.json until the
-    // next message consumes it.
+    // No pending chapter mechanism exists anymore.
     let dir = sessions_dir(&cli);
-    let chapters = std::fs::read_to_string(dir.join("chapters.json"))
-        .expect("chapters.json should exist after session new");
     assert!(
-        chapters.contains("\"new\""),
-        "chapters.json should hold the pending 'new' request: {chapters}"
+        !dir.join("chapters.json").exists(),
+        "chapters.json must never be written (chapters are gone)"
     );
     let live_before = live_root_id(&cli);
 
-    // Send #2: rotation happens at run start, before open/create.
+    // Send #2: an ordinary message on the same live session.
     let script = serde_json::json!({ second_needle: ["SECOND_TURN_OK"] }).to_string();
     configure_mock(&mock_url, &script).await;
 
@@ -223,34 +224,43 @@ async fn session_new_rotates_chapter_on_next_message() {
         "send #2 did not report SECOND_TURN_OK: stdout={out} stderr={err}",
     );
 
-    // The old chapter lives under `{live}#<ts>` with its history; the
-    // live id was re-minted fresh.
+    // Id stability: the live id is unchanged and no `#`-suffixed
+    // session was minted by either send.
     let index = sessions_index(&cli);
     let obj = index.as_object().unwrap();
-    let chapter_id = format!("{live_before}#");
-    let chapter_key = obj
-        .keys()
-        .find(|k| k.starts_with(&chapter_id))
-        .unwrap_or_else(|| panic!("no chapter session ({live_before}#…) in index: {obj:?}"));
     assert!(
         obj.contains_key(&live_before),
-        "live session id {live_before} should be re-minted: {obj:?}"
+        "live session id {live_before} should be untouched: {obj:?}"
+    );
+    assert!(
+        !obj.keys().any(|k| k.contains('#')),
+        "no `#`-suffixed session id may ever appear: {obj:?}"
     );
 
+    // Continuity: one stitched history holds both turns. If the
+    // transcript paged under a low `rotate_bytes` test override, the
+    // older page (`<id>.<n>.jsonl`) carries send #1 — either way no
+    // `#` id is involved.
     let safe = |id: &str| id.replace(['<', '>', ':', '"', '/', '\\', '|', '?', '*'], "-");
-    let chapter_file = dir.join(format!("{}.jsonl", safe(chapter_key)));
-    let chapter_content = std::fs::read_to_string(&chapter_file)
-        .unwrap_or_else(|e| panic!("read {}: {e}", chapter_file.display()));
+    let stem = safe(&live_before);
+    let mut stitched = String::new();
+    for entry in std::fs::read_dir(&dir)
+        .expect("read sessions dir")
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == format!("{stem}.jsonl")
+            || (name.starts_with(&format!("{stem}.")) && name.ends_with(".jsonl"))
+        {
+            stitched.push_str(
+                &std::fs::read_to_string(entry.path())
+                    .unwrap_or_else(|e| panic!("read {}: {e}", entry.path().display())),
+            );
+        }
+    }
     assert!(
-        chapter_content.contains("CHAPTER_QUEUED"),
-        "old chapter should keep send #1's history"
-    );
-    let live_file = dir.join(format!("{}.jsonl", safe(&live_before)));
-    let live_content = std::fs::read_to_string(&live_file)
-        .unwrap_or_else(|e| panic!("read {}: {e}", live_file.display()));
-    assert!(
-        !live_content.contains("CHAPTER_QUEUED") && live_content.contains("SECOND_TURN_OK"),
-        "fresh live session should only hold send #2"
+        stitched.contains("NEW_REFUSED") && stitched.contains("SECOND_TURN_OK"),
+        "the stable-id history (pages + current) must hold both turns"
     );
 }
 
@@ -330,7 +340,7 @@ async fn session_delete_current_session_refused() {
 }
 
 /// Full Agent-tool lifecycle on the coin model: spawn registers a
-/// `trigger == "spawn"` session → `resume_session` re-attaches with
+/// `trigger == "spawn"` session → `action:"resume"` re-attaches with
 /// history → `cleanup: "delete"` removes it through the guarded
 /// delete.
 #[tokio::test]
@@ -408,9 +418,10 @@ async fn agent_spawn_list_resume_cleanup_delete() {
         p2: [
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
+                    "action": "resume",
+                    "session_key": spawn_id,
                     "prompt": format!("Do part two. Needle '{c2}'."),
                     "subagent_type": WORKER,
-                    "resume_session": spawn_id,
                 }).to_string()
             } },
             "RESUME_DONE",
@@ -449,9 +460,10 @@ async fn agent_spawn_list_resume_cleanup_delete() {
         p3: [
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
+                    "action": "resume",
+                    "session_key": spawn_id,
                     "prompt": format!("Final part. Needle '{c3}'."),
                     "subagent_type": WORKER,
-                    "resume_session": spawn_id,
                     "cleanup": "delete",
                 }).to_string()
             } },

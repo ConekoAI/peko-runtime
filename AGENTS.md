@@ -667,38 +667,51 @@ cargo test --all-features
     `Agent::with_caller_principal_did`. Cron `message` jobs are the
     new `CronJobAction::Notify` (pure delivery, no agent turn);
     `Send` keeps its deferred-`peko send` turn semantics.
-  - **2026-08-09 agent-owned session management (coin model):** a
-    **session** is a persisted conversation; a **run** is a live
-    agentic process attached to exactly one session. The `Agent` tool
-    is the *generate* side (spawn, and `resume_session` to re-attach
-    a run to an existing spawned session); the `session` tool is the
-    *persist* side (12 actions: `status`, `list`, `history`,
-    `search`, `branch`, `rename`, `archive`, `unarchive`, `delete`,
-    `compact`, `new`, `resume`). `new`/`resume` rotate the
-    deterministic live id: the pending change is written to
-    `<sessions_dir>/chapters.json` and consumed at the next run start
-    in `principal/agent_runner.rs`, which renames the live session to
-    `root:{peer}#<YYYYMMDD-HHMMSS>` via
-    `SessionManager::rename_session_id` (the live id is reused, so
-    InboxRegistry/steering keys are untouched). Ownership: a caller
-    in a base session manages the whole store; a spawned (subtree)
-    caller manages only its own subtree — classification + refusal
-    constructors live in `peko-rs/core/src/session/ownership.rs`,
-    shared by the `SessionManagerRuntime` adapter (session tool) and
-    the `SubagentExecutor` (Agent tool). `delete`/`archive` acquire
+  - **2026-08-09 agent-owned session management (coin model); revised
+    2026-08-13 (round 7):** a **session** is a persisted conversation
+    belonging to one agent; a **run** is a live agentic process
+    attached to exactly one session. Session ids are **stable for
+    life** — the chapter concept (`chapters.json`, `#<timestamp>`
+    id rotation, `SessionManager::rename_session_id`) was deleted in
+    round 7. Paging is storage-internal: when a JSONL exceeds
+    `rotate_bytes` it pages in place (`<id>.jsonl` → `<id>.N.jsonl`,
+    N chronological, 1 = oldest; appends continue into a fresh
+    `<id>.jsonl`) and readers (`load_events`/`load_normalized`)
+    stitch pages 1..N + the current page transparently. Legacy
+    `#`-suffixed JSONLs stay inert on disk. The `session` tool is the
+    *persist* side (9 storage actions: `status`, `list`, `history`,
+    `search`, `rename`, `delete`, `branch`, `archive`, `unarchive`);
+    the `Agent` tool is the *generate* side (3 LLM-driving actions via
+    the `action` param, default `new`: `new` spawns, `resume`
+    re-attaches a run to an existing spawned session — the old
+    `resume_session` tool param is gone — `compact` flags the session
+    and returns immediately; the engine summarizes at the target's
+    next run, no completion signal). The principal's root session
+    (`root:*`) is continuous and engine-managed: delete/archive on it
+    are refused, and no caller may mutate the session it is running
+    in. Ownership: a caller in a base session manages the whole store;
+    a spawned (subtree) caller manages only its own subtree —
+    classification + refusal constructors live in
+    `peko-rs/core/src/session/ownership.rs`, shared by the
+    `SessionManagerRuntime` adapter (session tool) and the
+    `SubagentExecutor` (Agent tool). `delete`/`archive` acquire
     `InboxRegistry` run permits for the target + descendants (D3);
-    `Agent.resume_session` detects active runs via the unified
+    `Agent` `resume` detects active runs via the unified
     AsyncTaskRegistry (`has_active_subagent_run_for_child`) because
     subagent runs do NOT hold InboxRegistry permits.
-    `SessionEntry`/`SessionMetadata` gained `archived` +
-    `compact_requested` (serde-default false); the compaction
-    orchestrator ORs the persisted flag into its threshold decision
+    `SessionEntry`/`SessionMetadata` carry `archived` +
+    `compact_requested` (serde-default false); `Agent` `compact` sets
+    the flag via `SessionManager::set_compact_requested` and the
+    compaction orchestrator ORs it into its threshold decision
     (`SessionView::peek_compact_request`, read through to disk via
     `SessionIndex::get_uncached` so a flag set mid-run by another
     controller is seen) and clears it only when compaction genuinely
-    starts. `cleanup:"delete"` on both Agent paths routes through the
-    same guarded delete as `session delete`. The prompt's
-    `SessionSnapshot` now carries the real session id
+    starts. `cleanup:"delete"` on the Agent tool routes through the
+    same guarded delete as `session delete`; `cleanup` is validated
+    (`keep`/`delete`, structured error otherwise). The `trigger`
+    field is retained — the spawn depth check in
+    `agents/subagent_executor.rs` branches on `trigger == "spawn"`.
+    The prompt's `SessionSnapshot` carries the real session id
     (`TurnPromptContext.session_id`).
   - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 

@@ -1,14 +1,20 @@
 //! Ownership + self-guard primitives for agent-owned session
-//! management (plan D4/D5).
+//! management.
 //!
 //! Sessions form trees via `SessionMetadata::parent_session_id`. A
 //! caller running in a **base session** (no parent — the principal's
 //! root agent) manages the whole store; a caller in a **spawned
 //! session** manages only its own subtree. This module classifies the
 //! caller and produces structured, LLM-actionable guard refusals over
-//! plain metadata slices — no IO, no locks — so it can be shared by
-//! the `SessionManagerRuntime` adapter (session tool) and, in Phase 5,
-//! the `SubagentExecutor` / `AgentTool` path (Agent tool).
+//! plain metadata slices — no IO, no locks — so it is shared by the
+//! `SessionManagerRuntime` adapter (session tool) and the
+//! `SubagentExecutor` / `AgentTool` path (Agent tool).
+//!
+//! The principal's root session (the live `root:*` slot) is
+//! **continuous**: the engine owns its lifecycle (paging +
+//! compaction), so `delete` / `archive` on it are refused via
+//! [`err_live_base_managed`]. Archived state is read directly from
+//! `SessionMetadata::archived`.
 //!
 //! A session whose metadata is missing is treated as a tree root for
 //! *classification* (the walk ends there), but a dangling id in the
@@ -140,23 +146,6 @@ pub fn descendants_of(target: &str, metas: &[SessionMetadata]) -> Vec<String> {
     out
 }
 
-/// Live conversational ids are the deterministic `root:{peer}` /
-/// `root:cron:{peer}` slots. Archived chapters keep the same history
-/// under a derived `{live}#{ts}` id, so a `root:` id WITHOUT a `#` is
-/// a live slot: never directly deletable/archivable — managed via
-/// `new` / chapter rotation only.
-#[must_use]
-pub fn is_live_base_id(id: &str) -> bool {
-    id.starts_with("root:") && !id.contains('#')
-}
-
-/// The conversation family of an id: the part before `#` (the whole
-/// id when it has no `#`). Resume is only legal within one family.
-#[must_use]
-pub fn chapter_family(id: &str) -> &str {
-    id.split_once('#').map_or(id, |(base, _)| base)
-}
-
 // ─── Guard refusals ────────────────────────────────────────────────
 //
 // Every refusal names the offending session id, the reason, and an
@@ -165,8 +154,9 @@ pub fn chapter_family(id: &str) -> &str {
 /// `delete` / `archive` / `rename` on the caller's own live session.
 pub fn err_self_mutation(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "cannot modify session '{target}': it is the session you are currently running in — \
-         use action 'compact' to summarize it or 'new' to start a fresh chapter instead"
+        "cannot modify session '{target}': it is the session you are currently running in. \
+         The engine compacts and pages it automatically; to manage a different session, \
+         pass its session_id from `session list`."
     )
 }
 
@@ -185,11 +175,12 @@ pub fn err_out_of_tree(target: &str, caller: &str) -> anyhow::Error {
     )
 }
 
-/// `delete` / `archive` on a live `root:*` conversational slot.
+/// `delete` / `archive` on the principal's live `root:*` session.
 pub fn err_live_base_managed(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "session '{target}' is a live conversational session — it is managed via 'new' / \
-         chapter rotation only and cannot be deleted or archived directly"
+        "session '{target}' is the principal's root session: it is continuous and managed by \
+         the engine — you cannot delete or archive it. To manage a different session, pass its \
+         session_id from `session list`."
     )
 }
 
@@ -208,27 +199,10 @@ pub fn err_compact_archived(target: &str) -> anyhow::Error {
     )
 }
 
-/// `resume` of an archived chapter.
+/// `resume` of an archived session.
 pub fn err_resume_archived(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "cannot resume archived session '{target}' — unarchive it first with action 'unarchive'"
-    )
-}
-
-/// `new` / `resume` from a spawned (subtree) caller.
-pub fn err_chapters_principal_only() -> anyhow::Error {
-    anyhow::anyhow!(
-        "chapters are a principal-level concept — spawned agents cannot rotate chapters; \
-         use 'branch' to copy a session instead"
-    )
-}
-
-/// `new` / `resume` when the caller's current session is not a live
-/// `root:*` slot (defensive; e.g. a chapter id containing `#`).
-pub fn err_not_live_base(cur: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "chapter rotation applies to the live conversational session, but you are running in \
-         '{cur}', which is not a live base session"
     )
 }
 
@@ -254,22 +228,31 @@ pub fn err_descendants_exist(target: &str, descendants: &[String]) -> anyhow::Er
     )
 }
 
-/// `Agent` with `resume_session` targeting a non-spawn session
-/// (chapter, branch, or live root).
+/// `Agent` with `action = "resume"` targeting a non-spawn session
+/// (branch or live root).
 pub fn err_resume_not_spawned(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "cannot re-attach to session '{target}': only spawned subagent sessions (kind \
-         'spawned') can be re-attached with Agent's resume_session — chapters, branches, \
-         and live root sessions are refused"
+         'spawned') can be re-attached with Agent's action \"resume\" — branches and live \
+         root sessions are refused"
     )
 }
 
-/// `Agent` with `resume_session` targeting the caller's own session
+/// `Agent` with `action = "resume"` targeting the caller's own session
 /// or one of its ancestors (would re-enter the caller's own run).
 pub fn err_resume_into_own_run(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "cannot re-attach to session '{target}': it is the session you are running in or one \
          of its ancestors — pick a spawned session from the session tool's list instead"
+    )
+}
+
+/// `compact` targeting the caller's own session or one of its
+/// ancestors (the engine compacts those automatically when needed).
+pub fn err_compact_ancestor(target: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "cannot compact session '{target}': it is the session you are running in or an \
+         ancestor — the engine compacts it automatically when needed"
     )
 }
 
@@ -458,24 +441,6 @@ mod tests {
     }
 
     #[test]
-    fn live_base_id_detection() {
-        assert!(is_live_base_id("root:user:alice"));
-        assert!(is_live_base_id("root:cron:alice"));
-        assert!(!is_live_base_id("root:user:alice#20260809-120000"));
-        assert!(!is_live_base_id("spawn1"));
-    }
-
-    #[test]
-    fn chapter_family_splits_on_hash() {
-        assert_eq!(
-            chapter_family("root:user:alice#20260809-120000"),
-            "root:user:alice"
-        );
-        assert_eq!(chapter_family("root:user:alice"), "root:user:alice");
-        assert_eq!(chapter_family("spawn1"), "spawn1");
-    }
-
-    #[test]
     fn refusals_are_actionable() {
         for err in [
             err_self_mutation("s"),
@@ -484,9 +449,8 @@ mod tests {
             err_live_base_managed("s"),
             err_run_active("s"),
             err_compact_archived("s"),
+            err_compact_ancestor("s"),
             err_resume_archived("s"),
-            err_chapters_principal_only(),
-            err_not_live_base("c"),
             err_resume_self("s"),
             err_resume_cross_family("s", "c"),
             err_descendants_exist("s", &["d1".to_string()]),

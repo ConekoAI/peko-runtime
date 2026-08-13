@@ -1049,7 +1049,7 @@ both = `false`):
 | Field | Type | Description |
 |-------|------|-------------|
 | `archived` | bool | Hidden from `session list` unless `include_archived: true`; refuses resume/compact until unarchived |
-| `compact_requested` | bool | Persisted compaction request (the `session` tool's `compact` action). The orchestrator ORs it into the threshold decision at the session's next iteration/run and clears it only when compaction genuinely starts, so a crashed run doesn't lose the request |
+| `compact_requested` | bool | Persisted compaction request (set by the `Agent` tool's `compact` action). The orchestrator ORs it into the threshold decision at the session's next iteration/run and clears it only when compaction genuinely starts, so a crashed run doesn't lose the request |
 
 **`PeerInfo.active_session_id` is now `Option<String>`**
 (`#[serde(default)]`). Deleting a session scrubs its id from the
@@ -1059,29 +1059,37 @@ sessions) survives, staying routable/listable; the entry is dropped
 only when no sessions remain. Pre-change `peers.json` (`String`
 values) deserializes unchanged.
 
-**Chapter ids.** The deterministic live conversational id
-(`root:{peer}`, `root:cron:{peer}`) never changes ownership — chapter
-rotation *renames* it to `{live}#{YYYYMMDD-HHMMSS}` (UTC) at the next
-run start, and the normal create path re-mints the live id. On a
-same-second collision with an existing transcript the id gains a
-`-{8 hex}` suffix. Renames move the `.jsonl` transcript plus the
-`.index.json` / `.context.cache` sidecars under the append
-`FileLock` and re-key the `sessions.json` entry (`session_id`,
-`transcript_file`).
+**Session ids are stable for life.** The deterministic live
+conversational id (`root:{peer}`, `root:cron:{peer}`) and spawned
+session ids never change. The 2026-08-09 chapter mechanism (pending
+changes in `<sessions_dir>/chapters.json`, id rotation to
+`{live}#{YYYYMMDD-HHMMSS}`) was removed on 2026-08-13 (round 7) —
+legacy `#`-suffixed JSONLs stay on disk but are inert: never paged,
+never stitched, never listed.
 
-**`<sessions_dir>/chapters.json`** — durable pending chapter changes,
-written by the `session` tool (`new` / `resume`) and consumed
-read-and-clear by `agent_runner` at the next run start under
-`session_creation_lock`. Atomic write (serialize → per-PID `.tmp` →
-fsync → rename); missing/corrupt file loads as an empty map with a
-warning.
+**Transcript paging.** When appending an event would push a session's
+JSONL past `rotate_bytes`, the file pages in place instead of
+rotating the id:
 
-```json
-{
-  "root:user:alice": { "kind": "new", "title": "morning chapter" },
-  "root:cron:alice": { "kind": "resume", "target": "root:cron:alice#20260809-071500" }
-}
-```
+- `<session-id>.jsonl` — the current page (append target, always the
+  newest).
+- `<session-id>.1.jsonl` … `<session-id>.N.jsonl` — older pages,
+  chronological by number (1 = oldest). Page numbers are discovered
+  by scanning the sessions dir for `<session-id>.<n>.jsonl` and
+  parsing `<n>` numerically; there is no page index in the metadata
+  controller.
+
+Rotation renames `<session-id>.jsonl` → `<session-id>.<n>.jsonl`
+(`n = max(existing pages) + 1`) under the append `FileLock` and
+appends continue into a fresh `<session-id>.jsonl`; the
+`sessions.json` entry and `transcript_file` are untouched.
+`SessionStorage::load_events` / `load_normalized` stitch pages 1..N
+plus the current page transparently, so every reader (history,
+context build, compaction, transcript search) sees one continuous
+transcript. `delete_session` removes the current page, every page,
+and the `.index.json` / `.context.cache` sidecars; `branch_session`
+copies all pages preserving relative names under the new id. A boot
+sweep pages any oversized live JSONLs found.
 
 **Transcript search.** `session search` is a case-insensitive
 substring scan over the text content of user/assistant message events
@@ -1884,6 +1892,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.1.0 | 2026-08-13 | Round 7 (§5.8): chapter concept deleted — session ids are stable for life; `chapters.json` removed; oversized JSONLs page in place to `<id>.N.jsonl` with transparent read-path stitching; legacy `#`-suffixed files inert on disk. |
 | 0.1.0 | 2026-08-09 | Agent-owned session management (§5.8): `archived`/`compact_requested` on session entries, `PeerInfo.active_session_id` → `Option<String>` with session-id scrubbing on delete, chapter id rotation format (`root:{peer}#<ts>`), `chapters.json` pending-change sidecar, transcript search scope. |
 | 0.1.0 | 2026-07-20 | Chat-session separation: added §5½ Chat Log (runtime-owned, append-only, consumer-visible conversation history) distinct from §5 Session JSONL (mutable principal-owned working memory). Sharded by `(principal_did, peer)` with BLAKE3-hashed paths, opaque thread-bound cursors, sender-participant validation, durable append under `FileLock`. Deletion tied to `PrincipalManager::remove`. |
 | 0.1.0 | 2026-04-26 | Initial draft. ADR-022: Session compaction — added `compaction` and `model_change` system events (§5.3), context cache file format (§5.5), compaction semantics including dual-threshold triggers, turn boundaries, split-turn handling, and structured summary format (§5.6) |

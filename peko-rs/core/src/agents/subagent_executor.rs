@@ -101,7 +101,8 @@ impl Default for ExecutionConfig {
 
 /// Everything [`SubagentExecutor::register_subagent_run`] needs to
 /// register + execute one subagent run, independent of whether the
-/// child session was freshly spawned or re-attached (`resume_session`).
+/// child session was freshly spawned or re-attached (Agent tool
+/// `action = "resume"`).
 struct SubagentRunSpec {
     run_id: String,
     task: String,
@@ -646,7 +647,7 @@ impl SubagentExecutor {
     }
 
     /// Re-attach a new task run to an existing spawned session
-    /// (`Agent` tool's `resume_session` — persistent subagents).
+    /// (`Agent` tool's `action = "resume"` — persistent subagents).
     ///
     /// Skips `spawn_session`: the target session is opened as-is, so
     /// the run continues with its full prior history. All D4 guards
@@ -795,6 +796,85 @@ impl SubagentExecutor {
             parent_cancel,
         })
         .await
+    }
+
+    /// Flag a session for engine-driven compaction at its next run
+    /// (`Agent` tool `action = "compact"`). Returns immediately after
+    /// setting the persisted `compact_requested` flag — no LLM call,
+    /// no completion signal; the target's next resume reflects the
+    /// compacted history.
+    ///
+    /// Guards mirror [`resume_and_execute`](Self::resume_and_execute)
+    /// minus the spawn-trigger requirement (compact targets any session
+    /// in the caller's tree) and plus the self/ancestor refusal
+    /// (`err_compact_ancestor`) — the engine compacts the caller's own
+    /// lineage automatically. This deliberately diverges from
+    /// `SessionManagerRuntime::request_compaction`
+    /// (`session/session_runtime_impl.rs`), which allows compacting the
+    /// caller's own current session; the Agent path must not.
+    pub async fn request_compaction(
+        &self,
+        target: &str,
+        caller_session_key: &str,
+    ) -> Result<crate::tools::builtin::session::CompactRequestOutcome> {
+        use crate::session::ownership::{
+            caller_context, err_compact_ancestor, err_compact_archived, err_out_of_tree,
+            err_run_active, in_subtree,
+        };
+
+        let (caller, metas) = {
+            let mut manager = self.session_manager.write().await;
+            let metas = manager.list_all_sessions(false).await?;
+            (caller_context(caller_session_key, &metas), metas)
+        };
+
+        // Guard: target must exist.
+        let target_meta = metas
+            .iter()
+            .find(|m| m.session_id == target)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "session '{target}' not found — pass a session id from the \
+                     session tool's list"
+                )
+            })?;
+        // Guard: the caller's own session or an ancestor compacts
+        // automatically — refuse.
+        if target == caller.current_session_id || caller.ancestors.iter().any(|a| a == target) {
+            return Err(err_compact_ancestor(target));
+        }
+        // Guard: subtree callers stay inside their subtree (principal-
+        // level callers pass automatically).
+        if !caller.is_base && !in_subtree(&caller, target, &metas) {
+            return Err(err_out_of_tree(target, &caller.current_session_id));
+        }
+        // Guard: archived sessions have no future run to consume the
+        // request.
+        if target_meta.archived {
+            return Err(err_compact_archived(target));
+        }
+        // Guard: refuse while a run is in flight for the target (same
+        // registry source of truth as the resume path).
+        {
+            let registry = self.registry().read().await;
+            if registry.has_active_subagent_run_for_child(target) {
+                return Err(err_run_active(target));
+            }
+        }
+
+        self.session_manager
+            .read()
+            .await
+            .set_compact_requested(target, true)
+            .await?;
+        Ok(crate::tools::builtin::session::CompactRequestOutcome {
+            session_id: target.to_string(),
+            message: "Compaction scheduled — the engine summarizes the session at its next \
+                      run. There is no completion signal; the next resume reflects the \
+                      compacted history."
+                .to_string(),
+        })
     }
 
     /// Validate an explicitly-provided `parent_session_key` (spawn
@@ -1191,7 +1271,8 @@ impl SubagentExecutor {
         self.wait_for_run(&run_id, timeout_secs).await
     }
 
-    /// Re-attach to an existing spawned session (`resume_session`) and
+    /// Re-attach to an existing spawned session (Agent tool
+    /// `action = "resume"`) and
     /// wait for completion. Mirror of [`Self::execute_and_wait`] over
     /// [`Self::resume_and_execute`].
     pub async fn resume_and_wait(
