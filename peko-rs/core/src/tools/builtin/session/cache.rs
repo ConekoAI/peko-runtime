@@ -6,8 +6,8 @@
 //! session_key, returns pre-loaded `SessionInfo` / `HistoryMessage` /
 //! `SessionStatusResult` records.
 //!
-//! The lifecycle actions (branch / rename / archive / delete / compact
-//! / chapter) are modeled with plain in-memory semantics — no
+//! The lifecycle actions (branch / rename / archive / delete / compact)
+//! are modeled with plain in-memory semantics — no
 //! ownership guards (those are a production-adapter concern).
 
 use std::collections::HashMap;
@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use super::{
-    BranchOutcome, ChapterChangeOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage,
-    SessionInfo, SessionRuntime, SessionSearchHit, SessionStatusResult, SharedSessionRuntime,
+    BranchOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage, SessionInfo,
+    SessionRuntime, SessionSearchHit, SessionStatusResult, SharedSessionRuntime,
 };
 
 /// In-memory session cache for testing and placeholder use.
@@ -34,8 +34,6 @@ pub struct SessionCache {
     statuses: Mutex<HashMap<String, SessionStatusResult>>,
     /// Sessions that got a `request_compaction` call (for assertions).
     compact_requests: Mutex<Vec<String>>,
-    /// Chapter requests as `"new[:title]"` / `"resume:<target>"` strings.
-    chapter_requests: Mutex<Vec<String>>,
     /// Monotonic counter for deterministic branch ids in tests.
     branch_counter: Mutex<usize>,
 }
@@ -50,7 +48,6 @@ impl SessionCache {
             histories: Mutex::new(HashMap::new()),
             statuses: Mutex::new(HashMap::new()),
             compact_requests: Mutex::new(Vec::new()),
-            chapter_requests: Mutex::new(Vec::new()),
             branch_counter: Mutex::new(0),
         }
     }
@@ -83,15 +80,6 @@ impl SessionCache {
         self.compact_requests
             .lock()
             .expect("compact_requests mutex poisoned")
-            .clone()
-    }
-
-    /// Chapter requests recorded so far (test assertions).
-    #[must_use]
-    pub fn chapter_requests(&self) -> Vec<String> {
-        self.chapter_requests
-            .lock()
-            .expect("chapter_requests mutex poisoned")
             .clone()
     }
 
@@ -408,52 +396,6 @@ impl SessionRuntime for SessionCache {
                 .to_string(),
         })
     }
-
-    async fn new_chapter(&self, title: Option<String>) -> anyhow::Result<ChapterChangeOutcome> {
-        let live = self.current_session_key();
-        if live.is_empty() {
-            return Err(anyhow::anyhow!(
-                "No current session to start a new chapter for"
-            ));
-        }
-        self.chapter_requests
-            .lock()
-            .expect("chapter_requests mutex poisoned")
-            .push(match title {
-                Some(t) => format!("new:{t}"),
-                None => "new".to_string(),
-            });
-        Ok(ChapterChangeOutcome {
-            live_session_id: live,
-            message: "New chapter queued — takes effect on the next incoming message".to_string(),
-        })
-    }
-
-    async fn resume_chapter(
-        &self,
-        target_session_id: &str,
-    ) -> anyhow::Result<ChapterChangeOutcome> {
-        let live = self.current_session_key();
-        if live.is_empty() {
-            return Err(anyhow::anyhow!("No current session to resume into"));
-        }
-        if !self
-            .sessions
-            .lock()
-            .expect("sessions mutex poisoned")
-            .contains_key(target_session_id)
-        {
-            return Err(anyhow::anyhow!("Session not found: {target_session_id}"));
-        }
-        self.chapter_requests
-            .lock()
-            .expect("chapter_requests mutex poisoned")
-            .push(format!("resume:{target_session_id}"));
-        Ok(ChapterChangeOutcome {
-            live_session_id: live,
-            message: "Resume queued — takes effect on the next incoming message".to_string(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -565,7 +507,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compact_and_chapters_are_recorded() {
+    async fn compact_requests_are_recorded() {
         let cache = SessionCache::new("live-1");
         cache.add_session("s1".to_string(), info("s1"), vec![], status("s1", None));
 
@@ -573,22 +515,6 @@ mod tests {
         assert_eq!(outcome.session_id, "s1");
         assert!(cache.request_compaction("missing").await.is_err());
         assert_eq!(cache.compact_requests(), vec!["s1".to_string()]);
-
-        let new_outcome = cache
-            .new_chapter(Some("morning".to_string()))
-            .await
-            .unwrap();
-        assert_eq!(new_outcome.live_session_id, "live-1");
-        assert!(new_outcome.message.contains("next incoming message"));
-
-        let resume_outcome = cache.resume_chapter("s1").await.unwrap();
-        assert_eq!(resume_outcome.live_session_id, "live-1");
-        assert!(cache.resume_chapter("missing").await.is_err());
-
-        assert_eq!(
-            cache.chapter_requests(),
-            vec!["new:morning".to_string(), "resume:s1".to_string()]
-        );
     }
 
     #[tokio::test]

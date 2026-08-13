@@ -245,13 +245,13 @@ where
         .with_user(&peer.to_string());
     let session_manager = Arc::new(RwLock::new(session_manager));
 
-    // WS2 (implicit session management): startup sweep rotates any
+    // WS2 (implicit session management): startup sweep pages any
     // over-threshold live-id JSONL the daemon inherited (e.g. user
     // re-opens a principal after a deploy that catches a session
-    // mid-life above the auto-paging threshold). Idempotent: chapter
-    // ids (`#`-suffixed) are skipped, so subsequent boots don't double
-    // rotate. Best-effort — log and continue on failure rather than
-    // blocking the boot path.
+    // mid-life above the auto-paging threshold). Idempotent: after
+    // paging, `<id>.jsonl` no longer exists, so subsequent boots find
+    // nothing to page. Best-effort — log and continue on failure
+    // rather than blocking the boot path.
     {
         let mut mgr = session_manager.write().await;
         match mgr.rotate_oversized_sessions().await {
@@ -268,113 +268,8 @@ where
     // Open or create the root agent session.  Hold the per-principal
     // session-creation lock while touching the shared session index so
     // concurrent peers don't corrupt it.
-    let _is_new_session_unused_after_refactor = false;
     let session = {
         let _creation_guard = ctx.session_creation_lock.lock().await;
-
-        // Chapter rotation (agent-owned session management, plan D1):
-        // consume a pending chapter request BEFORE open/create. The
-        // live id (`root:{peer}` / `root:cron:{peer}`) is *reused* for
-        // whatever session follows, so InboxRegistry mappings, queued
-        // steering, and subagent completion announcements keyed by the
-        // live id are untouched — messages that arrive after the
-        // request land in the new chapter. `chapters::consume` does
-        // its file IO *without* the session_manager lock; the renames
-        // then take the manager write lock, keeping the lock order
-        // creation-lock → manager-lock. If a rename fails inside the
-        // closure, `consume` restores the pending request to the file
-        // so the next run retries. (`rename_session_id` re-keys
-        // sessions.json only; peers.json routing is left for the fresh
-        // create path below, by design.)
-        match peko_session::chapters::consume(
-            ctx.sessions_dir.as_path(),
-            &session_id,
-            async |req| {
-                match req {
-                    peko_session::chapters::ChapterRequest::New { title } => {
-                        let mut mgr = session_manager.write().await;
-                        // Only rotate when the live session actually
-                        // exists — a first-contact peer has nothing
-                        // to archive. A failed rename is propagated:
-                        // falling through would let `create_session`
-                        // truncate the existing transcript.
-                        if mgr.get_session_metadata(&session_id).await.is_ok() {
-                            let chapter = peko_session::chapters::chapter_id(
-                                ctx.sessions_dir.as_path(),
-                                &session_id,
-                            );
-                            mgr.rename_session_id(&session_id, &chapter).await?;
-                            if let Some(title) = title {
-                                // Best-effort label on the archived chapter.
-                                if let Err(e) =
-                                    mgr.set_session_title(&chapter, Some(title)).await
-                                {
-                                    tracing::warn!("failed to title chapter {chapter}: {e}");
-                                }
-                            }
-                        }
-                    }
-                    peko_session::chapters::ChapterRequest::Resume { target } => {
-                        let mut mgr = session_manager.write().await;
-                        // Verify the target FIRST: a stale resume
-                        // request must not brick the principal's
-                        // message path — warn and continue with the
-                        // current live session unchanged.
-                        if mgr.get_session_metadata(&target).await.is_err() {
-                            tracing::warn!(
-                                "chapter resume target '{target}' no longer exists; \
-                                 continuing with the current live session"
-                            );
-                        } else {
-                            // Archive the current live session (if
-                            // any), then move the target onto the
-                            // live id.
-                            let mut archived = None;
-                            if mgr.get_session_metadata(&session_id).await.is_ok() {
-                                let chapter = peko_session::chapters::chapter_id(
-                                    ctx.sessions_dir.as_path(),
-                                    &session_id,
-                                );
-                                mgr.rename_session_id(&session_id, &chapter).await?;
-                                archived = Some(chapter);
-                            }
-                            if let Err(e) = mgr.rename_session_id(&target, &session_id).await {
-                                // Roll back the first rename
-                                // (best-effort) so the pre-resume
-                                // layout is restored, then fail the
-                                // run startup loudly.
-                                if let Some(chapter) = archived {
-                                    if let Err(re) =
-                                        mgr.rename_session_id(&chapter, &session_id).await
-                                    {
-                                        tracing::warn!(
-                                            "resume rollback rename {chapter} → \
-                                             {session_id} failed: {re}"
-                                        );
-                                    }
-                                }
-                                return Err(e).context(format!(
-                                    "failed to resume chapter '{target}' onto \
-                                     live session '{session_id}'"
-                                ));
-                            }
-                        }
-                    }
-                }
-                Ok::<(), anyhow::Error>(())
-            },
-        )
-        .await
-        {
-            Ok(_) => {}
-            Err(e) => {
-                // Sidecar IO failure (load/save) or rename failure
-                // — never brick the message path. consume<F> has
-                // already restored the entry on closure errors, so
-                // retries are safe.
-                tracing::warn!("failed to apply pending chapter request: {e}");
-            }
-        }
 
         let maybe_handle = {
             let mut mgr = session_manager.write().await;
@@ -394,10 +289,11 @@ where
     };
     // WS2 (implicit session management): install the rotation sink so
     // every `add_*` on this session auto-pages when its JSONL crosses
-    // `test_config::rotate_bytes()` (10 MiB default). The sink re-keys
-    // `peers.json` for the rotated sibling (round-5 F3 fix), drops the
-    // in-memory `base_sessions` cache, and invalidates the new id's
-    // context cache. Safe to skip on cold paths (tests, recovery).
+    // `test_config::rotate_bytes()` (10 MiB default). Paging renames
+    // `<S>.jsonl` → `<S>.<n>.jsonl` in place — the session id, index
+    // entry, and peers routing stay untouched; only the context cache
+    // for `S` is invalidated. Safe to skip on cold paths (tests,
+    // recovery).
     {
         let mut session_guard = session.write().await;
         session_guard.set_rotation_sink(Arc::new(SessionManagerRotationSink::new(

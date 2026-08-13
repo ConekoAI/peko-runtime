@@ -6,12 +6,11 @@
 //! tools (Issue 013, expanded by PR #351 with 9 lifecycle operations,
 //! then trimmed in the implicit-session-management rollout —
 //! see `~/.claude/memory/cleanup-phase0-baseline.md` for the demote
-//! rationale). Lifecycle mechanics (chapters, compaction, archive)
+//! rationale). Lifecycle mechanics (paging, compaction, archive)
 //! are now driven by the engine without a tool affordance; the
-//! runtime still exposes `request_compaction` / `new_chapter` /
-//! `resume_chapter` / `branch_session` / `set_archived` for the
-//! engine's internal use, but the model can't call them here.
-//! Speaks to the [`SessionRuntime`] port.
+//! runtime still exposes `request_compaction` / `branch_session` /
+//! `set_archived` for the engine's internal use, but the model can't
+//! call them here. Speaks to the [`SessionRuntime`] port.
 
 use async_trait::async_trait;
 use peko_tools_core::traits::Tool;

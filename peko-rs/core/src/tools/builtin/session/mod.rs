@@ -191,16 +191,6 @@ pub struct CompactRequestOutcome {
     pub message: String,
 }
 
-/// Result of the `new` / `resume` chapter actions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChapterChangeOutcome {
-    /// The live session id the pending chapter change is queued for.
-    pub live_session_id: String,
-    /// Reminder that the change takes effect on the next incoming
-    /// message, not mid-turn.
-    pub message: String,
-}
-
 // ─── SessionRuntime port trait ────────────────────────────────────
 
 /// Runtime port the `SessionTool` uses to talk to session storage.
@@ -223,8 +213,7 @@ pub trait SessionRuntime: Send + Sync {
     /// - `include_archived`: include archived sessions (hidden by default).
     ///
     /// To find subagent sessions, the caller filters on
-    /// `parent_session_id is not None` in its own reasoning. To find
-    /// chapters, the caller filters on `session_id.contains('#')`.
+    /// `parent_session_id is not None` in its own reasoning.
     /// There is no closed-enum `kinds` filter — those were dropped
     /// because the description-vs-engine drift (r5/r6 field tests)
     /// could not be reconciled.
@@ -310,30 +299,6 @@ pub trait SessionRuntime: Send + Sync {
     /// surface (e.g. a CLI flag) can wire it up later.
     #[allow(dead_code)]
     async fn request_compaction(&self, session_key: &str) -> anyhow::Result<CompactRequestOutcome>;
-
-    /// Queue a fresh chapter for the caller's current (live) session.
-    /// Takes effect on the next incoming message.
-    ///
-    /// WS4 (implicit session management): `new_chapter` was demoted
-    /// from the `session` tool — chapter rotation is now driven by
-    /// the size-threshold auto-paging flow (WS2). The trait stays so
-    /// future engine-internal callers (admin tooling, special hooks)
-    /// can still drive a manual rotation.
-    #[allow(dead_code)]
-    async fn new_chapter(&self, title: Option<String>) -> anyhow::Result<ChapterChangeOutcome>;
-
-    /// Queue resuming `target_session_id` (a chapter or session) into
-    /// the caller's live session slot. Takes effect on the next
-    /// incoming message.
-    ///
-    /// WS4 (implicit session management): `resume_chapter` was
-    /// demoted from the `session` tool — the engine auto-loads the
-    /// requested chapter via the chapter-consume path at boot. The
-    /// trait stays so future engine-internal callers can still drive
-    /// an explicit resume.
-    #[allow(dead_code)]
-    async fn resume_chapter(&self, target_session_id: &str)
-        -> anyhow::Result<ChapterChangeOutcome>;
 }
 
 /// Type alias for the shared runtime handle threaded through every
@@ -369,9 +334,8 @@ mod tests {
         assert_eq!(json["agent_id"], "test-agent");
         assert_eq!(json["archived"], false);
         assert_eq!(json["run_active"], false);
-        // The old `kind` field is gone — model now uses
-        // `parent_session_id` (not in SessionInfo) and
-        // `session_id.contains('#')` to derive role.
+        // The old `kind` field is gone — the model now uses
+        // `parent_session_id` (not in SessionInfo) to derive role.
         let back: SessionInfo = serde_json::from_value(json).unwrap();
         assert_eq!(back.session_id, info.session_id);
         assert_eq!(back.peer_type, info.peer_type);
@@ -515,14 +479,5 @@ mod tests {
         assert_eq!(json["session_id"], "s1");
         let back: CompactRequestOutcome = serde_json::from_value(json).unwrap();
         assert_eq!(back.message, "fires next run");
-
-        let chapter = ChapterChangeOutcome {
-            live_session_id: "root:user:alice".into(),
-            message: "takes effect on the next incoming message".into(),
-        };
-        let json = serde_json::to_value(&chapter).unwrap();
-        assert_eq!(json["live_session_id"], "root:user:alice");
-        let back: ChapterChangeOutcome = serde_json::from_value(json).unwrap();
-        assert_eq!(back.message, chapter.message);
     }
 }
