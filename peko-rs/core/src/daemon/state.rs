@@ -216,6 +216,13 @@ pub(crate) struct AppState {
     /// track Principal activity for idle-triggered jobs.
     idle_detector: Option<Arc<IdleDetector>>,
 
+    /// Cron engine used by the `CronRun` IPC handler to dispatch
+    /// manual triggers (`peko cron run <id>`). Cloned into the
+    /// daemon's own `CronEngine` so the IPC handler can spawn
+    /// executions without borrowing `Daemon`. Set once at startup
+    /// via [`AppState::set_cron_engine`].
+    cron_engine: Option<Arc<crate::daemon::cron_engine::CronEngine>>,
+
     /// Runtime metadata (ADR-032)
     pub runtime_metadata: peko_identity::runtime_metadata::RuntimeMetadata,
 
@@ -1035,6 +1042,7 @@ impl AppState {
             direct_cancel: Arc::new(RwLock::new(None)),
             direct_last_error: Arc::new(RwLock::new(None)),
             idle_detector: None,
+            cron_engine: None,
             runtime_metadata,
             known_runtimes,
             trust_store,
@@ -1112,6 +1120,15 @@ impl AppState {
     /// Attach the shared idle detector used by the cron engine.
     pub fn set_idle_detector(&mut self, detector: Arc<IdleDetector>) {
         self.idle_detector = Some(detector);
+    }
+
+    /// Attach the daemon-owned cron engine used by the `CronRun` IPC
+    /// handler. Called once at startup after the engine is wired to
+    /// the real `PrincipalManager` (the placeholder made before
+    /// `AppState` exists is replaced by the daemon and re-attached
+    /// here so the IPC handler can dispatch manual triggers).
+    pub fn set_cron_engine(&mut self, engine: Arc<crate::daemon::cron_engine::CronEngine>) {
+        self.cron_engine = Some(engine);
     }
 
     /// Record activity for a Principal so idle-triggered cron jobs do not
@@ -2360,6 +2377,18 @@ impl crate::ipc::handlers::cron::CronHost for AppState {
     /// `common::authority::RuntimeAuthority::local`).
     fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
         &self.authority
+    }
+
+    /// Cron engine for manual fire dispatch (`peko cron run <id>`).
+    /// The daemon attaches the engine at startup (after `AppState`
+    /// exists); the `expect` arms a programmer-error panic if the
+    /// IPC `CronRun` packet arrives before the engine is wired up.
+    /// `CronEngine` is cheaply cloneable (all internal state is
+    /// `Arc`), so callers get an owned handle without a borrow.
+    fn cron_engine(&self) -> Arc<crate::daemon::cron_engine::CronEngine> {
+        self.cron_engine
+            .clone()
+            .expect("CronHost::cron_engine called before AppState::set_cron_engine")
     }
 }
 

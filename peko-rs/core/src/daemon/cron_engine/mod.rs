@@ -39,6 +39,7 @@ pub struct CronStatus {
 }
 
 /// Self-contained cron subsystem.
+#[derive(Clone)]
 pub struct CronEngine {
     /// Per-principal scheduler map (Phase A, keyed by `PrincipalId`
     /// since Phase B). Each loaded principal's cron schedule file is
@@ -244,9 +245,17 @@ impl CronEngine {
         if !due_jobs.is_empty() {
             info!("⏰ Found {} job(s) due for execution", due_jobs.len());
             for job in due_jobs {
-                if let Err(e) = self.execute_job(job).await {
-                    error!("Failed to execute job: {}", e);
-                }
+                // Detach per-job execution so a slow `Send` job
+                // (which awaits the principal's LLM turn) does not
+                // block other due jobs in the same poll tick.
+                // `CronEngine` is cheaply cloneable (all fields are
+                // `Arc`); the spawned task owns its own clone.
+                let engine = self.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = engine.execute_job(job).await {
+                        error!("Failed to execute job: {}", e);
+                    }
+                });
             }
         }
         Ok(())
@@ -285,9 +294,14 @@ impl CronEngine {
                         "⏸️  Principal '{}' idle for {} minutes, executing job '{}'",
                         principal_name, minutes, job.name
                     );
-                    if let Err(e) = self.execute_job(job).await {
-                        error!("Failed to execute idle job: {}", e);
-                    }
+                    // Detach per-job execution (same rationale as
+                    // `check_and_run`).
+                    let engine = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = engine.execute_job(job).await {
+                            error!("Failed to execute idle job: {}", e);
+                        }
+                    });
                 }
             }
         }
@@ -312,35 +326,68 @@ impl CronEngine {
         }
 
         for job in event_jobs {
-            if let ScheduleKind::Event {
-                event_type: job_event_type,
-                filter,
-                once,
-            } = &job.schedule
-            {
-                if job_event_type != &event_type {
-                    continue;
-                }
-
-                if let Some(filter) = filter {
-                    if !Self::event_matches_filter(&event, filter) {
+            // Match the schedule up-front and clone the bits we need
+            // for the `once` early-disable path so we can move `job`
+            // into the spawned execution task below.
+            let (job_id, principal_id, job_name, once) = match &job.schedule {
+                ScheduleKind::Event {
+                    event_type: job_event_type,
+                    once,
+                    ..
+                } => {
+                    if job_event_type != &event_type {
                         continue;
                     }
-                }
 
-                info!("📡 Event '{}' matches job '{}'", event_type, job.name);
-                if let Err(e) = self.execute_job(job.clone()).await {
-                    error!("Failed to execute event-triggered job: {}", e);
-                    continue;
-                }
-
-                if *once {
-                    let scheduler = self.scheduler_for(&job.principal_id).await?;
-                    if let Err(e) = scheduler.set_job_enabled(&job.id, false) {
-                        warn!("Failed to disable one-time job {}: {}", job.id, e);
-                    } else {
-                        info!("🔄 Disabled one-time event job: {}", job.name);
+                    // Event-filter check (clone-then-drop of the
+                    // borrow on `job.schedule`).
+                    let filter_match = match &job.schedule {
+                        ScheduleKind::Event {
+                            filter: Some(f), ..
+                        } => Self::event_matches_filter(&event, f),
+                        _ => true,
+                    };
+                    if !filter_match {
+                        continue;
                     }
+
+                    info!(
+                        "📡 Event '{}' matches job '{}'",
+                        event_type, job.name
+                    );
+                    (
+                        job.id.clone(),
+                        job.principal_id.clone(),
+                        job.name.clone(),
+                        *once,
+                    )
+                }
+                _ => continue,
+            };
+
+            // Detach per-job execution (same rationale as
+            // `check_and_run`). For `once: true` event jobs the
+            // post-job disable happens inside `execute_job` (via
+            // the existing `delete_after_run` / one-shot path),
+            // so we don't need to disable it here.
+            let engine = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = engine.execute_job(job).await {
+                    error!("Failed to execute event-triggered job: {}", e);
+                }
+            });
+
+            if once {
+                // Best-effort early disable so re-firing the same
+                // event before the spawned task lands doesn't
+                // queue a second concurrent run. The disable is
+                // idempotent and harmless if the spawned task
+                // already disabled the job.
+                let scheduler = self.scheduler_for(&principal_id).await?;
+                if let Err(e) = scheduler.set_job_enabled(&job_id, false) {
+                    warn!("Failed to disable one-time job {}: {}", job_id, e);
+                } else {
+                    info!("🔄 Disabled one-time event job: {}", job_name);
                 }
             }
         }
@@ -351,6 +398,62 @@ impl CronEngine {
     // ------------------------------------------------------------------
     // Job execution
     // ------------------------------------------------------------------
+
+    /// Manually trigger a job by id, walking the loaded principals'
+    /// schedulers to find the owner. Returns the engine's `run_id`
+    /// on fire; coalesces with any in-flight run for the same job
+    /// (manual triggers and poll-cycle fires share the coalescing
+    /// rule — a manual trigger against a running job returns the
+    /// existing in-flight `run_id` and does NOT spawn a second
+    /// execution).
+    ///
+    /// Errors:
+    /// - `"job {id} not found"` if no loaded principal owns the job.
+    /// - `"cron lookup"` for low-level scheduler failures.
+    pub async fn execute_job_for_id(&self, job_id: &str) -> Result<String> {
+        // Walk loaded schedulers looking for the one that owns the
+        // job. Schedulers are keyed by principal_id (DID); the
+        // on-disk file is keyed by name. The walk is the canonical
+        // way to resolve a job_id → principal_id without a separate
+        // index.
+        let pairs = self.all_schedulers().await;
+        let mut found: Option<(PrincipalId, Arc<CronScheduler>, CronJob)> = None;
+        for (id, scheduler) in &pairs {
+            if let Ok(Some(job)) = scheduler.get_job(job_id) {
+                found = Some((id.clone(), scheduler.clone(), job));
+                break;
+            }
+        }
+        let Some((_principal_id, scheduler, job)) = found else {
+            return Err(anyhow::anyhow!("job {job_id} not found"));
+        };
+
+        // Coalesce: if there is an in-flight run for this job, return
+        // its run_id and do NOT spawn a duplicate execution.
+        let running = scheduler
+            .list_running_runs()
+            .map_err(|e| anyhow::anyhow!("cron lookup: {e}"))?;
+        if let Some(open) = running.into_iter().find(|r| r.job_id == job_id) {
+            info!(
+                "⏰ Job '{}' already running as run_id={}; coalescing manual trigger",
+                job.name, open.id
+            );
+            return Ok(open.id);
+        }
+
+        // Spawn the execution. Same rationale as `check_and_run`:
+        // a slow `Send` job must not block the IPC handler that
+        // queued the trigger.
+        let run_id = Uuid::new_v4().to_string();
+        let engine = self.clone();
+        let job_id_for_log = job.id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = engine.execute_job(job).await {
+                error!("manual-trigger job {job_id_for_log} failed: {e}");
+            }
+        });
+        Ok(run_id)
+    }
 
     async fn execute_job(&self, job: CronJob) -> Result<()> {
         info!("🔄 Executing job '{}' ({})", job.name, job.id);
@@ -1233,8 +1336,20 @@ mod tests {
 
         engine.check_and_run().await.unwrap();
 
-        let status = engine.status().await;
-        assert_eq!(status.jobs_executed, 1);
+        // PR 2: per-job execution is now detached onto a tokio task,
+        // so poll the status counter rather than asserting
+        // synchronously. 5s budget is more than enough for the
+        // in-process test setup.
+        let mut jobs_executed = 0;
+        for _ in 0..50 {
+            let status = engine.status().await;
+            jobs_executed = status.jobs_executed;
+            if jobs_executed >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(jobs_executed, 1);
 
         let runs = scheduler.get_run_history(&job.id, 10).unwrap();
         let success = runs.iter().find(|r| r.status == "success");
@@ -1584,9 +1699,20 @@ mod tests {
 
         engine.check_and_run().await.unwrap();
 
+        // PR 2: per-job execution is now detached onto a tokio task,
+        // so poll the run history until the row is finalized. 5s
+        // budget.
+        let mut runs: Vec<peko_cron::CronRun> = Vec::new();
+        for _ in 0..50 {
+            runs = scheduler.get_run_history(&job.id, 10).unwrap();
+            if runs.len() >= 1 && runs[0].status != "running" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
         // Exactly ONE run row, closed as success (F3: no duplicate
         // start/completion rows).
-        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
         assert_eq!(runs.len(), 1, "expected a single run row, got: {runs:?}");
         assert_eq!(runs[0].status, "success");
         assert!(runs[0].finished_at.is_some());
@@ -1692,8 +1818,19 @@ mod tests {
 
         engine.check_and_run().await.unwrap();
 
+        // PR 2: poll until the one-shot job is reaped. The deletion
+        // happens inside the spawned execution task, so we cannot
+        // assert synchronously anymore.
+        let mut reaped = false;
+        for _ in 0..50 {
+            if scheduler.get_job(&job.id).unwrap().is_none() {
+                reaped = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         assert!(
-            scheduler.get_job(&job.id).unwrap().is_none(),
+            reaped,
             "one-shot job must be reaped after its fire regardless of status"
         );
         let runs = scheduler.get_run_history(&job.id, 10).unwrap();
@@ -1795,8 +1932,18 @@ mod tests {
 
         engine.check_and_run().await.unwrap();
 
+        // PR 2: poll for the run row to land AND finalize (per-job
+        // execution is now detached onto a tokio task). 5s budget.
+        let mut runs: Vec<peko_cron::CronRun> = Vec::new();
+        for _ in 0..50 {
+            runs = scheduler.get_run_history(&job.id, 10).unwrap();
+            if runs.len() >= 1 && runs[0].status != "running" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
         // Single closed success row.
-        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
         assert_eq!(runs.len(), 1, "expected a single run row, got: {runs:?}");
         assert_eq!(runs[0].status, "success");
         assert!(runs[0].finished_at.is_some());
@@ -1814,6 +1961,189 @@ mod tests {
         assert!(
             find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl").is_none(),
             "Notify must not create a cron session"
+        );
+
+        drop(principal);
+    }
+
+    /// PR 2: `execute_job_for_id` finds the owning principal's
+    /// scheduler, returns a fresh `run_id`, and actually fires the
+    /// job (a closed success row appears in the run history).
+    #[tokio::test]
+    async fn execute_job_for_id_fires_job_for_loaded_principal() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+
+        let idle = Arc::new(IdleDetector::new());
+        let obs = Arc::new(Observability::new("daemon"));
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            resolver,
+            idle,
+            obs,
+            Some(manager.clone()),
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
+            std::sync::Weak::new(),
+        );
+        // No jobs registered yet — install the scheduler so the
+        // engine can find the job after the manual trigger.
+        engine
+            .install_scheduler_for_test(&PrincipalId::from_did(&principal.did().await), scheduler.clone())
+            .await;
+
+        let job = peko_cron::CronJob {
+            id: "job-abc".to_string(),
+            name: "manual-target".to_string(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::Notify {
+                message: "manual trigger ping".to_string(),
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() + Duration::hours(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        // Manual trigger returns a non-empty run_id immediately.
+        let run_id = engine.execute_job_for_id("job-abc").await.unwrap();
+        assert!(!run_id.is_empty());
+
+        // And the work actually happens (poll until finalized).
+        let mut runs: Vec<peko_cron::CronRun> = Vec::new();
+        for _ in 0..50 {
+            runs = scheduler.get_run_history("job-abc", 10).unwrap();
+            if runs.len() >= 1 && runs[0].status != "running" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            runs.len(),
+            1,
+            "manual trigger must produce exactly one run row, got: {runs:?}"
+        );
+        assert_eq!(runs[0].status, "success");
+        assert!(runs[0].finished_at.is_some());
+
+        drop(principal);
+    }
+
+    /// PR 2: `execute_job_for_id` errors when no principal owns the
+    /// job (id not present in any loaded scheduler).
+    #[tokio::test]
+    async fn execute_job_for_id_returns_error_for_unknown_job() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+
+        let idle = Arc::new(IdleDetector::new());
+        let obs = Arc::new(Observability::new("daemon"));
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let _scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            resolver,
+            idle,
+            obs,
+            Some(manager.clone()),
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
+            std::sync::Weak::new(),
+        );
+
+        // No jobs registered — the lookup must fail.
+        let result = engine.execute_job_for_id("does-not-exist").await;
+        assert!(result.is_err(), "unknown job id must error, got: {result:?}");
+
+        drop(principal);
+    }
+
+    /// PR 2: `check_and_run` returns immediately even when one of the
+    /// due jobs is a slow Send — the per-job execution is detached
+    /// onto a `tokio::spawn`, so the poll tick is not blocked.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn check_and_run_does_not_block_on_slow_send_job() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+
+        let idle = Arc::new(IdleDetector::new());
+        let obs = Arc::new(Observability::new("daemon"));
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            resolver,
+            idle,
+            obs,
+            Some(manager.clone()),
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
+            std::sync::Weak::new(),
+        );
+        engine
+            .install_scheduler_for_test(&PrincipalId::from_did(&principal.did().await), scheduler.clone())
+            .await;
+
+        // One job, due immediately. We can't easily inject a sleep
+        // inside `execute_job`, so the assertion is that
+        // `check_and_run()` returns promptly — the spawned task runs
+        // in the background.
+        let job = peko_cron::CronJob {
+            id: "job-quick".to_string(),
+            name: "quick-send".to_string(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::Send {
+                message: "fast fire".to_string(),
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() - Duration::minutes(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        // The poll tick itself must complete in well under a second.
+        let start = std::time::Instant::now();
+        engine.check_and_run().await.unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "check_and_run must return promptly (per-job execution is detached), took: {elapsed:?}"
         );
 
         drop(principal);

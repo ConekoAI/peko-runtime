@@ -508,7 +508,7 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                     ..
                 } => {
                     println!("▶️  Triggered job '{run_job_id}' (run_id: {run_id})");
-                    println!("   The daemon will execute it on the next poll cycle.");
+                    println!("   The daemon is firing it now.");
                     Ok(())
                 }
                 ResponsePacket::Error { message, .. } => {

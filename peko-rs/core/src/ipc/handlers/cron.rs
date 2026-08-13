@@ -26,8 +26,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::Utc;
-use uuid::Uuid;
 
 use crate::common::paths::PathResolver;
 use crate::daemon::cron_ops::{CronOp, CronOps};
@@ -80,6 +78,13 @@ pub(crate) trait CronHost: Send + Sync {
             caller.subject().clone(),
         )
     }
+
+    /// Cron engine for manual fire dispatch (`peko cron run <id>`).
+    /// The handler does not own the engine; it borrows a cheap
+    /// `Arc<CronEngine>` clone. `CronEngine` is cheaply cloneable
+    /// (all fields are `Arc`) so spawn-and-forget execution does
+    /// not require `&mut`.
+    fn cron_engine(&self) -> Arc<crate::daemon::cron_engine::CronEngine>;
 }
 
 /// `cron` domain request handler. Constructed with an `Arc<dyn CronHost>`
@@ -177,60 +182,34 @@ impl RequestHandler for CronHandler {
             }
 
             RequestPacket::CronRun { request_id, job_id } => {
-                // `update_job_after_run` mutates the schedule file, so
-                // the schedule-write cap is the right one to require.
-                match self.ops().authorize(&job_id, CronOp::Mutate).await {
-                    Ok((_principal_name, cron_db, _caps)) => {
-                        match CronScheduler::new(&cron_db) {
-                            Ok(scheduler) => match scheduler.get_job(&job_id) {
-                                Ok(Some(_job)) => {
-                                    let now = Utc::now();
-                                    if let Err(e) =
-                                        scheduler.update_job_after_run(&job_id, "triggered", now)
-                                    {
-                                        let response = ResponsePacket::Error {
-                                            request_id,
-                                            message: format!("Failed to trigger job: {e}"),
-                                        };
-                                        send_response(sink, response).await?;
-                                    } else {
-                                        let run_id = Uuid::new_v4().to_string();
-                                        let response = ResponsePacket::CronRunStarted {
-                                            request_id,
-                                            job_id,
-                                            run_id,
-                                        };
-                                        send_response(sink, response).await?;
-                                    }
-                                }
-                                Ok(None) => {
-                                    let response = ResponsePacket::Error {
-                                        request_id,
-                                        message: format!("Job {job_id} not found"),
-                                    };
-                                    send_response(sink, response).await?;
-                                }
-                                Err(e) => {
-                                    let response = ResponsePacket::Error {
-                                        request_id,
-                                        message: format!("Failed to get job: {e}"),
-                                    };
-                                    send_response(sink, response).await?;
-                                }
-                            },
-                            Err(e) => {
-                                let response = ResponsePacket::Error {
-                                    request_id,
-                                    message: format!("Cron DB error: {e}"),
-                                };
-                                send_response(sink, response).await?;
-                            }
-                        }
+                // Manual trigger. The schedule-write cap is the right
+                // one to require (manual triggers mutate the schedule
+                // file via `execute_job`'s `update_job_after_run`).
+                // The actual execution is delegated to the engine,
+                // which walks loaded schedulers to find the job,
+                // coalesces with any in-flight run, and spawns the
+                // work so the IPC handler returns immediately.
+                if let Err(message) = self.ops().authorize(&job_id, CronOp::Mutate).await {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message,
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+                match self.host.cron_engine().execute_job_for_id(&job_id).await {
+                    Ok(run_id) => {
+                        let response = ResponsePacket::CronRunStarted {
+                            request_id,
+                            job_id,
+                            run_id,
+                        };
+                        send_response(sink, response).await?;
                     }
-                    Err(message) => {
+                    Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message,
+                            message: format!("Failed to trigger job: {e}"),
                         };
                         send_response(sink, response).await?;
                     }

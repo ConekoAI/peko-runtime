@@ -400,6 +400,10 @@ impl Daemon {
             cron_async_executor,
             cron_extension_core,
         );
+        // PR 2: hand the engine to AppState so the `CronRun` IPC
+        // handler can dispatch manual triggers through the same
+        // coalescing / spawn logic that scheduled fires use.
+        app_state.set_cron_engine(Arc::new(self.cron_engine.clone()));
 
         // Write our own PID file so stop commands can find us even if the parent is gone
         let pid_file = crate::ipc::default_pid_path();
