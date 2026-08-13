@@ -162,8 +162,11 @@ flow_main() {
     echo "sessions.json:"
     cat "$sessions_dir/sessions.json" 2>/dev/null | head -200
     echo
-    echo "chapters.json (if any):"
-    cat "$sessions_dir/chapters.json" 2>/dev/null
+    # Round 7 (2026-08-13) deleted the chapter concept: chapters.json no
+    # longer exists and session ids never carry a '#' suffix — oversized
+    # JSONLs page in place to <id>.N.jsonl. See probe-no-chapter-suffix.sh.
+    echo "in-place pages <id>.N.jsonl (if any):"
+    find "$sessions_dir" -name '*.jsonl' 2>/dev/null | grep -E '\.[0-9]+\.jsonl$' | sort
     echo
     echo "peers.json (if any):"
     cat "$sessions_dir/peers.json" 2>/dev/null
