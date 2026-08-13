@@ -42,27 +42,82 @@ pub enum RotationReason {
 /// Outcome of `SessionStorage::append_event_with_rotation`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RotationOutcome {
-    /// No rotation happened — the event was appended to the original
-    /// file as in `append_event`.
+    /// No rotation happened — the event was appended to the current
+    /// page as in `append_event`.
     NoRotation,
-    /// Rotation happened; the event was appended to the new sibling
-    /// `to` file (the original file is now archived at `from`).
-    Rotated { from: String, to: String },
+    /// Rotation happened; the previous content of
+    /// `<session_id>.jsonl` was paged to `<session_id>.<page_n>.jsonl`
+    /// and the event was appended to a fresh `<session_id>.jsonl`.
+    /// The session id is stable across paging.
+    Paged { session_id: String, page_n: u32 },
 }
 
 /// WS2 (implicit session management): callback invoked from
 /// `SessionStorage::append_event_with_rotation` when the live
-/// session's JSONL crosses the size threshold and needs to roll
-/// over to a `<id>#<UTC-ts>` sibling. The default impl is a
-/// panic — `append_event_with_rotation` requires an explicit sink
-/// so production wiring can't accidentally bypass rotation.
+/// session's JSONL crosses the size threshold and the current page
+/// needs to be renamed aside to a `<id>.<n>.jsonl` page. The default
+/// impl is a panic — `append_event_with_rotation` requires an explicit
+/// sink so production wiring can't accidentally bypass rotation.
 #[async_trait]
 pub trait RotationSink: Send + Sync {
-    async fn request_rotation(
-        &self,
-        session_id: &str,
-        reason: RotationReason,
-    ) -> Result<String>;
+    /// Page the current transcript in place (rename `<S>.jsonl` →
+    /// `<S>.<n>.jsonl`, leaving `<S>.jsonl` free for the next append)
+    /// and return the page number used.
+    async fn request_rotation(&self, session_id: &str, reason: RotationReason) -> Result<u32>;
+}
+
+/// Scan `dir` for page files of `session_id` (`<S>.<n>.jsonl`) and
+/// return the page numbers sorted ascending (1 = oldest). Non-numeric
+/// suffixes — including legacy `<S>#<UTC-ts>.jsonl` chapter files —
+/// are ignored.
+///
+/// Note: a literal session id ending in `.<digits>` would be
+/// indistinguishable from a page file; real ids (session keys, uuids)
+/// never take that shape.
+#[must_use]
+pub fn page_numbers(dir: &Path, session_id: &str) -> Vec<u32> {
+    let prefix = format!("{}.", safe_filename_component(session_id));
+    let mut numbers = vec![];
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(rest) = name
+                .strip_prefix(&prefix)
+                .and_then(|r| r.strip_suffix(".jsonl"))
+            else {
+                continue;
+            };
+            if let Ok(n) = rest.parse::<u32>() {
+                numbers.push(n);
+            }
+        }
+    }
+    numbers.sort_unstable();
+    numbers
+}
+
+/// Path of page `n` for `session_id` in `dir` (`<S>.<n>.jsonl`).
+#[must_use]
+pub fn page_path(dir: &Path, session_id: &str, n: u32) -> PathBuf {
+    dir.join(format!(
+        "{}.{}.jsonl",
+        safe_filename_component(session_id),
+        n
+    ))
+}
+
+/// Whether a `.jsonl` file name is a numbered page (`<id>.<n>.jsonl`)
+/// rather than a live transcript. Legacy `<id>#<ts>.jsonl` chapter
+/// files are not pages (non-numeric suffix).
+fn is_page_file_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".jsonl") else {
+        return false;
+    };
+    let Some((_, suffix)) = stem.rsplit_once('.') else {
+        return false;
+    };
+    !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Normalized session entry for unified access
@@ -172,25 +227,28 @@ impl SessionStorage {
         Ok(())
     }
 
-    /// Append a Peko event to the session, rotating to a `<id>#<ts>`
-    /// sibling first if the live file would exceed
+    /// Append a Peko event to the session, paging the current JSONL
+    /// aside to `<id>.<n>.jsonl` first if the live file would exceed
     /// `test_config::rotate_bytes()` after the append.
     ///
     /// WS2 (implicit session management): the engine keeps the live
-    /// session finite by auto-paging. The flow:
+    /// session finite by auto-paging. The session id is stable — the
+    /// flow:
     ///
-    /// 1. Acquire the `FileLock` for the source file (matches
+    /// 1. Acquire the `FileLock` for the live file (matches
     ///    `append_event`'s cross-process serialisation).
     /// 2. `fs::metadata(&path).len()` under the lock is
     ///    authoritative — concurrent writers can't race past us.
     /// 3. If `size + serialized_len > rotate_bytes()`, call
     ///    `sink.request_rotation(session_id, SizeExceeded)`. The
-    ///    sink is responsible for the atomic rename + index +
-    ///    cache invalidation (see `manager::SessionManagerRotationSink`).
-    /// 4. Drop the source lock, re-acquire on the new sibling path,
-    ///    and append.
-    /// 5. Return `RotationOutcome::Rotated { from, to }` so callers
-    ///    can invalidate any in-memory caches keyed by `from`.
+    ///    sink is responsible for the locked rename of `<id>.jsonl`
+    ///    to the next `<id>.<n>.jsonl` page plus context-cache
+    ///    invalidation (see `manager::SessionManagerRotationSink`).
+    /// 4. Drop the lock, re-acquire on the (now free) live path,
+    ///    and append — this recreates a fresh `<id>.jsonl`.
+    /// 5. Return `RotationOutcome::Paged { session_id, page_n }` so
+    ///    callers can invalidate any in-memory caches keyed by
+    ///    `session_id`.
     ///
     /// Returns `RotationOutcome::NoRotation` when the append fits in
     /// the existing file.
@@ -220,23 +278,23 @@ impl SessionStorage {
             return Ok(RotationOutcome::NoRotation);
         }
 
-        // Over threshold — drop the source lock so the sink's
-        // rename_session_id (which acquires `metadata_controller.write()` +
-        // a fresh FileLock on the source path) doesn't see us as
-        // holding the lock during its atomic rename. The source
-        // file is renamed away; once the sink returns the new id,
-        // we re-acquire on the sibling path.
+        // Over threshold — drop the live-file lock so the sink's page
+        // rename (which acquires a fresh FileLock on the same path)
+        // doesn't see us as holding the lock during its rename. The
+        // sink renames `<id>.jsonl` aside to `<id>.<n>.jsonl`; once it
+        // returns we re-acquire on the live path and recreate it.
         drop(_lock);
 
-        let new_id = sink.request_rotation(session_id, RotationReason::SizeExceeded).await?;
+        let page_n = sink
+            .request_rotation(session_id, RotationReason::SizeExceeded)
+            .await?;
 
-        let new_path = self.session_path(&new_id);
-        let _new_lock = FileLock::acquire(&new_path, SESSION_LOCK_TIMEOUT_MS).await?;
-        Self::append_bytes(&new_path, line.as_bytes()).await?;
+        let _new_lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
+        Self::append_bytes(&path, line.as_bytes()).await?;
 
-        Ok(RotationOutcome::Rotated {
-            from: session_id.to_string(),
-            to: new_id,
+        Ok(RotationOutcome::Paged {
+            session_id: session_id.to_string(),
+            page_n,
         })
     }
 
@@ -470,36 +528,61 @@ impl SessionStorage {
         Ok(())
     }
 
+    /// Ordered transcript paths for `session_id`: pages `1..=N`
+    /// (oldest first) followed by the current page. Missing files are
+    /// skipped.
+    fn transcript_paths(&self, session_id: &str) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = page_numbers(&self.storage_dir, session_id)
+            .into_iter()
+            .map(|n| page_path(&self.storage_dir, session_id, n))
+            .filter(|p| p.exists())
+            .collect();
+        let current = self.session_path(session_id);
+        if current.exists() {
+            paths.push(current);
+        }
+        paths
+    }
+
     /// Load all Peko events from a session
+    ///
+    /// Reads the paged transcript (`<id>.1.jsonl` … `<id>.N.jsonl`,
+    /// oldest first) stitched with the current page (`<id>.jsonl`), so
+    /// callers see the full history in chronological order regardless
+    /// of how many rotations happened.
     ///
     /// Also cleans up any partial .tmp files that may exist from crashes.
     pub async fn load_events(&self, session_id: &str) -> Result<Vec<SessionEvent>> {
-        let path = self.session_path(session_id);
-
         // Clean up any partial tmp files from previous crashes
         self.cleanup_temp_files(session_id).await?;
 
-        if !path.exists() {
+        let paths = self.transcript_paths(session_id);
+        if paths.is_empty() {
             return Ok(vec![]);
         }
 
-        // Acquire lock to ensure consistent read
-        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
+        // Acquire lock on the current page to ensure a consistent
+        // read. Pages are immutable once created, so they need no
+        // lock of their own.
+        let _lock =
+            FileLock::acquire(self.session_path(session_id), SESSION_LOCK_TIMEOUT_MS).await?;
 
-        let content = fs::read_to_string(&path).await?;
         let mut events = vec![];
 
-        for line in content.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            // Parse as Peko event
-            match serde_json::from_str::<SessionEvent>(line) {
-                Ok(event) => {
-                    events.push(event);
+        for path in paths {
+            let content = fs::read_to_string(&path).await?;
+            for line in content.lines() {
+                if line.trim().is_empty() {
+                    continue;
                 }
-                Err(e) => {
-                    debug!("Failed to parse session event: {}", e);
+                // Parse as Peko event
+                match serde_json::from_str::<SessionEvent>(line) {
+                    Ok(event) => {
+                        events.push(event);
+                    }
+                    Err(e) => {
+                        debug!("Failed to parse session event: {}", e);
+                    }
                 }
             }
         }
@@ -509,38 +592,42 @@ impl SessionStorage {
 
     /// Load session normalizing Event Format entries
     ///
-    /// This method provides a unified view over session data.
+    /// This method provides a unified view over session data. Like
+    /// `load_events`, it stitches paged transcripts (`<id>.N.jsonl`
+    /// pages then the current page) into one chronological view.
     pub async fn load_normalized(&self, session_id: &str) -> Result<Vec<NormalizedEntry>> {
-        let path = self.session_path(session_id);
-
         // Clean up any partial tmp files from previous crashes
         self.cleanup_temp_files(session_id).await?;
 
-        if !path.exists() {
+        let paths = self.transcript_paths(session_id);
+        if paths.is_empty() {
             return Ok(vec![]);
         }
 
-        // Acquire lock to ensure consistent read
-        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
+        // Acquire lock on the current page (pages are immutable).
+        let _lock =
+            FileLock::acquire(self.session_path(session_id), SESSION_LOCK_TIMEOUT_MS).await?;
 
-        let content = fs::read_to_string(&path).await?;
         let mut entries = vec![];
 
-        for line in content.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-
-            // Parse Event Format
-            if let Ok(event) = serde_json::from_str::<SessionEvent>(line) {
-                if let Some(entry) = Self::normalize_event(event) {
-                    entries.push(entry);
+        for path in paths {
+            let content = fs::read_to_string(&path).await?;
+            for line in content.lines() {
+                if line.trim().is_empty() {
+                    continue;
                 }
-                continue;
-            }
 
-            // Unknown format - log warning
-            warn!("Failed to parse session line: {}", line);
+                // Parse Event Format
+                if let Ok(event) = serde_json::from_str::<SessionEvent>(line) {
+                    if let Some(entry) = Self::normalize_event(event) {
+                        entries.push(entry);
+                    }
+                    continue;
+                }
+
+                // Unknown format - log warning
+                warn!("Failed to parse session line: {}", line);
+            }
         }
 
         Ok(entries)
@@ -875,12 +962,16 @@ impl SessionStorage {
         Ok(content.lines().filter(|l| !l.trim().is_empty()).count())
     }
 
-    /// Check if session exists
+    /// Check if session exists (current page or any numbered page)
     pub async fn session_exists(&self, session_id: &str) -> bool {
         self.session_path(session_id).exists()
+            || !page_numbers(&self.storage_dir, session_id).is_empty()
     }
 
     /// List all sessions
+    ///
+    /// Numbered page files (`<id>.<n>.jsonl`) are storage-internal and
+    /// excluded — the session shows up once, under its stable id.
     pub async fn list_sessions(&self) -> Result<Vec<String>> {
         let mut sessions = vec![];
 
@@ -888,7 +979,7 @@ impl SessionStorage {
             let mut entries = fs::read_dir(&self.storage_dir).await?;
             while let Some(entry) = entries.next_entry().await? {
                 if let Some(name) = entry.file_name().to_str() {
-                    if name.ends_with(".jsonl") {
+                    if name.ends_with(".jsonl") && !is_page_file_name(name) {
                         sessions.push(name.trim_end_matches(".jsonl").to_string());
                     }
                 }
@@ -900,11 +991,14 @@ impl SessionStorage {
     }
 
     /// Copy a session file (for branching)
+    ///
+    /// Copies the current page plus every numbered page, preserving
+    /// relative names under the target id.
     pub async fn copy_session(&self, source_id: &str, target_id: &str) -> Result<()> {
         let source_path = self.session_path(source_id);
         let target_path = self.session_path(target_id);
 
-        if !source_path.exists() {
+        if !source_path.exists() && page_numbers(&self.storage_dir, source_id).is_empty() {
             return Err(anyhow::anyhow!("Source session {source_id} does not exist"));
         }
 
@@ -913,13 +1007,19 @@ impl SessionStorage {
         // `append_event` blocks instead of landing mid-copy.
         let _lock = FileLock::acquire(&source_path, SESSION_LOCK_TIMEOUT_MS).await?;
 
-        fs::copy(&source_path, &target_path).await?;
+        for n in page_numbers(&self.storage_dir, source_id) {
+            let page = page_path(&self.storage_dir, source_id, n);
+            fs::copy(&page, page_path(&self.storage_dir, target_id, n)).await?;
+        }
+        if source_path.exists() {
+            fs::copy(&source_path, &target_path).await?;
+        }
 
         info!("Copied session {} to {}", source_id, target_id);
         Ok(())
     }
 
-    /// Delete a session file and its derived cache
+    /// Delete a session file, all its numbered pages, and its derived cache
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let path = self.session_path(session_id);
         let index_path = self.index_path(session_id);
@@ -932,6 +1032,13 @@ impl SessionStorage {
 
         if path.exists() {
             fs::remove_file(&path).await?;
+        }
+
+        for n in page_numbers(&self.storage_dir, session_id) {
+            let page = page_path(&self.storage_dir, session_id, n);
+            if page.exists() {
+                fs::remove_file(&page).await?;
+            }
         }
 
         if index_path.exists() {
@@ -1049,6 +1156,7 @@ mod tests {
     use crate::jsonl::RotationOutcome;
     use crate::*;
     use chrono::Utc;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::fs;
 
@@ -1104,14 +1212,21 @@ mod tests {
     /// test and restores the previous state on drop. Used by the
     /// WS2 rotation tests so the `test_config` default-value tests
     /// don't see leaked env state.
+    ///
+    /// Holds `crate::test_config::TEST_MODE_LOCK` so two guard-holding
+    /// tests can't run concurrently (the env var is process-global).
     struct PekoTestModeGuard {
         prev: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
     impl PekoTestModeGuard {
         fn new() -> Self {
+            let lock = crate::test_config::TEST_MODE_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prev = std::env::var("PEKO_TEST_MODE").ok();
             std::env::set_var("PEKO_TEST_MODE", "1");
-            Self { prev }
+            Self { prev, _lock: lock }
         }
     }
     impl Drop for PekoTestModeGuard {
@@ -1154,7 +1269,7 @@ mod tests {
                 &self,
                 _session_id: &str,
                 _reason: RotationReason,
-            ) -> anyhow::Result<String> {
+            ) -> anyhow::Result<u32> {
                 panic!("sink must not fire under threshold")
             }
         }
@@ -1168,8 +1283,8 @@ mod tests {
     }
 
     /// WS2: when an append would push the JSONL past `rotate_bytes()`
-    /// the sink is asked for a new id and the event lands in the
-    /// rotated sibling.
+    /// the sink pages the full file aside and the event lands in a
+    /// fresh `<id>.jsonl` under the SAME session id.
     #[tokio::test]
     async fn test_append_event_with_rotation_over_threshold_calls_sink() {
         let _guard = PekoTestModeGuard::new();
@@ -1183,8 +1298,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Sink that pretends to rotate to a fixed sibling id.
+        // Sink that pages in place, mirroring the production
+        // `SessionManagerRotationSink`.
         struct CapturingSink {
+            dir: PathBuf,
             captured: std::sync::Arc<std::sync::Mutex<Option<String>>>,
         }
         #[async_trait::async_trait]
@@ -1193,14 +1310,28 @@ mod tests {
                 &self,
                 session_id: &str,
                 reason: RotationReason,
-            ) -> anyhow::Result<String> {
-                self.captured.lock().unwrap().replace(session_id.to_string());
+            ) -> anyhow::Result<u32> {
+                self.captured
+                    .lock()
+                    .unwrap()
+                    .replace(session_id.to_string());
                 assert_eq!(reason, RotationReason::SizeExceeded);
-                Ok(format!("{session_id}#rotated"))
+                let n = crate::jsonl::page_numbers(&self.dir, session_id)
+                    .into_iter()
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+                tokio::fs::rename(
+                    self.dir.join(format!("{session_id}.jsonl")),
+                    crate::jsonl::page_path(&self.dir, session_id, n),
+                )
+                .await?;
+                Ok(n)
             }
         }
         let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
         let sink = CapturingSink {
+            dir: temp.path().to_path_buf(),
             captured: std::sync::Arc::clone(&captured),
         };
 
@@ -1219,18 +1350,217 @@ mod tests {
             .append_event_with_rotation("live", &event, &sink)
             .await
             .unwrap();
-        match outcome {
-            RotationOutcome::Rotated { from, to } => {
-                assert_eq!(from, "live");
-                assert_eq!(to, "live#rotated");
+        assert_eq!(
+            outcome,
+            RotationOutcome::Paged {
+                session_id: "live".to_string(),
+                page_n: 1,
             }
-            other => panic!("expected Rotated outcome, got {other:?}"),
-        }
+        );
         assert_eq!(*captured.lock().unwrap(), Some("live".to_string()));
         assert!(
-            temp.path().join("live#rotated.jsonl").exists(),
-            "event should land in the rotated sibling"
+            temp.path().join("live.1.jsonl").exists(),
+            "previous content should be paged aside"
         );
+        assert!(
+            temp.path().join("live.jsonl").exists(),
+            "event should land in a fresh current page under the same id"
+        );
+    }
+
+    // ============================================================
+    // Paging (round 7): discovery, stitching, delete, copy
+    // ============================================================
+
+    /// A test sink that pages in place exactly like the production
+    /// `SessionManagerRotationSink` (rename live file to the next
+    /// numbered page, return the page number).
+    struct PagingSink {
+        dir: PathBuf,
+    }
+    #[async_trait::async_trait]
+    impl RotationSink for PagingSink {
+        async fn request_rotation(
+            &self,
+            session_id: &str,
+            _reason: RotationReason,
+        ) -> anyhow::Result<u32> {
+            let n = crate::jsonl::page_numbers(&self.dir, session_id)
+                .into_iter()
+                .max()
+                .unwrap_or(0)
+                + 1;
+            tokio::fs::rename(
+                self.dir
+                    .join(format!("{}.jsonl", safe_filename_component(session_id))),
+                crate::jsonl::page_path(&self.dir, session_id, n),
+            )
+            .await?;
+            Ok(n)
+        }
+    }
+
+    fn user_event(text: &str) -> SessionEvent {
+        SessionEvent::MessageV2(crate::message::SessionMessage::user(
+            text,
+            crate::message::MessageSource::User,
+        ))
+    }
+
+    #[test]
+    fn test_page_numbers_discovers_numeric_pages_only() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        for name in [
+            "s.3.jsonl",
+            "s.1.jsonl",
+            "s.2.jsonl",
+            // Not pages: live file, legacy chapter, non-numeric suffix,
+            // a page belonging to a different session.
+            "s.jsonl",
+            "s#20260101-000000.jsonl",
+            "s.old.jsonl",
+            "other.7.jsonl",
+        ] {
+            std::fs::write(dir.join(name), "{}\n").unwrap();
+        }
+
+        assert_eq!(crate::jsonl::page_numbers(dir, "s"), vec![1, 2, 3]);
+        assert_eq!(crate::jsonl::page_numbers(dir, "other"), vec![7]);
+        assert_eq!(
+            crate::jsonl::page_numbers(dir, "missing"),
+            Vec::<u32>::new()
+        );
+    }
+
+    /// Multiple rotations number pages monotonically and `load_events`
+    /// stitches pages 1..=N + the current page in chronological order.
+    #[tokio::test]
+    async fn test_paging_stitches_full_history_in_order() {
+        let _guard = PekoTestModeGuard::new();
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+        let sink = PagingSink {
+            dir: temp.path().to_path_buf(),
+        };
+
+        // Each event is sized so two fit under the threshold but three
+        // do not — every third append pages, giving pages [1, 2].
+        let threshold = crate::test_config::rotate_bytes();
+        let overhead = serde_json::to_string(&user_event("")).unwrap().len() + 1;
+        let text_len = threshold / 2 - overhead - 32;
+        let big = "m".repeat(text_len);
+        let line_len = serde_json::to_string(&user_event(&big)).unwrap().len() + 1;
+        assert!(2 * line_len <= threshold, "two events must fit in a page");
+        assert!(3 * line_len > threshold, "three events must force a page");
+
+        let mut expected = vec![];
+        let mut page_numbers_seen = vec![];
+        for i in 0..5 {
+            let text = format!("{big}-{i}");
+            let outcome = storage
+                .append_event_with_rotation("live", &user_event(&text), &sink)
+                .await
+                .unwrap();
+            expected.push(text);
+            if let RotationOutcome::Paged { session_id, page_n } = outcome {
+                assert_eq!(session_id, "live");
+                page_numbers_seen.push(page_n);
+            }
+        }
+
+        // Two pages plus the live file; pages numbered monotonically.
+        assert_eq!(page_numbers_seen, vec![1, 2]);
+        assert_eq!(crate::jsonl::page_numbers(temp.path(), "live"), vec![1, 2]);
+        assert!(temp.path().join("live.jsonl").exists());
+
+        // Stitched read returns every event in append order.
+        let events = storage.load_events("live").await.unwrap();
+        let texts: Vec<String> = events
+            .iter()
+            .filter_map(|e| e.as_message().map(|m| m.text_content()))
+            .collect();
+        assert_eq!(texts, expected);
+
+        // `load_normalized` sees the same stitched history.
+        let entries = storage.load_normalized("live").await.unwrap();
+        assert_eq!(entries.len(), expected.len());
+
+        // Page files are storage-internal: `list_sessions` shows the
+        // session once under its stable id.
+        assert_eq!(
+            storage.list_sessions().await.unwrap(),
+            vec!["live".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_removes_pages() {
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+
+        storage.create_session("paged", None).await.unwrap();
+        std::fs::write(temp.path().join("paged.1.jsonl"), "{}\n").unwrap();
+        std::fs::write(temp.path().join("paged.2.jsonl"), "{}\n").unwrap();
+        assert!(storage.session_exists("paged").await);
+
+        storage.delete_session("paged").await.unwrap();
+
+        assert!(!storage.session_exists("paged").await);
+        assert!(!temp.path().join("paged.1.jsonl").exists());
+        assert!(!temp.path().join("paged.2.jsonl").exists());
+        assert!(!temp.path().join("paged.jsonl").exists());
+    }
+
+    /// A paged session whose current page was never recreated (freshly
+    /// rotated, no append yet) still exists and loads its history.
+    #[tokio::test]
+    async fn test_session_exists_and_loads_with_only_pages() {
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+
+        storage.create_session("only_pages", None).await.unwrap();
+        let event = storage.load_events("only_pages").await.unwrap();
+        // Move the live file aside to a page, leaving no current page.
+        tokio::fs::rename(
+            temp.path().join("only_pages.jsonl"),
+            temp.path().join("only_pages.1.jsonl"),
+        )
+        .await
+        .unwrap();
+
+        assert!(storage.session_exists("only_pages").await);
+        let events = storage.load_events("only_pages").await.unwrap();
+        assert_eq!(events.len(), event.len());
+    }
+
+    #[tokio::test]
+    async fn test_copy_session_copies_pages() {
+        let temp = TempDir::new().unwrap();
+        let storage = SessionStorage::new(temp.path().to_path_buf());
+
+        storage.create_session("branch_src", None).await.unwrap();
+        storage
+            .append_event("branch_src", &user_event("latest"))
+            .await
+            .unwrap();
+        std::fs::write(temp.path().join("branch_src.1.jsonl"), "{}\n").unwrap();
+        std::fs::write(temp.path().join("branch_src.2.jsonl"), "{}\n").unwrap();
+
+        storage
+            .copy_session("branch_src", "branch_dst")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            crate::jsonl::page_numbers(temp.path(), "branch_dst"),
+            vec![1, 2]
+        );
+        assert!(temp.path().join("branch_dst.jsonl").exists());
+        // The branch's stitched history matches the source's.
+        let src_events = storage.load_events("branch_src").await.unwrap();
+        let dst_events = storage.load_events("branch_dst").await.unwrap();
+        assert_eq!(src_events.len(), dst_events.len());
     }
 
     /// F30 writes never leave a `.tmp` behind. Verify by writing a

@@ -94,12 +94,26 @@ pub fn stale_lock_ms() -> u64 {
     }
 }
 
+/// Serializes tests that flip `PEKO_TEST_MODE` — the env var is
+/// process-global, so two guard-holding tests running in parallel
+/// would otherwise observe each other's set/restore (the first drop
+/// removes the var out from under the second test). Both
+/// `PekoTestModeGuard` copies (jsonl.rs, manager.rs) hold this lock
+/// for the guard's lifetime.
+#[cfg(test)]
+pub static TEST_MODE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use crate::*;
 
     #[test]
     fn test_defaults() {
+        // Excludes concurrent `PEKO_TEST_MODE` guard-holding tests —
+        // without the lock they could set the var mid-assertion.
+        let _lock = crate::test_config::TEST_MODE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Without test mode, should return defaults
         assert_eq!(max_sessions(), 500);
         assert_eq!(rotate_bytes(), 10 * 1024 * 1024);
@@ -108,6 +122,9 @@ mod tests {
 
     #[test]
     fn test_prune_duration() {
+        let _lock = crate::test_config::TEST_MODE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let duration = prune_duration();
         // Should be approximately 30 days
         assert!(duration.as_secs() >= 30 * 24 * 60 * 60);
