@@ -112,12 +112,12 @@ Per-action semantics (the action you choose determines which other params apply)
 - search: case-insensitive text search across session transcripts (query required; optional peer filter)
 - rename: retitle a session (session_key + title required)
 - status: one session's metadata + token usage (session_key optional, defaults to current)
-- list: query sessions (filters: kinds, peer, agent_id, active_minutes; archived hidden unless include_archived:true)
+- list: query sessions (filters: peer, agent_id, active_minutes; archived hidden unless include_archived:true)
 - history: messages of a session (session_key, include_tools)
 
-Kinds (set by the engine, observed via `list`): 'user' (your live session), 'chapter' (rotated conversations), 'spawned' (subagent sessions), 'branch' (copies made by the engine), 'cron' (scheduled-run sessions).
+There is no `kinds` filter. To find subagent sessions, look for entries with `parent_session_id` set. To find chapters, look for `session_id` containing `#` (e.g. `root:user:local#20260811-092932`) and pass `include_archived:true`.
 
-To RUN work in a session, use the Agent tool instead — spawned sessions appear here as kind 'spawned' and can be re-attached with Agent's resume_session param. You do not need to manage chapters or compaction manually — the engine rotates when a JSONL grows too large and compacts when the context window fills."
+To RUN work in a session, use the Agent tool instead — spawned sessions have `parent_session_id` set to the spawning session and can be re-attached with the Agent tool's `resume_session` param. You do not need to manage chapters or compaction manually — the engine rotates when a JSONL grows too large and compacts when the context window fills."
             .to_string()
     }
 
@@ -151,11 +151,6 @@ To RUN work in a session, use the Agent tool instead — spawned sessions appear
                     "type": "boolean",
                     "default": false,
                     "description": "Optional for 'list': include archived sessions (hidden by default)"
-                },
-                "kinds": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional filter for 'list': e.g., ['main', 'spawned', 'cron']"
                 },
                 "peer": {
                     "type": "string",
@@ -228,9 +223,6 @@ To RUN work in a session, use the Agent tool instead — spawned sessions appear
                 Ok(Self::build_status_response(&status))
             }
             SessionAction::List => {
-                let kinds: Option<Vec<String>> = params
-                    .get("kinds")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok());
                 let peer_str = params.get("peer").and_then(|v| v.as_str());
                 let peer = match peer_str {
                     Some(s) => Some(
@@ -247,11 +239,9 @@ To RUN work in a session, use the Agent tool instead — spawned sessions appear
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let kinds_ref = kinds.as_deref();
                 let sessions = self
                     .runtime
                     .list_sessions(
-                        kinds_ref,
                         peer.as_ref(),
                         agent_id,
                         limit,
@@ -395,7 +385,6 @@ mod tests {
         let session = SessionInfo {
             session_key: "test-session".to_string(),
             session_id: "abc123".to_string(),
-            kind: "spawned".to_string(),
             agent_id: Some("test-agent".to_string()),
             label: Some("Test Session".to_string()),
             created_at: "2024-01-01T00:00:00Z".to_string(),
@@ -522,7 +511,6 @@ mod tests {
         let session = SessionInfo {
             session_key: "current-session".to_string(),
             session_id: "current123".to_string(),
-            kind: "main".to_string(),
             agent_id: Some("main".to_string()),
             label: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
@@ -589,7 +577,6 @@ mod tests {
         let alice_main = SessionInfo {
             session_key: "alice-1".to_string(),
             session_id: "alice-1".to_string(),
-            kind: "main".to_string(),
             agent_id: Some("test-agent".to_string()),
             label: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
@@ -604,7 +591,6 @@ mod tests {
         let alice_other = SessionInfo {
             session_key: "alice-2".to_string(),
             session_id: "alice-2".to_string(),
-            kind: "spawned".to_string(),
             agent_id: Some("other-agent".to_string()),
             label: None,
             created_at: "2024-01-02T00:00:00Z".to_string(),
@@ -619,7 +605,6 @@ mod tests {
         let bob_main = SessionInfo {
             session_key: "bob-1".to_string(),
             session_id: "bob-1".to_string(),
-            kind: "main".to_string(),
             agent_id: Some("test-agent".to_string()),
             label: None,
             created_at: "2024-01-03T00:00:00Z".to_string(),
@@ -723,7 +708,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_list_peer_and_kinds_combined() {
+    async fn test_session_list_drops_kinds_param_silently() {
+        // The kinds filter was removed from the session tool (round-6 F1).
+        // The model still has the underlying data on each result: it
+        // derives "spawned" by `parent_session_id is not None` (visible
+        // on status results) and "chapter" by `session_id contains "#"`.
+        // An old payload that includes `kinds` must surface no error
+        // and just be ignored — the unfiltered list is returned.
         let tool = SessionTool::new(cross_peer_cache().as_shared());
         let result = tool
             .execute(json!({
@@ -740,8 +731,9 @@ mod tests {
             .iter()
             .map(|s| s["session_id"].as_str().unwrap())
             .collect();
-        assert_eq!(result["total"], 1);
-        assert_eq!(ids, vec!["alice-2"]);
+        assert_eq!(result["total"], 2);
+        assert!(ids.contains(&"alice-1"));
+        assert!(ids.contains(&"alice-2"));
     }
 
     #[tokio::test]
@@ -782,7 +774,6 @@ mod tests {
         let session = SessionInfo {
             session_key: "s1".to_string(),
             session_id: "s1".to_string(),
-            kind: "main".to_string(),
             agent_id: Some("main".to_string()),
             label: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),

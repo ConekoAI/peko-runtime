@@ -164,7 +164,6 @@ impl SessionManagerRuntime {
 impl SessionRuntime for SessionManagerRuntime {
     async fn list_sessions(
         &self,
-        kinds: Option<&[String]>,
         peer: Option<&Subject>,
         agent_id: Option<&str>,
         limit: usize,
@@ -193,7 +192,6 @@ impl SessionRuntime for SessionManagerRuntime {
             .filter(|m| {
                 let tree_match = caller.is_base || in_subtree(&caller, &m.session_id, &metadatas);
                 let archived_match = include_archived || !m.archived;
-                let kind_match = kinds.map_or(true, |k| k.contains(&m.trigger));
                 let agent_match = agent_id.map_or(true, |a| m.agent_name == a);
                 let active_match = cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
                 let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
@@ -208,7 +206,6 @@ impl SessionRuntime for SessionManagerRuntime {
                 });
                 tree_match
                     && archived_match
-                    && kind_match
                     && peer_match
                     && agent_match
                     && active_match
@@ -217,7 +214,6 @@ impl SessionRuntime for SessionManagerRuntime {
             .map(|m| SessionInfo {
                 session_key: m.session_id.clone(),
                 session_id: m.session_id.clone(),
-                kind: m.trigger.clone(),
                 agent_id: Some(m.agent_name.clone()),
                 label: m.title.clone(),
                 created_at: chrono::DateTime::from_timestamp_millis(m.created_at as i64)
@@ -826,7 +822,7 @@ mod tests {
         // Full list view.
         let all = h
             .runtime
-            .list_sessions(None, None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
         assert_eq!(all.len(), 4);
@@ -853,7 +849,7 @@ mod tests {
         h.runtime.set_archived("spawn2", true).await.unwrap();
         let listed = h
             .runtime
-            .list_sessions(None, None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
         assert_eq!(listed.len(), 3, "archived hidden by default");
@@ -969,7 +965,7 @@ mod tests {
         let guard = h.registry.try_acquire_run("child1").await.unwrap();
         let all = h
             .runtime
-            .list_sessions(None, None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
         let child = all.iter().find(|s| s.session_id == "child1").unwrap();
@@ -1055,7 +1051,7 @@ mod tests {
         // list: only the subtree is visible.
         let all = h
             .runtime
-            .list_sessions(None, None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
         let ids: Vec<&str> = all.iter().map(|s| s.session_id.as_str()).collect();

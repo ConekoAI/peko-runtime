@@ -49,7 +49,6 @@ use serde::{Deserialize, Serialize};
 pub struct SessionInfo {
     pub session_key: String,
     pub session_id: String,
-    pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -216,16 +215,21 @@ pub struct ChapterChangeOutcome {
 pub trait SessionRuntime: Send + Sync {
     /// List available sessions, optionally filtered.
     ///
-    /// - `kinds`: filter by `SessionMetadata::trigger` (e.g. `["main", "branch"]`).
     /// - `peer`: filter to a single peer (`user:alice`, `principal:<did>`, or `public`).
     ///   When `None`, results span all peers (the cross-peer view).
     /// - `agent_id`: filter to a single agent name.
     /// - `limit`: cap on results returned.
     /// - `active_minutes`: only sessions updated within the last N minutes.
     /// - `include_archived`: include archived sessions (hidden by default).
+    ///
+    /// To find subagent sessions, the caller filters on
+    /// `parent_session_id is not None` in its own reasoning. To find
+    /// chapters, the caller filters on `session_id.contains('#')`.
+    /// There is no closed-enum `kinds` filter — those were dropped
+    /// because the description-vs-engine drift (r5/r6 field tests)
+    /// could not be reconciled.
     async fn list_sessions(
         &self,
-        kinds: Option<&[String]>,
         peer: Option<&peko_subject::Subject>,
         agent_id: Option<&str>,
         limit: usize,
@@ -348,7 +352,6 @@ mod tests {
         let info = SessionInfo {
             session_key: "alice-1".into(),
             session_id: "alice-1".into(),
-            kind: "main".into(),
             agent_id: Some("test-agent".into()),
             label: None,
             created_at: "2024-01-01T00:00:00Z".into(),
@@ -366,6 +369,9 @@ mod tests {
         assert_eq!(json["agent_id"], "test-agent");
         assert_eq!(json["archived"], false);
         assert_eq!(json["run_active"], false);
+        // The old `kind` field is gone — model now uses
+        // `parent_session_id` (not in SessionInfo) and
+        // `session_id.contains('#')` to derive role.
         let back: SessionInfo = serde_json::from_value(json).unwrap();
         assert_eq!(back.session_id, info.session_id);
         assert_eq!(back.peer_type, info.peer_type);
@@ -377,6 +383,9 @@ mod tests {
     fn session_info_legacy_json_without_new_fields_defaults_false() {
         // A `SessionInfo` serialized before `archived` / `run_active`
         // existed must still deserialize, with both flags = false.
+        // The pre-refactor wire also had a `kind` field; absent in
+        // new payloads but tolerated on read (ignored via
+        // `#[serde(default)]` shape).
         let legacy = serde_json::json!({
             "session_key": "k",
             "session_id": "k",
@@ -445,7 +454,6 @@ mod tests {
         let info = SessionInfo {
             session_key: "k".into(),
             session_id: "k".into(),
-            kind: "main".into(),
             agent_id: None,
             label: None,
             created_at: String::new(),

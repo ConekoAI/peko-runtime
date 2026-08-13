@@ -564,7 +564,7 @@ Parameters:
 - parent_session_key: Parent session key for context seeding (optional - auto-detected if not provided; must be your own session or one inside your subtree)
 - resume_session: Re-attach this run to an existing spawned session you own (optional session id, see the session tool's list) — the subagent continues with its full prior history. Mutually exclusive with isolated.
 
-Sessions you spawn appear in the `session` tool as kind "spawned" — use that tool to inspect and manage them (list, history, search, branch, rename, archive, delete, compact). The session tool manages memory; this tool runs work.
+Sessions you spawn have `parent_session_id` set to your session; the `session` tool's `list` action surfaces this. Use that field to find them. The session tool manages memory; this tool runs work.
 
 resume_session refusals (structured errors naming the session): target must exist, be a spawned session (chapters/branches/live root sessions refuse), not be the session you are running in or an ancestor, not be archived, and not have an active run.
 

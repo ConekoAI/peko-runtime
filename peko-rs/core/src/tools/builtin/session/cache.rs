@@ -146,7 +146,6 @@ impl SessionCache {
 impl SessionRuntime for SessionCache {
     async fn list_sessions(
         &self,
-        kinds: Option<&[String]>,
         peer: Option<&peko_subject::Subject>,
         agent_id: Option<&str>,
         limit: usize,
@@ -162,7 +161,6 @@ impl SessionRuntime for SessionCache {
             .values()
             .filter(|s| {
                 let archived_match = include_archived || !s.archived;
-                let kind_match = kinds.map_or(true, |k| k.contains(&s.kind));
                 let agent_match = agent_id.map_or(true, |a| s.agent_id.as_deref() == Some(a));
                 let active_match = cutoff_ms.map_or(true, |_| {
                     chrono::DateTime::parse_from_rfc3339(&s.last_activity)
@@ -170,7 +168,6 @@ impl SessionRuntime for SessionCache {
                         .unwrap_or(true)
                 });
                 archived_match
-                    && kind_match
                     && Self::peer_matches(s, peer_filter.as_ref())
                     && agent_match
                     && active_match
@@ -267,7 +264,6 @@ impl SessionRuntime for SessionCache {
         let mut info = parent.clone();
         info.session_key = new_key.clone();
         info.session_id = new_key.clone();
-        info.kind = "branch".to_string();
         info.label = label.or(parent.label);
         sessions.insert(new_key.clone(), info);
 
@@ -469,7 +465,6 @@ mod tests {
         SessionInfo {
             session_key: key.to_string(),
             session_id: key.to_string(),
-            kind: "main".to_string(),
             agent_id: Some("agent".to_string()),
             label: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
@@ -517,14 +512,17 @@ mod tests {
 
         let branch = cache.get_status(&outcome.new_session_id).await.unwrap();
         assert_eq!(branch.parent_session, Some("p1".to_string()));
+        // After the kind-filter removal, the model derives
+        // "branchedness" from `parent_session` (a sibling field on
+        // SessionStatusResult) rather than from a `kind` enum. The
+        // SessionInfo itself carries the inherited label.
         let branch_info = cache
-            .list_sessions(None, None, None, 10, None, true)
+            .list_sessions(None, None, 10, None, true)
             .await
             .unwrap()
             .into_iter()
             .find(|s| s.session_key == outcome.new_session_id)
             .unwrap();
-        assert_eq!(branch_info.kind, "branch");
         // Label inherited when not supplied.
         assert_eq!(branch_info.label, Some("parent".to_string()));
 
@@ -558,7 +556,7 @@ mod tests {
             vec!["g1".to_string(), "c1".to_string(), "p".to_string()]
         );
         assert!(cache
-            .list_sessions(None, None, None, 10, None, true)
+            .list_sessions(None, None, 10, None, true)
             .await
             .unwrap()
             .is_empty());
