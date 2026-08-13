@@ -193,7 +193,6 @@ impl SessionRuntime for SessionManagerRuntime {
                     .map(|dt| dt.to_rfc3339())
                     .unwrap_or_default(),
                 message_count: m.message_count,
-                is_active: true,
                 peer_type: m.peer_type.clone(),
                 peer_id: m.peer_id.clone(),
                 archived: m.archived,
@@ -977,5 +976,37 @@ mod tests {
         let history = h.runtime.get_history("child1", 10, false).await.unwrap();
         assert_eq!(history.len(), 1);
         h.runtime.get_status("child1").await.unwrap();
+    }
+
+    // ─── Tool-surface wiring (SessionTool over the production runtime) ─
+
+    /// The restored `archive` action on the `session` tool routes
+    /// through the production guard layer: a live `root:*` session is
+    /// continuous and engine-managed, so archiving it is refused.
+    #[tokio::test]
+    async fn tool_archive_refuses_root_session() {
+        use crate::tools::builtin::session::{SessionTool, SharedSessionRuntime};
+        use peko_tools_core::traits::Tool;
+
+        let h = tree_harness("root:user:alice").await;
+        h.create("root:cron:alice", None).await;
+        let runtime: SharedSessionRuntime = Arc::new(SessionManagerRuntime::new(
+            Arc::clone(&h.manager),
+            Arc::clone(&h.current),
+            "test-agent".to_string(),
+            Some(Arc::clone(&h.registry)),
+        ));
+        let tool = SessionTool::new(runtime);
+
+        let err = tool
+            .execute(json!({"action": "archive", "session_key": "root:cron:alice"}))
+            .await
+            .expect_err("archiving a root session must be refused");
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
+
+        // A non-root session archives fine through the same surface.
+        tool.execute(json!({"action": "archive", "session_key": "spawn2"}))
+            .await
+            .unwrap();
     }
 }

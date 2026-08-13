@@ -412,7 +412,6 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 1,
-            is_active: true,
             peer_type: None,
             peer_id: None,
             archived: false,

@@ -1,16 +1,15 @@
-//! Unified `session` tool — single introspection entry point that
-//! dispatches by `action` over 6 operations
-//! (`status` / `list` / `history` / `search` / `rename` / `delete`).
+//! Unified `session` tool — single storage entry point that dispatches
+//! by `action` over 9 operations (`status` / `list` / `history` /
+//! `search` / `rename` / `delete` / `branch` / `archive` / `unarchive`).
 //!
-//! Replaces the legacy `session_status`, `sessions_list`, `sessions_history`
-//! tools (Issue 013, expanded by PR #351 with 9 lifecycle operations,
-//! then trimmed in the implicit-session-management rollout —
-//! see `~/.claude/memory/cleanup-phase0-baseline.md` for the demote
-//! rationale). Lifecycle mechanics (paging, compaction, archive)
-//! are now driven by the engine without a tool affordance; the
-//! runtime still exposes `request_compaction` / `branch_session` /
-//! `set_archived` for the engine's internal use, but the model can't
-//! call them here. Speaks to the [`SessionRuntime`] port.
+//! Replaces the legacy `session_status`, `sessions_list`,
+//! `sessions_history` tools (Issue 013, expanded by PR #351 with the
+//! lifecycle operations). PR #353 (WS4, implicit session management)
+//! demoted the lifecycle verbs; round 7 (2026-08-13) restored the
+//! storage-only three (`branch` / `archive` / `unarchive`) — always
+//! valid for sessions the caller owns. `new` / `resume` / `compact`
+//! drive the LLM and live on the Agent tool instead. Speaks to the
+//! [`SessionRuntime`] port.
 
 use async_trait::async_trait;
 use peko_tools_core::traits::Tool;
@@ -77,11 +76,11 @@ impl SessionTool {
 
 /// Actions supported by the `session` tool.
 ///
-/// WS4 (implicit session management): the 6 lifecycle actions
-/// (`new` / `resume` / `branch` / `archive` / `unarchive` /
-/// `compact`) that PR #351 surfaced to the model are now hidden.
-/// Rotation and compaction run inside the engine; the model only
-/// needs the 6 introspection + rename + delete verbs that survive.
+/// PR #353 (WS4, implicit session management) hid the 6 lifecycle
+/// actions PR #351 had surfaced; round 7 (2026-08-13) restored the
+/// storage-only three (`branch` / `archive` / `unarchive`). `new` /
+/// `resume` / `compact` stay off this tool — they drive the LLM and
+/// live on the Agent tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SessionAction {
@@ -91,6 +90,9 @@ enum SessionAction {
     Search,
     Rename,
     Delete,
+    Branch,
+    Archive,
+    Unarchive,
 }
 
 #[async_trait]
@@ -100,23 +102,24 @@ impl Tool for SessionTool {
     }
 
     fn description(&self) -> String {
-        r"Single tool with **6 operations** for inspecting and managing your persisted sessions. The `action` parameter is REQUIRED and MUST be one of:
+        r"Single tool with **9 operations** for inspecting and managing your persisted sessions (pure storage reads/writes — no LLM involvement). The `action` parameter is REQUIRED and MUST be one of:
 
-  delete | search | rename | status | list | history
-
-Lifecycle operations (chapter rotation, compaction, archive, branch) are NOT exposed here — the engine drives them automatically. The model only needs the 6 introspection / rename / delete verbs below.
+  status | list | history | search | rename | delete | branch | archive | unarchive
 
 Per-action semantics (the action you choose determines which other params apply):
-- delete: remove a session (session_key required; recursive:true also deletes its descendants, children first)
-- search: case-insensitive text search across session transcripts (query required; optional peer filter)
-- rename: retitle a session (session_key + title required)
 - status: one session's metadata + token usage (session_key optional, defaults to current)
 - list: query sessions (filters: peer, agent_id, active_minutes; archived hidden unless include_archived:true)
-- history: messages of a session (session_key, include_tools)
+- history: messages of a session (session_key optional, defaults to current; include_tools)
+- search: case-insensitive text search across session transcripts (query required; optional peer filter)
+- rename: retitle a session (session_key + title required)
+- delete: remove a session (session_key required; recursive:true also deletes its descendants, children first)
+- branch: copy a session under a new id (session_key required; optional label) — the copy is NOT running; attach a run to it via the Agent tool's resume action
+- archive: hide a session from list/search (session_key required; still visible with include_archived:true)
+- unarchive: restore an archived session to normal visibility (session_key required)
 
-There is no `kinds` filter. To find subagent sessions, look for entries with `parent_session_id` set. To find chapters, look for `session_id` containing `#` (e.g. `root:user:local#20260811-092932`) and pass `include_archived:true`.
+Refusals: the principal's root session (ids starting with `root:`) is continuous and managed by the engine — delete/archive on it are refused. You cannot delete, archive, or rename the session you are currently running in. Sessions with an active run refuse delete/archive. A caller in a spawned session manages only its own subtree.
 
-To RUN work in a session, use the Agent tool instead — spawned sessions have `parent_session_id` set to the spawning session and can be re-attached with the Agent tool's `resume_session` param. You do not need to manage chapters or compaction manually — the engine rotates when a JSONL grows too large and compacts when the context window fills."
+To RUN work in a session, use the Agent tool instead — its three actions (new / resume / compact) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session_id` set (visible on status)."
             .to_string()
     }
 
@@ -126,12 +129,12 @@ To RUN work in a session, use the Agent tool instead — spawned sessions have `
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "list", "history", "search", "rename", "delete"],
-                    "description": "What to do: status/list/history read; search finds text; rename/delete manage a session. Lifecycle operations are engine-driven and not exposed here."
+                    "enum": ["status", "list", "history", "search", "rename", "delete", "branch", "archive", "unarchive"],
+                    "description": "What to do: status/list/history read; search finds text; rename/delete/branch/archive/unarchive manage a session's storage. To run work in a session, use the Agent tool (new/resume/compact)."
                 },
                 "session_key": {
                     "type": "string",
-                    "description": "Target session. Required for history/rename/delete. Optional for status (defaults to current session)"
+                    "description": "Target session. Required for `rename`, `delete`, `branch`, `archive`, `unarchive`. Optional for `status` and `history` (defaults to current session)."
                 },
                 "query": {
                     "type": "string",
@@ -140,6 +143,10 @@ To RUN work in a session, use the Agent tool instead — spawned sessions have `
                 "title": {
                     "type": "string",
                     "description": "Required for 'rename'"
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Optional for 'branch': label/title for the new branch"
                 },
                 "recursive": {
                     "type": "boolean",
@@ -161,7 +168,7 @@ To RUN work in a session, use the Agent tool instead — spawned sessions have `
                 },
                 "limit": {
                     "type": "integer",
-                    "default": 50,
+                    "default": 100,
                     "description": "Max results for 'list', 'history', or 'search'"
                 },
                 "active_minutes": {
@@ -209,9 +216,11 @@ To RUN work in a session, use the Agent tool instead — spawned sessions have `
                             .with_timezone(&tz)
                             .format("%Y-%m-%d %H:%M:%S %Z")
                             .to_string(),
-                        Err(_) => chrono::Local::now()
-                            .format("%Y-%m-%d %H:%M:%S %Z")
-                            .to_string(),
+                        Err(_) => {
+                            return Err(anyhow::anyhow!(
+                                "timezone '{tz_str}' is not a valid IANA tz (e.g. 'America/New_York', 'UTC')"
+                            ));
+                        }
                     }
                 } else {
                     chrono::Local::now()
@@ -313,6 +322,27 @@ To RUN work in a session, use the Agent tool instead — spawned sessions have `
                 let outcome = self.runtime.delete_session(session_key, recursive).await?;
                 Ok(serde_json::to_value(outcome)?)
             }
+            SessionAction::Branch => {
+                let session_key = Self::require_session_key(&params, "branch")?;
+                let label = params
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                let outcome = self.runtime.branch_session(session_key, label).await?;
+                Ok(serde_json::to_value(outcome)?)
+            }
+            SessionAction::Archive | SessionAction::Unarchive => {
+                let archived = action == SessionAction::Archive;
+                let verb = if archived { "archive" } else { "unarchive" };
+                let session_key = Self::require_session_key(&params, verb)?;
+
+                self.runtime.set_archived(session_key, archived).await?;
+                Ok(json!({
+                    "session_key": session_key,
+                    "archived": archived,
+                }))
+            }
         }
     }
 }
@@ -326,25 +356,23 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    /// F5 (2026-08-11 field test, Addendum 3) + WS4 (implicit session
-    /// management, 2026-08-11): the model was anchoring on the legacy 3
-    /// actions (`status` / `list` / `history`) and refusing to call any
-    /// of the 9 PR #351 lifecycle operations. WS4 demotes those 6
-    /// lifecycle operations to engine-internal mechanics; the tool
-    /// surface is now 6 introspection / rename / delete actions. Pin
-    /// the description here so any future edit that drops one of the
-    /// surviving 6 action names fails the test — defense-in-depth
-    /// against the "register without surfacing in description" omission
-    /// pattern.
+    /// F5 (2026-08-11 field test, Addendum 3) + round 7 (2026-08-13):
+    /// the model was anchoring on the legacy 3 actions (`status` /
+    /// `list` / `history`) and refusing to call the lifecycle
+    /// operations. WS4 demoted all 6 lifecycle operations; round 7
+    /// restored the storage-only three (`branch` / `archive` /
+    /// `unarchive`), bringing the surface to 9 actions. Pin the
+    /// description here so any future edit that drops one of the 9
+    /// action names fails the test — defense-in-depth against the
+    /// "register without surfacing in description" omission pattern.
     #[test]
-    fn description_names_all_6_actions() {
+    fn description_names_all_9_actions() {
         let cache = SessionCache::new("test");
         let tool = SessionTool::new(Arc::new(cache).as_shared());
         let desc = tool.description();
 
-        // The 6 surviving actions, in the order they appear in
-        // `SessionAction`. If `SessionAction` ever grows, bump this
-        // list in lockstep.
+        // The 9 actions, in the order they appear in `SessionAction`.
+        // If `SessionAction` ever grows, bump this list in lockstep.
         let expected_actions = [
             "status",
             "list",
@@ -352,11 +380,14 @@ mod tests {
             "search",
             "rename",
             "delete",
+            "branch",
+            "archive",
+            "unarchive",
         ];
         assert_eq!(
             expected_actions.len(),
-            6,
-            "test bug: expected_actions must have 6 entries"
+            9,
+            "test bug: expected_actions must have 9 entries"
         );
 
         for action in expected_actions {
@@ -368,12 +399,10 @@ mod tests {
         }
 
         // Lead-with-count: the description must advertise the action
-        // count up front so the model sees all 6 before any per-action
+        // count up front so the model sees all 9 before any per-action
         // bullet (defeats primacy bias on the legacy 3).
         assert!(
-            desc.contains("6 operations")
-                || desc.contains("6 actions")
-                || desc.contains("6 op"),
+            desc.contains("9 operations") || desc.contains("9 actions") || desc.contains("9 op"),
             "session description must lead with the action count (F5: defeats primacy bias)"
         );
     }
@@ -389,7 +418,6 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 10,
-            is_active: true,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
             archived: false,
@@ -515,7 +543,6 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 5,
-            is_active: true,
             peer_type: None,
             peer_id: None,
             archived: false,
@@ -581,7 +608,6 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 5,
-            is_active: true,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
             archived: false,
@@ -595,7 +621,6 @@ mod tests {
             created_at: "2024-01-02T00:00:00Z".to_string(),
             last_activity: "2024-01-02T01:00:00Z".to_string(),
             message_count: 3,
-            is_active: true,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
             archived: false,
@@ -609,7 +634,6 @@ mod tests {
             created_at: "2024-01-03T00:00:00Z".to_string(),
             last_activity: "2024-01-03T01:00:00Z".to_string(),
             message_count: 7,
-            is_active: true,
             peer_type: Some("user".to_string()),
             peer_id: Some("bob".to_string()),
             archived: false,
@@ -711,7 +735,7 @@ mod tests {
         // The kinds filter was removed from the session tool (round-6 F1).
         // The model still has the underlying data on each result: it
         // derives "spawned" by `parent_session_id is not None` (visible
-        // on status results) and "chapter" by `session_id contains "#"`.
+        // on status results).
         // An old payload that includes `kinds` must surface no error
         // and just be ignored — the unfiltered list is returned.
         let tool = SessionTool::new(cross_peer_cache().as_shared());
@@ -760,11 +784,9 @@ mod tests {
     }
 
     // ====================================================================================
-    // Tests: surviving 6 actions (search/rename/delete). Lifecycle
-    // actions (branch/archive/unarchive/compact/new/resume) were
-    // demoted in WS4 (implicit session management) — the engine
-    // drives rotation + compaction + archival internally; the model
-    // has no surviving affordance to call them.
+    // Tests: mutation actions (search/rename/delete/branch/archive/
+    // unarchive). `new` / `resume` / `compact` stay refused on this
+    // tool — they drive the LLM and live on the Agent tool.
     // ====================================================================================
 
     #[tokio::test]
@@ -778,7 +800,6 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 1,
-            is_active: true,
             peer_type: None,
             peer_id: None,
             archived: false,
@@ -860,23 +881,17 @@ mod tests {
         assert!(err.to_string().contains("session_key"), "{err}");
     }
 
-    /// WS4: the 6 demoted lifecycle actions (`new` / `resume` / `branch` /
-    /// `archive` / `unarchive` / `compact`) must be rejected by the
-    /// schema validation, not silently routed to a dead match arm.
-    /// The prelaunch no-backward-compat stance makes this a hard cut.
+    /// The LLM-driving actions (`new` / `resume` / `compact`) must be
+    /// rejected by the schema validation on this tool, not silently
+    /// routed to a dead match arm — they live on the Agent tool.
+    /// (`branch` / `archive` / `unarchive` were restored to this tool
+    /// in round 7 and are covered by the dedicated tests below.)
     #[tokio::test]
     async fn test_demoted_actions_rejected_with_clear_validation_error() {
         let cache = create_test_cache();
         let tool = SessionTool::new(cache.as_shared());
 
-        for demoted in [
-            "new",
-            "resume",
-            "branch",
-            "archive",
-            "unarchive",
-            "compact",
-        ] {
+        for demoted in ["new", "resume", "compact"] {
             let exec_err = tool
                 .execute(json!({"action": demoted}))
                 .await
@@ -888,5 +903,112 @@ mod tests {
                 "demoted `{demoted}` should fail with Invalid action, got: {exec_err}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_session_branch_creates_stored_copy_not_running() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let result = tool
+            .execute(json!({"action": "branch", "session_key": "test-session", "label": "fork"}))
+            .await
+            .unwrap();
+        let new_id = result["new_session_id"].as_str().unwrap();
+        assert_eq!(result["parent_session_id"], "test-session");
+        assert_ne!(new_id, "test-session");
+
+        // The copy is stored (listed) but NOT running, and carries the
+        // branch label.
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        let branch = list["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["session_key"] == new_id)
+            .expect("branch must appear in list");
+        assert_eq!(branch["run_active"], false);
+        assert_eq!(branch["label"], "fork");
+
+        // History is copied over.
+        let history = tool
+            .execute(json!({"action": "history", "session_key": new_id}))
+            .await
+            .unwrap();
+        assert_eq!(history["total_messages"], 2);
+
+        // Branch without session_key must error.
+        let err = tool
+            .execute(json!({"action": "branch"}))
+            .await
+            .expect_err("branch without session_key must error");
+        assert!(err.to_string().contains("session_key"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_session_archive_unarchive_toggle_list_visibility() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let result = tool
+            .execute(json!({"action": "archive", "session_key": "test-session"}))
+            .await
+            .unwrap();
+        assert_eq!(result["archived"], true);
+
+        // Hidden by default, visible with include_archived:true.
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["total"], 0);
+        let list = tool
+            .execute(json!({"action": "list", "include_archived": true}))
+            .await
+            .unwrap();
+        assert_eq!(list["total"], 1);
+        assert_eq!(list["sessions"][0]["archived"], true);
+
+        let result = tool
+            .execute(json!({"action": "unarchive", "session_key": "test-session"}))
+            .await
+            .unwrap();
+        assert_eq!(result["archived"], false);
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["total"], 1);
+        assert_eq!(list["sessions"][0]["archived"], false);
+    }
+
+    #[tokio::test]
+    async fn test_session_status_invalid_timezone_errors() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let err = tool
+            .execute(json!({
+                "action": "status",
+                "session_key": "test-session",
+                "timezone": "Not/AZone"
+            }))
+            .await
+            .expect_err("invalid timezone must error, not fall back to local");
+        assert!(err.to_string().contains("not a valid IANA tz"), "{err}");
+
+        // A valid IANA tz still works.
+        tool.execute(json!({
+            "action": "status",
+            "session_key": "test-session",
+            "timezone": "UTC"
+        }))
+        .await
+        .unwrap();
+    }
+
+    /// The `limit` schema default must match the history handler's
+    /// fallback (100) — a schema/handler drift here silently changes
+    /// what the model gets when it omits `limit`.
+    #[test]
+    fn limit_schema_default_matches_history_handler() {
+        let cache = SessionCache::new("test");
+        let tool = SessionTool::new(Arc::new(cache).as_shared());
+        let schema = tool.parameters();
+        assert_eq!(schema["properties"]["limit"]["default"], 100);
     }
 }
