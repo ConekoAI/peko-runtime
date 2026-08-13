@@ -228,17 +228,17 @@ pub fn err_descendants_exist(target: &str, descendants: &[String]) -> anyhow::Er
     )
 }
 
-/// `Agent` with `resume_session` targeting a non-spawn session
-/// (chapter, branch, or live root).
+/// `Agent` with `action = "resume"` targeting a non-spawn session
+/// (branch or live root).
 pub fn err_resume_not_spawned(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "cannot re-attach to session '{target}': only spawned subagent sessions (kind \
-         'spawned') can be re-attached with Agent's resume_session — chapters, branches, \
-         and live root sessions are refused"
+         'spawned') can be re-attached with Agent's action \"resume\" — branches and live \
+         root sessions are refused"
     )
 }
 
-/// `Agent` with `resume_session` targeting the caller's own session
+/// `Agent` with `action = "resume"` targeting the caller's own session
 /// or one of its ancestors (would re-enter the caller's own run).
 pub fn err_resume_into_own_run(target: &str) -> anyhow::Error {
     anyhow::anyhow!(

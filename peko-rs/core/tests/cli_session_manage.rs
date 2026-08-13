@@ -4,14 +4,14 @@
 //! Covers the `session` tool's stable-id lifecycle (no chapters: the
 //! live `root:*` id never gains a `#` suffix; paging is
 //! storage-internal) and self-delete guard, and the `Agent` tool's
-//! spawn → `session list` → `resume_session` → `cleanup:"delete"`
+//! spawn → `session list` → `action:"resume"` → `cleanup:"delete"`
 //! lifecycle:
 //!
 //! | Test | What it pins |
 //! |------|--------------|
 //! | `session_new_refused_live_id_stays_stable` | scripted `session new` returns the demoted-action refusal, writes no `chapters.json`, and the NEXT `peko send` keeps the same live `root:*` id with both turns stitched in one history |
 //! | `session_delete_current_session_refused` | `session delete` on the caller's own live session returns the structured refusal and the session survives |
-//! | `agent_spawn_list_resume_cleanup_delete` | spawn registers a `trigger=="spawn"` session; `resume_session` continues it with history; `cleanup:"delete"` routes through the guarded delete and removes it |
+//! | `agent_spawn_list_resume_cleanup_delete` | spawn registers a `trigger=="spawn"` session; `action:"resume"` + `session_key` continues it with history; `cleanup:"delete"` routes through the guarded delete and removes it |
 //!
 //! Each test drives MULTIPLE sequential `peko send` runs against one
 //! daemon, re-scripting the mock LLM between sends
@@ -340,7 +340,7 @@ async fn session_delete_current_session_refused() {
 }
 
 /// Full Agent-tool lifecycle on the coin model: spawn registers a
-/// `trigger == "spawn"` session → `resume_session` re-attaches with
+/// `trigger == "spawn"` session → `action:"resume"` re-attaches with
 /// history → `cleanup: "delete"` removes it through the guarded
 /// delete.
 #[tokio::test]
@@ -418,9 +418,10 @@ async fn agent_spawn_list_resume_cleanup_delete() {
         p2: [
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
+                    "action": "resume",
+                    "session_key": spawn_id,
                     "prompt": format!("Do part two. Needle '{c2}'."),
                     "subagent_type": WORKER,
-                    "resume_session": spawn_id,
                 }).to_string()
             } },
             "RESUME_DONE",
@@ -459,9 +460,10 @@ async fn agent_spawn_list_resume_cleanup_delete() {
         p3: [
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
+                    "action": "resume",
+                    "session_key": spawn_id,
                     "prompt": format!("Final part. Needle '{c3}'."),
                     "subagent_type": WORKER,
-                    "resume_session": spawn_id,
                     "cleanup": "delete",
                 }).to_string()
             } },

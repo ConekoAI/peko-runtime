@@ -39,7 +39,7 @@ pub enum TaskMetadata {
 pub struct SubagentMetadata {
     pub child_session_key: String,
     /// The child's plain session id (uuid) — the id `session list`
-    /// shows and `Agent.resume_session` consumes. Spawn-registered
+    /// shows and Agent's `action = "resume"` consumes. Spawn-registered
     /// runs store the overlay key in `child_session_key`; this field
     /// lets busy/depth lookups match on the durable session id.
     /// `None` only for runs registered before this field existed.

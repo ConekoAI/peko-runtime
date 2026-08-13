@@ -19,6 +19,7 @@
 //! | [`resolve_agent_config`]                   | workspace `<ws>/agents/<n>/AGENT.md` (dir) or `<ws>/agents/<n>.md` (flat), then global `agents/<n>/config.toml`    |
 //! | [`audit_spawn`]                            | `observability.audit("SubagentSpawn", ...)` — no-op when no hub is attached                                        |
 //! | [`execute_and_wait`]                       | `SubagentExecutor::execute_and_wait` — returns the projected `SubagentRunView`                                     |
+//! | [`request_compaction`]                     | `SubagentExecutor::request_compaction` — flags the target for engine-driven compaction, returns immediately        |
 //!
 //! Principal-id and principal-name accessors are pulled directly from
 //! the executor's stable `principal_id`/`principal_name` getters.
@@ -364,10 +365,22 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         })
     }
 
+    /// `Agent` tool `action = "compact"` — delegate to the executor's
+    /// guarded flag-set. Returns immediately (no LLM call, no
+    /// completion signal).
+    async fn request_compaction(
+        &self,
+        target: &str,
+        caller_session_key: &str,
+    ) -> anyhow::Result<crate::tools::builtin::session::CompactRequestOutcome> {
+        self.executor
+            .request_compaction(target, caller_session_key)
+            .await
+    }
+
     fn principal_id(&self) -> String {
         self.executor.principal_id().0.clone()
     }
-
     fn principal_name(&self) -> Option<String> {
         self.executor.principal_name().map(str::to_owned)
     }
