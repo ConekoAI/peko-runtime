@@ -528,6 +528,19 @@ impl CronEngine {
             config.owner.clone()
         };
 
+        // Chat-log projection: the cron prompt is owner-authored
+        // (the cron fires on the owner's behalf) and is filtered
+        // out by `is_peer_chat_channel` elsewhere — so we record it
+        // directly here. The principal's reply still flows through
+        // `record_response` unconditionally. Best-effort: a failed
+        // chat-log write logs a warning but does not block the run.
+        if let Err(e) = pm.record_cron_input(&principal, &peer, &job.task_description()).await {
+            warn!(
+                "cron Send: chat-log inbound append failed for job '{}': {e}",
+                job.name
+            );
+        }
+
         let channel = ChannelContext {
             kind: ChannelKind::Cron,
             streaming: false,
@@ -603,8 +616,15 @@ impl CronEngine {
             ));
         };
         let note = format!("⏰ [cron job '{}' fired] {message}", job.name);
+        let caller_label = format!("cron job '{}'", job.name);
         match messenger
-            .deliver_note(&did.0, &peer, &note, peko_session::events::MessageSource::Cron)
+            .deliver_note(
+                &did.0,
+                &peer,
+                &note,
+                peko_session::events::MessageSource::Cron,
+                Some(&caller_label),
+            )
             .await
         {
             Ok(true) => {
@@ -653,13 +673,20 @@ impl CronEngine {
     ) {
         let excerpt: String = outcome.chars().take(500).collect();
         let note = format!("⏰ [cron job '{job_name}' fired] {excerpt}");
+        let caller_label = format!("cron job '{job_name}'");
         let did = principal.did().await;
         let Some(messenger) = self.messenger() else {
             warn!("cron note: no peer messenger available for {job_name}");
             return;
         };
         if let Err(e) = messenger
-            .deliver_note(&did.0, peer, &note, peko_session::events::MessageSource::Cron)
+            .deliver_note(
+                &did.0,
+                peer,
+                &note,
+                peko_session::events::MessageSource::Cron,
+                Some(&caller_label),
+            )
             .await
         {
             warn!("cron note append failed for {job_name}: {e}");

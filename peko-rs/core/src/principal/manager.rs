@@ -1094,6 +1094,35 @@ impl PrincipalManager {
             .map_err(|e| PrincipalManagerError::Config(format!("chat-log append: {e}")))
     }
 
+    /// Persist a cron-fired prompt to the chat-log shard for
+    /// `(principal_did, peer)`. Unlike `record_input`, this bypasses
+    /// the `is_peer_chat_channel` gate because cron prompts arrive on
+    /// `ChannelKind::Cron`, which is excluded by design — but the
+    /// owner still needs to see the cron-fired text in `peko log`
+    /// alongside the principal's reply (`record_response` writes that
+    /// unconditionally).
+    ///
+    /// Skipped silently when no chat-log store is attached (tests /
+    /// non-daemon contexts). Persistence failure returns `Err` so the
+    /// caller can log a warning — the cron run itself is not
+    /// rejected; the chat-log is best-effort projection.
+    pub(crate) async fn record_cron_input(
+        &self,
+        principal: &Arc<Principal>,
+        peer: &Subject,
+        message: &str,
+    ) -> Result<(), PrincipalManagerError> {
+        let Some(store) = self.chat_log_store.as_ref() else {
+            return Ok(());
+        };
+        let key = peko_chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
+        let entry = peko_chat_log::ChatLogMessage::new(peer.clone(), message.to_string(), None);
+        store
+            .append_message(&key, &entry)
+            .await
+            .map_err(|e| PrincipalManagerError::Config(format!("chat-log cron-input append: {e}")))
+    }
+
     /// Persist the principal's authoritative response (or queued
     /// acknowledgement) to the chat-log shard. Best-effort: a failed
     /// write logs a warning but does not reject the response — the

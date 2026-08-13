@@ -253,12 +253,19 @@ impl SendPeerTool {
             .or(agent_label.filter(|l| !l.is_empty()))
             .unwrap_or("agent");
         let note = format!("📨 [{label}] {message}");
+        // Caller-side label for the principal's view: tells the
+        // principal which agent turn pushed the note into the user's
+        // conversational session. Session id is the canonical link
+        // back to the engine context (subagent turns carry their
+        // parent's session id).
+        let caller_label = format!("agent {session_id}");
         match messenger
             .deliver_note(
                 principal_id,
                 target,
                 &note,
                 peko_session::events::MessageSource::Agent,
+                Some(&caller_label),
             )
             .await
         {
@@ -1699,6 +1706,7 @@ mod tests {
             target: &Subject,
             note: &str,
             _source: peko_session::events::MessageSource,
+            _caller_label: Option<&str>,
         ) -> anyhow::Result<bool> {
             self.delivered
                 .lock()

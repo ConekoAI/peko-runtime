@@ -79,6 +79,15 @@ fn non_spawn_subject(s: &str) -> Option<Subject> {
 /// peer has no conversational session yet (silent skip: the note has
 /// nothing to attach to; the outcome still lives in the caller's own
 /// session). No session is ever created.
+///
+/// When `caller_label` is supplied (e.g. `"agent <session_id>"` for a
+/// `send_peer` call, `"cron job <name>"` for a cron fire), the
+/// messenger ALSO writes a structured `[notify] …` line to the
+/// principal's canonical `root:{owner}` session JSONL so the principal
+/// sees what was sent on its behalf in its next turn. The
+/// notification is meta-info: it does not appear in the chat-log
+/// (consumer-facing `peko log`), only in the session JSONL (engine
+/// context). The peer view (full note + chat-log row) is unchanged.
 #[async_trait::async_trait]
 pub trait PeerMessenger: Send + Sync {
     async fn deliver_note(
@@ -87,6 +96,7 @@ pub trait PeerMessenger: Send + Sync {
         target: &Subject,
         note: &str,
         source: MessageSource,
+        caller_label: Option<&str>,
     ) -> Result<bool>;
 
     /// The human (or principal) peer that started the run owning
@@ -130,21 +140,101 @@ impl PeerMessenger for PrincipalPeerMessenger {
         target: &Subject,
         note: &str,
         source: MessageSource,
+        caller_label: Option<&str>,
     ) -> Result<bool> {
         let sessions_dir = self.sessions_dir_for(principal_id).await?;
         let conv_session_id = crate::principal::routers::root::root_session_id(target);
         let mut session_manager = peko_session::manager::SessionManager::new()
-            .with_sessions_dir_internal(sessions_dir);
-        match session_manager.open_session(&conv_session_id).await {
+            .with_sessions_dir_internal(sessions_dir.clone());
+        let appended = match session_manager.open_session(&conv_session_id).await {
             Ok(Some(handle)) => {
                 handle.add_user_with_source(note, source).await?;
-                Ok(true)
+                true
             }
             // No conversational session yet (the peer has never
             // chatted): nothing to attach the note to.
-            Ok(None) => Ok(false),
-            Err(e) => Err(e),
+            Ok(None) => false,
+            Err(e) => return Err(e),
+        };
+
+        // Chat-log projection: peer notes (📨 from `send_peer`,
+        // ⏰ from cron Send/Notify) are principal-authored lines in
+        // the owner's conversation thread. They must surface in
+        // `peko log` alongside the model's reply. Sender is the
+        // principal's DID; the chat-log peer is the human on the
+        // other side of the conversation (`target`).
+        //
+        // Best-effort: a failed append logs a warning but does not
+        // fail the call — the JSONL write already succeeded.
+        if appended {
+            if let Some(store) = self.principal_manager.chat_log_store() {
+                if let Some(principal) = crate::daemon::cron_engine::resolve_principal(
+                    &self.principal_manager,
+                    &peko_subject::PrincipalId(principal_id.to_string()),
+                )
+                .await
+                {
+                    let did = principal.did().await;
+                    let entry = peko_chat_log::ChatLogMessage::new(
+                        peko_subject::Subject::Principal(did.clone()),
+                        note.to_string(),
+                        None,
+                    );
+                    let key = peko_chat_log::ChatThreadKey::new(did, target.clone());
+                    if let Err(e) = store.append_message(&key, &entry).await {
+                        let source_dbg = format!("{source:?}").to_lowercase();
+                        tracing::warn!(
+                            principal_id,
+                            peer = %target,
+                            source = %source_dbg,
+                            error = %e,
+                            "chat-log append (peer note) failed; note was persisted to session JSONL but not to chat-log"
+                        );
+                    }
+                }
+            }
         }
+
+        // Principal-view notification: the principal's own session
+        // JSONL gets a structured `[notify] 📨 <caller_label> sent to
+        // <target>: <note>` line so the principal sees what was sent
+        // on its behalf in its next turn. This is NOT in the chat-log
+        // (consumer-facing `peko log`); only the session JSONL
+        // (engine context). Skipped when no caller_label is supplied
+        // (legacy callers) or when the principal's `root:{owner}`
+        // session does not exist yet.
+        //
+        // Best-effort: a failed append logs a warning but does not
+        // fail the call.
+        if appended {
+            if let Some(label) = caller_label {
+                let owner = target.clone();
+                let root_session_id = crate::principal::routers::root::root_session_id(&owner);
+                let mut session_manager = peko_session::manager::SessionManager::new()
+                    .with_sessions_dir_internal(sessions_dir.clone());
+                if let Ok(Some(handle)) = session_manager.open_session(&root_session_id).await
+                {
+                    let notification = format!(
+                        "[notify] 📨 {label} sent to {target}: {note}"
+                    );
+                    if let Err(e) = handle
+                        .add_user_with_source(&notification, MessageSource::Agent)
+                        .await
+                    {
+                        let source_dbg = format!("{source:?}").to_lowercase();
+                        tracing::warn!(
+                            principal_id,
+                            peer = %target,
+                            source = %source_dbg,
+                            error = %e,
+                            "principal-view notification append failed; note was delivered to peer but not to principal's session"
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(appended)
     }
 
     async fn originating_peer(
