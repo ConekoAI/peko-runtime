@@ -26,8 +26,14 @@ use crate::common::paths::PathResolver;
 use crate::principal::manager::PrincipalManager;
 
 /// Discriminator for [`CronOps::authorize`] — picks between the
-/// schedule-write gate (Add/Remove/Run) and the history-write gate
-/// (History).
+/// schedule-write gate (Add/Remove/Run) and the history gate (History).
+///
+/// **Read-via-write-cap invariant:** `CronOp::History` is gated by
+/// `principal:write_cron_history` because there is no separate read cap
+/// for cron history. The capability string is reused deliberately
+/// (see PR #339); the gate key is `local_cron_history_gate_for_name`.
+/// If a separate read cap is ever introduced, split the gate AND the
+/// starter-bundle grants at the same time.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum CronOp {
     Mutate,
@@ -223,6 +229,11 @@ impl CronOps {
     }
 
     /// The owner-capability gate shared by every mutating/history op.
+///
+/// Both arms resolve a `LocalPath` as the gate token; the IPC handler
+/// doesn't need the path itself — `CronOps::authorize` only returns
+/// the path for future use. The path-discarding `map(|_| ())` keeps
+/// the gate surface uniform across `Mutate` and `History`.
     fn gate(&self, principal_name: &str, caps: &Capabilities, op: CronOp) -> Result<(), String> {
         let gate = match op {
             CronOp::Mutate => self
@@ -231,7 +242,7 @@ impl CronOps {
                 .map(|_| ()),
             CronOp::History => self
                 .authority
-                .local_cron_history_write_for_name(principal_name, Some(caps))
+                .local_cron_history_gate_for_name(principal_name, Some(caps))
                 .map(|_| ()),
         };
         gate.map_err(|e| {
