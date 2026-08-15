@@ -35,6 +35,14 @@ Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in
   descendants is refused. The reparent is recorded as a `System` event in
   the session's JSONL; the `session.created` header's parent field stays
   stale-by-design (the index is the source of truth for parentage).
+- **Session path addressing (slugs).** Sessions gain an optional `slug`
+  (per-parent-unique path segment, serde-default). Any `session_key` tool
+  param now accepts `/a/b/c` paths — anchored at the caller's tree root,
+  walked by slug, resolved before ownership guards. Set points: `session
+  rename --slug`, Agent tool `new` with `name`, `branch` (derives
+  `<source>-branch`), `move` (uniqueness re-checked at destination).
+  `session list` shows `slug` + computed `path`. Ids remain the canonical
+  key; paths are a computed view (`peko-rs/session/src/path.rs`).
 
 ### Round 7: chapters deleted, stable-id paging, session/Agent tool surface (2026-08-13)
 

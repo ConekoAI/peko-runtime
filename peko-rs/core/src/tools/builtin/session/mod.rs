@@ -65,6 +65,15 @@ pub struct SessionInfo {
     /// archived, or re-attached while true).
     #[serde(default)]
     pub run_active: bool,
+    /// Per-parent-unique path segment (see `peko_session::path`).
+    /// `None` for sessions that were never given a slug.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// Absolute display path (`/a/b` — slug segments, slugless
+    /// ancestors skipped, slugless target falling back to its raw id
+    /// as the last segment). Computed view only; ids stay canonical.
+    #[serde(default)]
+    pub path: String,
 }
 
 /// Message in session history
@@ -250,8 +259,18 @@ pub trait SessionRuntime: Send + Sync {
         label: Option<String>,
     ) -> anyhow::Result<BranchOutcome>;
 
-    /// Rename (retitle) a session.
-    async fn rename_session(&self, session_key: &str, title: String) -> anyhow::Result<()>;
+    /// Rename (retitle) a session and/or set its slug (the
+    /// per-parent-unique path segment used for `/a/b` addressing).
+    /// At least one of `title` / `slug` is supplied (enforced by the
+    /// tool layer). A `Some` slug is validated and must be unique
+    /// among the session's siblings; a conflict is a structured error
+    /// naming the conflicting session id.
+    async fn rename_session(
+        &self,
+        session_key: &str,
+        title: Option<String>,
+        slug: Option<String>,
+    ) -> anyhow::Result<()>;
 
     /// Move (reparent) a session — with its subtree — under a new
     /// parent. Refused when the move would create a cycle, when the
@@ -312,6 +331,8 @@ mod tests {
             peer_id: Some("alice".into()),
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["session_key"], "alice-1");
@@ -347,6 +368,34 @@ mod tests {
         let back: SessionInfo = serde_json::from_value(legacy).unwrap();
         assert!(!back.archived);
         assert!(!back.run_active);
+        // slug/path were added later still; legacy payloads default them.
+        assert_eq!(back.slug, None);
+        assert_eq!(back.path, "");
+    }
+
+    #[test]
+    fn session_info_slug_and_path_roundtrip() {
+        let info = SessionInfo {
+            session_key: "s1".into(),
+            session_id: "s1".into(),
+            agent_id: None,
+            label: None,
+            created_at: "2024-01-01T00:00:00Z".into(),
+            last_activity: "2024-01-01T01:00:00Z".into(),
+            message_count: 0,
+            peer_type: None,
+            peer_id: None,
+            archived: false,
+            run_active: false,
+            slug: Some("task-b".into()),
+            path: "/memory/task-b".into(),
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["slug"], "task-b");
+        assert_eq!(json["path"], "/memory/task-b");
+        let back: SessionInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(back.slug.as_deref(), Some("task-b"));
+        assert_eq!(back.path, "/memory/task-b");
     }
 
     #[test]
@@ -412,6 +461,8 @@ mod tests {
             peer_id: None,
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
         let json = serde_json::to_value(&info).unwrap();
         let obj = json.as_object().unwrap();

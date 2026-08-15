@@ -288,12 +288,22 @@ impl SessionRuntime for SessionCache {
         })
     }
 
-    async fn rename_session(&self, session_key: &str, title: String) -> anyhow::Result<()> {
+    async fn rename_session(
+        &self,
+        session_key: &str,
+        title: Option<String>,
+        slug: Option<String>,
+    ) -> anyhow::Result<()> {
         let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
         let info = sessions
             .get_mut(session_key)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
-        info.label = Some(title.clone());
+        if let Some(ref title) = title {
+            info.label = Some(title.clone());
+        }
+        if let Some(ref slug) = slug {
+            info.slug = Some(slug.clone());
+        }
         drop(sessions);
 
         if let Some(status) = self
@@ -302,7 +312,9 @@ impl SessionRuntime for SessionCache {
             .expect("statuses mutex poisoned")
             .get_mut(session_key)
         {
-            status.label = Some(title);
+            if let Some(title) = title {
+                status.label = Some(title);
+            }
         }
         Ok(())
     }
@@ -435,6 +447,8 @@ mod tests {
             peer_id: None,
             archived: false,
             run_active: false,
+            slug: None,
+            path: format!("/{key}"),
         }
     }
 

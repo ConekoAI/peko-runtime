@@ -74,6 +74,7 @@ pub mod message_conversion;
 pub mod metadata;
 pub mod metadata_controller;
 pub mod overlay;
+pub mod path;
 pub mod recovery;
 pub mod session_core;
 pub mod session_core_impl;

@@ -1060,6 +1060,7 @@ both = `false`):
 | `archived` | bool | Hidden from `session list` unless `include_archived: true`; refuses resume/compact until unarchived |
 | `compact_requested` | bool | Persisted compaction request (set by the `Agent` tool's `compact` action). The orchestrator ORs it into the threshold decision at the session's next iteration/run and clears it only when compaction genuinely starts, so a crashed run doesn't lose the request |
 | `standing` | bool | Exempt from maintenance pruning (2026-08-15): a standing session's transcript is durable regardless of idle age. `root:*` ids and `archived` sessions are prune-exempt by rule; `standing` is the flag for standing children |
+| `slug` | string \| null | Per-parent-unique path segment for `/a/b` addressing (2026-08-15, Phase 1b). `#[serde(default, skip_serializing_if = "Option::is_none")]` on the entry. See "Session path addressing" below |
 
 **`PeerInfo.active_session_id` is now `Option<String>`**
 (`#[serde(default)]`). Deleting a session scrubs its id from the
@@ -1107,6 +1108,44 @@ in each in-scope session's JSONL (tool-call JSON is not matched).
 Hits are `(session_id, role, timestamp, snippet)` with a ~160-char
 snippet centered on the match. Subtree (spawned) callers are scoped
 to their own subtree; archived sessions are excluded.
+
+**Session path addressing (slugs).** Sessions form trees via
+`parent_session_id`; each session may carry a `slug` — a
+per-parent-unique path segment (1–64 chars, no `/`, no
+leading/trailing whitespace) — so a session is addressable as
+`/a/b/c` from anywhere inside its own tree. `title` stays free-form
+display text; the slug is the machine-stable segment.
+
+- **Uniqueness is per parent**: two sessions may share a slug iff
+  their parents differ. Enforced at every set point (`session
+  rename`'s `slug` param, the Agent tool's `name` param at spawn,
+  `branch`'s derived `<source-slug>-branch` — uniquified
+  `-branch-2`, … — and `move`, which re-checks against the
+  DESTINATION's siblings) by scanning siblings in the metadata slice;
+  a conflict is a structured error naming the conflicting session id.
+- **Resolution**: any tool parameter accepting a session reference
+  (`session_key` on the `session` tool incl. `move`'s `new_parent`;
+  `session_key` on the Agent tool's `resume`/`compact`) accepts a
+  `/`-rooted path. `/` alone anchors at the caller's **topmost
+  ancestor** (the root of the caller's tree); each further segment
+  selects the child of the current node whose slug equals the
+  segment. An unknown segment errors with the available child slugs
+  at the failing level. Resolution is cycle-safe and happens in the
+  runtime adapter layer before the (unchanged) ownership guards, ids
+  remain the canonical key everywhere else, and resolver input is
+  slug-only — raw ids are never accepted as intermediate segments.
+- Root `root:*` sessions carry no slug and are addressable only as
+  `/` from inside their own tree (cross-tree access is refused by the
+  ownership guards anyway).
+- `session list` entries carry `slug` and a computed absolute `path`
+  (display-only): ancestors without a slug are skipped as
+  intermediate segments, and a slugless target falls back to its raw
+  id as the last segment (e.g. `/memory/550e8400-…`).
+
+The pure resolver/validators live in `peko_session::path`
+(`resolve_path`, `compute_path`, `validate_slug`, `slug_conflict`,
+`derive_branch_slug`) over `&[SessionMetadata]` slices — no IO, no
+locks, mirroring the ownership-guard style.
 
 ---
 

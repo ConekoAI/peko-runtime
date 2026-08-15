@@ -293,6 +293,50 @@ impl MetadataController {
         Ok(())
     }
 
+    /// Set the slug on a session (per-parent-unique path segment).
+    ///
+    /// Unlike [`Self::set_parent`] this is NOT a raw write: the slug
+    /// format is validated (`crate::path::validate_slug`) and
+    /// per-parent uniqueness is enforced by scanning the session's
+    /// siblings (`crate::path::slug_conflict`) — a conflict is a
+    /// structured error naming the conflicting session id. Passing
+    /// `None` clears the slug without checks. Errors when the session
+    /// does not exist.
+    pub async fn set_slug(&mut self, session_id: &str, slug: Option<String>) -> Result<()> {
+        debug!("Setting slug={:?} for session {}", slug, session_id);
+
+        let entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
+            anyhow::anyhow!("Cannot set slug for non-existent session {session_id}")
+        })?;
+
+        if let Some(ref slug) = slug {
+            crate::path::validate_slug(slug)?;
+            let siblings = self.list_metadata(false).await?;
+            if let Some(conflict) = crate::path::slug_conflict(
+                &siblings,
+                entry.parent_session_id.as_deref(),
+                slug,
+                session_id,
+            ) {
+                return Err(crate::path::err_slug_conflict(
+                    slug,
+                    &conflict,
+                    entry.parent_session_id.as_deref(),
+                ));
+            }
+        }
+
+        if entry.slug != slug {
+            let mut entry = entry;
+            entry.slug = slug;
+            entry.touch();
+            self.update_entry(entry).await?;
+        }
+
+        info!("Set slug for session {}", session_id);
+        Ok(())
+    }
+
     /// Set the compaction-request flag on a session
     ///
     /// The compaction orchestrator ORs this flag into its
@@ -1101,6 +1145,77 @@ mod tests {
         // Errors on a non-existent session.
         assert!(third
             .set_parent("sess_nope", Some("p".to_string()))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_set_slug_validation_uniqueness_and_persistence() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().to_path_buf();
+
+        let mut controller = MetadataController::new(&dir);
+        // root ── a (slug "task")
+        //     └── b
+        //         └── c (slug "task" — same slug, different parent: OK)
+        let mut a = SessionMetadata::new("sess_a", "test_agent", "sess_a.jsonl");
+        a.parent_session_id = Some("root".to_string());
+        let mut b = SessionMetadata::new("sess_b", "test_agent", "sess_b.jsonl");
+        b.parent_session_id = Some("root".to_string());
+        let mut c = SessionMetadata::new("sess_c", "test_agent", "sess_c.jsonl");
+        c.parent_session_id = Some("sess_b".to_string());
+        for m in [a, b, c] {
+            controller.create_metadata(m).await.unwrap();
+        }
+
+        // Format validation: structured error.
+        for bad in ["", "a/b", " lead", "trail "] {
+            let err = controller
+                .set_slug("sess_a", Some(bad.to_string()))
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("invalid slug"), "{err}");
+        }
+
+        // Set + persist (reload through a fresh controller).
+        controller
+            .set_slug("sess_a", Some("task".to_string()))
+            .await
+            .unwrap();
+        controller
+            .set_slug("sess_c", Some("task".to_string()))
+            .await
+            .unwrap();
+        let mut reloaded = MetadataController::new(&dir);
+        assert_eq!(
+            reloaded
+                .get_metadata_fast("sess_a")
+                .await
+                .unwrap()
+                .unwrap()
+                .slug
+                .as_deref(),
+            Some("task")
+        );
+
+        // Sibling conflict: names the conflicting session id.
+        let err = controller
+            .set_slug("sess_b", Some("task".to_string()))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("sess_a"), "{err}");
+        assert!(err.to_string().contains("unique per parent"), "{err}");
+
+        // Keeping your own slug is not a conflict (self excluded).
+        controller
+            .set_slug("sess_a", Some("task".to_string()))
+            .await
+            .unwrap();
+
+        // Clearing is always allowed; non-existent sessions error.
+        controller.set_slug("sess_a", None).await.unwrap();
+        assert!(controller
+            .set_slug("sess_nope", Some("x".to_string()))
             .await
             .is_err());
     }

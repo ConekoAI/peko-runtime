@@ -84,6 +84,15 @@ pub struct ExecutionConfig {
     /// "inherit the parent's model verbatim" (pre-Phase-1
     /// behavior).
     pub model_override: Option<String>,
+    /// Slug for the child's session metadata (Agent tool `name`
+    /// param) — the per-parent-unique path segment for `/a/b`
+    /// addressing. `None` leaves the child slugless (the historical
+    /// behavior). Validated + uniqueness-checked at spawn time in
+    /// `spawn_and_execute`; the write lands via
+    /// `SessionManager::set_session_slug` right after the spawn
+    /// session is created (the same index entry
+    /// `stamp_spawn_parent_linkage` patches).
+    pub slug: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -95,6 +104,7 @@ impl Default for ExecutionConfig {
             announce_completion: true,
             max_depth: 1, // Default: no nested spawns
             model_override: None,
+            slug: None,
         }
     }
 }
@@ -603,6 +613,31 @@ impl SubagentExecutor {
             }));
         }
 
+        // Slug pre-flight (Agent tool `name` param): validate the
+        // format and check per-parent uniqueness BEFORE spawning, so a
+        // conflict refuses before any session is created. Siblings are
+        // the existing children of the parent session. The production
+        // path passes the caller's session id as `parent_session_key`;
+        // when it doesn't resolve to a metadata entry (legacy session
+        // KEY shapes) the pre-check is skipped and the post-spawn
+        // `set_session_slug` below still enforces the invariant.
+        if let Some(ref slug) = config.slug {
+            peko_session::path::validate_slug(slug)?;
+            let mut manager = self.session_manager.write().await;
+            let metas = manager.list_all_sessions(false).await?;
+            if metas.iter().any(|m| m.session_id == parent_session_key) {
+                if let Some(conflict) =
+                    peko_session::path::slug_conflict(&metas, Some(parent_session_key), slug, "")
+                {
+                    return Err(peko_session::path::err_slug_conflict(
+                        slug,
+                        &conflict,
+                        Some(parent_session_key),
+                    ));
+                }
+            }
+        }
+
         // Generate run ID
         let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
 
@@ -626,6 +661,21 @@ impl SubagentExecutor {
         let child_session_key = spawn_resolved.context.full_session_key.clone();
         let child_session_id = spawn_resolved.context.session_id.clone();
         let child_base = spawn_resolved.handle.base().clone();
+
+        // Stamp the child's slug (Agent tool `name`) onto the same
+        // index entry `stamp_spawn_parent_linkage` just patched. The
+        // pre-flight above already validated format + uniqueness when
+        // the parent resolved; `set_session_slug` re-enforces both
+        // (closing the race with a concurrent same-name spawn) and a
+        // failure here refuses the spawn — the run is not yet
+        // registered, so no LLM traffic has happened.
+        if let Some(ref slug) = config.slug {
+            self.session_manager
+                .read()
+                .await
+                .set_session_slug(&child_session_id, Some(slug.clone()))
+                .await?;
+        }
 
         info!(
             "Spawned subagent: run_id={} depth={} isolated={}",
@@ -681,6 +731,16 @@ impl SubagentExecutor {
             let metas = manager.list_all_sessions(false).await?;
             (caller_context(parent_session_key, &metas), metas)
         };
+
+        // A `/`-rooted `session_key` is a session path (slug segments
+        // anchored at the root of the caller's tree); resolve it to the
+        // canonical session id BEFORE the guards — they all run on ids.
+        let resolved_target = if resume_session_id.starts_with('/') {
+            peko_session::path::resolve_path(&metas, &caller.current_session_id, resume_session_id)?
+        } else {
+            resume_session_id.to_string()
+        };
+        let resume_session_id = resolved_target.as_str();
 
         // Guard: target must exist.
         let target_meta = metas
@@ -827,6 +887,16 @@ impl SubagentExecutor {
             let metas = manager.list_all_sessions(false).await?;
             (caller_context(caller_session_key, &metas), metas)
         };
+
+        // A `/`-rooted target is a session path (slug segments anchored
+        // at the root of the caller's tree); resolve to the canonical
+        // session id BEFORE the guards — they all run on ids.
+        let resolved_target = if target.starts_with('/') {
+            peko_session::path::resolve_path(&metas, &caller.current_session_id, target)?
+        } else {
+            target.to_string()
+        };
+        let target = resolved_target.as_str();
 
         // Guard: target must exist.
         let target_meta = metas

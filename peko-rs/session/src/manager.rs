@@ -1421,6 +1421,18 @@ impl SessionManager {
         controller.update_metadata(metadata).await
     }
 
+    /// Set the slug on a session's metadata (passthrough to the
+    /// `MetadataController`, which validates the format and enforces
+    /// per-parent uniqueness). Errors when the session does not exist
+    /// or the slug is invalid / conflicts with a sibling.
+    pub async fn set_session_slug(&self, session_id: &str, slug: Option<String>) -> Result<()> {
+        self.metadata_controller
+            .write()
+            .await
+            .set_slug(session_id, slug)
+            .await
+    }
+
     /// Set the archived flag on a session (passthrough to the
     /// `MetadataController`). When `archived == true`, also scrubs the
     /// session id from any peer routing entry so that archived sessions

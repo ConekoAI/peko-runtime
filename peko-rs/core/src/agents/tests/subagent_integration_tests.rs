@@ -1598,3 +1598,166 @@ async fn validate_context_parent_ownership() {
         .await
         .unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// Phase 1b: slugs + path addressing. Agent tool `new`'s `name` param
+// lands on `ExecutionConfig.slug` and is stamped onto the child's
+// session metadata at spawn; `resume` / `compact` accept `/`-rooted
+// session paths (resolved against the caller's tree before guards).
+// ---------------------------------------------------------------------------
+
+/// Set a slug on a linked session (mirrors what the session tool's
+/// rename does through the production adapter).
+async fn set_slug(session_manager: &Arc<RwLock<SessionManager>>, id: &str, slug: &str) {
+    session_manager
+        .read()
+        .await
+        .set_session_slug(id, Some(slug.to_string()))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn spawn_with_name_stamps_child_slug() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let run_id = executor
+        .spawn_and_execute(
+            "task",
+            None,
+            true,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("task-b".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(run_id.starts_with("run_"));
+
+    // The child session's metadata carries the slug.
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap();
+    let child = metas
+        .iter()
+        .find(|m| m.parent_session_id.as_deref() == Some("root-sess"))
+        .expect("spawned child present");
+    assert_eq!(child.slug.as_deref(), Some("task-b"));
+    assert_eq!(child.trigger, "spawn");
+
+    // Uniqueness: a second spawn with the same name under the same
+    // parent refuses BEFORE the run registers, naming the conflict.
+    let err = executor
+        .spawn_and_execute(
+            "task 2",
+            None,
+            true,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("task-b".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unique per parent"), "{err}");
+    assert!(err.to_string().contains(&child.session_id), "{err}");
+
+    // Invalid slug format refuses at spawn too.
+    let err = executor
+        .spawn_and_execute(
+            "task 3",
+            None,
+            true,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("has/slash".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("invalid slug"), "{err}");
+}
+
+#[tokio::test]
+async fn resume_and_compact_accept_path_targets() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+    set_slug(&session_manager, "spawn-a", "worker").await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+
+    // resume with a /path resolves to the same session id.
+    let run_id = executor
+        .resume_and_execute(
+            "continue the task",
+            "/worker",
+            "root-sess",
+            ExecutionConfig::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(run_id.starts_with("run_"));
+    sleep(Duration::from_millis(500)).await;
+    {
+        let guard = registry.read().await;
+        let entry = guard.get(&run_id).unwrap();
+        assert!(
+            entry.status.is_terminal(),
+            "resumed-via-path run should complete: {:?}",
+            entry.status
+        );
+    }
+
+    // compact with a /path flags the resolved session.
+    let outcome = executor
+        .request_compaction("/worker", "root-sess")
+        .await
+        .unwrap();
+    assert_eq!(outcome.session_id, "spawn-a");
+
+    // Unknown path segments surface the actionable resolver error
+    // (available child slugs listed), before any guard runs.
+    let err = executor
+        .request_compaction("/nope", "root-sess")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("worker"), "{err}");
+    let err = executor
+        .resume_and_execute("t", "/nope", "root-sess", ExecutionConfig::default(), None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("worker"), "{err}");
+}

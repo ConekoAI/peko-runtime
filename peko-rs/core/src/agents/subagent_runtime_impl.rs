@@ -294,6 +294,9 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             announce_completion: request.config.announce_completion,
             max_depth: request.config.max_depth,
             model_override,
+            // Agent tool `name` → the child session's slug (stamped by
+            // `spawn_and_execute`; ignored on the resume path).
+            slug: request.name.clone(),
         };
 
         let view = if let Some(ref resume_target) = request.resume_session {

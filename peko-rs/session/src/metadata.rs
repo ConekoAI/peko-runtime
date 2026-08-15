@@ -52,6 +52,12 @@ pub struct SessionMetadata {
     /// Standing sessions are exempt from maintenance pruning — their
     /// transcripts are durable regardless of idle age.
     pub standing: bool,
+    /// Per-parent-unique path segment for `/slug/...` addressing
+    /// (see `crate::path`). `title` stays free-form display text;
+    /// the slug is the machine-stable segment. Root `root:*`
+    /// sessions carry no slug — they are addressable only as `/`
+    /// from inside their own tree.
+    pub slug: Option<String>,
 }
 
 impl SessionMetadata {
@@ -86,6 +92,7 @@ impl SessionMetadata {
             archived: false,
             compact_requested: false,
             standing: false,
+            slug: None,
         }
     }
 
@@ -125,6 +132,7 @@ impl SessionMetadata {
             archived: entry.archived,
             compact_requested: entry.compact_requested,
             standing: entry.standing,
+            slug: entry.slug,
         }
     }
 
@@ -151,6 +159,7 @@ impl SessionMetadata {
             archived: self.archived,
             compact_requested: self.compact_requested,
             standing: self.standing,
+            slug: self.slug.clone(),
         }
     }
 
@@ -209,6 +218,17 @@ impl SessionMetadata {
     /// Set title
     pub fn set_title(&mut self, title: Option<impl Into<String>>) {
         self.title = title.map(Into::into);
+        self.touch();
+    }
+
+    /// Set the slug (per-parent-unique path segment).
+    ///
+    /// Raw write — format validation and per-parent uniqueness are
+    /// enforced by the callers (`crate::path::validate_slug` /
+    /// `crate::path::slug_conflict`, applied in
+    /// `MetadataController::set_slug` and the root-side adapters).
+    pub fn set_slug(&mut self, slug: Option<impl Into<String>>) {
+        self.slug = slug.map(Into::into);
         self.touch();
     }
 
@@ -348,6 +368,31 @@ mod tests {
         assert!(!meta.archived);
         assert!(!meta.compact_requested);
         assert!(!meta.standing);
+    }
+
+    #[test]
+    fn test_slug_roundtrip() {
+        let mut entry = SessionEntry::new(
+            "sess_123".to_string(),
+            "test_agent".to_string(),
+            "sess_123.jsonl".to_string(),
+        );
+        assert_eq!(entry.slug, None);
+        entry.slug = Some("task-b".to_string());
+
+        let meta = SessionMetadata::from_entry(entry);
+        assert_eq!(meta.slug.as_deref(), Some("task-b"));
+
+        let entry2 = meta.to_entry();
+        assert_eq!(entry2.slug.as_deref(), Some("task-b"));
+
+        // Slug defaults to None on construction; set_slug mirrors set_title.
+        let mut meta = SessionMetadata::new("sess_456", "test_agent", "sess_456.jsonl");
+        assert_eq!(meta.slug, None);
+        meta.set_slug(Some("memory"));
+        assert_eq!(meta.slug.as_deref(), Some("memory"));
+        meta.set_slug(None::<String>);
+        assert_eq!(meta.slug, None);
     }
 
     #[test]

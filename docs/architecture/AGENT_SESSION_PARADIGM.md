@@ -175,21 +175,24 @@ stale-by-design (never read back — the index is the source of truth for
 parentage). No reader caches the parent chain, so a reparent takes effect
 on the next guard evaluation.
 
-**(gap) No path addressing.** Session ids are opaque strings — the colon
-structure is convention, enforced nowhere (the v2 `agent:...:peer:...`
-strings in `peko-rs/session/src/key.rs` are *peer-routing keys* for
-peers.json, not session ids). A `/user-a/task-b` → id layer needs:
-
-- A per-parent-unique **slug** field (title cannot serve: optional,
-  non-unique).
-- A name index derivable from `sessions.json` at load — no new storage
-  strictly required.
-- Uniqueness enforced per parent at spawn/rename/move time.
-- Resolution entry points: the session tool's `session_key` param and the
-  Agent tool's `resume`/`compact`.
-- Ids stay stable for life; paths are a computed view over (parent chain,
-  slug), so ancestor renames cascade automatically and nothing stored
-  breaks.
+**(implemented — Phase 1b of the paradigm sprint, 2026-08-15)** Path
+addressing exists. Sessions carry an optional **slug** — a
+per-parent-unique path segment (`SessionMetadata.slug` /
+`SessionEntry.slug`, serde-default, validated: 1–64 chars, no `/`, no
+outer whitespace). The resolver (`peko-rs/session/src/path.rs`, pure
+functions over a metadata slice, ownership.rs-style) anchors `/` at the
+caller's topmost ancestor and walks children by slug; unknown segments
+produce structured errors listing the available child slugs. Every
+segment must be a slug — raw ids are not accepted as intermediate
+segments (a slugless node is addressed by raw id). Set points: session
+tool `rename` (optional `slug`), Agent tool `new` (optional `name`),
+`branch` (derives `<source-slug>-branch`, uniquified), and `move`
+(re-checks uniqueness among destination siblings). Resolution happens at
+the tool-runtime boundary for every `session_key`-shaped param
+(`/`-prefixed values resolve, raw ids pass through), *before* the
+unchanged ownership guards — paths are a computed view; ids stay the
+canonical key everywhere. `session list` shows `slug` + computed `path`
+(`compute_path` skips slugless ancestors, display-only).
 
 ## 3. Channels: the external interface
 
@@ -354,7 +357,7 @@ audit measured the current tool surface against that need:
 | Principal trunk `/` (self session, cron-kept, supervising) | ❌ gap | root is per-peer today; touch points in §2.1 |
 | Standing named children (`/memory`, `/about-user`, …) | ❌ gap | mechanics work; naming + registry + prune exemption missing (§2.2) |
 | Session `move` (reparent) | ✅ implemented (Phase 1a) | `session/session_runtime_impl.rs` `move_session`, `peko-rs/session/src/manager.rs`; cycle guard `err_move_cycle` (§2.4) |
-| Path addressing (`/user-a/task-b`) | ❌ gap | needs slug field + per-parent uniqueness + resolver (§2.4) |
+| Path addressing (`/user-a/task-b`) | ✅ implemented (Phase 1b) | `peko-rs/session/src/path.rs` resolver; `slug` on metadata; resolved at tool-runtime boundary before guards (§2.4) |
 | Channel → auto-spawned/bound child (`/user-a`, `/channel-a`) | ❌ gap | seam exists (`ChannelResponder`); binding storage, ChannelKind variant, self-post suppression, cursor durability missing (§3.2) |
 | Passive/active as channel tier property | ❌ gap | split is currently tunnel vs. channel; `Tier` is storage locality |
 | Per-session/subtree budget attribution | ❌ gap | quota is per-principal; no quota-reading tool |

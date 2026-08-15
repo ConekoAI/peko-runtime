@@ -185,6 +185,12 @@ pub struct SpawnRequest {
     /// the adapter to ownership-validate an explicit
     /// `parent_session_key`; `None` skips that check (test paths).
     pub caller_session_key: Option<String>,
+    /// Agent tool `name` param: slug for the child's session
+    /// metadata (the per-parent-unique path segment for `/a/b`
+    /// addressing). `None` leaves the child slugless. Ignored on the
+    /// resume path (the session already exists — rename it via the
+    /// session tool instead).
+    pub name: Option<String>,
 }
 
 // ─── SpawnAuditEvent (port input DTO) ─────────────────────────────

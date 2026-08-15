@@ -113,12 +113,14 @@ Per-action semantics (the action you choose determines which other params apply)
 - list: query sessions (filters: peer, agent_id, active_minutes; archived hidden unless include_archived:true)
 - history: messages of a session (session_key optional, defaults to current; include_tools)
 - search: case-insensitive text search across session transcripts (query required; optional peer filter)
-- rename: retitle a session (session_key + title required)
+- rename: retitle a session and/or set its slug (session_key required + at least one of title/slug; the slug is the per-parent-unique path segment used for /a/b addressing)
 - delete: remove a session (session_key required; recursive:true also deletes its descendants, children first)
-- branch: copy a session under a new id (session_key required; optional label) — the copy is NOT running; attach a run to it via the Agent tool's resume action
+- branch: copy a session under a new id (session_key required; optional label) — the copy is NOT running; attach a run to it via the Agent tool's resume action. When the source has a slug, the branch derives one (`<slug>-branch`, uniquified)
 - archive: hide a session from list/search (session_key required; still visible with include_archived:true)
 - unarchive: restore an archived session to normal visibility (session_key required)
 - move: reparent a session (with its whole subtree) under a new parent (session_key + new_parent required)
+
+Every session_key / new_parent parameter also accepts an absolute path (`/a/b` — see list's `path` field), anchored at the root of YOUR session tree; each segment is a slug. Raw session ids keep working everywhere.
 
 Refusals: the principal's root session (ids starting with `root:`) is continuous and managed by the engine — delete/archive/move on it are refused (moving UNDER a root session is allowed). You cannot delete, archive, rename, or move the session you are currently running in. Sessions with an active run refuse delete/archive/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). A caller in a spawned session manages only its own subtree — both the moved session and the destination must be inside it.
 
@@ -137,7 +139,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "session_key": {
                     "type": "string",
-                    "description": "Target session. Required for `rename`, `delete`, `branch`, `archive`, `unarchive`, `move`. Optional for `status` and `history` (defaults to current session)."
+                    "description": "Target session: a raw session id or an absolute path ('/a/b' of slugs, anchored at the root of your session tree — see list's `path` field). Required for `rename`, `delete`, `branch`, `archive`, `unarchive`, `move`. Optional for `status` and `history` (defaults to current session)."
                 },
                 "query": {
                     "type": "string",
@@ -145,7 +147,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "title": {
                     "type": "string",
-                    "description": "Required for 'rename'"
+                    "description": "Optional for 'rename': new display title (free-form). At least one of title/slug is required."
+                },
+                "slug": {
+                    "type": "string",
+                    "description": "Optional for 'rename': new slug — the per-parent-unique path segment used for /a/b addressing (1-64 chars, no '/', no leading/trailing whitespace; must be unique among the session's siblings). At least one of title/slug is required."
                 },
                 "label": {
                     "type": "string",
@@ -153,7 +159,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "new_parent": {
                     "type": "string",
-                    "description": "Required for 'move': the session to reparent under. Must exist; must not be the target itself or one of its descendants (cycle refusal); must be inside your subtree when you are a spawned caller."
+                    "description": "Required for 'move': the session to reparent under — a raw session id or an absolute path ('/a/b' of slugs). Must exist; must not be the target itself or one of its descendants (cycle refusal); must be inside your subtree when you are a spawned caller. The moved session's slug must be unique among the destination's children."
                 },
                 "recursive": {
                     "type": "boolean",
@@ -313,10 +319,20 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 let title = params
                     .get("title")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("'rename' requires the 'title' parameter"))?
-                    .to_string();
+                    .map(String::from);
+                let slug = params
+                    .get("slug")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                if title.is_none() && slug.is_none() {
+                    return Err(anyhow::anyhow!(
+                        "'rename' requires at least one of 'title' or 'slug'"
+                    ));
+                }
 
-                self.runtime.rename_session(session_key, title).await?;
+                self.runtime
+                    .rename_session(session_key, title, slug)
+                    .await?;
                 Ok(json!({ "renamed": session_key }))
             }
             SessionAction::Delete => {
@@ -445,6 +461,8 @@ mod tests {
             peer_id: Some("alice".to_string()),
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
 
         let history = vec![
@@ -570,6 +588,8 @@ mod tests {
             peer_id: None,
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
 
         cache.add_session("current-session".to_string(), session, vec![], status);
@@ -635,6 +655,8 @@ mod tests {
             peer_id: Some("alice".to_string()),
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
         let alice_other = SessionInfo {
             session_key: "alice-2".to_string(),
@@ -648,6 +670,8 @@ mod tests {
             peer_id: Some("alice".to_string()),
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
         let bob_main = SessionInfo {
             session_key: "bob-1".to_string(),
@@ -661,6 +685,8 @@ mod tests {
             peer_id: Some("bob".to_string()),
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
 
         cache.add_session(
@@ -827,6 +853,8 @@ mod tests {
             peer_id: None,
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
         let history = vec![HistoryMessage {
             role: "user".to_string(),
@@ -877,8 +905,44 @@ mod tests {
         let err = tool
             .execute(json!({"action": "rename", "session_key": "test-session"}))
             .await
-            .expect_err("rename without title must error");
+            .expect_err("rename without title or slug must error");
         assert!(err.to_string().contains("title"), "{err}");
+        assert!(err.to_string().contains("slug"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_session_rename_with_slug_only_title_only_and_both() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        // Slug only.
+        tool.execute(json!({"action": "rename", "session_key": "test-session", "slug": "task-b"}))
+            .await
+            .unwrap();
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["sessions"][0]["slug"], "task-b");
+        // Title untouched by a slug-only rename.
+        assert_eq!(list["sessions"][0]["label"], "Test Session");
+
+        // Title only (slug survives).
+        tool.execute(
+            json!({"action": "rename", "session_key": "test-session", "title": "New Title"}),
+        )
+        .await
+        .unwrap();
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["sessions"][0]["label"], "New Title");
+        assert_eq!(list["sessions"][0]["slug"], "task-b");
+
+        // Both at once.
+        tool.execute(
+            json!({"action": "rename", "session_key": "test-session", "title": "T", "slug": "s2"}),
+        )
+        .await
+        .unwrap();
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["sessions"][0]["label"], "T");
+        assert_eq!(list["sessions"][0]["slug"], "s2");
     }
 
     #[tokio::test]
@@ -1052,6 +1116,8 @@ mod tests {
                 peer_id: None,
                 archived: false,
                 run_active: false,
+                slug: None,
+                path: String::new(),
             },
             vec![],
             dummy_status("parent-s"),

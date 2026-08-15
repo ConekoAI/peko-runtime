@@ -107,6 +107,10 @@ pub struct AgentArgs {
     /// Optional description for tracking
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Optional slug for the spawned session (action `new` only) — the
+    /// per-parent-unique path segment for `/a/b` addressing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Optional model override for the subagent
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -364,6 +368,10 @@ impl AgentTool {
         // validated by the callers). The tool maps `action = "resume"`
         // + `session_key` onto this field.
         resume_session: Option<String>,
+        // Agent tool `name` param: slug for the spawned session's
+        // metadata (ignored on the resume path — the session already
+        // exists).
+        name: Option<String>,
         // The caller's own current session id — the adapter uses it
         // to ownership-validate an explicit `parent_session_key`.
         caller_session_key: Option<String>,
@@ -438,6 +446,7 @@ impl AgentTool {
                 // before calling `execute_subagent_task`.
                 model: model.clone(),
                 resume_session,
+                name,
                 caller_session_key,
             })
             .await
@@ -696,8 +705,9 @@ Parameters:
 - action: "new" | "resume" | "compact" (default: "new")
 - prompt: Description of the task to execute (required for new and resume)
 - subagent_type: Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required for new and resume)
-- session_key: Target session id (required for resume and compact; ignored for new)
+- session_key: Target session (required for resume and compact; ignored for new) — a raw session id from the session tool's list, or an absolute path ('/a/b' of slugs, anchored at the root of your session tree; see the session tool list's `path` field)
 - description: Optional description for tracking (matches Claude Code's Agent schema)
+- name: Optional slug for the spawned session (new only) — the per-parent-unique path segment so you can later address the child as '/.../<name>' (1-64 chars, no '/', no leading/trailing whitespace; must be unique among your session's existing children)
 - model: Optional model override for the subagent (matches Claude Code's Agent schema)
 - isolated: If true, creates isolated session without parent context (default: false)
 - cleanup: "keep" or "delete" - what to do with session after completion (default: "keep")
@@ -752,11 +762,15 @@ Examples:
                 },
                 "session_key": {
                     "type": "string",
-                    "description": "Target session id from the session tool's list. Required for resume and compact. Ignored for new."
+                    "description": "Target session: a raw session id from the session tool's list, or an absolute path ('/a/b' of slugs anchored at the root of your session tree). Required for resume and compact. Ignored for new."
                 },
                 "description": {
                     "type": "string",
                     "description": "Optional description for tracking this spawn"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional slug for the spawned session (new only): the per-parent-unique path segment for later '/.../<name>' addressing (1-64 chars, no '/', no leading/trailing whitespace; must be unique among your session's children)"
                 },
                 "model": {
                     "type": "string",
@@ -850,6 +864,7 @@ Examples:
             cleanup,
             args.model.clone(),
             resume_session,
+            args.name.clone(),
             caller_session_key,
             None,
         )
@@ -929,6 +944,7 @@ Examples:
             cleanup,
             args.model.clone(),
             resume_session,
+            args.name.clone(),
             caller_session_key,
             Some(ctx),
         )
@@ -960,6 +976,10 @@ struct TestSubagentState {
     /// confirm the parent-driven model id is forwarded all the
     /// way to the resolve path.
     model_overrides_seen: Vec<Option<String>>,
+    /// Every `name` (child slug) seen in `execute_and_wait` requests,
+    /// in order. Tests assert the Agent tool `name` param is
+    /// forwarded onto the spawn request.
+    names_seen: Vec<Option<String>>,
     /// Whether `execute_and_wait` should succeed (true) or fail with
     /// an error (false).
     succeed_on_execute: bool,
@@ -982,6 +1002,7 @@ impl TestSubagentRuntime {
                 configs: std::collections::HashMap::new(),
                 audits: Vec::new(),
                 model_overrides_seen: Vec::new(),
+                names_seen: Vec::new(),
                 succeed_on_execute: true,
                 compaction_requests: Vec::new(),
                 principal_id: String::new(),
@@ -1032,6 +1053,16 @@ impl TestSubagentRuntime {
             .lock()
             .expect("TestSubagentRuntime mutex poisoned")
             .model_overrides_seen
+            .clone()
+    }
+
+    /// Every `name` (child slug) seen in `execute_and_wait` requests.
+    #[must_use]
+    pub fn names_seen(&self) -> Vec<Option<String>> {
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .names_seen
             .clone()
     }
 
@@ -1134,11 +1165,14 @@ impl SubagentRuntime for TestSubagentRuntime {
         &self,
         request: SpawnRequest,
     ) -> anyhow::Result<crate::tools::builtin::messaging::dto::SubagentRunView> {
-        let succeed = self
-            .inner
-            .lock()
-            .expect("TestSubagentRuntime mutex poisoned")
-            .succeed_on_execute;
+        let succeed = {
+            let mut state = self
+                .inner
+                .lock()
+                .expect("TestSubagentRuntime mutex poisoned");
+            state.names_seen.push(request.name.clone());
+            state.succeed_on_execute
+        };
         if !succeed {
             return Err(anyhow::anyhow!("test failure"));
         }
@@ -1437,6 +1471,7 @@ mod tests {
                 SpawnCleanupPolicy::Keep,
                 None, // model override
                 None, // resume_session
+                None, // name (child slug)
                 None, // caller_session_key
                 None,
             )
@@ -1493,6 +1528,7 @@ mod tests {
                 SpawnCleanupPolicy::Keep,
                 Some("haiku-4".to_string()),
                 None, // resume_session
+                None, // name (child slug)
                 None, // caller_session_key
                 None,
             )
@@ -1712,5 +1748,48 @@ mod tests {
             SpawnCleanupPolicy::Delete
         );
         assert!(parse_cleanup(Some("purge")).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_new_with_name_forwards_child_slug() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.grant("agent:writer");
+        runtime.register_agent(
+            "writer",
+            AgentConfig {
+                name: "writer".into(),
+                ..Default::default()
+            },
+        );
+        let provider = Box::new(StaticSessionKeyProvider::new("caller:sess"));
+        let tool =
+            AgentTool::with_session_provider(runtime.clone() as SharedSubagentRuntime, provider);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "prompt": "x",
+                "subagent_type": "writer",
+                "name": "task-b",
+            }))
+            .await
+            .expect("spawn with name should succeed against the test runtime");
+        assert_eq!(result["status"], "completed");
+
+        // The `name` param lands on SpawnRequest.name (the adapter
+        // projects it onto the child session's slug).
+        assert_eq!(runtime.names_seen(), vec![Some("task-b".to_string())]);
+
+        // Schema + description surface the param.
+        let params = tool.parameters();
+        assert_eq!(params["properties"]["name"]["type"], "string");
+        assert!(tool.description().contains("name"));
+    }
+
+    #[tokio::test]
+    async fn test_name_defaults_to_none() {
+        let args: AgentArgs =
+            serde_json::from_str(r#"{"prompt": "Do something", "subagent_type": "writer"}"#)
+                .unwrap();
+        assert_eq!(args.name, None);
     }
 }

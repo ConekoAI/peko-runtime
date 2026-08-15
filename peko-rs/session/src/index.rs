@@ -109,6 +109,11 @@ pub struct SessionEntry {
     /// transcripts are durable regardless of idle age.
     #[serde(default)]
     pub standing: bool,
+    /// Per-parent-unique path segment for `/slug/...` addressing
+    /// (see `crate::path`). `None` for legacy entries and root
+    /// `root:*` sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
 }
 
 impl SessionEntry {
@@ -140,6 +145,7 @@ impl SessionEntry {
             archived: false,
             compact_requested: false,
             standing: false,
+            slug: None,
         }
     }
 
