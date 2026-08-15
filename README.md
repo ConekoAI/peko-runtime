@@ -460,6 +460,8 @@ MIT
 - [User's Guide](docs/user-guide/USERS_GUIDE.md) — Concepts, sessions, principals, extensions
 - [CLI Reference](docs/user-guide/CLI_REFERENCE.md) — Every `peko` command and flag
 - [Extension System](docs/architecture/EXTENSION_SYSTEM.md) — Unified extension architecture
+- [PEKO Primitive](docs/architecture/PEKO.md) — Canonical term: Persistent Entity with Keepalive Orchestration
+- [Agent–Session Paradigm](docs/architecture/AGENT_SESSION_PARADIGM.md) — Full design rationale, gap audit, build order
 - [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-042
 - [MCP Overview](docs/mcp/MCP.md) — Model Context Protocol integration
 - [Agent Guide](AGENTS.md) — Build, test, code-style rules for contributors
