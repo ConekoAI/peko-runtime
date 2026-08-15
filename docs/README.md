@@ -22,6 +22,7 @@ Complete documentation for the Peko multi-agent runtime.
 ### 🏗️ Architecture
 
 - **[Extension System](architecture/EXTENSION_SYSTEM.md)** — Unified extension architecture
+- **[Agent–Session Paradigm](architecture/AGENT_SESSION_PARADIGM.md)** — Target mental model: agent = session, principal as session tree, channels, cron heartbeat
 - **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-042
 - **[Public API Surface](../API_SURFACE.md)** — Rust public API contracts
 - **[Data Model](../DATA_MODEL.md)** — On-disk and in-memory data formats
@@ -51,7 +52,10 @@ docs/
 │   ├── USERS_GUIDE.md
 │   └── CLI_REFERENCE.md
 ├── architecture/
+│   ├── AGENT_SESSION_PARADIGM.md
+│   ├── CAPABILITY_BASED_EXTENSIONS.md
 │   ├── EXTENSION_SYSTEM.md
+│   ├── builtin-tools.md
 │   └── adr/                         # ADR-001 through ADR-042
 └── mcp/
     ├── MCP.md
