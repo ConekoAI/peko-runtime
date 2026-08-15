@@ -1942,6 +1942,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         preferred_model_id: None,
         transport_preference: Default::default(),
         quota: None,
+        children: Default::default(),
     }
 }
 

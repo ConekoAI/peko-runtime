@@ -109,33 +109,29 @@ is refused, and no caller may mutate the session it is running in.
 
 ### 2.2 Standing named children
 
-**(implemented, contrary to earlier assumption)** Spawned sessions are
-*not* mechanically ephemeral: under the default `cleanup: keep` the child
-JSONL, index entry, and metadata persist, and `Agent resume` re-attaches
-to the same session indefinitely (`agents/subagent_executor.rs:657-799` —
-guards: exists, not self/ancestor, `trigger=="spawn"`, subtree check, not
-archived, no active run via `has_active_subagent_run_for_child`). Depth is
-recomputed from the persisted parent chain so it survives daemon restarts.
+**(implemented — Phase 2 of the paradigm sprint, 2026-08-15)** A
+principal declares standing first-level children in `principal.toml`:
 
-**(gap)** What is actually missing for `/memory`-style standing children:
+```toml
+[children.memory]
+subagent_type = "archivist"
+description = "Long-term memory curator"
+```
 
-- **No name.** `SessionMetadata` has only `title: Option<String>` —
-  free-form, non-unique (`peko-rs/session/src/metadata.rs:39`). `resume`
-  and `compact` take raw UUID session keys (the `:subagent:{uuid}` key
-  machinery in `peko-rs/session/src/subagent_key.rs` is dead code; real
-  child ids are plain UUIDv4, `manager.rs:1584`).
-- **The 30-day prune destroys idle children.** The daemon's hourly
-  maintenance deletes every session — index entry, peer references, and
-  the JSONL transcript — whose `updated_at` is older than 30 days, with
-  **no exemption** for archived, spawned, or even `root:*` sessions
-  (`peko-rs/session/src/index.rs:930-934`,
-  `DEFAULT_PRUNE_AFTER_DAYS = 30`). A routinely-resumed child survives by
-  touching `updated_at`; an idle one is destroyed. See §7.
-- **No declaration registry** — nothing in `principal.toml` or elsewhere
-  declares "these children are standing entities."
-- **Spawn always mints a fresh UUID** — no spawn-or-attach-by-name in
-  `SessionManager::spawn_session`, so "spawn once, resume by name" is two
-  manual steps.
+Each declared child is ensured to exist at root-agent run setup
+(`peko-rs/core/src/principal/children.rs`, warn-and-continue on corrupt
+config): a session flagged `standing` / `trigger="spawn"` / `slug=name`,
+parented at the owner root (`root:{owner}`), created WITHOUT an LLM turn;
+the declaration's `subagent_type` is recorded as a `System` event in the
+child JSONL (`peko-rs/core/src/session/standing.rs`). A dangling owner
+root (no human has chatted yet) is tolerated by the ownership layer by
+design. The Agent tool's `new` with a `name` matching a standing child in
+the caller's subtree **attaches** to it (full resume guard stack re-runs)
+instead of minting a fresh UUID — "spawn once, resume by name" is one
+operation (`SubagentExecutor::spawn_and_execute`, first branch).
+Standing sessions are exempt from idle pruning (Phase 0 `standing`
+flag). Spawned (not base) sessions, so subtree scoping confines them
+correctly.
 
 ### 2.3 Scoping: an agent operates only within its own subtree
 
@@ -355,7 +351,7 @@ audit measured the current tool surface against that need:
 | Channel log ≠ session log | ✅ implemented | `peko-rs/channel/`, `peko-rs/chat-log/` |
 | Cron turn/notify/spawn-tool + idle/event schedules | ✅ implemented | `peko-rs/cron/`, `daemon/cron_engine/` |
 | Principal trunk `/` (self session, cron-kept, supervising) | ❌ gap | root is per-peer today; touch points in §2.1 |
-| Standing named children (`/memory`, `/about-user`, …) | ❌ gap | mechanics work; naming + registry + prune exemption missing (§2.2) |
+| Standing named children (`/memory`, `/about-user`, …) | ✅ implemented (Phase 2) | `principal.toml` `[children]` + `principal/children.rs` ensure-declared; Agent `new`-with-name attach (§2.2) |
 | Session `move` (reparent) | ✅ implemented (Phase 1a) | `session/session_runtime_impl.rs` `move_session`, `peko-rs/session/src/manager.rs`; cycle guard `err_move_cycle` (§2.4) |
 | Path addressing (`/user-a/task-b`) | ✅ implemented (Phase 1b) | `peko-rs/session/src/path.rs` resolver; `slug` on metadata; resolved at tool-runtime boundary before guards (§2.4) |
 | Channel → auto-spawned/bound child (`/user-a`, `/channel-a`) | ❌ gap | seam exists (`ChannelResponder`); binding storage, ChannelKind variant, self-post suppression, cursor durability missing (§3.2) |

@@ -1395,6 +1395,311 @@ async fn resume_happy_path_preserves_history() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2 (standing named children): `Agent` `new` with `name` attaches to
+// an existing standing child instead of minting a fresh session.
+// ---------------------------------------------------------------------------
+
+/// Create a standing child session (trigger "spawn", standing, slug)
+/// under `parent_id`, optionally recording a `[children]` declaration
+/// event in its JSONL.
+async fn create_standing_child(
+    session_manager: &Arc<RwLock<SessionManager>>,
+    agent_name: &str,
+    id: &str,
+    parent_id: &str,
+    slug: &str,
+    declared_type: Option<&str>,
+) {
+    create_linked_session(session_manager, agent_name, id, Some(parent_id), "spawn").await;
+    {
+        let mgr = session_manager.read().await;
+        mgr.set_session_slug(id, Some(slug.to_string()))
+            .await
+            .unwrap();
+        mgr.set_standing(id, true).await.unwrap();
+    }
+    if let Some(declared) = declared_type {
+        let dir = session_manager
+            .read()
+            .await
+            .sessions_dir()
+            .cloned()
+            .unwrap();
+        crate::session::standing::record_declared_child(&dir, id, slug, declared, None)
+            .await
+            .unwrap();
+    }
+}
+
+/// Read the registered run's child session id from the task metadata.
+async fn run_child_session_id(
+    registry: &SharedAsyncTaskRegistry,
+    run_id: &String,
+) -> Option<String> {
+    let guard = registry.read().await;
+    let entry = guard.get(run_id)?;
+    match &entry.metadata {
+        crate::extensions::framework::async_exec::executor::TaskMetadata::Subagent(meta) => {
+            meta.child_session_id.clone()
+        }
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn new_with_name_attaches_to_standing_child() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_standing_child(
+        &session_manager,
+        &agent_name,
+        "child-memory",
+        "root-sess",
+        "memory",
+        Some("archivist"),
+    )
+    .await;
+
+    let session_count_before = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap()
+        .len();
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let run_id = executor
+        .spawn_and_execute(
+            "summarize what you remember",
+            None,
+            false,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("memory".to_string()),
+                subagent_type: Some("archivist".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(run_id.starts_with("run_"));
+
+    // Attach: the run targets the EXISTING standing child, and no new
+    // session was minted.
+    assert_eq!(
+        run_child_session_id(&registry, &run_id).await.as_deref(),
+        Some("child-memory"),
+        "name matching a standing child must attach to it"
+    );
+    let session_count_after = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap()
+        .len();
+    assert_eq!(session_count_before, session_count_after);
+
+    // The turn runs (no provider → stub success path; the point is the
+    // run executes against the attached session).
+    sleep(Duration::from_millis(500)).await;
+    let guard = registry.read().await;
+    let entry = guard.get(&run_id).unwrap();
+    assert!(
+        entry.status.is_terminal(),
+        "attached run should complete: {:?}",
+        entry.status
+    );
+}
+
+#[tokio::test]
+async fn new_with_fresh_name_spawns_new_session() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_standing_child(
+        &session_manager,
+        &agent_name,
+        "child-memory",
+        "root-sess",
+        "memory",
+        None,
+    )
+    .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let run_id = executor
+        .spawn_and_execute(
+            "fresh task",
+            None,
+            false,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("about-user".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    // A fresh session was minted — NOT the standing "memory" child —
+    // and it carries the requested slug.
+    let child_id = run_child_session_id(&registry, &run_id)
+        .await
+        .expect("run has a child session id");
+    assert_ne!(child_id, "child-memory");
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap();
+    let fresh = metas
+        .iter()
+        .find(|m| m.session_id == child_id)
+        .expect("fresh child metadata exists");
+    assert_eq!(fresh.slug.as_deref(), Some("about-user"));
+    assert!(!fresh.standing, "fresh spawns are not standing");
+}
+
+#[tokio::test]
+async fn new_with_name_colliding_non_standing_errors() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    // A NON-standing session deeper in the caller's subtree already
+    // owns the slug "notes". (A direct-sibling collision keeps the
+    // Phase 1b "unique per parent" refusal — see
+    // `spawn_with_name_stamps_child_slug`.)
+    create_linked_session(&session_manager, &agent_name, "mid-spawn", Some("root-sess"), "spawn")
+        .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "plain-notes",
+        Some("mid-spawn"),
+        "spawn",
+    )
+    .await;
+    session_manager
+        .read()
+        .await
+        .set_session_slug("plain-notes", Some("notes".to_string()))
+        .await
+        .unwrap();
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager,
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let err = executor
+        .spawn_and_execute(
+            "task",
+            None,
+            false,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("notes".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("not a standing child"), "{msg}");
+    assert!(msg.contains("plain-notes"), "{msg}");
+}
+
+#[tokio::test]
+async fn new_with_name_attach_checks_declared_subagent_type() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_standing_child(
+        &session_manager,
+        &agent_name,
+        "child-memory",
+        "root-sess",
+        "memory",
+        Some("archivist"),
+    )
+    .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    // The standing child was declared with `archivist`; requesting
+    // `writer` is a structured refusal before anything runs.
+    let err = executor
+        .spawn_and_execute(
+            "task",
+            None,
+            false,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("memory".to_string()),
+                subagent_type: Some("writer".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("declared with subagent_type 'archivist'"),
+        "{msg}"
+    );
+    assert!(msg.contains("'writer'"), "{msg}");
+
+    // A matching type attaches cleanly (same session id).
+    let run_id = executor
+        .spawn_and_execute(
+            "task",
+            None,
+            false,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("memory".to_string()),
+                subagent_type: Some("archivist".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        run_child_session_id(&registry, &run_id).await.as_deref(),
+        Some("child-memory")
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Round 7: `request_compaction` (Agent tool `action = "compact"`) — guards
 // + happy path. Returns immediately after flagging; no LLM call.
 // ---------------------------------------------------------------------------

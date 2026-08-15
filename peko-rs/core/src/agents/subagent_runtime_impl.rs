@@ -297,6 +297,10 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             // Agent tool `name` → the child session's slug (stamped by
             // `spawn_and_execute`; ignored on the resume path).
             slug: request.name.clone(),
+            // Phase 2 (standing named children): threaded so the
+            // attach-by-name branch can check the requested type
+            // against the standing child's `[children]` declaration.
+            subagent_type: Some(request.subagent_type.clone()),
         };
 
         let view = if let Some(ref resume_target) = request.resume_session {

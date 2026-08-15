@@ -255,14 +255,26 @@ where
     {
         let mut mgr = session_manager.write().await;
         match mgr.rotate_oversized_sessions().await {
-            Ok(n) if n > 0 => tracing::info!(
-                "WS2 startup sweep: rotated {n} oversize session(s)"
-            ),
+            Ok(n) if n > 0 => tracing::info!("WS2 startup sweep: rotated {n} oversize session(s)"),
             Ok(_) => {}
-            Err(e) => tracing::warn!(
-                "WS2 startup sweep failed: {e}"
-            ),
+            Err(e) => tracing::warn!("WS2 startup sweep failed: {e}"),
         }
+    }
+
+    // Phase 2 (standing named children): ensure every `[children]`
+    // declaration in `principal.toml` exists as a standing session
+    // under the owner root. Best-effort: unreadable/corrupt config or
+    // storage failures warn and continue (the `seen_models.json`
+    // tolerated-corruption precedent) — a broken declaration must
+    // never block the root agent.
+    if let Err(e) = crate::principal::children::ensure_declared_children(
+        &ctx.workspace_path,
+        &prompt.name,
+        &session_manager,
+    )
+    .await
+    {
+        tracing::warn!("failed to ensure declared standing children: {e}");
     }
 
     // Open or create the root agent session.  Hold the per-principal

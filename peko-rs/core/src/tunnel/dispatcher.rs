@@ -1970,6 +1970,7 @@ mod tests {
             preferred_model_id: None,
             transport_preference: Default::default(),
             quota: None,
+            children: Default::default(),
         }
     }
 

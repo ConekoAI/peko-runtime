@@ -93,6 +93,13 @@ pub struct ExecutionConfig {
     /// session is created (the same index entry
     /// `stamp_spawn_parent_linkage` patches).
     pub slug: Option<String>,
+    /// The requested subagent type (Agent tool `subagent_type`
+    /// param), threaded by the runtime adapter for the standing-child
+    /// attach check: when `slug` matches a standing session that
+    /// carries a `[children]` declaration, the requested type must
+    /// match the declared one. `None` skips the check (callers that
+    /// don't know the type).
+    pub subagent_type: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -105,6 +112,7 @@ impl Default for ExecutionConfig {
             max_depth: 1, // Default: no nested spawns
             model_override: None,
             slug: None,
+            subagent_type: None,
         }
     }
 }
@@ -576,6 +584,89 @@ impl SubagentExecutor {
         config: ExecutionConfig,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
+        // Standing-child attach (agent-session paradigm, Phase 2): a
+        // `name` (config.slug) that already matches a STANDING spawned
+        // session in the caller's subtree re-attaches to it via the
+        // resume path instead of minting a fresh session — the call's
+        // `task` drives the turn. A `name` colliding with a
+        // non-standing session is a structured refusal (rename
+        // semantics live in the session tool). This runs BEFORE the
+        // cost pre-flight and before anything is minted;
+        // `resume_and_execute` re-runs the full guard stack (cost
+        // pre-flight included) for the attach branch.
+        if let Some(ref slug) = config.slug {
+            use crate::session::ownership::{caller_context, descendants_of};
+            let (caller, metas) = {
+                let mut manager = self.session_manager.write().await;
+                let metas = manager.list_all_sessions(false).await?;
+                (caller_context(parent_session_key, &metas), metas)
+            };
+            // The caller's subtree = its own session + all descendants.
+            let subtree: std::collections::HashSet<String> =
+                descendants_of(&caller.current_session_id, &metas)
+                    .into_iter()
+                    .chain(std::iter::once(caller.current_session_id.clone()))
+                    .collect();
+            let found = metas.iter().find(|m| {
+                m.slug.as_deref() == Some(slug.as_str()) && subtree.contains(&m.session_id)
+            });
+            if let Some(found) = found {
+                if found.standing && found.trigger == "spawn" {
+                    let child_id = found.session_id.clone();
+                    // When the session carries a `[children]`
+                    // declaration, the requested subagent type must
+                    // match it. Unrecoverable declarations (no event /
+                    // unreadable JSONL) skip the check — the param is
+                    // required as usual.
+                    if let Some(ref requested) = config.subagent_type {
+                        let sessions_dir =
+                            self.session_manager.read().await.sessions_dir().cloned();
+                        if let Some(dir) = sessions_dir {
+                            if let Some(declared) =
+                                crate::session::standing::declared_subagent_type(&dir, &child_id)
+                                    .await
+                            {
+                                if declared != *requested {
+                                    return Err(
+                                        crate::session::standing::err_declared_type_mismatch(
+                                            slug, &child_id, &declared, requested,
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    info!(
+                        "Attaching to standing child session: slug={} session={}",
+                        slug, child_id
+                    );
+                    return self
+                        .resume_and_execute(
+                            task,
+                            &child_id,
+                            parent_session_key,
+                            config,
+                            parent_cancel,
+                        )
+                        .await;
+                }
+                // Non-standing collision. A DIRECT sibling keeps the
+                // Phase 1b per-parent uniqueness refusal (identical to
+                // what the fresh-spawn pre-flight below would produce);
+                // a non-sibling subtree collision gets the
+                // standing-specific structured refusal.
+                return Err(if found.parent_session_id.as_deref() == Some(parent_session_key) {
+                    peko_session::path::err_slug_conflict(
+                        slug,
+                        &found.session_id,
+                        Some(parent_session_key),
+                    )
+                } else {
+                    crate::session::standing::err_name_not_standing(slug, &found.session_id)
+                });
+            }
+        }
+
         // Phase 3 — spawn-time pre-flight against
         // `cost_per_call_max`. Conservative token projection
         // (4K input + 1K output) multiplied by the chosen

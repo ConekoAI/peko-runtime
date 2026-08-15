@@ -707,7 +707,7 @@ Parameters:
 - subagent_type: Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required for new and resume)
 - session_key: Target session (required for resume and compact; ignored for new) — a raw session id from the session tool's list, or an absolute path ('/a/b' of slugs, anchored at the root of your session tree; see the session tool list's `path` field)
 - description: Optional description for tracking (matches Claude Code's Agent schema)
-- name: Optional slug for the spawned session (new only) — the per-parent-unique path segment so you can later address the child as '/.../<name>' (1-64 chars, no '/', no leading/trailing whitespace; must be unique among your session's existing children)
+- name: Optional slug for the spawned session (new only) — the per-parent-unique path segment so you can later address the child as '/.../<name>' (1-64 chars, no '/', no leading/trailing whitespace; must be unique among your session's existing children). If your subtree already contains a STANDING session with this slug (declared via the principal's [children] config), the run attaches to that session with its full history instead of spawning fresh; the subagent_type must match the declaration. A name colliding with a non-standing session is an error — rename semantics live in the session tool.
 - model: Optional model override for the subagent (matches Claude Code's Agent schema)
 - isolated: If true, creates isolated session without parent context (default: false)
 - cleanup: "keep" or "delete" - what to do with session after completion (default: "keep")
@@ -770,7 +770,7 @@ Examples:
                 },
                 "name": {
                     "type": "string",
-                    "description": "Optional slug for the spawned session (new only): the per-parent-unique path segment for later '/.../<name>' addressing (1-64 chars, no '/', no leading/trailing whitespace; must be unique among your session's children)"
+                    "description": "Optional slug for the spawned session (new only): the per-parent-unique path segment for later '/.../<name>' addressing (1-64 chars, no '/', no leading/trailing whitespace; must be unique among your session's children). A slug matching an existing STANDING session in your subtree attaches to it instead of spawning fresh."
                 },
                 "model": {
                     "type": "string",

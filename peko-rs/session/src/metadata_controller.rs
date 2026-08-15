@@ -337,6 +337,30 @@ impl MetadataController {
         Ok(())
     }
 
+    /// Set the standing flag on a session.
+    ///
+    /// Same update pattern as [`Self::set_archived`]: load the entry,
+    /// mutate the flag, and write it back through the delta-merge-safe
+    /// index save. Standing sessions are exempt from maintenance
+    /// pruning (`SessionIndex::maintenance`). Errors when the session
+    /// does not exist.
+    pub async fn set_standing(&mut self, session_id: &str, standing: bool) -> Result<()> {
+        debug!("Setting standing={} for session {}", standing, session_id);
+
+        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
+            anyhow::anyhow!("Cannot set standing for non-existent session {session_id}")
+        })?;
+
+        if entry.standing != standing {
+            entry.standing = standing;
+            entry.touch();
+            self.update_entry(entry).await?;
+        }
+
+        info!("Set standing={} for session {}", standing, session_id);
+        Ok(())
+    }
+
     /// Set the compaction-request flag on a session
     ///
     /// The compaction orchestrator ORs this flag into its
@@ -1218,6 +1242,56 @@ mod tests {
             .set_slug("sess_nope", Some("x".to_string()))
             .await
             .is_err());
+    }
+
+    /// `set_standing` round-trips the flag through the index and
+    /// errors on a non-existent session (same contract as
+    /// `set_archived`).
+    #[tokio::test]
+    async fn test_set_standing() {
+        let (mut controller, _temp) = setup_controller().await;
+        let peer = Subject::User("alice".to_string());
+        let peer_key = derive_base_session_key("test_agent", &peer);
+        let entry = SessionEntry::with_peer(
+            "sess_a".to_string(),
+            "test_agent".to_string(),
+            "sess_a.jsonl".to_string(),
+            "user",
+            "alice",
+        );
+        controller.create_for_peer(entry, &peer_key).await.unwrap();
+        controller.save_index().await.unwrap();
+
+        assert!(
+            !controller
+                .get_entry("sess_a", false)
+                .await
+                .unwrap()
+                .unwrap()
+                .standing
+        );
+        controller.set_standing("sess_a", true).await.unwrap();
+        assert!(
+            controller
+                .get_entry("sess_a", false)
+                .await
+                .unwrap()
+                .unwrap()
+                .standing
+        );
+        // Idempotent + reversible.
+        controller.set_standing("sess_a", true).await.unwrap();
+        controller.set_standing("sess_a", false).await.unwrap();
+        assert!(
+            !controller
+                .get_entry("sess_a", false)
+                .await
+                .unwrap()
+                .unwrap()
+                .standing
+        );
+        // Non-existent session errors.
+        assert!(controller.set_standing("sess_nope", true).await.is_err());
     }
 
     /// Deleting a session scrubs its id from the peer's `session_ids`

@@ -18,6 +18,7 @@
 pub mod agent_prompt;
 pub mod agent_runner;
 pub mod capability_evaluator;
+pub mod children;
 pub mod config;
 pub mod context;
 pub mod extension_store;

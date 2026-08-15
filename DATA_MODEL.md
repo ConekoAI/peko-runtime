@@ -1147,6 +1147,51 @@ The pure resolver/validators live in `peko_session::path`
 `derive_branch_slug`) over `&[SessionMetadata]` slices — no IO, no
 locks, mirroring the ownership-guard style.
 
+**Standing named children (`[children]` in `principal.toml`, Phase
+2).** A principal may declare standing first-level children that
+persist for the principal's lifetime and are resumed by name:
+
+```toml
+[children.memory]
+subagent_type = "archivist"        # required, nonempty
+description = "Long-term memory"   # optional; becomes the session title
+```
+
+Each table key (`memory`) is the child's slug and must pass
+`validate_slug` (1–64 chars, no `/`, no surrounding whitespace); a bad
+name or a missing/blank `subagent_type` is a structured load error.
+
+At root-agent run setup the runtime ensures each declared child EXISTS
+(`principal::children::ensure_declared_children`): a session whose
+`slug == <name>` AND `standing == true` AND `trigger == "spawn"` whose
+parent chain roots at the principal's owner root session
+(`root:{owner}`) is left untouched; otherwise the child is created —
+metadata + JSONL created-event only, **no LLM turn, no run** — with:
+
+| Field | Value |
+|-------|-------|
+| `trigger` | `"spawn"` |
+| `standing` | `true` (prune-exempt) |
+| `slug` | the declaration name |
+| `parent_session_id` | the owner root session id (`root:user:{owner}`); may DANGLE until the first human chat creates the root — the ownership walks tolerate this by design |
+| `title` | `description`, falling back to the name |
+
+The declaration is also recorded as a `system` event
+(`"event": "standing_child_declared"`, detail `{name, subagent_type,
+description}`) in the child's JSONL so a later attach can recover the
+declared `subagent_type` without re-reading the principal config.
+Ensure-declared failures (corrupt config, storage errors) warn and
+continue — they never crash principal init.
+
+The `Agent` tool's `new` action with a `name` param attaches by name:
+when the caller's subtree already contains a session with `slug ==
+name` AND `standing == true` AND `trigger == "spawn"`, the run
+re-attaches to it via the resume guard stack (the call's `prompt`
+drives the turn; `subagent_type` must match the recorded declaration
+when one is recoverable). A `name` colliding with a NON-standing
+session is a structured refusal — rename semantics live in the
+`session` tool. No `name` → unchanged fresh-UUID spawn.
+
 ---
 
 ## 5½. Chat Log — Consumer-Visible Conversation History

@@ -1473,6 +1473,17 @@ impl SessionManager {
             .await
     }
 
+    /// Set the standing flag on a session (passthrough to the
+    /// `MetadataController`). Standing sessions are exempt from
+    /// maintenance pruning. Errors when the session does not exist.
+    pub async fn set_standing(&self, session_id: &str, standing: bool) -> Result<()> {
+        self.metadata_controller
+            .write()
+            .await
+            .set_standing(session_id, standing)
+            .await
+    }
+
     /// Reparent a session: set `parent_session_id` (passthrough to the
     /// `MetadataController`) and append a `System` audit event to the
     /// session's JSONL recording old → new parent. Errors when the

@@ -1500,6 +1500,7 @@ impl RequestHandler for PrincipalHandler {
                     preferred_model_id: Some(model_id),
                     transport_preference: Default::default(),
                     quota: None,
+                    children: Default::default(),
                 };
 
                 match host.principal_manager().create(config).await {

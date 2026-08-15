@@ -20,7 +20,12 @@
 //! - [`ownership`] — caller classification + guard refusals for
 //!   agent-owned session management (plan D4/D5), shared by the
 //!   session-tool adapter and the Agent-tool spawn path.
+//! - [`standing`] — standing named children (`[children]` in
+//!   `principal.toml`): declaration recording/recovery helpers shared
+//!   by the principal ensure-declared path and the Agent tool's
+//!   attach-by-name branch.
 
 pub mod ownership;
 pub mod session_runtime_impl;
+pub mod standing;
 pub mod todo_runtime_impl;

@@ -43,6 +43,16 @@ Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in
   `<source>-branch`), `move` (uniqueness re-checked at destination).
   `session list` shows `slug` + computed `path`. Ids remain the canonical
   key; paths are a computed view (`peko-rs/session/src/path.rs`).
+- **Standing named children.** `principal.toml` gains a `[children]`
+  table (`name → { subagent_type, description? }`). Declared children are
+  ensured to exist at root-agent run setup — created as sessions flagged
+  `standing`/`trigger="spawn"`/slug=name, parented at the owner root, NO
+  LLM turn (`peko-rs/core/src/principal/children.rs`); the declaration is
+  recorded as a `System` event in the child JSONL. The Agent tool's `new`
+  with a `name` matching an existing standing child in the caller's
+  subtree **attaches** (resumes that session) instead of minting a fresh
+  UUID — "spawn once, resume by name" is one operation. Standing sessions
+  are exempt from idle pruning (Phase 0 flag).
 
 ### Round 7: chapters deleted, stable-id paging, session/Agent tool surface (2026-08-13)
 

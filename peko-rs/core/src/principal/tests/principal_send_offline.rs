@@ -87,6 +87,7 @@ async fn create_test_principal(
         preferred_model_id: Some("mock".to_string()),
         transport_preference,
         quota: None,
+        children: Default::default(),
     };
     manager.create(config).await.unwrap()
 }
