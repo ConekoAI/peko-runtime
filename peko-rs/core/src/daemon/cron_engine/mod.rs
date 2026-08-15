@@ -851,10 +851,11 @@ impl CronEngine {
     /// cron engine's `AsyncExecutor`. The executor:
     /// 1. resolves the tool instance via the daemon's `ExtensionCore`,
     /// 2. records an `AsyncTask` entry attributed to the principal's
-    ///    root session (so `AsyncOutput`/`AsyncStatus`/`AsyncStop`
+    ///    trunk session (so `AsyncOutput`/`AsyncStatus`/`AsyncStop`
     ///    remain scoped to that root), and
     /// 3. on completion, posts a `SteeringMessage` into the principal's
-    ///    root inbox when `wake_on_completion=true`.
+    ///    trunk inbox (`root:self`) when `wake_on_completion=true`
+    ///    (Phase 3b — see below).
     ///
     /// Returns `("running", Some(task_id))` immediately — the actual
     /// tool execution is async. The daemon's janitor loop reconciles
@@ -887,10 +888,21 @@ impl CronEngine {
             }
         };
 
-        // The executor's inbox key needs to be the principal's root
-        // session key so completion events and steer messages reach the
-        // principal's owner session — same shape as `peko send`. The
-        // owner subject is the same one `run_send_job` uses.
+        // The executor's inbox key is the principal's TRUNK session id
+        // (`root:self`) so completion events and steer messages reach
+        // the principal's own root — Phase 3b (2026-08-15). Pre-3b this
+        // was the owner's conversational root (`root:{owner}`), which
+        // gave one PEKO two "roots": cron Send with target="trunk" fired
+        // into `root:self` while SpawnTool wakes landed in the owner's
+        // human-facing thread. PEKO.md §K requires both to target the
+        // principal's root; the trunk is that root. The steer machinery
+        // is purely session-keyed (`InboxRegistry::get_or_create`
+        // creates the inbox on demand), so this is a key change only:
+        // when no trunk run is live the message waits in the registry
+        // and the trunk's next turn drains it at iteration start —
+        // identical semantics to the old key with no active run.
+        let trunk_session_key = crate::principal::routers::root::trunk_session_id();
+
         let Some(pm) = self.principal_manager.as_ref() else {
             return Ok((
                 "failed".to_string(),
@@ -906,10 +918,6 @@ impl CronEngine {
                 ));
             }
         };
-        let owner = {
-            let config = principal.config.read().await;
-            config.owner.clone()
-        };
         // Snapshot the principal's grants at fire time, then derive active
         // extensions from that same snapshot. Both values flow through the
         // canonical tool funnel so extension ownership requirements cannot be
@@ -924,15 +932,6 @@ impl CronEngine {
             .active_extensions_for(&principal, &capabilities)
             .await
             .to_vec();
-        // NOTE (Phase 3, 2026-08-15): Send jobs with `target="trunk"`
-        // fire into `root:self`, but SpawnTool's wake attribution is
-        // deliberately UNCHANGED this phase — completion steer messages
-        // still land in the owner's conversational root inbox
-        // (`root:{owner}`). The two action kinds disagree about "the
-        // root session" by design: Send is a deferred turn (which the
-        // trunk paradigm re-roots), SpawnTool is a background task
-        // whose completion notification belongs to the owner thread.
-        let principal_root_session_key = format!("root:{owner}");
 
         let wake = wake_on_completion.unwrap_or(false);
         let timeout = timeout_secs.or(Some(7200));
@@ -940,7 +939,7 @@ impl CronEngine {
         let config = AsyncToolConfig {
             timeout_secs: timeout,
             wake_on_completion: wake,
-            principal_root_session_key: Some(principal_root_session_key.clone()),
+            principal_root_session_key: Some(trunk_session_key.clone()),
             label: Some(job.name.clone()),
             ..Default::default()
         };
@@ -961,7 +960,7 @@ impl CronEngine {
             crate::extensions::framework::async_exec::executor::ToolDispatchContext::builder(
                 tool_name.clone(),
                 tool_params.clone(),
-                principal_root_session_key.clone(),
+                trunk_session_key.clone(),
             )
             .for_principal(snapshot_principal_id, snapshot_capabilities)
             .with_active_extensions(snapshot_active_extensions);
@@ -2054,7 +2053,152 @@ mod tests {
         assert!(runs[0].finished_at.is_some());
     }
 
-    /// Notify jobs (2026-08-08 `send_peer` unification): pure delivery
+    /// Minimal stub tool so `dispatch_tool` can resolve a tool instance
+    /// for the wake-attribution test below.
+    struct CronStubTool;
+
+    #[async_trait::async_trait]
+    impl peko_tools_core::Tool for CronStubTool {
+        fn name(&self) -> &str {
+            "cron_stub"
+        }
+        fn description(&self) -> String {
+            "stub tool for cron wake-attribution tests".to_string()
+        }
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    /// Phase 3b (2026-08-15): a SpawnTool job with
+    /// `wake_on_completion=true` posts its completion steer into the
+    /// principal's TRUNK inbox (`root:self`) — NOT the owner's
+    /// conversational root inbox (`root:{owner}`). PEKO.md §K: cron
+    /// Send (target="trunk") and SpawnTool wakes must both target the
+    /// principal's root; two "roots" for one PEKO is a contract
+    /// violation. The test principal has no live trunk run, which also
+    /// pins the no-active-run behavior: `InboxRegistry::get_or_create`
+    /// creates the inbox on demand and the message waits there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_spawn_tool_wake_posts_to_trunk_inbox() {
+        let tmp = TempDir::new().unwrap();
+        // Build the manager WITHOUT `init_global_core` (unlike
+        // `setup_principal_manager`): this test never runs an agentic
+        // turn — `run_spawn_tool_job` only reads the principal config
+        // and dispatches through the `ExtensionCore` passed to the
+        // engine — so it must not replace the process-wide core that
+        // parallel agentic-loop tests register hooks on (test-build
+        // `init_global_core` overwrites the global; pre-existing race
+        // surfaced in
+        // `after_agent_hook_fires_from_loop_with_agent_name_and_did`).
+        let path_resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let catalog_path = tmp.path().join("models.toml");
+        let (llm_resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_resolver(llm_resolver),
+        );
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+
+        // Executor wired to an inbox registry the test can inspect.
+        let registry =
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry();
+        let executor = Arc::new(AsyncExecutor::new(registry.clone()));
+
+        // ExtensionCore with the stub tool registered so the dispatch
+        // resolves an instance. The capability grant is irrelevant
+        // here: the wake steer fires on ANY terminal status (success or
+        // gate rejection), and this test pins the destination key only.
+        let core = Arc::new(ExtensionCore::new());
+        core.insert_tool_instance("cron_stub".to_string(), Arc::new(CronStubTool))
+            .await;
+
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let engine = CronEngine::new(
+            resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            executor,
+            Arc::downgrade(&core),
+        );
+
+        let job = CronJob {
+            id: "job-wake-trunk".to_string(),
+            name: "wake-trunk".to_string(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::SpawnTool {
+                tool_name: "cron_stub".to_string(),
+                tool_params: serde_json::json!({}),
+                wake_on_completion: Some(true),
+                timeout_secs: Some(60),
+                description: Some("wake attribution test".to_string()),
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+
+        let (status, receipt) = engine.run_spawn_tool_job(&job).await.unwrap();
+        assert_eq!(status, "running");
+        let task_id = receipt.expect("spawn receipt carries the task id");
+
+        // Poll up to 2s for the steer message to land in the trunk
+        // inbox (the closure runs in the background).
+        let trunk_key = crate::principal::routers::root::trunk_session_id();
+        for _ in 0..200 {
+            let trunk_inbox = registry.get_or_create(&trunk_key).await;
+            if !trunk_inbox.is_empty().await {
+                let items = trunk_inbox.drain_all().await;
+                assert_eq!(
+                    items.len(),
+                    1,
+                    "expected exactly one steer message in the trunk inbox"
+                );
+                match &items[0] {
+                    peko_extension_api::AsyncInboxItem::Steering(s) => {
+                        assert!(s.content.contains("wake-trunk"));
+                        assert!(s.content.contains(&task_id));
+                    }
+                    other => panic!("expected AsyncInboxItem::Steering, got {other:?}"),
+                }
+
+                // The owner's conversational inbox must stay empty —
+                // pre-3b the steer landed there instead.
+                let owner_inbox = registry.get_or_create("root:user:test-owner").await;
+                assert!(
+                    owner_inbox.is_empty().await,
+                    "owner conversational inbox must be untouched"
+                );
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("timed out waiting for steer message in {trunk_key} inbox");
+    }
+
     /// — the message text itself lands in the owner's conversational
     /// session as a labeled note, NO agent turn runs (no LLM call, no
     /// `root:cron:*` session).

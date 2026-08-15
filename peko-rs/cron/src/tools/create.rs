@@ -59,7 +59,8 @@ pub struct CronCreateArgs {
     /// action whose turn lands in the principal's forever-continuous
     /// self session `root:self` instead of delivering a user-visible
     /// notification (Phase 3, 2026-08-15). Invalid with `prompt`/`tool`
-    /// (`SpawnTool` targeting is unchanged this phase).
+    /// — SpawnTool jobs take no `target` param; their wake attribution
+    /// is fixed to `root:self` (Phase 3b).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// Tool name to invoke at fire time. When provided, the job is a
@@ -345,7 +346,8 @@ impl Tool for CronCreateTool {
         // `target` is message-only (Phase 3): `"trunk"` upgrades the
         // delivery into a `Send` turn in the principal's own trunk
         // session. With `prompt`/`tool` it is a structured error —
-        // SpawnTool targeting is unchanged this phase.
+        // SpawnTool jobs take no `target` param; their wake attribution
+        // is fixed to `root:self` (Phase 3b).
         let target = args.target.clone().or_else(|| {
             params
                 .get("target")

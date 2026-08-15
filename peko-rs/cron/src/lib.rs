@@ -180,8 +180,11 @@ impl CronScheduler {
         // message; SpawnTool requires a non-empty tool name; a Send
         // `target` must be a known value (serde rejects unknown targets
         // at JSON load, but in-process struct-literal construction
-        // bypasses that). Validation happens here so a malformed job
-        // never reaches the on-disk DB.
+        // bypasses that). A trunk-targeted Send additionally respects
+        // the keepalive interval floor (`TRUNK_MIN_INTERVAL_MS`) — a
+        // sub-minute self-poke loop is a runaway token-burn
+        // anti-pattern (Phase 3b). Validation happens here so a
+        // malformed job never reaches the on-disk DB.
         match &job.action {
             CronJobAction::Send { message, target } => {
                 if message.trim().is_empty() {
@@ -191,6 +194,7 @@ impl CronScheduler {
                     );
                 }
                 crate::tools::validate_send_target(target)?;
+                crate::tools::validate_trunk_send_interval(&job.schedule, target)?;
             }
             CronJobAction::Notify { message } => {
                 if message.trim().is_empty() {
@@ -851,6 +855,60 @@ mod tests {
         let job = scheduler.get_job("d").unwrap().unwrap();
         assert_eq!(job.consecutive_failures, 0);
         assert_eq!(job.run_count, 0); // set_job_last_status never bumps run_count
+    }
+
+    /// Phase 3b (2026-08-15): trunk-targeted Send jobs respect the
+    /// keepalive interval floor at the `add_job` funnel (the path the
+    /// CLI `--target trunk` and the `CronCreate` tool both flow
+    /// through). Sub-minute `Every` intervals are refused; non-trunk
+    /// jobs and explicit/event-driven schedules are unchanged.
+    #[test]
+    fn test_add_job_trunk_interval_floor() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = CronScheduler::new(tmp.path().join("cron.json")).unwrap();
+
+        let mut job = make_job("trunk-fast", None);
+        job.action = CronJobAction::Send {
+            message: "keepalive".to_string(),
+            target: Some("trunk".to_string()),
+        };
+
+        // Every{30s} + trunk → refused with the floor in the message.
+        job.schedule = ScheduleKind::Every { every_ms: 30_000 };
+        let err = scheduler.add_job(&job).unwrap_err();
+        assert!(err.to_string().contains("every_ms >= 60000"), "got: {err}");
+        assert!(scheduler.get_job("trunk-fast").unwrap().is_none());
+
+        // Every{300s} + trunk → accepted.
+        job.schedule = ScheduleKind::Every { every_ms: 300_000 };
+        scheduler.add_job(&job).unwrap();
+
+        // Non-trunk Send + Every{30s} → unchanged (accepted).
+        let mut fast = make_job("conv-fast", None);
+        fast.schedule = ScheduleKind::Every { every_ms: 30_000 };
+        scheduler.add_job(&fast).unwrap();
+
+        // trunk + At (future) and trunk + Cron → exempt, accepted.
+        let mut at = make_job("trunk-at", None);
+        at.action = CronJobAction::Send {
+            message: "keepalive".to_string(),
+            target: Some("trunk".to_string()),
+        };
+        at.schedule = ScheduleKind::At {
+            at: (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+        };
+        scheduler.add_job(&at).unwrap();
+
+        let mut cron = make_job("trunk-cron", None);
+        cron.action = CronJobAction::Send {
+            message: "keepalive".to_string(),
+            target: Some("trunk".to_string()),
+        };
+        cron.schedule = ScheduleKind::Cron {
+            expr: "* * * * *".to_string(),
+            tz: None,
+        };
+        scheduler.add_job(&cron).unwrap();
     }
 
     /// A past `at` must be rejected at creation, not silently parked on

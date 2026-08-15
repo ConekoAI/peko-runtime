@@ -874,6 +874,7 @@ Branch `feat/agent-session-paradigm`; see
 | `principal::children::ensure_declared_children` / `session::standing` helpers | `principal::children`, `session::standing` | ✅ New | Ensure-declared + declaration recovery |
 | `trunk_session_id()` / `ChannelKind::Trunk` / `PrincipalManager::receive_trunk` | `principal::routers::root`, `principal::router`, `principal::manager` | ✅ New | Principal trunk session `root:self` (peer-less, cron-kept) |
 | `CronJobAction::Send` (+`target`); `SEND_TARGET_TRUNK` / `validate_send_target` | `peko_cron::tools` | ✅ Extended | `target = "trunk"` routes the turn into `root:self` |
+| `TRUNK_MIN_INTERVAL_MS` / `validate_trunk_send_interval` | `peko_cron::tools` | ✅ New | Phase 3b: 60s floor for trunk-targeted `Every` keepalive (token-burn guard); SpawnTool wake posts to `root:self` |
 
 ### Type Aliases for Backward Compatibility
 

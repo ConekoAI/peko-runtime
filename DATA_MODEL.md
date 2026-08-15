@@ -1237,10 +1237,22 @@ validated on deserialize — pre-Phase-3 schedule files load with
 | anything else | Structured error at JSON load, at `CronScheduler::add_job`, and (defensively) at fire time |
 
 Creation surfaces: the `CronCreate` tool's `target` param (valid only
-together with `message`; `prompt`/`tool` jobs — `SpawnTool` — are
-unchanged by design this phase, including their `root:{owner}` wake
-attribution) and the `--target` flag on `peko cron add / at / every /
-add-idle / add-event`.
+together with `message`) and the `--target` flag on `peko cron add /
+at / every / add-idle / add-event`.
+
+**SpawnTool wake attribution (Phase 3b, 2026-08-15).** `SpawnTool`
+jobs take no `target` param; their `wake_on_completion` steer message
+posts to the trunk inbox `root:self` (pre-3b: the owner's
+conversational `root:{owner}` inbox). PEKO.md §K requires cron `Send`
+and SpawnTool wakes to target the same principal root — the trunk.
+
+**Trunk keepalive floor (Phase 3b).** A `Send` job with
+`target = "trunk"` AND an `Every { every_ms }` schedule is refused at
+`CronScheduler::add_job` when `every_ms < 60_000`
+(`TRUNK_MIN_INTERVAL_MS`) — every tick is a full LLM turn in
+`root:self`, so a floorless self-poke loop is a runaway token-burn
+anti-pattern. `At`, `Cron`, `Idle`, and `Event` schedules are exempt
+(explicit or event-driven cadence); non-trunk jobs are unchanged.
 
 ---
 

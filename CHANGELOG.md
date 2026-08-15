@@ -64,6 +64,12 @@ Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in
   unchanged. This is the principal's heartbeat: a trunk-targeted cron job
   on a fixed cadence keeps the principal an active actor, with
   `budget_per_cycle` / `cost_per_call_max` as the wake budget.
+- **SpawnTool wake + keepalive floor (Phase 3b).** Per PEKO.md §K, cron
+  `SpawnTool` completion wakes (`wake_on_completion`) now steer the trunk
+  inbox (`root:self`) instead of the owner's conversational root — one
+  PEKO, one root. Trunk-targeted `Send` jobs with an `Every` schedule are
+  refused below a 60s floor (`TRUNK_MIN_INTERVAL_MS`) — a faster
+  self-targeted keepalive is a token-burn anti-pattern.
 
 ### Round 7: chapters deleted, stable-id paging, session/Agent tool surface (2026-08-13)
 

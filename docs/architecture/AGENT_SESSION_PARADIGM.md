@@ -104,10 +104,8 @@ Cron targeting: `CronJobAction::Send` gains `target: Option<String>` —
 add … --target trunk`. This is the heartbeat the paradigm calls for; wire
 `budget_per_cycle` / `cost_per_call_max` as the wake budget (§4).
 
-Known follow-ups: cron `SpawnTool` wake messages still land in
-`root:{owner}` (unchanged by design this phase — see §7.4);
-`err_resume_cross_family` (`session/ownership.rs:216`) remains dormant
-scaffolding.
+Known follow-up: `err_resume_cross_family` (`session/ownership.rs:216`)
+remains dormant scaffolding.
 
 ### 2.2 Standing named children
 
@@ -292,31 +290,25 @@ and child supervision.
 **(implemented)** `CronJobAction` (`peko-rs/cron/src/tools/mod.rs`) has
 three variants:
 
-- `Send` — fires a full agent turn, isolated in `root:cron:{owner}`; the
-  reply is delivered as a note to the conversational root session.
+- `Send` — fires a full agent turn. Default: isolated in
+  `root:cron:{owner}` with the reply delivered as a note to the
+  conversational root session. With `target: "trunk"` (Phase 3): the turn
+  lands in the trunk `root:self` — the paradigm's heartbeat.
 - `Notify` — pure delivery, no agent turn, zero tokens.
 - `SpawnTool` — an async tool run; with `wake_on_completion` it posts a
-  steering message into the principal's root inbox.
+  steering message into the trunk inbox `root:self` (Phase 3b — one PEKO,
+  one root).
 
 Schedule kinds cover the needed rhythms: `At`, `Every`, `Cron` (with
 timezone), `Idle`, and `Event` triggers. Missed intervals are anchored
-(no catch-up bursts) and in-flight fires coalesce.
+(no catch-up bursts) and in-flight fires coalesce. Trunk-targeted `Every`
+sends enforce a 60s floor (`TRUNK_MIN_INTERVAL_MS`, Phase 3b) — a faster
+self-targeted keepalive is a token-burn anti-pattern.
 
-**(gap / inconsistencies the audit found)**
-
-- A heartbeat turn *in the supervisor's own session* is not expressible:
-  `Send` isolates into `root:cron:{owner}` (a deliberate 2026-08-07
-  field-test decision), while `SpawnTool`'s wake lands in the
-  conversational `root:{owner}` (`cron_engine/mod.rs:880`) — the two
-  actions disagree about which root is "the" root. The trunk (§2.1)
-  resolves this by giving cron a first-class self target.
-- **No minimum-interval floor** — `Every{every_ms}` accepts any positive
-  value; runaway protection is only failure-count-based (disable after 3
-  consecutive failures).
-- **(design note) An always-on actor needs a hard wake budget.** A
-  self-triggering root will happily burn tokens reorganizing memory at
-  3am. The instruments exist — `budget_per_cycle` (mid-stream rolling
-  cap), `cost_per_call_max` (spawn pre-flight), per-principal quota — and
+**(design note) An always-on actor needs a hard wake budget.** A
+self-triggering root will happily burn tokens reorganizing memory at
+3am. The instruments exist — `budget_per_cycle` (mid-stream rolling
+cap), `cost_per_call_max` (spawn pre-flight), per-principal quota — and
   should be wired as the supervision loop's ceiling from day one. Note
   they are *per-principal* (`quota_state.json` next to `principal.toml`);
   nothing attributes spend to a session or subtree (§5).
@@ -382,12 +374,12 @@ Items 1–3 were **fixed in Phase 0 of the paradigm sprint**
    `ChannelCursors::load` (`daemon/mod.rs`); a corrupt file falls back
    to fresh cursors with a warning. First-ever boot still starts from
    offset 0 by design (benign while the responder is Noop).
-4. **Cron actions disagree about the root session.** Partially settled by
-   Phase 3: `Send` now has an explicit `target` (`"trunk"` → `root:self`;
-   default → `root:cron:{owner}` + note). `SpawnTool` wake messages still
-   land in the conversational `root:{owner}` (`cron_engine/mod.rs`) —
-   unchanged by design this sprint; revisit once the trunk has a defined
-   inbox-consumption pattern.
+4. ~~**Cron actions disagree about the root session.**~~ **Resolved
+   (Phases 3 + 3b):** `Send` has an explicit `target` (`"trunk"` →
+   `root:self`; default → `root:cron:{owner}` + note), and `SpawnTool`'s
+   `wake_on_completion` now steers the trunk inbox (`root:self`) — one
+   PEKO, one root (PEKO.md §K). Trunk-targeted `Every` sends enforce a
+   60s floor (`TRUNK_MIN_INTERVAL_MS`).
 5. **Dead code to reclaim or delete:** the `:subagent:{uuid}` key helpers
    (`peko-rs/session/src/subagent_key.rs` — tests + re-export only) and
    `err_resume_cross_family` (`session/ownership.rs:216` — zero call
