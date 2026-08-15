@@ -177,6 +177,18 @@ pub trait ChannelPort: Send + Sync + 'static {
         channel: &ChannelId,
     ) -> Result<std::path::PathBuf>;
 
+    /// Phase 4 (agent-session paradigm sprint): the channel's passive
+    /// binding — a session id or `/path` declared at create time
+    /// (`CreateOpts::passive_binding`), persisted in `meta.json`.
+    /// `None` means the channel is unbound and behaves exactly as
+    /// before (active polling via the `channel read` tool only). The
+    /// default impl returns `None` so adapters without binding support
+    /// (`NoopChannelPort`, in-memory tests) don't need to override.
+    async fn passive_binding(&self, channel: &ChannelId) -> Result<Option<String>> {
+        let _ = channel;
+        Ok(None)
+    }
+
     /// PR-2b: subscribe to live events for `channel`. The returned
     /// receiver yields every event appended to the channel after this
     /// call (events appended before subscription are NOT replayed —
@@ -231,19 +243,43 @@ impl PostMsg {
 pub struct CreateOpts {
     pub name: String,
     pub tier: Tier,
+    /// Phase 4 (agent-session paradigm sprint): optional **passive
+    /// binding** — a session id or `/path` in the creator principal's
+    /// session tree. When set, the daemon's `PassiveBindingResponder`
+    /// wakes the bound session on every inbound `Posted` event from
+    /// another member and posts the reply back (DM-tier semantics,
+    /// paradigm §3.1 type 1). `None` keeps the channel purely active
+    /// (group tier, paradigm §3.1 type 2). Persisted to `meta.json`;
+    /// immutable after create.
+    pub passive_binding: Option<String>,
 }
 
 impl CreateOpts {
     /// Construct a Runtime-tier `CreateOpts` (PR-1 default).
     pub fn runtime(name: impl Into<String>) -> Self {
-        Self { name: name.into(), tier: Tier::Runtime }
+        Self {
+            name: name.into(),
+            tier: Tier::Runtime,
+            passive_binding: None,
+        }
     }
 
     /// Construct a Shared-tier `CreateOpts` (PR-3d). The caller is
     /// responsible for the authority gate — the CLI does this via the
     /// Phase B `RuntimeAuthority::write_shared_channels` check.
     pub fn shared(name: impl Into<String>) -> Self {
-        Self { name: name.into(), tier: Tier::Shared }
+        Self {
+            name: name.into(),
+            tier: Tier::Shared,
+            passive_binding: None,
+        }
+    }
+
+    /// Attach a passive binding (session id or `/path`). See
+    /// [`Self::passive_binding`].
+    pub fn with_passive_binding(mut self, binding: impl Into<String>) -> Self {
+        self.passive_binding = Some(binding.into());
+        self
     }
 }
 

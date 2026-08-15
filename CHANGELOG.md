@@ -70,6 +70,17 @@ Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in
   PEKO, one root. Trunk-targeted `Send` jobs with an `Every` schedule are
   refused below a 60s floor (`TRUNK_MIN_INTERVAL_MS`) — a faster
   self-targeted keepalive is a token-burn anti-pattern.
+- **Channel passive binding (Phase 4).** `peko channel create --bind
+  <session-id|/path>` marks a DM-tier channel: an inbound post from
+  another member wakes the bound session via the subagent resume path
+  (`SubagentExecutor::resume_and_execute`) and the reply is posted back
+  as the principal (`peko-rs/core/src/daemon/channel_binding.rs`).
+  Anti-loop: the responder never processes its own posts (author match).
+  Turns serialize per channel (FIFO) and coordinate with Agent-tool runs
+  via the shared registry key. No chat-log projection — the channel's
+  event log is the record of both directions. Unbound channels are
+  unchanged (active polling only). Restart-safe via persisted cursors;
+  at-most-once delivery by design.
 
 ### Round 7: chapters deleted, stable-id paging, session/Agent tool surface (2026-08-13)
 

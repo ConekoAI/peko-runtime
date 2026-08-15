@@ -23,6 +23,7 @@ This document defines every on-disk and in-memory data format used by the Peko r
    - [5.5 Context Cache (Derived)](#55-context-cache-derived)
    - [5.6 Compaction](#56-compaction)
    5½. [Chat Log — Consumer-Visible Conversation History](#5½-chat-log--consumer-visible-conversation-history)
+   5¾. [Channel Store — Multi-Principal Chat Event Log](#5¾-channel-store--multi-principal-chat-event-log)
 6. [Agent Package Format (.agent) (RETIRED)](#6-agent-package-format-agent-retired)
 7. [Team Package Format (.team) (RETIRED)](#7-team-package-format-team-retired)
 8. [Extension Package Format (.ext)](#8-extension-package-format-ext)
@@ -1411,6 +1412,62 @@ own view** (the recipient via `PrincipalManager::receive` with
 `tunnel::principal_send_tool.rs`). The two views are independent
 shards keyed on each principal's DID; deleting one principal
 removes only its own view.
+
+---
+
+## 5¾. Channel Store — Multi-Principal Chat Event Log
+
+`peko-channel` (`peko-rs/channel/`) storage. Distinct from both
+session JSONL (§5, the principal's private working memory) and the
+chat log (§5½, the consumer-facing projection): a channel's log is
+an append-only event log shared by its members.
+
+### 5¾.1 On-Disk Layout
+
+```text
+<runtime_dir>/channels/<channel_id>/
+  meta.json       # channel metadata (schema below)
+  members.json    # { members: [String], remote_members: [RemoteMember] }
+  events.jsonl    # one ChannelEvent per line, append-only
+  cursors.json    # per-member "last observed line" map (HashMap<PrincipalId, TaskId>)
+```
+
+Shared-tier channels (PR-3d `pin_to_shared`) use the same layout
+under `<shared_dir>/channels/<channel_id>/`.
+
+### 5¾.2 `meta.json` Schema
+
+```json
+{
+  "creator": "prin_alice",
+  "name": "design-sync",
+  "created_at": "2026-08-05T12:00:00Z",
+  "tier": "Runtime",
+  "passive_binding": "/user-a"
+}
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `creator` | string | yes | Creator principal id. |
+| `name` | string | yes | Free-form display name. |
+| `created_at` | RFC3339 | yes | Snapshot at create time. |
+| `tier` | `"Runtime"` \| `"Shared"` | yes | Storage locality (NOT the DM/group split). |
+| `passive_binding` | string | no | Phase 4 (agent-session paradigm sprint). Absent or omitted ⇒ unbound (active/group-tier channel; today's default). |
+
+`passive_binding` is written only when set (`skip_serializing_if`),
+so pre-Phase-4 files and new unbound channels share the same shape;
+legacy files without the key deserialize as absent
+(`#[serde(default)]`). The value is a session id or a `/path` in the
+creator principal's session tree (§5.8 path addressing), set at
+create time via `peko channel create --bind`. When present, the
+daemon's `PassiveBindingResponder` wakes the bound session on every
+inbound `posted` event from another member, runs one LLM turn there
+(via the subagent resume path), and posts the reply back as the
+principal. Self-authored posts are suppressed (anti-loop invariant),
+and channel-origin turns never project into the chat log — the
+channel's own `events.jsonl` is the durable record of both
+directions. See `peko-rs/core/src/daemon/channel_binding.rs`.
 
 ---
 

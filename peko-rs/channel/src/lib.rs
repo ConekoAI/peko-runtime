@@ -12,10 +12,12 @@
 //!   `create`, `invite`, `post`, `peek`, `leave`, `list_members`,
 //!   `list_for_principal`. Errors via [`port::ChannelError`].
 //! - [`responder`] — `ChannelResponder` trait (also consumer-defined).
-//!   One method: `consider_response(ctx)`. The shipped impl is the
-//!   `NoopChannelResponder`; agents read channels actively via the
-//!   `ChannelRead` tool (peko-core) rather than reacting via a daemon
-//!   responder. See `peko-channel-pr4-shipped.md` for the rationale.
+//!   One method: `consider_response(ctx)`. This crate ships the
+//!   `NoopChannelResponder`; the production `PassiveBindingResponder`
+//!   (Phase 4, DM-tier passive bindings) lives in the root crate
+//!   (`daemon/channel_binding.rs`) because turn-driving needs the
+//!   subagent executor. See `peko-channel-pr4-shipped.md` for the
+//!   original rationale.
 //! - [`store`] — `ChannelStore: ChannelPort` (file-backed JSONL event
 //!   log + member set; PR-5b replaces the prior `peko_plan`-backed
 //!   DAG with an append-only log).
@@ -42,10 +44,12 @@
 //!
 //! Earlier drafts had a `ChannelResponder` impl wrapping subagent
 //! dispatch plus a `caps::intersect_member_caps` helper to gate it.
-//! That wiring was speculative — agents read actively (PR-4a
-//! `ChannelRead` tool) so there is no daemon-side responder to gate.
-//! Capability is a principal-level concept; channels are just a shared
-//! append-only log. See `peko-channel-pr5-shipped.md` (PR-5a).
+//! That wiring was speculative when written (PR-5a) — the Phase 4
+//! `PassiveBindingResponder` (root crate) drives turns through the
+//! bound session's own resume path, which already applies the
+//! principal's capability snapshot; capability remains a
+//! principal-level concept and channels are just a shared append-only
+//! log. See `peko-channel-pr5-shipped.md` (PR-5a).
 //!
 //! See `multi-model-subagents-phase2-shipped.md` for the recent work
 //! this composes against.

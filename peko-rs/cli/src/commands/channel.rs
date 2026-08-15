@@ -43,6 +43,12 @@ pub enum ChannelCommands {
         creator: String,
         /// Channel display name (free-form string).
         name: String,
+        /// Optional passive binding (Phase 4, agent-session paradigm):
+        /// a session id or `/path` in the creator's session tree. When
+        /// set, inbound messages from other members wake the bound
+        /// session and the reply is posted back (DM-tier channel).
+        #[arg(long)]
+        bind: Option<String>,
         /// Output the new channel id as JSON.
         #[arg(long)]
         json: bool,
@@ -167,11 +173,17 @@ impl ChannelCommands {
 pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result<()> {
     let json = cmd.json_flag();
     match cmd {
-        ChannelCommands::Create { creator, name, .. } => {
+        ChannelCommands::Create {
+            creator,
+            name,
+            bind,
+            ..
+        } => {
             let packet = RequestPacket::ChannelCreate {
                 request_id: 0,
                 creator_name: creator.clone(),
                 name: name.clone(),
+                passive_binding: bind.clone(),
             };
             let ch = run_daemon_or(
                 paths,
@@ -185,7 +197,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         .with_context(|| {
                             format!("Creator principal '{creator}' not found on disk")
                         })?;
-                    let resp = router.handle_create(&creator_id, &name).await?;
+                    let resp = router.handle_create(&creator_id, &name, bind).await?;
                     Ok(resp.channel)
                 })
             )

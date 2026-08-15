@@ -114,6 +114,13 @@ pub(crate) struct AppState {
     /// path resolver's `runtime_dir()`.
     channel_port: Arc<dyn peko_channel::ChannelPort>,
 
+    /// Phase 4 (agent-session paradigm sprint): owns the
+    /// per-(principal, channel) `ChannelSubscriber` lifespan — boot
+    /// enumeration plus the post-boot create/invite hooks — and the
+    /// per-principal bound-session turn drivers. See
+    /// `daemon/channel_binding.rs`.
+    channel_binding_supervisor: Arc<crate::daemon::channel_binding::ChannelBindingSupervisor>,
+
     /// peko-channel cross-runtime PR-B commit 2: the concrete
     /// `TunnelChannelPort` that wraps `channel_port`'s local store.
     /// The tunnel dispatcher reaches this through
@@ -976,6 +983,28 @@ impl AppState {
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
 
+        // Phase 4 (agent-session paradigm sprint): the channel
+        // passive-binding supervisor. Owns subscriber spawning (boot +
+        // post-boot hooks) and per-principal bound-session turn
+        // drivers. Built here (not lazily) so the `ChannelHost` hooks
+        // on `AppState` can reach it from the first IPC call. The meter
+        // is one `AuditChannelMeter` over the observability hub
+        // (`peko audit list --type channel.` surfaces channel
+        // observation history); the supervisor clones the `Arc` into
+        // each subscriber — the meter is a stateless wrapper, so one
+        // shared instance is equivalent to the pre-Phase-4 per-call
+        // construction.
+        let channel_binding_supervisor = Arc::new(
+            crate::daemon::channel_binding::ChannelBindingSupervisor::new(
+                channel_port.clone(),
+                Arc::new(peko_channel::AuditChannelMeter::new(observability.clone())),
+                path_resolver.runtime_dir(),
+                Arc::clone(&principal_manager),
+                Arc::clone(&resolver),
+                Arc::clone(&observability),
+            ),
+        );
+
         Ok(Self {
             started_at: SystemTime::now(),
             workspace_path,
@@ -1009,6 +1038,7 @@ impl AppState {
             // the typed path resolver's runtime dir. PR-1 only ships
             // Runtime-tier; PR-3 may add a Shared-tier sibling adapter.
             channel_port: channel_port.clone(),
+            channel_binding_supervisor,
             // peko-channel cross-runtime PR-B commit 2: the concrete
             // `TunnelChannelPort` accessor. Built by the
             // channel_port construction block above (line ~706); the
@@ -1271,6 +1301,16 @@ impl AppState {
     #[must_use]
     pub fn principal_manager(&self) -> &Arc<PrincipalManager> {
         &self.principal_manager
+    }
+
+    /// Phase 4 (agent-session paradigm sprint): the channel
+    /// passive-binding supervisor (subscriber lifespan + bound-session
+    /// turn drivers). Cloned `Arc` — callers (`daemon::run`'s boot
+    /// spawn, the `ChannelHost` hooks) share the one instance.
+    pub(crate) fn channel_binding_supervisor(
+        &self,
+    ) -> Arc<crate::daemon::channel_binding::ChannelBindingSupervisor> {
+        Arc::clone(&self.channel_binding_supervisor)
     }
 
     /// Runtime-owned chat-log store. Always present after daemon
@@ -2401,20 +2441,6 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
         self.channel_port.clone()
     }
 
-    fn channel_meter(&self) -> Arc<dyn peko_channel::ChannelMeter> {
-        // PR-3c / PR-5a: production daemon wires the audit ring
-        // buffer so `peko audit list --type channel.` surfaces channel
-        // observation history. The meter is created once at AppState
-        // construction; the subscription loops clone the Arc into
-        // each per-(principal, channel) ChannelSubscriber. The
-        // companion `ChannelResponder` passed to those subscribers is
-        // permanently `NoopChannelResponder` — agents read actively via
-        // the `ChannelRead` tool (PR-4a).
-        Arc::new(peko_channel::AuditChannelMeter::new(
-            self.observability.clone(),
-        ))
-    }
-
     fn principal_manager(
         &self,
     ) -> Option<&Arc<crate::principal::manager::PrincipalManager>> {
@@ -2426,14 +2452,14 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
     /// operators can distinguish "joined" from "kickoff observed" at
     /// join time, not just at read time.
     ///
-    /// Deliberately **does not** dispatch an `AsyncSpawn` of
-    /// `ChannelRead` to wake the invitee's session. That would
-    /// require per-invitee session-key resolution + F37 funnel
-    /// plumbing (per-agent `AsyncExecutorRuntime` + capabilities
-    /// snapshot) which is a meaningfully larger feature than this
-    /// PR warrants and which the principal boundary model would need
-    /// to absorb carefully. Operators who want session wake-up use
-    /// the cron-poll recipe (PR-4b) instead.
+    /// Phase 4 (agent-session paradigm sprint): additionally ensures a
+    /// subscriber exists for the (invitee, channel) pair — channels
+    /// joined after daemon boot otherwise get none until the next
+    /// restart. This is a *subscriber* spawn (meter +, for bound
+    /// channels, the passive responder), still NOT an `AsyncSpawn` of
+    /// `ChannelRead`: waking a session on join remains the passive
+    /// binding's job, driven by inbound events rather than the join
+    /// itself.
     fn kickoff_channel_read(
         &self,
         invitee: &peko_subject::PrincipalId,
@@ -2442,18 +2468,30 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
         tracing::info!(
             invitee = %invitee.0,
             channel = %channel.as_str(),
-            "channel invite kickoff observed (PR-4c); no session dispatch"
+            "channel invite kickoff observed (PR-4c); ensuring subscriber (Phase 4)"
         );
-        // The audit entry below records the join trigger distinct
-        // from a read event. The meter writes are async; we don't
-        // `await` because the trait method is sync — `peko_observability`
-        // internally buffers and the record is best-effort.
-        let meter = self.channel_meter();
-        // No-op meter behavior on test paths; production paths get
-        // an `AuditChannelMeter` (PR-3c) that buffers into the audit
-        // ring buffer. The trait surface is intentionally narrow —
-        // future PRs can extend this with a real spawn path.
-        let _ = meter; // explicit hold so the binding is observable.
+        self.channel_binding_supervisor()
+            .ensure_subscriber(invitee.clone(), channel.clone());
+    }
+
+    /// Phase 4 (agent-session paradigm sprint): post-create hook.
+    /// Ensures a subscriber exists for the (creator, channel) pair so
+    /// a channel created after boot gets its responder — including the
+    /// `PassiveBindingResponder` when `create --bind` set
+    /// `meta.json`'s `passive_binding` — without waiting for a daemon
+    /// restart.
+    fn channel_created(
+        &self,
+        creator: &peko_subject::PrincipalId,
+        channel: &peko_channel::ChannelId,
+    ) {
+        tracing::info!(
+            creator = %creator.0,
+            channel = %channel.as_str(),
+            "channel created (Phase 4); ensuring subscriber"
+        );
+        self.channel_binding_supervisor()
+            .ensure_subscriber(creator.clone(), channel.clone());
     }
 }
 

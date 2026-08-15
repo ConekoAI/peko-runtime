@@ -843,11 +843,18 @@ pub enum RequestPacket {
     // `PrincipalId` via `ChannelHost::principal_manager`).
 
     /// Create a new channel owned by `creator_name`.
+    ///
+    /// `passive_binding` (Phase 4, agent-session paradigm sprint) is the
+    /// optional `--bind` value (session id or `/path`). Serde-defaulted
+    /// so pre-Phase-4 clients decode as `None` (unbound) and older
+    /// daemons silently ignore the field.
     #[serde(rename = "channel_create")]
     ChannelCreate {
         request_id: u64,
         creator_name: String,
         name: String,
+        #[serde(default)]
+        passive_binding: Option<String>,
     },
 
     /// Add `invitee_name` to `channel` (invited by `inviter_name`).

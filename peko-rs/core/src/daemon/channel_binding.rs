@@ -1,0 +1,1436 @@
+//! Channel passive binding — Phase 4 of the agent-session paradigm
+//! sprint (2026-08-15, `docs/architecture/AGENT_SESSION_PARADIGM.md`
+//! §3.1 type 1).
+//!
+//! A channel with a `passive_binding` in its `meta.json` (a session id
+//! or `/path` in the creator principal's session tree) is a **DM-tier**
+//! channel: an inbound `Posted` event from another member automatically
+//! wakes the bound session, the session runs one LLM turn, and the
+//! final reply is posted back to the channel as the principal.
+//!
+//! ## Design decisions
+//!
+//! - **Turn driving: the subagent resume path.** Turns are driven by
+//!   [`SubagentResumeDriver`], a thin wrapper over
+//!   `SubagentExecutor::resume_and_execute` — the same path the `Agent`
+//!   tool's `resume` action uses. Bound sessions are expected to be
+//!   spawned sessions (standing children carry `trigger="spawn"`), which
+//!   is exactly what the resume guards require; the session's prior
+//!   history loads from its JSONL, so the child continues with full
+//!   context. The alternative — a `PrincipalManager`-based receive path
+//!   — was rejected: `receive`/`receive_trunk` land turns in root
+//!   sessions (`root:{peer}` / `root:self`) and run the *root* agent
+//!   prompt, neither of which fits "wake the bound child session".
+//! - **No `ChannelKind::Channel`.** That variant was sketched for turn
+//!   attribution through `PrincipalManager` routing
+//!   (`principal/router.rs`); since turns do NOT flow through the
+//!   router, the variant would have no consumer and is deliberately
+//!   skipped.
+//! - **No chat-log projection.** Channel-origin turns never touch
+//!   `peko-chat-log`: `record_input`/`record_response` live inside
+//!   `PrincipalManager::receive`/`receive_streaming`, which this module
+//!   never calls. The channel's own append-only event log is the
+//!   durable record of both directions (the inbound post and the
+//!   posted reply); the bound session's JSONL is the principal's
+//!   private working memory. This preserves the channel/session/chat-log
+//!   three-way separation (ADR-044, PEKO.md).
+//! - **Self-post suppression (anti-loop invariant).** The responder
+//!   posts its reply via `ChannelPort::post` as the principal, then
+//!   observes its own post on the subscriber's next poll tick.
+//!   [`PassiveBindingResponder::response_trigger`] drops any `Posted`
+//!   event whose `author` equals the bound principal's id — a responder
+//!   NEVER processes its own posts (PEKO.md "Violates channel/session
+//!   separation"). Author matching is unambiguous: `ChannelStore::post`
+//!   writes `author: sender.to_string()` and the responder compares
+//!   against the same `PrincipalId::to_string()` form.
+//! - **Run concurrency.** `consider_response` spawns the turn as a
+//!   detached task and returns immediately, so the subscriber's cursor
+//!   keeps advancing (persisted cursors, Phase 0) instead of blocking
+//!   on an LLM turn. Turns for one channel serialize on a per-responder
+//!   `tokio::Mutex`, so a second message arriving mid-run queues behind
+//!   the first and gets its own turn — never a crash, never a
+//!   double-run. Cross-path safety (root agent resuming the same
+//!   session via the `Agent` tool while a channel turn is in flight) is
+//!   inherited from `resume_and_execute`'s
+//!   `has_active_subagent_run_for_child` guard: the driver's executor
+//!   deliberately shares the root agent's global registry key
+//!   (`default_root_prompt().name`), so both paths see each other's
+//!   runs and the loser is refused with `err_run_active` (logged, turn
+//!   skipped).
+//! - **Failure policy: log-only.** A failed resolution or turn logs a
+//!   warning and posts NOTHING — a broken binding must never error-spam
+//!   a channel its other members read. (The trunk/cron paths follow the
+//!   same log-only idiom.)
+//! - **Restart semantics.** Subscriber cursors are persisted (Phase 0)
+//!   and loaded at spawn; a daemon restart does not re-fire channel
+//!   history through the responder. Caveat: a message whose turn task
+//!   was in flight when the daemon died is not retried (the cursor
+//!   advanced past it at delivery) — at-most-once delivery, by design.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use tokio::sync::RwLock;
+use tracing::{debug, warn};
+
+use peko_channel::{
+    ChannelCursors, ChannelEvent, ChannelId, ChannelMeter, ChannelPort, ChannelResponder,
+    ChannelSubscriber, NoopChannelResponder, PostMsg, RespondCtx, SubscriptionConfig,
+};
+use peko_observability::Observability;
+use peko_session::manager::SessionManager;
+use peko_subject::PrincipalId;
+
+use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
+use crate::extensions::framework::async_exec::executor::registry::TaskMetadata;
+use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
+use crate::principal::manager::PrincipalManager;
+use crate::principal::Principal;
+
+/// Extra slack on top of the turn's own timeout when waiting for a
+/// bound-session run to reach a terminal registry state.
+const COMPLETION_WAIT_MARGIN_SECS: u64 = 30;
+
+/// Poll interval for the run-completion wait. Mirrors the 50ms poll in
+/// `AsyncTaskRegistry::wait_for_completion` (which we deliberately do
+/// NOT use — see [`SubagentResumeDriver::drive_turn`]).
+const COMPLETION_POLL_MS: u64 = 50;
+
+// ---------------------------------------------------------------------------
+// Turn-driver + binding-resolver seams
+// ---------------------------------------------------------------------------
+
+/// Drives one LLM turn in an existing session of the principal's tree
+/// and returns the final response text. Trait seam so the responder's
+/// decision logic is unit-testable without a provider; the production
+/// impl is [`SubagentResumeDriver`].
+#[async_trait]
+pub(crate) trait BoundTurnDriver: Send + Sync + 'static {
+    /// Run a turn in `session_id` (a canonical id — the responder
+    /// resolves `/`-paths before calling) with `message` as the user
+    /// input. Returns the final response text.
+    async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String>;
+}
+
+/// Resolves a channel's passive binding (raw session id or `/path`) to
+/// a canonical session id. Trait seam for the same reason as
+/// [`BoundTurnDriver`]; the production impl is
+/// [`SessionStoreBindingResolver`].
+#[async_trait]
+pub(crate) trait BindingResolver: Send + Sync + 'static {
+    async fn resolve(&self, binding: &str) -> anyhow::Result<String>;
+}
+
+// ---------------------------------------------------------------------------
+// PassiveBindingResponder
+// ---------------------------------------------------------------------------
+
+/// `ChannelResponder` for DM-tier (passively bound) channels. See the
+/// module docs for the design; the anti-loop filter is
+/// [`Self::response_trigger`].
+///
+/// Cheap to clone (one `Arc` inside) so `consider_response` can move a
+/// handle into the detached turn task.
+#[derive(Clone)]
+pub(crate) struct PassiveBindingResponder {
+    inner: Arc<ResponderInner>,
+}
+
+struct ResponderInner {
+    channel: ChannelId,
+    principal: PrincipalId,
+    /// The raw binding string from `meta.json` (id or `/path`).
+    binding: String,
+    port: Arc<dyn ChannelPort>,
+    resolver: Arc<dyn BindingResolver>,
+    driver: Arc<dyn BoundTurnDriver>,
+    /// Resolved session id cache — the binding is resolved ONCE per
+    /// responder (per channel) via `get_or_try_init`, so a failing
+    /// resolution retries on the next event but a successful one is
+    /// never recomputed.
+    resolved_session: tokio::sync::OnceCell<String>,
+    /// Serializes turns for this channel: a message arriving mid-run
+    /// queues behind the in-flight turn instead of double-running the
+    /// bound session.
+    turn_lock: tokio::sync::Mutex<()>,
+}
+
+impl PassiveBindingResponder {
+    pub(crate) fn new(
+        channel: ChannelId,
+        principal: PrincipalId,
+        binding: String,
+        port: Arc<dyn ChannelPort>,
+        resolver: Arc<dyn BindingResolver>,
+        driver: Arc<dyn BoundTurnDriver>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(ResponderInner {
+                channel,
+                principal,
+                binding,
+                port,
+                resolver,
+                driver,
+                resolved_session: tokio::sync::OnceCell::new(),
+                turn_lock: tokio::sync::Mutex::new(()),
+            }),
+        }
+    }
+
+    /// The anti-loop filter. Returns the message text to act on, or
+    /// `None` to drop the event. Only `Posted` events from OTHER
+    /// members trigger a turn — `Created`/`MemberJoined`/`MemberLeft`
+    /// are channel bookkeeping, and self-authored posts are the loop
+    /// vector this filter exists to close.
+    fn response_trigger(principal: &PrincipalId, event: &ChannelEvent) -> Option<String> {
+        match event {
+            ChannelEvent::Posted { author, text, .. } if *author != principal.to_string() => {
+                Some(text.clone())
+            }
+            _ => None,
+        }
+    }
+}
+
+impl ResponderInner {
+    /// One full passive-binding cycle for `text`: resolve the binding
+    /// (cached), drive the turn (serialized per channel), post the
+    /// reply. All failures are log-only — see the module docs.
+    async fn run_turn(&self, text: String) {
+        let _turn_guard = self.turn_lock.lock().await;
+
+        let session_id = match self
+            .resolved_session
+            .get_or_try_init(|| self.resolver.resolve(&self.binding))
+            .await
+        {
+            Ok(id) => id.clone(),
+            Err(e) => {
+                warn!(
+                    channel = %self.channel,
+                    binding = %self.binding,
+                    "channel binding: resolution failed (will retry on next event): {e:#}"
+                );
+                return;
+            }
+        };
+
+        match self.driver.drive_turn(&session_id, &text).await {
+            Ok(reply) => {
+                let reply = reply.trim();
+                if reply.is_empty() {
+                    debug!(
+                        channel = %self.channel,
+                        session = %session_id,
+                        "channel binding: turn produced an empty reply; posting nothing"
+                    );
+                    return;
+                }
+                if let Err(e) = self
+                    .port
+                    .post(&self.channel, &self.principal, PostMsg::root(reply))
+                    .await
+                {
+                    warn!(
+                        channel = %self.channel,
+                        "channel binding: reply post failed: {e}"
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    channel = %self.channel,
+                    session = %session_id,
+                    "channel binding: turn failed (posting nothing): {e:#}"
+                );
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl ChannelResponder for PassiveBindingResponder {
+    async fn consider_response(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
+        let Some(text) = Self::response_trigger(&ctx.principal, &ctx.event) else {
+            return Ok(());
+        };
+        // Detached task: the subscriber's cursor advance + persistence
+        // must not block on an LLM turn (see module docs). The turn
+        // lock inside `run_turn` serializes concurrent arrivals.
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move { inner.run_turn(text).await });
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SessionStoreBindingResolver (production)
+// ---------------------------------------------------------------------------
+
+/// Production [`BindingResolver`] over the principal's session store.
+/// Raw ids pass through; `/`-rooted paths resolve via
+/// `peko_session::path::resolve_path` anchored at the principal's owner
+/// root (`root:{owner}`) — the tree every standing child hangs under
+/// (Phase 2). A dangling owner root (no human has chatted yet) fails
+/// path resolution with a clear error; the responder logs and retries
+/// on the next event.
+pub(crate) struct SessionStoreBindingResolver {
+    session_manager: Arc<RwLock<SessionManager>>,
+    anchor: String,
+}
+
+impl SessionStoreBindingResolver {
+    pub(crate) fn new(session_manager: Arc<RwLock<SessionManager>>, anchor: String) -> Self {
+        Self {
+            session_manager,
+            anchor,
+        }
+    }
+}
+
+#[async_trait]
+impl BindingResolver for SessionStoreBindingResolver {
+    async fn resolve(&self, binding: &str) -> anyhow::Result<String> {
+        if !binding.starts_with('/') {
+            return Ok(binding.to_string());
+        }
+        let metas = self
+            .session_manager
+            .write()
+            .await
+            .list_all_sessions(false)
+            .await?;
+        peko_session::path::resolve_path(&metas, &self.anchor, binding)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SubagentResumeDriver (production)
+// ---------------------------------------------------------------------------
+
+/// Production [`BoundTurnDriver`]: drives the turn through
+/// `SubagentExecutor::resume_and_execute` — the same machinery the
+/// `Agent` tool's `resume` action uses — then waits for the run to
+/// reach a terminal registry state and extracts the final text.
+///
+/// The parent session key is the principal's owner root
+/// (`root:{owner}`): a base-session caller, so the ownership guards
+/// admit any session in the principal's tree (and when the owner root
+/// is dangling, the subtree check still admits its own children —
+/// exactly where standing children live).
+pub(crate) struct SubagentResumeDriver {
+    executor: SubagentExecutor,
+    parent_session_key: String,
+}
+
+impl SubagentResumeDriver {
+    pub(crate) fn new(executor: SubagentExecutor, parent_session_key: String) -> Self {
+        Self {
+            executor,
+            parent_session_key,
+        }
+    }
+}
+
+#[async_trait]
+impl BoundTurnDriver for SubagentResumeDriver {
+    async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
+        // No completion announcement: the reply goes to the CHANNEL,
+        // not the parent session's inbox. Everything else defaults
+        // (cleanup: Keep — bound sessions outlive their runs;
+        // timeout 300s; max_depth 1).
+        let config = ExecutionConfig {
+            announce_completion: false,
+            ..ExecutionConfig::default()
+        };
+        let wait_timeout =
+            Duration::from_secs(config.timeout_seconds + COMPLETION_WAIT_MARGIN_SECS);
+
+        let run_id = self
+            .executor
+            .resume_and_execute(message, session_id, &self.parent_session_key, config, None)
+            .await?;
+
+        // Poll for a terminal state with SHORT-LIVED read guards. The
+        // registry's own `wait_for_completion` holds its read guard
+        // across the whole wait, which would block the completing
+        // task's write-guard status update and deadlock until timeout —
+        // so we re-acquire per poll instead.
+        let registry = Arc::clone(self.executor.registry());
+        let deadline = tokio::time::Instant::now() + wait_timeout;
+        loop {
+            let status = registry.read().await.check_status(&run_id);
+            match status {
+                Some(AsyncTaskStatus::Completed { .. }) => {
+                    let output = {
+                        let guard = registry.read().await;
+                        guard.get(&run_id).and_then(|entry| match &entry.metadata {
+                            TaskMetadata::Subagent(meta) => {
+                                meta.subagent_result.as_ref().and_then(|r| r.output.clone())
+                            }
+                            _ => None,
+                        })
+                    };
+                    return output.ok_or_else(|| {
+                        anyhow::anyhow!("bound-session run {run_id} completed without output")
+                    });
+                }
+                Some(AsyncTaskStatus::Failed { error }) => {
+                    return Err(anyhow::anyhow!("bound-session turn failed: {error}"));
+                }
+                Some(AsyncTaskStatus::Cancelled) => {
+                    return Err(anyhow::anyhow!("bound-session run {run_id} was cancelled"));
+                }
+                Some(_) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(anyhow::anyhow!(
+                            "bound-session run {run_id} timed out after {wait_timeout:?}"
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
+                }
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "bound-session run {run_id} vanished from the registry"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// select_responder — the per-channel wiring decision
+// ---------------------------------------------------------------------------
+
+/// Pick the responder for one (principal, channel) pair. Pure decision
+/// shared by the boot path and the post-boot hooks, and unit-tested
+/// here: a binding + a successfully built driver yields a
+/// [`PassiveBindingResponder`]; anything else (unbound channel, or a
+/// principal with no resolvable model) keeps the pre-Phase-4
+/// [`NoopChannelResponder`] behavior.
+pub(crate) fn select_responder(
+    channel: ChannelId,
+    principal: PrincipalId,
+    port: Arc<dyn ChannelPort>,
+    binding: Option<String>,
+    driver: Option<(Arc<dyn BoundTurnDriver>, Arc<dyn BindingResolver>)>,
+) -> Arc<dyn ChannelResponder> {
+    match (binding, driver) {
+        (Some(binding), Some((turn_driver, resolver))) => Arc::new(PassiveBindingResponder::new(
+            channel,
+            principal,
+            binding,
+            port,
+            resolver,
+            turn_driver,
+        )),
+        (binding, _) => {
+            if let Some(binding) = binding {
+                debug!(
+                    channel = %channel,
+                    binding = %binding,
+                    "channel binding: no turn driver available; channel stays active-only"
+                );
+            }
+            Arc::new(NoopChannelResponder)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ChannelBindingSupervisor
+// ---------------------------------------------------------------------------
+
+/// Owns the per-(principal, channel) `ChannelSubscriber` lifespan:
+/// boot-time enumeration ([`Self::spawn_all`]) plus the post-boot
+/// hooks ([`Self::ensure_subscriber`], called from `ChannelHost`'s
+/// `channel_created` / `kickoff_channel_read` impls on `AppState`).
+///
+/// Also owns the per-principal [`SubagentResumeDriver`] cache — driver
+/// construction resolves the principal's provider, so it happens once
+/// per principal (first bound channel), not once per message.
+///
+/// Post-boot approach: hook-driven, not a periodic rescan. The IPC
+/// `ChannelCreate` / `ChannelInvite` success arms already call
+/// `ChannelHost` hooks; wiring those is cheaper and immediate. Known
+/// gap (documented, deliberate): channels joined via the cross-runtime
+/// tunnel bootstrap (`join_remote`) fire no hook today — their
+/// subscribers appear at the next daemon boot via `spawn_all`.
+pub(crate) struct ChannelBindingSupervisor {
+    port: Arc<dyn ChannelPort>,
+    meter: Arc<dyn ChannelMeter>,
+    runtime_dir: PathBuf,
+    principal_manager: Arc<PrincipalManager>,
+    llm_resolver: Arc<peko_providers::LlmResolver>,
+    observability: Arc<Observability>,
+    /// (principal, channel) pairs that already have a live subscriber.
+    /// Short critical sections only — a std Mutex is fine.
+    spawned: std::sync::Mutex<HashSet<(PrincipalId, ChannelId)>>,
+    /// Per-principal (turn driver, binding resolver) bundles.
+    drivers: tokio::sync::Mutex<
+        HashMap<PrincipalId, (Arc<SubagentResumeDriver>, Arc<SessionStoreBindingResolver>)>,
+    >,
+}
+
+impl ChannelBindingSupervisor {
+    pub(crate) fn new(
+        port: Arc<dyn ChannelPort>,
+        meter: Arc<dyn ChannelMeter>,
+        runtime_dir: PathBuf,
+        principal_manager: Arc<PrincipalManager>,
+        llm_resolver: Arc<peko_providers::LlmResolver>,
+        observability: Arc<Observability>,
+    ) -> Self {
+        Self {
+            port,
+            meter,
+            runtime_dir,
+            principal_manager,
+            llm_resolver,
+            observability,
+            spawned: std::sync::Mutex::new(HashSet::new()),
+            drivers: tokio::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Boot path: spawn one subscriber per (loaded principal × channel
+    /// the principal is a member of). Replaces the pre-Phase-4
+    /// `spawn_channel_subscribers` body; spawn-and-forget so a
+    /// subscriber crash doesn't block daemon boot.
+    pub(crate) async fn spawn_all(self: &Arc<Self>) -> Vec<tokio::task::JoinHandle<()>> {
+        let principals = self.principal_manager.list_all().await;
+        let mut handles = Vec::new();
+        for principal in principals {
+            let channels = match self.port.list_for_principal(&principal.id).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(
+                        principal = %principal.id,
+                        ?e,
+                        "channel subscribers: list_for_principal failed; skipping"
+                    );
+                    continue;
+                }
+            };
+            for channel in channels {
+                if let Some(handle) = self.spawn_one(Arc::clone(&principal), channel).await {
+                    handles.push(handle);
+                }
+            }
+        }
+        handles
+    }
+
+    /// Post-boot hook (create/invite): ensure a subscriber exists for
+    /// this pair. Sync wrapper — spawns the async work so the IPC
+    /// handler never blocks on it; dedup via `spawned` makes repeat
+    /// hooks harmless.
+    pub(crate) fn ensure_subscriber(self: &Arc<Self>, principal: PrincipalId, channel: ChannelId) {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let Some(principal) = this.principal_manager.get(principal.clone()).await else {
+                warn!(
+                    principal = %principal,
+                    channel = %channel,
+                    "channel subscribers: post-boot hook for unknown principal; skipping"
+                );
+                return;
+            };
+            let _ = this.spawn_one(principal, channel).await;
+        });
+    }
+
+    /// Spawn one subscriber unless the pair already has one. Returns
+    /// the `JoinHandle` for a fresh spawn, `None` on dedup hit.
+    async fn spawn_one(
+        self: &Arc<Self>,
+        principal: Arc<Principal>,
+        channel: ChannelId,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        {
+            let mut spawned = self.spawned.lock().expect("spawned mutex poisoned");
+            if !spawned.insert((principal.id.clone(), channel.clone())) {
+                return None;
+            }
+        }
+
+        let channel_dir = self.runtime_dir.join("channels").join(channel.as_str());
+        // Resume from the persisted per-member cursors so a daemon
+        // restart doesn't re-observe (and, for bound channels,
+        // re-fire) the channel's entire event history. A missing file
+        // loads as an empty map (first-ever boot); a corrupt file
+        // falls back to fresh cursors.
+        let cursors = match ChannelCursors::load(&channel_dir).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    channel = %channel,
+                    dir = %channel_dir.display(),
+                    ?e,
+                    "channel subscribers: cursor load failed; starting from fresh cursors"
+                );
+                ChannelCursors::new()
+            }
+        };
+
+        let responder = self.responder_for(&principal, &channel).await;
+        let sub = ChannelSubscriber::new(
+            channel,
+            principal.id.clone(),
+            channel_dir,
+            Arc::clone(&self.port),
+            responder,
+            Arc::clone(&self.meter),
+            cursors,
+            SubscriptionConfig::default(),
+        );
+        Some(sub.spawn())
+    }
+
+    /// Read the channel's binding from `meta.json` and pick the
+    /// responder. Unreadable meta (or any other binding read failure)
+    /// degrades to `Noop` with a warning — the meter-only subscriber
+    /// still runs.
+    async fn responder_for(
+        &self,
+        principal: &Arc<Principal>,
+        channel: &ChannelId,
+    ) -> Arc<dyn ChannelResponder> {
+        let binding = match self.port.passive_binding(channel).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    channel = %channel,
+                    "channel subscribers: passive_binding read failed; treating as unbound: {e}"
+                );
+                None
+            }
+        };
+        let driver = match binding {
+            Some(_) => self.driver_for(principal).await.map(|(turn, resolver)| {
+                (
+                    Arc::clone(&turn) as Arc<dyn BoundTurnDriver>,
+                    Arc::clone(&resolver) as Arc<dyn BindingResolver>,
+                )
+            }),
+            None => None,
+        };
+        select_responder(
+            channel.clone(),
+            principal.id.clone(),
+            Arc::clone(&self.port),
+            binding,
+            driver,
+        )
+    }
+
+    /// Get or build the per-principal driver bundle. `None` (with a
+    /// warning) when the principal has no resolvable model — the same
+    /// configuration error that breaks `peko send`; bound channels
+    /// then stay active-only until the principal config is fixed and
+    /// the daemon restarts.
+    async fn driver_for(
+        &self,
+        principal: &Arc<Principal>,
+    ) -> Option<(Arc<SubagentResumeDriver>, Arc<SessionStoreBindingResolver>)> {
+        if let Some(bundle) = self.drivers.lock().await.get(&principal.id).cloned() {
+            return Some(bundle);
+        }
+
+        let (name, owner, capabilities, preferred_model_id) = {
+            let config = principal.config.read().await;
+            (
+                config.name.clone(),
+                config.owner.clone(),
+                config.capabilities.clone(),
+                config.preferred_model_id.clone(),
+            )
+        };
+
+        // Resolve the principal's pinned model through the daemon's
+        // shared resolver (`AgentPreference` precedence — no per-call
+        // override exists on this path).
+        let provider = match self
+            .llm_resolver
+            .build(peko_providers::resolver::ResolveRequest {
+                agent_model: preferred_model_id.as_deref(),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok((provider, _choice)) => provider,
+            Err(e) => {
+                warn!(
+                    principal = %principal.id,
+                    "channel binding: cannot build a turn driver (no resolvable model); \
+                     bound channels stay active-only: {e:#}"
+                );
+                return None;
+            }
+        };
+
+        // Session manager mirrors `agent_runner`'s root-agent
+        // construction: same sessions dir, agent name = principal name,
+        // owner as the session peer.
+        let session_manager = Arc::new(RwLock::new(
+            SessionManager::new()
+                .with_sessions_dir_internal(principal.memory.sessions_dir())
+                .with_agent_name(&name)
+                .with_peer_principal(owner.clone())
+                .with_user(&owner.to_string()),
+        ));
+
+        // `SubagentExecutor::new`'s agent name keys the GLOBAL async
+        // task registry (`get_or_create_registry_for_agent`). Use the
+        // default root prompt's name — the same key the root agent's
+        // own executor uses — so `resume_and_execute`'s
+        // `has_active_subagent_run_for_child` guard sees Agent-tool
+        // runs on the same session (and vice versa). A separate key
+        // would let a channel turn and an Agent-tool resume double-run
+        // one session JSONL.
+        let registry_key = crate::principal::routers::root::default_root_prompt().name;
+        let executor = SubagentExecutor::new(
+            Arc::clone(&session_manager),
+            registry_key,
+            5,
+            principal.id.clone(),
+        )
+        .with_principal_name(name)
+        .with_principal_workspace(principal.workspace_path.clone())
+        .with_principal_capabilities(Some(Arc::new(capabilities)))
+        .with_principal_plan_port(Arc::clone(&principal.plan_port))
+        .with_observability(Some(Arc::clone(&self.observability)))
+        // Charge channel-driven turns against the principal's meter,
+        // like any other subagent run (F39).
+        .with_quota_meter(Some(Arc::clone(&principal.quota_meter)))
+        .with_provider(provider);
+        executor.set_caller_principal_did(principal.did().await.0);
+
+        let owner_root = crate::principal::routers::root::root_session_id(&owner);
+        let turn_driver = Arc::new(SubagentResumeDriver::new(executor, owner_root.clone()));
+        let binding_resolver = Arc::new(SessionStoreBindingResolver::new(
+            session_manager,
+            owner_root,
+        ));
+
+        let bundle = (turn_driver, binding_resolver);
+        self.drivers
+            .lock()
+            .await
+            .insert(principal.id.clone(), bundle.clone());
+        Some(bundle)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use peko_channel::{ChannelConfig, ChannelStore, CreateOpts};
+    use peko_session::SessionCreateOptions;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex as StdMutex;
+
+    fn pid(s: &str) -> PrincipalId {
+        PrincipalId(s.to_string())
+    }
+
+    fn chan() -> ChannelId {
+        ChannelId::generate()
+    }
+
+    fn posted(author: &str, text: &str) -> ChannelEvent {
+        ChannelEvent::Posted {
+            channel: chan(),
+            author: author.to_string(),
+            parent: None,
+            text: text.to_string(),
+            at: "2026-08-15T00:00:00Z".to_string(),
+        }
+    }
+
+    fn respond_ctx(
+        principal: &PrincipalId,
+        channel: &ChannelId,
+        event: ChannelEvent,
+    ) -> RespondCtx {
+        RespondCtx {
+            channel: channel.clone(),
+            principal: principal.clone(),
+            event,
+            now: std::time::SystemTime::now(),
+        }
+    }
+
+    // -- stubs ------------------------------------------------------------
+
+    struct StubDriver {
+        calls: Arc<StdMutex<Vec<(String, String)>>>,
+        reply: String,
+        delay: Duration,
+        active: Arc<AtomicUsize>,
+        max_active: Arc<AtomicUsize>,
+    }
+
+    impl StubDriver {
+        fn new(reply: &str) -> (Self, Arc<StdMutex<Vec<(String, String)>>>) {
+            let calls = Arc::new(StdMutex::new(Vec::new()));
+            (
+                Self {
+                    calls: Arc::clone(&calls),
+                    reply: reply.to_string(),
+                    delay: Duration::ZERO,
+                    active: Arc::new(AtomicUsize::new(0)),
+                    max_active: Arc::new(AtomicUsize::new(0)),
+                },
+                calls,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl BoundTurnDriver for StubDriver {
+        async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
+            let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(now, Ordering::SeqCst);
+            if self.delay > Duration::ZERO {
+                tokio::time::sleep(self.delay).await;
+            }
+            self.calls
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), message.to_string()));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(self.reply.clone())
+        }
+    }
+
+    struct StubResolver {
+        id: String,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl BindingResolver for StubResolver {
+        async fn resolve(&self, _binding: &str) -> anyhow::Result<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.id.clone())
+        }
+    }
+
+    fn test_store(label: &str) -> (Arc<ChannelStore>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let _ = label;
+        let store = ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        });
+        (Arc::new(store), tmp)
+    }
+
+    /// Poll `cond` until it holds or the deadline expires.
+    async fn eventually<F, Fut>(cond: F) -> bool
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            if cond().await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    // -- response_trigger (the anti-loop filter) ---------------------------
+
+    #[test]
+    fn response_trigger_ignores_non_posted_events() {
+        let principal = pid("prin_self");
+        let channel = chan();
+        for ev in [
+            ChannelEvent::Created {
+                channel: channel.clone(),
+                creator: "prin_other".into(),
+                name: "dm".into(),
+                at: "2026-08-15T00:00:00Z".into(),
+            },
+            ChannelEvent::MemberJoined {
+                channel: channel.clone(),
+                member: "prin_other".into(),
+                at: "2026-08-15T00:00:00Z".into(),
+            },
+            ChannelEvent::MemberLeft {
+                channel,
+                member: "prin_other".into(),
+                at: "2026-08-15T00:00:00Z".into(),
+            },
+        ] {
+            assert_eq!(
+                PassiveBindingResponder::response_trigger(&principal, &ev),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn response_trigger_ignores_self_authored_posts() {
+        let principal = pid("prin_self");
+        // The principal's own reply (posted via ChannelPort::post with
+        // sender = principal) comes back with author ==
+        // principal.to_string() — the anti-loop invariant depends on
+        // this exact-match suppression.
+        let ev = posted("prin_self", "my own reply");
+        assert_eq!(
+            PassiveBindingResponder::response_trigger(&principal, &ev),
+            None
+        );
+    }
+
+    #[test]
+    fn response_trigger_accepts_other_members_posts() {
+        let principal = pid("prin_self");
+        let ev = posted("prin_other", "hello agent");
+        assert_eq!(
+            PassiveBindingResponder::response_trigger(&principal, &ev),
+            Some("hello agent".to_string())
+        );
+    }
+
+    // -- responder end-to-end (stub driver, real ChannelStore) -------------
+
+    async fn bound_responder(
+        label_principal: &str,
+        driver: StubDriver,
+        resolver: StubResolver,
+    ) -> (
+        PassiveBindingResponder,
+        Arc<ChannelStore>,
+        ChannelId,
+        PrincipalId,
+        tempfile::TempDir,
+    ) {
+        let (store, tmp) = test_store(label_principal);
+        let principal = pid(label_principal);
+        let channel = store
+            .create(&principal, CreateOpts::runtime("dm"))
+            .await
+            .unwrap();
+        let responder = PassiveBindingResponder::new(
+            channel.clone(),
+            principal.clone(),
+            "/bound".to_string(),
+            Arc::clone(&store) as Arc<dyn ChannelPort>,
+            Arc::new(resolver),
+            Arc::new(driver),
+        );
+        (responder, store, channel, principal, tmp)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn posted_event_drives_turn_and_posts_reply() {
+        let (driver, calls) = StubDriver::new("the reply");
+        let resolver = StubResolver {
+            id: "session-1".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder, store, channel, principal, _tmp) =
+            bound_responder("prin_self", driver, resolver).await;
+
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                posted("prin_other", "hi"),
+            ))
+            .await
+            .unwrap();
+
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        assert_eq!(
+            calls.lock().unwrap()[0],
+            ("session-1".to_string(), "hi".to_string())
+        );
+
+        // The reply lands on the channel as the principal, and the
+        // channel's own event log is the only record (no chat-log
+        // projection anywhere on this path).
+        let store2 = Arc::clone(&store);
+        let channel2 = channel.clone();
+        let principal2 = principal.clone();
+        assert!(
+            eventually(|| async {
+                store2
+                    .peek(&channel2, &peko_channel::Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|ev| {
+                        matches!(ev, ChannelEvent::Posted { author, text, .. }
+                    if *author == principal2.to_string() && text == "the reply")
+                    })
+            })
+            .await
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn self_post_is_suppressed_end_to_end() {
+        let (driver, calls) = StubDriver::new("reply");
+        let resolver = StubResolver {
+            id: "session-1".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder, _store, channel, principal, _tmp) =
+            bound_responder("prin_self", driver, resolver).await;
+
+        // A post authored by the bound principal (i.e. our own reply
+        // observed on the next poll tick) must not drive a turn.
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                posted("prin_self", "my reply"),
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn binding_resolves_once_and_is_cached() {
+        let (driver, calls) = StubDriver::new("r");
+        let resolve_calls = Arc::new(AtomicUsize::new(0));
+        let resolver = StubResolver {
+            id: "session-1".into(),
+            calls: Arc::clone(&resolve_calls),
+        };
+        let (responder, _store, channel, principal, _tmp) =
+            bound_responder("prin_self", driver, resolver).await;
+
+        for text in ["one", "two"] {
+            responder
+                .consider_response(respond_ctx(
+                    &principal,
+                    &channel,
+                    posted("prin_other", text),
+                ))
+                .await
+                .unwrap();
+        }
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 2 }).await);
+        assert_eq!(
+            resolve_calls.load(Ordering::SeqCst),
+            1,
+            "the binding must resolve once per channel, not once per message"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_messages_serialize_turns() {
+        let (mut driver, calls) = StubDriver::new("r");
+        driver.delay = Duration::from_millis(100);
+        let max_active = Arc::clone(&driver.max_active);
+        let resolver = StubResolver {
+            id: "session-1".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder, _store, channel, principal, _tmp) =
+            bound_responder("prin_self", driver, resolver).await;
+
+        // Two messages arriving in the same tick: both get a turn, but
+        // never concurrently (the second queues behind the first).
+        for text in ["m1", "m2"] {
+            responder
+                .consider_response(respond_ctx(
+                    &principal,
+                    &channel,
+                    posted("prin_other", text),
+                ))
+                .await
+                .unwrap();
+        }
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 2 }).await);
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+        // Order preserved: the queue is FIFO.
+        assert_eq!(calls.lock().unwrap()[0].1, "m1");
+        assert_eq!(calls.lock().unwrap()[1].1, "m2");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_reply_posts_nothing() {
+        let (driver, _calls) = StubDriver::new("   ");
+        let resolver = StubResolver {
+            id: "session-1".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder, store, channel, principal, _tmp) =
+            bound_responder("prin_self", driver, resolver).await;
+
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                posted("prin_other", "hi"),
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let events = store
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|ev| matches!(ev, ChannelEvent::Posted { .. })),
+            "empty replies must not be posted; got {events:?}"
+        );
+    }
+
+    // -- select_responder ---------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn select_responder_noop_for_unbound_channel() {
+        let (store, _tmp) = test_store("select-unbound");
+        let principal = pid("prin_self");
+        let channel = store
+            .create(&principal, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+
+        // Unbound: Noop even if a driver is somehow available.
+        let (driver, calls) = StubDriver::new("r");
+        let responder = select_responder(
+            channel.clone(),
+            principal.clone(),
+            Arc::clone(&store) as Arc<dyn ChannelPort>,
+            None,
+            Some((
+                Arc::new(driver),
+                Arc::new(StubResolver {
+                    id: "s".into(),
+                    calls: Arc::new(AtomicUsize::new(0)),
+                }),
+            )),
+        );
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                posted("prin_other", "hi"),
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn select_responder_noop_when_driver_unavailable() {
+        let (store, _tmp) = test_store("select-nodriver");
+        let principal = pid("prin_self");
+        let channel = store
+            .create(
+                &principal,
+                CreateOpts::runtime("dm").with_passive_binding("/user-a"),
+            )
+            .await
+            .unwrap();
+
+        // Bound but the principal's model didn't resolve: Noop (the
+        // channel behaves as active-only rather than failing per event).
+        let responder = select_responder(
+            channel.clone(),
+            principal.clone(),
+            Arc::clone(&store) as Arc<dyn ChannelPort>,
+            Some("/user-a".to_string()),
+            None,
+        );
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                posted("prin_other", "hi"),
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn select_responder_passive_for_bound_channel_with_driver() {
+        let (store, _tmp) = test_store("select-bound");
+        let principal = pid("prin_self");
+        let channel = store
+            .create(
+                &principal,
+                CreateOpts::runtime("dm").with_passive_binding("/user-a"),
+            )
+            .await
+            .unwrap();
+
+        let (driver, calls) = StubDriver::new("r");
+        let responder = select_responder(
+            channel.clone(),
+            principal.clone(),
+            Arc::clone(&store) as Arc<dyn ChannelPort>,
+            Some("/user-a".to_string()),
+            Some((
+                Arc::new(driver),
+                Arc::new(StubResolver {
+                    id: "session-1".into(),
+                    calls: Arc::new(AtomicUsize::new(0)),
+                }),
+            )),
+        );
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                posted("prin_other", "hi"),
+            ))
+            .await
+            .unwrap();
+        assert!(eventually(|| async { !calls.lock().unwrap().is_empty() }).await);
+    }
+
+    // -- SessionStoreBindingResolver (real session store) -------------------
+
+    /// Build a session manager over a tempdir with a root session and a
+    /// spawned child carrying slug `user-a` — the standing-child shape
+    /// from Phase 2.
+    async fn store_with_standing_child() -> (Arc<RwLock<SessionManager>>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new()
+            .with_sessions_dir_internal(tmp.path().join("sessions"))
+            .with_agent_name("test-agent")
+            .with_user("alice");
+        let manager = Arc::new(RwLock::new(manager));
+        let peer = peko_auth::Subject::User("alice".to_string());
+        {
+            let mut mgr = manager.write().await;
+            mgr.create_session(
+                "test-agent",
+                &peer,
+                SessionCreateOptions::new()
+                    .with_session_id("root:user:alice")
+                    .with_trigger("user"),
+            )
+            .await
+            .unwrap();
+            mgr.create_session(
+                "test-agent",
+                &peer,
+                SessionCreateOptions::new()
+                    .with_session_id("child-1")
+                    .with_parent("root:user:alice")
+                    .with_trigger("spawn"),
+            )
+            .await
+            .unwrap();
+        }
+        {
+            let mgr = manager.read().await;
+            mgr.set_session_slug("child-1", Some("user-a".to_string()))
+                .await
+                .unwrap();
+        }
+        (manager, tmp)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolver_passes_raw_ids_through() {
+        let (manager, _tmp) = store_with_standing_child().await;
+        let resolver = SessionStoreBindingResolver::new(manager, "root:user:alice".to_string());
+        assert_eq!(resolver.resolve("child-1").await.unwrap(), "child-1");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolver_resolves_slash_paths() {
+        let (manager, _tmp) = store_with_standing_child().await;
+        let resolver = SessionStoreBindingResolver::new(manager, "root:user:alice".to_string());
+        assert_eq!(resolver.resolve("/user-a").await.unwrap(), "child-1");
+        let err = resolver.resolve("/nope").await.unwrap_err();
+        assert!(err.to_string().contains("user-a"), "{err}");
+    }
+
+    // -- SubagentResumeDriver (real resume path, no provider) ---------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn driver_runs_a_real_turn_in_the_bound_session() {
+        let (manager, _tmp) = store_with_standing_child().await;
+        // Unique agent name → private global registry for this test
+        // (mirrors the subagent integration tests' counter pattern).
+        static CTR: AtomicUsize = AtomicUsize::new(0);
+        let agent_name = format!(
+            "channel-binding-test-{}",
+            CTR.fetch_add(1, Ordering::Relaxed)
+        );
+        let executor = SubagentExecutor::new(
+            Arc::clone(&manager),
+            &agent_name,
+            5,
+            PrincipalId::generate(),
+        );
+        let driver = SubagentResumeDriver::new(executor, "root:user:alice".to_string());
+
+        // No provider configured: the resume path short-circuits to
+        // its stub completion text (which embeds the task message) and
+        // never appends to the child session. The assertion therefore
+        // pins guard passage + turn execution + output extraction
+        // through the registry wait — the message text flowing into
+        // the turn — rather than session writes (those only happen
+        // once a real provider drives the loop).
+        let reply = driver
+            .drive_turn("child-1", "hello from the channel")
+            .await
+            .unwrap();
+        assert!(
+            reply.contains("no provider configured"),
+            "unexpected reply: {reply}"
+        );
+        assert!(
+            reply.contains("hello from the channel"),
+            "the channel message must reach the turn body: {reply}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn driver_surfaces_guard_refusals_as_errors() {
+        let (manager, _tmp) = store_with_standing_child().await;
+        static CTR2: AtomicUsize = AtomicUsize::new(0);
+        let agent_name = format!(
+            "channel-binding-test-guard-{}",
+            CTR2.fetch_add(1, Ordering::Relaxed)
+        );
+        let executor = SubagentExecutor::new(
+            Arc::clone(&manager),
+            &agent_name,
+            5,
+            PrincipalId::generate(),
+        );
+        let driver = SubagentResumeDriver::new(executor, "root:user:alice".to_string());
+
+        // The root session itself is not a spawned session — the
+        // resume guard refuses it (bound sessions must be spawned).
+        let err = driver
+            .drive_turn("root:user:alice", "hi")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("spawn"), "{err}");
+    }
+
+    // -- restart semantics (Phase 0 cursors + anti-loop across ticks) -------
+
+    /// A simulated daemon restart must not re-fire channel history
+    /// through the responder: boot 1's subscriber persists its cursor,
+    /// boot 2's subscriber loads it and sees only NEW events. The one
+    /// new event here is boot 1's own reply post — which the anti-loop
+    /// filter suppresses. This is the full PEKO.md "channel/session
+    /// separation" loop-closure invariant exercised end to end.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn restart_does_not_refire_history() {
+        let (store, tmp) = test_store("restart");
+        let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
+        let principal = pid("prin_self");
+        let other = pid("prin_other");
+        let channel = store
+            .create(
+                &principal,
+                CreateOpts::runtime("dm").with_passive_binding("/user-a"),
+            )
+            .await
+            .unwrap();
+        store.invite(&channel, &principal, &other).await.unwrap();
+        store
+            .post(&channel, &other, PostMsg::root("before-restart"))
+            .await
+            .unwrap();
+
+        let channel_dir = tmp.path().join("channels").join(channel.as_str());
+        let (driver, calls) = StubDriver::new("the reply");
+        let mk_responder = |driver: StubDriver| {
+            PassiveBindingResponder::new(
+                channel.clone(),
+                principal.clone(),
+                "/user-a".to_string(),
+                Arc::clone(&port),
+                Arc::new(StubResolver {
+                    id: "session-1".into(),
+                    calls: Arc::new(AtomicUsize::new(0)),
+                }),
+                Arc::new(driver),
+            )
+        };
+
+        // Boot 1: fresh cursors (first-ever boot starts at offset 0 by
+        // design), the pre-restart post drives exactly one turn.
+        let mut sub1 = ChannelSubscriber::new(
+            channel.clone(),
+            principal.clone(),
+            channel_dir.clone(),
+            Arc::clone(&port),
+            Arc::new(mk_responder(driver)),
+            peko_channel::cost::noop_meter(),
+            ChannelCursors::load(&channel_dir).await.unwrap(),
+            SubscriptionConfig::default(),
+        );
+        sub1.tick_once().await.unwrap();
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        // Let the detached turn task finish so its reply post is in the
+        // log before boot 2 ticks.
+        let store2 = Arc::clone(&store);
+        let channel2 = channel.clone();
+        assert!(eventually(|| async {
+            store2
+                .peek(&channel2, &peko_channel::Checkpoint::default())
+                .await
+                .unwrap()
+                .iter()
+                .any(|ev| matches!(ev, ChannelEvent::Posted { text, .. } if text == "the reply"))
+        })
+        .await);
+
+        // Boot 2 ("daemon restart"): a fresh subscriber over LOADED
+        // cursors. History is not re-delivered; the only new event is
+        // boot 1's self-authored reply, which must not drive a turn.
+        let (driver2, _calls2) = StubDriver::new("unused");
+        let mut sub2 = ChannelSubscriber::new(
+            channel.clone(),
+            principal.clone(),
+            channel_dir.clone(),
+            Arc::clone(&port),
+            Arc::new(mk_responder(driver2)),
+            peko_channel::cost::noop_meter(),
+            ChannelCursors::load(&channel_dir).await.unwrap(),
+            SubscriptionConfig::default(),
+        );
+        let delivered = sub2.tick_once().await.unwrap();
+        assert_eq!(
+            delivered.len(),
+            1,
+            "only boot 1's reply post is new after restart; got {delivered:?}"
+        );
+        assert!(matches!(
+            delivered[0],
+            ChannelEvent::Posted { ref author, .. } if *author == principal.to_string()
+        ));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            1,
+            "self-authored reply observed after restart must not drive a turn"
+        );
+    }
+}

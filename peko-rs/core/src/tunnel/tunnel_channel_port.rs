@@ -706,6 +706,15 @@ impl ChannelPort for TunnelChannelPort {
         self.local.membership(channel).await
     }
 
+    /// Phase 4 (agent-session paradigm sprint): delegate the
+    /// `meta.json` passive-binding read to the local store — the
+    /// wrapper's `ChannelPort` impl overrides every other method, so
+    /// without this the trait's `None` default would silently shadow
+    /// the store's real answer and bound channels would look unbound.
+    async fn passive_binding(&self, channel: &ChannelId) -> Result<Option<String>> {
+        self.local.passive_binding(channel).await
+    }
+
     async fn pin_to_shared(
         &self,
         channel: &ChannelId,

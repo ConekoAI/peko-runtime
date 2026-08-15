@@ -7,7 +7,7 @@
 //! <runtime_dir>/
 //!   channels/
 //!     <chan_id>/
-//!       meta.json       # { creator, name, created_at, tier }
+//!       meta.json       # { creator, name, created_at, tier, passive_binding? }
 //!       members.json    # { members: [String] }
 //!       events.jsonl    # one ChannelEvent per line, append-only
 //! ```
@@ -153,6 +153,14 @@ pub struct MetaJson {
     /// Snapshotted at create-time so subsequent ops don't have to
     /// probe both Runtime and Shared roots.
     pub tier: Tier,
+    /// Phase 4 (agent-session paradigm sprint): optional passive
+    /// binding — a session id or `/path` in the creator's session
+    /// tree. `#[serde(default)]` so pre-Phase-4 `meta.json` files
+    /// deserialize as `None` without a migration; skipped on write
+    /// when `None` so unbound channels keep the legacy file shape
+    /// byte-for-byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passive_binding: Option<String>,
 }
 
 impl MetaJson {
@@ -760,6 +768,10 @@ impl ChannelStore {
             name: name.to_string(),
             created_at: now,
             tier: Tier::Runtime,
+            // Cross-runtime invites carry no binding on the wire
+            // (`TunnelChannelInvite` has no such field); mirrors always
+            // bootstrap unbound.
+            passive_binding: None,
         };
         meta.save(&chan_dir).await?;
 
@@ -861,6 +873,7 @@ impl ChannelPort for ChannelStore {
             name: opts.name.clone(),
             created_at: now,
             tier: opts.tier,
+            passive_binding: opts.passive_binding.clone(),
         };
         meta.save(&chan_dir).await?;
 
@@ -948,6 +961,25 @@ impl ChannelPort for ChannelStore {
     ) -> Result<Vec<(TaskId, ChannelEvent)>> {
         let tier = self.resolve_tier(channel).await?;
         self.read_events(tier, channel, since).await
+    }
+
+    /// Phase 4: read `meta.json`'s `passive_binding`. Probes the
+    /// Runtime-tier dir first (the common case), then the Shared dir
+    /// when configured — mirroring `resolve_tier`'s fallback so a
+    /// pinned-to-shared channel still reports its binding.
+    async fn passive_binding(&self, channel: &ChannelId) -> Result<Option<String>> {
+        let runtime_dir = self.cfg.channel_dir(channel);
+        match MetaJson::load(&runtime_dir).await {
+            Ok(meta) => Ok(meta.passive_binding),
+            Err(ChannelError::NotFound(_)) => match self.cfg.shared_channels_dir() {
+                Some(shared) => {
+                    let meta = MetaJson::load(&shared.join(channel.as_str())).await?;
+                    Ok(meta.passive_binding)
+                }
+                None => Err(ChannelError::NotFound(channel.clone())),
+            },
+            Err(e) => Err(e),
+        }
     }
 
     async fn leave(
@@ -1110,6 +1142,75 @@ mod tests {
         let bytes = serde_json::to_vec(&m).unwrap();
         let parsed: MembersJson = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed, m);
+    }
+
+    // -- passive_binding (Phase 4, agent-session paradigm sprint) ------
+
+    /// `CreateOpts::passive_binding` persists into `meta.json` and is
+    /// readable back through the `ChannelPort::passive_binding`
+    /// accessor. This is the DM-tier binding the daemon's
+    /// `PassiveBindingResponder` reads at subscriber-spawn time.
+    #[tokio::test]
+    async fn passive_binding_persists_through_create() {
+        let cfg = tmp_cfg("passive-binding");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let opts = CreateOpts::runtime("dm-user-a").with_passive_binding("/user-a");
+        let channel = store.create(&creator, opts).await.unwrap();
+
+        assert_eq!(
+            store.passive_binding(&channel).await.unwrap(),
+            Some("/user-a".to_string())
+        );
+    }
+
+    /// A channel created WITHOUT a binding reports `None` and its
+    /// `meta.json` omits the field entirely (`skip_serializing_if`),
+    /// so unbound channels keep the pre-Phase-4 file shape
+    /// byte-for-byte.
+    #[tokio::test]
+    async fn no_binding_leaves_meta_unchanged() {
+        let cfg = tmp_cfg("no-binding");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+
+        assert_eq!(store.passive_binding(&channel).await.unwrap(), None);
+        let raw = std::fs::read_to_string(cfg.channel_dir(&channel).join("meta.json")).unwrap();
+        assert!(
+            !raw.contains("passive_binding"),
+            "unbound meta.json must not carry the field; got {raw}"
+        );
+    }
+
+    /// A pre-Phase-4 `meta.json` (no `passive_binding` key) loads as
+    /// `None` — the `#[serde(default)]` back-compat invariant.
+    #[test]
+    fn meta_json_deserializes_legacy_files_without_binding() {
+        let legacy = r#"{"creator":"prin_alice","name":"team","created_at":"2026-08-05T12:00:00Z","tier":"Runtime"}"#;
+        let parsed: MetaJson = serde_json::from_str(legacy).expect("legacy must parse");
+        assert_eq!(parsed.passive_binding, None);
+    }
+
+    /// Full `MetaJson` round-trip with a binding set.
+    #[test]
+    fn meta_json_round_trips_with_binding() {
+        let m = MetaJson {
+            creator: "prin_alice".into(),
+            name: "dm".into(),
+            created_at: Utc::now(),
+            tier: Tier::Runtime,
+            passive_binding: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+        };
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let parsed: MetaJson = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            parsed.passive_binding.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
     }
 
     // -- list_remote_members / is_remote_member -------------------------

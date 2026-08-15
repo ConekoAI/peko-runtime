@@ -264,7 +264,10 @@ async fn cli_router_round_trip() {
     let alice = PrincipalId::generate();
     let bob = PrincipalId::generate();
 
-    let created = router.handle_create(&alice, "demo").await.expect("create");
+    let created = router
+        .handle_create(&alice, "demo", None)
+        .await
+        .expect("create");
     router
         .handle_invite(&created.channel, &alice, &bob)
         .await
@@ -338,6 +341,7 @@ async fn tier_rule_rejects_non_runtime_in_pr1() {
     let opts = CreateOpts {
         name: "future-shared".into(),
         tier: Tier::Runtime, // PR-1 only allows Runtime; this stays
+        passive_binding: None,
     };
     let _ = opts; // sanity: Tier::Runtime is the only valid option
     let _ = port.create(&alice, CreateOpts::runtime("ok")).await;

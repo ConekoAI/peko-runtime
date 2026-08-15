@@ -227,11 +227,11 @@ polls every 5s, but the store also has a fully wired **push broadcast**:
 `ChannelPort::subscribe_events` fires on every append (including
 cross-runtime arrivals via `TunnelChannelPort::append_remote_event`), and
 is already consumed by the desktop UI stream
-(`ipc/handlers/channel.rs:561-632`). A passive binding can be
-event-driven, not poll-driven — the `ChannelResponder::consider_response`
-trait (`channel/src/responder.rs:36-40`) is the intended "should I
-respond?" seam; only `NoopChannelResponder` ships, hardcoded at
-`daemon/mod.rs:761`.
+(`ipc/handlers/channel.rs:561-632`). The `ChannelResponder::
+consider_response` trait (`channel/src/responder.rs:36-40`) is the
+"should I respond?" seam; the daemon selects per channel:
+`NoopChannelResponder` for unbound channels, `PassiveBindingResponder`
+for bound ones (Phase 4, below).
 
 **(implemented)** Passive DM pickup exists — but on the tunnel/A2A path,
 not channels. An inbound peer message auto-continues the stable
@@ -239,39 +239,51 @@ not channels. An inbound peer message auto-continues the stable
 steering fallback, and the reply returns as a synchronous RPC response
 (`tunnel/dispatcher.rs:1246-1422`, `principal/manager.rs:879-946`).
 
-**(gap) Channel → session binding.** No inbound channel event ever creates
-or wakes a session; the one hook that could (`ChannelHost::
-kickoff_channel_read`, `daemon/state.rs:2424-2457`) is a deliberate no-op
-with a design comment. Missing pieces, with what to reuse:
+**(implemented — Phase 4 of the paradigm sprint, 2026-08-15)** Channel →
+session passive binding exists (`peko-rs/core/src/daemon/
+channel_binding.rs`; design decisions documented in its module header):
 
-- **Binding storage + tier semantics** — `CreateOpts`/`MetaJson` carry
-  only `name` + `tier`, and `Tier::Runtime/Shared` is storage locality,
-  *not* DM/group. The paradigm wants something like
-  `passive_binding: Option<SessionKey>` on DM-tier channels.
-- **A `ChannelKind` variant** — `ChannelKind`
-  (`principal/router.rs:200-209`: Cli/Http/Hub/A2a/P2p/Webhook/Cron/
-  FileWatch) has no peko-channel variant, so session-id derivation
-  (`root_session_id_for_channel`) and chat-log classification wouldn't
-  recognize channel-originated turns.
-- **Self-post suppression** — a passive responder posts its reply via
-  `post`, then observes its own post next tick; it must filter
-  `event.author == principal`. Nothing does this today (the Noop responder
-  never posts, so the anti-loop invariant has never been tested).
-- **Cursor durability at boot** — subscribers are spawned with fresh
-  in-memory cursors (`ChannelCursors::load` is never called in production,
-  `daemon/mod.rs:763`); a non-noop responder would re-fire the channel's
-  entire history on every daemon restart. See §7.
-- **Post-boot membership** — subscribers are enumerated once at boot;
-  channels joined later get none.
-- The turn-driving machinery itself is reusable as-is:
-  `PrincipalManager::receive` / `receive_streaming`
-  (`principal/manager.rs:879-1023`) is exactly what the tunnel dispatcher
-  already drives for inbound peer messages.
+- **Binding storage** — `CreateOpts`/`MetaJson` gain
+  `passive_binding: Option<String>` (session id or `/path`),
+  serde-defaulted so legacy `meta.json` loads unchanged. CLI:
+  `peko channel create --bind <session-id|/path>`. Channels without a
+  binding behave exactly as before (Noop responder, active-only).
+- **Turn driving: the subagent resume path.** A `Posted` event from
+  another member wakes the bound session via
+  `SubagentExecutor::resume_and_execute` — the same path as the Agent
+  tool's `resume` (bound sessions are spawned/standing children, exactly
+  what the resume guards require; prior history loads from the JSONL).
+  The final reply is posted back to the channel as the principal.
+- **Self-post suppression (anti-loop invariant)** — the responder drops
+  any `Posted` whose author is the bound principal; a responder NEVER
+  processes its own posts (PEKO.md "Violates channel/session
+  separation").
+- **Run concurrency** — the turn is a detached task (subscriber cursors
+  keep advancing); turns per channel serialize on a FIFO mutex; the
+  driver shares the root agent's registry key so Agent-tool runs and
+  channel turns on the same session see each other
+  (`has_active_subagent_run_for_child` refuses the loser — no
+  double-run).
+- **No chat-log projection, no `ChannelKind::Channel`** — turns never
+  flow through `PrincipalManager` routing, so the sketched variant has
+  no consumer and was deliberately skipped; the channel's own event log
+  is the durable record of both directions (ADR-044 three-way
+  separation preserved).
+- **Post-boot channels** — `ChannelHost::channel_created` (new) and the
+  existing invite hook both ensure a subscriber via
+  `ChannelBindingSupervisor`; known gap: cross-runtime `join_remote`
+  channels get subscribers at next boot.
+- **Restart semantics** — persisted cursors (Phase 0) mean a restart
+  re-fires nothing; delivery is at-most-once by design.
+- **Failure policy** — log-only; a broken binding never error-spams the
+  channel.
 
-**(gap) Two transports, divergent semantics.** Tunnel/A2A is push,
-passive, per-peer-session-bound, sync-RPC; channels are pull/poll, active,
-group-oriented, unbound. If DM-tier channels gained passive binding, the
-tunnel behaviors that must be preserved are: sync request/response with
+**(partially closed — Phase 4) Two transports, divergent semantics.**
+Tunnel/A2A remains push, per-peer-session-bound, sync-RPC; channels now
+support BOTH active polling (type 2) and passive binding (type 1, above).
+The remaining divergence is the tunnel's per-peer `root:{peer}` DM
+experience vs. bound-channel DM sessions. The tunnel behaviors that must
+be preserved in any future consolidation: sync request/response with
 pending-correlation + timeout, ed25519 envelope verification, hub
 directory + transport selection, chat-log projection of both directions,
 `root:{peer}` session continuity (or a deliberate migration of it), and
@@ -348,8 +360,8 @@ audit measured the current tool surface against that need:
 | Standing named children (`/memory`, `/about-user`, …) | ✅ implemented (Phase 2) | `principal.toml` `[children]` + `principal/children.rs` ensure-declared; Agent `new`-with-name attach (§2.2) |
 | Session `move` (reparent) | ✅ implemented (Phase 1a) | `session/session_runtime_impl.rs` `move_session`, `peko-rs/session/src/manager.rs`; cycle guard `err_move_cycle` (§2.4) |
 | Path addressing (`/user-a/task-b`) | ✅ implemented (Phase 1b) | `peko-rs/session/src/path.rs` resolver; `slug` on metadata; resolved at tool-runtime boundary before guards (§2.4) |
-| Channel → auto-spawned/bound child (`/user-a`, `/channel-a`) | ❌ gap | seam exists (`ChannelResponder`); binding storage, ChannelKind variant, self-post suppression, cursor durability missing (§3.2) |
-| Passive/active as channel tier property | ❌ gap | split is currently tunnel vs. channel; `Tier` is storage locality |
+| Channel → auto-spawned/bound child (`/user-a`, `/channel-a`) | ✅ implemented (Phase 4) | `daemon/channel_binding.rs` `PassiveBindingResponder`; `meta.json` `passive_binding`; `--bind` on channel create (§3.2) |
+| Passive/active as channel tier property | ✅ implemented (Phase 4) | per-channel `passive_binding` (not `Tier` — binding IS the DM marker); unbound channels stay active-only |
 | Per-session/subtree budget attribution | ❌ gap | quota is per-principal; no quota-reading tool |
 | Offline (headless) compaction | ❌ gap | `compact` is flag-only, fires at target's next run |
 | Supervision loop (root reviews/compacts/archives children) | ❌ gap | observability partially broken (§5); pattern does not exist |
@@ -401,7 +413,8 @@ per phase):
 3. ✅ **Principal trunk `/`** — `root:self` (inherits the prefix guards),
    cron `Send target:"trunk"`, chat-log projection skipped for trunk
    turns (self-thread convention deferred).
-4. ⏳ **Channel passive binding** — DM-tier channels bound to a child
-   session (`/user-a`), event-driven via the existing broadcast, with
-   self-post suppression and boot-time cursor loading; collapses type-1
-   communication onto `peko-channel`.
+4. ✅ **Channel passive binding** — `meta.json` `passive_binding` +
+   `PassiveBindingResponder` (`daemon/channel_binding.rs`): DM-bound
+   channels wake the bound session via the subagent resume path and post
+   the reply back; self-post suppression, FIFO turn serialization,
+   cursor-durable restarts; unbound channels stay active-only (type 2).

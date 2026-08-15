@@ -7,10 +7,12 @@
 //! - `peko-channel::ChannelSubscriber` consumes it via
 //!   `Arc<dyn ChannelResponder>`.
 //!
-//! Only the `Noop` impl ships. Agents read channels actively via the
-//! `ChannelRead` tool (peko-core / PR-4a), so there is no daemon-side
-//! responder to dispatch through. Future per-channel behaviour can
-//! land as additional impls without touching the trait.
+//! Only the `Noop` impl ships in this crate. The production passive
+//! responder (`PassiveBindingResponder`, Phase 4 of the agent-session
+//! paradigm sprint) lives in the root crate
+//! (`peko-rs/core/src/daemon/channel_binding.rs`) because driving a
+//! turn needs the subagent executor — a root-only dependency this leaf
+//! crate must not take.
 
 use async_trait::async_trait;
 use peko_subject::PrincipalId;
