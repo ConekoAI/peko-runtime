@@ -614,6 +614,13 @@ impl CronEngine {
     /// Run a [`CronJobAction::Send`] job by delivering its message to
     /// the Principal's owner root session. Equivalent to a deferred
     /// `peko send` from the daemon.
+    ///
+    /// `target = "trunk"` (Phase 3, 2026-08-15) re-routes the turn into
+    /// the principal's trunk session `root:self` via
+    /// [`PrincipalManager::receive_trunk`]: no chat-log projection and
+    /// no `deliver_send_job_note` cross-post (the turn already IS in
+    /// the principal's own session). Default (`None`) preserves the
+    /// `root:cron:{owner}` + note behavior exactly.
     async fn run_send_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         let Some(pm) = self.principal_manager.as_ref() else {
             return Ok((
@@ -625,6 +632,46 @@ impl CronEngine {
         let principal = resolve_principal(&pm, &job.principal_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("Principal '{}' not loaded", job.principal_id.0))?;
+
+        let trunk = match &job.action {
+            CronJobAction::Send { target, .. } => match target.as_deref() {
+                None => false,
+                Some(peko_cron::tools::SEND_TARGET_TRUNK) => true,
+                // Defensive: the DTO deserializer and
+                // `CronScheduler::add_job` both reject unknown targets,
+                // but a struct-literal construction could still slip
+                // one through — fail loudly rather than misroute.
+                Some(other) => {
+                    return Ok((
+                        "failed".to_string(),
+                        Some(format!(
+                            "invalid cron Send target '{other}': only \"{}\" is supported",
+                            peko_cron::tools::SEND_TARGET_TRUNK
+                        )),
+                    ));
+                }
+            },
+            // The dispatch in `execute_job` only routes Send here.
+            _ => false,
+        };
+
+        if trunk {
+            return match pm
+                .receive_trunk(principal.id.clone(), job.task_description(), None)
+                .await
+            {
+                Ok(response) => {
+                    self.idle_detector
+                        .record_activity(&principal.name().await)
+                        .await;
+                    Ok(("success".to_string(), Some(response.content)))
+                }
+                Err(e) => Ok((
+                    "failed".to_string(),
+                    Some(format!("Principal trunk execution error: {e}")),
+                )),
+            };
+        }
 
         let peer = {
             let config = principal.config.read().await;
@@ -877,6 +924,14 @@ impl CronEngine {
             .active_extensions_for(&principal, &capabilities)
             .await
             .to_vec();
+        // NOTE (Phase 3, 2026-08-15): Send jobs with `target="trunk"`
+        // fire into `root:self`, but SpawnTool's wake attribution is
+        // deliberately UNCHANGED this phase — completion steer messages
+        // still land in the owner's conversational root inbox
+        // (`root:{owner}`). The two action kinds disagree about "the
+        // root session" by design: Send is a deferred turn (which the
+        // trunk paradigm re-roots), SpawnTool is a background task
+        // whose completion notification belongs to the owner thread.
         let principal_root_session_key = format!("root:{owner}");
 
         let wake = wake_on_completion.unwrap_or(false);
@@ -1321,6 +1376,7 @@ mod tests {
             schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::Send {
                 message: "Hello from cron".to_string(),
+                target: None,
             },
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -1684,6 +1740,7 @@ mod tests {
             schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::Send {
                 message: "cron tick payload".to_string(),
+                target: None,
             },
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -1747,6 +1804,163 @@ mod tests {
         assert!(
             !conv_jsonl.contains("cron tick payload"),
             "cron message must NOT leak into the conversational session"
+        );
+
+        drop(principal);
+    }
+
+    /// Phase 3 (2026-08-15): a `Send` job with `target = "trunk"` fires
+    /// its turn into the principal's trunk session `root:self` — NOT
+    /// the per-owner `root:cron:{owner}` session — and skips the
+    /// `deliver_send_job_note` cross-post into the conversational
+    /// session (the turn already IS in the principal's own session).
+    ///
+    /// `#[serial]` because the principal-manager tests mutate the
+    /// process-global `PEKO_HOME` (identity key storage root); running
+    /// concurrently with them makes principal DID resolution fail
+    /// mid-test.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn test_send_job_target_trunk_lands_in_root_self() {
+        let tmp = TempDir::new().unwrap();
+
+        // Principal manager with a mock resolver; two queued texts:
+        // one for the conversational turn, one for the trunk turn.
+        let path_resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), tmp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+        let catalog_path = tmp.path().join("models.toml");
+        let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        adapter.queue_text("conversational reply");
+        adapter.queue_text("trunk turn reply");
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_resolver(resolver),
+        );
+
+        let workspace = tmp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+
+        // 1. A conversational (CLI) turn creates the human's root
+        //    session — so a note cross-post WOULD have somewhere to
+        //    land if it happened.
+        manager
+            .receive(
+                principal.id.clone(),
+                Subject::User("test-owner".to_string()),
+                "hello there".to_string(),
+                ChannelContext {
+                    kind: ChannelKind::Cli,
+                    streaming: false,
+                },
+                None,
+            )
+            .await
+            .expect("conversational turn should succeed");
+
+        // 2. A due trunk-targeted Send job fires.
+        let engine_resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler =
+            Arc::new(CronScheduler::new(engine_resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            engine_resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
+            std::sync::Weak::new(),
+        );
+        let job = CronJob {
+            id: "job-trunk".to_string(),
+            name: "self-upkeep".to_string(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::Send {
+                message: "organize your memory".to_string(),
+                target: Some("trunk".to_string()),
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() - Duration::minutes(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        engine.check_and_run().await.unwrap();
+
+        // PR 2: poll until the detached per-job execution finalizes the
+        // run row. 5s budget.
+        let mut runs: Vec<peko_cron::CronRun> = Vec::new();
+        for _ in 0..50 {
+            runs = scheduler.get_run_history(&job.id, 10).unwrap();
+            if runs.len() >= 1 && runs[0].status != "running" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(runs.len(), 1, "expected a single run row, got: {runs:?}");
+        assert_eq!(runs[0].status, "success");
+        assert!(runs[0].finished_at.is_some());
+
+        // The turn ran in the trunk session.
+        let trunk_path = find_file_named(tmp.path(), "root:self.jsonl")
+            .expect("trunk session JSONL should exist");
+        let trunk_jsonl = std::fs::read_to_string(&trunk_path).unwrap();
+        assert!(
+            trunk_jsonl.contains("organize your memory"),
+            "trunk session should contain the cron payload, got: {trunk_jsonl}"
+        );
+        assert!(
+            trunk_jsonl.contains("trunk turn reply"),
+            "trunk session should contain the turn's reply"
+        );
+
+        // No per-owner cron session was created.
+        assert!(
+            find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl").is_none(),
+            "trunk-targeted Send must not create a root:cron session"
+        );
+
+        // The conversational session holds ONLY the human turn — no
+        // note cross-post, no payload leak.
+        let conv_path = find_file_named(tmp.path(), "root:user:test-owner.jsonl")
+            .expect("conversational session JSONL should exist");
+        let conv_jsonl = std::fs::read_to_string(&conv_path).unwrap();
+        assert!(
+            conv_jsonl.contains("hello there"),
+            "conversational session should contain the human turn"
+        );
+        assert!(
+            !conv_jsonl.contains("⏰ [cron job"),
+            "trunk-targeted Send must NOT cross-post a note, got: {conv_jsonl}"
+        );
+        assert!(
+            !conv_jsonl.contains("organize your memory"),
+            "trunk payload must NOT leak into the conversational session"
         );
 
         drop(principal);
@@ -2124,6 +2338,7 @@ mod tests {
             schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::Send {
                 message: "fast fire".to_string(),
+                target: None,
             },
             delivery: DeliveryMode::None,
             delete_after_run: false,

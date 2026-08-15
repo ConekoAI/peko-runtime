@@ -35,10 +35,12 @@ const MAX_PEER_WALK_DEPTH: usize = 8;
 /// - subagent keys (`…:subagent:{uuid}`, possibly nested) — stripped
 ///   down to the base key.
 ///
-/// Spawn pseudo-peers (`principal:spawn_<uuid>` — the child base
-/// session's placeholder peer) are deliberately NOT returned: they
-/// carry no originator, so callers must continue walking the parent
-/// linkage instead.
+/// The principal trunk session `root:self` (Phase 3, 2026-08-15) is
+/// explicitly NOT a peer key: it has no external peer, so it resolves
+/// to `None` — never to a literal peer named "self". Spawn pseudo-peers
+/// (`principal:spawn_<uuid>` — the child base session's placeholder
+/// peer) are likewise NOT returned: they carry no originator, so
+/// callers must continue walking the parent linkage instead.
 #[must_use]
 pub fn peer_from_session_key(session_id: &str) -> Option<Subject> {
     // Strip any `:subagent:{uuid}` trail first (possibly nested) — a
@@ -48,6 +50,13 @@ pub fn peer_from_session_key(session_id: &str) -> Option<Subject> {
     let mut current = session_id;
     while let Some((base, _)) = current.rsplit_once(":subagent:") {
         current = base;
+    }
+    // The trunk has no external peer. Handled ahead of the prefix walk
+    // so `root:self` can never misparse as a peer named "self" even if
+    // Subject parsing changes (today `"self"` fails `Subject::from_str`
+    // anyway and would coincidentally return None — do not rely on it).
+    if current == crate::principal::routers::root::trunk_session_id() {
+        return None;
     }
     for prefix in ["root:cron:", "root:"] {
         if let Some(rest) = current.strip_prefix(prefix) {
@@ -327,6 +336,16 @@ mod tests {
         // linkage walk (needs the session store; covered by the
         // `originating_peer` integration path).
         assert_eq!(peer_from_session_key("root:principal:spawn_abc123"), None);
+    }
+
+    #[test]
+    fn trunk_session_has_no_peer() {
+        // The principal trunk `root:self` (Phase 3) is a self session:
+        // it must never misparse as a peer literally named "self".
+        // Callers (`originating_peer`) fall through to the parent-linkage
+        // walk, which bottoms out at None — a graceful "no originator".
+        assert_eq!(peer_from_session_key("root:self"), None);
+        assert_eq!(peer_from_session_key("root:self:subagent:uuid-1"), None);
     }
 
     #[test]

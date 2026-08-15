@@ -1192,6 +1192,56 @@ when one is recoverable). A `name` colliding with a NON-standing
 session is a structured refusal — rename semantics live in the
 `session` tool. No `name` → unchanged fresh-UUID spawn.
 
+### 5.9 The Principal Trunk Session `root:self` (2026-08-15, Phase 3)
+
+A principal has a forever-continuous SELF session — the trunk `/` of
+its session tree — with the constant id **`root:self`**. Where every
+other root session is per-peer (`root:{peer}`, `root:cron:{peer}`),
+the trunk is keyed by no peer: it is the principal's own ongoing
+working session, keeping the principal an active actor (supervising
+children, organizing memory) instead of a passive request handler.
+
+- **On disk** it is an ordinary session JSONL
+  (`<sessions_dir>/root:self.jsonl`) with the standard paging,
+  index, and metadata treatment; nothing about the file format is
+  special.
+- **Guards:** the `root:` prefix is load-bearing — the root-family
+  refusals (delete/archive/move "managed by the engine",
+  `starts_with("root:")` in the session tool surface) apply to the
+  trunk unchanged. A bare `root` id would escape that guard (and
+  misparse in the messenger), which is why the id is `root:self`.
+- **Turns** arrive via `PrincipalManager::receive_trunk`, which uses
+  the principal's owner as the *proxy subject* for the permission
+  check and memory recall (existing gates work unchanged) but always
+  runs in `root:self` (`ChannelKind::Trunk`). Trunk turns skip slash
+  preprocessing and keep the per-session run permit + steering
+  fallback (a second tick steers the live run).
+- **Chat log:** trunk turns are NOT projected into the chat log —
+  the log is a per-peer consumer projection keyed by
+  `(principal_did, peer)` and the trunk has no peer thread. A
+  self-thread convention is deliberately deferred; the session JSONL
+  is the durable record.
+- **Messenger:** `peer_from_session_key("root:self")` returns `None`
+  — the trunk has no external peer and must never misparse as a peer
+  literally named "self".
+
+**Cron targeting.** `CronJobAction::Send` gains an optional `target`
+field (`#[serde(default, skip_serializing_if = "Option::is_none")]`,
+validated on deserialize — pre-Phase-3 schedule files load with
+`target` absent = `None`):
+
+| Value | Fire behavior |
+|-------|---------------|
+| absent / `null` | Unchanged legacy behavior: the turn runs in `root:cron:{owner}`, the prompt is projected to the chat log via `record_cron_input`, and the outcome is cross-posted as a `⏰ [cron job '<name>' fired] …` note to `root:{owner}` |
+| `"trunk"` | The turn runs in `root:self` via the trunk receive path; chat-log projection AND the note cross-post are both skipped |
+| anything else | Structured error at JSON load, at `CronScheduler::add_job`, and (defensively) at fire time |
+
+Creation surfaces: the `CronCreate` tool's `target` param (valid only
+together with `message`; `prompt`/`tool` jobs — `SpawnTool` — are
+unchanged by design this phase, including their `root:{owner}` wake
+attribution) and the `--target` flag on `peko cron add / at / every /
+add-idle / add-event`.
+
 ---
 
 ## 5½. Chat Log — Consumer-Visible Conversation History
@@ -1986,6 +2036,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.1.0 | 2026-08-15 | Principal trunk session (§5.9): constant `root:self` self session; `ChannelKind::Trunk`; `CronJobAction::Send.target` (`"trunk"` or absent, validated on load); trunk turns skip chat-log projection and the cron note cross-post. |
 | 0.1.0 | 2026-08-13 | Round 7 (§5.8): chapter concept deleted — session ids are stable for life; `chapters.json` removed; oversized JSONLs page in place to `<id>.N.jsonl` with transparent read-path stitching; legacy `#`-suffixed files inert on disk. |
 | 0.1.0 | 2026-08-09 | Agent-owned session management (§5.8): `archived`/`compact_requested` on session entries, `PeerInfo.active_session_id` → `Option<String>` with session-id scrubbing on delete, chapter id rotation format (`root:{peer}#<ts>`), `chapters.json` pending-change sidecar, transcript search scope. |
 | 0.1.0 | 2026-07-20 | Chat-session separation: added §5½ Chat Log (runtime-owned, append-only, consumer-visible conversation history) distinct from §5 Session JSONL (mutable principal-owned working memory). Sharded by `(principal_did, peer)` with BLAKE3-hashed paths, opaque thread-bound cursors, sender-participant validation, durable append under `FileLock`. Deletion tied to `PrincipalManager::remove`. |

@@ -857,6 +857,24 @@ oversized transcripts page in place. New/changed public items:
 | `SubagentRuntime::request_compaction` | `tools::builtin::messaging` | ✅ New | Agent tool compact-action port method |
 | `SubagentMetadata.child_session_id` / `AsyncTaskRegistry::has_active_subagent_run_for_child` | `extensions::framework::async_exec::executor` | ✅ New | Subagent active-run detection |
 
+### Agent–Session Paradigm Sprint (2026-08-15)
+
+Branch `feat/agent-session-paradigm`; see
+`docs/architecture/AGENT_SESSION_PARADIGM.md`. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `SessionMetadata`/`SessionEntry` (+`standing`, +`slug`) | `peko_session::{metadata,index}` | ✅ Extended | Durability flag (prune exemption) + per-parent-unique path segment |
+| `MetadataController::{set_parent, set_slug, set_standing}` / `SessionManager::{move_session, set_session_slug, set_standing}` | `peko_session::{metadata_controller,manager}` | ✅ New | Reparent / slug / standing writers |
+| `peko_session::path` (`resolve_path`, `compute_path`, `validate_slug`, `derive_branch_slug`) | `peko_session::path` | ✅ New | `/a/b/c` path addressing over the session tree |
+| `SessionRuntime::move_session`; `rename_session` (+`slug`); `SessionInfo` (+`slug`, +`path`) | `tools::builtin::session` | ✅ Extended | Session tool 10th action + path-aware DTOs |
+| `ownership::{err_move_ancestor, err_move_cycle}` | `session::ownership` | ✅ New | Move guard refusals (incl. cycle prevention) |
+| `SpawnRequest.name` / `ExecutionConfig.{slug, subagent_type}` | `tools::builtin::messaging`, `agents` | ✅ Extended | Named spawns + standing-child attach |
+| `PrincipalConfig.children` / `ChildDeclaration` | `principal::config` | ✅ New | `[children]` standing-children declaration |
+| `principal::children::ensure_declared_children` / `session::standing` helpers | `principal::children`, `session::standing` | ✅ New | Ensure-declared + declaration recovery |
+| `trunk_session_id()` / `ChannelKind::Trunk` / `PrincipalManager::receive_trunk` | `principal::routers::root`, `principal::router`, `principal::manager` | ✅ New | Principal trunk session `root:self` (peer-less, cron-kept) |
+| `CronJobAction::Send` (+`target`); `SEND_TARGET_TRUNK` / `validate_send_target` | `peko_cron::tools` | ✅ Extended | `target = "trunk"` routes the turn into `root:self` |
+
 ### Type Aliases for Backward Compatibility
 
 ```rust

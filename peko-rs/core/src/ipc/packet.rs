@@ -3051,6 +3051,7 @@ mod tests {
             principal_id: PrincipalId("test-principal".to_string()),
             action: peko_cron::CronJobAction::Send {
                 message: "Hello cron".to_string(),
+                target: None,
             },
             delivery: peko_cron::DeliveryMode::None,
             delete_after_run: false,
@@ -3145,6 +3146,7 @@ mod tests {
             principal_id: PrincipalId("test-principal".to_string()),
             action: peko_cron::CronJobAction::Send {
                 message: "Hello cron".to_string(),
+                target: None,
             },
             delivery: peko_cron::DeliveryMode::None,
             delete_after_run: false,
@@ -3276,6 +3278,7 @@ mod tests {
                 principal_id: PrincipalId("test-principal".to_string()),
                 action: peko_cron::CronJobAction::Send {
                     message: "m".to_string(),
+                    target: None,
                 },
                 delivery: peko_cron::DeliveryMode::None,
                 delete_after_run: false,

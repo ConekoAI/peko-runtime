@@ -40,6 +40,28 @@ pub fn root_session_id(peer: &peko_auth::Subject) -> String {
     format!("root:{peer}")
 }
 
+/// The principal's trunk session id: `"root:self"` (Phase 3,
+/// 2026-08-15).
+///
+/// Paradigm role: the trunk is the principal's forever-continuous SELF
+/// session — the `/` of its session tree. Cron `Send` jobs with
+/// `target = "trunk"` fire turns into it, keeping the principal an
+/// active actor (supervising children, organizing memory) rather than
+/// a passive request handler. Unlike the per-peer `root:{peer}` /
+/// `root:cron:{peer}` sessions, the trunk is keyed by NO peer: every
+/// self-turn, from whatever automation source, continues the same
+/// session.
+///
+/// The literal deliberately keeps the `root:` prefix so the trunk
+/// inherits the root-family guards for free (`starts_with("root:")` in
+/// `session/session_runtime_impl.rs` refuses delete/archive/move). A
+/// bare `root` id would escape that prefix guard AND misparse in the
+/// messenger's `peer_from_session_key` prefix walk.
+#[must_use]
+pub fn trunk_session_id() -> String {
+    "root:self".to_string()
+}
+
 /// Root-agent session id for a peer, adjusted for the channel.
 ///
 /// Automation traffic (`ChannelKind::Cron`) gets its own per-peer
@@ -57,6 +79,9 @@ pub fn root_session_id_for_channel(
 ) -> String {
     match kind {
         crate::principal::router::ChannelKind::Cron => format!("root:cron:{peer}"),
+        // Trunk turns are peer-less: the id is the constant `root:self`
+        // regardless of the proxy subject carried on the context.
+        crate::principal::router::ChannelKind::Trunk => trunk_session_id(),
         _ => root_session_id(peer),
     }
 }
@@ -326,6 +351,34 @@ mod tests {
         assert!(
             prompt.body.contains("agent_catalog"),
             "root agent prompt should mention agent_catalog"
+        );
+    }
+
+    #[test]
+    fn trunk_session_id_is_root_prefixed_constant() {
+        // The `root:` prefix is load-bearing: it puts the trunk under
+        // the root-family guards (`starts_with("root:")` refusals on
+        // delete/archive/move in the session tool surface).
+        assert_eq!(trunk_session_id(), "root:self");
+        assert!(trunk_session_id().starts_with("root:"));
+    }
+
+    #[test]
+    fn trunk_channel_maps_to_trunk_session_regardless_of_peer() {
+        use crate::principal::router::ChannelKind;
+        let peer = peko_auth::Subject::User("test-owner".to_string());
+        assert_eq!(
+            root_session_id_for_channel(&peer, &ChannelKind::Trunk),
+            "root:self"
+        );
+        // Sibling channels keep their per-peer shapes.
+        assert_eq!(
+            root_session_id_for_channel(&peer, &ChannelKind::Cron),
+            "root:cron:user:test-owner"
+        );
+        assert_eq!(
+            root_session_id_for_channel(&peer, &ChannelKind::Cli),
+            "root:user:test-owner"
         );
     }
 }

@@ -53,6 +53,17 @@ Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in
   subtree **attaches** (resumes that session) instead of minting a fresh
   UUID — "spawn once, resume by name" is one operation. Standing sessions
   are exempt from idle pruning (Phase 0 flag).
+- **Principal trunk session `root:self`.** A peer-less, forever-continuous
+  self session — the `/` of the principal's session tree
+  (`trunk_session_id()` in `principal/routers/root.rs`; inherits the
+  root-family delete/archive/move guards via the `root:` prefix).
+  `CronJobAction::Send` gains `target: "trunk"` (CLI: `--target`): the
+  turn lands in `root:self` via `PrincipalManager::receive_trunk`
+  (owner-as-proxy permissions, no chat-log projection, no note
+  cross-post). Default cron behavior (`root:cron:{owner}` + note) is
+  unchanged. This is the principal's heartbeat: a trunk-targeted cron job
+  on a fixed cadence keeps the principal an active actor, with
+  `budget_per_cycle` / `cost_per_call_max` as the wake budget.
 
 ### Round 7: chapters deleted, stable-id paging, session/Agent tool surface (2026-08-13)
 

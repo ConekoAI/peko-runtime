@@ -48,6 +48,40 @@ use uuid::Uuid;
 /// unlimited and preserves the legacy retry-forever behavior.
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
 
+/// The only accepted value for [`CronJobAction::Send`]'s `target`
+/// field: route the fired turn into the principal's trunk session
+/// `root:self` instead of the default per-owner cron session
+/// `root:cron:{owner}` (Phase 3, 2026-08-15).
+pub const SEND_TARGET_TRUNK: &str = "trunk";
+
+/// Validate a [`CronJobAction::Send`] `target` value supplied by a
+/// caller (CLI flag, tool param). `None` (default routing) and
+/// `"trunk"` are accepted; anything else is a structured error. The
+/// serde deserializer below applies the same rule at JSON load time;
+/// this helper covers the struct-literal construction paths that
+/// bypass serde.
+pub fn validate_send_target(target: &Option<String>) -> Result<()> {
+    match target.as_deref() {
+        None | Some(SEND_TARGET_TRUNK) => Ok(()),
+        Some(other) => anyhow::bail!(
+            "invalid cron Send target '{other}': only \"{SEND_TARGET_TRUNK}\" is supported"
+        ),
+    }
+}
+
+/// Serde field deserializer for [`CronJobAction::Send`]'s `target`:
+/// applies [`validate_send_target`] at load time so a hand-edited
+/// `cron.json` with an unknown target fails loudly instead of silently
+/// misrouting a turn.
+fn deserialize_send_target<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    validate_send_target(&value).map_err(serde::de::Error::custom)?;
+    Ok(value)
+}
+
 // ─── DTOs (canonical home; root re-exports these) ─────────────────
 
 /// Schedule kinds for cron jobs.
@@ -141,7 +175,25 @@ pub enum DeliveryMode {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CronJobAction {
     /// Deliver a user-message to the Principal's owner root session.
-    Send { message: String },
+    ///
+    /// `target` (Phase 3, 2026-08-15) selects the destination session:
+    /// `None` (the default — and the only value pre-Phase-3 jobs can
+    /// carry) preserves the legacy behavior exactly: the turn lands in
+    /// the per-owner cron session `root:cron:{owner}` and the outcome
+    /// is cross-posted as a note to `root:{owner}`. `"trunk"` routes
+    /// the turn into the principal's forever-continuous self session
+    /// `root:self` (no chat-log projection, no note cross-post — the
+    /// turn already IS in the principal's own session). No other value
+    /// is accepted (see [`validate_send_target`]).
+    Send {
+        message: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_send_target"
+        )]
+        target: Option<String>,
+    },
     /// Pure notification delivery (2026-08-08): the message text is
     /// appended to the owner's conversational session as a labeled
     /// note — NO agent turn runs (unlike [`Self::Send`], which is a
@@ -251,7 +303,7 @@ impl CronJob {
     #[must_use]
     pub fn task_description(&self) -> String {
         match &self.action {
-            CronJobAction::Send { message } | CronJobAction::Notify { message }
+            CronJobAction::Send { message, .. } | CronJobAction::Notify { message }
                 if !message.is_empty() =>
             {
                 message.clone()
@@ -308,7 +360,10 @@ pub fn normalize_cron_expr(expr: &str) -> String {
 ///
 /// `next_run` is precomputed by the caller (the cron engine will
 /// re-evaluate on its own clock, but the initial schedule fires
-/// from this value).
+/// from this value). `target` is the optional session target — see
+/// [`CronJobAction::Send`]; the daemon-side `CronScheduler::add_job`
+/// validation ([`validate_send_target`]) rejects unknown values even
+/// for in-process construction paths that bypass serde.
 #[allow(clippy::too_many_arguments)]
 pub fn build_send_job(
     id: String,
@@ -319,13 +374,14 @@ pub fn build_send_job(
     delivery: DeliveryMode,
     delete_after_run: bool,
     next_run: DateTime<Utc>,
+    target: Option<String>,
 ) -> CronJob {
     CronJob {
         id,
         name,
         principal_id,
         schedule,
-        action: CronJobAction::Send { message },
+        action: CronJobAction::Send { message, target },
         delivery,
         delete_after_run,
         enabled: true,
@@ -636,7 +692,16 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
             });
             let map = obj.as_object_mut().expect("object literal above");
             match &j.action {
-                CronJobAction::Send { message } | CronJobAction::Notify { message } => {
+                CronJobAction::Send { message, target } => {
+                    map.insert(
+                        "task".to_string(),
+                        serde_json::Value::String(message.clone()),
+                    );
+                    if let Some(t) = target {
+                        map.insert("target".to_string(), serde_json::Value::String(t.clone()));
+                    }
+                }
+                CronJobAction::Notify { message } => {
                     map.insert(
                         "task".to_string(),
                         serde_json::Value::String(message.clone()),
@@ -843,6 +908,64 @@ mod tests {
         let json = serde_json::to_string(&job).unwrap();
         let back: CronJob = serde_json::from_str(&json).unwrap();
         assert_eq!(format!("{:?}", job), format!("{:?}", back));
+    }
+
+    /// Phase 3 (2026-08-15): legacy Send jobs (written before the
+    /// `target` field existed) must deserialize with `target: None` —
+    /// the wire change is backward-compatible by serde default.
+    #[test]
+    fn send_target_defaults_to_none_on_legacy_json() {
+        let legacy = serde_json::json!({"kind": "send", "message": "hello"});
+        let action: CronJobAction = serde_json::from_value(legacy).unwrap();
+        let CronJobAction::Send { message, target } = action else {
+            panic!("expected Send action");
+        };
+        assert_eq!(message, "hello");
+        assert_eq!(target, None);
+
+        // `None` is skipped on serialize, so a legacy job re-written by
+        // a new binary stays byte-compatible with the old shape.
+        let json = serde_json::to_value(&CronJobAction::Send {
+            message: "hello".into(),
+            target: None,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "send", "message": "hello"})
+        );
+    }
+
+    /// `"trunk"` is the only accepted target; anything else is a
+    /// structured error at BOTH the serde boundary and the explicit
+    /// validator (struct-literal construction bypasses serde).
+    #[test]
+    fn send_target_validation() {
+        let ok: CronJobAction = serde_json::from_value(
+            serde_json::json!({"kind": "send", "message": "m", "target": "trunk"}),
+        )
+        .unwrap();
+        let CronJobAction::Send { target, .. } = &ok else {
+            panic!("expected Send action");
+        };
+        assert_eq!(target.as_deref(), Some(SEND_TARGET_TRUNK));
+
+        let err = serde_json::from_value::<CronJobAction>(
+            serde_json::json!({"kind": "send", "message": "m", "target": "bogey"}),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("invalid cron Send target 'bogey'"),
+            "got: {err}"
+        );
+
+        assert!(validate_send_target(&None).is_ok());
+        assert!(validate_send_target(&Some("trunk".to_string())).is_ok());
+        let err = validate_send_target(&Some("bogey".to_string())).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid cron Send target 'bogey'"),
+            "got: {err}"
+        );
     }
 
     /// PR-4b — `peko channel poll` cron recipe. A `SpawnTool` job

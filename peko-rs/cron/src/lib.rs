@@ -177,10 +177,22 @@ impl CronScheduler {
         }
 
         // Validate the action shape. Send/Notify require a non-empty
-        // message; SpawnTool requires a non-empty tool name. Validation
-        // happens here so a malformed job never reaches the on-disk DB.
+        // message; SpawnTool requires a non-empty tool name; a Send
+        // `target` must be a known value (serde rejects unknown targets
+        // at JSON load, but in-process struct-literal construction
+        // bypasses that). Validation happens here so a malformed job
+        // never reaches the on-disk DB.
         match &job.action {
-            CronJobAction::Send { message } | CronJobAction::Notify { message } => {
+            CronJobAction::Send { message, target } => {
+                if message.trim().is_empty() {
+                    anyhow::bail!(
+                        "CronJob {} action requires a non-empty 'message'",
+                        job.action.kind_label()
+                    );
+                }
+                crate::tools::validate_send_target(target)?;
+            }
+            CronJobAction::Notify { message } => {
                 if message.trim().is_empty() {
                     anyhow::bail!(
                         "CronJob {} action requires a non-empty 'message'",
@@ -503,6 +515,7 @@ mod tests {
             principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test message".to_string(),
+                target: None,
             },
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -544,6 +557,7 @@ mod tests {
             principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
+                target: None,
             },
             delivery: DeliveryMode::None,
             delete_after_run: true,
@@ -668,6 +682,7 @@ mod tests {
             principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
+                target: None,
             },
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -688,6 +703,7 @@ mod tests {
             principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
+                target: None,
             },
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -742,6 +758,7 @@ mod tests {
             schedule: ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::Send {
                 message: "x".to_string(),
+                target: None,
             },
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -851,6 +868,7 @@ mod tests {
             principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
+                target: None,
             },
             delivery: DeliveryMode::None,
             delete_after_run: true,
@@ -903,6 +921,7 @@ mod tests {
                 schedule: ScheduleKind::Every { every_ms: 60000 },
                 action: CronJobAction::Send {
                     message: "Hello".to_string(),
+                    target: None,
                 },
                 delivery: DeliveryMode::None,
                 delete_after_run: false,

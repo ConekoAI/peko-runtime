@@ -1408,6 +1408,34 @@ mod tests {
             .unwrap();
     }
 
+    /// Phase 3 (2026-08-15): the principal trunk session `root:self`
+    /// keeps the `root:` prefix precisely so the root-family guards
+    /// apply to it unchanged — delete, archive, and move are all
+    /// refused as "managed by the engine", exactly like `root:{peer}`
+    /// and `root:cron:{peer}`.
+    #[tokio::test]
+    async fn trunk_session_inherits_root_family_guards() {
+        let h = tree_harness("root:user:alice").await;
+        h.create("root:self", None).await;
+
+        let err = h
+            .runtime
+            .delete_session("root:self", true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
+
+        let err = h.runtime.set_archived("root:self", true).await.unwrap_err();
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
+
+        let err = h
+            .runtime
+            .move_session("root:self", "spawn1".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
+    }
+
     // ─── Slugs + path addressing (Phase 1b) ─────────────────────────
 
     impl Harness {

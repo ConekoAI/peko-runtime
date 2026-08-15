@@ -9,11 +9,15 @@
 //! - `prompt` shorthand — schedules an `Agent` tool run (a `SpawnTool`
 //!   job whose `tool_name="Agent"` and `params={ prompt }`).
 //! - explicit `tool` + `params` — schedules any tool run.
+//!
+//! Plus the delivery-only `message` path (a `Notify` job — or, with
+//! `target="trunk"`, a `Send` job firing a turn into the principal's
+//! trunk session `root:self`; Phase 3, 2026-08-15).
 
 use crate::tools::{
-    add_job_via_runtime, build_notify_job, build_spawn_tool_job, global_runtime,
-    resolve_delete_after_run,
-    resolve_label, resolve_schedule_kind, DeliveryMode,
+    add_job_via_runtime, build_notify_job, build_send_job, build_spawn_tool_job, global_runtime,
+    resolve_delete_after_run, resolve_label, resolve_schedule_kind, validate_send_target,
+    DeliveryMode,
 };
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
@@ -50,6 +54,14 @@ pub struct CronCreateArgs {
     /// notification) instead of running a tool.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// `message`-only. Optional session target for the fired turn.
+    /// `"trunk"` (the only accepted value) turns the job into a `Send`
+    /// action whose turn lands in the principal's forever-continuous
+    /// self session `root:self` instead of delivering a user-visible
+    /// notification (Phase 3, 2026-08-15). Invalid with `prompt`/`tool`
+    /// (`SpawnTool` targeting is unchanged this phase).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     /// Tool name to invoke at fire time. When provided, the job is a
     /// `SpawnTool` job calling this tool with `params`. When omitted
     /// and `prompt` is non-empty, defaults to `"Agent"`.
@@ -191,7 +203,12 @@ impl Tool for CronCreateTool {
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "REMINDERS / NOTIFICATIONS: use this for 'remind me …' requests. At fire time the message is delivered to the user as a labeled notification (visible in the next chat turn). For background work (research, edits, checks) use `prompt` or `tool` instead — those produce no user-visible output."
+                    "description": "REMINDERS / NOTIFICATIONS: use this for 'remind me …' requests. At fire time the message is delivered to the user as a labeled notification (visible in the next chat turn). For background work (research, edits, checks) use `prompt` or `tool` instead — those produce no user-visible output. Combine with target=\"trunk\" to fire the message as a turn in YOUR OWN trunk session (self-prompts, memory upkeep) instead of notifying the user."
+                },
+                "target": {
+                    "type": "string",
+                    "enum": ["trunk"],
+                    "description": "message-only: with target=\"trunk\" the message fires as an agent turn in the principal's forever-continuous self session root:self (no user notification, no chat-log entry). Omit for normal user-facing reminders. Invalid together with prompt/tool."
                 },
                 "prompt": {
                     "type": "string",
@@ -325,6 +342,21 @@ impl Tool for CronCreateTool {
                 .map(String::from)
         });
 
+        // `target` is message-only (Phase 3): `"trunk"` upgrades the
+        // delivery into a `Send` turn in the principal's own trunk
+        // session. With `prompt`/`tool` it is a structured error —
+        // SpawnTool targeting is unchanged this phase.
+        let target = args.target.clone().or_else(|| {
+            params
+                .get("target")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+        validate_send_target(&target)?;
+        if target.is_some() && message.is_none() {
+            anyhow::bail!("`target` is only valid together with `message`");
+        }
+
         let tool = args.tool.clone().or_else(|| {
             params
                 .get("tool")
@@ -352,20 +384,39 @@ impl Tool for CronCreateTool {
         let next_run = crate::tools::calculate_next_run(&schedule, chrono::Utc::now())?;
 
         let job = if let Some(message_text) = message {
-            // Notify path (reminders/notifications): pure delivery —
-            // the message text lands in the user's conversational
-            // session as a labeled note at fire time. No agent turn,
-            // no tokens spent (2026-08-08 unification).
-            build_notify_job(
-                job_id,
-                label,
-                peko_subject::PrincipalId(principal_id.clone()),
-                schedule,
-                message_text,
-                DeliveryMode::None,
-                delete_after_run,
-                next_run,
-            )
+            if let Some(target) = target {
+                // Trunk-targeted Send (Phase 3): the message fires as a
+                // real agent turn in the principal's self session
+                // `root:self` — the mechanism by which the principal
+                // schedules its own upkeep (memory organization, child
+                // supervision) without user visibility.
+                build_send_job(
+                    job_id,
+                    label,
+                    peko_subject::PrincipalId(principal_id.clone()),
+                    schedule,
+                    message_text,
+                    DeliveryMode::None,
+                    delete_after_run,
+                    next_run,
+                    Some(target),
+                )
+            } else {
+                // Notify path (reminders/notifications): pure delivery —
+                // the message text lands in the user's conversational
+                // session as a labeled note at fire time. No agent turn,
+                // no tokens spent (2026-08-08 unification).
+                build_notify_job(
+                    job_id,
+                    label,
+                    peko_subject::PrincipalId(principal_id.clone()),
+                    schedule,
+                    message_text,
+                    DeliveryMode::None,
+                    delete_after_run,
+                    next_run,
+                )
+            }
         } else if let Some(tool_name) = tool {
             // Explicit SpawnTool path.
             let final_params = if prompt.is_some() && args.params.is_none() {
@@ -443,6 +494,28 @@ mod tests {
         assert!(props.get("tool").is_some());
         assert!(props.get("wake_on_completion").is_some());
         assert!(props.get("timeout_secs").is_some());
+        // Phase 3: `target` is exposed and constrained to "trunk".
+        let target = props.get("target").expect("target param");
+        assert_eq!(target["enum"], serde_json::json!(["trunk"]));
+    }
+
+    /// Phase 3: `target` parses through the typed args struct, and the
+    /// value validator (shared with the DTO deserializer) rejects
+    /// unknown targets before any job is built.
+    #[test]
+    fn test_target_arg_parsing_and_validation() {
+        let args: CronCreateArgs =
+            serde_json::from_value(json!({"message": "m", "target": "trunk"})).unwrap();
+        assert_eq!(args.target.as_deref(), Some("trunk"));
+        validate_send_target(&args.target).unwrap();
+
+        let args: CronCreateArgs = serde_json::from_value(json!({"message": "m"})).unwrap();
+        assert_eq!(args.target, None);
+        validate_send_target(&args.target).unwrap();
+
+        let args: CronCreateArgs =
+            serde_json::from_value(json!({"message": "m", "target": "bogey"})).unwrap();
+        assert!(validate_send_target(&args.target).is_err());
     }
 
     /// Round-4 verification finding (2026-08-08): `at` jobs must default

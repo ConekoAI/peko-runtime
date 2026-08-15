@@ -206,6 +206,12 @@ pub enum ChannelKind {
     Webhook,
     Cron,
     FileWatch,
+    /// Principal-self trunk turn (Phase 3, 2026-08-15): no external
+    /// peer exists — the turn runs in the principal's forever-continuous
+    /// self session `root:self` (see `routers::root::trunk_session_id`).
+    /// Cron `Send` jobs with `target = "trunk"` arrive on this channel.
+    /// Like `Cron`, it is excluded from peer-chat chat-log projection.
+    Trunk,
 }
 
 #[async_trait]

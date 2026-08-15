@@ -78,34 +78,36 @@ structurally, a **tree of sessions**:
 family (`root:*`) is continuous and engine-managed: delete/archive on it
 is refused, and no caller may mutate the session it is running in.
 
-**(gap) No principal trunk.** Audit findings:
+**(implemented — Phase 3 of the paradigm sprint, 2026-08-15)** The
+principal trunk exists: **`root:self`** (`trunk_session_id()` in
+`peko-rs/core/src/principal/routers/root.rs`). Design choices:
 
-- Today's root is *per-peer*: exactly two key patterns exist,
-  `root:{peer}` and `root:cron:{peer}`
-  (`peko-rs/core/src/principal/routers/root.rs:39-62`). There is no
-  principal-self session — `Subject` has `User`/`Principal`/`Public` only,
-  no self variant. Even the owner chatting via CLI lands in
-  `root:user:local` — the owner is modeled as an *external peer*.
-- Cron `Send` hard-resolves `peer = config.owner` and forces
-  `ChannelKind::Cron`, so the turn lands in `root:cron:{owner}`
-  (`peko-rs/core/src/daemon/cron_engine/mod.rs:617-675`). No "no peer"
-  branch exists anywhere in the cron engine.
-- Touch points for adding a trunk: the session-id constructor and channel
-  branch (`routers/root.rs:39-62`), the cron engine's peer resolution
-  (`cron_engine/mod.rs:629-650`), `PrincipalManager.receive`'s
-  peer-mandatory signature (permission check + peer-keyed memory recall,
-  `principal/manager.rs:682-709`), chat-log projection (keyed by
-  `(principal_did, peer)` — needs a self-thread convention or an explicit
-  skip, `manager.rs:1076-1149`), and the messenger's
-  `peer_from_session_key` parser (`principal/messenger.rs:43-62`).
-- **Id-choice pitfall:** the root-family guard is a literal
-  `starts_with("root:")` prefix match
-  (`session/session_runtime_impl.rs:383,432`). A trunk ided bare `root`
-  would escape delete/archive protection and misparse in the messenger; an
-  id like `root:self` inherits all existing guards for free.
-- `err_resume_cross_family` (`session/ownership.rs:216`) is dormant
-  scaffolding — defined, tested, zero call sites. The "conversation
-  family" concept is currently enforced nowhere.
+- The `root:` prefix is load-bearing — the trunk inherits the
+  root-family guards (delete/archive/move refused) for free. A bare
+  `root` id was rejected: it would escape the `starts_with("root:")`
+  guard and misparse in the messenger.
+- Trunk turns are peer-less: `ChannelKind::Trunk` routes to the constant
+  `root:self` regardless of the subject; `PrincipalManager::receive_trunk`
+  uses the owner as a proxy subject for permission/recall but overrides
+  the session id, and **skips chat-log projection** (a self-thread
+  convention is deferred). The per-session run permit + steering fallback
+  apply — a cron tick during an active trunk run steers instead of
+  failing.
+- `peer_from_session_key("root:self")` returns `None` explicitly — the
+  trunk has no external peer.
+- Per-peer sessions are unchanged: `root:{peer}` for humans,
+  `root:cron:{peer}` for automation.
+
+Cron targeting: `CronJobAction::Send` gains `target: Option<String>` —
+`"trunk"` fires the turn into `root:self`; default (`None`) preserves the
+`root:cron:{owner}` + note-cross-post behavior exactly. CLI: `peko cron
+add … --target trunk`. This is the heartbeat the paradigm calls for; wire
+`budget_per_cycle` / `cost_per_call_max` as the wake budget (§4).
+
+Known follow-ups: cron `SpawnTool` wake messages still land in
+`root:{owner}` (unchanged by design this phase — see §7.4);
+`err_resume_cross_family` (`session/ownership.rs:216`) remains dormant
+scaffolding.
 
 ### 2.2 Standing named children
 
@@ -350,7 +352,7 @@ audit measured the current tool surface against that need:
 | Channel push broadcast (`subscribe_events`) | ✅ implemented (desktop UI only consumer) | `channel/src/store.rs:296-320` |
 | Channel log ≠ session log | ✅ implemented | `peko-rs/channel/`, `peko-rs/chat-log/` |
 | Cron turn/notify/spawn-tool + idle/event schedules | ✅ implemented | `peko-rs/cron/`, `daemon/cron_engine/` |
-| Principal trunk `/` (self session, cron-kept, supervising) | ❌ gap | root is per-peer today; touch points in §2.1 |
+| Principal trunk `/` (self session, cron-kept, supervising) | ✅ implemented (Phase 3) | `root:self` via `trunk_session_id()` + `ChannelKind::Trunk` + `receive_trunk`; cron `Send target:"trunk"` (§2.1) |
 | Standing named children (`/memory`, `/about-user`, …) | ✅ implemented (Phase 2) | `principal.toml` `[children]` + `principal/children.rs` ensure-declared; Agent `new`-with-name attach (§2.2) |
 | Session `move` (reparent) | ✅ implemented (Phase 1a) | `session/session_runtime_impl.rs` `move_session`, `peko-rs/session/src/manager.rs`; cycle guard `err_move_cycle` (§2.4) |
 | Path addressing (`/user-a/task-b`) | ✅ implemented (Phase 1b) | `peko-rs/session/src/path.rs` resolver; `slug` on metadata; resolved at tool-runtime boundary before guards (§2.4) |
@@ -380,34 +382,34 @@ Items 1–3 were **fixed in Phase 0 of the paradigm sprint**
    `ChannelCursors::load` (`daemon/mod.rs`); a corrupt file falls back
    to fresh cursors with a warning. First-ever boot still starts from
    offset 0 by design (benign while the responder is Noop).
-4. **Cron actions disagree about the root session.** `Send` turns land in
-   `root:cron:{owner}`; `SpawnTool` wake messages land in the
-   conversational `root:{owner}` (`cron_engine/mod.rs:880`). Trunk work
-   (§2.1) should settle this once.
+4. **Cron actions disagree about the root session.** Partially settled by
+   Phase 3: `Send` now has an explicit `target` (`"trunk"` → `root:self`;
+   default → `root:cron:{owner}` + note). `SpawnTool` wake messages still
+   land in the conversational `root:{owner}` (`cron_engine/mod.rs`) —
+   unchanged by design this sprint; revisit once the trunk has a defined
+   inbox-consumption pattern.
 5. **Dead code to reclaim or delete:** the `:subagent:{uuid}` key helpers
    (`peko-rs/session/src/subagent_key.rs` — tests + re-export only) and
    `err_resume_cross_family` (`session/ownership.rs:216` — zero call
    sites). Child ids are plain UUIDs; keep the messenger's defensive
    `:subagent:` trail-stripping for legacy keys.
 
-## 8. Suggested build order
+## 8. Build order (execution status of the 2026-08-15 sprint)
 
-Each step depends on the previous one and is independently shippable:
+Steps 0–3 **landed** on branch `feat/agent-session-paradigm` (one commit
+per phase):
 
-0. **Fix the paradigm-threatening latent issues** (§7.1–7.3): prune
-   exemptions (at minimum `root:*` + a future `standing` flag; decide on
-   `archived`), `run_active` correctness, cursor load at boot.
-1. **Session `move` (reparent) + slug/path view** — reparent action with
-   cycle guard; per-parent-unique slug; `/user-a/task-b` → id resolver
-   over the name index.
-2. **Standing children registry** — declared first-level children with
-   known names; spawn-or-attach-by-name so "spawn once, resume by name" is
-   one operation; prune exemption wired to the registry.
-3. **Principal trunk `/`** — a `root:self`-style id (inherits the
-   existing prefix guards), cron `Send` targeting it, quota and cost
-   ceilings wired in as the wake budget, chat-log self-thread convention;
-   supervision patterns land here.
-4. **Channel passive binding** — DM-tier channels bound to a child session
-   (`/user-a`), event-driven via the existing broadcast, with self-post
-   suppression and boot-time cursor loading; collapses type-1
+0. ✅ **Latent issues fixed** (§7.1–7.3): prune exemptions (`root:*` +
+   `archived` + `standing`), `run_active` correctness, cursor load at
+   boot.
+1. ✅ **Session `move` (reparent) + slug/path view** — Phase 1a (reparent
+   with cycle guard) + Phase 1b (slug, `/user-a/task-b` → id resolver).
+2. ✅ **Standing children registry** — `[children]` declaration,
+   ensure-declared, spawn-or-attach-by-name, prune exemption.
+3. ✅ **Principal trunk `/`** — `root:self` (inherits the prefix guards),
+   cron `Send target:"trunk"`, chat-log projection skipped for trunk
+   turns (self-thread convention deferred).
+4. ⏳ **Channel passive binding** — DM-tier channels bound to a child
+   session (`/user-a`), event-driven via the existing broadcast, with
+   self-post suppression and boot-time cursor loading; collapses type-1
    communication onto `peko-channel`.

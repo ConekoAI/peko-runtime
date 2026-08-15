@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 
 use super::{
     factory::{PrincipalMemoryFactory, PrincipalRouterFactory},
-    router::{ChannelContext, RouteDecision, RouterContext, RouterError},
+    router::{ChannelContext, ChannelKind, RouteDecision, RouterContext, RouterError},
     slash::{SlashDispatcher, SlashError},
     Principal, PrincipalId,
 };
@@ -1017,6 +1017,79 @@ impl PrincipalManager {
                 let queued = format!("Queued for root agent session {session_id}.");
                 self.record_response(&principal, &response_peer, &queued)
                     .await;
+                Ok(PrincipalResponse::queued(queued))
+            }
+        }
+    }
+
+    /// Principal-self entry point (Phase 3, 2026-08-15): a turn fired
+    /// into the principal's forever-continuous trunk session
+    /// `root:self` (see `routers::root::trunk_session_id`). This is the
+    /// receive path for cron `Send` jobs with `target = "trunk"`.
+    ///
+    /// Design:
+    /// - **Proxy subject.** No external peer exists for a trunk turn.
+    ///   The principal's owner is used as the proxy subject so the
+    ///   existing gates work unchanged: `build_router_context` runs its
+    ///   `check_permission(Chat, &peer)` and peer-keyed memory recall
+    ///   (`find_latest_session_for_peer`) against the owner. The
+    ///   SESSION id, however, is always `root:self` — never
+    ///   `root:{owner}` — via `ChannelKind::Trunk`.
+    /// - **No chat-log projection.** `record_input` / `record_response`
+    ///   are skipped entirely: the chat log is a consumer-facing
+    ///   per-peer conversation projection keyed by `(principal_did,
+    ///   peer)` and the trunk has no peer thread to project into. (A
+    ///   self-thread convention is deliberately deferred — see
+    ///   DATA_MODEL.md. The trunk session JSONL remains the durable
+    ///   record; `ChannelKind::Trunk` is also excluded by
+    ///   `is_peer_chat_channel` as defense in depth.)
+    /// - **No slash preprocessing.** Trunk messages are agent-bound
+    ///   automation prompts (cron payloads), not interactive commands.
+    /// - **Same run discipline as `receive`.** The per-session run
+    ///   permit is acquired on `root:self`; a second trunk turn
+    ///   arriving while a run is active is queued as a steering
+    ///   message into the trunk inbox (a rapid cron tick steers the
+    ///   live trunk run instead of crashing).
+    pub async fn receive_trunk(
+        &self,
+        principal_id: PrincipalId,
+        message: String,
+        // Per-message configured model override; same semantics as
+        // `receive` (`None` uses the principal's pinned model).
+        override_model: Option<String>,
+    ) -> Result<PrincipalResponse, PrincipalManagerError> {
+        let principal = self
+            .get(principal_id)
+            .await
+            .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
+
+        let peer = {
+            let config = principal.config.read().await;
+            config.owner.clone()
+        };
+        let channel = ChannelContext {
+            kind: ChannelKind::Trunk,
+            streaming: false,
+        };
+
+        let ctx = self
+            .build_router_context(&principal, peer, message, channel, override_model)
+            .await?;
+
+        let session_id = super::routers::root::trunk_session_id();
+        match self.inbox_registry.try_acquire_run(&session_id).await {
+            Some(_permit) => {
+                let decision = principal.router.route(ctx).await?;
+                match decision {
+                    RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
+                }
+            }
+            None => {
+                let inbox = self.inbox_registry.get_or_create(&session_id).await;
+                inbox
+                    .push(SteeringMessage::new(ctx.message.clone()).into())
+                    .await;
+                let queued = format!("Queued for root agent session {session_id}.");
                 Ok(PrincipalResponse::queued(queued))
             }
         }
@@ -2225,6 +2298,130 @@ mod tests {
         assert_eq!(
             actual_ids, expected_ids,
             "plan injections must be ordered by updated_at DESC"
+        );
+    }
+
+    // ===================================================================
+    // Phase 3 (2026-08-15): principal trunk session `root:self`
+    // ===================================================================
+
+    /// A trunk turn runs in `root:self` — never `root:{owner}` or
+    /// `root:cron:{owner}` — and skips chat-log projection entirely:
+    /// the chat log is a per-peer consumer projection and the trunk has
+    /// no peer thread (a self-thread convention is deferred; the
+    /// session JSONL is the durable record).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn trunk_receive_uses_trunk_session_and_skips_chat_log() {
+        use peko_chat_log::{ChatLogStore, ChatThreadKey};
+
+        let temp = TempDir::new().expect("temp dir");
+        std::env::set_var("PEKO_HOME", temp.path());
+        peko_identity::init_test_env();
+
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+
+        let workspace = temp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let catalog_path = temp.path().join("models.toml");
+        let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        adapter.queue_text("trunk reply");
+
+        // Attach a chat-log store so a projection would be VISIBLE if
+        // one happened — the empty page below is the assertion.
+        let store = Arc::new(ChatLogStore::new(temp.path().join("chat_log")));
+        let manager = PrincipalManager::with_path_resolver(
+            path_resolver,
+            Arc::new(DefaultPrincipalMemoryFactory),
+            Arc::new(DefaultPrincipalRouterFactory),
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        )
+        .with_resolver(resolver)
+        .with_chat_log_store(store.clone());
+        let principal = create_test_principal(&manager, "stressy").await;
+        let id = principal.id.clone();
+
+        let response = manager
+            .receive_trunk(id.clone(), "trunk tick".to_string(), None)
+            .await
+            .expect("trunk receive should succeed");
+        assert!(
+            response.content.contains("trunk reply"),
+            "response should carry the mock reply: {}",
+            response.content
+        );
+
+        // The turn landed in the trunk session, not in any per-peer
+        // root session.
+        let sessions_dir = principal.memory.sessions_dir().clone();
+        let trunk_jsonl = sessions_dir.join("root:self.jsonl");
+        assert!(trunk_jsonl.exists(), "trunk session JSONL should exist");
+        let content = std::fs::read_to_string(&trunk_jsonl).unwrap();
+        assert!(
+            content.contains("trunk tick"),
+            "trunk turn should be persisted to root:self, got: {content}"
+        );
+        assert!(
+            !sessions_dir.join("root:user:test-owner.jsonl").exists(),
+            "trunk turn must not create the owner's conversational session"
+        );
+        assert!(
+            !sessions_dir
+                .join("root:cron:user:test-owner.jsonl")
+                .exists(),
+            "trunk turn must not create the per-owner cron session"
+        );
+
+        // No chat-log projection for the owner thread.
+        let owner = Subject::User("test-owner".to_string());
+        let key = ChatThreadKey::new(principal.did().await, owner);
+        let page = store
+            .read_page(&key, None, 100, None)
+            .await
+            .expect("read_page should succeed");
+        assert!(
+            page.messages.is_empty(),
+            "trunk turns must not project to the chat log, got {} messages",
+            page.messages.len()
+        );
+    }
+
+    /// A second trunk turn arriving while a trunk run is active is
+    /// queued as a steering message into the trunk inbox — a rapid cron
+    /// tick steers the live run instead of erroring (same run
+    /// discipline as `receive`).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn trunk_receive_queues_when_run_active() {
+        let (_temp, manager, adapter, id) = setup().await;
+        adapter.queue_text("unused — the queued path makes no LLM call");
+
+        // Hold the trunk run permit: the next trunk turn must steer.
+        let _permit = manager
+            .inbox_registry
+            .try_acquire_run("root:self")
+            .await
+            .expect("permit should be free");
+
+        let response = manager
+            .receive_trunk(id, "second tick".to_string(), None)
+            .await
+            .expect("trunk receive should succeed");
+        assert!(
+            response
+                .content
+                .contains("Queued for root agent session root:self"),
+            "expected the queued-steering response, got: {}",
+            response.content
         );
     }
 }
