@@ -505,6 +505,15 @@ Written as the very first line of every new session file.
 }
 ```
 
+> **Reparenting:** the `session` tool's `move` action rewrites
+> `parent_session_id` in the session index (the source of truth for
+> parentage) and appends a `system` event (`event: "reparent"`, with
+> `old_parent` / `new_parent` in `detail`) to the session's JSONL as an
+> audit trail. The `session.created` header's `parent_session_id` is
+> **stale after a reparent** — it records parentage at creation time and
+> is never read back. Moves that would create a parent↔child cycle are
+> refused.
+
 | `trigger` | Meaning |
 |-----------|---------|
 | `user` | Interactive session started by a user |
@@ -1610,7 +1619,7 @@ This is not a user-editable file. It is the daemon's working state — sessions 
 | `turn_count` | INTEGER | Number of complete turns |
 | `event_count` | INTEGER | Total events in the JSONL |
 | `total_tokens` | INTEGER | Cumulative token usage |
-| `parent_session_id` | TEXT NULL | Set if branched |
+| `parent_session_id` | TEXT NULL | Parent session id (set for spawned/branched sessions; rewritten by the `session` tool's `move` action) |
 | `trigger` | TEXT | How the session was started |
 | `ended` | INTEGER | Boolean (0/1) |
 | `title` | TEXT NULL | Auto-generated or user-set |

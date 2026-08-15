@@ -19,7 +19,7 @@
 //! reads (`list_sessions` / `get_history` / `get_status` /
 //! `search_sessions` / `current_session_key`) and storage mutations
 //! (`branch_session` / `rename_session` / `set_archived` /
-//! `delete_session`). `request_compaction` rides the same trait but is
+//! `delete_session` / `move_session`). `request_compaction` rides the same trait but is
 //! engine-facing only — the model-facing `compact` affordance lives on
 //! the Agent tool. Production wiring uses the `SessionManagerRuntime`
 //! adapter in `src/session/session_runtime_impl.rs`; tests construct a
@@ -252,6 +252,12 @@ pub trait SessionRuntime: Send + Sync {
 
     /// Rename (retitle) a session.
     async fn rename_session(&self, session_key: &str, title: String) -> anyhow::Result<()>;
+
+    /// Move (reparent) a session — with its subtree — under a new
+    /// parent. Refused when the move would create a cycle, when the
+    /// target is a live `root:*` session, or when the target or any
+    /// descendant has an active run.
+    async fn move_session(&self, session_key: &str, new_parent: String) -> anyhow::Result<()>;
 
     /// Set or clear the archived flag on a session. Archived sessions
     /// are hidden from `list` (unless `include_archived: true`) and

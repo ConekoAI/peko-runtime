@@ -158,27 +158,22 @@ its own scope (`peko-rs/core/src/session/ownership.rs`):
 
 ### 2.4 Path addressing and `move`
 
-**(gap) No reparent exists anywhere** — zero `move`/`reparent` hits in any
-tool, port, manager, or controller. But the audit found the mechanics are
-mostly free:
-
-- `MetadataController::update_entry` already does delta-merge-safe
-  persistence (`metadata_controller.rs:232-245`); a `set_parent` beside
-  `set_archived` is a few lines.
-- No reader caches the parent chain; ownership guards, the messenger
-  originator walk, and resume depth recomputation all re-read it per call,
-  so a reparent takes effect immediately.
-- The JSONL header's parent field is write-once and **never read back**
-  (and already disagrees with the index for spawns, `manager.rs:1616`) —
-  header staleness after reparent is cosmetic; optionally append a
-  `System` event for auditability.
-- Guards should mirror `delete` (not-self, not-ancestor, tree guard on
-  both source and destination, `root:*` refusal, run permits for target +
-  descendants, subagent-run check, `session_runtime_impl.rs:414-504`).
-- **The one real hazard is cycles.** Existing walkers are cycle-safe but
-  silently truncate ancestry (`ownership.rs:69-77`); a move must refuse to
-  place a session under its own descendant (checkable with
-  `descendants_of` on the destination).
+**(implemented — Phase 1a of the paradigm sprint, 2026-08-15)** Session
+`move` (reparent) exists: the session tool's 10th action reparents a
+session with its subtree via `MetadataController::set_parent` +
+`SessionManager::move_session` (`peko-rs/session/src/manager.rs`), guarded
+in `SessionManagerRuntime::move_session`
+(`session/session_runtime_impl.rs`): not-self, not-ancestor-of-caller,
+subtree guard on both endpoints, `root:*` source refused (moving *under*
+`root:*` is allowed), live-run refusal (refuse-and-retry — a reparent is
+a single metadata write, unlike delete's multi-step permit protocol), and
+a **cycle guard** (`err_move_cycle` in `ownership.rs`) refusing any move
+whose destination is the target itself or one of its descendants. The
+reparent is recorded as a `System` event (`event: "reparent"`,
+old → new parent) in the session's JSONL; the header's parent field stays
+stale-by-design (never read back — the index is the source of truth for
+parentage). No reader caches the parent chain, so a reparent takes effect
+on the next guard evaluation.
 
 **(gap) No path addressing.** Session ids are opaque strings — the colon
 structure is convention, enforced nowhere (the v2 `agent:...:peer:...`
@@ -347,7 +342,7 @@ audit measured the current tool surface against that need:
 | Paradigm element | Status | Where |
 |---|---|---|
 | Agent tool = LLM side (`new`/`resume`/`compact`) | ✅ implemented | `core/src/tools/builtin/messaging/agent.rs` |
-| Session tool = storage side (9 actions) | ✅ implemented | `core/src/tools/builtin/session/tool.rs` |
+| Session tool = storage side (10 actions) | ✅ implemented | `core/src/tools/builtin/session/tool.rs` |
 | JSONL auto-paging, stable ids | ✅ implemented | `core/src/session/`, `peko-rs/session/` |
 | Subtree-scoped Agent/session tools | ✅ implemented | `core/src/session/ownership.rs` |
 | Spawned sessions retained + re-resumable (`cleanup: keep`) | ✅ implemented | `agents/subagent_executor.rs:657-799` |
@@ -358,7 +353,7 @@ audit measured the current tool surface against that need:
 | Cron turn/notify/spawn-tool + idle/event schedules | ✅ implemented | `peko-rs/cron/`, `daemon/cron_engine/` |
 | Principal trunk `/` (self session, cron-kept, supervising) | ❌ gap | root is per-peer today; touch points in §2.1 |
 | Standing named children (`/memory`, `/about-user`, …) | ❌ gap | mechanics work; naming + registry + prune exemption missing (§2.2) |
-| Session `move` (reparent) | ❌ gap | mechanics nearly free; cycle guard is the real work (§2.4) |
+| Session `move` (reparent) | ✅ implemented (Phase 1a) | `session/session_runtime_impl.rs` `move_session`, `peko-rs/session/src/manager.rs`; cycle guard `err_move_cycle` (§2.4) |
 | Path addressing (`/user-a/task-b`) | ❌ gap | needs slug field + per-parent uniqueness + resolver (§2.4) |
 | Channel → auto-spawned/bound child (`/user-a`, `/channel-a`) | ❌ gap | seam exists (`ChannelResponder`); binding storage, ChannelKind variant, self-post suppression, cursor durability missing (§3.2) |
 | Passive/active as channel tier property | ❌ gap | split is currently tunnel vs. channel; `Tier` is storage locality |

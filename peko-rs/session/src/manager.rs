@@ -1461,6 +1461,57 @@ impl SessionManager {
             .await
     }
 
+    /// Reparent a session: set `parent_session_id` (passthrough to the
+    /// `MetadataController`) and append a `System` audit event to the
+    /// session's JSONL recording old → new parent. Errors when the
+    /// session does not exist. The ownership / cycle / live-run guards
+    /// live in the caller (root's `SessionManagerRuntime::move_session`).
+    pub async fn move_session(
+        &mut self,
+        session_id: &str,
+        new_parent: Option<String>,
+    ) -> Result<()> {
+        let old_parent = self
+            .metadata_controller
+            .write()
+            .await
+            .get_metadata(session_id, false)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?
+            .parent_session_id;
+
+        self.metadata_controller
+            .write()
+            .await
+            .set_parent(session_id, new_parent.clone())
+            .await?;
+
+        // Audit trail: record the reparent as a System event. The
+        // JSONL header's `SessionCreated.parent_session_id` stays
+        // stale-by-design — it is never read back; the index is the
+        // source of truth for parentage.
+        if let Some(sessions_dir) = self.sessions_dir.as_ref() {
+            use crate::events::{EventEnvelope, SessionEvent, SystemEvent};
+            let event = SessionEvent::System(SystemEvent {
+                envelope: EventEnvelope {
+                    id: format!("evt_{}", uuid::Uuid::new_v4().simple()),
+                    ts: chrono::Utc::now(),
+                },
+                event: "reparent".to_string(),
+                detail: serde_json::json!({
+                    "old_parent": old_parent,
+                    "new_parent": new_parent,
+                }),
+            });
+            SessionStorage::new(sessions_dir.clone())
+                .append_event(session_id, &event)
+                .await?;
+        }
+
+        info!("Moved session {} under {:?}", session_id, new_parent);
+        Ok(())
+    }
+
     /// Delete a session completely (metadata + transcript + sidecars)
     /// by id (passthrough to the `MetadataController`). Returns
     /// `Ok(true)` when the session existed.

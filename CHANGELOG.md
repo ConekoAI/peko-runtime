@@ -27,6 +27,14 @@ Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in
 - **`standing` flag** on `SessionMetadata`/`SessionEntry`
   (serde-default false): marks a session as a durable, standing entity —
   exempt from idle pruning. Groundwork for standing named children.
+- **`session move` (reparent).** The session tool gains a 10th action,
+  `move` (`session_key` + `new_parent`), reparenting a session with its
+  subtree. Guards mirror `delete` (not-self, not-ancestor, subtree scope
+  on both endpoints, `root:*` source refused, live-run refusal) plus a
+  **cycle guard** — moving a session under itself or one of its
+  descendants is refused. The reparent is recorded as a `System` event in
+  the session's JSONL; the `session.created` header's parent field stays
+  stale-by-design (the index is the source of truth for parentage).
 
 ### Round 7: chapters deleted, stable-id paging, session/Agent tool surface (2026-08-13)
 

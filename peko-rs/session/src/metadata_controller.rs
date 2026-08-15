@@ -266,6 +266,33 @@ impl MetadataController {
         Ok(())
     }
 
+    /// Set the parent session id on a session (reparent).
+    ///
+    /// Same update pattern as [`Self::set_archived`]: load the entry,
+    /// mutate the field, and write it back through the delta-merge-safe
+    /// index save. Errors when the session does not exist. This is a
+    /// raw write — the ownership / cycle / live-run guards live in the
+    /// caller (root's `SessionManagerRuntime::move_session`).
+    pub async fn set_parent(&mut self, session_id: &str, new_parent: Option<String>) -> Result<()> {
+        debug!(
+            "Setting parent_session_id={:?} for session {}",
+            new_parent, session_id
+        );
+
+        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
+            anyhow::anyhow!("Cannot set parent for non-existent session {session_id}")
+        })?;
+
+        if entry.parent_session_id != new_parent {
+            entry.parent_session_id = new_parent;
+            entry.touch();
+            self.update_entry(entry).await?;
+        }
+
+        info!("Set parent_session_id for session {}", session_id);
+        Ok(())
+    }
+
     /// Set the compaction-request flag on a session
     ///
     /// The compaction orchestrator ORs this flag into its
@@ -1037,6 +1064,43 @@ mod tests {
         assert!(third.set_archived("sess_nope", true).await.is_err());
         assert!(third
             .set_compact_requested("sess_nope", true)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_set_parent_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().to_path_buf();
+
+        let mut controller = MetadataController::new(&dir);
+        let metadata = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
+        controller.create_metadata(metadata).await.unwrap();
+
+        controller
+            .set_parent("sess_123", Some("sess_parent".to_string()))
+            .await
+            .unwrap();
+
+        // Reload through a fresh controller (fresh index + cache) to
+        // prove the reparent survived the save/reload round trip.
+        let mut reloaded = MetadataController::new(&dir);
+        let meta = reloaded
+            .get_metadata_fast("sess_123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.parent_session_id.as_deref(), Some("sess_parent"));
+
+        // Clearing the parent persists too.
+        reloaded.set_parent("sess_123", None).await.unwrap();
+        let mut third = MetadataController::new(&dir);
+        let meta = third.get_metadata_fast("sess_123").await.unwrap().unwrap();
+        assert_eq!(meta.parent_session_id, None);
+
+        // Errors on a non-existent session.
+        assert!(third
+            .set_parent("sess_nope", Some("p".to_string()))
             .await
             .is_err());
     }

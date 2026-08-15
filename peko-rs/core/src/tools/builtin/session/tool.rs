@@ -1,6 +1,7 @@
 //! Unified `session` tool — single storage entry point that dispatches
-//! by `action` over 9 operations (`status` / `list` / `history` /
-//! `search` / `rename` / `delete` / `branch` / `archive` / `unarchive`).
+//! by `action` over 10 operations (`status` / `list` / `history` /
+//! `search` / `rename` / `delete` / `branch` / `archive` / `unarchive` /
+//! `move`).
 //!
 //! Replaces the legacy `session_status`, `sessions_list`,
 //! `sessions_history` tools (Issue 013, expanded by PR #351 with the
@@ -93,6 +94,7 @@ enum SessionAction {
     Branch,
     Archive,
     Unarchive,
+    Move,
 }
 
 #[async_trait]
@@ -102,9 +104,9 @@ impl Tool for SessionTool {
     }
 
     fn description(&self) -> String {
-        r"Single tool with **9 operations** for inspecting and managing your persisted sessions (pure storage reads/writes — no LLM involvement). The `action` parameter is REQUIRED and MUST be one of:
+        r"Single tool with **10 operations** for inspecting and managing your persisted sessions (pure storage reads/writes — no LLM involvement). The `action` parameter is REQUIRED and MUST be one of:
 
-  status | list | history | search | rename | delete | branch | archive | unarchive
+  status | list | history | search | rename | delete | branch | archive | unarchive | move
 
 Per-action semantics (the action you choose determines which other params apply):
 - status: one session's metadata + token usage (session_key optional, defaults to current)
@@ -116,8 +118,9 @@ Per-action semantics (the action you choose determines which other params apply)
 - branch: copy a session under a new id (session_key required; optional label) — the copy is NOT running; attach a run to it via the Agent tool's resume action
 - archive: hide a session from list/search (session_key required; still visible with include_archived:true)
 - unarchive: restore an archived session to normal visibility (session_key required)
+- move: reparent a session (with its whole subtree) under a new parent (session_key + new_parent required)
 
-Refusals: the principal's root session (ids starting with `root:`) is continuous and managed by the engine — delete/archive on it are refused. You cannot delete, archive, or rename the session you are currently running in. Sessions with an active run refuse delete/archive. A caller in a spawned session manages only its own subtree.
+Refusals: the principal's root session (ids starting with `root:`) is continuous and managed by the engine — delete/archive/move on it are refused (moving UNDER a root session is allowed). You cannot delete, archive, rename, or move the session you are currently running in. Sessions with an active run refuse delete/archive/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). A caller in a spawned session manages only its own subtree — both the moved session and the destination must be inside it.
 
 To RUN work in a session, use the Agent tool instead — its three actions (new / resume / compact) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session_id` set (visible on status)."
             .to_string()
@@ -129,12 +132,12 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "list", "history", "search", "rename", "delete", "branch", "archive", "unarchive"],
-                    "description": "What to do: status/list/history read; search finds text; rename/delete/branch/archive/unarchive manage a session's storage. To run work in a session, use the Agent tool (new/resume/compact)."
+                    "enum": ["status", "list", "history", "search", "rename", "delete", "branch", "archive", "unarchive", "move"],
+                    "description": "What to do: status/list/history read; search finds text; rename/delete/branch/archive/unarchive/move manage a session's storage. To run work in a session, use the Agent tool (new/resume/compact)."
                 },
                 "session_key": {
                     "type": "string",
-                    "description": "Target session. Required for `rename`, `delete`, `branch`, `archive`, `unarchive`. Optional for `status` and `history` (defaults to current session)."
+                    "description": "Target session. Required for `rename`, `delete`, `branch`, `archive`, `unarchive`, `move`. Optional for `status` and `history` (defaults to current session)."
                 },
                 "query": {
                     "type": "string",
@@ -147,6 +150,10 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 "label": {
                     "type": "string",
                     "description": "Optional for 'branch': label/title for the new branch"
+                },
+                "new_parent": {
+                    "type": "string",
+                    "description": "Required for 'move': the session to reparent under. Must exist; must not be the target itself or one of its descendants (cycle refusal); must be inside your subtree when you are a spawned caller."
                 },
                 "recursive": {
                     "type": "boolean",
@@ -343,6 +350,20 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     "archived": archived,
                 }))
             }
+            SessionAction::Move => {
+                let session_key = Self::require_session_key(&params, "move")?;
+                let new_parent = params
+                    .get("new_parent")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("'move' requires the 'new_parent' parameter"))?
+                    .to_string();
+
+                self.runtime.move_session(session_key, new_parent).await?;
+                Ok(json!({
+                    "session_key": session_key,
+                    "moved": true,
+                }))
+            }
         }
     }
 }
@@ -361,17 +382,18 @@ mod tests {
     /// `list` / `history`) and refusing to call the lifecycle
     /// operations. WS4 demoted all 6 lifecycle operations; round 7
     /// restored the storage-only three (`branch` / `archive` /
-    /// `unarchive`), bringing the surface to 9 actions. Pin the
-    /// description here so any future edit that drops one of the 9
+    /// `unarchive`), bringing the surface to 9 actions; the `move`
+    /// (reparent) action brought it to 10. Pin the
+    /// description here so any future edit that drops one of the 10
     /// action names fails the test — defense-in-depth against the
     /// "register without surfacing in description" omission pattern.
     #[test]
-    fn description_names_all_9_actions() {
+    fn description_names_all_10_actions() {
         let cache = SessionCache::new("test");
         let tool = SessionTool::new(Arc::new(cache).as_shared());
         let desc = tool.description();
 
-        // The 9 actions, in the order they appear in `SessionAction`.
+        // The 10 actions, in the order they appear in `SessionAction`.
         // If `SessionAction` ever grows, bump this list in lockstep.
         let expected_actions = [
             "status",
@@ -383,11 +405,12 @@ mod tests {
             "branch",
             "archive",
             "unarchive",
+            "move",
         ];
         assert_eq!(
             expected_actions.len(),
-            9,
-            "test bug: expected_actions must have 9 entries"
+            10,
+            "test bug: expected_actions must have 10 entries"
         );
 
         for action in expected_actions {
@@ -399,10 +422,10 @@ mod tests {
         }
 
         // Lead-with-count: the description must advertise the action
-        // count up front so the model sees all 9 before any per-action
+        // count up front so the model sees all 10 before any per-action
         // bullet (defeats primacy bias on the legacy 3).
         assert!(
-            desc.contains("9 operations") || desc.contains("9 actions") || desc.contains("9 op"),
+            desc.contains("10 operations") || desc.contains("10 actions") || desc.contains("10 op"),
             "session description must lead with the action count (F5: defeats primacy bias)"
         );
     }
@@ -785,7 +808,7 @@ mod tests {
 
     // ====================================================================================
     // Tests: mutation actions (search/rename/delete/branch/archive/
-    // unarchive). `new` / `resume` / `compact` stay refused on this
+    // unarchive/move). `new` / `resume` / `compact` stay refused on this
     // tool — they drive the LLM and live on the Agent tool.
     // ====================================================================================
 
@@ -1010,5 +1033,69 @@ mod tests {
         let tool = SessionTool::new(Arc::new(cache).as_shared());
         let schema = tool.parameters();
         assert_eq!(schema["properties"]["limit"]["default"], 100);
+    }
+
+    #[tokio::test]
+    async fn test_session_move_happy_and_missing_params() {
+        let cache = create_test_cache();
+        cache.add_session(
+            "parent-s".to_string(),
+            SessionInfo {
+                session_key: "parent-s".to_string(),
+                session_id: "parent-s".to_string(),
+                agent_id: Some("test-agent".to_string()),
+                label: None,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                last_activity: "2024-01-01T01:00:00Z".to_string(),
+                message_count: 0,
+                peer_type: None,
+                peer_id: None,
+                archived: false,
+                run_active: false,
+            },
+            vec![],
+            dummy_status("parent-s"),
+        );
+        let tool = SessionTool::new(cache.as_shared());
+
+        let result = tool
+            .execute(json!({
+                "action": "move",
+                "session_key": "test-session",
+                "new_parent": "parent-s"
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result["moved"], true);
+
+        // The reparent is visible on status.
+        let status = tool
+            .execute(json!({"action": "status", "session_key": "test-session"}))
+            .await
+            .unwrap();
+        assert_eq!(status["parent_session"], "parent-s");
+
+        // Both params are required.
+        let err = tool
+            .execute(json!({"action": "move", "new_parent": "parent-s"}))
+            .await
+            .expect_err("move without session_key must error");
+        assert!(err.to_string().contains("session_key"), "{err}");
+        let err = tool
+            .execute(json!({"action": "move", "session_key": "test-session"}))
+            .await
+            .expect_err("move without new_parent must error");
+        assert!(err.to_string().contains("new_parent"), "{err}");
+
+        // Unknown endpoints error.
+        let err = tool
+            .execute(json!({
+                "action": "move",
+                "session_key": "missing",
+                "new_parent": "parent-s"
+            }))
+            .await
+            .expect_err("move of an unknown session must error");
+        assert!(err.to_string().contains("missing"), "{err}");
     }
 }

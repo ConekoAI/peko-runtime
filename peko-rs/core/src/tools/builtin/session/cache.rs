@@ -6,8 +6,8 @@
 //! session_key, returns pre-loaded `SessionInfo` / `HistoryMessage` /
 //! `SessionStatusResult` records.
 //!
-//! The lifecycle actions (branch / rename / archive / delete / compact)
-//! are modeled with plain in-memory semantics — no
+//! The lifecycle actions (branch / rename / archive / delete / compact /
+//! move) are modeled with plain in-memory semantics — no
 //! ownership guards (those are a production-adapter concern).
 
 use std::collections::HashMap;
@@ -313,6 +313,25 @@ impl SessionRuntime for SessionCache {
             .get_mut(session_key)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
         info.archived = archived;
+        Ok(())
+    }
+
+    async fn move_session(&self, session_key: &str, new_parent: String) -> anyhow::Result<()> {
+        // Plain in-memory reparent — no ownership/cycle guards (those
+        // are a production-adapter concern). Both endpoints must exist.
+        if !self
+            .statuses
+            .lock()
+            .expect("statuses mutex poisoned")
+            .contains_key(&new_parent)
+        {
+            return Err(anyhow::anyhow!("Session not found: {new_parent}"));
+        }
+        let mut statuses = self.statuses.lock().expect("statuses mutex poisoned");
+        let status = statuses
+            .get_mut(session_key)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
+        status.parent_session = Some(new_parent);
         Ok(())
     }
 

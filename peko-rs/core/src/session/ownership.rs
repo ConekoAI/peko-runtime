@@ -167,6 +167,23 @@ pub fn err_delete_ancestor(target: &str) -> anyhow::Error {
     )
 }
 
+/// `move` on an ancestor of the caller's current session.
+pub fn err_move_ancestor(target: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "cannot move session '{target}': it is an ancestor of the session you are running in"
+    )
+}
+
+/// `move` that would create a parent↔child cycle (`new_parent` is the
+/// target itself or one of its descendants). Cycles silently truncate
+/// ancestry walks, so they are refused at move time.
+pub fn err_move_cycle(target: &str, new_parent: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "cannot move session '{target}' under '{new_parent}': the destination is the session \
+         itself or one of its descendants — the move would create a cycle"
+    )
+}
+
 /// A subtree (spawned) caller acting outside its subtree.
 pub fn err_out_of_tree(target: &str, caller: &str) -> anyhow::Error {
     anyhow::anyhow!(
@@ -175,12 +192,12 @@ pub fn err_out_of_tree(target: &str, caller: &str) -> anyhow::Error {
     )
 }
 
-/// `delete` / `archive` on the principal's live `root:*` session.
+/// `delete` / `archive` / `move` on the principal's live `root:*` session.
 pub fn err_live_base_managed(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "session '{target}' is the principal's root session: it is continuous and managed by \
-         the engine — you cannot delete or archive it. To manage a different session, pass its \
-         session_id from `session list`."
+         the engine — you cannot delete, archive, or move it. To manage a different session, \
+         pass its session_id from `session list`."
     )
 }
 
@@ -445,6 +462,8 @@ mod tests {
         for err in [
             err_self_mutation("s"),
             err_delete_ancestor("s"),
+            err_move_ancestor("s"),
+            err_move_cycle("s", "d"),
             err_out_of_tree("s", "c"),
             err_live_base_managed("s"),
             err_run_active("s"),

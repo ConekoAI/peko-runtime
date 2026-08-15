@@ -24,8 +24,8 @@
 //!   (stateless CLI), these guards degrade to metadata-only with a
 //!   debug note.
 //! - **Live slots**: `root:*` ids are the principal's continuous
-//!   sessions; they refuse delete/archive — the engine manages their
-//!   lifecycle (paging + compaction).
+//!   sessions; they refuse delete/archive/move — the engine manages
+//!   their lifecycle (paging + compaction).
 
 use std::sync::Arc;
 
@@ -34,8 +34,8 @@ use serde_json::json;
 
 use crate::session::ownership::{
     caller_context, descendants_of, err_compact_archived, err_dangling, err_delete_ancestor,
-    err_descendants_exist, err_live_base_managed, err_out_of_tree, err_run_active,
-    err_self_mutation, in_subtree, CallerContext,
+    err_descendants_exist, err_live_base_managed, err_move_ancestor, err_move_cycle,
+    err_out_of_tree, err_run_active, err_self_mutation, in_subtree, CallerContext,
 };
 use crate::tools::builtin::session::{
     BranchOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage, SessionInfo,
@@ -505,6 +505,71 @@ impl SessionRuntime for SessionManagerRuntime {
             }
         }
         Ok(DeleteOutcome { deleted })
+    }
+
+    async fn move_session(&self, session_key: &str, new_parent: String) -> anyhow::Result<()> {
+        let mut manager = self.session_manager.write().await;
+        let (caller, metas) = self.caller_and_metas(&mut manager).await?;
+
+        if !metas.iter().any(|m| m.session_id == session_key) {
+            return Err(anyhow::anyhow!("Session not found: {session_key}"));
+        }
+        if !metas.iter().any(|m| m.session_id == new_parent) {
+            return Err(anyhow::anyhow!("Session not found: {new_parent}"));
+        }
+        self.guard_not_self(&caller, session_key)?;
+        if caller.ancestors.iter().any(|a| a == session_key) {
+            return Err(self.refuse(err_move_ancestor(session_key)));
+        }
+        // Tree guard on BOTH endpoints: a subtree caller may only move
+        // sessions within its own subtree, and the destination must be
+        // in that subtree too.
+        self.guard_tree(&caller, session_key, &metas)?;
+        self.guard_tree(&caller, &new_parent, &metas)?;
+        // Live `root:*` sessions are continuous and engine-managed:
+        // moving one is refused outright (moving UNDER one is fine).
+        if session_key.starts_with("root:") {
+            return Err(self.refuse(err_live_base_managed(session_key)));
+        }
+
+        // Cycle guard: ancestry walkers are cycle-safe but silently
+        // truncate, so a cycle must never be CREATED. Refuse when the
+        // destination is the target itself or sits in its subtree.
+        let mut descendants = descendants_of(session_key, &metas);
+        descendants.sort();
+        if new_parent == session_key || descendants.iter().any(|d| d == &new_parent) {
+            return Err(self.refuse(err_move_cycle(session_key, &new_parent)));
+        }
+
+        // Live-run guard: REFUSE while the target or any descendant has
+        // a run in flight. Delete holds the InboxRegistry permits across
+        // its multi-step removal; a reparent is a single metadata write,
+        // so a refuse-and-retry snapshot check is enough. `None`
+        // registry (stateless CLI) degrades to metadata-only.
+        match &self.inbox_registry {
+            Some(registry) => {
+                for id in std::iter::once(&session_key.to_string()).chain(descendants.iter()) {
+                    if registry.peek_run_held(id).await {
+                        return Err(self.refuse(err_run_active(id)));
+                    }
+                }
+            }
+            None => {
+                tracing::debug!(
+                    "no inbox registry bound; moving {session_key} without run-permit check"
+                );
+            }
+        }
+        // Subagent runs never hold InboxRegistry permits (they register
+        // in the per-agent AsyncTaskRegistry) — same check as delete.
+        use crate::extensions::framework::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
+        for id in std::iter::once(&session_key.to_string()).chain(descendants.iter()) {
+            if has_active_subagent_run_across_all_registries(id).await {
+                return Err(self.refuse(err_run_active(id)));
+            }
+        }
+
+        manager.move_session(session_key, Some(new_parent)).await
     }
 
     async fn request_compaction(&self, session_key: &str) -> anyhow::Result<CompactRequestOutcome> {
@@ -1040,6 +1105,191 @@ mod tests {
         let history = h.runtime.get_history("child1", 10, false).await.unwrap();
         assert_eq!(history.len(), 1);
         h.runtime.get_status("child1").await.unwrap();
+    }
+
+    // ─── Move (reparent) ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn move_reparents_and_appends_audit_event() {
+        let h = tree_harness("root:user:alice").await;
+
+        // Principal-level caller: move child1 (with its subtree) from
+        // spawn1 to spawn2.
+        h.runtime
+            .move_session("child1", "spawn2".to_string())
+            .await
+            .unwrap();
+        let status = h.runtime.get_status("child1").await.unwrap();
+        assert_eq!(status.parent_session.as_deref(), Some("spawn2"));
+
+        // Audit trail: a System "reparent" event landed in child1's
+        // JSONL recording old → new parent.
+        let storage = SessionStorage::new(h._temp.path().to_path_buf());
+        let events = storage.load_events("child1").await.unwrap();
+        let reparent = events
+            .iter()
+            .find_map(|e| match e {
+                peko_session::SessionEvent::System(sys) if sys.event == "reparent" => Some(sys),
+                _ => None,
+            })
+            .expect("reparent System event must be appended");
+        assert_eq!(reparent.detail["old_parent"], "spawn1");
+        assert_eq!(reparent.detail["new_parent"], "spawn2");
+
+        // Moving UNDER a live root:* session is allowed.
+        h.runtime
+            .move_session("child1", "root:user:alice".to_string())
+            .await
+            .unwrap();
+        let status = h.runtime.get_status("child1").await.unwrap();
+        assert_eq!(status.parent_session.as_deref(), Some("root:user:alice"));
+
+        // Unknown endpoints error.
+        assert!(h
+            .runtime
+            .move_session("ghost", "spawn2".to_string())
+            .await
+            .is_err());
+        assert!(h
+            .runtime
+            .move_session("child1", "ghost".to_string())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn move_self_and_ancestor_refused() {
+        // Caller spawn1: moving its own session refuses (not-self).
+        let h = tree_harness("spawn1").await;
+        let err = h
+            .runtime
+            .move_session("spawn1", "spawn2".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("currently running in"), "{err}");
+
+        // Caller child1: moving an ancestor refuses.
+        let h = tree_harness("child1").await;
+        let err = h
+            .runtime
+            .move_session("spawn1", "spawn2".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("ancestor"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn move_out_of_tree_refused_for_subtree_caller() {
+        let h = tree_harness("spawn1").await;
+
+        // Target outside the caller's subtree.
+        let err = h
+            .runtime
+            .move_session("spawn2", "child1".to_string())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("outside your session subtree"),
+            "{err}"
+        );
+
+        // Destination outside the caller's subtree.
+        let err = h
+            .runtime
+            .move_session("child1", "spawn2".to_string())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("outside your session subtree"),
+            "{err}"
+        );
+
+        // Fully in-tree move works.
+        h.create("grandchild1", Some("child1")).await;
+        h.runtime
+            .move_session("grandchild1", "spawn1".to_string())
+            .await
+            .unwrap();
+        let status = h.runtime.get_status("grandchild1").await.unwrap();
+        assert_eq!(status.parent_session.as_deref(), Some("spawn1"));
+    }
+
+    #[tokio::test]
+    async fn move_cycle_refused() {
+        let h = tree_harness("root:user:alice").await;
+
+        // Moving spawn1 under its own descendant child1 would create a
+        // cycle (spawn1 → child1 → spawn1) — ancestry walkers truncate
+        // silently on cycles, so this must be refused at move time.
+        let err = h
+            .runtime
+            .move_session("spawn1", "child1".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cycle"), "{err}");
+
+        // Moving a session under itself is the degenerate cycle.
+        let err = h
+            .runtime
+            .move_session("child1", "child1".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cycle"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn move_root_source_refused() {
+        let h = tree_harness("root:user:alice").await;
+        h.create("root:cron:alice", None).await;
+
+        let err = h
+            .runtime
+            .move_session("root:cron:alice", "spawn1".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn move_run_permit_held_refuses_then_succeeds() {
+        let h = tree_harness("root:user:alice").await;
+
+        let guard = h.registry.try_acquire_run("child1").await.unwrap();
+        let err = h
+            .runtime
+            .move_session("child1", "spawn2".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("active run"), "{err}");
+        drop(guard);
+
+        h.runtime
+            .move_session("child1", "spawn2".to_string())
+            .await
+            .unwrap();
+        let status = h.runtime.get_status("child1").await.unwrap();
+        assert_eq!(status.parent_session.as_deref(), Some("spawn2"));
+    }
+
+    /// A run on a DESCENDANT of the move target also refuses — the
+    /// subtree moves with the target, so no part of it may be live.
+    #[tokio::test]
+    async fn move_descendant_run_active_refuses() {
+        let h = tree_harness("root:user:alice").await;
+
+        let guard = h.registry.try_acquire_run("child1").await.unwrap();
+        let err = h
+            .runtime
+            .move_session("spawn1", "spawn2".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("active run"), "{err}");
+        drop(guard);
+
+        h.runtime
+            .move_session("spawn1", "spawn2".to_string())
+            .await
+            .unwrap();
     }
 
     // ─── Tool-surface wiring (SessionTool over the production runtime) ─
