@@ -1,6 +1,6 @@
 # The Agent–Session Paradigm
 
-**Status:** Design direction — partially implemented; codebase-audited 2026-08-15
+**Status:** Implemented on branch `feat/agent-session-paradigm` (sprint of 2026-08-15); canonical term: [PEKO](PEKO.md)
 **Date:** 2026-08-15
 **Related:** [ADR-039](adr/ADR-039-principal-model.md) (principal model),
 [ADR-041](adr/ADR-041-principal-as-container.md) (principal-as-container),
@@ -364,7 +364,12 @@ audit measured the current tool surface against that need:
 | Passive/active as channel tier property | ✅ implemented (Phase 4) | per-channel `passive_binding` (not `Tier` — binding IS the DM marker); unbound channels stay active-only |
 | Per-session/subtree budget attribution | ❌ gap | quota is per-principal; no quota-reading tool |
 | Offline (headless) compaction | ❌ gap | `compact` is flag-only, fires at target's next run |
-| Supervision loop (root reviews/compacts/archives children) | ❌ gap | observability partially broken (§5); pattern does not exist |
+| Supervision loop (root reviews/compacts/archives children) | ⚠️ primitives ready | observability fixed (Phase 0); the loop itself is a usage pattern on the trunk (cron `target:"trunk"` + session/Agent tools), not new machinery |
+
+The remaining ❌ rows are **deliberately deferred** (out of sprint scope):
+per-session budget attribution, offline compaction, and an agent-facing
+memory tool. Everything else in the paradigm is implemented as of the
+2026-08-15 sprint.
 
 ## 7. Latent issues surfaced by the 2026-08-15 audit
 
