@@ -167,8 +167,10 @@ mod tests {
     /// backoff.
     #[test]
     fn jitter_validation_rejects_out_of_range() {
-        let mut cfg = ProviderRetryConfig::default();
-        cfg.retry_jitter = Some(1.5);
+        let mut cfg = ProviderRetryConfig {
+            retry_jitter: Some(1.5),
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err(), "jitter >= 1.0 must be rejected");
         cfg.retry_jitter = Some(-0.01);
         assert!(cfg.validate().is_err(), "negative jitter must be rejected");
@@ -186,9 +188,11 @@ mod tests {
     /// the engine mid-stream retry site ever sees a turn.
     #[test]
     fn max_retries_exceeds_max_attempts_rejected() {
-        let mut cfg = ProviderRetryConfig::default();
-        cfg.max_retries = 10;
-        cfg.max_attempts = 4;
+        let cfg = ProviderRetryConfig {
+            max_retries: 10,
+            max_attempts: 4,
+            ..Default::default()
+        };
         let err = cfg
             .validate()
             .expect_err("max_retries > max_attempts must fail");
@@ -202,8 +206,10 @@ mod tests {
     /// every transient 5xx); cap smaller than seed is also rejected.
     #[test]
     fn zero_delay_and_cap_smaller_than_seed_rejected() {
-        let mut cfg = ProviderRetryConfig::default();
-        cfg.retry_delay_ms = 0;
+        let mut cfg = ProviderRetryConfig {
+            retry_delay_ms: 0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err(), "zero delay must be rejected");
         cfg.retry_delay_ms = 1000;
         cfg.retry_max_delay_ms = 500;

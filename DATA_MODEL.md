@@ -1050,6 +1050,7 @@ both = `false`):
 |-------|------|-------------|
 | `archived` | bool | Hidden from `session list` unless `include_archived: true`; refuses resume/compact until unarchived |
 | `compact_requested` | bool | Persisted compaction request (set by the `Agent` tool's `compact` action). The orchestrator ORs it into the threshold decision at the session's next iteration/run and clears it only when compaction genuinely starts, so a crashed run doesn't lose the request |
+| `standing` | bool | Exempt from maintenance pruning (2026-08-15): a standing session's transcript is durable regardless of idle age. `root:*` ids and `archived` sessions are prune-exempt by rule; `standing` is the flag for standing children |
 
 **`PeerInfo.active_session_id` is now `Option<String>`**
 (`#[serde(default)]`). Deleting a session scrubs its id from the

@@ -805,7 +805,7 @@ mod tests {
     #[tokio::test]
     async fn upsert_accepts_note_at_exactly_500_chars() {
         let (_dir, cat) = temp_catalog().await;
-        let at_cap: String = std::iter::repeat('a').take(NOTE_MAX_CHARS).collect();
+        let at_cap: String = "a".repeat(NOTE_MAX_CHARS);
         let entry = ModelConfig {
             id: "edge".to_string(),
             display_name: "Edge".to_string(),

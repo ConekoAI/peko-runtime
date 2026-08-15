@@ -4,6 +4,30 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Agent–session paradigm sprint (2026-08-15)
+
+Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in
+`docs/architecture/AGENT_SESSION_PARADIGM.md`.
+
+#### Fixed
+- **Maintenance prune no longer destroys protected transcripts.** The
+  30-day idle prune now exempts the `root:*` family, `archived`
+  sessions, and sessions carrying the new `standing` flag — previously
+  it deleted the JSONL transcript of any session idle past the cutoff
+  with no exemptions (`peko-rs/session/src/index.rs`).
+- **`session list` reports subagent liveness.** `run_active` now also
+  consults the unified `AsyncTaskRegistry`; subagent runs never hold
+  `InboxRegistry` permits, so live subagent sessions previously showed
+  `run_active: false`.
+- **Channel subscribers resume from persisted cursors at daemon boot.**
+  Previously every restart re-observed each channel's full event
+  history.
+
+#### Added
+- **`standing` flag** on `SessionMetadata`/`SessionEntry`
+  (serde-default false): marks a session as a durable, standing entity —
+  exempt from idle pruning. Groundwork for standing named children.
+
 ### Round 7: chapters deleted, stable-id paging, session/Agent tool surface (2026-08-13)
 
 The chapter concept was a category error — a session is one agent.

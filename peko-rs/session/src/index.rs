@@ -105,6 +105,10 @@ pub struct SessionEntry {
     /// actually starts, so the request survives restarts.
     #[serde(default)]
     pub compact_requested: bool,
+    /// Standing sessions are exempt from maintenance pruning — their
+    /// transcripts are durable regardless of idle age.
+    #[serde(default)]
+    pub standing: bool,
 }
 
 impl SessionEntry {
@@ -135,6 +139,7 @@ impl SessionEntry {
             peer_id: None,
             archived: false,
             compact_requested: false,
+            standing: false,
         }
     }
 
@@ -650,7 +655,11 @@ impl SessionIndex {
             .filter_map(|(k, p)| {
                 let in_list = p.session_ids.iter().any(|s| s == session_id);
                 let is_active = p.active_session_id.as_deref() == Some(session_id);
-                if in_list || is_active { Some(k.clone()) } else { None }
+                if in_list || is_active {
+                    Some(k.clone())
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -929,7 +938,14 @@ impl SessionIndex {
 
             sessions
                 .iter()
-                .filter(|(_, e)| e.updated_at < cutoff)
+                // Prune exemptions: `root:*` sessions are the principal's
+                // continuous sessions (engine-managed, never idle-prunable),
+                // and archived/standing sessions must never lose their
+                // transcripts — archiving/standing is a durability promise,
+                // not a deletion candidate.
+                .filter(|(id, e)| {
+                    e.updated_at < cutoff && !id.starts_with("root:") && !e.archived && !e.standing
+                })
                 .map(|(k, _)| k.clone())
                 .collect()
         };
@@ -1060,8 +1076,8 @@ fn backfill_peer_attribution(entries: &mut HashMap<String, SessionEntry>) -> boo
 
 #[cfg(test)]
 mod tests {
-    use crate::*;
     use crate::index::backfill_peer_attribution;
+    use crate::*;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -1230,8 +1246,8 @@ mod tests {
     }
 
     /// Backward compatibility: a `sessions.json` entry written before
-    /// the `archived` / `compact_requested` fields existed must
-    /// deserialize with both flags = false (`#[serde(default)]`).
+    /// the `archived` / `compact_requested` / `standing` fields existed
+    /// must deserialize with all flags = false (`#[serde(default)]`).
     #[test]
     fn test_legacy_entry_without_archive_flags_defaults_false() {
         let legacy = serde_json::json!({
@@ -1255,15 +1271,103 @@ mod tests {
         let entry: SessionEntry = serde_json::from_value(legacy).unwrap();
         assert!(!entry.archived);
         assert!(!entry.compact_requested);
+        assert!(!entry.standing);
 
         // And the flags round-trip through serialization once set.
         let mut entry = entry;
         entry.archived = true;
         entry.compact_requested = true;
+        entry.standing = true;
         let json = serde_json::to_value(&entry).unwrap();
         let reloaded: SessionEntry = serde_json::from_value(json).unwrap();
         assert!(reloaded.archived);
         assert!(reloaded.compact_requested);
+        assert!(reloaded.standing);
+    }
+
+    /// Maintenance must retain sessions exempt from pruning: `root:*`
+    /// ids (the principal's continuous, engine-managed sessions),
+    /// archived sessions, and standing sessions — while still pruning a
+    /// plain idle session past the cutoff.
+    #[tokio::test]
+    async fn maintenance_prune_exemptions() {
+        use crate::index::{MaintenanceConfig, DEFAULT_MAX_SESSIONS};
+        use std::time::{Duration, SystemTime};
+        use tokio::fs;
+
+        let temp = TempDir::new().unwrap();
+        let mut index = SessionIndex::open(temp.path());
+
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let two_days_ms: u64 = 2 * 24 * 60 * 60 * 1000;
+
+        async fn insert_old(
+            index: &mut SessionIndex,
+            id: &str,
+            updated_at: u64,
+            mutate: impl FnOnce(&mut SessionEntry),
+        ) {
+            let mut entry = SessionEntry::new(
+                id.to_string(),
+                "testagent".to_string(),
+                format!("{}.jsonl", safe_filename_component(id)),
+            );
+            entry.updated_at = updated_at;
+            mutate(&mut entry);
+            index.insert(entry).await.unwrap();
+        }
+
+        // One per exemption class, plus a plain idle session.
+        insert_old(&mut index, "root:user:alice", now - two_days_ms, |_| {}).await;
+        insert_old(&mut index, "sess_archived", now - two_days_ms, |e| {
+            e.archived = true;
+        })
+        .await;
+        insert_old(&mut index, "sess_standing", now - two_days_ms, |e| {
+            e.standing = true;
+        })
+        .await;
+        insert_old(&mut index, "sess_plain", now - two_days_ms, |_| {}).await;
+        index.save().await.unwrap();
+
+        // Transcripts exist on disk for the exempt + plain sessions.
+        for id in [
+            "root:user:alice",
+            "sess_archived",
+            "sess_standing",
+            "sess_plain",
+        ] {
+            fs::write(
+                temp.path()
+                    .join(format!("{}.jsonl", safe_filename_component(id))),
+                "{}\n",
+            )
+            .await
+            .unwrap();
+        }
+
+        let config = MaintenanceConfig {
+            prune_after: Duration::from_secs(24 * 60 * 60),
+            max_sessions: DEFAULT_MAX_SESSIONS,
+        };
+        let report = index.maintenance(&config).await.unwrap();
+        assert_eq!(report.pruned, 1, "only the plain idle session pruned");
+        assert_eq!(report.total, 3);
+
+        for id in ["root:user:alice", "sess_archived", "sess_standing"] {
+            assert!(index.get(id).await.unwrap().is_some(), "{id} retained");
+            assert!(
+                temp.path()
+                    .join(format!("{}.jsonl", safe_filename_component(id)))
+                    .exists(),
+                "{id} transcript retained"
+            );
+        }
+        assert!(index.get("sess_plain").await.unwrap().is_none());
+        assert!(!temp.path().join("sess_plain.jsonl").exists());
     }
 
     /// `clear_active_for_peer` drops only the active-session pointer;
@@ -1469,10 +1573,7 @@ mod tests {
         // fields).
         let changed = backfill_peer_attribution(&mut entries);
         assert!(changed);
-        assert_eq!(
-            entries.get("b").unwrap().peer_type.as_deref(),
-            Some("user")
-        );
+        assert_eq!(entries.get("b").unwrap().peer_type.as_deref(), Some("user"));
         assert_eq!(entries.get("b").unwrap().peer_id.as_deref(), Some("alice"));
     }
 }

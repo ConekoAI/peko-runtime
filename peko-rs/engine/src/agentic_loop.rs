@@ -227,9 +227,13 @@ pub struct AgenticLoop {
     /// loop falls back to `Info` — engines constructed without a
     /// sink-binding don't get first-use UX, just the
     /// info-tier baseline.
-    audit_first_use_for_model:
-        Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    audit_first_use_for_model: Option<FirstUseLookupFn>,
 }
+
+/// Lookup closure for the `model.selected` first-use audit decision:
+/// given a model id, returns whether this is the first
+/// `(principal, model)` use (`Warning` severity vs `Info`).
+type FirstUseLookupFn = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 impl AgenticLoop {
     /// Create a new agentic loop
@@ -454,7 +458,7 @@ impl AgenticLoop {
     pub fn with_audit_sink(
         mut self,
         sink: Option<Arc<dyn crate::audit_sink::AuditSink>>,
-        first_use_lookup: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+        first_use_lookup: Option<FirstUseLookupFn>,
     ) -> Self {
         self.audit_sink = sink;
         self.audit_first_use_for_model = first_use_lookup;

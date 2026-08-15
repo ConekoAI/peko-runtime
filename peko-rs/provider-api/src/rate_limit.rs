@@ -498,27 +498,35 @@ mod tests {
 
     #[test]
     fn effective_retry_after_prefers_header() {
-        let mut s = RateLimitSnapshot::default();
-        s.retry_after = Some(Duration::from_secs(30));
-        s.body_delay = Some(Duration::from_secs(5));
+        let s = RateLimitSnapshot {
+            retry_after: Some(Duration::from_secs(30)),
+            body_delay: Some(Duration::from_secs(5)),
+            ..Default::default()
+        };
         assert_eq!(s.effective_retry_after(), Some(Duration::from_secs(30)));
-        let mut s = RateLimitSnapshot::default();
-        s.body_delay = Some(Duration::from_secs(5));
+        let s = RateLimitSnapshot {
+            body_delay: Some(Duration::from_secs(5)),
+            ..Default::default()
+        };
         assert_eq!(s.effective_retry_after(), Some(Duration::from_secs(5)));
         assert_eq!(RateLimitSnapshot::default().effective_retry_after(), None);
-        let mut s = RateLimitSnapshot::default();
-        s.retry_after = Some(Duration::ZERO);
+        let s = RateLimitSnapshot {
+            retry_after: Some(Duration::ZERO),
+            ..Default::default()
+        };
         assert_eq!(s.effective_retry_after(), None);
     }
 
     #[test]
     fn snapshot_round_trip_through_format_then_parse() {
-        let mut original = RateLimitSnapshot::default();
-        original.kind = RateLimitKind::Anthropic;
-        original.requests_remaining = Some(7);
-        original.tokens_remaining = Some(100);
-        original.retry_after = Some(Duration::from_secs(45));
-        original.body_delay = Some(Duration::from_secs(2));
+        let original = RateLimitSnapshot {
+            kind: RateLimitKind::Anthropic,
+            requests_remaining: Some(7),
+            tokens_remaining: Some(100),
+            retry_after: Some(Duration::from_secs(45)),
+            body_delay: Some(Duration::from_secs(2)),
+            ..Default::default()
+        };
         let formatted = format_snapshot(&original);
         let msg = format!("HTTP error 429 ({formatted}): rate limit");
         let parsed = parse_snapshot_metadata(&msg);

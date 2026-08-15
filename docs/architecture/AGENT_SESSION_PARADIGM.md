@@ -333,7 +333,7 @@ audit measured the current tool surface against that need:
 | Need | Status | Where |
 |---|---|---|
 | List children with timestamps, archived flag | ✅ | `SessionInfo.last_activity/archived`, `tools/builtin/session/mod.rs:40-68` |
-| Live-run flag on `list` | ⚠️ under-reports | populated only from `InboxRegistry` permits, which subagent runs never hold (`session_runtime_impl.rs:205-208`); the `AsyncTaskRegistry` check exists but is wired only into `delete` (`:483-495`). A supervisor sees `run_active: false` on mid-run subagents — see §7 |
+| Live-run flag on `list` | ✅ | `run_active` ORs `InboxRegistry` permits with the `AsyncTaskRegistry` subagent-run check (`session/session_runtime_impl.rs`, Phase 0 sprint fix) |
 | Per-child token usage | ⚠️ partial | per-session `status` only (`UsageStats`, lifetime not windowed); not on `list` |
 | `compact_requested` visibility | ❌ | the flag is write-only from the tool surface; a supervisor cannot tell whether it already flagged a session |
 | Per-child spend / budget view | ❌ | quota is per-principal (+ peer meters); no session/subtree attribution, and no built-in tool reads quota state at all |
@@ -368,27 +368,24 @@ audit measured the current tool surface against that need:
 
 ## 7. Latent issues surfaced by the 2026-08-15 audit
 
-These threaten the paradigm (or are already wrong today) independent of
-any new feature work, ordered by blast radius:
+Items 1–3 were **fixed in Phase 0 of the paradigm sprint**
+(branch `feat/agent-session-paradigm`, 2026-08-15).
 
-1. **The 30-day prune deletes transcripts with no exemptions.**
-   `SessionIndex::maintenance` prunes any session with `updated_at` older
-   than `DEFAULT_PRUNE_AFTER_DAYS = 30`, deleting the JSONL file — no
-   exemption for `archived`, spawned, or `root:*` sessions
-   (`peko-rs/session/src/index.rs:930-934`). An idle root session or a
-   future standing child is destroyed. Meanwhile
-   `MaintenanceConfig.max_sessions = 500` is declared but never enforced
-   (`peko-rs/session/src/maintenance.rs:49-50`).
-2. **`session list` under-reports liveness for exactly the sessions a
-   supervisor manages.** `run_active` checks only `InboxRegistry` permits;
-   subagent runs never hold those, so a mid-run subagent shows
-   `run_active: false` (`session_runtime_impl.rs:205-208`; the
-   `AsyncTaskRegistry` check at `:483-495` is wired into `delete` only).
-3. **Channel subscribers boot with fresh cursors.** The daemon passes
-   `ChannelCursors::new()` and production never calls `load`
-   (`daemon/mod.rs:763`), so every restart re-observes the channel's full
-   history. Harmless with the Noop responder (duplicate audit records);
-   a history-re-fire bug the moment any responder ships.
+1. ~~**The 30-day prune deletes transcripts with no exemptions.**~~
+   **Fixed (Phase 0):** the prune filter now skips the `root:*` family,
+   `archived` sessions, and sessions with the new `standing` flag
+   (`peko-rs/session/src/index.rs`, `SessionIndex::maintenance`).
+   Remaining: `MaintenanceConfig.max_sessions = 500` is still declared
+   but never enforced (`peko-rs/session/src/maintenance.rs`).
+2. ~~**`session list` under-reports liveness.**~~ **Fixed (Phase 0):**
+   `run_active` now ORs the `InboxRegistry` permit with the unified
+   `AsyncTaskRegistry` subagent-run check
+   (`session/session_runtime_impl.rs`, `list_sessions`).
+3. ~~**Channel subscribers boot with fresh cursors.**~~ **Fixed
+   (Phase 0):** `spawn_channel_subscribers` loads persisted cursors via
+   `ChannelCursors::load` (`daemon/mod.rs`); a corrupt file falls back
+   to fresh cursors with a warning. First-ever boot still starts from
+   offset 0 by design (benign while the responder is Noop).
 4. **Cron actions disagree about the root session.** `Send` turns land in
    `root:cron:{owner}`; `SpawnTool` wake messages land in the
    conversational `root:{owner}` (`cron_engine/mod.rs:880`). Trunk work

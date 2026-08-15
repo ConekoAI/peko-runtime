@@ -189,8 +189,7 @@ impl Daemon {
             // bound to the AppState's `InboxRegistry`.
             std::sync::Arc::new(
                 crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
-                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(
-                    ),
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
                 ),
             ),
             std::sync::Weak::new(),
@@ -239,8 +238,7 @@ impl Daemon {
             None,
             std::sync::Arc::new(
                 crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
-                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(
-                    ),
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
                 ),
             ),
             std::sync::Weak::new(),
@@ -357,8 +355,7 @@ impl Daemon {
         // errors internally (logs and continues; only `NotFound` /
         // `NotMember` end the loop, which is the correct signal for
         // "channel deleted out from under us").
-        let channel_handles =
-            spawn_channel_subscribers(&app_state).await;
+        let channel_handles = spawn_channel_subscribers(&app_state).await;
         info!(
             "channel subscribers: spawned {} poll task(s)",
             channel_handles.len()
@@ -479,8 +476,9 @@ impl Daemon {
                 std::sync::Arc::clone(app_state.principal_manager()),
                 std::sync::Arc::clone(&app_state.authority),
             ));
-            let adapter =
-                std::sync::Arc::new(crate::daemon::cron_runtime::DaemonCronAdapter::new(cron_ops));
+            let adapter = std::sync::Arc::new(crate::daemon::cron_runtime::DaemonCronAdapter::new(
+                cron_ops,
+            ));
             adapter.install_as_global();
             info!("🕓 Cron runtime port installed (DaemonCronAdapter, in-process)");
         }
@@ -753,6 +751,23 @@ async fn spawn_channel_subscribers(
 
         for channel in channels {
             let channel_dir = runtime_dir.join("channels").join(channel.as_str());
+            // Resume from the persisted per-member cursors so a daemon
+            // restart doesn't re-observe the channel's entire event
+            // history. A missing file loads as an empty map (first-ever
+            // boot — the tick then starts from offset 0 by design); a
+            // corrupt/unreadable file falls back to fresh cursors.
+            let cursors = match peko_channel::ChannelCursors::load(&channel_dir).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(
+                        channel = %channel,
+                        dir = %channel_dir.display(),
+                        ?e,
+                        "channel subscribers: cursor load failed; starting from fresh cursors"
+                    );
+                    peko_channel::ChannelCursors::new()
+                }
+            };
             let sub = ChannelSubscriber::new(
                 channel.clone(),
                 principal_id.clone(),
@@ -760,7 +775,7 @@ async fn spawn_channel_subscribers(
                 port.clone(),
                 Arc::new(NoopChannelResponder),
                 meter.clone(),
-                peko_channel::ChannelCursors::new(),
+                cursors,
                 cfg.clone(),
             );
             handles.push(sub.spawn());

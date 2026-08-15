@@ -490,9 +490,11 @@ mod tests {
     /// retry executor can recover them via substring scan.
     #[test]
     fn classify_http_error_embeds_retry_after_and_snapshot_tokens() {
-        let mut snap = peko_provider_api::RateLimitSnapshot::default();
-        snap.kind = peko_provider_api::RateLimitKind::Anthropic;
-        snap.requests_remaining = Some(2);
+        let snap = peko_provider_api::RateLimitSnapshot {
+            kind: peko_provider_api::RateLimitKind::Anthropic,
+            requests_remaining: Some(2),
+            ..Default::default()
+        };
         let err = classify_http_error(
             429,
             "rate limit".to_string(),

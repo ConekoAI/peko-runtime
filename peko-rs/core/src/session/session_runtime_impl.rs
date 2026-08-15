@@ -174,11 +174,7 @@ impl SessionRuntime for SessionManagerRuntime {
                     };
                     have_kind == want_kind.as_str() && have_id == want_id.as_str()
                 });
-                tree_match
-                    && archived_match
-                    && peer_match
-                    && agent_match
-                    && active_match
+                tree_match && archived_match && peer_match && agent_match && active_match
             })
             .take(limit)
             .map(|m| SessionInfo {
@@ -202,10 +198,18 @@ impl SessionRuntime for SessionManagerRuntime {
 
         // Run-permit snapshot so the agent can see why a delete would
         // refuse. `peek_run_held` is a snapshot (fine for display).
-        if let Some(registry) = &self.inbox_registry {
-            for info in &mut sessions {
-                info.run_active = registry.peek_run_held(&info.session_id).await;
-            }
+        // Subagent runs never hold `InboxRegistry` permits — they
+        // register in the per-agent `AsyncTaskRegistry` instead — so a
+        // live subagent session shows up via the unified-registry check
+        // (the same guard the delete path uses at `delete_session`).
+        use crate::extensions::framework::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
+        for info in &mut sessions {
+            let run_held = match &self.inbox_registry {
+                Some(registry) => registry.peek_run_held(&info.session_id).await,
+                None => false,
+            };
+            info.run_active =
+                run_held || has_active_subagent_run_across_all_registries(&info.session_id).await;
         }
 
         Ok(sessions)
@@ -866,6 +870,66 @@ mod tests {
         let other = all.iter().find(|s| s.session_id == "spawn2").unwrap();
         assert!(!other.run_active);
         drop(guard);
+    }
+
+    /// Subagent runs never hold `InboxRegistry` permits — they register
+    /// in the per-agent `AsyncTaskRegistry`. `session list` must still
+    /// mark such a session `run_active` (same check the delete path
+    /// uses). The probe session id is unique to this test so entries
+    /// from other tests in the shared global registries can't collide.
+    #[tokio::test]
+    async fn list_marks_run_active_for_subagent_run() {
+        use crate::extensions::framework::async_exec::executor::registry::{
+            get_or_create_registry_for_agent, AsyncTaskEntry, SubagentMetadata, TaskMetadata,
+        };
+        use crate::extensions::framework::async_exec::executor::types::{
+            AsyncTaskStatus, AsyncToolConfig,
+        };
+
+        let h = tree_harness("root:user:alice").await;
+        h.create("subrun_probe", Some("root:user:alice")).await;
+
+        let registry = get_or_create_registry_for_agent("test-agent-list-run-active");
+        let task_id = "task_subrun_probe".to_string();
+        registry
+            .write()
+            .await
+            .register(AsyncTaskEntry::with_metadata(
+                task_id.clone(),
+                "Agent".to_string(),
+                json!({}),
+                "root:user:alice".to_string(),
+                AsyncToolConfig::default(),
+                TaskMetadata::Subagent(SubagentMetadata {
+                    child_session_key: "subrun_probe".to_string(),
+                    child_session_id: Some("subrun_probe".to_string()),
+                    cleanup: peko_session::types::SpawnCleanupPolicy::Keep,
+                    depth: 1,
+                    announce_completion: false,
+                    subagent_result: None,
+                }),
+            ));
+
+        let all = h
+            .runtime
+            .list_sessions(None, None, 50, None, false)
+            .await
+            .unwrap();
+        let probe = all.iter().find(|s| s.session_id == "subrun_probe").unwrap();
+        assert!(probe.run_active, "live subagent run must mark run_active");
+
+        // Terminal runs no longer count.
+        registry
+            .write()
+            .await
+            .update_status(&task_id, AsyncTaskStatus::Cancelled);
+        let all = h
+            .runtime
+            .list_sessions(None, None, 50, None, false)
+            .await
+            .unwrap();
+        let probe = all.iter().find(|s| s.session_id == "subrun_probe").unwrap();
+        assert!(!probe.run_active);
     }
 
     // ─── Subtree (spawned) caller ───────────────────────────────────

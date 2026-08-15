@@ -49,6 +49,9 @@ pub struct SessionMetadata {
     /// Set when an agent requests compaction of this session; consumed
     /// by the compaction orchestrator at the session's next run.
     pub compact_requested: bool,
+    /// Standing sessions are exempt from maintenance pruning — their
+    /// transcripts are durable regardless of idle age.
+    pub standing: bool,
 }
 
 impl SessionMetadata {
@@ -82,6 +85,7 @@ impl SessionMetadata {
             peer_id: None,
             archived: false,
             compact_requested: false,
+            standing: false,
         }
     }
 
@@ -120,6 +124,7 @@ impl SessionMetadata {
             peer_id: entry.peer_id,
             archived: entry.archived,
             compact_requested: entry.compact_requested,
+            standing: entry.standing,
         }
     }
 
@@ -145,6 +150,7 @@ impl SessionMetadata {
             peer_id: self.peer_id.clone(),
             archived: self.archived,
             compact_requested: self.compact_requested,
+            standing: self.standing,
         }
     }
 
@@ -325,19 +331,23 @@ mod tests {
         );
         entry.archived = true;
         entry.compact_requested = true;
+        entry.standing = true;
 
         let meta = SessionMetadata::from_entry(entry);
         assert!(meta.archived);
         assert!(meta.compact_requested);
+        assert!(meta.standing);
 
         let entry2 = meta.to_entry();
         assert!(entry2.archived);
         assert!(entry2.compact_requested);
+        assert!(entry2.standing);
 
         // Defaults are false on construction.
         let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
         assert!(!meta.archived);
         assert!(!meta.compact_requested);
+        assert!(!meta.standing);
     }
 
     #[test]
