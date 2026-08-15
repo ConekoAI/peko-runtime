@@ -3120,16 +3120,26 @@ mod tests {
         let _ = core.unregister_hook(&hook_id).await;
 
         let log_snapshot = log.lock().unwrap().clone();
+        // The global `ExtensionCore` is shared across tests; foreign
+        // loops (e.g. trunk-receive manager tests) can fire Stop into
+        // this recorder concurrently. Filter to this test's agent
+        // before counting (same pattern as the AfterAgent tests).
+        let own_events: Vec<&serde_json::Value> = log_snapshot
+            .iter()
+            .filter(|v| {
+                v.get("agent_name").and_then(|n| n.as_str()) == Some("f31x-stop-end-agent")
+            })
+            .collect();
         assert_eq!(
-            log_snapshot.len(),
+            own_events.len(),
             1,
             "Stop must fire exactly once on clean End; got: {log_snapshot:?}"
         );
         assert_eq!(
-            log_snapshot[0].get("reason").and_then(|v| v.as_str()),
+            own_events[0].get("reason").and_then(|v| v.as_str()),
             Some("end"),
             "Stop payload must carry reason: \"end\"; got: {}",
-            log_snapshot[0]
+            own_events[0]
         );
     }
 
@@ -3216,22 +3226,30 @@ mod tests {
 
         assert!(!result.success, "cap-hit must be success=false");
         let log_snapshot = log.lock().unwrap().clone();
+        // Shared-global-core guard: filter to this test's agent (see
+        // the clean-End Stop test above).
+        let own_events: Vec<&serde_json::Value> = log_snapshot
+            .iter()
+            .filter(|v| {
+                v.get("agent_name").and_then(|n| n.as_str()) == Some("f31x-stop-cap-agent")
+            })
+            .collect();
         assert_eq!(
-            log_snapshot.len(),
+            own_events.len(),
             1,
             "Stop must fire exactly once on cap-hit; got: {log_snapshot:?}"
         );
         assert_eq!(
-            log_snapshot[0].get("reason").and_then(|v| v.as_str()),
+            own_events[0].get("reason").and_then(|v| v.as_str()),
             Some("max_iterations"),
             "Stop payload must carry reason: \"max_iterations\"; got: {}",
-            log_snapshot[0]
+            own_events[0]
         );
         assert_eq!(
-            log_snapshot[0].get("iterations").and_then(|v| v.as_u64()),
+            own_events[0].get("iterations").and_then(|v| v.as_u64()),
             Some(2),
             "Stop payload must carry the configured cap; got: {}",
-            log_snapshot[0]
+            own_events[0]
         );
     }
 
@@ -3318,16 +3336,25 @@ mod tests {
 
         assert!(result.interrupted, "result should be marked interrupted");
         let log_snapshot = log.lock().unwrap().clone();
+        // Shared-global-core guard: filter to this test's agent (see
+        // the clean-End Stop test above).
+        let own_events: Vec<&serde_json::Value> = log_snapshot
+            .iter()
+            .filter(|v| {
+                v.get("agent_name").and_then(|n| n.as_str())
+                    == Some("f31x-stop-interrupt-agent")
+            })
+            .collect();
         assert_eq!(
-            log_snapshot.len(),
+            own_events.len(),
             1,
             "Stop must fire exactly once on soft-interrupt; got: {log_snapshot:?}"
         );
         assert_eq!(
-            log_snapshot[0].get("reason").and_then(|v| v.as_str()),
+            own_events[0].get("reason").and_then(|v| v.as_str()),
             Some("interrupted"),
             "Stop payload must carry reason: \"interrupted\"; got: {}",
-            log_snapshot[0]
+            own_events[0]
         );
     }
 
@@ -3648,27 +3675,32 @@ mod tests {
         let _ = result;
 
         let log_snapshot = log.lock().unwrap().clone();
+        // `global_core()` is shared across tests, and the `serial(core)`
+        // key only serializes tests that opt into it — a foreign loop
+        // (e.g. a trunk-receive manager test) can fire AfterAgent into
+        // this recorder concurrently. Filter to THIS loop's firing via
+        // the uuid-unique agent name before asserting cardinality.
+        let mine: Vec<&serde_json::Value> = log_snapshot
+            .iter()
+            .filter(|v| {
+                v.get("agent_name").and_then(|n| n.as_str()) == Some(agent_name.as_str())
+            })
+            .collect();
         assert_eq!(
-            log_snapshot.len(),
+            mine.len(),
             1,
             "AfterAgent must fire exactly once from the loop on clean End; got: {log_snapshot:?}"
         );
-        assert_eq!(
-            log_snapshot[0].get("agent_name").and_then(|v| v.as_str()),
-            Some(agent_name.as_str()),
-            "AfterAgent payload must carry agent_name from the loop; got: {}",
-            log_snapshot[0]
-        );
         assert!(
-            log_snapshot[0].get("agent_did").is_some(),
+            mine[0].get("agent_did").is_some(),
             "AfterAgent payload must carry agent_did; got: {}",
-            log_snapshot[0]
+            mine[0]
         );
         assert_eq!(
-            log_snapshot[0].get("reason").and_then(|v| v.as_str()),
+            mine[0].get("reason").and_then(|v| v.as_str()),
             Some("end"),
             "AfterAgent payload must carry the same `reason` field that Stop saw; got: {}",
-            log_snapshot[0]
+            mine[0]
         );
     }
 
