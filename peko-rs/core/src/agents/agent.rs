@@ -733,6 +733,23 @@ impl Agent {
         self
     }
 
+    /// Bind an external inbox registry post-construction.
+    ///
+    /// Sprint 2 Phase 7 (peer-child ingress): a peer-child turn runs
+    /// through `SubagentExecutor::resume_streaming`, whose child Agent
+    /// is built by `new_with_shared_executor_with_model_override` with
+    /// `inbox_registry: None` — its loop would drain a per-call
+    /// standalone registry, and steering queued by the
+    /// `PrincipalManager` / IPC serial-queue fallback into the SHARED
+    /// registry (keyed by the child session id) would never be
+    /// consumed. Binding the shared registry here makes the child
+    /// loop's per-iteration drain see those steering messages.
+    #[must_use]
+    pub fn with_inbox_registry(mut self, registry: Option<Arc<InboxRegistry>>) -> Self {
+        self.inbox_registry = registry;
+        self
+    }
+
     /// Bind the caller's principal identity for `send_peer`.
     ///
     /// `principal_did` is the Principal's stable DID (used as

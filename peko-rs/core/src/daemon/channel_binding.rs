@@ -317,11 +317,11 @@ impl BindingResolver for SessionStoreBindingResolver {
 /// `Agent` tool's `resume` action uses — then waits for the run to
 /// reach a terminal registry state and extracts the final text.
 ///
-/// The parent session key is the principal's owner root
-/// (`root:{owner}`): a base-session caller, so the ownership guards
-/// admit any session in the principal's tree (and when the owner root
-/// is dangling, the subtree check still admits its own children —
-/// exactly where standing children live).
+/// The parent session key is the principal's trunk (`root:self`,
+/// Phase 7): a base-session caller, so the ownership guards admit any
+/// session in the principal's tree (and while the trunk is dangling,
+/// the subtree check still admits its own children — exactly where
+/// standing children live).
 pub(crate) struct SubagentResumeDriver {
     executor: SubagentExecutor,
     parent_session_key: String,
@@ -652,6 +652,11 @@ impl ChannelBindingSupervisor {
             principal,
             &self.llm_resolver,
             Arc::clone(&self.observability),
+            // Channel-driven child turns drain the daemon-shared
+            // registry too: a CLI/A2A send steered into the same
+            // child mid-run is consumed at the next iteration
+            // boundary instead of stalling in the inbox.
+            Some(self.principal_manager.shared_inbox_registry()),
         )
         .await
         {

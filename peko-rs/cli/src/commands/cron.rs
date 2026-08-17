@@ -68,9 +68,9 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Session target for the fired turn: "trunk" routes the turn
-        /// into the principal's self session `root:self` instead of the
-        /// default per-owner cron session
+        /// Session target for the fired turn. Since Phase 7 the trunk
+        /// (`root:self`) is the default and only destination; "trunk" is
+        /// accepted for compatibility and changes nothing
         #[arg(long)]
         target: Option<String>,
         /// Announce results
@@ -96,7 +96,8 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Session target for the fired turn ("trunk" → `root:self`)
+        /// Session target for the fired turn ("trunk" → `root:self`; the
+        /// default since Phase 7 — the flag is accepted for compatibility)
         #[arg(long)]
         target: Option<String>,
         /// Announce results
@@ -122,7 +123,8 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Session target for the fired turn ("trunk" → `root:self`)
+        /// Session target for the fired turn ("trunk" → `root:self`; the
+        /// default since Phase 7 — the flag is accepted for compatibility)
         #[arg(long)]
         target: Option<String>,
         /// Announce results
@@ -179,7 +181,8 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short = 'm', long)]
         message: String,
-        /// Session target for the fired turn ("trunk" → `root:self`)
+        /// Session target for the fired turn ("trunk" → `root:self`; the
+        /// default since Phase 7 — the flag is accepted for compatibility)
         #[arg(long)]
         target: Option<String>,
         /// Announce results
@@ -207,7 +210,8 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Session target for the fired turn ("trunk" → `root:self`)
+        /// Session target for the fired turn ("trunk" → `root:self`; the
+        /// default since Phase 7 — the flag is accepted for compatibility)
         #[arg(long)]
         target: Option<String>,
         /// Announce results

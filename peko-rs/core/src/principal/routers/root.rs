@@ -1,14 +1,26 @@
-//! Root-agent-based Principal router.
+//! Root-agent-based Principal router — TRUNK-ONLY since Phase 7.
 //!
 //! The `RootRouter` runs a normal agent prompt (the built-in root
-//! agent, or a user-supplied override) in a peer-scoped session. The
-//! root agent does the actual orchestration: it inspects principal
-//! memory/sessions, chooses specialist agents from the catalog, and
-//! delegates via the existing `Agent` tool and async task tools.
+//! agent, or a user-supplied override) in the principal's trunk
+//! session `root:self`. The root agent does the actual orchestration:
+//! it inspects principal memory/sessions, chooses specialist agents
+//! from the catalog, and delegates via the existing `Agent` tool and
+//! async task tools.
 //!
 //! From the Principal boundary's point of view, the root agent simply
 //! returns a `RouteDecision::Respond` containing the agent's final
 //! answer.
+//!
+//! Phase 7 (sprint 2, 2026-08-17): the per-peer root sessions
+//! (`root:{peer}` / `root:cron:{peer}`) are RETIRED. Peer ingress
+//! (`Cli`/`Http`/`Hub`/`A2a`/`P2p`/`Webhook`/`FileWatch`) never reaches
+//! this router — `PrincipalManager::receive`/`receive_streaming` and
+//! the IPC `principal_send` handler route it into per-peer standing
+//! children of the trunk (`principal::peer_children` provisioning +
+//! `principal::child_turns` turn driving). `Cron` traffic maps onto
+//! the trunk (the cron `Send` default target IS the trunk). A peer
+//! channel reaching [`RootRouter::route`]/[`RootRouter::route_streaming`]
+//! is a routing bug and fails loudly.
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock as StdRwLock};
@@ -18,7 +30,7 @@ use async_trait::async_trait;
 use crate::principal::agent_prompt::{parse_agent_prompt, AgentPrompt};
 use crate::principal::agent_runner::{run_root_agent_prompt, run_root_agent_prompt_streaming};
 use crate::principal::context::PrincipalContext;
-use crate::principal::memory::{PrincipalMemory, SessionArtifact};
+use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::{
     recalled_context_messages, AgentPromptSummary, PrincipalRouter, RouteDecision, RouterContext,
     RouterError,
@@ -34,55 +46,47 @@ pub fn default_root_prompt() -> AgentPrompt {
     parse_agent_prompt("root", PathBuf::from("builtin:root"), content)
 }
 
-/// Stable root-agent session id for a peer.
-#[must_use]
-pub fn root_session_id(peer: &peko_auth::Subject) -> String {
-    format!("root:{peer}")
-}
-
 /// The principal's trunk session id: `"root:self"` (Phase 3,
 /// 2026-08-15).
 ///
 /// Paradigm role: the trunk is the principal's forever-continuous SELF
-/// session — the `/` of its session tree. Cron `Send` jobs with
-/// `target = "trunk"` fire turns into it, keeping the principal an
-/// active actor (supervising children, organizing memory) rather than
-/// a passive request handler. Unlike the per-peer `root:{peer}` /
-/// `root:cron:{peer}` sessions, the trunk is keyed by NO peer: every
-/// self-turn, from whatever automation source, continues the same
-/// session.
+/// session — the `/` of its session tree. Cron `Send` jobs fire turns
+/// into it (the default target since Phase 7), keeping the principal
+/// an active actor (supervising children, organizing memory) rather
+/// than a passive request handler. The trunk is keyed by NO peer:
+/// every self-turn, from whatever automation source, continues the
+/// same session. The per-peer `root:{peer}` / `root:cron:{peer}`
+/// sessions are retired (Phase 7): peer ingress lives in per-peer
+/// standing children of the trunk.
 ///
 /// The literal deliberately keeps the `root:` prefix so the trunk
-/// inherits the root-family guards for free (`starts_with("root:")` in
-/// `session/session_runtime_impl.rs` refuses delete/archive/move). A
-/// bare `root` id would escape that prefix guard AND misparse in the
-/// messenger's `peer_from_session_key` prefix walk.
+/// stays under the root-family guard (`session/session_runtime_impl.rs`
+/// refuses delete/archive/move on `root:self`) and never misparses in
+/// the messenger's `peer_from_session_key`.
 #[must_use]
 pub fn trunk_session_id() -> String {
     "root:self".to_string()
 }
 
-/// Root-agent session id for a peer, adjusted for the channel.
+/// The session id the trunk router runs a turn in, adjusted for the
+/// channel.
 ///
-/// Automation traffic (`ChannelKind::Cron`) gets its own per-peer
-/// session (`root:cron:{peer}`) so scheduled turns never interleave
-/// with — or hijack — the human's conversational session: a cron
-/// message draining at an iteration boundary is indistinguishable from
-/// human input, and the model answers the newest one, dropping the
-/// user's pending request (2026-08-07 field test, F2). The cron
-/// session gives recurring jobs continuity at low token cost; the
-/// conversational session stays human/peer-only.
+/// Phase 7: the `RootRouter` is trunk-only. `Trunk` and `Cron` both
+/// map to the trunk (`root:self`) — cron `Send`'s default target IS
+/// the trunk. Peer channels are unreachable here (peer ingress is
+/// routed into per-peer standing children by `PrincipalManager`
+/// before any router call); reaching this function with one is a
+/// routing bug and panics loudly rather than silently misrouting.
 #[must_use]
-pub fn root_session_id_for_channel(
-    peer: &peko_auth::Subject,
-    kind: &crate::principal::router::ChannelKind,
-) -> String {
+pub fn root_session_id_for_channel(kind: &crate::principal::router::ChannelKind) -> String {
     match kind {
-        crate::principal::router::ChannelKind::Cron => format!("root:cron:{peer}"),
-        // Trunk turns are peer-less: the id is the constant `root:self`
-        // regardless of the proxy subject carried on the context.
-        crate::principal::router::ChannelKind::Trunk => trunk_session_id(),
-        _ => root_session_id(peer),
+        crate::principal::router::ChannelKind::Cron
+        | crate::principal::router::ChannelKind::Trunk => trunk_session_id(),
+        other => panic!(
+            "peer channel {other:?} reached the retired per-peer root routing — \
+             Phase 7 routes peer ingress into per-peer standing children of the trunk \
+             (PrincipalManager::receive* / the IPC principal_send handler)"
+        ),
     }
 }
 
@@ -250,8 +254,22 @@ impl PrincipalRouter for RootRouter {
         RootRouter::set_caller_runtime_id(self, runtime_id);
     }
     async fn route(&self, ctx: RouterContext) -> Result<RouteDecision, RouterError> {
+        // Phase 7: trunk-only. Peer channels route into per-peer
+        // standing children before any router call; reaching here with
+        // one is a routing bug — fail loudly.
+        if !matches!(
+            ctx.channel.kind,
+            crate::principal::router::ChannelKind::Trunk
+                | crate::principal::router::ChannelKind::Cron
+        ) {
+            return Err(RouterError::AgentFailed(format!(
+                "channel {:?} reached the trunk-only RootRouter — peer ingress must route \
+                 through per-peer standing children (PrincipalManager::receive*)",
+                ctx.channel.kind
+            )));
+        }
         let peer = ctx.peer.clone();
-        let session_id = root_session_id_for_channel(&peer, &ctx.channel.kind);
+        let session_id = root_session_id_for_channel(&ctx.channel.kind);
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
         let user_text = ctx.message.clone();
         let pre_user_messages = recalled_context_messages(&ctx.recalled_context);
@@ -259,10 +277,10 @@ impl PrincipalRouter for RootRouter {
 
         let response = run_root_agent_prompt(
             &self.root_prompt,
-            peer.clone(),
+            peer,
             user_text,
             pre_user_messages,
-            session_id.clone(),
+            session_id,
             available_agents,
             &principal_ctx,
         )
@@ -277,19 +295,10 @@ impl PrincipalRouter for RootRouter {
         // middle. Debug keeps the multi-line structure intact.
         .map_err(|e| RouterError::AgentFailed(format!("{e:?}")))?;
 
-        // Record the root-agent session artifact so future messages
-        // from this peer can recall it as prior context.
-        let artifact = SessionArtifact {
-            session_id,
-            peer,
-            title: Some("root".to_string()),
-            updated_at: chrono::Utc::now(),
-            summary: Some(response.clone()),
-        };
-        if let Err(e) = self.memory.record_session(artifact).await {
-            tracing::warn!("failed to record root-agent session artifact: {e}");
-        }
-
+        // Phase 7: no session-recall artifact write here. The retired
+        // per-peer write (session id `root:{peer}`) is replaced by
+        // `PrincipalManager::record_peer_recall` on the peer-child
+        // paths; trunk continuity lives in the trunk JSONL itself.
         Ok(RouteDecision::Respond { response })
     }
 
@@ -299,8 +308,20 @@ impl PrincipalRouter for RootRouter {
         on_event: Box<dyn Fn(AgenticEvent) + Send + Sync>,
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<RouteDecision, RouterError> {
+        // Phase 7: trunk-only — see `route` above.
+        if !matches!(
+            ctx.channel.kind,
+            crate::principal::router::ChannelKind::Trunk
+                | crate::principal::router::ChannelKind::Cron
+        ) {
+            return Err(RouterError::AgentFailed(format!(
+                "channel {:?} reached the trunk-only RootRouter — peer ingress must route \
+                 through per-peer standing children (PrincipalManager::receive*)",
+                ctx.channel.kind
+            )));
+        }
         let peer = ctx.peer.clone();
-        let session_id = root_session_id_for_channel(&peer, &ctx.channel.kind);
+        let session_id = root_session_id_for_channel(&ctx.channel.kind);
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
         let user_text = ctx.message.clone();
         let pre_user_messages = recalled_context_messages(&ctx.recalled_context);
@@ -308,10 +329,10 @@ impl PrincipalRouter for RootRouter {
 
         let response = run_root_agent_prompt_streaming(
             &self.root_prompt,
-            peer.clone(),
+            peer,
             user_text,
             pre_user_messages,
-            session_id.clone(),
+            session_id,
             available_agents,
             &principal_ctx,
             on_event,
@@ -323,19 +344,7 @@ impl PrincipalRouter for RootRouter {
         // the CLI. See the matching note in `route()` above.
         .map_err(|e| RouterError::AgentFailed(format!("{e:?}")))?;
 
-        // Record the root-agent session artifact so future messages
-        // from this peer can recall it as prior context.
-        let artifact = SessionArtifact {
-            session_id,
-            peer,
-            title: Some("root".to_string()),
-            updated_at: chrono::Utc::now(),
-            summary: Some(response.clone()),
-        };
-        if let Err(e) = self.memory.record_session(artifact).await {
-            tracing::warn!("failed to record root-agent session artifact: {e}");
-        }
-
+        // Phase 7: no session-recall artifact write — see `route`.
         Ok(RouteDecision::Respond { response })
     }
 }
@@ -357,28 +366,29 @@ mod tests {
     #[test]
     fn trunk_session_id_is_root_prefixed_constant() {
         // The `root:` prefix is load-bearing: it puts the trunk under
-        // the root-family guards (`starts_with("root:")` refusals on
+        // the root-family guard (the `root:self` refusal on
         // delete/archive/move in the session tool surface).
         assert_eq!(trunk_session_id(), "root:self");
         assert!(trunk_session_id().starts_with("root:"));
     }
 
     #[test]
-    fn trunk_channel_maps_to_trunk_session_regardless_of_peer() {
+    fn trunk_and_cron_channels_map_to_trunk_session() {
         use crate::principal::router::ChannelKind;
-        let peer = peko_auth::Subject::User("test-owner".to_string());
+        // Phase 7: cron traffic maps onto the trunk — the per-peer
+        // `root:cron:{owner}` session is retired.
         assert_eq!(
-            root_session_id_for_channel(&peer, &ChannelKind::Trunk),
+            root_session_id_for_channel(&ChannelKind::Trunk),
             "root:self"
         );
-        // Sibling channels keep their per-peer shapes.
-        assert_eq!(
-            root_session_id_for_channel(&peer, &ChannelKind::Cron),
-            "root:cron:user:test-owner"
-        );
-        assert_eq!(
-            root_session_id_for_channel(&peer, &ChannelKind::Cli),
-            "root:user:test-owner"
-        );
+        assert_eq!(root_session_id_for_channel(&ChannelKind::Cron), "root:self");
+    }
+
+    #[test]
+    #[should_panic(expected = "retired per-peer root routing")]
+    fn peer_channel_panics_loudly() {
+        // Phase 7: peer ingress never reaches the RootRouter — a peer
+        // channel here is a routing bug and must fail loudly.
+        let _ = root_session_id_for_channel(&crate::principal::router::ChannelKind::Cli);
     }
 }

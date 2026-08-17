@@ -1260,7 +1260,10 @@ impl SubagentExecutor {
         let async_config = AsyncToolConfig {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: None,
-            timeout_secs: Some(config.timeout_seconds),
+            // `ExecutionConfig::timeout_seconds == 0` means UNLIMITED,
+            // but the AsyncExecutor treats `Some(0)` as an immediate
+            // timeout — map 0 to `None` so unlimited survives the hop.
+            timeout_secs: (config.timeout_seconds > 0).then_some(config.timeout_seconds),
             timeout_millis: None,
             cleanup_after_delivery: config.cleanup == SpawnCleanupPolicy::Delete,
             label: config.label.clone(),
@@ -1315,6 +1318,13 @@ impl SubagentExecutor {
         // Moved into the task closure; `None` keeps the final-only
         // execution path.
         let stream_events_for_closure = stream_events;
+        // Sprint 2 Phase 7: the daemon-shared inbox registry (when
+        // bound via `with_inbox_registry`) is handed to the child
+        // Agent so its agentic loop drains the SAME registry the
+        // principal ingress paths queue steering into (keyed by the
+        // child session id). `None` keeps the per-call standalone
+        // drain (tests / CLI one-shots).
+        let inbox_registry_for_closure = self.inbox_registry.clone();
 
         self.unified_executor
             .execute_with_metadata(
@@ -1379,6 +1389,7 @@ impl SubagentExecutor {
                         parent_peer_meter_clone,
                         caller_principal_did_clone,
                         stream_events_for_closure,
+                        inbox_registry_for_closure,
                     );
                     let result = if timeout > 0 {
                         match tokio::time::timeout(
@@ -1903,6 +1914,11 @@ async fn execute_subagent_task(
     // to the sink (the IPC `principal_send` drain-loop shape); `None`
     // keeps the final-only `execute_with_session` path.
     stream_events: Option<AgenticEventSink>,
+    // Sprint 2 Phase 7: the daemon-shared inbox registry, bound onto
+    // the child Agent so its loop drains steering queued by the
+    // principal ingress serial-queue fallback (keyed by the child
+    // session id). `None` keeps the per-call standalone drain.
+    inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
 ) -> Result<SubagentTaskOutput> {
     info!(
         "Executing subagent task: agent={} session={}",
@@ -2054,6 +2070,12 @@ async fn execute_subagent_task(
     // child — and, via the executor propagation inside
     // `with_caller_principal_did`, for deeper descendants too.
     subagent = subagent.with_caller_principal_did(caller_principal_did);
+
+    // Sprint 2 Phase 7: bind the daemon-shared inbox registry so the
+    // child loop drains steering queued by ingress paths (the
+    // `PrincipalManager` / IPC serial-queue fallback) into this child
+    // session's inbox. `None` keeps the per-call standalone drain.
+    subagent = subagent.with_inbox_registry(inbox_registry);
 
     // Update the subagent's session key provider so nested spawns know their parent
     subagent.session_key_provider().set_session_key(session_key);

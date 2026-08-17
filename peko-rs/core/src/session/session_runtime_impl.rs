@@ -23,9 +23,11 @@
 //!   in flight — or start — mid-operation. When no registry is bound
 //!   (stateless CLI), these guards degrade to metadata-only with a
 //!   debug note.
-//! - **Live slots**: `root:*` ids are the principal's continuous
-//!   sessions; they refuse delete/archive/move — the engine manages
-//!   their lifecycle (paging + compaction).
+//! - **Live slots**: the principal's trunk session (`root:self`) is
+//!   continuous; it refuses delete/archive/move — the engine manages
+//!   its lifecycle (paging + compaction). Phase 7 narrowed the guard
+//!   from the whole `root:*` family to the trunk alone: the per-peer
+//!   root sessions (`root:{peer}`, `root:cron:{peer}`) are retired.
 
 use std::sync::Arc;
 
@@ -445,9 +447,11 @@ impl SessionRuntime for SessionManagerRuntime {
         let session_key = &self.resolve_ref(&caller, &metas, session_key)?;
         self.guard_not_self(&caller, session_key)?;
         self.guard_tree(&caller, session_key, &metas)?;
-        // Live `root:*` sessions are continuous and engine-managed:
-        // archiving one is refused outright.
-        if archived && session_key.starts_with("root:") {
+        // The live trunk session (`root:self`) is continuous and
+        // engine-managed: archiving it is refused outright. Phase 7
+        // narrowed this from the whole `root:*` family — the per-peer
+        // root sessions are retired; the trunk is the only one left.
+        if archived && session_key.as_str() == crate::principal::routers::root::trunk_session_id() {
             return Err(self.refuse(err_live_base_managed(session_key)));
         }
 
@@ -495,9 +499,11 @@ impl SessionRuntime for SessionManagerRuntime {
             return Err(self.refuse(err_delete_ancestor(session_key)));
         }
         self.guard_tree(&caller, session_key, &metas)?;
-        // Live `root:*` sessions are continuous and engine-managed:
-        // deleting one is refused outright.
-        if session_key.starts_with("root:") {
+        // The live trunk session (`root:self`) is continuous and
+        // engine-managed: deleting it is refused outright. Phase 7
+        // narrowed this from the whole `root:*` family — the per-peer
+        // root sessions are retired; the trunk is the only one left.
+        if session_key.as_str() == crate::principal::routers::root::trunk_session_id() {
             return Err(self.refuse(err_live_base_managed(session_key)));
         }
 
@@ -592,9 +598,12 @@ impl SessionRuntime for SessionManagerRuntime {
         // in that subtree too.
         self.guard_tree(&caller, session_key, &metas)?;
         self.guard_tree(&caller, new_parent, &metas)?;
-        // Live `root:*` sessions are continuous and engine-managed:
-        // moving one is refused outright (moving UNDER one is fine).
-        if session_key.starts_with("root:") {
+        // The live trunk session (`root:self`) is continuous and
+        // engine-managed: moving it is refused outright (moving UNDER
+        // it is fine). Phase 7 narrowed this from the whole `root:*`
+        // family — the per-peer root sessions are retired; the trunk
+        // is the only one left.
+        if session_key.as_str() == crate::principal::routers::root::trunk_session_id() {
             return Err(self.refuse(err_live_base_managed(session_key)));
         }
 
@@ -853,6 +862,12 @@ mod tests {
     /// Tree used by most tests:
     /// `root:user:alice` (live) ── `spawn1` ── `child1`
     ///                     └──── `spawn2`
+    ///
+    /// Phase 7 note: the base id's `root:` prefix carries NO special
+    /// semantics anymore — the engine-managed family guard matches
+    /// exactly `root:self` (the trunk), so this fixture's base is
+    /// simply a plain parentless (base-caller) session id. Tests that
+    /// exercise the family guard use `root:self` explicitly.
     async fn tree_harness(current: &str) -> Harness {
         let h = Harness::new().await;
         h.create("root:user:alice", None).await;
@@ -947,20 +962,27 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("currently running in"), "{err}");
 
-        // A second live base id refuses delete/archive (engine-managed).
-        h.create("root:cron:alice", None).await;
+        // The trunk (`root:self`) — the only engine-managed id left
+        // after Phase 7 — refuses delete/archive.
+        h.create("root:self", None).await;
         let err = h
+            .runtime
+            .delete_session("root:self", true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
+        let err = h.runtime.set_archived("root:self", true).await.unwrap_err();
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
+
+        // A retired-shape id (`root:cron:*`) has no family protection
+        // anymore: it deletes like any plain session.
+        h.create("root:cron:alice", None).await;
+        let outcome = h
             .runtime
             .delete_session("root:cron:alice", true)
             .await
-            .unwrap_err();
-        assert!(err.to_string().contains("managed by the engine"), "{err}");
-        let err = h
-            .runtime
-            .set_archived("root:cron:alice", true)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("managed by the engine"), "{err}");
+            .unwrap();
+        assert_eq!(outcome.deleted, vec!["root:cron:alice".to_string()]);
     }
 
     #[tokio::test]
@@ -1197,8 +1219,9 @@ mod tests {
 
     /// A `privileged` spawned caller (sprint 2 peer-child provisioning)
     /// gets whole-store reach through the same guards that confine a
-    /// plain spawned caller — while the self / ancestor / `root:*`
-    /// guards (independent of `is_base`/`privileged`) still apply.
+    /// plain spawned caller — while the self / ancestor / trunk
+    /// (`root:self`) guards (independent of `is_base`/`privileged`)
+    /// still apply.
     #[tokio::test]
     async fn privileged_caller_whole_store_reach() {
         let h = tree_harness("spawn1").await;
@@ -1236,20 +1259,18 @@ mod tests {
         let err = h.runtime.delete_session("spawn1", true).await.unwrap_err();
         assert!(err.to_string().contains("currently running in"), "{err}");
 
-        // The live root is still refused — both as an ancestor of the
-        // caller (delete) and as an engine-managed `root:*` session
-        // (archive).
+        // The caller's base ancestor is still refused as an ancestor
+        // (delete); the TRUNK (`root:self`) is refused as
+        // engine-managed (archive) — Phase 7 narrowed the family guard
+        // to the trunk alone, so the archive assertion targets it.
         let err = h
             .runtime
             .delete_session("root:user:alice", true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("ancestor"), "{err}");
-        let err = h
-            .runtime
-            .set_archived("root:user:alice", true)
-            .await
-            .unwrap_err();
+        h.create("root:self", None).await;
+        let err = h.runtime.set_archived("root:self", true).await.unwrap_err();
         assert!(err.to_string().contains("managed by the engine"), "{err}");
     }
 
@@ -1386,14 +1407,22 @@ mod tests {
     #[tokio::test]
     async fn move_root_source_refused() {
         let h = tree_harness("root:user:alice").await;
-        h.create("root:cron:alice", None).await;
+        h.create("root:self", None).await;
 
         let err = h
             .runtime
-            .move_session("root:cron:alice", "spawn1".to_string())
+            .move_session("root:self", "spawn1".to_string())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("managed by the engine"), "{err}");
+
+        // A retired-shape id (`root:cron:*`) moves like any plain
+        // session — Phase 7 narrowed the family guard to the trunk.
+        h.create("root:cron:alice", None).await;
+        h.runtime
+            .move_session("root:cron:alice", "spawn1".to_string())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1441,15 +1470,16 @@ mod tests {
     // ─── Tool-surface wiring (SessionTool over the production runtime) ─
 
     /// The restored `archive` action on the `session` tool routes
-    /// through the production guard layer: a live `root:*` session is
-    /// continuous and engine-managed, so archiving it is refused.
+    /// through the production guard layer: the live trunk session
+    /// (`root:self`) is continuous and engine-managed, so archiving it
+    /// is refused.
     #[tokio::test]
     async fn tool_archive_refuses_root_session() {
         use crate::tools::builtin::session::{SessionTool, SharedSessionRuntime};
         use peko_tools_core::traits::Tool;
 
         let h = tree_harness("root:user:alice").await;
-        h.create("root:cron:alice", None).await;
+        h.create("root:self", None).await;
         let runtime: SharedSessionRuntime = Arc::new(SessionManagerRuntime::new(
             Arc::clone(&h.manager),
             Arc::clone(&h.current),
@@ -1459,9 +1489,9 @@ mod tests {
         let tool = SessionTool::new(runtime);
 
         let err = tool
-            .execute(json!({"action": "archive", "session_key": "root:cron:alice"}))
+            .execute(json!({"action": "archive", "session_key": "root:self"}))
             .await
-            .expect_err("archiving a root session must be refused");
+            .expect_err("archiving the trunk session must be refused");
         assert!(err.to_string().contains("managed by the engine"), "{err}");
 
         // A non-root session archives fine through the same surface.
@@ -1470,13 +1500,15 @@ mod tests {
             .unwrap();
     }
 
-    /// Phase 3 (2026-08-15): the principal trunk session `root:self`
-    /// keeps the `root:` prefix precisely so the root-family guards
-    /// apply to it unchanged — delete, archive, and move are all
-    /// refused as "managed by the engine", exactly like `root:{peer}`
-    /// and `root:cron:{peer}`.
+    /// Phase 3 (2026-08-15) / Phase 7 (2026-08-17): the principal trunk
+    /// session `root:self` IS the root family now — delete, archive,
+    /// and move are refused as "managed by the engine". Retired-shape
+    /// ids (`root:{peer}`, `root:cron:{peer}`) carry no protection:
+    /// they are plain sessions and mutate freely (asserted in
+    /// `principal_level_self_and_live_base_guards` and
+    /// `move_root_source_refused`).
     #[tokio::test]
-    async fn trunk_session_inherits_root_family_guards() {
+    async fn trunk_session_is_engine_managed() {
         let h = tree_harness("root:user:alice").await;
         h.create("root:self", None).await;
 

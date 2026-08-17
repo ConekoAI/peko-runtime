@@ -36,6 +36,7 @@ use chrono::Utc;
 use tokio::sync::RwLock;
 use tracing::warn;
 
+use crate::agents::subagent_executor::StreamingResumeOutcome;
 use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
 use crate::extensions::framework::store::ExtensionStore;
@@ -48,8 +49,7 @@ use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::router::{ChannelContext, ChannelKind};
-use crate::principal::routers::root::root_session_id;
-use crate::principal::{Principal, RouteDecision, RouterError};
+use crate::principal::Principal;
 use crate::registry::packaging::TrustStore;
 use crate::tunnel::TunnelDispatcher;
 use peko_auth::caller::CallerContext;
@@ -1829,11 +1829,26 @@ async fn handle_principal_send_control(
                     {
                         (false, Some(format!("Failed to persist steered chat input: {e}")))
                     } else {
-                        let session_id = root_session_id(&peer);
-                        let inbox =
-                            host.inbox_registry().get_or_create(&session_id).await;
-                        inbox.push(SteeringMessage::new(text).into()).await;
-                        (true, None)
+                        // Phase 7: the run lives in the peer's standing
+                        // child of the trunk — the steering push keys
+                        // the CHILD session inbox (find-or-create is
+                        // idempotent; the active run's child exists).
+                        match host
+                            .principal_manager()
+                            .ensure_peer_child_session(&p, &peer)
+                            .await
+                        {
+                            Ok(session_id) => {
+                                let inbox =
+                                    host.inbox_registry().get_or_create(&session_id).await;
+                                inbox.push(SteeringMessage::new(text).into()).await;
+                                (true, None)
+                            }
+                            Err(e) => (
+                                false,
+                                Some(format!("Failed to resolve peer child session: {e}")),
+                            ),
+                        }
                     }
                 }
                 None => (
@@ -1863,8 +1878,9 @@ async fn handle_principal_send_control(
 
 /// Shared body for `RequestPacket::PrincipalSend` and
 /// `RequestPacket::PrincipalSendStream`. Both IPC variants run the
-/// root agent via the streaming machinery (`router.route_streaming`)
-/// and register a `CancellationToken` in `streaming_runs`, so the
+/// peer's standing child turn via the streaming machinery
+/// (`PeerChildTurns::drive_turn_streaming` — Phase 7) and register a
+/// `CancellationToken` in `streaming_runs`, so the
 /// `PrincipalSendControl` IPC works uniformly regardless of which
 /// variant the caller chose. The only difference at the wire level is
 /// the success packet — `PrincipalSent` for `OneShot` and
@@ -1981,14 +1997,14 @@ async fn run_principal_send(
         return Ok(());
     }
 
-    // Construct the RouterContext the root router expects.
-    // Audit H1: the streaming path now uses the same
-    // `PrincipalManager::build_router_context` helper as the legacy
-    // one-shot `PrincipalManager::receive` path (which is no longer
-    // called from this handler), so permission checks, session
-    // recall, and per-message configuration can't drift between the
-    // two variants.
-    let router_ctx = match host
+    // Permission check (+ session recall parity) via the shared
+    // builder — audit H1: both the IPC streaming path and
+    // `PrincipalManager::receive*` funnel through
+    // `PrincipalManager::build_router_context`, so permission checks
+    // and per-message configuration can't drift between variants. The
+    // assembled context is otherwise unused: Phase 7 drives the turn
+    // in the peer's standing child (below), not through the router.
+    if let Err(e) = host
         .principal_manager()
         .build_router_context(
             &principal,
@@ -1999,11 +2015,34 @@ async fn run_principal_send(
         )
         .await
     {
-        Ok(ctx) => ctx,
+        let response = ResponsePacket::Error {
+            request_id,
+            message: format!("Failed to build router context: {e}"),
+        };
+        send_response(sink, response).await?;
+        let done = ResponsePacket::Done {
+            request_id,
+            success: false,
+            error: Some(e.to_string()),
+        };
+        send_response(sink, done).await?;
+        return Ok(());
+    }
+
+    // Phase 7: the turn runs in the peer's standing child of the
+    // trunk (provisioned on first contact). The child session id keys
+    // the run permit, the steering inbox, and the streaming run's
+    // drain — `root:{peer}` sessions are retired.
+    let turns = match host
+        .principal_manager()
+        .peer_child_turns_for(&principal)
+        .await
+    {
+        Ok(t) => t,
         Err(e) => {
             let response = ResponsePacket::Error {
                 request_id,
-                message: format!("Failed to build router context: {e}"),
+                message: format!("Failed to build peer-child turn driver: {e}"),
             };
             send_response(sink, response).await?;
             let done = ResponsePacket::Done {
@@ -2015,10 +2054,27 @@ async fn run_principal_send(
             return Ok(());
         }
     };
+    let child_id = match turns.ensure_child(&peer).await {
+        Ok(id) => id,
+        Err(e) => {
+            let response = ResponsePacket::Error {
+                request_id,
+                message: format!("Failed to provision peer child session: {e:?}"),
+            };
+            send_response(sink, response).await?;
+            let done = ResponsePacket::Done {
+                request_id,
+                success: false,
+                error: Some(format!("{e:?}")),
+            };
+            send_response(sink, done).await?;
+            return Ok(());
+        }
+    };
 
     // Per-session run permit. The principal IPC must honor the same
     // serial-queue contract as `PrincipalManager::receive_streaming`:
-    // only one root-agent run may be active per (peer, session) at a
+    // only one run may be active per (peer, child session) at a
     // time. If a run is already in flight, the message is queued as a
     // `SteeringMessage` and the caller gets a "Queued…" response — the
     // existing `PrincipalSendControl::Steer` IPC will inject it at the
@@ -2026,10 +2082,10 @@ async fn run_principal_send(
     // already persisted above via `record_chat_input`, so consumer
     // chat history stays consistent regardless of which branch we
     // take. Without this guard, two concurrent `principal_send*`
-    // calls for the same peer would spawn two parallel root-agent
-    // runs over the same session and any steered push keyed by that
-    // session-id would be drained by whichever loop ran first.
-    let session_id = root_session_id(&peer);
+    // calls for the same peer would spawn two parallel runs over the
+    // same session and any steered push keyed by that session-id
+    // would be drained by whichever loop ran first.
+    let session_id = child_id;
     let _permit_guard = match host.inbox_registry().try_acquire_run(&session_id).await {
         Some(g) => g,
         None => {
@@ -2071,9 +2127,12 @@ async fn run_principal_send(
     // client expects a single `PrincipalSent { content }` at the end.
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(256);
 
-    // Oneshot for the final RouteDecision.
+    // Oneshot for the final turn outcome. Phase 7: the task drives a
+    // peer-child turn (`PeerChildTurns::drive_turn_streaming`), whose
+    // `StreamingResumeOutcome.final_text` is the authoritative answer
+    // the success packet carries.
     let (result_tx, result_rx) =
-        tokio::sync::oneshot::channel::<Result<RouteDecision, RouterError>>();
+        tokio::sync::oneshot::channel::<anyhow::Result<StreamingResumeOutcome>>();
 
     let on_event = move |event: AgenticEvent| {
         let _ = event_tx.try_send(event);
@@ -2103,17 +2162,27 @@ async fn run_principal_send(
         request_id,
     };
 
-    // Run the root agent in a background task. When the task completes,
-    // the event_tx is dropped, closing the channel and signalling the
-    // handler to flush. The `_permit_guard` is moved into the spawn
-    // scope so its `Drop` runs only when the agentic loop completes
-    // — releasing the per-session run permit back to the registry.
-    let router = Arc::clone(&principal.router);
+    // Run the peer-child turn in a background task. When the task
+    // completes, the event_tx is dropped, closing the channel and
+    // signalling the handler to flush. The `_permit_guard` is moved
+    // into the spawn scope so its `Drop` runs only when the agentic
+    // loop completes — releasing the per-session run permit back to
+    // the registry.
     let permit_for_task = _permit_guard;
-    let root_agent_handle = tokio::spawn(async move {
+    let turns_for_task = Arc::clone(&turns);
+    let session_id_for_task = session_id.clone();
+    let message_for_task = message.clone();
+    let override_model_for_task = override_model.clone();
+    let child_turn_handle = tokio::spawn(async move {
         let _permit_held = permit_for_task;
-        let result = router
-            .route_streaming(router_ctx, Box::new(on_event), Some(cancel))
+        let result = turns_for_task
+            .drive_turn_streaming(
+                &session_id_for_task,
+                &message_for_task,
+                Arc::new(on_event),
+                Some(cancel),
+                override_model_for_task,
+            )
             .await;
         let _ = result_tx.send(result);
     });
@@ -2171,7 +2240,7 @@ async fn run_principal_send(
                 let beat = ResponsePacket::Heartbeat { request_id };
                 if let Err(e) = send_response(sink, beat).await {
                     tracing::warn!("failed to send Heartbeat: {e}; aborting stream");
-                    root_agent_handle.abort();
+                    child_turn_handle.abort();
                     // Finding 8 (2026-08-07 field test): leave a trace of
                     // the failed run in the chat log so `peko log` doesn't
                     // show the user's message followed by a silent gap.
@@ -2270,7 +2339,7 @@ async fn run_principal_send(
         if matches!(response_kind, PrincipalSendResponseKind::Streaming) {
             if let Err(e) = send_response(sink, packet).await {
                 tracing::warn!("failed to send {packet_label}: {e}; aborting stream");
-                root_agent_handle.abort();
+                child_turn_handle.abort();
                 // Finding 8 (2026-08-07 field test): same silent-gap
                 // trace as the heartbeat-abort branch above.
                 host.principal_manager()
@@ -2293,23 +2362,27 @@ async fn run_principal_send(
         // expects one final packet with the full answer, not deltas.
     }
 
-    // The channel closed because the root agent task dropped
+    // The channel closed because the child-turn task dropped
     // `event_tx`. Await the result.
-    let route_result = match result_rx.await {
+    let turn_result = match result_rx.await {
         Ok(r) => r,
-        Err(_) => Err(RouterError::AgentFailed(
-            "root-agent task died before producing a result".into(),
+        Err(_) => Err(anyhow::anyhow!(
+            "peer-child turn task died before producing a result"
         )),
     };
-    let _ = root_agent_handle.await;
+    let _ = child_turn_handle.await;
 
-    match route_result {
-        Ok(decision) => {
-            let content = match decision {
-                RouteDecision::Respond { response } => response,
-            };
+    match turn_result {
+        Ok(outcome) => {
+            let content = outcome.final_text;
             host.principal_manager()
                 .record_chat_response(&principal, &peer, &content)
+                .await;
+            // Peer-recall artifact: the peer's latest session is the
+            // child (Phase 7); future turns recall it via
+            // `find_latest_session_for_peer`.
+            host.principal_manager()
+                .record_peer_recall(&principal, &peer, &session_id, &content)
                 .await;
             let final_packet = match response_kind {
                 PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
@@ -2364,6 +2437,8 @@ async fn run_principal_send(
                     sink,
                     request_id,
                     &principal,
+                    Arc::clone(&turns),
+                    &session_id,
                     peer.clone(),
                     msg,
                     override_model.clone(),
@@ -2436,22 +2511,29 @@ async fn drain_pending_steering(
 /// user turn was already persisted by `handle_principal_send_control`
 /// (or by Gap-1's queued branch), so we skip the input persistence
 /// here and only record the principal's response.
+///
+/// Phase 7: the successor runs in the same peer-child session as the
+/// predecessor (`child_id`), driven via the shared `PeerChildTurns`
+/// bundle — the retired root router is no longer involved.
+#[allow(clippy::too_many_arguments)]
 async fn run_steering_successor(
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,
     predecessor_request_id: u64,
     principal: &Arc<Principal>,
+    turns: Arc<crate::principal::child_turns::PeerChildTurns>,
+    child_id: &str,
     peer: Subject,
     steering: SteeringMessage,
     override_model: Option<String>,
 ) -> anyhow::Result<()> {
-    let session_id = root_session_id(&peer);
+    let session_id = child_id;
     // The predecessor's `_permit_guard` was dropped when its spawned
     // task completed, so the per-session permit is now free. We
     // re-acquire it to keep the same serial-queue contract as the
     // initial run. A second `principal_send*` for the same peer
     // arriving during this successor run queues behind us.
-    let _permit_guard = match host.inbox_registry().try_acquire_run(&session_id).await {
+    let _permit_guard = match host.inbox_registry().try_acquire_run(session_id).await {
         Some(g) => g,
         None => {
             // Should not happen — the predecessor's permit is
@@ -2476,50 +2558,50 @@ async fn run_steering_successor(
 
     let successor_id = next_successor_request_id();
 
-    let router_ctx = match host
+    // Permission-check parity with the predecessor: the shared builder
+    // is the single gate. The assembled context is otherwise unused —
+    // the turn runs in the peer child via `PeerChildTurns`.
+    if let Err(e) = host
         .principal_manager()
         .build_router_context(
             principal,
             peer.clone(),
             steering.content.clone(),
             channel,
-            override_model,
+            override_model.clone(),
         )
         .await
     {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            let error = ResponsePacket::Error {
-                request_id: predecessor_request_id,
-                message: format!("Failed to build successor router context: {e}"),
-            };
-            send_response(sink, error).await?;
-            return Ok(());
-        }
-    };
+        let error = ResponsePacket::Error {
+            request_id: predecessor_request_id,
+            message: format!("Failed to build successor router context: {e}"),
+        };
+        send_response(sink, error).await?;
+        return Ok(());
+    }
 
-    let decision = match principal
-        .router
-        .route_streaming(router_ctx, Box::new(|_event: AgenticEvent| {}), None)
+    let outcome = match turns
+        .drive_turn(session_id, &steering.content, override_model)
         .await
     {
-        Ok(d) => d,
+        Ok(o) => o,
         Err(e) => {
             let error = ResponsePacket::Error {
                 request_id: predecessor_request_id,
-                message: format!("Successor run failed: {e}"),
+                message: format!("Successor run failed: {e:?}"),
             };
             send_response(sink, error).await?;
             return Ok(());
         }
     };
 
-    let content = match decision {
-        RouteDecision::Respond { response } => response,
-    };
+    let content = outcome.final_text;
 
     host.principal_manager()
         .record_chat_response(principal, &peer, &content)
+        .await;
+    host.principal_manager()
+        .record_peer_recall(principal, &peer, session_id, &content)
         .await;
 
     let packet = ResponsePacket::PrincipalSentSuccessor {

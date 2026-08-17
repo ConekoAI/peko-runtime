@@ -122,7 +122,7 @@ Per-action semantics (the action you choose determines which other params apply)
 
 Every session_key / new_parent parameter also accepts an absolute path (`/a/b` — see list's `path` field), anchored at the root of YOUR session tree; each segment is a slug. Raw session ids keep working everywhere.
 
-Refusals: the principal's root session (ids starting with `root:`) is continuous and managed by the engine — delete/archive/move on it are refused (moving UNDER a root session is allowed). You cannot delete, archive, rename, or move the session you are currently running in. Sessions with an active run refuse delete/archive/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). A caller in a spawned session manages only its own subtree — both the moved session and the destination must be inside it.
+Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — delete/archive/move on it are refused (moving UNDER the trunk is allowed). You cannot delete, archive, rename, or move the session you are currently running in. Sessions with an active run refuse delete/archive/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). A caller in a spawned session manages only its own subtree — both the moved session and the destination must be inside it.
 
 To RUN work in a session, use the Agent tool instead — its three actions (new / resume / compact) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session_id` set (visible on status)."
             .to_string()

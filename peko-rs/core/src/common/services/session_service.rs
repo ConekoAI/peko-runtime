@@ -109,9 +109,10 @@ impl From<SessionEntry> for SessionInfo {
 )]
 pub enum HistoryEvent {
     /// Session-start marker. Carries the session id (e.g.
-    /// `"root:user:local"`) and the wall-clock time the session was
-    /// created so the desktop Activity route can render a header row
-    /// without joining against the response envelope.
+    /// `"root:self"` for the principal's trunk) and the wall-clock
+    /// time the session was created so the desktop Activity route can
+    /// render a header row without joining against the response
+    /// envelope.
     Session {
         #[serde(rename = "sessionId")]
         session_id: String,

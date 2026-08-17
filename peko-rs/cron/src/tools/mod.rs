@@ -85,32 +85,42 @@ where
 /// Minimum interval for a trunk-targeted keepalive Send job: 60s
 /// (Phase 3b, 2026-08-15).
 ///
-/// A `Send { target: "trunk" }` job fires a real agent turn in the
-/// principal's self session `root:self` on every tick — each tick is a
-/// full LLM round-trip over the trunk's growing history. An
-/// `Every { every_ms }` schedule with no floor is a runaway
-/// token-burn anti-pattern (PEKO.md "Violates K"), so creation refuses
-/// intervals below this constant. One-shot `At`, `Cron` expressions,
-/// `Idle`, and `Event` schedules are exempt: their cadence is explicit
-/// or event-driven, not a bare self-poke loop.
+/// A `Send` job fires a real agent turn in the principal's trunk
+/// session `root:self` on every tick — each tick is a full LLM
+/// round-trip over the trunk's growing history. An `Every { every_ms
+/// }` schedule with no floor is a runaway token-burn anti-pattern
+/// (PEKO.md "Violates K"), so creation refuses intervals below this
+/// constant. One-shot `At`, `Cron` expressions, `Idle`, and `Event`
+/// schedules are exempt: their cadence is explicit or event-driven,
+/// not a bare self-poke loop.
+///
+/// Phase 7 (2026-08-17): the trunk is the DEFAULT Send target
+/// (`target: None` and `Some("trunk")` are the same route), so the
+/// floor applies to both.
 pub const TRUNK_MIN_INTERVAL_MS: u64 = 60_000;
 
-/// Enforce [`TRUNK_MIN_INTERVAL_MS`] on trunk-targeted Send jobs with
-/// an `Every` schedule. All other actions, targets, and schedule kinds
-/// pass through unchanged. Called from `CronScheduler::add_job` so every
-/// creation surface (CLI `peko cron add --target trunk`, the
-/// `CronCreate` tool, in-process construction) funnels through it.
+/// Enforce [`TRUNK_MIN_INTERVAL_MS`] on trunk-bound Send jobs with
+/// an `Every` schedule. Since Phase 7 every Send job is trunk-bound
+/// (`None` and `"trunk"` are the same destination); other actions and
+/// schedule kinds pass through unchanged. Called from
+/// `CronScheduler::add_job` so every creation surface (CLI `peko cron
+/// add`, the `CronCreate` tool, in-process construction) funnels
+/// through it.
 pub fn validate_trunk_send_interval(
     schedule: &ScheduleKind,
     target: &Option<String>,
 ) -> Result<()> {
-    if target.as_deref() != Some(SEND_TARGET_TRUNK) {
-        return Ok(());
+    if let Some(t) = target.as_deref() {
+        if t != SEND_TARGET_TRUNK {
+            // Unknown targets are rejected by `validate_send_target`;
+            // the floor only concerns trunk-bound jobs.
+            return Ok(());
+        }
     }
     if let ScheduleKind::Every { every_ms } = schedule {
         if *every_ms < TRUNK_MIN_INTERVAL_MS {
             anyhow::bail!(
-                "cron Send target \"{SEND_TARGET_TRUNK}\" with an interval schedule requires \
+                "cron Send (trunk target) with an interval schedule requires \
                  every_ms >= {TRUNK_MIN_INTERVAL_MS} ({}s); got {every_ms}ms. \
                  A faster self-targeted keepalive burns tokens on every tick with no external \
                  input — use a cron expression or a one-shot 'at' for sub-minute timing.",
@@ -1009,7 +1019,8 @@ mod tests {
 
     /// Phase 3b (2026-08-15): trunk-targeted Send jobs with an `Every`
     /// schedule below [`TRUNK_MIN_INTERVAL_MS`] are refused (token-burn
-    /// guard); everything else passes.
+    /// guard); everything else passes. Phase 7: the trunk is the
+    /// DEFAULT target, so `None` is held to the same floor.
     #[test]
     fn trunk_send_interval_floor() {
         let trunk = Some(SEND_TARGET_TRUNK.to_string());
@@ -1018,13 +1029,23 @@ mod tests {
         let err = validate_trunk_send_interval(&ScheduleKind::Every { every_ms: 30_000 }, &trunk)
             .unwrap_err();
         assert!(err.to_string().contains("every_ms >= 60000"), "got: {err}");
+        // Phase 7: the DEFAULT target is the trunk — same floor.
+        let err = validate_trunk_send_interval(&ScheduleKind::Every { every_ms: 30_000 }, &None)
+            .unwrap_err();
+        assert!(err.to_string().contains("every_ms >= 60000"), "got: {err}");
 
         // At and above the floor → accepted.
         validate_trunk_send_interval(&ScheduleKind::Every { every_ms: 60_000 }, &trunk).unwrap();
         validate_trunk_send_interval(&ScheduleKind::Every { every_ms: 300_000 }, &trunk).unwrap();
 
-        // Non-trunk Send is unchanged: sub-minute intervals accepted.
-        validate_trunk_send_interval(&ScheduleKind::Every { every_ms: 30_000 }, &None).unwrap();
+        // Unknown targets pass through here (rejected by
+        // `validate_send_target` instead) — the floor only concerns
+        // trunk-bound jobs.
+        validate_trunk_send_interval(
+            &ScheduleKind::Every { every_ms: 30_000 },
+            &Some("bogey".to_string()),
+        )
+        .unwrap();
 
         // At / Cron / Idle / Event are exempt even for trunk targets.
         validate_trunk_send_interval(

@@ -99,6 +99,33 @@ pub fn peer_child_slug(peer: &Subject) -> Result<String> {
     Ok(slug)
 }
 
+/// Find the peer's EXISTING standing child of the trunk (find-only —
+/// never creates). Returns the child session id, or `None` when the
+/// peer has no child yet.
+///
+/// Used by the peer messenger's note delivery
+/// ([`crate::principal::messenger`]): a note must attach to the peer's
+/// conversational session but must never provision one — sessions are
+/// created by ingress turns, not by note delivery.
+///
+/// Same match rule as [`ensure_peer_child`]: walk `base`, `base-2`,
+/// …; a standing spawn child of the trunk whose stamped peer IS this
+/// peer matches; a slug claimed by a DIFFERENT peer's child keeps the
+/// walk going; the first unclaimed candidate ends it (`None`).
+pub fn find_peer_child(metas: &[SessionMetadata], peer: &Subject) -> Option<String> {
+    let base_slug = peer_child_slug(peer).ok()?;
+    let trunk = trunk_session_id();
+    for attempt in 0..MAX_SLUG_ATTEMPTS {
+        let candidate = suffixed_slug(&base_slug, attempt);
+        match find_declared_child(metas, &trunk, &candidate) {
+            Some(m) if peer_matches(m, peer) => return Some(m.session_id.clone()),
+            Some(_) => continue,
+            None => return None,
+        }
+    }
+    None
+}
+
 /// Find-or-create the peer's standing child of the trunk; returns the
 /// child session id. Idempotent: a second call returns the same id.
 ///
@@ -129,15 +156,17 @@ pub async fn ensure_peer_child(
     let mut mgr = session_manager.write().await;
     let metas = mgr.list_all_sessions(false).await?;
 
-    // Find: walk `base`, `base-2`, `base-3`, … The first candidate
-    // present as a standing spawn child in the trunk's tree decides:
-    // same peer ⇒ reuse (idempotent); different peer ⇒ the slug was
-    // claimed by a sanitized collision, keep walking.
+    // Find: an existing standing child stamped with THIS peer is
+    // reused (idempotent). Otherwise walk `base`, `base-2`, … for the
+    // first candidate not claimed by a DIFFERENT peer's child
+    // (sanitized collisions like `user:Foo Bar` vs `user:foo-bar`).
+    if let Some(existing) = find_peer_child(&metas, peer) {
+        return Ok(existing);
+    }
     let mut create_slug = None;
     for attempt in 0..MAX_SLUG_ATTEMPTS {
         let candidate = suffixed_slug(&base_slug, attempt);
         match find_declared_child(&metas, &trunk, &candidate) {
-            Some(m) if peer_matches(m, peer) => return Ok(m.session_id.clone()),
             Some(_) => continue,
             None => {
                 create_slug = Some(candidate);

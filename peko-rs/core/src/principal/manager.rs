@@ -109,6 +109,16 @@ pub struct PrincipalManager {
     /// channels (Cron/FileWatch) are excluded. `None` for tests /
     /// non-daemon contexts that don't need consumer-visible history.
     chat_log_store: Option<Arc<peko_chat_log::ChatLogStore>>,
+    /// Sprint 2 Phase 7: per-principal peer-child turn bundles
+    /// (`PeerChildTurns`), built lazily on first peer ingress and
+    /// cached for the principal's lifetime. The bundle owns the
+    /// persona-carrying `SubagentExecutor` + the session manager the
+    /// principal's peer children live in. Build failures (no
+    /// resolvable model) surface per call; nothing is cached on
+    /// error so a config fix takes effect on the next message.
+    peer_child_turns: tokio::sync::RwLock<
+        HashMap<PrincipalId, Arc<crate::principal::child_turns::PeerChildTurns>>,
+    >,
 }
 
 impl PrincipalManager {
@@ -145,6 +155,7 @@ impl PrincipalManager {
             observability: None,
             peer_registry: None,
             chat_log_store: None,
+            peer_child_turns: tokio::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -505,6 +516,8 @@ impl PrincipalManager {
             self.principals.write().await.remove(&id);
             self.principals_by_name.write().await.remove(name);
             self.session_creation_locks.write().await.remove(&id);
+            // Phase 7: drop the cached peer-child turn bundle too.
+            self.peer_child_turns.write().await.remove(&id);
         }
 
         // Phase A: remove both tier roots via the typed layout.
@@ -632,6 +645,69 @@ impl PrincipalManager {
             .entry(principal_id)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
+    }
+
+    /// The shared inbox registry (daemon-global when wired via
+    /// `AppState`). Exposed for Phase 7 peer-child turn construction
+    /// (`PeerChildTurns::build`) so child runs drain the same registry
+    /// the ingress serial-queue fallback queues steering into.
+    pub fn shared_inbox_registry(&self) -> Arc<peko_session::InboxRegistry> {
+        Arc::clone(&self.inbox_registry)
+    }
+
+    /// Sprint 2 Phase 7: get-or-build the principal's peer-child turn
+    /// bundle (the shared persona-carrying executor + session manager
+    /// + trunk ownership anchor). Cached per principal; a build
+    /// failure (no resolvable model — the same configuration error
+    /// that breaks the trunk path) is NOT cached, so a config fix
+    /// takes effect on the next message.
+    pub(crate) async fn peer_child_turns_for(
+        &self,
+        principal: &Arc<Principal>,
+    ) -> Result<Arc<crate::principal::child_turns::PeerChildTurns>, PrincipalManagerError> {
+        if let Some(turns) = self.peer_child_turns.read().await.get(&principal.id) {
+            return Ok(Arc::clone(turns));
+        }
+        let resolver = self.resolver.clone().ok_or_else(|| {
+            PrincipalManagerError::Config(
+                "no LLM resolver configured; cannot drive peer-child turns".to_string(),
+            )
+        })?;
+        let observability = self
+            .observability
+            .clone()
+            .unwrap_or_else(|| Arc::new(Observability::new("principal")));
+        let turns = crate::principal::child_turns::PeerChildTurns::build(
+            principal,
+            &resolver,
+            observability,
+            Some(self.shared_inbox_registry()),
+        )
+        .await
+        .map_err(|e| {
+            PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
+        })?;
+        let turns = Arc::new(turns);
+        self.peer_child_turns
+            .write()
+            .await
+            .insert(principal.id.clone(), Arc::clone(&turns));
+        Ok(turns)
+    }
+
+    /// Sprint 2 Phase 7: find-or-create the peer's standing child of
+    /// the trunk; returns the child session id. Idempotent per peer.
+    /// Used by the IPC steering path, which must key the child inbox
+    /// without driving a turn.
+    pub(crate) async fn ensure_peer_child_session(
+        &self,
+        principal: &Arc<Principal>,
+        peer: &Subject,
+    ) -> Result<String, PrincipalManagerError> {
+        let turns = self.peer_child_turns_for(principal).await?;
+        turns.ensure_child(peer).await.map_err(|e| {
+            PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
+        })
     }
 
     /// Borrow the shared `inbox_registry` and per-principal
@@ -876,6 +952,23 @@ impl PrincipalManager {
     }
 
     /// The main entry point: a message arrives at a Principal boundary.
+    ///
+    /// Sprint 2 Phase 7 routing: peer channels (Cli/Http/Hub/A2a/P2p/
+    /// Webhook/FileWatch) drive the turn in the peer's STANDING CHILD
+    /// of the trunk (provisioned on first contact via
+    /// [`crate::principal::peer_children::ensure_peer_child`], driven
+    /// via [`crate::principal::child_turns::PeerChildTurns`]) — the
+    /// per-peer `root:{peer}` root sessions are retired. Automation
+    /// channels (`Cron`) and explicit trunk turns delegate to
+    /// [`Self::receive_trunk`]: the trunk (`root:self`) is cron-only.
+    ///
+    /// Kept from the pre-Phase-7 flow: slash preprocessing, the
+    /// permission check + recall via [`Self::build_router_context`],
+    /// the chat-log projection (same `(principal_did, peer)` keys),
+    /// and the per-session serial queue — re-keyed to the CHILD
+    /// session id, so a message arriving while the peer's child has a
+    /// run in flight is queued as a steering message (drained by the
+    /// live child run at its next iteration boundary).
     pub async fn receive(
         &self,
         principal_id: PrincipalId,
@@ -887,6 +980,14 @@ impl PrincipalManager {
         // `None` and use the principal's pinned model.
         override_model: Option<String>,
     ) -> Result<PrincipalResponse, PrincipalManagerError> {
+        // Automation + trunk channels: the trunk path owns its own
+        // discipline (no slash preprocessing, no chat-log projection).
+        if matches!(channel.kind, ChannelKind::Trunk | ChannelKind::Cron) {
+            return self
+                .receive_trunk(principal_id, message, override_model)
+                .await;
+        }
+
         let principal = self
             .get(principal_id)
             .await
@@ -910,48 +1011,67 @@ impl PrincipalManager {
             .await?;
 
         let ctx = self
-            .build_router_context(&principal, peer.clone(), message, channel, override_model)
+            .build_router_context(
+                &principal,
+                peer.clone(),
+                message,
+                channel,
+                override_model.clone(),
+            )
             .await?;
 
-        let response_peer = ctx.peer.clone();
-        // Serial queue per peer: only one root-agent run may be active for a
-        // given peer/session at a time.  If a message arrives while the
-        // root agent is already running, queue it as a steering message in the
-        // same session inbox; the active run will drain it on its next
-        // iteration.
-        let session_id =
-            super::routers::root::root_session_id_for_channel(&response_peer, &ctx.channel.kind);
-        match self.inbox_registry.try_acquire_run(&session_id).await {
+        // Phase 7: the turn runs in the peer's standing child of the
+        // trunk. The recalled/plan context assembled on `ctx` is
+        // intentionally NOT forwarded — the child session IS the
+        // peer's continuous memory (its JSONL history loads on
+        // resume); `ctx` is kept for the permission check.
+        let turns = self.peer_child_turns_for(&principal).await?;
+        let child_id = turns.ensure_child(&peer).await.map_err(|e| {
+            PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
+        })?;
+
+        // Serial queue per peer: only one run may be active for a
+        // given peer child at a time. If a message arrives while the
+        // child has a run in flight, queue it as a steering message in
+        // the child session inbox; the active run drains it on its
+        // next iteration.
+        match self.inbox_registry.try_acquire_run(&child_id).await {
             Some(_permit) => {
-                let decision = principal.router.route(ctx).await?;
-                match decision {
-                    RouteDecision::Respond { response } => {
-                        self.record_response(&principal, &response_peer, &response)
-                            .await;
-                        Ok(PrincipalResponse::text(response))
-                    }
-                }
+                let outcome = turns
+                    .drive_turn(&child_id, &ctx.message, override_model)
+                    .await
+                    .map_err(|e| {
+                        PrincipalManagerError::RouterError(RouterError::AgentFailed(format!(
+                            "{e:?}"
+                        )))
+                    })?;
+                let response = outcome.final_text;
+                self.record_response(&principal, &peer, &response).await;
+                self.record_peer_recall(&principal, &peer, &child_id, &response)
+                    .await;
+                Ok(PrincipalResponse::text(response))
             }
             None => {
-                let inbox = self.inbox_registry.get_or_create(&session_id).await;
+                let inbox = self.inbox_registry.get_or_create(&child_id).await;
                 inbox
                     .push(SteeringMessage::new(ctx.message.clone()).into())
                     .await;
-                let queued = format!("Queued for root agent session {session_id}.");
-                self.record_response(&principal, &response_peer, &queued)
-                    .await;
+                let queued = format!("Queued for root agent session {child_id}.");
+                self.record_response(&principal, &peer, &queued).await;
                 Ok(PrincipalResponse::queued(queued))
             }
         }
     }
 
     /// Streaming entry point: like [`receive`](Self::receive), but drives
-    /// the router's `route_streaming` so token deltas are delivered to
-    /// `on_event` as they are produced. Permission checks, session recall,
-    /// and the per-peer serial queue are identical to `receive` — both
-    /// funnel through [`build_router_context`](Self::build_router_context)
-    /// and acquire the same `inbox_registry` run permit, so the streaming
-    /// and one-shot paths can't drift.
+    /// the peer-child turn via
+    /// [`crate::principal::child_turns::PeerChildTurns::drive_turn_streaming`]
+    /// so token deltas are delivered to `on_event` as they are produced.
+    /// Permission checks, session recall, and the per-peer serial queue
+    /// are identical to `receive` — both funnel through
+    /// [`build_router_context`](Self::build_router_context) and acquire
+    /// the same `inbox_registry` run permit (keyed by the CHILD session
+    /// id, Phase 7), so the streaming and one-shot paths can't drift.
     ///
     /// The returned [`PrincipalResponse`] carries the authoritative final
     /// answer (the same value `receive` would return). Callers that
@@ -968,6 +1088,14 @@ impl PrincipalManager {
         // Per-message configured model override (RP8 wires CLI flags).
         override_model: Option<String>,
     ) -> Result<PrincipalResponse, PrincipalManagerError> {
+        // Automation + trunk channels have no streaming trunk entry
+        // point; route them through the one-shot trunk path.
+        if matches!(channel.kind, ChannelKind::Trunk | ChannelKind::Cron) {
+            return self
+                .receive_trunk(principal_id, message, override_model)
+                .await;
+        }
+
         let principal = self
             .get(principal_id)
             .await
@@ -985,38 +1113,53 @@ impl PrincipalManager {
             .await?;
 
         let ctx = self
-            .build_router_context(&principal, peer.clone(), message, channel, override_model)
+            .build_router_context(
+                &principal,
+                peer.clone(),
+                message,
+                channel,
+                override_model.clone(),
+            )
             .await?;
 
-        let response_peer = ctx.peer.clone();
-        // Same serial-queue discipline as `receive`: only one root-agent
-        // run may be active per peer/session. A message arriving while a
-        // run is active is queued as a steering message (no streaming
-        // events for the queued case).
-        let session_id =
-            super::routers::root::root_session_id_for_channel(&response_peer, &ctx.channel.kind);
-        match self.inbox_registry.try_acquire_run(&session_id).await {
+        let turns = self.peer_child_turns_for(&principal).await?;
+        let child_id = turns.ensure_child(&peer).await.map_err(|e| {
+            PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
+        })?;
+
+        // Same serial-queue discipline as `receive`: only one run may
+        // be active per peer child. A message arriving while a run is
+        // active is queued as a steering message (no streaming events
+        // for the queued case).
+        match self.inbox_registry.try_acquire_run(&child_id).await {
             Some(_permit) => {
-                let decision = principal
-                    .router
-                    .route_streaming(ctx, on_event, None)
-                    .await?;
-                match decision {
-                    RouteDecision::Respond { response } => {
-                        self.record_response(&principal, &response_peer, &response)
-                            .await;
-                        Ok(PrincipalResponse::text(response))
-                    }
-                }
+                let outcome = turns
+                    .drive_turn_streaming(
+                        &child_id,
+                        &ctx.message,
+                        Arc::from(on_event),
+                        None,
+                        override_model,
+                    )
+                    .await
+                    .map_err(|e| {
+                        PrincipalManagerError::RouterError(RouterError::AgentFailed(format!(
+                            "{e:?}"
+                        )))
+                    })?;
+                let response = outcome.final_text;
+                self.record_response(&principal, &peer, &response).await;
+                self.record_peer_recall(&principal, &peer, &child_id, &response)
+                    .await;
+                Ok(PrincipalResponse::text(response))
             }
             None => {
-                let inbox = self.inbox_registry.get_or_create(&session_id).await;
+                let inbox = self.inbox_registry.get_or_create(&child_id).await;
                 inbox
                     .push(SteeringMessage::new(ctx.message.clone()).into())
                     .await;
-                let queued = format!("Queued for root agent session {session_id}.");
-                self.record_response(&principal, &response_peer, &queued)
-                    .await;
+                let queued = format!("Queued for root agent session {child_id}.");
+                self.record_response(&principal, &peer, &queued).await;
                 Ok(PrincipalResponse::queued(queued))
             }
         }
@@ -1138,26 +1281,23 @@ impl PrincipalManager {
         self.record_response(principal, peer, response).await
     }
 
-    /// Sprint 2 Phase 6: record the peer-recall artifact for a peer
+    /// Sprint 2 Phase 7: record the peer-recall artifact for a peer
     /// turn that ran in the peer's STANDING CHILD session (the
     /// per-peer child of the trunk provisioned by
     /// [`crate::principal::peer_children::ensure_peer_child`]).
     ///
-    /// This is the re-pointed write side of the session-recall loop:
-    /// pre-paradigm, `RootRouter::route`/`route_streaming` artifacted
-    /// the peer's `root:{peer}` session id; with per-peer children the
-    /// peer's latest session IS the child, so the artifact's
-    /// `session_id` is the child session id. The read side
-    /// (`build_router_context` →
+    /// This is the write side of the session-recall loop after the
+    /// per-peer root sessions were retired: the peer's latest session
+    /// IS the child, so the artifact's `session_id` is the child
+    /// session id. The read side (`build_router_context` →
     /// `PrincipalMemory::find_latest_session_for_peer`) is peer-keyed
     /// and needs no change — it picks this artifact up as-is.
     ///
-    /// Best-effort like the router's write: a failure logs a warning
-    /// and does not fail the turn. Phase 7's ingress wrappers call
-    /// this around the child turn driver; the legacy root-session
-    /// writes in `routers/root.rs` stay until the re-route lands.
-    /// Allowed dead until Phase 7 lands.
-    #[allow(dead_code)]
+    /// Best-effort like the retired router's write: a failure logs a
+    /// warning and does not fail the turn. The Phase 7 ingress
+    /// wrappers (`receive` / `receive_streaming` / the IPC
+    /// `principal_send` handler) call this around the child turn
+    /// driver.
     pub(crate) async fn record_peer_recall(
         &self,
         principal: &Arc<Principal>,
@@ -1583,12 +1723,31 @@ mod tests {
     async fn concurrent_same_peer_messages_are_queued() {
         let (_temp, manager, adapter, id) = setup().await;
         let messages = 5;
-        for i in 0..messages {
-            adapter.queue_text(format!("same-peer {i}"));
-        }
+        adapter.queue_text("same-peer final".to_string());
 
         let peer = Subject::User("same-peer".to_string());
-        let mut handles = Vec::with_capacity(messages as usize);
+        let principal = manager
+            .get(id.clone())
+            .await
+            .expect("principal should exist");
+
+        // Phase 7: the serial queue keys on the peer's standing CHILD
+        // session. Provision it up front and hold its run permit so
+        // every concurrent receive deterministically takes the
+        // steering-queue branch (the mock LLM answers instantly, so a
+        // real first run would complete before the others arrive —
+        // the permit hold makes the interleaving deterministic).
+        let child_id = manager
+            .ensure_peer_child_session(&principal, &peer)
+            .await
+            .expect("peer child provisioning");
+        let permit_hold = manager
+            .inbox_registry
+            .try_acquire_run(&child_id)
+            .await
+            .expect("permit should be free");
+
+        let mut handles = Vec::with_capacity(messages);
         for i in 0..messages {
             let manager = Arc::clone(&manager);
             let id = id.clone();
@@ -1602,12 +1761,6 @@ mod tests {
         }
 
         let results = futures::future::join_all(handles).await;
-        let ok_count = results.iter().filter(|r| r.is_ok()).count();
-        assert_eq!(
-            ok_count, messages as usize,
-            "all concurrent receives should complete"
-        );
-
         let responses: Vec<PrincipalResponse> = results
             .into_iter()
             .map(|r| {
@@ -1616,23 +1769,50 @@ mod tests {
             })
             .collect();
 
-        let answered = responses
-            .iter()
-            .filter(|r| !r.content.starts_with("Queued for root agent session"))
-            .count();
+        // Every concurrent arrival queued as a steering message into
+        // the CHILD session inbox.
+        let expected_queued = format!("Queued for root agent session {child_id}.");
+        for r in &responses {
+            assert_eq!(
+                r.content, expected_queued,
+                "a message arriving while a run holds the child permit must queue as steering"
+            );
+        }
+        // The inbox holds exactly the queued steering messages.
+        let inbox = manager.inbox_registry.get_or_create(&child_id).await;
         assert_eq!(
-            answered, 1,
-            "only one root-agent run should be active for the same peer at a time"
+            inbox.len().await,
+            messages as usize,
+            "all concurrent messages queued into the child inbox"
         );
 
-        let queued = responses
-            .iter()
-            .filter(|r| r.content.starts_with("Queued for root agent session"))
-            .count();
+        // Release the permit; the next receive runs ONE turn whose
+        // loop drains the queued steering at its first iteration.
+        drop(permit_hold);
+        let response = manager
+            .receive(
+                id.clone(),
+                peer.clone(),
+                "after".to_string(),
+                cli_channel(),
+                None,
+            )
+            .await
+            .expect("receive should succeed");
+        assert!(
+            response.content.contains("same-peer final"),
+            "response should carry the mock reply: {}",
+            response.content
+        );
         assert_eq!(
-            queued,
-            messages as usize - 1,
-            "the rest should be queued as steering messages"
+            inbox.len().await,
+            0,
+            "the child run drained the queued steering messages"
+        );
+        assert_eq!(
+            adapter.recorded_requests().len(),
+            1,
+            "exactly one LLM call ran for the whole batch"
         );
 
         let principal = manager.get(id).await.expect("principal should exist");
@@ -1644,7 +1824,7 @@ mod tests {
         assert_eq!(
             sessions.len(),
             1,
-            "all messages for the same peer share one root-agent session"
+            "all messages for the same peer share one peer-child session"
         );
     }
 
@@ -1887,9 +2067,9 @@ mod tests {
 
     // ===================================================================
     // Gap-1: parallel `receive_streaming` calls for the same peer must
-    // serialize — the first call acquires the per-session run permit,
-    // the rest queue as SteeringMessages. Mirrors the existing
-    // `concurrent_same_peer_messages_are_queued` test (line 1291) for
+    // serialize — arrivals while the peer child's run permit is held
+    // queue as SteeringMessages into the CHILD session inbox (Phase 7
+    // re-key). Mirrors `concurrent_same_peer_messages_are_queued` for
     // the streaming variant.
     // ===================================================================
     #[tokio::test(flavor = "multi_thread")]
@@ -1897,12 +2077,28 @@ mod tests {
     async fn concurrent_same_peer_streaming_receives_are_queued() {
         let (_temp, manager, adapter, id) = setup().await;
         let messages = 4;
-        for i in 0..messages {
-            adapter.queue_text(format!("streaming {i}"));
-        }
+        adapter.queue_text("streaming final".to_string());
 
         let peer = Subject::User("streaming-peer".to_string());
-        let mut handles = Vec::with_capacity(messages as usize);
+        let principal = manager
+            .get(id.clone())
+            .await
+            .expect("principal should exist");
+
+        // Hold the peer child's run permit so every concurrent
+        // streaming receive deterministically takes the
+        // steering-queue branch (see the non-streaming sibling test).
+        let child_id = manager
+            .ensure_peer_child_session(&principal, &peer)
+            .await
+            .expect("peer child provisioning");
+        let permit_hold = manager
+            .inbox_registry
+            .try_acquire_run(&child_id)
+            .await
+            .expect("permit should be free");
+
+        let mut handles = Vec::with_capacity(messages);
         for i in 0..messages {
             let manager = Arc::clone(&manager);
             let id = id.clone();
@@ -1923,12 +2119,6 @@ mod tests {
         }
 
         let results = futures::future::join_all(handles).await;
-        let ok_count = results.iter().filter(|r| r.is_ok()).count();
-        assert_eq!(
-            ok_count, messages as usize,
-            "all concurrent streaming receives should complete"
-        );
-
         let responses: Vec<PrincipalResponse> = results
             .into_iter()
             .map(|r| {
@@ -1937,32 +2127,41 @@ mod tests {
             })
             .collect();
 
-        let answered = responses
-            .iter()
-            .filter(|r| !r.content.starts_with("Queued for root agent session"))
-            .count();
-        assert_eq!(
-            answered, 1,
-            "only one root-agent run should be active for the same peer at a time"
+        let expected_queued = format!("Queued for root agent session {child_id}.");
+        for r in &responses {
+            assert_eq!(
+                r.content, expected_queued,
+                "all concurrent sends should be queued as steering"
+            );
+        }
+
+        // Release the permit; one streaming receive runs ONE turn that
+        // drains the queued steering at its first iteration.
+        drop(permit_hold);
+        let response = manager
+            .receive_streaming(
+                id,
+                peer,
+                "after".to_string(),
+                cli_channel(),
+                Box::new(|_event| {}),
+                None,
+            )
+            .await
+            .expect("receive_streaming should succeed");
+        assert!(
+            response.content.contains("streaming final"),
+            "response should carry the mock reply: {}",
+            response.content
         );
 
-        let queued = responses
-            .iter()
-            .filter(|r| r.content.starts_with("Queued for root agent session"))
-            .count();
-        assert_eq!(
-            queued,
-            messages - 1,
-            "all other concurrent sends should be queued as steering"
-        );
-
-        // Exactly one LLM call when the first run completes — the other
-        // messages are queued as steering for the next iteration.
+        // Exactly one LLM call for the whole batch — the queued
+        // messages rode the single run's steering drain.
         let recorded = adapter.recorded_requests();
         assert_eq!(
             recorded.len(),
             1,
-            "predecessor's LLM call should be the only one recorded"
+            "the single child run should be the only LLM call recorded"
         );
     }
 
@@ -2506,6 +2705,184 @@ mod tests {
             actual_ids, expected_ids,
             "plan injections must be ordered by updated_at DESC"
         );
+    }
+
+    // ===================================================================
+    // Sprint 2 Phase 7: all external peer ingress lands in per-peer
+    // standing children of the trunk.
+    // ===================================================================
+
+    /// Assert that no retired per-peer root JSONL (`root:{peer}` /
+    /// `root:cron:*`) exists under the principal's sessions dir.
+    fn assert_no_retired_root_jsonl(sessions_dir: &std::path::Path) {
+        for entry in std::fs::read_dir(sessions_dir).expect("sessions dir readable") {
+            let name = entry.unwrap().file_name().to_string_lossy().to_string();
+            assert!(
+                !name.starts_with("root:") || name == "root:self.jsonl",
+                "retired per-peer root session file must never be created: {name}"
+            );
+        }
+    }
+
+    /// The CLI owner (`user:local`) lands in the privileged
+    /// `/local-user` standing child of the trunk: the turn's JSONL
+    /// carries the exchange, the child is parented at `root:self`, and
+    /// no `root:user:local` session is created.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn receive_lands_in_privileged_local_user_child() {
+        let (_temp, manager, adapter, id) = setup().await;
+        adapter.queue_text("hi owner".to_string());
+
+        // Production shape: the CLI user IS the principal's owner
+        // (`user:local`), so its child is the privileged one.
+        manager
+            .update_config("stressy", |config| {
+                config.owner = Subject::User("local".to_string());
+            })
+            .await
+            .expect("update_config should succeed");
+
+        let peer = Subject::User("local".to_string());
+        let response = manager
+            .receive(
+                id.clone(),
+                peer.clone(),
+                "hello".to_string(),
+                cli_channel(),
+                None,
+            )
+            .await
+            .expect("receive should succeed");
+        assert!(response.content.contains("hi owner"));
+
+        let principal = manager.get(id).await.expect("principal should exist");
+        let sessions_dir = principal.memory.sessions_dir().clone();
+
+        // The peer child: standing, privileged (owner), parented at
+        // the trunk, stamped with the real peer.
+        let mut mgr = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir.clone());
+        let metas = mgr.list_all_sessions(false).await.unwrap();
+        let child_id = crate::principal::peer_children::find_peer_child(&metas, &peer)
+            .expect("owner peer child exists");
+        let child = metas
+            .iter()
+            .find(|m| m.session_id == child_id)
+            .expect("child metadata");
+        assert_eq!(child.slug.as_deref(), Some("local-user"));
+        assert!(child.standing);
+        assert!(child.privileged, "owner's child must be privileged");
+        assert_eq!(child.parent_session_id.as_deref(), Some("root:self"));
+
+        // The exchange landed in the child JSONL.
+        let jsonl = std::fs::read_to_string(sessions_dir.join(format!("{child_id}.jsonl")))
+            .expect("child JSONL exists");
+        assert!(jsonl.contains("hello"), "child JSONL carries the input");
+        assert!(jsonl.contains("hi owner"), "child JSONL carries the reply");
+
+        assert_no_retired_root_jsonl(&sessions_dir);
+    }
+
+    /// An A2A peer (`principal:{did}`) lands in a NON-privileged
+    /// `/principal-{fragment}` standing child — the subtree-scoped
+    /// stranger shape.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn receive_a2a_peer_creates_principal_child() {
+        let (_temp, manager, adapter, id) = setup().await;
+        adapter.queue_text("a2a reply".to_string());
+
+        let peer = Subject::Principal("did:key:z6MkA2aPeerExample".to_string().into());
+        let channel = ChannelContext {
+            kind: ChannelKind::A2a,
+            streaming: false,
+        };
+        let response = manager
+            .receive(id.clone(), peer.clone(), "ping".to_string(), channel, None)
+            .await
+            .expect("receive should succeed");
+        assert!(response.content.contains("a2a reply"));
+
+        let principal = manager.get(id).await.expect("principal should exist");
+        let sessions_dir = principal.memory.sessions_dir().clone();
+        let mut mgr = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir.clone());
+        let metas = mgr.list_all_sessions(false).await.unwrap();
+        let child_id = crate::principal::peer_children::find_peer_child(&metas, &peer)
+            .expect("A2A peer child exists");
+        let child = metas
+            .iter()
+            .find(|m| m.session_id == child_id)
+            .expect("child metadata");
+        assert!(
+            child.slug.as_deref().unwrap().starts_with("principal-"),
+            "A2A child slug must be /principal-{{fragment}}, got {:?}",
+            child.slug
+        );
+        assert!(child.standing);
+        assert!(
+            !child.privileged,
+            "a stranger's child must stay subtree-scoped"
+        );
+        assert_eq!(child.peer_type.as_deref(), Some("principal"));
+        assert_eq!(child.peer_id.as_deref(), Some("did:key:z6MkA2aPeerExample"));
+
+        let jsonl = std::fs::read_to_string(sessions_dir.join(format!("{child_id}.jsonl")))
+            .expect("child JSONL exists");
+        assert!(jsonl.contains("ping"), "child JSONL carries the input");
+
+        assert_no_retired_root_jsonl(&sessions_dir);
+    }
+
+    /// `receive_streaming` drives the peer-child turn and forwards
+    /// `AgenticEvent`s (assistant text/deltas) to the caller's sink.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn receive_streaming_streams_from_peer_child() {
+        let (_temp, manager, adapter, id) = setup().await;
+        adapter.queue_text("streamed reply".to_string());
+
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_sink = Arc::clone(&events);
+        let peer = Subject::User("alice".to_string());
+        let response = manager
+            .receive_streaming(
+                id.clone(),
+                peer.clone(),
+                "stream me".to_string(),
+                cli_channel(),
+                Box::new(move |event| events_sink.lock().unwrap().push(event)),
+                None,
+            )
+            .await
+            .expect("receive_streaming should succeed");
+        assert!(response.content.contains("streamed reply"));
+
+        let collected = events.lock().unwrap();
+        assert!(
+            collected.iter().any(|e| matches!(
+                e,
+                peko_engine::AgenticEvent::AssistantText { .. }
+                    | peko_engine::AgenticEvent::AssistantDelta { .. }
+            )),
+            "the sink must see assistant text events; got {} events",
+            collected.len()
+        );
+        drop(collected);
+
+        // The turn landed in alice's standing child.
+        let principal = manager.get(id).await.expect("principal should exist");
+        let sessions_dir = principal.memory.sessions_dir().clone();
+        let mut mgr = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir.clone());
+        let metas = mgr.list_all_sessions(false).await.unwrap();
+        let child_id = crate::principal::peer_children::find_peer_child(&metas, &peer)
+            .expect("alice's peer child exists");
+        let jsonl = std::fs::read_to_string(sessions_dir.join(format!("{child_id}.jsonl")))
+            .expect("child JSONL exists");
+        assert!(jsonl.contains("stream me"));
+        assert_no_retired_root_jsonl(&sessions_dir);
     }
 
     // ===================================================================

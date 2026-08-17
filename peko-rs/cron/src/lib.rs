@@ -860,8 +860,9 @@ mod tests {
     /// Phase 3b (2026-08-15): trunk-targeted Send jobs respect the
     /// keepalive interval floor at the `add_job` funnel (the path the
     /// CLI `--target trunk` and the `CronCreate` tool both flow
-    /// through). Sub-minute `Every` intervals are refused; non-trunk
-    /// jobs and explicit/event-driven schedules are unchanged.
+    /// through). Sub-minute `Every` intervals are refused; explicit/
+    /// event-driven schedules are unchanged. Phase 7: the trunk is the
+    /// DEFAULT Send target, so `target: None` jobs are floored too.
     #[test]
     fn test_add_job_trunk_interval_floor() {
         let tmp = TempDir::new().unwrap();
@@ -883,10 +884,12 @@ mod tests {
         job.schedule = ScheduleKind::Every { every_ms: 300_000 };
         scheduler.add_job(&job).unwrap();
 
-        // Non-trunk Send + Every{30s} → unchanged (accepted).
+        // Default-target (None) Send + Every{30s} → refused: Phase 7
+        // made the trunk the default destination, so the floor holds.
         let mut fast = make_job("conv-fast", None);
         fast.schedule = ScheduleKind::Every { every_ms: 30_000 };
-        scheduler.add_job(&fast).unwrap();
+        let err = scheduler.add_job(&fast).unwrap_err();
+        assert!(err.to_string().contains("every_ms >= 60000"), "got: {err}");
 
         // trunk + At (future) and trunk + Cron → exempt, accepted.
         let mut at = make_job("trunk-at", None);

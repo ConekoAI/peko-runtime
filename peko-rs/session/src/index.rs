@@ -951,13 +951,18 @@ impl SessionIndex {
 
             sessions
                 .iter()
-                // Prune exemptions: `root:*` sessions are the principal's
-                // continuous sessions (engine-managed, never idle-prunable),
+                // Prune exemptions: the principal's trunk session
+                // (`root:self` — the only `root:*` id left after the
+                // Phase 7 retirement of the per-peer root sessions) is
+                // continuous and engine-managed, never idle-prunable;
                 // and archived/standing sessions must never lose their
-                // transcripts — archiving/standing is a durability promise,
-                // not a deletion candidate.
+                // transcripts — archiving/standing is a durability
+                // promise, not a deletion candidate.
                 .filter(|(id, e)| {
-                    e.updated_at < cutoff && !id.starts_with("root:") && !e.archived && !e.standing
+                    e.updated_at < cutoff
+                        && id.as_str() != "root:self"
+                        && !e.archived
+                        && !e.standing
                 })
                 .map(|(k, _)| k.clone())
                 .collect()
@@ -1302,10 +1307,12 @@ mod tests {
         assert!(reloaded.privileged);
     }
 
-    /// Maintenance must retain sessions exempt from pruning: `root:*`
-    /// ids (the principal's continuous, engine-managed sessions),
-    /// archived sessions, and standing sessions — while still pruning a
-    /// plain idle session past the cutoff.
+    /// Maintenance must retain sessions exempt from pruning: the
+    /// principal's trunk `root:self` (the only `root:*` id left after
+    /// Phase 7 retired the per-peer root sessions — a legacy
+    /// `root:user:*` id has NO exemption and prunes like any plain
+    /// session), archived sessions, and standing sessions — while
+    /// still pruning plain idle sessions past the cutoff.
     #[tokio::test]
     async fn maintenance_prune_exemptions() {
         use crate::index::{MaintenanceConfig, DEFAULT_MAX_SESSIONS};
@@ -1337,8 +1344,10 @@ mod tests {
             index.insert(entry).await.unwrap();
         }
 
-        // One per exemption class, plus a plain idle session.
-        insert_old(&mut index, "root:user:alice", now - two_days_ms, |_| {}).await;
+        // One per exemption class, plus two plain idle sessions (one
+        // carrying a retired `root:user:*`-shaped id — no longer
+        // exempt).
+        insert_old(&mut index, "root:self", now - two_days_ms, |_| {}).await;
         insert_old(&mut index, "sess_archived", now - two_days_ms, |e| {
             e.archived = true;
         })
@@ -1348,14 +1357,16 @@ mod tests {
         })
         .await;
         insert_old(&mut index, "sess_plain", now - two_days_ms, |_| {}).await;
+        insert_old(&mut index, "root:user:alice", now - two_days_ms, |_| {}).await;
         index.save().await.unwrap();
 
         // Transcripts exist on disk for the exempt + plain sessions.
         for id in [
-            "root:user:alice",
+            "root:self",
             "sess_archived",
             "sess_standing",
             "sess_plain",
+            "root:user:alice",
         ] {
             fs::write(
                 temp.path()
@@ -1371,10 +1382,13 @@ mod tests {
             max_sessions: DEFAULT_MAX_SESSIONS,
         };
         let report = index.maintenance(&config).await.unwrap();
-        assert_eq!(report.pruned, 1, "only the plain idle session pruned");
+        assert_eq!(
+            report.pruned, 2,
+            "the plain idle session AND the retired root:user:* id prune"
+        );
         assert_eq!(report.total, 3);
 
-        for id in ["root:user:alice", "sess_archived", "sess_standing"] {
+        for id in ["root:self", "sess_archived", "sess_standing"] {
             assert!(index.get(id).await.unwrap().is_some(), "{id} retained");
             assert!(
                 temp.path()
@@ -1383,8 +1397,16 @@ mod tests {
                 "{id} transcript retained"
             );
         }
-        assert!(index.get("sess_plain").await.unwrap().is_none());
-        assert!(!temp.path().join("sess_plain.jsonl").exists());
+        for id in ["sess_plain", "root:user:alice"] {
+            assert!(index.get(id).await.unwrap().is_none(), "{id} pruned");
+            assert!(
+                !temp
+                    .path()
+                    .join(format!("{}.jsonl", safe_filename_component(id)))
+                    .exists(),
+                "{id} transcript pruned"
+            );
+        }
     }
 
     /// `clear_active_for_peer` drops only the active-session pointer;

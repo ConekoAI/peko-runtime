@@ -274,8 +274,8 @@ pub trait SessionRuntime: Send + Sync {
 
     /// Move (reparent) a session — with its subtree — under a new
     /// parent. Refused when the move would create a cycle, when the
-    /// target is a live `root:*` session, or when the target or any
-    /// descendant has an active run.
+    /// target is the live trunk session (`root:self`), or when the
+    /// target or any descendant has an active run.
     async fn move_session(&self, session_key: &str, new_parent: String) -> anyhow::Result<()>;
 
     /// Set or clear the archived flag on a session. Archived sessions

@@ -16,25 +16,26 @@
 //!
 //! - match: a session whose `slug == name` AND `standing == true` AND
 //!   `trigger == "spawn"` whose parent chain roots at the principal's
-//!   owner root session (`root:{owner}`) — left untouched (idempotent);
+//!   TRUNK session (`root:self` — re-anchored from the retired owner
+//!   root `root:{owner}` in Phase 7) — left untouched (idempotent);
 //! - missing: created with metadata + a JSONL created-event only (NO
 //!   LLM turn, no run), flagged `trigger = "spawn"` / `standing =
-//!   true` / `slug = name`, parented at the owner root, titled with
+//!   true` / `slug = name`, parented at the trunk, titled with
 //!   the declaration's description (falling back to the name). The
 //!   declaration's `subagent_type` is recorded as a `System` event in
 //!   the child JSONL so a later attach can default to it
 //!   (`crate::session::standing`).
 //!
-//! ## Dangling owner root
+//! ## Dangling trunk
 //!
-//! The owner root session may not exist yet (no human has chatted).
+//! The trunk session may not exist yet (no self-turn has run).
 //! The child's `parent_session_id` then dangles — which the ownership
 //! layer tolerates by design: the ancestor walk ends gracefully at the
 //! missing entry (the id still lands in `ancestors`), and
 //! `descendants_of` adjacency works without a parent entry. The child
 //! classifies as a spawned (non-base) caller either way, and once the
-//! owner root session is created it manages the whole store including
-//! the child. We deliberately do NOT create the owner root entry at
+//! trunk session is created it manages the whole store including
+//! the child. We deliberately do NOT create the trunk entry at
 //! init — its lifecycle belongs to the engine.
 //!
 //! ## Failure tolerance
@@ -53,7 +54,7 @@ use peko_session::{SessionCreateOptions, SessionMetadata};
 use tokio::sync::RwLock;
 
 use crate::principal::config::PrincipalConfig;
-use crate::principal::routers::root::root_session_id;
+use crate::principal::routers::root::trunk_session_id;
 use crate::session::ownership::caller_context;
 
 /// Ensure every `[children]` declaration in the principal's
@@ -95,7 +96,7 @@ pub async fn ensure_declared_children(
         return Ok(0);
     }
 
-    let owner_root = root_session_id(&config.owner);
+    let trunk = trunk_session_id();
     let mut created = 0;
     let mut mgr = session_manager.write().await;
     // Snapshot once: declared names are unique map keys, and a child
@@ -103,12 +104,12 @@ pub async fn ensure_declared_children(
     // stale snapshot cannot cause a duplicate create.
     let metas = mgr.list_all_sessions(false).await?;
     for (name, decl) in &config.children {
-        if find_declared_child(&metas, &owner_root, name).is_some() {
+        if find_declared_child(&metas, &trunk, name).is_some() {
             continue;
         }
         let peer = Subject::Principal(format!("standing_{name}").into());
         let options = SessionCreateOptions::new()
-            .with_parent(owner_root.clone())
+            .with_parent(trunk.clone())
             // `with_parent` presets trigger="branch"; the explicit
             // trigger must be applied after it (spawn semantics — the
             // resume guard stack keys on `trigger == "spawn"`).
@@ -131,14 +132,16 @@ pub async fn ensure_declared_children(
         created += 1;
         tracing::info!(
             "ensure_declared_children: created standing child '{name}' as session {child_id} \
-             under {owner_root}"
+             under {trunk}"
         );
     }
     Ok(created)
 }
 
 /// Find the standing child session for `name`: slug match + standing
-/// + spawn-triggered + parent chain rooted at `owner_root`.
+/// + spawn-triggered + parent chain rooted at `owner_root` (the
+/// principal's TRUNK `root:self` on the production path — Phase 7
+/// re-anchor).
 #[must_use]
 pub fn find_declared_child<'a>(
     metas: &'a [SessionMetadata],
@@ -222,8 +225,8 @@ mod tests {
         assert_eq!(child.trigger, "spawn");
         assert_eq!(
             child.parent_session_id.as_deref(),
-            Some("root:user:alice"),
-            "child must be parented at the owner root session"
+            Some("root:self"),
+            "child must be parented at the trunk session"
         );
         assert_eq!(child.title.as_deref(), Some("Memory curator"));
 
@@ -280,13 +283,13 @@ mod tests {
     #[tokio::test]
     async fn non_standing_slug_collision_does_not_match() {
         let (dir, manager) = fixture("\n[children.memory]\nsubagent_type = \"archivist\"\n").await;
-        // Pre-create a NON-standing session under the owner root with
+        // Pre-create a NON-standing session under the trunk with
         // the same slug.
         {
             let mut mgr = manager.write().await;
             let peer = Subject::User("alice".to_string());
             let options = SessionCreateOptions::new()
-                .with_parent("root:user:alice")
+                .with_parent("root:self")
                 .with_trigger("spawn");
             let handle = mgr.create_session("root", &peer, options).await.unwrap();
             let id = handle.session_id().to_string();
@@ -330,13 +333,13 @@ mod tests {
         assert!(metas_of(&manager).await.is_empty());
     }
 
-    /// Dangling-parent ownership behavior (the owner root session does
+    /// Dangling-parent ownership behavior (the trunk session does
     /// not exist yet when the child is created):
     ///
-    /// (a) once the owner root session exists, its caller is base and
+    /// (a) once the trunk session exists, its caller is base and
     ///     manages the whole store including the child;
     /// (b) the child classifies as a spawned caller both BEFORE and
-    ///     AFTER the root exists, and manages only its own subtree.
+    ///     AFTER the trunk exists, and manages only its own subtree.
     #[tokio::test]
     async fn dangling_parent_keeps_ownership_semantics() {
         let (dir, manager) = fixture("\n[children.memory]\nsubagent_type = \"archivist\"\n").await;
@@ -352,33 +355,30 @@ mod tests {
             .session_id
             .clone();
 
-        // (b) BEFORE the root exists: the child is a spawned (non-base)
+        // (b) BEFORE the trunk exists: the child is a spawned (non-base)
         // caller; its dangling parent id stays in its ancestor chain.
         let child_caller = caller_context(&child_id, &metas);
         assert!(!child_caller.is_base);
         assert!(!child_caller.dangling);
-        assert_eq!(child_caller.ancestors, vec!["root:user:alice".to_string()]);
+        assert_eq!(child_caller.ancestors, vec!["root:self".to_string()]);
         // The child cannot manage its (missing) parent — outside its subtree.
-        assert!(!in_subtree(&child_caller, "root:user:alice", &metas));
+        assert!(!in_subtree(&child_caller, "root:self", &metas));
         // Adjacency still works without a parent entry: the dangling
-        // root's descendants include the child.
-        assert_eq!(
-            descendants_of("root:user:alice", &metas),
-            vec![child_id.clone()]
-        );
+        // trunk's descendants include the child.
+        assert_eq!(descendants_of("root:self", &metas), vec![child_id.clone()]);
 
-        // Create the owner root session (as the first human chat would).
+        // Create the trunk session (as the first self-turn would).
         {
             let mut mgr = manager.write().await;
             let peer = Subject::User("alice".to_string());
-            let options = SessionCreateOptions::new().with_session_id("root:user:alice");
+            let options = SessionCreateOptions::new().with_session_id("root:self");
             mgr.create_session("root", &peer, options).await.unwrap();
         }
         let metas = metas_of(&manager).await;
 
-        // (a) The root caller is base → manages the whole store,
+        // (a) The trunk caller is base → manages the whole store,
         // including the pre-existing standing child.
-        let root_caller = caller_context("root:user:alice", &metas);
+        let root_caller = caller_context("root:self", &metas);
         assert!(root_caller.is_base);
         assert!(in_subtree(&root_caller, &child_id, &metas));
 
@@ -386,7 +386,7 @@ mod tests {
         // its own subtree.
         let child_caller = caller_context(&child_id, &metas);
         assert!(!child_caller.is_base);
-        assert!(!in_subtree(&child_caller, "root:user:alice", &metas));
+        assert!(!in_subtree(&child_caller, "root:self", &metas));
         // …but it manages its OWN subtree: a grandchild under the child.
         {
             let mut mgr = manager.write().await;
@@ -402,8 +402,8 @@ mod tests {
             .find(|m| m.parent_session_id.as_deref() == Some(child_id.as_str()))
             .unwrap();
         assert!(in_subtree(&child_caller, &grandchild.session_id, &metas));
-        // …and still not the root.
-        assert!(!in_subtree(&child_caller, "root:user:alice", &metas));
+        // …and still not the trunk.
+        assert!(!in_subtree(&child_caller, "root:self", &metas));
     }
 
     /// The match requires the parent chain to root at THIS principal's

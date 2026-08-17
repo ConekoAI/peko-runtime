@@ -12,6 +12,7 @@ use crate::extensions::framework::async_exec::executor::{
 };
 use crate::extensions::framework::core::ExtensionCore;
 use crate::principal::manager::PrincipalManager;
+#[cfg(test)]
 use crate::principal::router::{ChannelContext, ChannelKind};
 use anyhow::Result;
 use chrono::Utc;
@@ -611,16 +612,19 @@ impl CronEngine {
     // Principal execution — Send path (CLI cron)
     // ------------------------------------------------------------------
 
-    /// Run a [`CronJobAction::Send`] job by delivering its message to
-    /// the Principal's owner root session. Equivalent to a deferred
-    /// `peko send` from the daemon.
+    /// Run a [`CronJobAction::Send`] job by firing its message into the
+    /// principal's TRUNK session `root:self` via
+    /// [`PrincipalManager::receive_trunk`]. Equivalent to a deferred
+    /// self-turn from the daemon.
     ///
-    /// `target = "trunk"` (Phase 3, 2026-08-15) re-routes the turn into
-    /// the principal's trunk session `root:self` via
-    /// [`PrincipalManager::receive_trunk`]: no chat-log projection and
-    /// no `deliver_send_job_note` cross-post (the turn already IS in
-    /// the principal's own session). Default (`None`) preserves the
-    /// `root:cron:{owner}` + note behavior exactly.
+    /// Phase 7 (sprint 2, 2026-08-17): the trunk is the DEFAULT (and
+    /// only) destination — `target: None` and `target = "trunk"` are
+    /// the same route; the per-owner `root:cron:{owner}` session is
+    /// retired. The owner-facing projection survives unchanged:
+    /// `record_cron_input` writes the fired prompt to the
+    /// `(principal_did, owner)` chat-log thread, and
+    /// `deliver_send_job_note` cross-posts the labeled outcome note
+    /// into the owner's standing peer child (via the peer messenger).
     async fn run_send_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         let Some(pm) = self.principal_manager.as_ref() else {
             return Ok((
@@ -633,14 +637,14 @@ impl CronEngine {
             .await
             .ok_or_else(|| anyhow::anyhow!("Principal '{}' not loaded", job.principal_id.0))?;
 
-        let trunk = match &job.action {
+        // Validate the target. `None` (default) and "trunk" are the
+        // same destination since Phase 7; the DTO deserializer and
+        // `CronScheduler::add_job` both reject unknown targets, but a
+        // struct-literal construction could still slip one through —
+        // fail loudly rather than misroute.
+        match &job.action {
             CronJobAction::Send { target, .. } => match target.as_deref() {
-                None => false,
-                Some(peko_cron::tools::SEND_TARGET_TRUNK) => true,
-                // Defensive: the DTO deserializer and
-                // `CronScheduler::add_job` both reject unknown targets,
-                // but a struct-literal construction could still slip
-                // one through — fail loudly rather than misroute.
+                None | Some(peko_cron::tools::SEND_TARGET_TRUNK) => {}
                 Some(other) => {
                     return Ok((
                         "failed".to_string(),
@@ -652,25 +656,7 @@ impl CronEngine {
                 }
             },
             // The dispatch in `execute_job` only routes Send here.
-            _ => false,
-        };
-
-        if trunk {
-            return match pm
-                .receive_trunk(principal.id.clone(), job.task_description(), None)
-                .await
-            {
-                Ok(response) => {
-                    self.idle_detector
-                        .record_activity(&principal.name().await)
-                        .await;
-                    Ok(("success".to_string(), Some(response.content)))
-                }
-                Err(e) => Ok((
-                    "failed".to_string(),
-                    Some(format!("Principal trunk execution error: {e}")),
-                )),
-            };
+            _ => {}
         }
 
         let peer = {
@@ -679,31 +665,24 @@ impl CronEngine {
         };
 
         // Chat-log projection: the cron prompt is owner-authored
-        // (the cron fires on the owner's behalf) and is filtered
-        // out by `is_peer_chat_channel` elsewhere — so we record it
-        // directly here. The principal's reply still flows through
-        // `record_response` unconditionally. Best-effort: a failed
-        // chat-log write logs a warning but does not block the run.
-        if let Err(e) = pm.record_cron_input(&principal, &peer, &job.task_description()).await {
+        // (the cron fires on the owner's behalf) and the trunk path
+        // skips chat-log projection by design — so we record it
+        // directly here. The outcome surfaces via
+        // `deliver_send_job_note`'s chat-log row. Best-effort: a
+        // failed chat-log write logs a warning but does not block the
+        // run.
+        if let Err(e) = pm
+            .record_cron_input(&principal, &peer, &job.task_description())
+            .await
+        {
             warn!(
                 "cron Send: chat-log inbound append failed for job '{}': {e}",
                 job.name
             );
         }
 
-        let channel = ChannelContext {
-            kind: ChannelKind::Cron,
-            streaming: false,
-        };
-
         match pm
-            .receive(
-                principal.id.clone(),
-                peer.clone(),
-                job.task_description(),
-                channel,
-                None,
-            )
+            .receive_trunk(principal.id.clone(), job.task_description(), None)
             .await
         {
             Ok(response) => {
@@ -716,7 +695,7 @@ impl CronEngine {
             }
             Err(e) => Ok((
                 "failed".to_string(),
-                Some(format!("Principal execution error: {e}")),
+                Some(format!("Principal trunk execution error: {e}")),
             )),
         }
     }
@@ -798,14 +777,16 @@ impl CronEngine {
     }
 
     /// Append a fired Send job's outcome to the owner's CONVERSATIONAL
-    /// root session as a labeled note (2026-08-07 field test, F2).
+    /// session as a labeled note (2026-08-07 field test, F2).
     ///
-    /// The cron turn itself runs in the isolated `root:cron:{peer}`
-    /// session; this note is the only thing that crosses into the
-    /// human's session. It never triggers a turn: if a turn is in
-    /// flight the note lands mid-history and is picked up (and
-    /// shape-repaired if needed) at the next load; if idle, it waits in
-    /// the JSONL for the user's next message. Tagged
+    /// Phase 7: the cron turn itself runs in the TRUNK session
+    /// (`root:self`); this note is the only thing that crosses into the
+    /// human's session — which is now the owner's standing peer child
+    /// of the trunk (the messenger resolves it find-only; the retired
+    /// `root:{owner}` session is never addressed). It never triggers a
+    /// turn: if a turn is in flight the note lands mid-history and is
+    /// picked up (and shape-repaired if needed) at the next load; if
+    /// idle, it waits in the JSONL for the user's next message. Tagged
     /// `MessageSource::Cron` so consumers can distinguish it from human
     /// input; user-role because the Anthropic-style adapter maps
     /// system-role messages to the top-level system parameter
@@ -1661,13 +1642,27 @@ mod tests {
         None
     }
 
-    /// F2 regression (2026-08-07 field test): a `Send` cron job must run
-    /// its turn in the isolated `root:cron:{peer}` session — never in the
-    /// human's conversational `root:{peer}` session — and must leave a
-    /// labeled note with the outcome in the conversational session so the
-    /// user actually sees the result.
+    /// Phase 7 helper: the owner peer's standing child session id
+    /// (the `/user-test-owner` child of the trunk), resolved find-only
+    /// from the principal's sessions dir.
+    async fn owner_child_id(
+        principal: &Arc<crate::principal::Principal>,
+        peer: &Subject,
+    ) -> Option<String> {
+        let mut mgr = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(principal.memory.sessions_dir().clone());
+        let metas = mgr.list_all_sessions(false).await.ok()?;
+        crate::principal::peer_children::find_peer_child(&metas, peer)
+    }
+
+    /// Phase 7 (sprint 2): a `Send` cron job (default target) fires its
+    /// turn into the principal's TRUNK session `root:self` — the
+    /// `root:cron:{owner}` session is retired — and leaves a labeled
+    /// note with the outcome in the owner's standing peer child so the
+    /// user actually sees the result. The trunk also carries the
+    /// `[notify]` self-view line for the note delivery.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_send_job_isolates_cron_session_and_delivers_note() {
+    async fn test_send_job_fires_into_trunk_and_delivers_note() {
         let tmp = TempDir::new().unwrap();
 
         // Principal manager with a mock resolver; two queued texts:
@@ -1699,11 +1694,14 @@ mod tests {
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "crony").await;
 
-        // 1. A conversational (CLI) turn creates the human's root session.
+        let owner = Subject::User("test-owner".to_string());
+
+        // 1. A conversational (CLI) turn creates the owner's standing
+        //    peer child.
         manager
             .receive(
                 principal.id.clone(),
-                Subject::User("test-owner".to_string()),
+                owner.clone(),
                 "hello there".to_string(),
                 ChannelContext {
                     kind: ChannelKind::Cli,
@@ -1714,7 +1712,7 @@ mod tests {
             .await
             .expect("conversational turn should succeed");
 
-        // 2. A due Send job fires a cron turn.
+        // 2. A due Send job (DEFAULT target) fires a trunk turn.
         let engine_resolver = crate::common::paths::PathResolver::with_dirs(
             tmp.path().to_path_buf(),
             tmp.path().join("data"),
@@ -1774,27 +1772,40 @@ mod tests {
         assert_eq!(runs[0].status, "success");
         assert!(runs[0].finished_at.is_some());
 
-        // The cron turn ran in the isolated cron session.
-        let cron_path = find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl")
-            .expect("cron session JSONL should exist");
-        let cron_jsonl = std::fs::read_to_string(&cron_path).unwrap();
+        // The cron turn ran in the TRUNK session.
+        let trunk_path = find_file_named(tmp.path(), "root:self.jsonl")
+            .expect("trunk session JSONL should exist");
+        let trunk_jsonl = std::fs::read_to_string(&trunk_path).unwrap();
         assert!(
-            cron_jsonl.contains("cron tick payload"),
-            "cron session should contain the cron turn, got: {cron_jsonl}"
+            trunk_jsonl.contains("cron tick payload"),
+            "trunk session should contain the cron turn, got: {trunk_jsonl}"
+        );
+        assert!(
+            trunk_jsonl.contains("cron turn reply"),
+            "trunk session should contain the turn's reply, got: {trunk_jsonl}"
+        );
+        // The note delivery's `[notify]` self-view line lands in the
+        // trunk (Phase 7: the principal's self-view lives there).
+        assert!(
+            trunk_jsonl.contains("[notify]"),
+            "trunk session should carry the note-delivery self-view line, got: {trunk_jsonl}"
         );
 
-        // The conversational session holds the human turn plus the
-        // labeled cron note — and NOT the raw cron message.
-        let conv_path = find_file_named(tmp.path(), "root:user:test-owner.jsonl")
-            .expect("conversational session JSONL should exist");
+        // The owner's peer child holds the human turn plus the labeled
+        // cron note — and NOT the raw cron message.
+        let child_id = owner_child_id(&principal, &owner)
+            .await
+            .expect("owner peer child should exist");
+        let conv_path = find_file_named(tmp.path(), &format!("{child_id}.jsonl"))
+            .expect("owner child session JSONL should exist");
         let conv_jsonl = std::fs::read_to_string(&conv_path).unwrap();
         assert!(
             conv_jsonl.contains("hello there"),
-            "conversational session should contain the human turn"
+            "owner child should contain the human turn"
         );
         assert!(
             conv_jsonl.contains("⏰ [cron job 'test-job' fired]"),
-            "conversational session should contain the cron note, got: {conv_jsonl}"
+            "owner child should contain the cron note, got: {conv_jsonl}"
         );
         assert!(
             conv_jsonl.contains("cron turn reply"),
@@ -1802,17 +1813,29 @@ mod tests {
         );
         assert!(
             !conv_jsonl.contains("cron tick payload"),
-            "cron message must NOT leak into the conversational session"
+            "cron message must NOT leak into the owner child session"
+        );
+
+        // Retired session ids are never created.
+        assert!(
+            find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl").is_none(),
+            "the per-owner cron session is retired — it must never be created"
+        );
+        assert!(
+            find_file_named(tmp.path(), "root:user:test-owner.jsonl").is_none(),
+            "the per-peer root session is retired — it must never be created"
         );
 
         drop(principal);
     }
 
-    /// Phase 3 (2026-08-15): a `Send` job with `target = "trunk"` fires
-    /// its turn into the principal's trunk session `root:self` — NOT
-    /// the per-owner `root:cron:{owner}` session — and skips the
-    /// `deliver_send_job_note` cross-post into the conversational
-    /// session (the turn already IS in the principal's own session).
+    /// Phase 7 (2026-08-17): `target = "trunk"` stays accepted and is
+    /// the SAME route as the default — the turn fires into the
+    /// principal's trunk session `root:self`, and the outcome note
+    /// cross-posts into the owner's standing peer child exactly like
+    /// the default path (the Phase-3 "trunk means no note" special
+    /// case is gone: the note no longer duplicates anything, since
+    /// the note lives in the owner child, not the trunk).
     ///
     /// `#[serial]` because the principal-manager tests mutate the
     /// process-global `PEKO_HOME` (identity key storage root); running
@@ -1820,7 +1843,7 @@ mod tests {
     /// mid-test.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn test_send_job_target_trunk_lands_in_root_self() {
+    async fn test_send_job_explicit_trunk_target_matches_default() {
         let tmp = TempDir::new().unwrap();
 
         // Principal manager with a mock resolver; two queued texts:
@@ -1851,14 +1874,15 @@ mod tests {
         let workspace = tmp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "crony").await;
+        let owner = Subject::User("test-owner".to_string());
 
-        // 1. A conversational (CLI) turn creates the human's root
-        //    session — so a note cross-post WOULD have somewhere to
-        //    land if it happened.
+        // 1. A conversational (CLI) turn creates the owner's standing
+        //    peer child — so the note cross-post has somewhere to
+        //    land.
         manager
             .receive(
                 principal.id.clone(),
-                Subject::User("test-owner".to_string()),
+                owner.clone(),
                 "hello there".to_string(),
                 ChannelContext {
                     kind: ChannelKind::Cli,
@@ -1941,25 +1965,28 @@ mod tests {
         // No per-owner cron session was created.
         assert!(
             find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl").is_none(),
-            "trunk-targeted Send must not create a root:cron session"
+            "the per-owner cron session is retired — it must never be created"
         );
 
-        // The conversational session holds ONLY the human turn — no
-        // note cross-post, no payload leak.
-        let conv_path = find_file_named(tmp.path(), "root:user:test-owner.jsonl")
-            .expect("conversational session JSONL should exist");
+        // The owner's peer child holds the human turn plus the note
+        // cross-post — and NOT the raw trunk payload.
+        let child_id = owner_child_id(&principal, &owner)
+            .await
+            .expect("owner peer child should exist");
+        let conv_path = find_file_named(tmp.path(), &format!("{child_id}.jsonl"))
+            .expect("owner child session JSONL should exist");
         let conv_jsonl = std::fs::read_to_string(&conv_path).unwrap();
         assert!(
             conv_jsonl.contains("hello there"),
-            "conversational session should contain the human turn"
+            "owner child should contain the human turn"
         );
         assert!(
-            !conv_jsonl.contains("⏰ [cron job"),
-            "trunk-targeted Send must NOT cross-post a note, got: {conv_jsonl}"
+            conv_jsonl.contains("⏰ [cron job 'self-upkeep' fired]"),
+            "owner child should carry the outcome note, got: {conv_jsonl}"
         );
         assert!(
             !conv_jsonl.contains("organize your memory"),
-            "trunk payload must NOT leak into the conversational session"
+            "trunk payload must NOT leak into the owner child session"
         );
 
         drop(principal);
@@ -2185,13 +2212,12 @@ mod tests {
                     other => panic!("expected AsyncInboxItem::Steering, got {other:?}"),
                 }
 
-                // The owner's conversational inbox must stay empty —
-                // pre-3b the steer landed there instead.
-                let owner_inbox = registry.get_or_create("root:user:test-owner").await;
-                assert!(
-                    owner_inbox.is_empty().await,
-                    "owner conversational inbox must be untouched"
-                );
+                // The owner's peer-child inbox must stay empty —
+                // pre-3b the steer landed in the owner's
+                // conversational inbox instead of the trunk's. (No
+                // peer child exists in this test — nothing was ever
+                // sent — so any non-trunk inbox key stays empty; the
+                // trunk assertion above is the load-bearing one.)
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -2199,15 +2225,17 @@ mod tests {
         panic!("timed out waiting for steer message in {trunk_key} inbox");
     }
 
-    /// — the message text itself lands in the owner's conversational
-    /// session as a labeled note, NO agent turn runs (no LLM call, no
-    /// `root:cron:*` session).
+    /// Phase 7: the Notify note lands in the owner's standing peer
+    /// child (the conversational session), NO agent turn runs (no LLM
+    /// call), and — because no self-turn has ever run — the trunk
+    /// session is NOT created just to carry the `[notify]` self-view
+    /// line (the messenger's principal-view append is open-if-exists).
     #[tokio::test(flavor = "multi_thread")]
     async fn test_notify_job_delivers_note_without_turn() {
         let tmp = TempDir::new().unwrap();
 
         // Principal manager with a mock resolver; ONE queued text —
-        // the conversational turn that creates the human's session.
+        // the conversational turn that creates the owner's peer child.
         // The Notify fire must consume NOTHING from the queue.
         let path_resolver = PathResolver::with_dirs(
             tmp.path().join("config"),
@@ -2234,12 +2262,13 @@ mod tests {
         let workspace = tmp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "crony").await;
+        let owner = Subject::User("test-owner".to_string());
 
-        // A conversational turn creates the human's root session.
+        // A conversational turn creates the owner's peer child.
         manager
             .receive(
                 principal.id.clone(),
-                Subject::User("test-owner".to_string()),
+                owner.clone(),
                 "hello there".to_string(),
                 ChannelContext {
                     kind: ChannelKind::Cli,
@@ -2307,19 +2336,39 @@ mod tests {
         assert_eq!(runs[0].status, "success");
         assert!(runs[0].finished_at.is_some());
 
-        // The note IS the message text, in the conversational session.
-        let conv_path = find_file_named(tmp.path(), "root:user:test-owner.jsonl")
-            .expect("conversational session JSONL should exist");
+        // The note IS the message text, in the owner's peer child.
+        let child_id = owner_child_id(&principal, &owner)
+            .await
+            .expect("owner peer child should exist");
+        let conv_path = find_file_named(tmp.path(), &format!("{child_id}.jsonl"))
+            .expect("owner child session JSONL should exist");
         let conv_jsonl = std::fs::read_to_string(&conv_path).unwrap();
         assert!(
             conv_jsonl.contains("⏰ [cron job 'water-reminder' fired] 💧 Time to drink water"),
-            "conversational session should carry the message text as the note, got: {conv_jsonl}"
+            "owner child should carry the message text as the note, got: {conv_jsonl}"
         );
 
-        // No cron session was created — no turn ran.
+        // No LLM call beyond the conversational turn: the Notify fire
+        // consumed nothing from the mock queue.
+        assert_eq!(
+            adapter.recorded_requests().len(),
+            1,
+            "Notify must not consume an LLM call"
+        );
+
+        // No cron session and no trunk session were created — no turn
+        // ran, and the `[notify]` self-view line is open-if-exists.
         assert!(
             find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl").is_none(),
             "Notify must not create a cron session"
+        );
+        assert!(
+            find_file_named(tmp.path(), "root:self.jsonl").is_none(),
+            "Notify must not create the trunk session just for the self-view line"
+        );
+        assert!(
+            find_file_named(tmp.path(), "root:user:test-owner.jsonl").is_none(),
+            "the per-peer root session is retired — it must never be created"
         );
 
         drop(principal);

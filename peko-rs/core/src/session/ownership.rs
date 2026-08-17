@@ -10,11 +10,12 @@
 //! `SessionManagerRuntime` adapter (session tool) and the
 //! `SubagentExecutor` / `AgentTool` path (Agent tool).
 //!
-//! The principal's root session (the live `root:*` slot) is
-//! **continuous**: the engine owns its lifecycle (paging +
-//! compaction), so `delete` / `archive` on it are refused via
-//! [`err_live_base_managed`]. Archived state is read directly from
-//! `SessionMetadata::archived`.
+//! The principal's trunk session (`root:self` — the only `root:*` id
+//! left after Phase 7 retired the per-peer `root:{peer}` /
+//! `root:cron:{peer}` sessions) is **continuous**: the engine owns its
+//! lifecycle (paging + compaction), so `delete` / `archive` on it are
+//! refused via [`err_live_base_managed`]. Archived state is read
+//! directly from `SessionMetadata::archived`.
 //!
 //! A session whose metadata is missing is treated as a tree root for
 //! *classification* (the walk ends there), but a dangling id in the
@@ -255,8 +256,8 @@ pub fn err_resume_self(target: &str) -> anyhow::Error {
     anyhow::anyhow!("session '{target}' is already your current session")
 }
 
-/// `resume` across conversation families (different `root:{peer}` /
-/// `root:cron:{peer}` prefix).
+/// `resume` across conversation families (different peer-child
+/// subtree of the trunk).
 pub fn err_resume_cross_family(target: &str, cur: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "cannot resume '{target}': it belongs to a different conversation family than your \

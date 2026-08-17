@@ -54,7 +54,7 @@ use crate::principal::agent_runner::build_agent_config;
 use crate::principal::config::PrincipalConfig;
 use crate::principal::factory::DefaultPrincipalRouterFactory;
 use crate::principal::peer_children::ensure_peer_child;
-use crate::principal::routers::root::{default_root_prompt, root_session_id};
+use crate::principal::routers::root::{default_root_prompt, trunk_session_id};
 use crate::principal::Principal;
 
 /// Resolve the principal's root agent prompt and build the
@@ -89,22 +89,18 @@ pub(crate) struct PeerChildTurns {
     executor: SubagentExecutor,
     session_manager: Arc<RwLock<SessionManager>>,
     /// The caller session key the resume guards anchor at: the
-    /// principal's owner root (`root:{owner}`). A base-session caller,
-    /// so the ownership guards admit any session in the principal's
-    /// tree (and when the owner root is dangling, the subtree check
-    /// still admits its own children — exactly where peer children
-    /// live).
+    /// principal's trunk session (`root:self`). The trunk is a
+    /// base-session caller, so the ownership guards admit any session
+    /// in the principal's tree (and while the trunk is still dangling —
+    /// no self-turn has run — the subtree check still admits its own
+    /// children, exactly where peer children live).
     parent_session_key: String,
     /// The principal's configured owner subject — decides the
-    /// `privileged` flag in [`ensure_peer_child`]. Read only by
-    /// [`Self::ensure_child`] (Phase 7 ingress); allowed dead until
-    /// the re-route lands.
-    #[allow(dead_code)]
+    /// `privileged` flag in [`ensure_peer_child`] (the owner's child
+    /// `/local-user` gets whole-store reach).
     owner: Subject,
     /// The root agent's prompt name, stamped as the agent name on
-    /// provisioned peer-child sessions. Same Phase 7 allowance as
-    /// `owner`.
-    #[allow(dead_code)]
+    /// provisioned peer-child sessions.
     agent_name: String,
 }
 
@@ -113,10 +109,17 @@ impl PeerChildTurns {
     /// has no resolvable model — the same configuration error that
     /// breaks `peko send` (callers degrade to their no-driver
     /// behavior: bound channels stay active-only, ingress errors out).
+    ///
+    /// `inbox_registry` is the daemon-shared `InboxRegistry` (Phase 7):
+    /// bound onto the executor so child runs drain steering queued by
+    /// the `PrincipalManager` / IPC serial-queue fallback (keyed by the
+    /// child session id). `None` keeps the per-call standalone drain
+    /// (tests and non-daemon contexts).
     pub(crate) async fn build(
         principal: &Arc<Principal>,
         llm_resolver: &peko_providers::LlmResolver,
         observability: Arc<Observability>,
+        inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
     ) -> Result<Self> {
         let (name, owner, capabilities, agent_config, preferred_model_id) = {
             let config = principal.config.read().await;
@@ -132,8 +135,12 @@ impl PeerChildTurns {
         let agent_name = agent_config.name.clone();
 
         // Resolve the principal's pinned model through the daemon's
-        // shared resolver (`AgentPreference` precedence — no per-call
-        // override exists on these paths).
+        // shared resolver (`AgentPreference` precedence). A per-call
+        // override (`peko send --model`) does NOT re-resolve here —
+        // it rides `ExecutionConfig::model_override` at drive time
+        // (`Provider::with_model_id` on a clone + pre-flight
+        // `SpecGate::check`), so the cached bundle stays
+        // override-neutral.
         let (provider, _choice) = llm_resolver
             .build(peko_providers::resolver::ResolveRequest {
                 agent_model: preferred_model_id.as_deref(),
@@ -154,11 +161,19 @@ impl PeerChildTurns {
 
         // `SubagentExecutor::new`'s agent name keys the GLOBAL async
         // task registry — see "Registry key" in the module docs.
+        //
+        // `max_concurrent` is 64, not the subagent-default 5: this
+        // executor drives PEER INGRESS turns, where distinct peers
+        // legitimately run in parallel (per-child serialization is the
+        // `InboxRegistry` run permit + the registry's
+        // `has_active_subagent_run_for_child` cross-check). The shared
+        // "root"-keyed registry counts the trunk's own subagent spawns
+        // here too, so the cap is a runaway guard, not a throttle.
         let registry_key = default_root_prompt().name;
         let executor = SubagentExecutor::new(
             Arc::clone(&session_manager),
             registry_key,
-            5,
+            64,
             principal.id.clone(),
         )
         .with_principal_name(name)
@@ -166,6 +181,10 @@ impl PeerChildTurns {
         .with_principal_capabilities(Some(Arc::new(capabilities)))
         .with_principal_plan_port(Arc::clone(&principal.plan_port))
         .with_observability(Some(observability))
+        // Phase 7: child runs drain the daemon-shared registry so the
+        // ingress serial-queue fallback's steering pushes reach the
+        // live turn at its next iteration boundary.
+        .with_inbox_registry(inbox_registry)
         // Charge peer-child turns against the principal's meter, like
         // any other subagent run (F39).
         .with_quota_meter(Some(Arc::clone(&principal.quota_meter)))
@@ -177,7 +196,7 @@ impl PeerChildTurns {
         Ok(Self {
             executor,
             session_manager,
-            parent_session_key: root_session_id(&owner),
+            parent_session_key: trunk_session_id(),
             owner,
             agent_name,
         })
@@ -194,17 +213,14 @@ impl PeerChildTurns {
         &self.session_manager
     }
 
-    /// The ownership anchor for the resume guard stack
-    /// (`root:{owner}`).
+    /// The ownership anchor for the resume guard stack (the trunk,
+    /// `root:self`).
     pub(crate) fn parent_session_key(&self) -> &str {
         &self.parent_session_key
     }
 
     /// Find-or-create the peer's standing child of the trunk; returns
     /// the child session id. Idempotent per peer (Phase 5 semantics).
-    /// Consumed by the Phase 7 ingress re-route; allowed dead until
-    /// it lands.
-    #[allow(dead_code)]
     pub(crate) async fn ensure_child(&self, peer: &Subject) -> Result<String> {
         ensure_peer_child(&self.agent_name, &self.owner, peer, &self.session_manager).await
     }
@@ -220,21 +236,29 @@ impl PeerChildTurns {
     /// the same child from ANY path sharing the registry key is
     /// refused with `err_run_active`.
     ///
-    /// No completion announcement and no cleanup: the reply goes to
-    /// the caller, and standing children outlive their runs.
+    /// `override_model` is the per-message configured-model override
+    /// (`peko send --model`): threaded into `ExecutionConfig`’s
+    /// `model_override` so the run's pre-flight `SpecGate` check and
+    /// provider override behave exactly like a parent-picked subagent
+    /// model. `None` keeps the principal's pinned model.
     ///
-    /// Consumed by the Phase 7 ingress re-route; allowed dead until it
-    /// lands.
-    #[allow(dead_code)]
+    /// No completion announcement and no cleanup: the reply goes to
+    /// the caller, and standing children outlive their runs. The turn
+    /// has no wall-clock timeout (`timeout_seconds: 0`) — parity with
+    /// the retired root-agent ingress path; cancellation is via
+    /// `cancel` (the IPC `PrincipalSendControl::Interrupt` token).
     pub(crate) async fn drive_turn_streaming(
         &self,
         session_id: &str,
         message: &str,
         on_event: AgenticEventSink,
         cancel: Option<tokio_util::sync::CancellationToken>,
+        override_model: Option<String>,
     ) -> Result<StreamingResumeOutcome> {
         let config = ExecutionConfig {
             announce_completion: false,
+            timeout_seconds: 0,
+            model_override: override_model,
             ..ExecutionConfig::default()
         };
         self.executor
@@ -246,6 +270,19 @@ impl PeerChildTurns {
                 on_event,
                 cancel,
             )
+            .await
+    }
+
+    /// Blocking variant of [`Self::drive_turn_streaming`] for the
+    /// one-shot `PrincipalManager::receive` path and steering
+    /// successor runs: events are dropped, no cancel token.
+    pub(crate) async fn drive_turn(
+        &self,
+        session_id: &str,
+        message: &str,
+        override_model: Option<String>,
+    ) -> Result<StreamingResumeOutcome> {
+        self.drive_turn_streaming(session_id, message, Arc::new(|_| {}), None, override_model)
             .await
     }
 }
