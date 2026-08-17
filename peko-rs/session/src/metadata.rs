@@ -52,6 +52,11 @@ pub struct SessionMetadata {
     /// Standing sessions are exempt from maintenance pruning — their
     /// transcripts are durable regardless of idle age.
     pub standing: bool,
+    /// Privileged sessions give their caller whole-store reach in the
+    /// ownership guards (like a base caller) while keeping their parent
+    /// pointer and tree membership (sprint 2 peer-child provisioning —
+    /// set only for the principal owner's peer child).
+    pub privileged: bool,
     /// Per-parent-unique path segment for `/slug/...` addressing
     /// (see `crate::path`). `title` stays free-form display text;
     /// the slug is the machine-stable segment. Root `root:*`
@@ -92,6 +97,7 @@ impl SessionMetadata {
             archived: false,
             compact_requested: false,
             standing: false,
+            privileged: false,
             slug: None,
         }
     }
@@ -132,6 +138,7 @@ impl SessionMetadata {
             archived: entry.archived,
             compact_requested: entry.compact_requested,
             standing: entry.standing,
+            privileged: entry.privileged,
             slug: entry.slug,
         }
     }
@@ -159,6 +166,7 @@ impl SessionMetadata {
             archived: self.archived,
             compact_requested: self.compact_requested,
             standing: self.standing,
+            privileged: self.privileged,
             slug: self.slug.clone(),
         }
     }
@@ -352,22 +360,26 @@ mod tests {
         entry.archived = true;
         entry.compact_requested = true;
         entry.standing = true;
+        entry.privileged = true;
 
         let meta = SessionMetadata::from_entry(entry);
         assert!(meta.archived);
         assert!(meta.compact_requested);
         assert!(meta.standing);
+        assert!(meta.privileged);
 
         let entry2 = meta.to_entry();
         assert!(entry2.archived);
         assert!(entry2.compact_requested);
         assert!(entry2.standing);
+        assert!(entry2.privileged);
 
         // Defaults are false on construction.
         let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
         assert!(!meta.archived);
         assert!(!meta.compact_requested);
         assert!(!meta.standing);
+        assert!(!meta.privileged);
     }
 
     #[test]

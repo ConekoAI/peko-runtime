@@ -4,6 +4,32 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### PEKO sprint 2: external ingress off the root (2026-08-17)
+
+External traffic (CLI `peko send`, tunnel A2A, Hub webchat) moves off the
+root agent into per-peer standing children of the trunk (`/local-user`,
+`/user-x`, `/principal-{did}`); the trunk `root:self` is cron-only.
+Per-peer `root:{peer}` / `root:cron:{owner}` sessions are retired
+(prelaunch breaking change — no migration).
+
+#### Added
+- **Peer-child provisioning** (`principal/peer_children.rs`):
+  `peer_child_slug` (peer → slug: `user:local` → `local-user`,
+  `user:{id}` → `user-{id}`, `principal:{did}` → `principal-{fragment}`)
+  and `ensure_peer_child` — find-or-create the peer's standing child
+  (parent = trunk, `trigger="spawn"`, real peer stamped, idempotent,
+  slug-collision suffixing).
+- **`privileged` session flag**: the owner's child (`/local-user`) gets
+  whole-store reach in the ownership guards (like the root agent had);
+  strangers' children stay subtree-scoped. Privilege affects guard reach
+  only — the session keeps its parent and stays in the trunk's tree.
+
+#### Fixed
+- **`create_session` peer clobbering**: the peer stamp on the index entry
+  was silently lost when a post-create `set_*` (`set_slug`, `set_standing`,
+  …) rewrote the entry through the metadata cache. The peer is now stamped
+  on the metadata before caching.
+
 ### Agent–session paradigm sprint (2026-08-15)
 
 Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in

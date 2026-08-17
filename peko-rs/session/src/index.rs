@@ -109,6 +109,12 @@ pub struct SessionEntry {
     /// transcripts are durable regardless of idle age.
     #[serde(default)]
     pub standing: bool,
+    /// Privileged sessions give their caller whole-store reach in the
+    /// ownership guards (like a base caller) while keeping their parent
+    /// pointer and tree membership (sprint 2 peer-child provisioning —
+    /// set only for the principal owner's peer child).
+    #[serde(default)]
+    pub privileged: bool,
     /// Per-parent-unique path segment for `/slug/...` addressing
     /// (see `crate::path`). `None` for legacy entries and root
     /// `root:*` sessions.
@@ -145,6 +151,7 @@ impl SessionEntry {
             archived: false,
             compact_requested: false,
             standing: false,
+            privileged: false,
             slug: None,
         }
     }
@@ -1252,8 +1259,9 @@ mod tests {
     }
 
     /// Backward compatibility: a `sessions.json` entry written before
-    /// the `archived` / `compact_requested` / `standing` fields existed
-    /// must deserialize with all flags = false (`#[serde(default)]`).
+    /// the `archived` / `compact_requested` / `standing` / `privileged`
+    /// fields existed must deserialize with all flags = false
+    /// (`#[serde(default)]`).
     #[test]
     fn test_legacy_entry_without_archive_flags_defaults_false() {
         let legacy = serde_json::json!({
@@ -1278,17 +1286,20 @@ mod tests {
         assert!(!entry.archived);
         assert!(!entry.compact_requested);
         assert!(!entry.standing);
+        assert!(!entry.privileged);
 
         // And the flags round-trip through serialization once set.
         let mut entry = entry;
         entry.archived = true;
         entry.compact_requested = true;
         entry.standing = true;
+        entry.privileged = true;
         let json = serde_json::to_value(&entry).unwrap();
         let reloaded: SessionEntry = serde_json::from_value(json).unwrap();
         assert!(reloaded.archived);
         assert!(reloaded.compact_requested);
         assert!(reloaded.standing);
+        assert!(reloaded.privileged);
     }
 
     /// Maintenance must retain sessions exempt from pruning: `root:*`

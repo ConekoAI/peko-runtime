@@ -857,7 +857,8 @@ impl SubagentExecutor {
         }
         // Guard: subtree callers stay inside their subtree (principal-
         // level callers pass automatically).
-        if !caller.is_base && !in_subtree(&caller, resume_session_id, &metas) {
+        if !caller.is_base && !caller.privileged && !in_subtree(&caller, resume_session_id, &metas)
+        {
             return Err(err_out_of_tree(
                 resume_session_id,
                 &caller.current_session_id,
@@ -1007,7 +1008,7 @@ impl SubagentExecutor {
         }
         // Guard: subtree callers stay inside their subtree (principal-
         // level callers pass automatically).
-        if !caller.is_base && !in_subtree(&caller, target, &metas) {
+        if !caller.is_base && !caller.privileged && !in_subtree(&caller, target, &metas) {
             return Err(err_out_of_tree(target, &caller.current_session_id));
         }
         // Guard: archived sessions have no future run to consume the
@@ -1055,7 +1056,7 @@ impl SubagentExecutor {
         let mut manager = self.session_manager.write().await;
         let metas = manager.list_all_sessions(false).await?;
         let caller = caller_context(caller_session_key, &metas);
-        if caller.is_base || in_subtree(&caller, context_parent, &metas) {
+        if caller.is_base || caller.privileged || in_subtree(&caller, context_parent, &metas) {
             return Ok(());
         }
         Err(err_context_out_of_tree(context_parent, caller_session_key))

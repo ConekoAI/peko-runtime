@@ -1117,6 +1117,14 @@ impl SessionManager {
             metadata.title = Some(title);
         }
         metadata.trigger = options.trigger;
+        // Stamp the peer on the metadata too, not just the index entry
+        // below: `create_metadata` caches this entry, and a post-create
+        // `set_*` mutation (`set_slug`, `set_standing`, …) reads back
+        // through that cache and rewrites the index — a peer-less cache
+        // entry would clobber the `with_peer` stamp (sprint 2 peer-child
+        // provisioning depends on the stamp surviving those writes).
+        metadata.peer_type = Some(peer.kind().to_string());
+        metadata.peer_id = Some(peer.subject_id().to_string());
 
         // 3 + 4. Store metadata AND update the peer-routing index AND save
         // the index, all under a single `metadata_controller` write lock.
@@ -1481,6 +1489,18 @@ impl SessionManager {
             .write()
             .await
             .set_standing(session_id, standing)
+            .await
+    }
+
+    /// Set the privileged flag on a session (passthrough to the
+    /// `MetadataController`). A privileged session's caller gets
+    /// whole-store reach in the ownership guards (sprint 2 peer-child
+    /// provisioning). Errors when the session does not exist.
+    pub async fn set_privileged(&self, session_id: &str, privileged: bool) -> Result<()> {
+        self.metadata_controller
+            .write()
+            .await
+            .set_privileged(session_id, privileged)
             .await
     }
 

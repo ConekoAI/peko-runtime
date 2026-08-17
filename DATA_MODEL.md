@@ -1061,6 +1061,7 @@ both = `false`):
 | `archived` | bool | Hidden from `session list` unless `include_archived: true`; refuses resume/compact until unarchived |
 | `compact_requested` | bool | Persisted compaction request (set by the `Agent` tool's `compact` action). The orchestrator ORs it into the threshold decision at the session's next iteration/run and clears it only when compaction genuinely starts, so a crashed run doesn't lose the request |
 | `standing` | bool | Exempt from maintenance pruning (2026-08-15): a standing session's transcript is durable regardless of idle age. `root:*` ids and `archived` sessions are prune-exempt by rule; `standing` is the flag for standing children |
+| `privileged` | bool | Whole-store ownership-guard reach for the session's caller (sprint 2 Phase 5, 2026-08-17) despite having a parent — tree membership is unchanged. Set only for the principal owner's peer child (`/local-user`); see "Peer-child provisioning" in §5.10 |
 | `slug` | string \| null | Per-parent-unique path segment for `/a/b` addressing (2026-08-15, Phase 1b). `#[serde(default, skip_serializing_if = "Option::is_none")]` on the entry. See "Session path addressing" below |
 
 **`PeerInfo.active_session_id` is now `Option<String>`**
@@ -1254,6 +1255,48 @@ and SpawnTool wakes to target the same principal root — the trunk.
 `root:self`, so a floorless self-poke loop is a runaway token-burn
 anti-pattern. `At`, `Cron`, `Idle`, and `Event` schedules are exempt
 (explicit or event-driven cadence); non-trunk jobs are unchanged.
+
+### 5.10 Peer-Child Provisioning (sprint 2 Phase 5, 2026-08-17)
+
+Every external ingress peer gets a standing first-level child of the
+trunk (`root:self`) that acts as that peer's permanent conversation
+with the principal. `principal::peer_children::ensure_peer_child`
+find-or-creates it (metadata + JSONL created-event only — no LLM turn,
+no run); idempotent per peer. The child's slug is derived by
+`peer_child_slug`:
+
+| Peer | Slug |
+|------|------|
+| `user:local` (CLI owner) | `local-user` |
+| `user:{id}` | `user-{sanitized}` — lowercase ascii alnum kept, everything else → `-`, repeats collapsed, ends trimmed; empty result falls back to bare `user` |
+| `principal:{did}` | `principal-{fragment}` — first 16 lowercase ascii alnum chars of the DID |
+| `public` | structured error — public is not a session peer (ADR-039) |
+
+Slugs pass `validate_slug` and are capped at 64 chars. A slug already
+held under the trunk by a DIFFERENT session (sanitized collision, e.g.
+`user:Foo Bar` vs `user:foo-bar`) retries with `-2`, `-3`, … suffixes;
+each peer's lookup walks the same suffix chain so provisioning stays
+idempotent per peer.
+
+Created children carry:
+
+| Field | Value |
+|-------|-------|
+| `trigger` | `"spawn"` |
+| `standing` | `true` (prune-exempt) |
+| `privileged` | `true` iff the peer IS the principal's configured owner (the `/local-user` case); `false` for everyone else |
+| `slug` | the derived (possibly suffixed) slug |
+| `parent_session_id` | the trunk session id (`root:self`); may DANGLE until the first self-turn creates the trunk — the ownership walks tolerate this by design |
+| `title` | the peer's display string (e.g. `user:alice`) |
+| `peer_type` / `peer_id` | the REAL peer (not the `standing_*` placeholder declared children use) |
+
+**Ownership semantics.** A `privileged` caller gets whole-store reach
+in the ownership guards (`caller.is_base || caller.privileged` at the
+guard sites) while keeping its parent pointer: path addressing, the
+ancestor / self-mutation / `root:*` guards, and `descendants_of`
+supervision are unaffected. Non-privileged peer children stay
+subtree-scoped. The ingress re-route that sends peer traffic to these
+children is Phase 7; nothing routes here yet.
 
 ---
 

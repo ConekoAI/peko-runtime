@@ -123,7 +123,7 @@ impl SessionManagerRuntime {
         if caller.dangling {
             return Err(self.refuse(err_dangling(&caller.current_session_id)));
         }
-        if !caller.is_base && !in_subtree(caller, target, metas) {
+        if !caller.is_base && !caller.privileged && !in_subtree(caller, target, metas) {
             return Err(self.refuse(err_out_of_tree(target, &caller.current_session_id)));
         }
         Ok(())
@@ -181,7 +181,9 @@ impl SessionRuntime for SessionManagerRuntime {
         let mut sessions: Vec<SessionInfo> = metadatas
             .iter()
             .filter(|m| {
-                let tree_match = caller.is_base || in_subtree(&caller, &m.session_id, &metadatas);
+                let tree_match = caller.is_base
+                    || caller.privileged
+                    || in_subtree(&caller, &m.session_id, &metadatas);
                 let archived_match = include_archived || !m.archived;
                 let agent_match = agent_id.map_or(true, |a| m.agent_name == a);
                 let active_match = cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
@@ -346,7 +348,9 @@ impl SessionRuntime for SessionManagerRuntime {
                 .iter()
                 .filter(|m| {
                     // D5: subtree callers search only their subtree.
-                    let tree_match = caller.is_base || in_subtree(&caller, &m.session_id, &metas);
+                    let tree_match = caller.is_base
+                        || caller.privileged
+                        || in_subtree(&caller, &m.session_id, &metas);
                     let visible_match = !m.archived;
                     let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
                         let (have_kind, have_id) =
@@ -1189,6 +1193,64 @@ mod tests {
         let history = h.runtime.get_history("child1", 10, false).await.unwrap();
         assert_eq!(history.len(), 1);
         h.runtime.get_status("child1").await.unwrap();
+    }
+
+    /// A `privileged` spawned caller (sprint 2 peer-child provisioning)
+    /// gets whole-store reach through the same guards that confine a
+    /// plain spawned caller — while the self / ancestor / `root:*`
+    /// guards (independent of `is_base`/`privileged`) still apply.
+    #[tokio::test]
+    async fn privileged_caller_whole_store_reach() {
+        let h = tree_harness("spawn1").await;
+        h.manager
+            .write()
+            .await
+            .set_privileged("spawn1", true)
+            .await
+            .unwrap();
+
+        // Whole-store list view (a plain spawned caller sees only its
+        // subtree — see subtree_caller_read_scoping).
+        let all = h
+            .runtime
+            .list_sessions(None, None, 50, None, false)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 4);
+
+        // Out-of-subtree mutations pass: rename, archive, move, delete.
+        h.runtime
+            .rename_session("spawn2", Some("renamed".to_string()), None)
+            .await
+            .unwrap();
+        h.runtime.set_archived("spawn2", true).await.unwrap();
+        h.runtime.set_archived("spawn2", false).await.unwrap();
+        h.runtime
+            .move_session("spawn2", "spawn1".to_string())
+            .await
+            .unwrap();
+        let outcome = h.runtime.delete_session("spawn2", true).await.unwrap();
+        assert_eq!(outcome.deleted, vec!["spawn2".to_string()]);
+
+        // Self-mutation is still refused.
+        let err = h.runtime.delete_session("spawn1", true).await.unwrap_err();
+        assert!(err.to_string().contains("currently running in"), "{err}");
+
+        // The live root is still refused — both as an ancestor of the
+        // caller (delete) and as an engine-managed `root:*` session
+        // (archive).
+        let err = h
+            .runtime
+            .delete_session("root:user:alice", true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("ancestor"), "{err}");
+        let err = h
+            .runtime
+            .set_archived("root:user:alice", true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("managed by the engine"), "{err}");
     }
 
     // ─── Move (reparent) ────────────────────────────────────────────
