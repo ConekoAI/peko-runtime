@@ -642,28 +642,20 @@ impl ChannelBindingSupervisor {
             return Some(bundle);
         }
 
-        let (name, owner, capabilities, preferred_model_id) = {
-            let config = principal.config.read().await;
-            (
-                config.name.clone(),
-                config.owner.clone(),
-                config.capabilities.clone(),
-                config.preferred_model_id.clone(),
-            )
-        };
-
-        // Resolve the principal's pinned model through the daemon's
-        // shared resolver (`AgentPreference` precedence — no per-call
-        // override exists on this path).
-        let provider = match self
-            .llm_resolver
-            .build(peko_providers::resolver::ResolveRequest {
-                agent_model: preferred_model_id.as_deref(),
-                ..Default::default()
-            })
-            .await
+        // Sprint 2 Phase 6: construction is shared with the streaming
+        // ingress driver (`principal::child_turns`) — one builder for
+        // provider resolution, session-manager wiring, registry key,
+        // quota attribution, and persona inheritance (the executor now
+        // carries the principal's root agent prompt via
+        // `.with_agent_config`, closing the blank-prompt gap).
+        let turns = match crate::principal::child_turns::PeerChildTurns::build(
+            principal,
+            &self.llm_resolver,
+            Arc::clone(&self.observability),
+        )
+        .await
         {
-            Ok((provider, _choice)) => provider,
+            Ok(turns) => turns,
             Err(e) => {
                 warn!(
                     principal = %principal.id,
@@ -674,47 +666,13 @@ impl ChannelBindingSupervisor {
             }
         };
 
-        // Session manager mirrors `agent_runner`'s root-agent
-        // construction: same sessions dir, agent name = principal name,
-        // owner as the session peer.
-        let session_manager = Arc::new(RwLock::new(
-            SessionManager::new()
-                .with_sessions_dir_internal(principal.memory.sessions_dir())
-                .with_agent_name(&name)
-                .with_peer_principal(owner.clone())
-                .with_user(&owner.to_string()),
+        let owner_root = turns.parent_session_key().to_string();
+        let turn_driver = Arc::new(SubagentResumeDriver::new(
+            turns.executor().clone(),
+            owner_root.clone(),
         ));
-
-        // `SubagentExecutor::new`'s agent name keys the GLOBAL async
-        // task registry (`get_or_create_registry_for_agent`). Use the
-        // default root prompt's name — the same key the root agent's
-        // own executor uses — so `resume_and_execute`'s
-        // `has_active_subagent_run_for_child` guard sees Agent-tool
-        // runs on the same session (and vice versa). A separate key
-        // would let a channel turn and an Agent-tool resume double-run
-        // one session JSONL.
-        let registry_key = crate::principal::routers::root::default_root_prompt().name;
-        let executor = SubagentExecutor::new(
-            Arc::clone(&session_manager),
-            registry_key,
-            5,
-            principal.id.clone(),
-        )
-        .with_principal_name(name)
-        .with_principal_workspace(principal.workspace_path.clone())
-        .with_principal_capabilities(Some(Arc::new(capabilities)))
-        .with_principal_plan_port(Arc::clone(&principal.plan_port))
-        .with_observability(Some(Arc::clone(&self.observability)))
-        // Charge channel-driven turns against the principal's meter,
-        // like any other subagent run (F39).
-        .with_quota_meter(Some(Arc::clone(&principal.quota_meter)))
-        .with_provider(provider);
-        executor.set_caller_principal_did(principal.did().await.0);
-
-        let owner_root = crate::principal::routers::root::root_session_id(&owner);
-        let turn_driver = Arc::new(SubagentResumeDriver::new(executor, owner_root.clone()));
         let binding_resolver = Arc::new(SessionStoreBindingResolver::new(
-            session_manager,
+            Arc::clone(turns.session_manager()),
             owner_root,
         ));
 
@@ -1051,16 +1009,26 @@ mod tests {
 
         // Two messages arriving in the same tick: both get a turn, but
         // never concurrently (the second queues behind the first).
-        for text in ["m1", "m2"] {
-            responder
-                .consider_response(respond_ctx(
-                    &principal,
-                    &channel,
-                    posted("prin_other", text),
-                ))
-                .await
-                .unwrap();
-        }
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                posted("prin_other", "m1"),
+            ))
+            .await
+            .unwrap();
+        // Deterministic FIFO: wait until m1's turn has actually STARTED
+        // (its task holds the turn mutex) before issuing m2 — spawn
+        // order alone doesn't guarantee lock-acquisition order.
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                posted("prin_other", "m2"),
+            ))
+            .await
+            .unwrap();
         assert!(eventually(|| async { calls.lock().unwrap().len() == 2 }).await);
         assert_eq!(max_active.load(Ordering::SeqCst), 1);
         // Order preserved: the queue is FIFO.

@@ -61,6 +61,37 @@ pub struct CompletedRun {
     pub announcement: String,
 }
 
+/// Shared streaming event sink for child turns (agent-session
+/// paradigm, sprint 2 Phase 6).
+///
+/// Carries the same `AgenticEvent` stream shape the IPC
+/// `principal_send` drain loop consumes (`AssistantDelta` /
+/// `AssistantText` / `Lifecycle` / `ToolStart` / `ToolEnd` / `Usage`)
+/// — a streaming child turn feeds the caller's sink directly instead
+/// of dropping events like the final-only resume path. `Arc`-shared
+/// so the sink can move into the spawned run task while the caller
+/// keeps no borrow.
+pub type AgenticEventSink = Arc<dyn Fn(peko_engine::AgenticEvent) + Send + Sync>;
+
+/// Completion summary of a streaming child turn
+/// ([`SubagentExecutor::resume_streaming`]).
+///
+/// `final_text` is the child session's final answer (what the IPC
+/// handler's `PrincipalSent`/`PrincipalSentDone` `content` carries
+/// today). `token_usage` is the `(input, output, total)` projection
+/// recorded on the run's `SubagentResult`; the per-call `Usage` event
+/// also flows through the event sink, so streaming callers that
+/// accumulate from events (the IPC drain loop) do not need this.
+#[derive(Debug, Clone)]
+pub struct StreamingResumeOutcome {
+    /// The registered run id (AsyncTaskRegistry key).
+    pub run_id: String,
+    /// The child agent's final answer.
+    pub final_text: String,
+    /// Token usage `(input, output, total)` accumulated over the run.
+    pub token_usage: Option<(usize, usize, usize)>,
+}
+
 /// Configuration for subagent execution
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
@@ -138,6 +169,25 @@ struct SubagentRunSpec {
     child_depth: u32,
     config: ExecutionConfig,
     parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    /// Streaming event sink (sprint 2 Phase 6). `Some` runs the child
+    /// agent via `Agent::execute_streaming_with_session`
+    /// (`OrchestratorConfig::live()`) and forwards every
+    /// `AgenticEvent` to the sink; `None` keeps the final-only
+    /// `execute_with_session` path (events dropped).
+    stream_events: Option<AgenticEventSink>,
+}
+
+/// The output of [`SubagentExecutor::resume_preflight`]: everything
+/// the registration step needs once the resume guard stack has
+/// passed. Shared by the final-only (`resume_and_execute`) and
+/// streaming (`resume_streaming`) resume paths.
+struct ResumePreflight {
+    run_id: String,
+    /// The path-resolved canonical target session id.
+    session_id: String,
+    /// The opened existing session (prior history attached).
+    child_base: Arc<RwLock<peko_session::Session>>,
+    child_depth: u32,
 }
 
 /// Executor for subagent tasks
@@ -504,6 +554,14 @@ impl SubagentExecutor {
         self
     }
 
+    /// The agent configuration snapshot child runs inherit, if bound.
+    /// `None` means [`execute_subagent_task`] falls back to a default
+    /// config with `prompt: None` (the pre-Phase-6 blank-persona gap).
+    #[must_use]
+    pub fn agent_config(&self) -> Option<&AgentConfig> {
+        self.agent_config.as_ref()
+    }
+
     /// Scope spawned subagents to a Principal workspace so nested delegation
     /// resolves subagents from `<workspace>/agents/<name>/AGENT.md`.
     #[must_use]
@@ -783,6 +841,7 @@ impl SubagentExecutor {
             child_depth,
             config,
             parent_cancel,
+            stream_events: None,
         })
         .await
     }
@@ -792,9 +851,11 @@ impl SubagentExecutor {
     ///
     /// Skips `spawn_session`: the target session is opened as-is, so
     /// the run continues with its full prior history. All D4 guards
-    /// from the shared ownership module apply (see inline comments).
-    /// The caller's current session is `parent_session_key` (the
-    /// caller's session id on the production path).
+    /// from the shared ownership module apply (enforced in
+    /// [`Self::resume_preflight`], shared with
+    /// [`Self::resume_streaming`]). The caller's current session is
+    /// `parent_session_key` (the caller's session id on the production
+    /// path).
     pub async fn resume_and_execute(
         &self,
         task: &str,
@@ -803,6 +864,121 @@ impl SubagentExecutor {
         config: ExecutionConfig,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
+        let pre = self
+            .resume_preflight(resume_session_id, parent_session_key, &config)
+            .await?;
+
+        info!(
+            "Resuming subagent session: run_id={} session={} depth={}",
+            pre.run_id, pre.session_id, pre.child_depth
+        );
+
+        self.register_subagent_run(SubagentRunSpec {
+            run_id: pre.run_id,
+            task: task.to_string(),
+            parent_session_key: parent_session_key.to_string(),
+            // No spawn overlay exists for a resumed session — register
+            // with the plain session id in both slots.
+            child_session_key: pre.session_id.clone(),
+            child_session_id: pre.session_id,
+            child_base: pre.child_base,
+            child_depth: pre.child_depth,
+            config,
+            parent_cancel,
+            stream_events: None,
+        })
+        .await
+    }
+
+    /// Streaming variant of [`Self::resume_and_execute`] (agent-session
+    /// paradigm, sprint 2 Phase 6): the same resume guard stack and
+    /// run registration, but the child agent runs via
+    /// `Agent::execute_streaming_with_session`
+    /// (`OrchestratorConfig::live()`), forwarding every
+    /// [`peko_engine::AgenticEvent`] to `on_event` — the exact stream
+    /// shape the IPC `principal_send` drain loop consumes — and this
+    /// call blocks until the run reaches a terminal state, returning
+    /// the final text + token usage.
+    ///
+    /// Built for the per-peer standing-child ingress paths (Phase 7
+    /// swaps `route_streaming` for this): the shared registry key is
+    /// load-bearing, so a streaming turn and a channel-driven or
+    /// Agent-tool turn on the same child can never double-run.
+    /// `parent_cancel` is observed by the child loop at iteration
+    /// boundaries; a cancelled run surfaces as an error here.
+    pub async fn resume_streaming(
+        &self,
+        task: &str,
+        resume_session_id: &str,
+        parent_session_key: &str,
+        config: ExecutionConfig,
+        on_event: AgenticEventSink,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<StreamingResumeOutcome> {
+        // Wait slack mirrors the channel driver's
+        // COMPLETION_WAIT_MARGIN_SECS: the run's own timeout fires
+        // inside the task, so the waiter gives it room to land its
+        // terminal status before declaring a wait timeout.
+        // `timeout_seconds == 0` means unlimited — the wait must not
+        // fire either.
+        let wait_secs = if config.timeout_seconds == 0 {
+            u64::MAX / 2
+        } else {
+            config.timeout_seconds + 30
+        };
+
+        let pre = self
+            .resume_preflight(resume_session_id, parent_session_key, &config)
+            .await?;
+
+        info!(
+            "Resuming subagent session (streaming): run_id={} session={} depth={}",
+            pre.run_id, pre.session_id, pre.child_depth
+        );
+
+        let run_id = self
+            .register_subagent_run(SubagentRunSpec {
+                run_id: pre.run_id,
+                task: task.to_string(),
+                parent_session_key: parent_session_key.to_string(),
+                // No spawn overlay exists for a resumed session —
+                // register with the plain session id in both slots.
+                child_session_key: pre.session_id.clone(),
+                child_session_id: pre.session_id,
+                child_base: pre.child_base,
+                child_depth: pre.child_depth,
+                config,
+                parent_cancel,
+                stream_events: Some(on_event),
+            })
+            .await?;
+
+        let view = self.wait_for_run(&run_id, wait_secs).await?;
+        let result = view.result.ok_or_else(|| {
+            anyhow::anyhow!("streaming child run {run_id} completed without a result")
+        })?;
+        Ok(StreamingResumeOutcome {
+            run_id,
+            final_text: result.output.unwrap_or_default(),
+            token_usage: result.token_usage,
+        })
+    }
+
+    /// The full resume guard stack + session open shared by
+    /// [`Self::resume_and_execute`] (final-only) and
+    /// [`Self::resume_streaming`] (live event stream) so the two can
+    /// never drift. Runs every D4 guard from the shared ownership
+    /// module (see inline comments) plus the spawn-time cost
+    /// pre-flight — a resume is still LLM traffic against the
+    /// principal's meter. The caller's current session is
+    /// `parent_session_key` (the caller's session id on the
+    /// production path).
+    async fn resume_preflight(
+        &self,
+        resume_session_id: &str,
+        parent_session_key: &str,
+        config: &ExecutionConfig,
+    ) -> Result<ResumePreflight> {
         use crate::session::ownership::{
             caller_context, err_out_of_tree, err_resume_archived, err_resume_into_own_run,
             err_resume_not_spawned, err_run_active, in_subtree,
@@ -810,10 +986,9 @@ impl SubagentExecutor {
 
         // Same spawn-time cost pre-flight as the spawn path — a resume
         // is still LLM traffic against the principal's meter.
-        if let Some(err) = pre_flight_cost_ceiling(
-            self.quota_meter.as_deref(),
-            self.provider.as_ref(),
-        ) {
+        if let Some(err) =
+            pre_flight_cost_ceiling(self.quota_meter.as_deref(), self.provider.as_ref())
+        {
             return Err(anyhow::anyhow!(err));
         }
 
@@ -929,25 +1104,12 @@ impl SubagentExecutor {
                 .clone()
         };
 
-        info!(
-            "Resuming subagent session: run_id={} session={} depth={}",
-            run_id, resume_session_id, child_depth
-        );
-
-        self.register_subagent_run(SubagentRunSpec {
+        Ok(ResumePreflight {
             run_id,
-            task: task.to_string(),
-            parent_session_key: parent_session_key.to_string(),
-            // No spawn overlay exists for a resumed session — register
-            // with the plain session id in both slots.
-            child_session_key: resume_session_id.to_string(),
-            child_session_id: resume_session_id.to_string(),
+            session_id: resume_session_id.to_string(),
             child_base,
             child_depth,
-            config,
-            parent_cancel,
         })
-        .await
     }
 
     /// Flag a session for engine-driven compaction at its next run
@@ -1078,6 +1240,7 @@ impl SubagentExecutor {
             child_depth,
             config,
             parent_cancel,
+            stream_events,
         } = spec;
 
         // Build the metadata extension that carries subagent-specific data
@@ -1148,6 +1311,10 @@ impl SubagentExecutor {
         // `execute_subagent_task` (task-locals don't cross
         // `tokio::spawn`, but plain owned Strings do).
         let model_override_clone = config.model_override.clone();
+        // Sprint 2 Phase 6: the streaming resume path's event sink.
+        // Moved into the task closure; `None` keeps the final-only
+        // execution path.
+        let stream_events_for_closure = stream_events;
 
         self.unified_executor
             .execute_with_metadata(
@@ -1211,6 +1378,7 @@ impl SubagentExecutor {
                         parent_quota_meter_clone,
                         parent_peer_meter_clone,
                         caller_principal_did_clone,
+                        stream_events_for_closure,
                     );
                     let result = if timeout > 0 {
                         match tokio::time::timeout(
@@ -1241,39 +1409,45 @@ impl SubagentExecutor {
                     let cancelled = child_cancel_for_closure
                         .as_ref()
                         .is_some_and(tokio_util::sync::CancellationToken::is_cancelled);
-                    let (status, output, error): (AsyncTaskStatus, Option<String>, Option<String>) =
-                        if cancelled {
-                            info!("Subagent cancelled by parent: run_id={}", run_id_clone);
-                            (AsyncTaskStatus::Cancelled, None, None)
-                        } else {
-                            match result {
-                                Ok(output) => {
-                                    info!(
-                                        "Subagent completed successfully: run_id={}",
-                                        run_id_clone
-                                    );
-                                    (
-                                        AsyncTaskStatus::Completed {
-                                            result: peko_tools_core::ToolResult::success(
-                                                serde_json::json!({"output": &output}),
-                                            ),
-                                        },
-                                        Some(output),
-                                        None,
-                                    )
-                                }
-                                Err(e) => {
-                                    error!("Subagent failed: run_id={} error={}", run_id_clone, e);
-                                    (
-                                        AsyncTaskStatus::Failed {
-                                            error: e.to_string(),
-                                        },
-                                        None,
-                                        Some(e.to_string()),
-                                    )
-                                }
+                    let (status, output, error, token_usage): (
+                        AsyncTaskStatus,
+                        Option<String>,
+                        Option<String>,
+                        Option<(usize, usize, usize)>,
+                    ) = if cancelled {
+                        info!("Subagent cancelled by parent: run_id={}", run_id_clone);
+                        (AsyncTaskStatus::Cancelled, None, None, None)
+                    } else {
+                        match result {
+                            Ok(task_output) => {
+                                info!(
+                                    "Subagent completed successfully: run_id={}",
+                                    run_id_clone
+                                );
+                                (
+                                    AsyncTaskStatus::Completed {
+                                        result: peko_tools_core::ToolResult::success(
+                                            serde_json::json!({"output": &task_output.final_answer}),
+                                        ),
+                                    },
+                                    Some(task_output.final_answer),
+                                    None,
+                                    task_output.token_usage,
+                                )
                             }
-                        };
+                            Err(e) => {
+                                error!("Subagent failed: run_id={} error={}", run_id_clone, e);
+                                (
+                                    AsyncTaskStatus::Failed {
+                                        error: e.to_string(),
+                                    },
+                                    None,
+                                    Some(e.to_string()),
+                                    None,
+                                )
+                            }
+                        }
+                    };
 
                     // Update the unified registry with the subagent result.
                     // This is the ONLY state update — no dual registry sync.
@@ -1299,7 +1473,7 @@ impl SubagentExecutor {
                                     status: status.clone(),
                                     output: output.clone(),
                                     error: error.clone(),
-                                    token_usage: None, // TODO: Track token usage
+                                    token_usage,
                                     completed_at: Utc::now(),
                                 });
                             }
@@ -1386,7 +1560,7 @@ impl SubagentExecutor {
                     Ok(serde_json::json!({
                         "output": output,
                         "error": error,
-                        "token_usage": null,
+                        "token_usage": token_usage,
                     }))
                 },
             )
@@ -1652,6 +1826,15 @@ impl SubagentExecutor {
     }
 }
 
+/// The outcome of [`execute_subagent_task`]: the child agent's final
+/// answer plus the token usage accumulated over the run (projected to
+/// the `(input, output, total)` tuple `SubagentResult::token_usage`
+/// carries).
+struct SubagentTaskOutput {
+    final_answer: String,
+    token_usage: Option<(usize, usize, usize)>,
+}
+
 /// Execute a subagent task
 ///
 /// This is the core execution function that runs in a background task.
@@ -1659,12 +1842,16 @@ impl SubagentExecutor {
 /// 1. Loads the child session
 /// 2. Creates a subagent Agent sharing the parent's session manager
 /// 3. Runs the full `AgenticLoop` via `Agent::execute_with_session`
-/// 4. Returns the assistant's final answer
+///    (final-only) or — when `stream_events` is `Some` —
+///    `Agent::execute_streaming_with_session` (live `AgenticEvent`
+///    stream; sprint 2 Phase 6)
+/// 4. Returns the assistant's final answer + token usage
 ///
 /// The child resolves tools from the daemon-global
 /// [`crate::extensions::framework::core::global_core`]. The parent's
 /// `principal_id` is propagated so the child's own `SubagentExecutor`
 /// and any descendant spawns carry the same identity.
+#[allow(clippy::too_many_arguments)]
 async fn execute_subagent_task(
     agent_name: &str,
     session_key: &str,
@@ -1710,7 +1897,13 @@ async fn execute_subagent_task(
     // The spawning principal's DID, bound onto the child Agent so
     // `send_peer` registers down the tree with correct attribution.
     caller_principal_did: Option<String>,
-) -> Result<String> {
+    // Sprint 2 Phase 6: streaming event sink. `Some` runs the child
+    // via `Agent::execute_streaming_with_session`
+    // (`OrchestratorConfig::live()`) and forwards every `AgenticEvent`
+    // to the sink (the IPC `principal_send` drain-loop shape); `None`
+    // keeps the final-only `execute_with_session` path.
+    stream_events: Option<AgenticEventSink>,
+) -> Result<SubagentTaskOutput> {
     info!(
         "Executing subagent task: agent={} session={}",
         agent_name, session_key
@@ -1720,9 +1913,12 @@ async fn execute_subagent_task(
     let provider = match provider {
         Some(p) => p,
         None => {
-            return Ok(format!(
-                "# Subagent Task\n\n**Task:** {task_message}\n\n**Status:** Completed (no provider configured)\n\nThe subagent executed without an LLM provider."
-            ));
+            return Ok(SubagentTaskOutput {
+                final_answer: format!(
+                    "# Subagent Task\n\n**Task:** {task_message}\n\n**Status:** Completed (no provider configured)\n\nThe subagent executed without an LLM provider."
+                ),
+                token_usage: None,
+            });
         }
     };
 
@@ -1907,9 +2103,27 @@ async fn execute_subagent_task(
         parent_quota_meter.unwrap_or_else(|| Arc::new(peko_quota::meter::QuotaMeter::unlimited()));
     let parent_peer_meter =
         parent_peer_meter.unwrap_or_else(|| Arc::new(peko_quota::meter::QuotaMeter::unlimited()));
-    let inner_fut = Box::pin(peko_quota::scope::QuotaScope::with(
-        parent_peer_meter,
-        subagent.execute_with_session(
+    // Sprint 2 Phase 6: when a streaming sink is bound, run the child
+    // through `execute_streaming_with_session`
+    // (`OrchestratorConfig::live()`) so per-token `AssistantDelta`
+    // events reach the caller; otherwise keep the final-only
+    // `execute_with_session` path. Both arms produce the same
+    // `AgenticResult`, boxed to a common future type.
+    let run_fut: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<peko_engine::AgenticResult>> + Send + '_>,
+    > = match stream_events {
+        Some(sink) => Box::pin(subagent.execute_streaming_with_session(
+            &combined_prompt,
+            Vec::new(), // subagents carry no recalled context
+            child_session,
+            None, // history: None => full system prompt (with tools) is prepended
+            None, // caller_id: child turns attribute at the principal boundary
+            move |event| sink(event),
+            cancel,
+            None, // explicit_meter override: None = use the task-local meter
+            None, // explicit_peer_meter override: None = use the task-local peer meter
+        )),
+        None => Box::pin(subagent.execute_with_session(
             &combined_prompt,
             Vec::new(), // subagents carry no recalled context
             child_session,
@@ -1920,12 +2134,21 @@ async fn execute_subagent_task(
             },
             None, // explicit_meter override: None = use the task-local meter
             None, // explicit_peer_meter override: None = use the task-local peer meter
-        ),
+        )),
+    };
+    let inner_fut = Box::pin(peko_quota::scope::QuotaScope::with(
+        parent_peer_meter,
+        run_fut,
     ));
     let result = peko_quota::scope::QuotaScope::with(parent_quota_meter, inner_fut).await;
 
     match result {
         Ok(agentic_result) => {
+            let token_usage = Some((
+                agentic_result.usage.input as usize,
+                agentic_result.usage.output as usize,
+                agentic_result.usage.total as usize,
+            ));
             let mut final_answer = agentic_result.final_answer;
 
             // If the final answer is empty, try to recover from the session history.
@@ -1951,7 +2174,10 @@ async fn execute_subagent_task(
                 agentic_result.iterations,
                 final_answer.len()
             );
-            Ok(final_answer)
+            Ok(SubagentTaskOutput {
+                final_answer,
+                token_usage,
+            })
         }
         Err(e) => {
             error!(

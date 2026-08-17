@@ -23,8 +23,25 @@ Per-peer `root:{peer}` / `root:cron:{owner}` sessions are retired
   whole-store reach in the ownership guards (like the root agent had);
   strangers' children stay subtree-scoped. Privilege affects guard reach
   only — the session keeps its parent and stays in the trunk's tree.
+- **Streaming child-turn driver** (`principal/child_turns.rs` +
+  `SubagentExecutor::resume_streaming`): drives a turn in a peer child
+  session with the full resume guard stack, live `AgenticEvent`
+  streaming (same event shape as the root path — the IPC packet mapping
+  is unchanged), cancellation, and registry registration (run-active
+  guards see it). One shared builder (`PeerChildTurns::build`) now
+  constructs both this driver and the channel-binding driver.
+- **Persona inheritance**: peer children run the principal's root agent
+  prompt (workspace `agents/root.md` → compiled-in default), fixing the
+  blank-prompt fallback in daemon-driven child turns.
+- **`record_peer_recall`**: the per-peer memory artifact now points at
+  the peer-child session id (write side; the read side is peer-keyed and
+  unchanged).
 
 #### Fixed
+- **Flaky `concurrent_messages_serialize_turns` test** (was failing ~6/8
+  full-suite runs): the FIFO assertion raced task spawn order against
+  mutex acquisition; now waits for the first turn to start before issuing
+  the second message.
 - **`create_session` peer clobbering**: the peer stamp on the index entry
   was silently lost when a post-create `set_*` (`set_slug`, `set_standing`,
   …) rewrote the entry through the metadata cache. The peer is now stamped

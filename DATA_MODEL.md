@@ -1298,6 +1298,17 @@ supervision are unaffected. Non-privileged peer children stay
 subtree-scoped. The ingress re-route that sends peer traffic to these
 children is Phase 7; nothing routes here yet.
 
+**Recall artifact target (Phase 6, 2026-08-17).** The
+`memory_index.json` `SessionArtifact` shape is unchanged, but the
+`session_id` VALUE for peer-chat recall is re-pointed: pre-paradigm
+the root router artifacted the peer's `root:{peer}` session;
+`PrincipalManager::record_peer_recall` (the Phase 7 write path, around
+the streaming child-turn driver) artifacts the peer's standing child
+session id instead. The read side
+(`PrincipalMemory::find_latest_session_for_peer`) is peer-keyed and
+unaffected. No migration: stale `root:{peer}` artifacts simply age
+out of use.
+
 ---
 
 ## 5½. Chat Log — Consumer-Visible Conversation History

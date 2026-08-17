@@ -1138,6 +1138,45 @@ impl PrincipalManager {
         self.record_response(principal, peer, response).await
     }
 
+    /// Sprint 2 Phase 6: record the peer-recall artifact for a peer
+    /// turn that ran in the peer's STANDING CHILD session (the
+    /// per-peer child of the trunk provisioned by
+    /// [`crate::principal::peer_children::ensure_peer_child`]).
+    ///
+    /// This is the re-pointed write side of the session-recall loop:
+    /// pre-paradigm, `RootRouter::route`/`route_streaming` artifacted
+    /// the peer's `root:{peer}` session id; with per-peer children the
+    /// peer's latest session IS the child, so the artifact's
+    /// `session_id` is the child session id. The read side
+    /// (`build_router_context` →
+    /// `PrincipalMemory::find_latest_session_for_peer`) is peer-keyed
+    /// and needs no change — it picks this artifact up as-is.
+    ///
+    /// Best-effort like the router's write: a failure logs a warning
+    /// and does not fail the turn. Phase 7's ingress wrappers call
+    /// this around the child turn driver; the legacy root-session
+    /// writes in `routers/root.rs` stay until the re-route lands.
+    /// Allowed dead until Phase 7 lands.
+    #[allow(dead_code)]
+    pub(crate) async fn record_peer_recall(
+        &self,
+        principal: &Arc<Principal>,
+        peer: &Subject,
+        child_session_id: &str,
+        summary: &str,
+    ) {
+        let artifact = super::memory::SessionArtifact {
+            session_id: child_session_id.to_string(),
+            peer: peer.clone(),
+            title: Some("peer-child".to_string()),
+            updated_at: chrono::Utc::now(),
+            summary: Some(summary.to_string()),
+        };
+        if let Err(e) = principal.memory.record_session(artifact).await {
+            tracing::warn!("failed to record peer-child session artifact: {e}");
+        }
+    }
+
     /// Persist a peer chat-channel input to the chat-log shard for
     /// `(principal_did, peer)`. Skipped silently for non-chat channels
     /// and when no chat-log store is attached (tests / non-daemon).
@@ -2021,6 +2060,174 @@ mod tests {
 
         // Sanity: the principal id round-trips.
         let _ = id;
+    }
+
+    // ===================================================================
+    // Sprint 2 Phase 6: a peer turn driven in the peer's standing
+    // child keeps the chat-log projection (keyed `(principal_did,
+    // peer)` exactly as today) and the recall artifact points at the
+    // child session id. This is the wrapper shape Phase 7's ingress
+    // re-route uses around the child turn driver.
+    // ===================================================================
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn peer_child_turn_projects_chat_log_and_recall_artifact() {
+        use peko_chat_log::{ChatLogStore, ChatThreadKey};
+
+        let temp = TempDir::new().expect("temp dir");
+        std::env::set_var("PEKO_HOME", temp.path());
+        peko_identity::init_test_env();
+
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+
+        let workspace = temp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let catalog_path = temp.path().join("models.toml");
+        let (resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+
+        let store = Arc::new(ChatLogStore::new(temp.path().join("chat_log")));
+        let manager = PrincipalManager::with_path_resolver(
+            path_resolver,
+            Arc::new(DefaultPrincipalMemoryFactory),
+            Arc::new(DefaultPrincipalRouterFactory),
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        )
+        .with_resolver(resolver)
+        .with_chat_log_store(store.clone());
+        let principal = create_test_principal(&manager, "stressy").await;
+
+        let owner = Subject::User("test-owner".to_string());
+        let peer = Subject::User("alice".to_string());
+
+        // Provision the peer's standing child (Phase 5) over the SAME
+        // sessions dir the principal's memory exposes — the child the
+        // Phase 6 streaming driver runs the turn in.
+        let session_manager = Arc::new(tokio::sync::RwLock::new(
+            peko_session::manager::SessionManager::new()
+                .with_sessions_dir_internal(principal.memory.sessions_dir()),
+        ));
+        let child_id = crate::principal::peer_children::ensure_peer_child(
+            "root",
+            &owner,
+            &peer,
+            &session_manager,
+        )
+        .await
+        .expect("peer child provisioning");
+
+        // The Phase 7 wrapper: input row before the child turn,
+        // response row after — both keyed (principal_did, peer).
+        manager
+            .record_chat_input(&principal, &peer, "hello principal", &cli_channel())
+            .await
+            .expect("record_chat_input should succeed");
+        manager
+            .record_chat_response(&principal, &peer, "hello alice")
+            .await;
+
+        let key = ChatThreadKey::new(principal.did().await, peer.clone());
+        let page = store
+            .read_page(&key, None, 100, None)
+            .await
+            .expect("read_page should succeed");
+        assert_eq!(
+            page.messages.len(),
+            2,
+            "input + response rows land around the child turn"
+        );
+        assert_eq!(page.messages[0].sender, peer);
+        assert_eq!(page.messages[0].text, "hello principal");
+        assert_eq!(
+            page.messages[1].sender,
+            Subject::Principal(principal.did().await)
+        );
+        assert_eq!(page.messages[1].text, "hello alice");
+
+        // Recall: the peer's latest-session artifact points at the
+        // child session id, not a `root:{peer}` id.
+        manager
+            .record_peer_recall(&principal, &peer, &child_id, "hello alice")
+            .await;
+        let artifact = principal
+            .memory
+            .find_latest_session_for_peer(&peer)
+            .await
+            .expect("recall read")
+            .expect("recall artifact exists");
+        assert_eq!(
+            artifact.session_id, child_id,
+            "recall artifact must point at the peer-child session"
+        );
+        assert_eq!(artifact.summary.as_deref(), Some("hello alice"));
+    }
+
+    /// The chat-log projection gate still applies around child turns:
+    /// automation channels (Cron) are not peer chat and persist no
+    /// input row.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn peer_child_turn_chat_projection_skips_non_chat_channels() {
+        use peko_chat_log::{ChatLogStore, ChatThreadKey};
+
+        let temp = TempDir::new().expect("temp dir");
+        std::env::set_var("PEKO_HOME", temp.path());
+        peko_identity::init_test_env();
+
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+
+        let workspace = temp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let catalog_path = temp.path().join("models.toml");
+        let (resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+
+        let store = Arc::new(ChatLogStore::new(temp.path().join("chat_log")));
+        let manager = PrincipalManager::with_path_resolver(
+            path_resolver,
+            Arc::new(DefaultPrincipalMemoryFactory),
+            Arc::new(DefaultPrincipalRouterFactory),
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        )
+        .with_resolver(resolver)
+        .with_chat_log_store(store.clone());
+        let principal = create_test_principal(&manager, "stressy").await;
+
+        let peer = Subject::User("alice".to_string());
+        let cron_channel = ChannelContext {
+            kind: ChannelKind::Cron,
+            streaming: false,
+        };
+        manager
+            .record_chat_input(&principal, &peer, "cron-fired prompt", &cron_channel)
+            .await
+            .expect("record_chat_input should succeed (skipped)");
+
+        let key = ChatThreadKey::new(principal.did().await, peer.clone());
+        let page = store
+            .read_page(&key, None, 100, None)
+            .await
+            .expect("read_page should succeed");
+        assert!(
+            page.messages.is_empty(),
+            "non-chat channels persist no chat-log rows"
+        );
     }
 
     /// Phase 12+ PR #3: an open plan with an InProgress node surfaces
