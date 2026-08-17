@@ -95,14 +95,35 @@ principal trunk exists: **`root:self`** (`trunk_session_id()` in
   failing.
 - `peer_from_session_key("root:self")` returns `None` explicitly — the
   trunk has no external peer.
-- Per-peer sessions are unchanged: `root:{peer}` for humans,
-  `root:cron:{peer}` for automation.
 
-Cron targeting: `CronJobAction::Send` gains `target: Option<String>` —
-`"trunk"` fires the turn into `root:self`; default (`None`) preserves the
-`root:cron:{owner}` + note-cross-post behavior exactly. CLI: `peko cron
-add … --target trunk`. This is the heartbeat the paradigm calls for; wire
-`budget_per_cycle` / `cost_per_call_max` as the wake budget (§4).
+**(implemented — Phase 7 of sprint 2, 2026-08-17; breaking)** The trunk
+is now the ONLY root session and is cron-only — unreachable from outside:
+
+- **All external ingress lands in per-peer standing children** of the
+  trunk: `peko send` (CLI/IPC) → `/local-user` (privileged, whole-store
+  reach), other users → `/user-x`, A2A principals →
+  `/principal-{did-fragment}` (`principal/peer_children.rs`:
+  spawn-on-contact via `ensure_peer_child`; turns driven by
+  `principal/child_turns.rs` with the principal's persona, live event
+  streaming, and the full resume guard stack). The per-peer
+  `root:{peer}` / `root:cron:{peer}` sessions and their routing are
+  **deleted**; `RootRouter` routes the trunk only.
+- The root-family guards (delete/archive/move refusal, prune exemption)
+  now protect exactly `root:self`.
+- Chat-log projection for peer turns is unchanged (keyed
+  `(principal_did, peer)`); the per-peer memory-recall artifact points at
+  the peer-child session id.
+
+Cron targeting: cron `Send` defaults to the **trunk** (since Phase 7 —
+`target: "trunk"` is accepted but redundant); the 60s `Every` floor
+(`TRUNK_MIN_INTERVAL_MS`) applies to all trunk sends. Send outcome notes
+land in the owner's child (`/local-user`); `[notify]` self-view lines land
+in the trunk; cron `SpawnTool` wakes steer the trunk inbox. This is the
+heartbeat the paradigm calls for; wire `budget_per_cycle` /
+`cost_per_call_max` as the wake budget (§4). The keepalive is
+self-regulating: the trunk agent holds the cron tools and can
+create/delete its own `target:"trunk"` jobs (no cron edit action — create
++ delete).
 
 Known follow-up: `err_resume_cross_family` (`session/ownership.rs:216`)
 remains dormant scaffolding.
@@ -233,11 +254,13 @@ consider_response` trait (`channel/src/responder.rs:36-40`) is the
 `NoopChannelResponder` for unbound channels, `PassiveBindingResponder`
 for bound ones (Phase 4, below).
 
-**(implemented)** Passive DM pickup exists — but on the tunnel/A2A path,
-not channels. An inbound peer message auto-continues the stable
-`root:{peer}` session (created if absent) with serial-run queueing and
-steering fallback, and the reply returns as a synchronous RPC response
-(`tunnel/dispatcher.rs:1246-1422`, `principal/manager.rs:879-946`).
+**(implemented — Phase 7, sprint 2)** Passive DM pickup exists on BOTH
+paths, and both land in children now: an inbound A2A/tunnel or CLI/Hub
+message spawns-or-continues the per-peer standing child (`/user-x`,
+`/principal-{did}`) with serial-run queueing and steering fallback
+(`principal/manager.rs::receive`, `tunnel/dispatcher.rs`); a bound
+channel message wakes its bound child (Phase 4, below). The sync-RPC
+reply semantics of the tunnel are preserved.
 
 **(implemented — Phase 4 of the paradigm sprint, 2026-08-15)** Channel →
 session passive binding exists (`peko-rs/core/src/daemon/
@@ -278,19 +301,18 @@ channel_binding.rs`; design decisions documented in its module header):
 - **Failure policy** — log-only; a broken binding never error-spams the
   channel.
 
-**(partially closed — Phase 4) Two transports, divergent semantics.**
-Tunnel/A2A remains push, per-peer-session-bound, sync-RPC; channels now
-support BOTH active polling (type 2) and passive binding (type 1, above).
-The remaining divergence is the tunnel's per-peer `root:{peer}` DM
-experience vs. bound-channel DM sessions. The tunnel behaviors that must
-be preserved in any future consolidation: sync request/response with
+**(narrowed — Phases 4+7) Two transports, converged semantics.**
+Tunnel/A2A remains push + sync-RPC; channels support BOTH active polling
+(type 2) and passive binding (type 1). Since Phase 7 both land in child
+sessions — the tunnel in per-peer children (`/principal-{did}`), bound
+channels in their bound session. What remains tunnel-only and must be
+preserved in any future consolidation: sync request/response with
 pending-correlation + timeout, ed25519 envelope verification, hub
-directory + transport selection, chat-log projection of both directions,
-`root:{peer}` session continuity (or a deliberate migration of it), and
-`[notify]` principal-view lines. What becomes redundant: channel-side
-mirroring of DM traffic, most of `PeerMessenger` (survives as the
-`[notify]` writer + originator walk), and the user branch of `send_peer`
-(subsumed by a DM-channel post — the principal branch's sync RPC is not).
+directory + transport selection, and chat-log projection of both
+directions. What becomes redundant: channel-side mirroring of DM traffic,
+most of `PeerMessenger` (survives as the `[notify]` writer + originator
+walk), and the user branch of `send_peer` (subsumed by a DM-channel post —
+the principal branch's sync RPC is not).
 The tunnel *transport* itself stays regardless.
 
 ## 4. Cron: the principal's heartbeat
@@ -351,7 +373,7 @@ audit measured the current tool surface against that need:
 | JSONL auto-paging, stable ids | ✅ implemented | `core/src/session/`, `peko-rs/session/` |
 | Subtree-scoped Agent/session tools | ✅ implemented | `core/src/session/ownership.rs` |
 | Spawned sessions retained + re-resumable (`cleanup: keep`) | ✅ implemented | `agents/subagent_executor.rs:657-799` |
-| Passive DM → auto-continued per-peer session | ✅ implemented (tunnel path) | `tunnel/dispatcher.rs:1246-1422` |
+| Passive DM → per-peer child session (`/user-x`, `/principal-{did}`) | ✅ implemented (Phase 7, sprint 2) | `principal/manager.rs::receive` + `peer_children.rs` + `child_turns.rs`; `root:{peer}` retired |
 | Channel read/send tools | ✅ implemented | `core/src/tools/builtin/channel/` |
 | Channel push broadcast (`subscribe_events`) | ✅ implemented (desktop UI only consumer) | `channel/src/store.rs:296-320` |
 | Channel log ≠ session log | ✅ implemented | `peko-rs/channel/`, `peko-rs/chat-log/` |
@@ -362,6 +384,9 @@ audit measured the current tool surface against that need:
 | Path addressing (`/user-a/task-b`) | ✅ implemented (Phase 1b) | `peko-rs/session/src/path.rs` resolver; `slug` on metadata; resolved at tool-runtime boundary before guards (§2.4) |
 | Channel → auto-spawned/bound child (`/user-a`, `/channel-a`) | ✅ implemented (Phase 4) | `daemon/channel_binding.rs` `PassiveBindingResponder`; `meta.json` `passive_binding`; `--bind` on channel create (§3.2) |
 | Passive/active as channel tier property | ✅ implemented (Phase 4) | per-channel `passive_binding` (not `Tier` — binding IS the DM marker); unbound channels stay active-only |
+| Spawn-on-contact (external peer → auto-created child) | ✅ implemented (Phase 5+7) | `principal/peer_children.rs::ensure_peer_child`; standing + slug + real peer stamped, parented at trunk |
+| Owner child privileged (whole-store reach) | ✅ implemented (Phase 5) | `privileged` metadata flag; `CallerContext.privileged`; only `/local-user` |
+| Trunk unreachable from outside (cron-only) | ✅ implemented (Phase 7) | peer channels re-route to children; `RootRouter` is trunk-only; `root:{peer}`/`root:cron:*` deleted |
 | Per-session/subtree budget attribution | ❌ gap | quota is per-principal; no quota-reading tool |
 | Offline (headless) compaction | ❌ gap | `compact` is flag-only, fires at target's next run |
 | Supervision loop (root reviews/compacts/archives children) | ⚠️ primitives ready | observability fixed (Phase 0); the loop itself is a usage pattern on the trunk (cron `target:"trunk"` + session/Agent tools), not new machinery |
@@ -403,10 +428,10 @@ Items 1–3 were **fixed in Phase 0 of the paradigm sprint**
    sites). Child ids are plain UUIDs; keep the messenger's defensive
    `:subagent:` trail-stripping for legacy keys.
 
-## 8. Build order (execution status of the 2026-08-15 sprint)
+## 8. Build order (execution status)
 
-Steps 0–3 **landed** on branch `feat/agent-session-paradigm` (one commit
-per phase):
+Sprint 1 (2026-08-15) landed steps 0–4 on branch
+`feat/agent-session-paradigm` (one commit per phase):
 
 0. ✅ **Latent issues fixed** (§7.1–7.3): prune exemptions (`root:*` +
    `archived` + `standing`), `run_active` correctness, cursor load at
@@ -423,3 +448,19 @@ per phase):
    channels wake the bound session via the subagent resume path and post
    the reply back; self-post suppression, FIFO turn serialization,
    cursor-durable restarts; unbound channels stay active-only (type 2).
+
+Sprint 2 (2026-08-17, same branch) completed the shape — external ingress
+off the root, children are the front door:
+
+5. ✅ **Peer-child provisioning + privilege** — `peer_child_slug`,
+   `ensure_peer_child` (spawn-on-contact, trunk-anchored, real peer
+   stamped), `privileged` flag (owner's `/local-user` manages the whole
+   store).
+6. ✅ **Streaming child-turn driver** — `SubagentExecutor::
+   resume_streaming` + `principal/child_turns.rs` (one builder shared
+   with the channel driver; persona inheritance from the principal's
+   root prompt).
+7. ✅ **Ingress re-route (breaking)** — CLI/A2A/Hub land in per-peer
+   children; `root:{peer}` / `root:cron:{owner}` retired; cron `Send`
+   defaults to the trunk; notes → owner's child, `[notify]` → trunk;
+   root-family guards protect exactly `root:self`.

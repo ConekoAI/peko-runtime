@@ -659,8 +659,9 @@ cargo test --all-features
     (`peko-rs/core/src/principal/messenger.rs` — trait + global
     registry mirroring the `CronRuntime` pattern, installed by the
     daemon at startup). Originating-peer resolution derives from the
-    calling session id (`root:{peer}` / v2 keys / subagent-suffix
-    stripping / spawn-overlay `parent_session_id` walk) — NOT from
+    calling session's stamped `peer_type`/`peer_id` + the spawn
+    `parent_session_id` walk (the `root:{peer}` key parsing was
+    retired in sprint 2 phase 7) — NOT from
     `ToolContext.peer_id`, which is never populated in production.
     Subagents get the tool via `SubagentExecutor`'s
     `caller_principal_did` OnceLock, propagated by
@@ -679,18 +680,28 @@ cargo test --all-features
     `<id>.jsonl`) and readers (`load_events`/`load_normalized`)
     stitch pages 1..N + the current page transparently. Legacy
     `#`-suffixed JSONLs stay inert on disk. The `session` tool is the
-    *persist* side (9 storage actions: `status`, `list`, `history`,
-    `search`, `rename`, `delete`, `branch`, `archive`, `unarchive`);
+    *persist* side (10 storage actions: `status`, `list`, `history`,
+    `search`, `rename`, `delete`, `branch`, `archive`, `unarchive`,
+    `move`);
     the `Agent` tool is the *generate* side (3 LLM-driving actions via
     the `action` param, default `new`: `new` spawns, `resume`
     re-attaches a run to an existing spawned session — the old
     `resume_session` tool param is gone — `compact` flags the session
     and returns immediately; the engine summarizes at the target's
-    next run, no completion signal). The principal's root session
-    (`root:*`) is continuous and engine-managed: delete/archive on it
-    are refused, and no caller may mutate the session it is running
-    in. Ownership: a caller in a base session manages the whole store;
-    a spawned (subtree) caller manages only its own subtree —
+    next run, no completion signal). The principal's trunk session
+    (`root:self`) is the ONLY root-family session (since sprint 2,
+    2026-08-17): continuous, engine-managed, cron-only — external
+    ingress (CLI send / A2A / Hub) lands in per-peer standing children
+    (`/local-user`, `/user-x`, `/principal-{did}`) provisioned by
+    `principal/peer_children.rs` and driven by
+    `principal/child_turns.rs`; bound DM channels wake their bound
+    child (`daemon/channel_binding.rs`). The per-peer `root:{peer}` /
+    `root:cron:{owner}` sessions are retired. Delete/archive/move on
+    `root:self` are refused, and no caller may mutate the session it
+    is running in. Ownership: a caller in a base session — or a
+    `privileged` one (the owner's `/local-user` child) — manages the
+    whole store; a spawned (subtree) caller manages only its own
+    subtree —
     classification + refusal constructors live in
     `peko-rs/core/src/session/ownership.rs`, shared by the
     `SessionManagerRuntime` adapter (session tool) and the
@@ -775,6 +786,8 @@ peko principal push my-principal:v1.0 custom.registry.com/peko/principals/my-pri
 ## Related Documentation
 
 - `README.md` — Human-facing quick start and feature overview
+- `docs/architecture/PEKO.md` — **The PEKO primitive** (Persistent Entity with Keepalive Orchestration): canonical term + contract for the agent–session paradigm
+- `docs/architecture/AGENT_SESSION_PARADIGM.md` — Full paradigm rationale, gap audit, sprint build order
 - `API_SURFACE.md` — Public Rust API surface
 - `DATA_MODEL.md` — On-disk and in-memory data formats
 - `CHANGELOG.md` — Version history

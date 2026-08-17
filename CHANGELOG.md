@@ -12,6 +12,25 @@ root agent into per-peer standing children of the trunk (`/local-user`,
 Per-peer `root:{peer}` / `root:cron:{owner}` sessions are retired
 (prelaunch breaking change — no migration).
 
+#### Changed (breaking)
+- **External ingress lands in per-peer children** (Phase 7). `peko send`,
+  tunnel A2A, and Hub webchat spawn-or-continue the peer's standing child
+  (`/local-user` for the owner — privileged, whole-store; `/user-x`;
+  `/principal-{did}`) and stream the turn from there via
+  `SubagentExecutor::resume_streaming`. Per-peer root sessions
+  (`root:{peer}`, `root:cron:{owner}`) and their routing are deleted;
+  `RootRouter` is trunk-only; `root_session_id` is gone. The root-family
+  guards (delete/archive/move refusal, prune exemption) now protect
+  exactly `root:self`.
+- **Cron `Send` defaults to the trunk** (`target: "trunk"` is accepted
+  but redundant); the 60s `Every` floor covers all trunk sends. Send
+  outcome notes land in the owner's child; `[notify]` self-view lines
+  land in the trunk; `SpawnTool` wakes steer the trunk inbox (Phase 3b).
+  `deliver_note` appends to the peer's child (find-only, no create).
+- `peer_from_session_key` no longer parses `root:`/`root:cron:` keys;
+  `originating_peer` resolves via stamped `peer_type`/`peer_id` + the
+  parent walk.
+
 #### Added
 - **Peer-child provisioning** (`principal/peer_children.rs`):
   `peer_child_slug` (peer → slug: `user:local` → `local-user`,

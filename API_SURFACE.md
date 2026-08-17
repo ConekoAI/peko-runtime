@@ -874,6 +874,24 @@ Branch `feat/agent-session-paradigm`; see
 | `principal::children::ensure_declared_children` / `session::standing` helpers | `principal::children`, `session::standing` | ✅ New | Ensure-declared + declaration recovery |
 | `trunk_session_id()` / `ChannelKind::Trunk` / `PrincipalManager::receive_trunk` | `principal::routers::root`, `principal::router`, `principal::manager` | ✅ New | Principal trunk session `root:self` (peer-less, cron-kept) |
 | `CronJobAction::Send` (+`target`); `SEND_TARGET_TRUNK` / `validate_send_target` | `peko_cron::tools` | ✅ Extended | `target = "trunk"` routes the turn into `root:self` |
+
+### PEKO Sprint 2 (2026-08-17) — external ingress off the root
+
+Breaking (prelaunch): per-peer `root:{peer}` / `root:cron:{owner}`
+sessions retired; all external ingress lands in per-peer standing
+children of the trunk. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `SessionMetadata`/`SessionEntry` (+`privileged`) | `peko_session::{metadata,index}` | ✅ Extended | Owner's child gets whole-store guard reach |
+| `CallerContext.privileged` | `session::ownership` | ✅ Extended | Privilege = guard reach, not tree membership |
+| `peer_child_slug` / `ensure_peer_child` | `principal::peer_children` | ✅ New | Spawn-on-contact per-peer children (`/local-user`, `/user-x`, `/principal-{did}`), trunk-anchored |
+| `PeerChildTurns` (`ensure_child`, `drive_turn{,_streaming}`) | `principal::child_turns` | ✅ New | Persona-inheriting child turn driver (shared with channel binding) |
+| `SubagentExecutor::resume_streaming` / `StreamingResumeOutcome` | `agents::subagent_executor` | ✅ New | Streaming child turns (same event shape as the root path) |
+| `PrincipalManager::record_peer_recall` | `principal::manager` | ✅ New | Per-peer recall artifact → peer-child session id |
+| `PrincipalManager::receive` / `receive_streaming` | `principal::manager` | ⚠️ Changed | Peer channels route to peer children; Trunk/Cron → `receive_trunk` |
+| ~~`root_session_id`~~; `root_session_id_for_channel` (trunk-only) | `principal::routers::root` | ❌ Deleted / narrowed | Per-peer root routing retired |
+| Cron `Send` default target | `daemon::cron_engine`, `peko_cron` | ⚠️ Changed | Default = trunk; `TRUNK_MIN_INTERVAL_MS` covers `target: None` |
 | `TRUNK_MIN_INTERVAL_MS` / `validate_trunk_send_interval` | `peko_cron::tools` | ✅ New | Phase 3b: 60s floor for trunk-targeted `Every` keepalive (token-burn guard); SpawnTool wake posts to `root:self` |
 
 ### Type Aliases for Backward Compatibility

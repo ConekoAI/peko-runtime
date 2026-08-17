@@ -55,14 +55,17 @@ rather than a passive request handler.
 ### K — Keepalive
 
 - The root session receives periodic cron turns that keep it alive and
-  continuously active.
+  continuously active. Cron `Send` defaults to the trunk; `SpawnTool`'s
+  `wake_on_completion` steers the trunk inbox. Trunk-targeted `Every`
+  sends enforce a 60s floor (`TRUNK_MIN_INTERVAL_MS`).
+- External ingress never reaches the root: CLI/A2A/Hub DMs land in
+  per-peer children, bound channels in their bound child (see §O).
 - Without keepalive, the root idles, standing children become orphaned,
   and the principal becomes a passive request handler.
 - The keepalive is **per-principal** and serves double duty: liveness
-  signal + the principal's own supervision tick.
-- `CronJobAction::Send` (full turn) and `SpawnTool`'s
-  `wake_on_completion` both target this root — the trunk work in §2.1
-  of the paradigm doc collapses them onto one target.
+  signal + the principal's own supervision tick. It is self-regulating —
+  the trunk agent holds the cron tools and can create/delete its own
+  trunk-targeted jobs to adjust its cadence.
 
 ### O — Orchestration
 
@@ -77,6 +80,13 @@ rather than a passive request handler.
 - **Standing children** are declared in `principal.toml` `[children]`,
   ensured at root setup, and attach by name on `Agent new` rather than
   minting a fresh UUID.
+- **External-facing children** are auto-spawned on contact
+  (`principal/peer_children.rs`): each DM peer gets a per-peer standing
+  child (`/local-user`, `/user-x`, `/principal-{did-fragment}`) parented
+  at the trunk; bound channels wake their bound child. External traffic
+  NEVER lands in the trunk — the root is cron-only (Phase 7, sprint 2).
+  The owner's child (`/local-user`) is `privileged`: whole-store reach in
+  the ownership guards; strangers' children stay subtree-scoped.
 - **Move** reparents a session and its subtree with a cycle guard
   (`err_move_cycle`); refused on `root:*` source, live-run target, and
   ancestor descent.
@@ -159,11 +169,15 @@ violation** and should be rejected in review.
   principal's root.
 - No cron firing into the root at all — turns the PEKO into a passive
   request handler.
-- The §7.4 disagreement: `Send` lands in `root:cron:{owner}` while
-  `SpawnTool`'s wake lands in `root:{owner}`. Two "roots" for one PEKO
-  is a contract violation; the trunk work in §2.1 resolves it.
+- External ingress (CLI send, A2A, Hub, bound channels) landing in the
+  trunk instead of a child — the trunk's context is the supervision
+  loop's working memory, not a receptionist's. (Pre-Phase-7 the per-peer
+  `root:{peer}` sessions violated this; they are retired.)
+- Two "roots" for one PEKO (the retired §7.4 disagreement: `Send` in
+  `root:cron:{owner}` while `SpawnTool` woke `root:{owner}`).
 - Cron `Every{every_ms}` with no minimum-interval floor on
-  self-targeted keepalive (runaway-token-burn anti-pattern).
+  self-targeted keepalive (runaway-token-burn anti-pattern; enforced by
+  `TRUNK_MIN_INTERVAL_MS`).
 
 ### Violates O (Orchestration)
 
