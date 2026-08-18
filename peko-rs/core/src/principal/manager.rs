@@ -119,6 +119,18 @@ pub struct PrincipalManager {
     peer_child_turns: tokio::sync::RwLock<
         HashMap<PrincipalId, Arc<crate::principal::child_turns::PeerChildTurns>>,
     >,
+    /// Sprint 3 Phase 10: the daemon-global channel port threaded into
+    /// `PeerChildTurns` so peer ingress auto-provisions the peer's DM
+    /// channel. `None` (tests / offline CLI) disables provisioning —
+    /// session behavior unchanged.
+    channel_port: Option<Arc<dyn peko_channel::ChannelPort>>,
+    /// Phase 10: kickoff hook fired when a peer's DM channel is
+    /// freshly created (the daemon installs a closure forwarding to
+    /// `ChannelBindingSupervisor::ensure_subscriber` AFTER the
+    /// supervisor is built — the supervisor needs the `Arc` of this
+    /// manager first, so this is a post-construction install behind
+    /// interior mutability, not a builder arg).
+    dm_subscriber_hook: std::sync::RwLock<Option<crate::principal::peer_dm::PeerDmSubscriberHook>>,
 }
 
 impl PrincipalManager {
@@ -156,6 +168,8 @@ impl PrincipalManager {
             peer_registry: None,
             chat_log_store: None,
             peer_child_turns: tokio::sync::RwLock::new(HashMap::new()),
+            channel_port: None,
+            dm_subscriber_hook: std::sync::RwLock::new(None),
         }
     }
 
@@ -250,6 +264,30 @@ impl PrincipalManager {
     #[must_use]
     pub fn chat_log_store(&self) -> Option<&Arc<peko_chat_log::ChatLogStore>> {
         self.chat_log_store.as_ref()
+    }
+
+    /// Sprint 3 Phase 10: attach the daemon-global channel port. When
+    /// attached, peer ingress (`PeerChildTurns::ensure_child`)
+    /// auto-provisions the peer's DM channel alongside its standing
+    /// child session. `None` (the default) disables provisioning —
+    /// the right choice for tests / non-daemon contexts.
+    #[must_use]
+    pub fn with_channel_port(mut self, channel_port: Arc<dyn peko_channel::ChannelPort>) -> Self {
+        self.channel_port = Some(channel_port);
+        self
+    }
+
+    /// Phase 10: install the DM-channel subscriber kickoff hook.
+    /// Called by the daemon AFTER the `ChannelBindingSupervisor` is
+    /// built (the supervisor needs this manager's `Arc` first).
+    pub(crate) fn set_dm_subscriber_hook(
+        &self,
+        hook: crate::principal::peer_dm::PeerDmSubscriberHook,
+    ) {
+        *self
+            .dm_subscriber_hook
+            .write()
+            .expect("dm_subscriber_hook lock poisoned") = Some(hook);
     }
 
     /// Create a new Principal from config, generate a real identity, and load
@@ -687,6 +725,18 @@ impl PrincipalManager {
         .map_err(|e| {
             PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
         })?;
+        // Phase 10: thread the channel port + DM provisioning wiring
+        // through so ingress auto-provisions the peer's DM channel and
+        // a freshly created one gets its subscriber without a restart.
+        let dm_hook = self
+            .dm_subscriber_hook
+            .read()
+            .expect("dm_subscriber_hook lock poisoned")
+            .clone();
+        let turns = turns
+            .with_channel_port(self.channel_port.clone())
+            .with_dm_subscriber_hook(dm_hook)
+            .with_dm_lock(Some(self.session_creation_lock(principal.id.clone()).await));
         let turns = Arc::new(turns);
         self.peer_child_turns
             .write()

@@ -313,10 +313,12 @@ impl ChannelStore {
     }
 
     /// PR-2b: fire `event` to every subscriber of `channel`. No-op
-    /// when nobody has subscribed. Called by the local append paths
-    /// (`post`, `append_remote_event`, `join_remote`) after a
-    /// successful write so the desktop's `ChannelEventsWatch` stream
-    /// picks up events in real time.
+    /// when nobody has subscribed. Called by [`Self::append_event`]
+    /// after every successful durable append so BOTH live consumers
+    /// pick events up in real time: the desktop's `ChannelEventsWatch`
+    /// stream and (sprint 3 Phase 10) the `ChannelSubscriber` poll
+    /// loop, whose `select!` wakes on this broadcast instead of
+    /// waiting out its backstop tick.
     fn notify_event(&self, channel: &ChannelId, event: &ChannelEvent) {
         let guard = self.notifiers.lock().expect("notifier mutex");
         if let Some(sender) = guard.get(channel) {
@@ -390,6 +392,16 @@ impl ChannelStore {
     /// per-shard [`FileLock`] + uses [`append_bytes_durable`] for
     /// crash safety. Returns the line number (0-indexed) the event
     /// was assigned.
+    ///
+    /// This is the SINGLE disk-append chokepoint for the store —
+    /// `create`, `post_with_event`, `append_remote_event` (the
+    /// cross-runtime mirror path), `invite`, `leave`, and
+    /// `join_remote` all funnel through here — so the live-event
+    /// broadcast (`notify_event`) fires from this one spot and every
+    /// append wakes `subscribe_events` receivers regardless of which
+    /// `ChannelPort` face was used. Best-effort: a missed
+    /// notification just means a consumer polls for the event; the
+    /// on-disk log is the source of truth.
     async fn append_event(
         &self,
         tier: Tier,
@@ -431,6 +443,9 @@ impl ChannelStore {
         append_bytes_durable(&path, &bytes).await.map_err(|e| {
             ChannelError::Adapter(format!("append {}: {e}", path.display()))
         })?;
+        // Notify live subscribers only after the durable append
+        // succeeds (see the method docs — single chokepoint).
+        self.notify_event(channel, ev);
         Ok(line_number)
     }
 
@@ -571,11 +586,6 @@ impl ChannelStore {
     ) -> Result<TaskId> {
         let tier = self.resolve_tier(channel).await?;
         let line = self.append_event(tier, channel, ev).await?;
-        // PR-2b: notify any `ChannelEventsWatch` subscribers after
-        // the durable append succeeds. Best-effort — a missed
-        // notification just means the desktop polls for the next
-        // event; the on-disk log is the source of truth.
-        self.notify_event(channel, ev);
         Ok(line.to_string())
     }
 
@@ -842,9 +852,6 @@ impl ChannelStore {
             at: Utc::now().to_rfc3339(),
         };
         let line = self.append_event(tier, channel, &ev).await?;
-        // PR-2b: notify `ChannelEventsWatch` subscribers after the
-        // durable append so the desktop's live stream sees the post.
-        self.notify_event(channel, &ev);
         Ok((line.to_string(), ev))
     }
 }
@@ -890,12 +897,6 @@ impl ChannelPort for ChannelStore {
             at: now.to_rfc3339(),
         };
         self.append_event(opts.tier, &channel, &event).await?;
-        // PR-2b: notify any `ChannelEventsWatch` subscribers on the
-        // freshly-created channel. Crucial for the remote-bootstrap
-        // path — the receiver's `join_remote` synthesizes a `Created`
-        // event so the desktop's watch opens after the bootstrap
-        // can still see it.
-        self.notify_event(&channel, &event);
 
         Ok(channel)
     }
@@ -930,7 +931,6 @@ impl ChannelPort for ChannelStore {
             at: Utc::now().to_rfc3339(),
         };
         self.append_event(tier, channel, &ev).await?;
-        self.notify_event(channel, &ev);
         Ok(())
     }
 
@@ -1004,7 +1004,6 @@ impl ChannelPort for ChannelStore {
             at: Utc::now().to_rfc3339(),
         };
         self.append_event(tier, channel, &ev).await?;
-        self.notify_event(channel, &ev);
         Ok(())
     }
 
@@ -1462,6 +1461,75 @@ mod tests {
         assert!(
             matches!(result, Err(ChannelError::NotFound(_))),
             "unknown channel must surface NotFound; got: {result:?}"
+        );
+    }
+
+    // -- live-event wake (sprint 3 Phase 10 push-wake) -----------------
+
+    /// Every append path fires the per-channel broadcast from the
+    /// single `append_event` chokepoint. A `subscribe_events` receiver
+    /// must observe a local `post` promptly — well under the
+    /// subscriber's backstop tick (30s default; the pre-Phase-10 loop
+    /// polled every 5s).
+    #[tokio::test]
+    async fn post_notifies_live_subscribers_promptly() {
+        let cfg = tmp_cfg("wake-post");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        let mut rx = store.subscribe_events(&channel).await;
+        store
+            .post(&channel, &creator, PostMsg::root("wake up"))
+            .await
+            .unwrap();
+
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("post must wake a live subscriber well under the backstop tick")
+            .expect("broadcast must be open");
+        assert!(
+            matches!(observed, ChannelEvent::Posted { ref text, .. } if text == "wake up"),
+            "expected the Posted event, got {observed:?}"
+        );
+    }
+
+    /// The cross-runtime mirror append (`append_remote_event`) wakes
+    /// subscribers through the same chokepoint — the DM-tier responder
+    /// depends on this to react to relayed remote posts in real time.
+    #[tokio::test]
+    async fn remote_mirror_append_notifies_live_subscribers() {
+        let cfg = tmp_cfg("wake-remote");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        let mut rx = store.subscribe_events(&channel).await;
+        let remote_event = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob@runtime-B".to_string(),
+            parent: None,
+            text: "hello from B".to_string(),
+            at: "2026-08-18T00:00:00Z".to_string(),
+        };
+        store
+            .append_remote_event(&channel, &remote_event)
+            .await
+            .unwrap();
+
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("mirror append must wake a live subscriber")
+            .expect("broadcast must be open");
+        assert!(
+            matches!(observed, ChannelEvent::Posted { ref text, .. } if text == "hello from B"),
+            "expected the mirrored Posted event, got {observed:?}"
         );
     }
 

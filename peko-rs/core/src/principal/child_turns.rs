@@ -54,6 +54,7 @@ use crate::principal::agent_runner::build_agent_config;
 use crate::principal::config::PrincipalConfig;
 use crate::principal::factory::DefaultPrincipalRouterFactory;
 use crate::principal::peer_children::ensure_peer_child;
+use crate::principal::peer_dm::{ensure_peer_dm_channel, PeerDmSubscriberHook};
 use crate::principal::routers::root::{default_root_prompt, trunk_session_id};
 use crate::principal::Principal;
 
@@ -102,6 +103,24 @@ pub(crate) struct PeerChildTurns {
     /// The root agent's prompt name, stamped as the agent name on
     /// provisioned peer-child sessions.
     agent_name: String,
+    /// The principal's own id — the creator (auto-member) of peer DM
+    /// channels (Phase 10).
+    principal_id: peko_subject::PrincipalId,
+    /// Sprint 3 Phase 10: the daemon-global channel port DM channels
+    /// are provisioned through. `None` in standalone/test contexts —
+    /// provisioning is then skipped (debug log) and session behavior
+    /// is unchanged.
+    channel_port: Option<Arc<dyn peko_channel::ChannelPort>>,
+    /// Phase 10: post-create kickoff hook (the daemon's
+    /// `ChannelBindingSupervisor::ensure_subscriber`) so a freshly
+    /// provisioned DM channel gets its subscriber without a restart.
+    dm_subscriber_hook: Option<PeerDmSubscriberHook>,
+    /// Phase 10: per-principal serialization for the DM channel
+    /// find-or-create (the manager's `session_creation_lock` — shared
+    /// across all `PeerChildTurns` instances built for this
+    /// principal). `None` falls back to unsynchronized provisioning
+    /// (tests only).
+    dm_lock: Option<Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl PeerChildTurns {
@@ -199,7 +218,35 @@ impl PeerChildTurns {
             parent_session_key: trunk_session_id(),
             owner,
             agent_name,
+            principal_id: principal.id.clone(),
+            channel_port: None,
+            dm_subscriber_hook: None,
+            dm_lock: None,
         })
+    }
+
+    /// Phase 10: attach the channel port peer DM channels are
+    /// provisioned through (`None` keeps provisioning disabled — the
+    /// standalone/test default).
+    pub(crate) fn with_channel_port(
+        mut self,
+        port: Option<Arc<dyn peko_channel::ChannelPort>>,
+    ) -> Self {
+        self.channel_port = port;
+        self
+    }
+
+    /// Phase 10: attach the post-create subscriber kickoff hook.
+    pub(crate) fn with_dm_subscriber_hook(mut self, hook: Option<PeerDmSubscriberHook>) -> Self {
+        self.dm_subscriber_hook = hook;
+        self
+    }
+
+    /// Phase 10: attach the per-principal DM provisioning lock (the
+    /// manager's `session_creation_lock`).
+    pub(crate) fn with_dm_lock(mut self, lock: Option<Arc<tokio::sync::Mutex<()>>>) -> Self {
+        self.dm_lock = lock;
+        self
     }
 
     /// The shared executor (channel driver wraps this in its
@@ -221,8 +268,54 @@ impl PeerChildTurns {
 
     /// Find-or-create the peer's standing child of the trunk; returns
     /// the child session id. Idempotent per peer (Phase 5 semantics).
+    ///
+    /// Sprint 3 Phase 10: also find-or-creates the peer's DM channel
+    /// (`dm-<slug>`, bound to the child's path) when a channel port is
+    /// attached — EVERY external ingress path funnels through here, so
+    /// no ingress can provision a child without its DM channel.
+    /// Provisioning failures degrade to a warning (the ingress turn
+    /// itself is unaffected); a missing port skips provisioning with a
+    /// debug log (standalone/test contexts).
     pub(crate) async fn ensure_child(&self, peer: &Subject) -> Result<String> {
-        ensure_peer_child(&self.agent_name, &self.owner, peer, &self.session_manager).await
+        let child_id =
+            ensure_peer_child(&self.agent_name, &self.owner, peer, &self.session_manager).await?;
+        let Some(port) = self.channel_port.clone() else {
+            tracing::debug!(
+                peer = %peer,
+                "peer DM provisioning skipped: no channel port attached"
+            );
+            return Ok(child_id);
+        };
+        // Tests may leave `dm_lock` unset; a call-local mutex gives no
+        // cross-call serialization (documented on the field).
+        let fallback_lock = tokio::sync::Mutex::new(());
+        let lock = self.dm_lock.as_deref().unwrap_or(&fallback_lock);
+        match ensure_peer_dm_channel(
+            &port,
+            &self.principal_id,
+            peer,
+            &child_id,
+            &self.session_manager,
+            lock,
+        )
+        .await
+        {
+            Ok(provision) => {
+                if provision.created {
+                    if let Some(hook) = &self.dm_subscriber_hook {
+                        hook(self.principal_id.clone(), provision.channel);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    peer = %peer,
+                    child = %child_id,
+                    "peer DM channel provisioning failed (ingress unaffected): {e:#}"
+                );
+            }
+        }
+        Ok(child_id)
     }
 
     /// Drive one streaming turn in the peer's standing child session.
@@ -294,6 +387,7 @@ mod tests {
         PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
+    use peko_channel::ChannelPort;
 
     /// Minimal principal config for persona tests — everything
     /// defaulted except `name` and `routing`.
@@ -384,5 +478,171 @@ mod tests {
             prompt.contains("OVERRIDE_MARKER"),
             "explicit root_prompt override must win; got: {prompt}"
         );
+    }
+
+    // ─── Phase 10: DM channel provisioning on ensure_child ───────────
+
+    /// Build a minimal `PeerChildTurns` directly (struct literal —
+    /// `build` needs a full `Principal` + resolver, none of which the
+    /// provisioning path touches). The executor is never driven here.
+    fn bare_turns(
+        session_manager: Arc<RwLock<SessionManager>>,
+        channel_port: Option<Arc<dyn peko_channel::ChannelPort>>,
+        hook: Option<PeerDmSubscriberHook>,
+        dm_lock: Option<Arc<tokio::sync::Mutex<()>>>,
+    ) -> PeerChildTurns {
+        let principal_id = peko_subject::PrincipalId("prin_self".to_string());
+        let executor = SubagentExecutor::new(
+            Arc::clone(&session_manager),
+            "root",
+            5,
+            principal_id.clone(),
+        );
+        PeerChildTurns {
+            executor,
+            session_manager,
+            parent_session_key: trunk_session_id(),
+            owner: Subject::User("local".to_string()),
+            agent_name: "root".to_string(),
+            principal_id,
+            channel_port,
+            dm_subscriber_hook: hook,
+            dm_lock,
+        }
+    }
+
+    async fn dm_fixture() -> (
+        tempfile::TempDir,
+        Arc<RwLock<SessionManager>>,
+        Arc<peko_channel::ChannelStore>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new().with_sessions_dir_internal(dir.path().join("sessions"));
+        let store = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: dir.path().join("runtime"),
+                shared_dir: None,
+            },
+        ));
+        (dir, Arc::new(RwLock::new(manager)), store)
+    }
+
+    #[tokio::test]
+    async fn ensure_child_provisions_dm_channel_and_fires_hook_once() {
+        let (_dir, manager, store) = dm_fixture().await;
+        let port: Arc<dyn peko_channel::ChannelPort> = store.clone();
+        let hook_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hook_calls2 = Arc::clone(&hook_calls);
+        let hook: PeerDmSubscriberHook = Arc::new(move |principal, channel| {
+            hook_calls2.lock().unwrap().push((principal, channel));
+        });
+        let turns = bare_turns(
+            manager,
+            Some(port),
+            Some(hook),
+            Some(Arc::new(tokio::sync::Mutex::new(()))),
+        );
+
+        let peer = Subject::User("alice".to_string());
+        let child_id = turns.ensure_child(&peer).await.unwrap();
+
+        // The DM channel exists, named + bound to the peer child.
+        let channels = store.list_for_principal(&turns.principal_id).await.unwrap();
+        assert_eq!(channels.len(), 1);
+        assert_eq!(
+            store
+                .passive_binding(&channels[0])
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("/user-alice")
+        );
+        assert_eq!(
+            store.membership(&channels[0]).await.unwrap().name,
+            "dm-user-alice"
+        );
+
+        // The kickoff hook fired exactly once with (principal, channel).
+        {
+            let calls = hook_calls.lock().unwrap();
+            assert_eq!(calls.len(), 1, "hook fires only on fresh create");
+            assert_eq!(calls[0].0, turns.principal_id);
+            assert_eq!(calls[0].1, channels[0]);
+        }
+
+        // Second ensure: same child, no new channel, no second hook.
+        let again = turns.ensure_child(&peer).await.unwrap();
+        assert_eq!(again, child_id);
+        assert_eq!(
+            store
+                .list_for_principal(&turns.principal_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(hook_calls.lock().unwrap().len(), 1);
+    }
+
+    /// Without a channel port (standalone/test contexts) provisioning
+    /// is skipped — session behavior is unchanged.
+    #[tokio::test]
+    async fn ensure_child_without_port_skips_provisioning() {
+        let (_dir, manager, _store) = dm_fixture().await;
+        let turns = bare_turns(manager, None, None, None);
+        let peer = Subject::User("alice".to_string());
+        turns.ensure_child(&peer).await.unwrap();
+        // Nothing to assert on the channel side except "did not
+        // panic"; the child still exists.
+        let metas = turns
+            .session_manager
+            .write()
+            .await
+            .list_all_sessions(false)
+            .await
+            .unwrap();
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].slug.as_deref(), Some("user-alice"));
+    }
+
+    /// Concurrent first-contact ensures for the same peer converge on
+    /// exactly one DM channel + one hook firing (the per-principal
+    /// `dm_lock` serializes find-or-create).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_ensure_child_provisions_one_channel() {
+        let (_dir, manager, store) = dm_fixture().await;
+        let port: Arc<dyn peko_channel::ChannelPort> = store.clone();
+        let hook_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook_count2 = Arc::clone(&hook_count);
+        let hook: PeerDmSubscriberHook = Arc::new(move |_p, _c| {
+            hook_count2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let turns = Arc::new(bare_turns(
+            manager,
+            Some(port),
+            Some(hook),
+            Some(Arc::new(tokio::sync::Mutex::new(()))),
+        ));
+
+        let peer = Subject::User("alice".to_string());
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            let turns = Arc::clone(&turns);
+            let peer = peer.clone();
+            handles.push(tokio::spawn(async move { turns.ensure_child(&peer).await }));
+        }
+        for h in handles {
+            h.await.unwrap().unwrap();
+        }
+        assert_eq!(
+            store
+                .list_for_principal(&turns.principal_id)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "concurrent first-contact must create exactly one DM channel"
+        );
+        assert_eq!(hook_count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

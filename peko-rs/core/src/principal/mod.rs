@@ -29,6 +29,7 @@ pub mod memory;
 pub mod messenger;
 pub mod peer;
 pub mod peer_children;
+pub(crate) mod peer_dm;
 pub mod router;
 pub mod routers;
 pub mod runtime;

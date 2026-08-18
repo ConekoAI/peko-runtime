@@ -724,6 +724,36 @@ cargo test --all-features
     `agents/subagent_executor.rs` branches on `trigger == "spawn"`.
     The prompt's `SessionSnapshot` carries the real session id
     (`TurnPromptContext.session_id`).
+  - **2026-08-18 sprint 3 Phase 10 (DM channels + push-wake):** every
+    peer ingress path (`peko send` IPC, tunnel A2A `receive`/
+    `receive_streaming`, Hub webchat, IPC Steer) funnels through
+    `PeerChildTurns::ensure_child`, which now also find-or-creates the
+    peer's **DM channel** — `dm-<peer_child_slug>` with
+    `passive_binding = "/<slug>"` (path form, matching the
+    `PassiveBindingResponder` fixtures) and the principal as
+    creator/member — via `principal/peer_dm.rs::ensure_peer_dm_channel`.
+    Find-or-create matches on the *binding* (not the display name) and
+    is serialized per principal by the manager's
+    `session_creation_lock`; the port is threaded
+    `AppState → PrincipalManager::with_channel_port → PeerChildTurns`
+    (explicit, not the process global; `None` = standalone/test skips
+    provisioning). A freshly created DM channel fires the
+    `dm_subscriber_hook` the daemon installs post-supervisor-build
+    (`PrincipalManager::set_dm_subscriber_hook` →
+    `ChannelBindingSupervisor::ensure_subscriber`), so it gets its
+    `PassiveBindingResponder` subscriber WITHOUT a restart. Remote
+    (`principal:<did>`) peers get the LOCAL channel only —
+    cross-runtime invite/`join_remote` fan-out is Phase 12. Bound
+    channels are also **push-woken** now: `ChannelStore::append_event`
+    is the single disk-append chokepoint and fires the per-channel
+    broadcast on EVERY append (local posts, membership events, and
+    cross-runtime mirror appends via `append_remote_event`;
+    `TunnelChannelPort` delegates to the same store), and
+    `ChannelSubscriber::spawn` `select!`s on that broadcast + a
+    backstop tick (`SubscriptionConfig::default` raised 5s → 30s; a
+    `Closed` broadcast degrades to pure ticking). No `ChannelPort`
+    trait signature changed (`subscribe_events` already existed with a
+    no-op default).
   - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
 - **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.

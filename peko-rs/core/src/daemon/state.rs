@@ -900,7 +900,10 @@ impl AppState {
             .with_slash_dispatcher(slash_dispatcher)
             .with_extension_store(Arc::clone(&extension_store))
             .with_observability(Arc::clone(&observability))
-            .with_chat_log_store(Arc::clone(&chat_log_store));
+            .with_chat_log_store(Arc::clone(&chat_log_store))
+            // Sprint 3 Phase 10: peer ingress auto-provisions the
+            // peer's DM channel through the daemon-global port.
+            .with_channel_port(channel_port.clone());
 
             if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {
@@ -1012,6 +1015,19 @@ impl AppState {
                 Arc::clone(&observability),
             ),
         );
+
+        // Sprint 3 Phase 10: peer ingress (`PeerChildTurns::ensure_child`
+        // via `PrincipalManager`) fires this hook when it freshly
+        // creates a peer's DM channel, so the channel gets its
+        // subscriber — including the `PassiveBindingResponder` — without
+        // waiting for the next boot sweep. Installed post-construction
+        // because the supervisor itself needs the manager's `Arc`.
+        {
+            let supervisor = Arc::clone(&channel_binding_supervisor);
+            principal_manager.set_dm_subscriber_hook(Arc::new(move |principal, channel| {
+                supervisor.ensure_subscriber(principal, channel);
+            }));
+        }
 
         Ok(Self {
             started_at: SystemTime::now(),

@@ -4,6 +4,44 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### PEKO sprint 3: DM-over-channel unification (2026-08-18)
+
+Re-founds all peer DM communication on the channel primitive: a peer
+DM is a 1:1 channel with a passive binding to the peer's standing
+child; group channels stay active (cron-read). Phase by phase.
+
+#### Phase 10 — DM channel auto-provisioning + push-wake
+
+##### Added
+- **Peer DM channel auto-provisioning** (`principal/peer_dm.rs`):
+  every external ingress path (`peko send` IPC, tunnel A2A
+  `receive`/`receive_streaming`, Hub webchat, IPC Steer) funnels
+  through `PeerChildTurns::ensure_child`, which now also
+  find-or-creates the peer's DM channel — `dm-<peer_child_slug>` with
+  `passive_binding = "/<slug>"` and the principal as creator/member.
+  Find matches on the *binding* (semantic identity), not the display
+  name; find-or-create is serialized per principal by the manager's
+  `session_creation_lock` (concurrent first-contacts converge on one
+  channel). The port is threaded explicitly
+  `AppState → PrincipalManager::with_channel_port → PeerChildTurns`;
+  `None` (standalone/test) skips provisioning with session behavior
+  unchanged. Remote (`principal:<did>`) peers get the LOCAL channel
+  only — cross-runtime invite/`join_remote` fan-out is Phase 12.
+- **Live subscriber on create**: a freshly provisioned DM channel
+  fires the `dm_subscriber_hook` the daemon installs
+  post-supervisor-build (`PrincipalManager::set_dm_subscriber_hook` →
+  `ChannelBindingSupervisor::ensure_subscriber`), so it gets its
+  `PassiveBindingResponder` subscriber without a daemon restart.
+- **Push-woken bound channels**: `ChannelStore::append_event` is now
+  the single disk-append chokepoint and fires the per-channel
+  broadcast on EVERY durable append (local posts, membership events,
+  and cross-runtime mirror appends; `TunnelChannelPort` delegates to
+  the same store). `ChannelSubscriber::spawn` `select!`s on that
+  broadcast plus a backstop tick (`SubscriptionConfig` default raised
+  5s → 30s; a `Closed` broadcast degrades to pure ticking). No
+  `ChannelPort` trait signature changed (`subscribe_events` already
+  existed with a no-op default).
+
 ### Channel tool reachability fixes (reviewer findings, 2026-08-18)
 
 The `ChannelRead` / `ChannelSend` built-in tools were wired in but

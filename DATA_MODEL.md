@@ -1565,6 +1565,13 @@ and channel-origin turns never project into the chat log — the
 channel's own `events.jsonl` is the durable record of both
 directions. See `peko-rs/core/src/daemon/channel_binding.rs`.
 
+**Sprint 3 Phase 10 (2026-08-18):** peer ingress auto-provisions a
+1:1 **DM channel** per peer alongside its standing child session —
+`name = "dm-<peer_child_slug>"` (e.g. `dm-local-user`, `dm-user-a`),
+`passive_binding = "/<peer_child_slug>"`, creator/member = the
+principal itself (`peko-rs/core/src/principal/peer_dm.rs`). Find is by
+binding match, so the on-disk shape is unchanged.
+
 ---
 
 ## 6. Agent Package Format (.agent) (RETIRED)
