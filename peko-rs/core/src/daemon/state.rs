@@ -763,6 +763,14 @@ impl AppState {
             tunnel_channel_port = Some(Arc::new(tcp.clone()));
             Arc::new(tcp) as Arc<dyn peko_channel::ChannelPort>
         };
+        // Install the real port process-wide so a later
+        // `PrincipalContext::core()` tool-bag re-registration resolves
+        // the same adapter via `peko_channel::global_channel_port()`
+        // instead of clobbering the global-core `ChannelRead` /
+        // `ChannelSend` instances with a `NoopChannelPort`
+        // (2026-08-18 reviewer finding). Set-once; silently ignored
+        // if a previous daemon init in this process already set it.
+        peko_channel::set_global_channel_port(channel_port.clone());
         let tool_runtime = Arc::new(
             ToolRuntime::with_workspace_and_core_and_channel_port(
                 path_resolver_clone.clone(),

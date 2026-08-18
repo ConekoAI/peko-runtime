@@ -307,6 +307,17 @@ impl Capabilities {
             // 2026-08-11 field test (scripts/e2e/reports/2026-08-11-
             // non-technical-user-subagent-session.md, F1).
             "tool:session",
+            // Channel messaging (2026-08-18 reviewer finding, same
+            // shape as the F351 session-tool bug PR #351). The
+            // ChannelRead / ChannelSend tools are registered globally
+            // by `ToolRuntime::register_builtins` against the
+            // daemon-installed `ChannelPort`; without these `tool:`
+            // grants the capability filter (`is_tool_enabled` in
+            // tool_registry.rs) drops them from a default-created
+            // principal's toolset even though the tools are wired in,
+            // so the principal can never read or post to channels.
+            "tool:ChannelRead",
+            "tool:ChannelSend",
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",
@@ -473,6 +484,25 @@ mod tests {
             caps.is_granted(&Capability::new("tool:session")),
             "starter_bundle must include tool:session"
         );
+    }
+
+    /// Auto-grant the ChannelRead / ChannelSend tools so a fresh
+    /// principal can actually read and post to channels. The tools
+    /// are registered globally by `ToolRuntime::register_builtins`
+    /// against the daemon-installed `ChannelPort`; without these
+    /// grants `is_tool_enabled` filters them out of the LLM's
+    /// available_tools list despite the tools being wired in —
+    /// the same shape as the F351 session-tool bug (PR #351).
+    /// Surfaced by reviewer 2026-08-18.
+    #[test]
+    fn starter_bundle_includes_channel_tools() {
+        let caps = Capabilities::starter_bundle();
+        for tool in ["ChannelRead", "ChannelSend"] {
+            assert!(
+                caps.is_granted(&Capability::new(format!("tool:{tool}"))),
+                "starter_bundle must include tool:{tool}"
+            );
+        }
     }
 }
 

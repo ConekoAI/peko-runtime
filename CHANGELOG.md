@@ -4,6 +4,32 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Channel tool reachability fixes (reviewer findings, 2026-08-18)
+
+The `ChannelRead` / `ChannelSend` built-in tools were wired in but
+unreachable and inert in production; two layered bugs, both fixed.
+
+#### Fixed
+- **Missing starter grants** (same shape as the F351 session-tool bug,
+  PR #351): `Capabilities::starter_bundle()` now grants
+  `tool:ChannelRead` / `tool:ChannelSend`. Without them the capability
+  filter (`is_tool_enabled`) dropped the tools from every
+  default-created principal's toolset even though they were registered
+  globally by `ToolRuntime::register_builtins`. Pinned by
+  `starter_bundle_includes_channel_tools`.
+- **`NoopChannelPort` clobber**: the daemon registered the real
+  file-backed channel port at startup, but the first
+  `PrincipalContext::core()` call re-registered the channel tools with
+  a `NoopChannelPort`, and `BuiltinToolAdapter::register_tool`
+  unconditionally overwrites the name-keyed instance side-table — so
+  the real adapter was replaced and the tools were inert in
+  production. The real port is now installed process-wide via
+  `peko_channel::set_global_channel_port` (new global registry in
+  `peko-channel`, mirroring the `CronRuntime`/`PeerMessenger` port
+  pattern); `PrincipalContext::core()` resolves it via
+  `peko_channel::global_channel_port()` with `NoopChannelPort` only as
+  the test/standalone fallback.
+
 ### PEKO sprint 2: external ingress off the root (2026-08-17)
 
 External traffic (CLI `peko send`, tunnel A2A, Hub webchat) moves off the

@@ -500,3 +500,50 @@ impl ChannelPort for NoopChannelPort {
         ))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Global registry (mirrors `peko_cron::tools::set_global_runtime`)
+// ---------------------------------------------------------------------------
+
+static GLOBAL_CHANNEL_PORT: std::sync::OnceLock<std::sync::Arc<dyn ChannelPort>> =
+    std::sync::OnceLock::new();
+
+/// Install the process-wide channel port. Called once by the daemon at
+/// startup (right after it builds the real file-backed port); later
+/// calls are silently ignored (same semantics as the cron runtime
+/// port). Principal-side tool-bag installs
+/// (`PrincipalContext::core()`) read the port back through
+/// [`global_channel_port`] so a late re-registration of the global
+/// `ChannelRead` / `ChannelSend` tools keeps the real adapter instead
+/// of clobbering it with a [`NoopChannelPort`].
+pub fn set_global_channel_port(port: std::sync::Arc<dyn ChannelPort>) {
+    let _ = GLOBAL_CHANNEL_PORT.set(port);
+}
+
+/// The installed channel port, if the daemon has started.
+#[must_use]
+pub fn global_channel_port() -> Option<std::sync::Arc<dyn ChannelPort>> {
+    GLOBAL_CHANNEL_PORT.get().cloned()
+}
+
+#[cfg(test)]
+mod global_registry_tests {
+    use super::*;
+
+    /// Set-once registry: `set_global_channel_port` installs the port
+    /// and `global_channel_port` hands the same `Arc` back. Single
+    /// test by design — the `OnceLock` is process-global, so no other
+    /// test in this crate binary may call `set_global_channel_port`.
+    #[test]
+    fn set_then_get_returns_installed_port() {
+        let port: std::sync::Arc<dyn ChannelPort> = std::sync::Arc::new(NoopChannelPort);
+        set_global_channel_port(std::sync::Arc::clone(&port));
+        let got = global_channel_port().expect("port was just installed");
+        assert!(std::sync::Arc::ptr_eq(&got, &port));
+        // Second install is silently ignored (set-once semantics).
+        let other: std::sync::Arc<dyn ChannelPort> = std::sync::Arc::new(NoopChannelPort);
+        set_global_channel_port(other);
+        let got = global_channel_port().expect("port remains installed");
+        assert!(std::sync::Arc::ptr_eq(&got, &port));
+    }
+}

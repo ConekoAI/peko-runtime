@@ -84,7 +84,7 @@ pub mod subscription;
 pub use cli_handlers::ChannelCliRouter;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
-pub use port::{ChannelError, ChannelPort, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, Tier};
+pub use port::{ChannelError, ChannelPort, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, Tier, global_channel_port, set_global_channel_port};
 pub use store::{ChannelConfig, ChannelStore};
 pub use responder::{ChannelResponder, NoopChannelResponder, RespondCtx};
 pub use subscription::{ChannelSubscriber, SubscriptionConfig};

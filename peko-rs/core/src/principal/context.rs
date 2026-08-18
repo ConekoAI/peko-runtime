@@ -437,18 +437,21 @@ impl PrincipalContext {
             // the Shared tier root, so the agents dir is exactly
             // `workspace_path.join("agents")`.
             let agents_dir = self.workspace_path.join("agents");
-            // PR-4a: principal contexts don't hold their own channel
-            // port — the daemon's `AppState` does, and the global core
-            // is registered against that real port at daemon init. The
-            // re-registration here is idempotent for the tool *name*
-            // (`register_tool_system` keys on `PrincipalId::system()`);
-            // the port payload on the new `ChannelRead` instance is
-            // unused because the global-core registration already
-            // took the real port. We pass `NoopChannelPort` to keep
-            // this function dependency-free of the principal
-            // configuration plumbing.
-            let channel_port: Arc<dyn peko_channel::ChannelPort> =
-                Arc::new(peko_channel::NoopChannelPort);
+            // Channel port resolution (2026-08-18 reviewer finding):
+            // principal contexts don't hold their own channel port —
+            // the daemon builds the real file-backed port at startup
+            // and installs it process-wide via
+            // `peko_channel::set_global_channel_port`. We re-resolve
+            // that port here so re-registering `ChannelRead` /
+            // `ChannelSend` against the global core keeps the real
+            // adapter; passing a `NoopChannelPort` would clobber the
+            // daemon-registered tool instances
+            // (`BuiltinToolAdapter::register_tool` unconditionally
+            // overwrites the name-keyed instance side-table) and
+            // leave the tools inert in production. The Noop remains
+            // as the test / standalone fallback when no daemon has
+            // installed a port.
+            let channel_port = resolve_channel_port();
             if let Err(e) = install_principal_tool_bag(
                 Arc::clone(&core),
                 &agents_dir,
@@ -499,6 +502,18 @@ impl PrincipalContext {
     }
 }
 
+/// Resolve the `ChannelPort` for the principal tool-bag install.
+///
+/// Prefers the daemon-installed process-global port (the real
+/// file-backed adapter, registered by `daemon/state.rs` at startup);
+/// falls back to [`peko_channel::NoopChannelPort`] in tests and
+/// standalone contexts where no daemon has installed one. Kept as a
+/// tiny free function so the fallback behavior is unit-testable.
+fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
+    peko_channel::global_channel_port()
+        .unwrap_or_else(|| Arc::new(peko_channel::NoopChannelPort))
+}
+
 /// Wire the principal's tool bag onto the daemon-global `ExtensionCore`.
 ///
 /// Built-ins (Read, Bash, glob, grep, Cron*, Task*, Async*, …) and
@@ -510,10 +525,12 @@ impl PrincipalContext {
 /// directly so the hand-rolled `workspace_path.join("agents")`
 /// join inside this function is gone.
 ///
-/// `channel_port` is the per-principal `ChannelPort` used for the
-/// `ChannelRead` tool registration. Pass `Arc::new(NoopChannelPort)`
-/// for tests that don't have a real adapter wired up — `ChannelRead`
-/// will surface `Adapter` errors instead of silently zero-returning.
+/// `channel_port` is the `ChannelPort` used for the `ChannelRead` /
+/// `ChannelSend` tool registrations. Production callers pass
+/// [`resolve_channel_port`]'s result (the daemon-installed real
+/// port); `Arc::new(NoopChannelPort)` is fine for tests that don't
+/// have a real adapter wired up — `ChannelRead` will surface
+/// `Adapter` errors instead of silently zero-returning.
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
     agents_dir: &Path,
@@ -663,6 +680,40 @@ mod tests {
             Arc::ptr_eq(&returned, &global),
             "ctx.core() must return the same Arc as global_core()"
         );
+    }
+
+    /// `resolve_channel_port` prefers the daemon-installed global port
+    /// and falls back to `NoopChannelPort` when no daemon has run in
+    /// this process (2026-08-18 Noop-clobber fix). Both branches are
+    /// asserted because lib-test siblings that build an `AppState`
+    /// install the global port process-wide, so which branch is live
+    /// depends on test execution order — either proves the helper
+    /// never invents a second real port.
+    #[tokio::test]
+    async fn resolve_channel_port_prefers_global_or_falls_back_to_noop() {
+        match peko_channel::global_channel_port() {
+            Some(global) => {
+                let resolved = resolve_channel_port();
+                assert!(
+                    Arc::ptr_eq(&resolved, &global),
+                    "with a global port installed, resolve_channel_port must return it"
+                );
+            }
+            None => {
+                let resolved = resolve_channel_port();
+                let err = resolved
+                    .peek(
+                        &peko_channel::ChannelId::generate(),
+                        &peko_channel::Checkpoint::default(),
+                    )
+                    .await
+                    .expect_err("NoopChannelPort::peek always errors");
+                assert!(
+                    matches!(err, peko_channel::ChannelError::Adapter(ref msg) if msg.contains("NoopChannelPort")),
+                    "fallback must be the NoopChannelPort, got: {err}"
+                );
+            }
+        }
     }
 
     /// `set_root_prompt` is idempotent — once a principal's root
