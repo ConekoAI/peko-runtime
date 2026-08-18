@@ -754,6 +754,37 @@ cargo test --all-features
     `Closed` broadcast degrades to pure ticking). No `ChannelPort`
     trait signature changed (`subscribe_events` already existed with a
     no-op default).
+  - **2026-08-18 sprint 3 Phase 11 (DM channels become the
+    conversation):** the local peer ingress paths now WRITE the
+    conversation onto the Phase-10 DM channels instead of the chat
+    log. Every ingress funnels through
+    `PeerChildTurns::ensure_child_ingress` (returns the child session
+    id + the DM channel). The inbound message is posted with
+    `ChannelPort::post_attributed` (new trait method; `sender =
+    principal.id` for membership, `author = peer.to_string()` — the
+    Subject wire form) BEFORE the run permit is acquired (drive and
+    queue branches both covered); the reply / failure trace is posted
+    back via plain `post` (principal-authored). Chat-log projections
+    on these paths (`record_chat_input` / `record_chat_response` /
+    `record_input` / `record_response` / `is_peer_chat_channel`) are
+    deleted; `record_cron_input` and the peer messenger's user-branch
+    notes keep the crate alive until Phase 13. Accepted behavior
+    changes: manager-path slash responses are no longer persisted;
+    `Queued…` notices no longer appear in the conversation log;
+    port-less contexts (tests/standalone) record nothing. The
+    `PassiveBindingResponder` never double-drives these turns:
+    `response_trigger` now skips any `Posted` event whose author
+    parses as a Subject wire form
+    (`daemon/channel_binding.rs` — the author-based turn-ownership
+    partition; responder-owned posts are exactly raw-principal-id
+    posts from other principals). `peko log`
+    (`read_principal_log`) reads the DM channel log
+    (`find_peer_dm_channel` → `peek_with_ids`, `Posted` events only,
+    in-memory limit/cursor paging, `since` cutoff on the event's
+    `at`); pre-Phase-11 chat-log history stays on disk unread (Phase
+    13 decides migration). A2A gets local DM posting as a side effect
+    of the shared manager funnel — no await-reply, no fan-out (Phase
+    12).
   - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
 - **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.

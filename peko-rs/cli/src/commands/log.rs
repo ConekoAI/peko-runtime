@@ -13,9 +13,12 @@
 //!   This is the only user-facing way to inspect a principal's
 //!   consumer-visible conversation without running a turn.
 //!
-//! Internally the read path is the runtime-owned
-//! `ChatLogStore` (sharded by `(principal_did, peer)`), distinct
-//! from the principal's mutable session JSONL working memory.
+//! Internally the read path walks the peer's **DM channel** log
+//! (sprint 3 Phase 11 — `dm-<peer_child_slug>`, provisioned on first
+//! contact; `principal_log` IPC → `find_peer_dm_channel` →
+//! `peek_with_ids`, `Posted` events only), distinct from the
+//! principal's mutable session JSONL working memory. Pre-Phase-11
+//! chat-log history stays on disk but is no longer read here.
 
 use crate::commands::GlobalPaths;
 use anyhow::{Context, Result};

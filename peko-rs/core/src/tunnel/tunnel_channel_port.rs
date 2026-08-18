@@ -653,6 +653,40 @@ impl ChannelPort for TunnelChannelPort {
         Ok(line)
     }
 
+    /// Phase 11: attributed posts (peer-DM inbound attribution).
+    /// Identical fan-out semantics to [`Self::post`] — the local
+    /// write carries the explicit `author`, and the same event (with
+    /// the custom author) is fanned out.
+    async fn post_attributed(
+        &self,
+        channel: &ChannelId,
+        sender: &PrincipalId,
+        author: &str,
+        msg: PostMsg,
+    ) -> Result<TaskId> {
+        // 1. Local attributed write — same path as `post`, but with
+        // the caller-supplied author string on the event.
+        let (line, ev) = self
+            .local
+            .post_attributed_with_event(channel, sender, author, msg)
+            .await?;
+
+        // 2. Outbound fan-out. Failures here never error the local
+        // post — the local mirror is authoritative; remote runtimes
+        // hydrate off the next event or via `peek` reconciliation.
+        if let Err(e) = self.fanout_event(channel, &ev, sender).await {
+            warn!(
+                "outbound TunnelChannelEvent fan-out partial-failure for channel={} \
+                 (local attributed post succeeded at line {}): {}",
+                channel.as_str(),
+                line,
+                e
+            );
+        }
+
+        Ok(line)
+    }
+
     async fn peek(
         &self,
         channel: &ChannelId,

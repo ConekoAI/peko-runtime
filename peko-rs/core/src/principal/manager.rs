@@ -14,6 +14,8 @@ use crate::common::paths::PathResolver;
 use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::principal::agent_prompt::load_agent_prompt;
+use crate::principal::child_turns::PeerChildIngress;
+use crate::principal::peer_dm::{post_peer_dm_inbound, post_peer_dm_reply};
 use crate::principal::runtime::OutputFormat;
 use crate::principal::AgentPrompt;
 use crate::principal::PrincipalConfig;
@@ -102,12 +104,12 @@ pub struct PrincipalManager {
     /// the principal's meter. `None` for tests / contexts that don't
     /// have a daemon-managed `PeerRegistry`.
     peer_registry: Option<Arc<crate::principal::peer::PeerRegistry>>,
-    /// Runtime-owned, append-only chat-log store. When present, every
-    /// accepted peer chat-channel message is recorded alongside its
-    /// authoritative response. Pure peer-chat channels
-    /// (Cli/Http/Hub/A2a/P2p/Webhook) are persisted; automation
-    /// channels (Cron/FileWatch) are excluded. `None` for tests /
-    /// non-daemon contexts that don't need consumer-visible history.
+    /// Runtime-owned, append-only chat-log store. Phase 11 narrowed
+    /// its role: peer-conversation projection moved to the per-peer
+    /// DM channels (`peer_dm`), so the remaining writers are the cron
+    /// `Send` projection (`record_cron_input`) and the peer
+    /// messenger's user-branch notes. The crate is retained until
+    /// Phase 13. `None` for tests / non-daemon contexts.
     chat_log_store: Option<Arc<peko_chat_log::ChatLogStore>>,
     /// Sprint 2 Phase 7: per-principal peer-child turn bundles
     /// (`PeerChildTurns`), built lazily on first peer ingress and
@@ -745,19 +747,30 @@ impl PrincipalManager {
         Ok(turns)
     }
 
-    /// Sprint 2 Phase 7: find-or-create the peer's standing child of
-    /// the trunk; returns the child session id. Idempotent per peer.
-    /// Used by the IPC steering path, which must key the child inbox
-    /// without driving a turn.
-    pub(crate) async fn ensure_peer_child_session(
+    /// Phase 11: find-or-create the peer's standing child of the trunk
+    /// and return it together with the peer's DM channel (when a
+    /// channel port is attached; `None` in port-less contexts).
+    /// Idempotent per peer. The IPC ingress handlers post the inbound
+    /// message + reply to the returned channel
+    /// (`peer_dm::post_peer_dm_inbound` / `post_peer_dm_reply`); the
+    /// IPC steering path keys the CHILD session inbox via
+    /// `ingress.child_id`.
+    pub(crate) async fn ensure_peer_child_ingress(
         &self,
         principal: &Arc<Principal>,
         peer: &Subject,
-    ) -> Result<String, PrincipalManagerError> {
+    ) -> Result<PeerChildIngress, PrincipalManagerError> {
         let turns = self.peer_child_turns_for(principal).await?;
-        turns.ensure_child(peer).await.map_err(|e| {
+        turns.ensure_child_ingress(peer).await.map_err(|e| {
             PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
         })
+    }
+
+    /// Phase 11: the daemon-global channel port (when attached) — the
+    /// IPC ingress handlers + `peko log` read the peer DM channels
+    /// through it.
+    pub(crate) fn channel_port(&self) -> Option<Arc<dyn peko_channel::ChannelPort>> {
+        self.channel_port.clone()
     }
 
     /// Borrow the shared `inbox_registry` and per-principal
@@ -1047,18 +1060,12 @@ impl PrincipalManager {
             .preprocess_slash(&principal, message, false, OutputFormat::Human)
             .await?;
         if let Some(content) = slash_response.as_ref() {
-            // Slash responses are part of what the consumer sees —
-            // record them as the principal's reply to the (unlogged)
-            // slash input.
-            self.record_response(&principal, &peer, content).await;
+            // Phase 11: slash responses are no longer persisted
+            // anywhere (the pre-Phase-11 chat-log projection is
+            // superseded by the peer DM channels, and slash output is
+            // transport UX, not conversation).
             return Ok(PrincipalResponse::text(content.clone()));
         }
-
-        // Record the raw input *before* dispatching. Recording failure
-        // rejects dispatch so the consumer cannot believe they sent
-        // something that did not enter the principal's chat-log shard.
-        self.record_input(&principal, &peer, &message, &channel)
-            .await?;
 
         let ctx = self
             .build_router_context(
@@ -1075,10 +1082,25 @@ impl PrincipalManager {
         // intentionally NOT forwarded — the child session IS the
         // peer's continuous memory (its JSONL history loads on
         // resume); `ctx` is kept for the permission check.
+        //
+        // Phase 11: the inbound message is posted to the peer's DM
+        // channel (attributed to the peer) before dispatch — a post
+        // failure rejects dispatch so the consumer cannot believe they
+        // sent something that never entered the conversation's
+        // durable home. Port-less contexts (tests / standalone) skip
+        // the post.
         let turns = self.peer_child_turns_for(&principal).await?;
-        let child_id = turns.ensure_child(&peer).await.map_err(|e| {
+        let ingress = turns.ensure_child_ingress(&peer).await.map_err(|e| {
             PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
         })?;
+        let child_id = ingress.child_id.clone();
+        if let (Some(port), Some(dm)) = (&self.channel_port, &ingress.dm_channel) {
+            post_peer_dm_inbound(port, &principal.id, dm, &peer.to_string(), &ctx.message)
+                .await
+                .map_err(|e| {
+                    PrincipalManagerError::Config(format!("peer DM inbound post: {e:#}"))
+                })?;
+        }
 
         // Serial queue per peer: only one run may be active for a
         // given peer child at a time. If a message arrives while the
@@ -1096,7 +1118,9 @@ impl PrincipalManager {
                         )))
                     })?;
                 let response = outcome.final_text;
-                self.record_response(&principal, &peer, &response).await;
+                if let (Some(port), Some(dm)) = (&self.channel_port, &ingress.dm_channel) {
+                    post_peer_dm_reply(port, &principal.id, dm, &response).await;
+                }
                 self.record_peer_recall(&principal, &peer, &child_id, &response)
                     .await;
                 Ok(PrincipalResponse::text(response))
@@ -1106,8 +1130,10 @@ impl PrincipalManager {
                 inbox
                     .push(SteeringMessage::new(ctx.message.clone()).into())
                     .await;
+                // Phase 11: the "Queued…" notice is transport UX, not
+                // conversation — no DM channel row. The inbound post
+                // above is already the durable record.
                 let queued = format!("Queued for root agent session {child_id}.");
-                self.record_response(&principal, &peer, &queued).await;
                 Ok(PrincipalResponse::queued(queued))
             }
         }
@@ -1155,12 +1181,10 @@ impl PrincipalManager {
             .preprocess_slash(&principal, message, false, OutputFormat::Human)
             .await?;
         if let Some(content) = slash_response.as_ref() {
-            self.record_response(&principal, &peer, content).await;
+            // Phase 11: slash responses are no longer persisted
+            // anywhere (see `receive`).
             return Ok(PrincipalResponse::text(content.clone()));
         }
-
-        self.record_input(&principal, &peer, &message, &channel)
-            .await?;
 
         let ctx = self
             .build_router_context(
@@ -1172,10 +1196,21 @@ impl PrincipalManager {
             )
             .await?;
 
+        // Phase 11: same DM-channel discipline as `receive` — the
+        // inbound message is posted (peer-attributed) before dispatch;
+        // a post failure rejects dispatch.
         let turns = self.peer_child_turns_for(&principal).await?;
-        let child_id = turns.ensure_child(&peer).await.map_err(|e| {
+        let ingress = turns.ensure_child_ingress(&peer).await.map_err(|e| {
             PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
         })?;
+        let child_id = ingress.child_id.clone();
+        if let (Some(port), Some(dm)) = (&self.channel_port, &ingress.dm_channel) {
+            post_peer_dm_inbound(port, &principal.id, dm, &peer.to_string(), &ctx.message)
+                .await
+                .map_err(|e| {
+                    PrincipalManagerError::Config(format!("peer DM inbound post: {e:#}"))
+                })?;
+        }
 
         // Same serial-queue discipline as `receive`: only one run may
         // be active per peer child. A message arriving while a run is
@@ -1198,7 +1233,9 @@ impl PrincipalManager {
                         )))
                     })?;
                 let response = outcome.final_text;
-                self.record_response(&principal, &peer, &response).await;
+                if let (Some(port), Some(dm)) = (&self.channel_port, &ingress.dm_channel) {
+                    post_peer_dm_reply(port, &principal.id, dm, &response).await;
+                }
                 self.record_peer_recall(&principal, &peer, &child_id, &response)
                     .await;
                 Ok(PrincipalResponse::text(response))
@@ -1208,8 +1245,9 @@ impl PrincipalManager {
                 inbox
                     .push(SteeringMessage::new(ctx.message.clone()).into())
                     .await;
+                // Phase 11: the "Queued…" notice is transport UX, not
+                // conversation — no DM channel row (see `receive`).
                 let queued = format!("Queued for root agent session {child_id}.");
-                self.record_response(&principal, &peer, &queued).await;
                 Ok(PrincipalResponse::queued(queued))
             }
         }
@@ -1228,14 +1266,12 @@ impl PrincipalManager {
     ///   (`find_latest_session_for_peer`) against the owner. The
     ///   SESSION id, however, is always `root:self` — never
     ///   `root:{owner}` — via `ChannelKind::Trunk`.
-    /// - **No chat-log projection.** `record_input` / `record_response`
-    ///   are skipped entirely: the chat log is a consumer-facing
-    ///   per-peer conversation projection keyed by `(principal_did,
-    ///   peer)` and the trunk has no peer thread to project into. (A
-    ///   self-thread convention is deliberately deferred — see
-    ///   DATA_MODEL.md. The trunk session JSONL remains the durable
-    ///   record; `ChannelKind::Trunk` is also excluded by
-    ///   `is_peer_chat_channel` as defense in depth.)
+    /// - **No conversation projection.** The trunk has no peer thread
+    ///   to project into, so the trunk path never touched the peer
+    ///   conversation record (pre-Phase-11: chat log; post-Phase-11:
+    ///   the per-peer DM channels). The trunk session JSONL remains
+    ///   the durable record; the cron `Send` caller projects the fired
+    ///   prompt itself via `record_cron_input`.
     /// - **No slash preprocessing.** Trunk messages are agent-bound
     ///   automation prompts (cron payloads), not interactive commands.
     /// - **Same run discipline as `receive`.** The per-session run
@@ -1289,48 +1325,7 @@ impl PrincipalManager {
     }
 }
 
-/// Pure peer-chat channels. Messages arriving on these channels are
-/// persisted to the runtime-owned chat log as consumer-visible
-/// conversation. Automation channels (Cron/FileWatch) are excluded
-/// because they represent scheduled triggers and file-system events,
-/// not user/principal conversation.
-fn is_peer_chat_channel(kind: &crate::principal::router::ChannelKind) -> bool {
-    use crate::principal::router::ChannelKind;
-    matches!(
-        kind,
-        ChannelKind::Cli
-            | ChannelKind::Http
-            | ChannelKind::Hub
-            | ChannelKind::A2a
-            | ChannelKind::P2p
-            | ChannelKind::Webhook
-    )
-}
-
 impl PrincipalManager {
-    /// Persist a peer-chat input for callers that drive the router directly,
-    /// such as the IPC streaming handler.
-    pub(crate) async fn record_chat_input(
-        &self,
-        principal: &Arc<Principal>,
-        peer: &Subject,
-        message: &str,
-        channel: &ChannelContext,
-    ) -> Result<(), PrincipalManagerError> {
-        self.record_input(principal, peer, message, channel).await
-    }
-
-    /// Persist a principal response for callers that drive the router
-    /// directly, such as the IPC streaming handler.
-    pub(crate) async fn record_chat_response(
-        &self,
-        principal: &Arc<Principal>,
-        peer: &Subject,
-        response: &str,
-    ) {
-        self.record_response(principal, peer, response).await
-    }
-
     /// Sprint 2 Phase 7: record the peer-recall artifact for a peer
     /// turn that ran in the peer's STANDING CHILD session (the
     /// per-peer child of the trunk provisioned by
@@ -1367,42 +1362,12 @@ impl PrincipalManager {
         }
     }
 
-    /// Persist a peer chat-channel input to the chat-log shard for
-    /// `(principal_did, peer)`. Skipped silently for non-chat channels
-    /// and when no chat-log store is attached (tests / non-daemon).
-    ///
-    /// Persistence failure surfaces to the caller as
-    /// [`PrincipalManagerError::Internal`] so dispatch is rejected —
-    /// the consumer must not be allowed to believe they sent something
-    /// the principal never recorded.
-    async fn record_input(
-        &self,
-        principal: &Arc<Principal>,
-        peer: &Subject,
-        message: &str,
-        channel: &ChannelContext,
-    ) -> Result<(), PrincipalManagerError> {
-        let Some(store) = self.chat_log_store.as_ref() else {
-            return Ok(());
-        };
-        if !is_peer_chat_channel(&channel.kind) {
-            return Ok(());
-        }
-        let key = peko_chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
-        let entry = peko_chat_log::ChatLogMessage::new(peer.clone(), message.to_string(), None);
-        store
-            .append_message(&key, &entry)
-            .await
-            .map_err(|e| PrincipalManagerError::Config(format!("chat-log append: {e}")))
-    }
-
     /// Persist a cron-fired prompt to the chat-log shard for
-    /// `(principal_did, peer)`. Unlike `record_input`, this bypasses
-    /// the `is_peer_chat_channel` gate because cron prompts arrive on
-    /// `ChannelKind::Cron`, which is excluded by design — but the
-    /// owner still needs to see the cron-fired text in `peko log`
-    /// alongside the principal's reply (`record_response` writes that
-    /// unconditionally).
+    /// `(principal_did, peer)`. Cron prompts arrive on
+    /// `ChannelKind::Cron`, which the peer DM-channel ingress paths
+    /// never see — but the owner still needs to see the cron-fired
+    /// text in the owner-facing record (the messenger's outcome note
+    /// writes the reply side).
     ///
     /// Skipped silently when no chat-log store is attached (tests /
     /// non-daemon contexts). Persistence failure returns `Err` so the
@@ -1423,31 +1388,6 @@ impl PrincipalManager {
             .append_message(&key, &entry)
             .await
             .map_err(|e| PrincipalManagerError::Config(format!("chat-log cron-input append: {e}")))
-    }
-
-    /// Persist the principal's authoritative response (or queued
-    /// acknowledgement) to the chat-log shard. Best-effort: a failed
-    /// write logs a warning but does not reject the response — the
-    /// caller has already invested in producing the answer.
-    async fn record_response(&self, principal: &Arc<Principal>, peer: &Subject, response: &str) {
-        let Some(store) = self.chat_log_store.as_ref() else {
-            return;
-        };
-        let key = peko_chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
-        let entry = peko_chat_log::ChatLogMessage::new(
-            peko_subject::Subject::Principal(principal.did().await),
-            response.to_string(),
-            None,
-        );
-        if let Err(e) = store.append_message(&key, &entry).await {
-            let did_str = principal.did().await.0;
-            tracing::warn!(
-                principal_did = %did_str,
-                peer = %peer,
-                error = %e,
-                "chat-log append (response) failed; response was returned to caller but not persisted"
-            );
-        }
     }
 }
 
@@ -1547,6 +1487,101 @@ mod tests {
         (temp, manager, adapter, principal.id.clone())
     }
 
+    /// Phase 11: `setup` with a real `ChannelStore` attached via
+    /// `with_channel_port`, so the re-routed ingress paths post the
+    /// peer conversation to the peer's DM channel.
+    async fn setup_with_channels() -> (
+        TempDir,
+        Arc<PrincipalManager>,
+        MockAdapter,
+        PrincipalId,
+        Arc<peko_channel::ChannelStore>,
+    ) {
+        let temp = TempDir::new().expect("temp dir");
+        std::env::set_var("PEKO_HOME", temp.path());
+        peko_identity::init_test_env();
+
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+
+        let workspace = temp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let catalog_path = temp.path().join("models.toml");
+        let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        let store = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: temp.path().join("runtime"),
+                shared_dir: None,
+            },
+        ));
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_resolver(resolver)
+            .with_channel_port(store.clone()),
+        );
+
+        let principal = create_test_principal(&manager, "stressy").await;
+        (temp, manager, adapter, principal.id.clone(), store)
+    }
+
+    /// Phase 11 test helper: the `(author, text)` rows of every
+    /// `Posted` event in the peer's DM channel, oldest first. Finds
+    /// the channel by the peer child's binding path.
+    async fn dm_posted_rows(
+        manager: &PrincipalManager,
+        store: &peko_channel::ChannelStore,
+        principal: &Arc<Principal>,
+        peer: &Subject,
+    ) -> Vec<(String, String)> {
+        use peko_channel::ChannelPort as _;
+        let mut session_manager = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(principal.memory.sessions_dir());
+        let metas = session_manager
+            .list_all_sessions(false)
+            .await
+            .expect("list sessions");
+        let child_id = crate::principal::peer_children::find_peer_child(&metas, peer)
+            .expect("peer child exists after ingress");
+        let slug = metas
+            .iter()
+            .find(|m| m.session_id == child_id)
+            .and_then(|m| m.slug.clone())
+            .expect("peer child has a slug");
+        let port = manager.channel_port().expect("channel port attached");
+        let channel = crate::principal::peer_dm::find_peer_dm_channel(
+            &port,
+            &principal.id,
+            &format!("/{slug}"),
+        )
+        .await
+        .expect("dm lookup")
+        .expect("DM channel exists after ingress");
+        store
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .expect("peek")
+            .iter()
+            .filter_map(|ev| match ev {
+                peko_channel::ChannelEvent::Posted { author, text, .. } => {
+                    Some((author.clone(), text.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
     async fn create_test_principal(manager: &PrincipalManager, name: &str) -> Arc<Principal> {
         create_test_principal_with_agents(manager, name, &[]).await
     }
@@ -1788,9 +1823,9 @@ mod tests {
         // real first run would complete before the others arrive —
         // the permit hold makes the interleaving deterministic).
         let child_id = manager
-            .ensure_peer_child_session(&principal, &peer)
+            .ensure_peer_child_ingress(&principal, &peer)
             .await
-            .expect("peer child provisioning");
+            .expect("peer child provisioning").child_id;
         let permit_hold = manager
             .inbox_registry
             .try_acquire_run(&child_id)
@@ -2139,9 +2174,9 @@ mod tests {
         // streaming receive deterministically takes the
         // steering-queue branch (see the non-streaming sibling test).
         let child_id = manager
-            .ensure_peer_child_session(&principal, &peer)
+            .ensure_peer_child_ingress(&principal, &peer)
             .await
-            .expect("peer child provisioning");
+            .expect("peer child provisioning").child_id;
         let permit_hold = manager
             .inbox_registry
             .try_acquire_run(&child_id)
@@ -2216,88 +2251,46 @@ mod tests {
     }
 
     // ===================================================================
-    // Gap-3: a `SteeringMessage` arriving via `PrincipalSendControl::Steer`
-    // must be persisted to the runtime-owned chat log so the user sees
-    // their own message in `peko log` and the desktop chat history.
-    // The handler calls `record_chat_input` (the `pub(crate)` wrapper)
-    // before pushing the inbox item — this test verifies the wrapper
-    // persists correctly when the steering channel context is used.
+    // Gap-3 (Phase 11 form): a `SteeringMessage` arriving via
+    // `PrincipalSendControl::Steer` is posted to the peer's DM channel
+    // (peer-attributed) so the user sees their own message in
+    // `peko log`. The handler resolves the peer child + DM channel via
+    // `ensure_peer_child_ingress` and posts through
+    // `post_peer_dm_inbound` before pushing the inbox item — this test
+    // verifies that path persists correctly.
     // ===================================================================
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn steering_message_persists_to_chat_log() {
-        use peko_chat_log::{ChatLogStore, ChatThreadKey};
+    async fn steering_message_persists_to_dm_channel() {
+        let (_temp, manager, _adapter, id, store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
 
-        let temp = TempDir::new().expect("temp dir");
-        std::env::set_var("PEKO_HOME", temp.path());
-        peko_identity::init_test_env();
-
-        let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            temp.path().join("config"),
-            temp.path().join("data"),
-            temp.path().join("cache"),
-        );
-        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
-            .await
-            .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
-
-        let workspace = temp.path().join("principals");
-        tokio::fs::create_dir_all(&workspace).await.unwrap();
-
-        let catalog_path = temp.path().join("models.toml");
-        let (resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
-
-        // Pre-attach the chat log store to the manager so the gap-3
-        // fix's `record_chat_input` call has somewhere to write.
-        let chat_log_dir = temp.path().join("chat_log");
-        let store = Arc::new(ChatLogStore::new(chat_log_dir));
-        let manager = PrincipalManager::with_path_resolver(
-            path_resolver,
-            Arc::new(DefaultPrincipalMemoryFactory),
-            Arc::new(DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-        )
-        .with_resolver(resolver)
-        .with_chat_log_store(store.clone());
-        let principal = create_test_principal(&manager, "stressy").await;
-        let id = principal.id.clone();
-
-        // Mimic the gap-3 persistence path: `handle_principal_send_control`
-        // looks up the principal by name, then calls `record_chat_input`
-        // with a CLI channel and `streaming: true` (the values the
-        // handler builds for the Steer branch).
+        // Mimic the Phase 11 steer handler: one ingress call resolves
+        // the child + DM channel, then the steered text is posted
+        // inbound (peer-attributed).
         let peer = Subject::User("alice".to_string());
         let steered_text = "wait, do this instead";
-        let channel = ChannelContext {
-            kind: ChannelKind::Cli,
-            streaming: true,
-        };
-
-        manager
-            .record_chat_input(&principal, &peer, steered_text, &channel)
+        let ingress = manager
+            .ensure_peer_child_ingress(&principal, &peer)
             .await
-            .expect("record_chat_input should succeed");
+            .expect("ingress");
+        let port = manager.channel_port().expect("port attached");
+        let dm = ingress.dm_channel.expect("DM channel provisioned");
+        crate::principal::peer_dm::post_peer_dm_inbound(
+            &port,
+            &principal.id,
+            &dm,
+            &peer.to_string(),
+            steered_text,
+        )
+        .await
+        .expect("inbound post");
 
-        // Read the chat log back and verify the steered turn is there.
-        let key = ChatThreadKey::new(principal.did().await, peer.clone());
-        let page = store
-            .read_page(&key, None, 100, None)
-            .await
-            .expect("read_page should succeed");
+        let rows = dm_posted_rows(&manager, &store, &principal, &peer).await;
         assert_eq!(
-            page.messages.len(),
-            1,
-            "exactly one message should have been persisted"
-        );
-        let persisted = &page.messages[0];
-        assert_eq!(
-            persisted.text, steered_text,
-            "persisted message should contain the steered text"
-        );
-        assert_eq!(
-            persisted.sender, peer,
-            "persisted message should be from the user peer"
+            rows,
+            vec![("user:alice".to_string(), steered_text.to_string())],
+            "exactly one peer-authored row should land on the DM channel"
         );
 
         // The principal name lookup the gap-3 handler uses must work.
@@ -2312,100 +2305,44 @@ mod tests {
     }
 
     // ===================================================================
-    // Sprint 2 Phase 6: a peer turn driven in the peer's standing
-    // child keeps the chat-log projection (keyed `(principal_did,
-    // peer)` exactly as today) and the recall artifact points at the
-    // child session id. This is the wrapper shape Phase 7's ingress
-    // re-route uses around the child turn driver.
+    // Sprint 3 Phase 11: a peer turn driven through `receive` posts the
+    // inbound message (peer-attributed) and the reply
+    // (principal-authored) to the peer's DM channel, and the recall
+    // artifact points at the child session id.
     // ===================================================================
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn peer_child_turn_projects_chat_log_and_recall_artifact() {
-        use peko_chat_log::{ChatLogStore, ChatThreadKey};
+    async fn peer_child_turn_posts_dm_channel_and_recall_artifact() {
+        let (_temp, manager, adapter, id, store) = setup_with_channels().await;
+        adapter.queue_text("hello alice".to_string());
+        let principal = manager.get(id.clone()).await.expect("principal");
 
-        let temp = TempDir::new().expect("temp dir");
-        std::env::set_var("PEKO_HOME", temp.path());
-        peko_identity::init_test_env();
-
-        let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            temp.path().join("config"),
-            temp.path().join("data"),
-            temp.path().join("cache"),
-        );
-        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
-            .await
-            .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
-
-        let workspace = temp.path().join("principals");
-        tokio::fs::create_dir_all(&workspace).await.unwrap();
-
-        let catalog_path = temp.path().join("models.toml");
-        let (resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
-
-        let store = Arc::new(ChatLogStore::new(temp.path().join("chat_log")));
-        let manager = PrincipalManager::with_path_resolver(
-            path_resolver,
-            Arc::new(DefaultPrincipalMemoryFactory),
-            Arc::new(DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-        )
-        .with_resolver(resolver)
-        .with_chat_log_store(store.clone());
-        let principal = create_test_principal(&manager, "stressy").await;
-
-        let owner = Subject::User("test-owner".to_string());
         let peer = Subject::User("alice".to_string());
-
-        // Provision the peer's standing child (Phase 5) over the SAME
-        // sessions dir the principal's memory exposes — the child the
-        // Phase 6 streaming driver runs the turn in.
-        let session_manager = Arc::new(tokio::sync::RwLock::new(
-            peko_session::manager::SessionManager::new()
-                .with_sessions_dir_internal(principal.memory.sessions_dir()),
-        ));
-        let child_id = crate::principal::peer_children::ensure_peer_child(
-            "root",
-            &owner,
-            &peer,
-            &session_manager,
-        )
-        .await
-        .expect("peer child provisioning");
-
-        // The Phase 7 wrapper: input row before the child turn,
-        // response row after — both keyed (principal_did, peer).
-        manager
-            .record_chat_input(&principal, &peer, "hello principal", &cli_channel())
+        let response = manager
+            .receive(id, peer.clone(), "hello principal".to_string(), cli_channel(), None)
             .await
-            .expect("record_chat_input should succeed");
-        manager
-            .record_chat_response(&principal, &peer, "hello alice")
-            .await;
+            .expect("receive should succeed");
+        assert!(response.content.contains("hello alice"));
 
-        let key = ChatThreadKey::new(principal.did().await, peer.clone());
-        let page = store
-            .read_page(&key, None, 100, None)
-            .await
-            .expect("read_page should succeed");
+        // Both directions land on the DM channel: inbound attributed
+        // to the peer (Subject wire form), reply authored by the
+        // principal's raw id.
+        let rows = dm_posted_rows(&manager, &store, &principal, &peer).await;
         assert_eq!(
-            page.messages.len(),
-            2,
-            "input + response rows land around the child turn"
+            rows,
+            vec![
+                ("user:alice".to_string(), "hello principal".to_string()),
+                (principal.id.to_string(), "hello alice".to_string()),
+            ],
+            "inbound (peer-attributed) + reply (principal-authored) rows"
         );
-        assert_eq!(page.messages[0].sender, peer);
-        assert_eq!(page.messages[0].text, "hello principal");
-        assert_eq!(
-            page.messages[1].sender,
-            Subject::Principal(principal.did().await)
-        );
-        assert_eq!(page.messages[1].text, "hello alice");
 
         // Recall: the peer's latest-session artifact points at the
-        // child session id, not a `root:{peer}` id.
-        manager
-            .record_peer_recall(&principal, &peer, &child_id, "hello alice")
-            .await;
+        // child session id.
+        let child_id = manager
+            .ensure_peer_child_ingress(&principal, &peer)
+            .await
+            .expect("peer child").child_id;
         let artifact = principal
             .memory
             .find_latest_session_for_peer(&peer)
@@ -2416,66 +2353,59 @@ mod tests {
             artifact.session_id, child_id,
             "recall artifact must point at the peer-child session"
         );
-        assert_eq!(artifact.summary.as_deref(), Some("hello alice"));
+        assert!(artifact.summary.as_deref().is_some_and(|s| s.contains("hello alice")));
     }
 
-    /// The chat-log projection gate still applies around child turns:
-    /// automation channels (Cron) are not peer chat and persist no
-    /// input row.
+    /// Phase 11 queued path: with a channel port attached, every
+    /// queued arrival's inbound message is posted to the DM channel
+    /// exactly once, and no "Queued…" notice row lands (transport UX,
+    /// not conversation).
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn peer_child_turn_chat_projection_skips_non_chat_channels() {
-        use peko_chat_log::{ChatLogStore, ChatThreadKey};
+    async fn queued_messages_post_inbound_once_and_no_notice_row() {
+        let (_temp, manager, _adapter, id, store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
+        let peer = Subject::User("queued-peer".to_string());
 
-        let temp = TempDir::new().expect("temp dir");
-        std::env::set_var("PEKO_HOME", temp.path());
-        peko_identity::init_test_env();
-
-        let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            temp.path().join("config"),
-            temp.path().join("data"),
-            temp.path().join("cache"),
-        );
-        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
+        // Hold the child run permit so every receive takes the
+        // steering-queue branch (mirrors
+        // `concurrent_same_peer_messages_are_queued`).
+        let child_id = manager
+            .ensure_peer_child_ingress(&principal, &peer)
             .await
-            .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
-
-        let workspace = temp.path().join("principals");
-        tokio::fs::create_dir_all(&workspace).await.unwrap();
-
-        let catalog_path = temp.path().join("models.toml");
-        let (resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
-
-        let store = Arc::new(ChatLogStore::new(temp.path().join("chat_log")));
-        let manager = PrincipalManager::with_path_resolver(
-            path_resolver,
-            Arc::new(DefaultPrincipalMemoryFactory),
-            Arc::new(DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-        )
-        .with_resolver(resolver)
-        .with_chat_log_store(store.clone());
-        let principal = create_test_principal(&manager, "stressy").await;
-
-        let peer = Subject::User("alice".to_string());
-        let cron_channel = ChannelContext {
-            kind: ChannelKind::Cron,
-            streaming: false,
-        };
-        manager
-            .record_chat_input(&principal, &peer, "cron-fired prompt", &cron_channel)
+            .expect("peer child provisioning").child_id;
+        let _permit_hold = manager
+            .inbox_registry
+            .try_acquire_run(&child_id)
             .await
-            .expect("record_chat_input should succeed (skipped)");
+            .expect("permit should be free");
 
-        let key = ChatThreadKey::new(principal.did().await, peer.clone());
-        let page = store
-            .read_page(&key, None, 100, None)
-            .await
-            .expect("read_page should succeed");
-        assert!(
-            page.messages.is_empty(),
-            "non-chat channels persist no chat-log rows"
+        for i in 0..2 {
+            let response = manager
+                .receive(
+                    id.clone(),
+                    peer.clone(),
+                    format!("hello {i}"),
+                    cli_channel(),
+                    None,
+                )
+                .await
+                .expect("receive should succeed");
+            assert!(
+                response.content.starts_with("Queued for root agent session"),
+                "expected the queued branch; got: {}",
+                response.content
+            );
+        }
+
+        let rows = dm_posted_rows(&manager, &store, &principal, &peer).await;
+        assert_eq!(
+            rows,
+            vec![
+                ("user:queued-peer".to_string(), "hello 0".to_string()),
+                ("user:queued-peer".to_string(), "hello 1".to_string()),
+            ],
+            "each inbound posted exactly once; no Queued… notice rows"
         );
     }
 

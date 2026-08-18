@@ -821,6 +821,27 @@ impl ChannelStore {
         sender: &PrincipalId,
         msg: PostMsg,
     ) -> Result<(TaskId, ChannelEvent)> {
+        self.post_attributed_with_event(channel, sender, &sender.to_string(), msg)
+            .await
+    }
+
+    /// Like [`Self::post_with_event`] but writes an explicit `author`
+    /// string onto the event instead of deriving it from `sender`.
+    /// Membership + parent validation are still enforced against
+    /// `sender`; `author` is written verbatim (attribution only, not
+    /// an authority claim).
+    ///
+    /// Phase 11 (agent-session paradigm sprint): the peer-DM channels
+    /// use this to post the inbound message with `author =
+    /// peer.to_string()` while `sender = principal.id` remains the
+    /// member against which the write is authorized.
+    pub async fn post_attributed_with_event(
+        &self,
+        channel: &ChannelId,
+        sender: &PrincipalId,
+        author: &str,
+        msg: PostMsg,
+    ) -> Result<(TaskId, ChannelEvent)> {
         let tier = self.resolve_tier(channel).await?;
         if !self.check_membership(tier, channel, sender).await? {
             return Err(ChannelError::NotMember);
@@ -846,7 +867,7 @@ impl ChannelStore {
 
         let ev = ChannelEvent::Posted {
             channel: channel.clone(),
-            author: sender.to_string(),
+            author: author.to_string(),
             parent: msg.parent.clone(),
             text: msg.text,
             at: Utc::now().to_rfc3339(),
@@ -942,6 +963,21 @@ impl ChannelPort for ChannelStore {
     ) -> Result<TaskId> {
         let (_line, _ev) = self.post_with_event(channel, sender, msg).await?;
         Ok(_line)
+    }
+
+    /// Phase 11: attributed posts write `author` verbatim (see the
+    /// inherent [`Self::post_attributed_with_event`]).
+    async fn post_attributed(
+        &self,
+        channel: &ChannelId,
+        sender: &PrincipalId,
+        author: &str,
+        msg: PostMsg,
+    ) -> Result<TaskId> {
+        let (line, _ev) = self
+            .post_attributed_with_event(channel, sender, author, msg)
+            .await?;
+        Ok(line)
     }
 
     async fn peek(
@@ -1462,6 +1498,147 @@ mod tests {
             matches!(result, Err(ChannelError::NotFound(_))),
             "unknown channel must surface NotFound; got: {result:?}"
         );
+    }
+
+    // -- attributed posts (sprint 3 Phase 11, peer-DM attribution) ----
+
+    /// `post_attributed` writes the caller-supplied `author` verbatim
+    /// onto the event instead of deriving it from `sender`. This is
+    /// the Phase 11 peer-DM inbound convention: `sender = principal.id`
+    /// (the member), `author = peer.to_string()` (the Subject wire
+    /// form) — the log reads as a two-party conversation.
+    #[tokio::test]
+    async fn post_attributed_writes_author_verbatim() {
+        let cfg = tmp_cfg("attributed-verbatim");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_self");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("dm-user-alice"))
+            .await
+            .unwrap();
+
+        let line = store
+            .post_attributed(
+                &channel,
+                &creator,
+                "user:alice",
+                PostMsg::root("hi from alice"),
+            )
+            .await
+            .unwrap();
+
+        let events = store.peek(&channel, &Checkpoint::default()).await.unwrap();
+        let posted: Vec<_> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted { author, text, .. } => Some((author, text)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(posted.len(), 1);
+        assert_eq!(posted[0].0, "user:alice");
+        assert_eq!(posted[0].1, "hi from alice");
+        assert_eq!(line, "1", "Created is line 0; first post is line 1");
+    }
+
+    /// Membership is enforced against `sender`, not `author` — an
+    /// attribution string must not let a non-member write.
+    #[tokio::test]
+    async fn post_attributed_rejects_non_member_sender() {
+        let cfg = tmp_cfg("attributed-not-member");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_self");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("dm"))
+            .await
+            .unwrap();
+
+        let err = store
+            .post_attributed(
+                &channel,
+                &pid("prin_stranger"),
+                "user:alice",
+                PostMsg::root("must not land"),
+            )
+            .await;
+        assert!(
+            matches!(err, Err(ChannelError::NotMember)),
+            "non-member sender must still be rejected; got: {err:?}"
+        );
+    }
+
+    /// Parent validation is unchanged under attribution: a parent
+    /// pointing past the end of the log errors, a valid parent lands.
+    #[tokio::test]
+    async fn post_attributed_validates_parent() {
+        let cfg = tmp_cfg("attributed-parent");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_self");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("dm"))
+            .await
+            .unwrap();
+
+        let bad = store
+            .post_attributed(
+                &channel,
+                &creator,
+                "user:alice",
+                PostMsg::reply("9".to_string(), "bad parent"),
+            )
+            .await;
+        assert!(
+            matches!(bad, Err(ChannelError::Adapter(_))),
+            "missing parent line must error; got: {bad:?}"
+        );
+
+        // Line 1 is the first post (line 0 is Created).
+        store
+            .post_attributed(&channel, &creator, "user:alice", PostMsg::root("inbound"))
+            .await
+            .unwrap();
+        let events = store
+            .peek_with_ids(&channel, &Checkpoint::default())
+            .await
+            .unwrap();
+        let first_post_line = events
+            .iter()
+            .find(|(_, ev)| matches!(ev, ChannelEvent::Posted { .. }))
+            .map(|(line, _)| line.clone())
+            .unwrap();
+        let reply = store
+            .post_attributed(
+                &channel,
+                &creator,
+                "user:alice",
+                PostMsg::reply(first_post_line, "follow-up"),
+            )
+            .await;
+        assert!(reply.is_ok(), "valid parent must land; got: {reply:?}");
+    }
+
+    /// Plain `post` delegates with `author = sender.to_string()` —
+    /// the two paths must agree byte-for-byte on the event shape.
+    #[tokio::test]
+    async fn post_with_event_delegates_with_sender_author() {
+        let cfg = tmp_cfg("delegate-author");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_self");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("dm"))
+            .await
+            .unwrap();
+
+        let (_line, ev) = store
+            .post_with_event(&channel, &creator, PostMsg::root("plain"))
+            .await
+            .unwrap();
+        match ev {
+            ChannelEvent::Posted { author, .. } => {
+                assert_eq!(author, "prin_self");
+            }
+            other => panic!("expected Posted event; got {other:?}"),
+        }
     }
 
     // -- live-event wake (sprint 3 Phase 10 push-wake) -----------------

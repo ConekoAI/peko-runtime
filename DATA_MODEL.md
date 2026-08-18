@@ -1355,13 +1355,23 @@ out of use.
 
 ## 5½. Chat Log — Consumer-Visible Conversation History
 
+> **Superseded for peer conversations (sprint 3 Phase 11,
+> 2026-08-18).** The per-peer conversation projection moved onto the
+> Phase-10 **peer DM channels**: `peko log` and the `principal_log`
+> IPC read the DM channel's `Posted` events (see §channels), not
+> these shards. The remaining writers are the cron `Send` projection
+> (`PrincipalManager::record_cron_input`) and the peer messenger's
+> user-branch notes; the crate and its files stay on disk until
+> Phase 13 decides migration/removal. The description below is kept
+> for the retained cron/messenger use and for the on-disk history.
+
 The chat log is the runtime-owned, append-only, **consumer-visible**
 record of the text messages an external participant actually
 exchanged with a Principal. It is **distinct from the session
 JSONL** (§5): the session JSONL is mutable principal-owned working
-memory optimized for the agent loop, while the chat log is the
-only record surfaced by `peko log`, the desktop's `principal_log`
-IPC, and any future chat-history surface.
+memory optimized for the agent loop, while the chat log was —
+pre-Phase-11 — the only record surfaced by `peko log`, the desktop's
+`principal_log` IPC, and any future chat-history surface.
 
 The two stores are intentionally separate so internal execution
 detail (prompts, tool calls, thinking blocks, compactions, model

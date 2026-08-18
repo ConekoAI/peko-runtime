@@ -42,6 +42,54 @@ child; group channels stay active (cron-read). Phase by phase.
   `ChannelPort` trait signature changed (`subscribe_events` already
   existed with a no-op default).
 
+#### Phase 11 — local ingress re-routed onto DM channels
+
+`peko send` (IPC), Hub webchat, and IPC steer now write both
+directions of the conversation to the peer's DM channel; the chat-log
+projections on these paths are deleted.
+
+##### Added
+- **Attributed channel posts**: `ChannelPort::post_attributed`
+  (default degrades to `post`) with `ChannelStore` +
+  `TunnelChannelPort` overrides — membership/permission checked
+  against the `sender` principal, `author` written verbatim. Ingress
+  convention: inbound posts use `sender = principal.id`,
+  `author = peer.to_string()` (the Subject wire form: `user:alice`,
+  `principal:<did>`); replies keep plain `post()` (author = the
+  principal's `prin_<uuid>`).
+- **`PeerChildTurns::ensure_child_ingress`** returns
+  `PeerChildIngress { child_id, dm_channel }`; `peer_dm` gained
+  `find_peer_dm_channel` (find-only by binding) +
+  `post_peer_dm_inbound` / `post_peer_dm_reply` helpers.
+
+##### Changed (breaking)
+- **Ingress posts to the DM channel, drives the turn itself.** The
+  inbound message is posted before the run permit is acquired (a post
+  failure rejects dispatch — the persist-before-dispatch invariant);
+  the assistant reply, run-failure traces, and steering-successor
+  replies are posted back as the principal. Turn ownership is
+  partitioned by author: `PassiveBindingResponder::response_trigger`
+  now skips posts whose author parses as a Subject wire form
+  (ingress-handler-owned), and drives only raw-principal-id posts
+  from OTHER principals (local cross-principal `ChannelSend`; Phase
+  12 A2A fan-out). No double-turns.
+- **`peko log` reads the DM channel**, not the chat log: same
+  `PrincipalLog` packet + `ChatLogMessage` rows, backed by
+  `find_peer_dm_channel` + `peek_with_ids` with line-number cursors.
+- **Behavior changes:** manager-path slash responses and "Queued…"
+  notices are no longer persisted anywhere (transport UX, not
+  conversation); pre-Phase-11 chat-log peer history stays on disk but
+  is no longer read (Phase 13 owns the crate's retirement);
+  port-less standalone/test contexts skip DM posts.
+- **Dead surface deleted** (prelaunch): `record_input` /
+  `record_response` / `record_chat_input` / `record_chat_response` /
+  `is_peer_chat_channel` on `PrincipalManager`,
+  `PrincipalHost::chat_log_store`,
+  `PeerChildTurns::ensure_child` /
+  `PrincipalManager::ensure_peer_child_session` (all call sites use
+  the `_ingress` forms). `record_cron_input` stays — cron projection
+  is unchanged and keeps `peko-chat-log` alive until Phase 13.
+
 ### Channel tool reachability fixes (reviewer findings, 2026-08-18)
 
 The `ChannelRead` / `ChannelSend` built-in tools were wired in but

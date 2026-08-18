@@ -80,6 +80,17 @@ pub(crate) fn peer_child_agent_config(
     )
 }
 
+/// Result of [`PeerChildTurns::ensure_child_ingress`]: the peer's
+/// standing-child session id plus, when a channel port is attached and
+/// provisioning succeeded, the peer's DM channel (Phase 11 — the
+/// conversation's channel-tier home; `None` keeps the pre-Phase-11
+/// degrade posture: standalone/test contexts simply don't post).
+#[derive(Debug, Clone)]
+pub(crate) struct PeerChildIngress {
+    pub child_id: String,
+    pub dm_channel: Option<peko_channel::ChannelId>,
+}
+
 /// Per-principal peer-child turn bundle: the shared
 /// [`SubagentExecutor`] (persona-carrying), the session manager the
 /// peer children live in, and the ownership anchor for the resume
@@ -266,8 +277,11 @@ impl PeerChildTurns {
         &self.parent_session_key
     }
 
-    /// Find-or-create the peer's standing child of the trunk; returns
-    /// the child session id. Idempotent per peer (Phase 5 semantics).
+    /// Find-or-create the peer's standing child of the trunk and (Phase
+    /// 11) surface the peer's DM channel alongside — the ingress
+    /// handlers post the inbound message + reply to the returned
+    /// channel (`principal::peer_dm::post_peer_dm_inbound` /
+    /// `post_peer_dm_reply`). Idempotent per peer (Phase 5 semantics).
     ///
     /// Sprint 3 Phase 10: also find-or-creates the peer's DM channel
     /// (`dm-<slug>`, bound to the child's path) when a channel port is
@@ -275,8 +289,9 @@ impl PeerChildTurns {
     /// no ingress can provision a child without its DM channel.
     /// Provisioning failures degrade to a warning (the ingress turn
     /// itself is unaffected); a missing port skips provisioning with a
-    /// debug log (standalone/test contexts).
-    pub(crate) async fn ensure_child(&self, peer: &Subject) -> Result<String> {
+    /// debug log (standalone/test contexts). `dm_channel` is `None` in
+    /// both cases (callers skip the posts).
+    pub(crate) async fn ensure_child_ingress(&self, peer: &Subject) -> Result<PeerChildIngress> {
         let child_id =
             ensure_peer_child(&self.agent_name, &self.owner, peer, &self.session_manager).await?;
         let Some(port) = self.channel_port.clone() else {
@@ -284,7 +299,10 @@ impl PeerChildTurns {
                 peer = %peer,
                 "peer DM provisioning skipped: no channel port attached"
             );
-            return Ok(child_id);
+            return Ok(PeerChildIngress {
+                child_id,
+                dm_channel: None,
+            });
         };
         // Tests may leave `dm_lock` unset; a call-local mutex gives no
         // cross-call serialization (documented on the field).
@@ -303,9 +321,13 @@ impl PeerChildTurns {
             Ok(provision) => {
                 if provision.created {
                     if let Some(hook) = &self.dm_subscriber_hook {
-                        hook(self.principal_id.clone(), provision.channel);
+                        hook(self.principal_id.clone(), provision.channel.clone());
                     }
                 }
+                Ok(PeerChildIngress {
+                    child_id,
+                    dm_channel: Some(provision.channel),
+                })
             }
             Err(e) => {
                 tracing::warn!(
@@ -313,9 +335,12 @@ impl PeerChildTurns {
                     child = %child_id,
                     "peer DM channel provisioning failed (ingress unaffected): {e:#}"
                 );
+                Ok(PeerChildIngress {
+                    child_id,
+                    dm_channel: None,
+                })
             }
         }
-        Ok(child_id)
     }
 
     /// Drive one streaming turn in the peer's standing child session.
@@ -480,7 +505,7 @@ mod tests {
         );
     }
 
-    // ─── Phase 10: DM channel provisioning on ensure_child ───────────
+    // ─── Phase 10: DM channel provisioning on ensure_child_ingress ───
 
     /// Build a minimal `PeerChildTurns` directly (struct literal —
     /// `build` needs a full `Principal` + resolver, none of which the
@@ -544,7 +569,7 @@ mod tests {
         );
 
         let peer = Subject::User("alice".to_string());
-        let child_id = turns.ensure_child(&peer).await.unwrap();
+        let child_id = turns.ensure_child_ingress(&peer).await.unwrap().child_id;
 
         // The DM channel exists, named + bound to the peer child.
         let channels = store.list_for_principal(&turns.principal_id).await.unwrap();
@@ -571,7 +596,7 @@ mod tests {
         }
 
         // Second ensure: same child, no new channel, no second hook.
-        let again = turns.ensure_child(&peer).await.unwrap();
+        let again = turns.ensure_child_ingress(&peer).await.unwrap().child_id;
         assert_eq!(again, child_id);
         assert_eq!(
             store
@@ -591,7 +616,7 @@ mod tests {
         let (_dir, manager, _store) = dm_fixture().await;
         let turns = bare_turns(manager, None, None, None);
         let peer = Subject::User("alice".to_string());
-        turns.ensure_child(&peer).await.unwrap();
+        turns.ensure_child_ingress(&peer).await.unwrap();
         // Nothing to assert on the channel side except "did not
         // panic"; the child still exists.
         let metas = turns
@@ -629,7 +654,7 @@ mod tests {
         for _ in 0..6 {
             let turns = Arc::clone(&turns);
             let peer = peer.clone();
-            handles.push(tokio::spawn(async move { turns.ensure_child(&peer).await }));
+            handles.push(tokio::spawn(async move { turns.ensure_child_ingress(&peer).await }));
         }
         for h in handles {
             h.await.unwrap().unwrap();
@@ -644,5 +669,78 @@ mod tests {
             "concurrent first-contact must create exactly one DM channel"
         );
         assert_eq!(hook_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    // ─── Phase 11: ensure_child_ingress surfaces the DM channel ──────
+
+    /// `ensure_child_ingress` returns both the child session id and
+    /// the provisioned DM channel; a post pair through the Phase 11
+    /// helpers lands with the peer / principal authors.
+    #[tokio::test]
+    async fn ensure_child_ingress_returns_child_and_dm_channel() {
+        use crate::principal::peer_dm::{post_peer_dm_inbound, post_peer_dm_reply};
+
+        let (_dir, manager, store) = dm_fixture().await;
+        let port: Arc<dyn peko_channel::ChannelPort> = store.clone();
+        let turns = bare_turns(
+            manager,
+            Some(port.clone()),
+            None,
+            Some(Arc::new(tokio::sync::Mutex::new(()))),
+        );
+
+        let peer = Subject::User("alice".to_string());
+        let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
+        let dm = ingress.dm_channel.expect("port attached ⇒ DM channel");
+
+        post_peer_dm_inbound(
+            &port,
+            &turns.principal_id,
+            &dm,
+            &peer.to_string(),
+            "hello",
+        )
+        .await
+        .unwrap();
+        post_peer_dm_reply(&port, &turns.principal_id, &dm, "hi alice").await;
+
+        let events = store
+            .peek(&dm, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        let posted: Vec<(String, String)> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                peko_channel::ChannelEvent::Posted { author, text, .. } => {
+                    Some((author.clone(), text.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            posted,
+            vec![
+                ("user:alice".to_string(), "hello".to_string()),
+                ("prin_self".to_string(), "hi alice".to_string()),
+            ]
+        );
+
+        // Idempotent: a second ingress returns the same pair.
+        let again = turns.ensure_child_ingress(&peer).await.unwrap();
+        assert_eq!(again.child_id, ingress.child_id);
+        assert_eq!(again.dm_channel, Some(dm));
+    }
+
+    /// Without a channel port, `ensure_child_ingress` reports
+    /// `dm_channel: None` (the accepted Phase 11 degrade: the
+    /// conversation is not projected anywhere).
+    #[tokio::test]
+    async fn ensure_child_ingress_without_port_reports_no_channel() {
+        let (_dir, manager, _store) = dm_fixture().await;
+        let turns = bare_turns(manager, None, None, None);
+        let peer = Subject::User("alice".to_string());
+        let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
+        assert!(ingress.dm_channel.is_none());
+        assert!(!ingress.child_id.is_empty());
     }
 }

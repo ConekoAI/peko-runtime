@@ -878,10 +878,12 @@ impl AppState {
         ));
         // Runtime-owned, append-only chat-log store. Constructed
         // before the PrincipalManager so the manager builder captures
-        // the same `Arc` and can record boundary messages from
-        // `receive` / `receive_streaming`. The store is independent of
-        // any principal's session JSONL — deleting a principal deletes
-        // only that principal's chat-log shards.
+        // the same `Arc`. Phase 11 narrowed its writers to the cron
+        // `Send` projection (`record_cron_input`) and the peer
+        // messenger's user-branch notes — peer conversation ingress
+        // now posts to the per-peer DM channels instead. The store is
+        // independent of any principal's session JSONL — deleting a
+        // principal deletes only that principal's chat-log shards.
         let chat_log_store = Arc::new(peko_chat_log::ChatLogStore::new(
             path_resolver.chat_logs_dir(),
         ));
@@ -3351,10 +3353,6 @@ impl crate::ipc::handlers::credential::BindingHost for AppState {
 impl crate::ipc::handlers::principal::PrincipalHost for AppState {
     fn principal_manager(&self) -> &Arc<PrincipalManager> {
         AppState::principal_manager(self)
-    }
-
-    fn chat_log_store(&self) -> &Arc<peko_chat_log::ChatLogStore> {
-        AppState::chat_log_store(self)
     }
 
     fn streaming_runs(

@@ -48,16 +48,26 @@
 //! `ChannelBindingSupervisor::ensure_subscriber`, so the new channel
 //! gets its `PassiveBindingResponder` subscriber immediately —
 //! without waiting for the next boot sweep.
+//!
+//! ## Conversation home (Phase 11)
+//!
+//! Phase 11 routes the actual peer conversation onto the DM channel:
+//! the ingress handlers post the inbound message attributed to the
+//! peer ([`post_peer_dm_inbound`]) and the reply back as the
+//! principal ([`post_peer_dm_reply`]); `peko log` reads the channel
+//! log back through [`find_peer_dm_channel`]. The responder's
+//! author-based skip rule (`daemon::channel_binding`) keeps it from
+//! double-driving turns on these posts.
 
 use std::sync::Arc;
 
 use anyhow::Result;
 use peko_auth::Subject;
-use peko_channel::{ChannelId, ChannelPort, CreateOpts};
+use peko_channel::{ChannelId, ChannelPort, CreateOpts, PostMsg};
 use peko_session::manager::SessionManager;
 use peko_subject::PrincipalId;
 use tokio::sync::{Mutex, RwLock};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::principal::peer_children::peer_child_slug;
 
@@ -116,26 +126,12 @@ pub(crate) async fn ensure_peer_dm_channel(
     let _guard = lock.lock().await;
 
     // Find: a channel whose binding IS this child's path is the peer's
-    // DM channel. Match on the binding (the semantic identity), not
-    // the display name. Per-channel read failures (a partially
-    // written channel dir) skip that channel rather than failing the
-    // whole ensure.
-    for candidate in port.list_for_principal(principal).await? {
-        match port.passive_binding(&candidate).await {
-            Ok(Some(existing)) if existing == binding => {
-                return Ok(PeerDmProvision {
-                    channel: candidate,
-                    created: false,
-                });
-            }
-            Ok(_) => {}
-            Err(e) => {
-                debug!(
-                    channel = %candidate,
-                    "peer DM provisioning: skipping channel with unreadable binding: {e}"
-                );
-            }
-        }
+    // DM channel (see `find_peer_dm_channel`).
+    if let Some(existing) = find_peer_dm_channel(port, principal, &binding).await? {
+        return Ok(PeerDmProvision {
+            channel: existing,
+            created: false,
+        });
     }
 
     // Create: the principal is the creator (auto-member). For
@@ -158,6 +154,81 @@ pub(crate) async fn ensure_peer_dm_channel(
         channel,
         created: true,
     })
+}
+
+/// Find-only variant of [`ensure_peer_dm_channel`]: returns the
+/// channel whose passive binding IS `binding` (the semantic identity,
+/// not the display name), or `None` when the principal has no such
+/// channel. Per-channel read failures (a partially written channel
+/// dir) skip that channel rather than failing the whole scan.
+///
+/// Phase 11: used by `peko log` (`read_principal_log`) to locate the
+/// peer's DM channel without provisioning one.
+pub(crate) async fn find_peer_dm_channel(
+    port: &Arc<dyn ChannelPort>,
+    principal: &PrincipalId,
+    binding: &str,
+) -> Result<Option<ChannelId>> {
+    for candidate in port.list_for_principal(principal).await? {
+        match port.passive_binding(&candidate).await {
+            Ok(Some(existing)) if existing == binding => {
+                return Ok(Some(candidate));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                debug!(
+                    channel = %candidate,
+                    "peer DM lookup: skipping channel with unreadable binding: {e}"
+                );
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Phase 11: post a peer's inbound message to the DM channel,
+/// attributed to the peer. `sender` stays the principal (the
+/// channel's creator/member — the human peer is deliberately not a
+/// member); `author` is the peer's Subject wire form
+/// (`peer.to_string()`: `user:alice`, `user:local`, `principal:did:…`),
+/// which is also what the responder's author-based skip rule matches
+/// so it never double-drives the turn.
+pub(crate) async fn post_peer_dm_inbound(
+    port: &Arc<dyn ChannelPort>,
+    principal: &PrincipalId,
+    channel: &ChannelId,
+    author: &str,
+    text: &str,
+) -> Result<()> {
+    port.post_attributed(channel, principal, author, PostMsg::root(text))
+        .await?;
+    Ok(())
+}
+
+/// Phase 11: post the principal's reply back to the DM channel
+/// (plain `post` — author = `principal.id`, e.g. `prin_<uuid>`).
+///
+/// Warn-only on failure, mirroring the failure posture of the
+/// responder's reply post (`daemon::channel_binding::ResponderInner`):
+/// the reply has already been delivered over the IPC stream; the
+/// channel row is the durable projection, not the delivery mechanism.
+/// Empty/whitespace replies are skipped (mirrors the responder's own
+/// guard).
+pub(crate) async fn post_peer_dm_reply(
+    port: &Arc<dyn ChannelPort>,
+    principal: &PrincipalId,
+    channel: &ChannelId,
+    text: &str,
+) {
+    if text.trim().is_empty() {
+        return;
+    }
+    if let Err(e) = port.post(channel, principal, PostMsg::root(text)).await {
+        warn!(
+            channel = %channel,
+            "peer DM reply projection failed (reply already delivered): {e}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +427,126 @@ mod tests {
         assert_eq!(
             store.membership(&provision.channel).await.unwrap().name,
             "dm-local-user"
+        );
+    }
+
+    // -- Phase 11: find-only lookup + post helpers ---------------------
+
+    /// `find_peer_dm_channel` hits on the provisioned binding and
+    /// misses on an unknown one — without creating anything.
+    #[tokio::test]
+    async fn find_peer_dm_channel_hit_and_miss() {
+        let (_dir, manager, _store, port, lock) = fixture().await;
+        let peer = Subject::User("alice".to_string());
+        let child_id = ensure_peer_child("root", &owner(), &peer, &manager)
+            .await
+            .unwrap();
+
+        // Miss: nothing provisioned yet.
+        assert!(find_peer_dm_channel(&port, &principal_id(), "/user-alice")
+            .await
+            .unwrap()
+            .is_none());
+
+        let provision =
+            ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
+                .await
+                .unwrap();
+
+        // Hit on the binding.
+        assert_eq!(
+            find_peer_dm_channel(&port, &principal_id(), "/user-alice")
+                .await
+                .unwrap(),
+            Some(provision.channel.clone())
+        );
+        // Still a miss for a different binding; no new channels created.
+        assert!(find_peer_dm_channel(&port, &principal_id(), "/user-bob")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            port.list_for_principal(&principal_id())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// `post_peer_dm_inbound` writes the peer's Subject wire form as
+    /// the event author while `sender` remains the principal; a
+    /// follow-up `post_peer_dm_reply` lands as the principal.
+    #[tokio::test]
+    async fn post_helpers_land_with_expected_authors() {
+        let (_dir, manager, store, port, lock) = fixture().await;
+        let peer = Subject::User("alice".to_string());
+        let child_id = ensure_peer_child("root", &owner(), &peer, &manager)
+            .await
+            .unwrap();
+        let provision =
+            ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
+                .await
+                .unwrap();
+
+        post_peer_dm_inbound(
+            &port,
+            &principal_id(),
+            &provision.channel,
+            &peer.to_string(),
+            "hello there",
+        )
+        .await
+        .unwrap();
+        post_peer_dm_reply(&port, &principal_id(), &provision.channel, "hi alice").await;
+
+        let events = store
+            .peek(&provision.channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        let posted: Vec<(String, String)> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                peko_channel::ChannelEvent::Posted { author, text, .. } => {
+                    Some((author.clone(), text.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            posted,
+            vec![
+                ("user:alice".to_string(), "hello there".to_string()),
+                ("prin_self".to_string(), "hi alice".to_string()),
+            ]
+        );
+    }
+
+    /// Empty/whitespace replies are skipped (mirror of the
+    /// responder's own guard) — no event lands.
+    #[tokio::test]
+    async fn post_peer_dm_reply_skips_empty_text() {
+        let (_dir, manager, store, port, lock) = fixture().await;
+        let peer = Subject::User("alice".to_string());
+        let child_id = ensure_peer_child("root", &owner(), &peer, &manager)
+            .await
+            .unwrap();
+        let provision =
+            ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
+                .await
+                .unwrap();
+
+        post_peer_dm_reply(&port, &principal_id(), &provision.channel, "   ").await;
+
+        let events = store
+            .peek(&provision.channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|ev| !matches!(ev, peko_channel::ChannelEvent::Posted { .. })),
+            "whitespace reply must not land in the channel log"
         );
     }
 }

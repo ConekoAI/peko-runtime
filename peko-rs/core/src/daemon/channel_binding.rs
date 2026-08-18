@@ -27,13 +27,29 @@
 //!   router, the variant would have no consumer and is deliberately
 //!   skipped.
 //! - **No chat-log projection.** Channel-origin turns never touch
-//!   `peko-chat-log`: `record_input`/`record_response` live inside
-//!   `PrincipalManager::receive`/`receive_streaming`, which this module
-//!   never calls. The channel's own append-only event log is the
-//!   durable record of both directions (the inbound post and the
-//!   posted reply); the bound session's JSONL is the principal's
-//!   private working memory. This preserves the channel/session/chat-log
+//!   `peko-chat-log` (its remaining writers — the cron `Send`
+//!   projection and the peer messenger — are paths this module never
+//!   calls). The channel's own append-only event log is the durable
+//!   record of both directions (the inbound post and the posted
+//!   reply); the bound session's JSONL is the principal's private
+//!   working memory. This preserves the channel/session/chat-log
 //!   three-way separation (ADR-044, PEKO.md).
+//! - **Author-based turn-ownership partition (Phase 11).** The peer DM
+//!   channels are driven by the ingress handlers (`peko send` IPC,
+//!   manager `receive*`/A2A/Hub, IPC steer): the handler posts the
+//!   inbound message with `author = peer.to_string()` — the Subject
+//!   wire form (`user:alice`, `user:local`, `public`,
+//!   `principal:<did>`) — and drives the turn itself, then posts the
+//!   reply as the principal. The responder must NEVER act on those
+//!   posts (that would double-drive the turn), so
+//!   [`PassiveBindingResponder::response_trigger`] drops any `Posted`
+//!   event whose author parses as a Subject wire form. The responder
+//!   owns exactly the raw-principal-id-authored posts: another local
+//!   principal posting via `peko channel send` / `ChannelSend`
+//!   (existing Phase 4 behavior) and future Phase 12 A2A fan-out
+//!   posts. Known gap (Phase 12 owns cross-runtime semantics and will
+//!   revisit): remote-mirrored posts whose author is a Subject wire
+//!   form (e.g. `user:*`) are also skipped by this rule.
 //! - **Self-post suppression (anti-loop invariant).** The responder
 //!   posts its reply via `ChannelPort::post` as the principal, then
 //!   observes its own post on the subscriber's next poll tick.
@@ -42,7 +58,10 @@
 //!   NEVER processes its own posts (PEKO.md "Violates channel/session
 //!   separation"). Author matching is unambiguous: `ChannelStore::post`
 //!   writes `author: sender.to_string()` and the responder compares
-//!   against the same `PrincipalId::to_string()` form.
+//!   against the same `PrincipalId::to_string()` form. Together with
+//!   the Subject-wire-form skip above, the partition is: posts the
+//!   responder acts on are exactly raw-principal-id posts from OTHER
+//!   principals.
 //! - **Run concurrency.** `consider_response` spawns the turn as a
 //!   detached task and returns immediately, so the subscriber's cursor
 //!   keeps advancing (persisted cursors, Phase 0) instead of blocking
@@ -69,6 +88,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -186,9 +206,20 @@ impl PassiveBindingResponder {
     /// members trigger a turn — `Created`/`MemberJoined`/`MemberLeft`
     /// are channel bookkeeping, and self-authored posts are the loop
     /// vector this filter exists to close.
+    ///
+    /// Phase 11 turn-ownership partition: posts whose author is a
+    /// Subject wire form (`user:*`, `principal:*`, `public`) are
+    /// ingress-handler-owned — the handler already posted them AND
+    /// drives the turn, so the responder must skip them (no
+    /// double-turn). The responder drives only raw-principal-id posts
+    /// from other principals (local `peko channel send` / `ChannelSend`
+    /// cross-principal posts; Phase 12 A2A fan-out).
     fn response_trigger(principal: &PrincipalId, event: &ChannelEvent) -> Option<String> {
         match event {
-            ChannelEvent::Posted { author, text, .. } if *author != principal.to_string() => {
+            ChannelEvent::Posted { author, text, .. }
+                if *author != principal.to_string()
+                    && peko_subject::Subject::from_str(author).is_err() =>
+            {
                 Some(text.clone())
             }
             _ => None,
@@ -868,6 +899,48 @@ mod tests {
             PassiveBindingResponder::response_trigger(&principal, &ev),
             Some("hello agent".to_string())
         );
+    }
+
+    // -- Phase 11: Subject-wire-form authors are ingress-handler-owned ----
+
+    /// Ingress-handler posts (the Phase 11 inbound convention) carry
+    /// `author = peer.to_string()` — the Subject wire form. The
+    /// responder must skip them all: `user:*`, `principal:*`, and
+    /// `public`. Otherwise the peer-DM channel would double-drive
+    /// every turn (handler AND responder).
+    #[test]
+    fn response_trigger_skips_subject_wire_form_authors() {
+        let principal = pid("prin_self");
+        for author in [
+            "user:alice",
+            "user:local",
+            "principal:did:peko:principal:abc123",
+            "public",
+        ] {
+            let ev = posted(author, "inbound via ingress handler");
+            assert_eq!(
+                PassiveBindingResponder::response_trigger(&principal, &ev),
+                None,
+                "Subject-wire-form author {author} must not trigger a responder turn"
+            );
+        }
+    }
+
+    /// The partition boundary: a raw principal-id form that is NOT the
+    /// bound principal (including `@runtime`-decorated mirror forms)
+    /// still triggers — those are local cross-principal posts and
+    /// Phase 12 A2A fan-out posts.
+    #[test]
+    fn response_trigger_still_accepts_raw_principal_id_forms() {
+        let principal = pid("prin_self");
+        for author in ["prin_other", "prin_bob@runtime-B"] {
+            let ev = posted(author, "cross-principal post");
+            assert_eq!(
+                PassiveBindingResponder::response_trigger(&principal, &ev),
+                Some("cross-principal post".to_string()),
+                "raw principal-id author {author} must trigger a responder turn"
+            );
+        }
     }
 
     // -- responder end-to-end (stub driver, real ChannelStore) -------------

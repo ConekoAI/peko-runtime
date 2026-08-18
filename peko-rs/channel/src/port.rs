@@ -57,6 +57,34 @@ pub trait ChannelPort: Send + Sync + 'static {
         msg: PostMsg,
     ) -> Result<TaskId>;
 
+    /// Phase 11 (agent-session paradigm sprint): like [`Self::post`]
+    /// but writes an explicit `author` string onto the event instead
+    /// of deriving it from `sender`. Membership + parent validation
+    /// are still enforced against `sender` — `author` is a display
+    /// attribution, not an authority claim.
+    ///
+    /// Used by the per-peer DM channels: the inbound message is posted
+    /// with `sender = principal.id` (the channel's creator/member —
+    /// the human peer is deliberately not added to membership) and
+    /// `author = peer.to_string()` (the Subject wire form, e.g.
+    /// `user:alice` or `principal:did:...`), so the channel log reads
+    /// as a natural two-party conversation.
+    ///
+    /// The default impl degrades to a plain `sender`-authored
+    /// [`Self::post`], so adapters that don't distinguish attribution
+    /// (`NoopChannelPort`, in-memory test ports) don't need to
+    /// override.
+    async fn post_attributed(
+        &self,
+        channel: &ChannelId,
+        sender: &PrincipalId,
+        author: &str,
+        msg: PostMsg,
+    ) -> Result<TaskId> {
+        let _ = author;
+        self.post(channel, sender, msg).await
+    }
+
     /// Walk the channel's event log starting from `since`, returning
     /// every event keyed at a strictly later `TaskId`. An empty
     /// `Checkpoint` (default) returns the entire log.
