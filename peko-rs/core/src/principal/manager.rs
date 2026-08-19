@@ -104,13 +104,6 @@ pub struct PrincipalManager {
     /// the principal's meter. `None` for tests / contexts that don't
     /// have a daemon-managed `PeerRegistry`.
     peer_registry: Option<Arc<crate::principal::peer::PeerRegistry>>,
-    /// Runtime-owned, append-only chat-log store. Phase 11 narrowed
-    /// its role: peer-conversation projection moved to the per-peer
-    /// DM channels (`peer_dm`), so the remaining writers are the cron
-    /// `Send` projection (`record_cron_input`) and the peer
-    /// messenger's user-branch notes. The crate is retained until
-    /// Phase 13. `None` for tests / non-daemon contexts.
-    chat_log_store: Option<Arc<peko_chat_log::ChatLogStore>>,
     /// Sprint 2 Phase 7: per-principal peer-child turn bundles
     /// (`PeerChildTurns`), built lazily on first peer ingress and
     /// cached for the principal's lifetime. The bundle owns the
@@ -168,7 +161,6 @@ impl PrincipalManager {
             extension_store: None,
             observability: None,
             peer_registry: None,
-            chat_log_store: None,
             peer_child_turns: tokio::sync::RwLock::new(HashMap::new()),
             channel_port: None,
             dm_subscriber_hook: std::sync::RwLock::new(None),
@@ -249,23 +241,6 @@ impl PrincipalManager {
     #[must_use]
     pub fn peer_registry(&self) -> Option<&Arc<crate::principal::peer::PeerRegistry>> {
         self.peer_registry.as_ref()
-    }
-
-    /// Attach the runtime-owned chat-log store. When attached, peer
-    /// chat-channel messages accepted by `receive`/`receive_streaming`
-    /// are persisted to the chat log alongside their authoritative
-    /// response. `None` (the default) disables recording and is the
-    /// right choice for tests / non-daemon contexts.
-    #[must_use]
-    pub fn with_chat_log_store(mut self, chat_log_store: Arc<peko_chat_log::ChatLogStore>) -> Self {
-        self.chat_log_store = Some(chat_log_store);
-        self
-    }
-
-    /// Optional reference to the attached chat-log store.
-    #[must_use]
-    pub fn chat_log_store(&self) -> Option<&Arc<peko_chat_log::ChatLogStore>> {
-        self.chat_log_store.as_ref()
     }
 
     /// Sprint 3 Phase 10: attach the daemon-global channel port. When
@@ -537,19 +512,12 @@ impl PrincipalManager {
                 .ok_or_else(|| PrincipalManagerError::NotFound(name.to_string()))?
         };
 
-        let principal = self
-            .get(id.clone())
+        // Existence check — the in-memory entry must be present.
+        self.get(id.clone())
             .await
             .ok_or_else(|| PrincipalManagerError::NotFound(name.to_string()))?;
 
         let layout = self.path_resolver.principal_layout(name);
-        // Snapshot the principal's stable DID before we drop the
-        // in-memory entries — `chat_log_store.remove_principal`
-        // deletes the principal's shard directory keyed by that
-        // DID. The caller-view shards (e.g. principal-A's view of
-        // a conversation with principal-B) are NOT touched here:
-        // they live under the caller's DID, not this principal's.
-        let principal_did = principal.did().await;
 
         // Remove from in-memory indexes first.
         {
@@ -585,26 +553,6 @@ impl PrincipalManager {
                     );
                     PrincipalManagerError::Io(e)
                 })?;
-        }
-
-        // Delete this principal's chat-log shards. Only the
-        // principal's own views go; counterpart views held on
-        // other principals' shards remain because they are owned
-        // by the other principal. Cleanup failures are surfaced —
-        // silent retention of a removed principal's logs would
-        // leak history the principal was promised to lose.
-        if let Some(store) = self.chat_log_store.as_ref() {
-            if let Err(error) = store.remove_principal(&principal_did).await {
-                tracing::warn!(
-                    principal_did = %principal_did.0,
-                    %error,
-                    "failed to remove chat-log shards for principal"
-                );
-                return Err(PrincipalManagerError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("chat-log cleanup failed: {error}"),
-                )));
-            }
         }
 
         Ok(())
@@ -1154,8 +1102,8 @@ impl PrincipalManager {
     ///   to project into, so the trunk path never touched the peer
     ///   conversation record (pre-Phase-11: chat log; post-Phase-11:
     ///   the per-peer DM channels). The trunk session JSONL remains
-    ///   the durable record; the cron `Send` caller projects the fired
-    ///   prompt itself via `record_cron_input`.
+    ///   the durable record; the cron `Send` outcome surfaces via the
+    ///   messenger's `deliver_note` on the owner's DM channel.
     /// - **No slash preprocessing.** Trunk messages are agent-bound
     ///   automation prompts (cron payloads), not interactive commands.
     /// - **Same run discipline as `receive`.** The per-session run
@@ -1244,34 +1192,6 @@ impl PrincipalManager {
         if let Err(e) = principal.memory.record_session(artifact).await {
             tracing::warn!("failed to record peer-child session artifact: {e}");
         }
-    }
-
-    /// Persist a cron-fired prompt to the chat-log shard for
-    /// `(principal_did, peer)`. Cron prompts arrive on
-    /// `ChannelKind::Cron`, which the peer DM-channel ingress paths
-    /// never see — but the owner still needs to see the cron-fired
-    /// text in the owner-facing record (the messenger's outcome note
-    /// writes the reply side).
-    ///
-    /// Skipped silently when no chat-log store is attached (tests /
-    /// non-daemon contexts). Persistence failure returns `Err` so the
-    /// caller can log a warning — the cron run itself is not
-    /// rejected; the chat-log is best-effort projection.
-    pub(crate) async fn record_cron_input(
-        &self,
-        principal: &Arc<Principal>,
-        peer: &Subject,
-        message: &str,
-    ) -> Result<(), PrincipalManagerError> {
-        let Some(store) = self.chat_log_store.as_ref() else {
-            return Ok(());
-        };
-        let key = peko_chat_log::ChatThreadKey::new(principal.did().await, peer.clone());
-        let entry = peko_chat_log::ChatLogMessage::new(peer.clone(), message.to_string(), None);
-        store
-            .append_message(&key, &entry)
-            .await
-            .map_err(|e| PrincipalManagerError::Config(format!("chat-log cron-input append: {e}")))
     }
 }
 
@@ -2759,15 +2679,12 @@ mod tests {
     // ===================================================================
 
     /// A trunk turn runs in `root:self` — never `root:{owner}` or
-    /// `root:cron:{owner}` — and skips chat-log projection entirely:
-    /// the chat log is a per-peer consumer projection and the trunk has
-    /// no peer thread (a self-thread convention is deferred; the
-    /// session JSONL is the durable record).
+    /// `root:cron:{owner}` — and the trunk session JSONL is the
+    /// durable record (no separate consumer projection exists since
+    /// the chat-log store was retired in Phase 13).
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn trunk_receive_uses_trunk_session_and_skips_chat_log() {
-        use peko_chat_log::{ChatLogStore, ChatThreadKey};
-
+    async fn trunk_receive_uses_trunk_session() {
         let temp = TempDir::new().expect("temp dir");
         std::env::set_var("PEKO_HOME", temp.path());
         peko_identity::init_test_env();
@@ -2789,17 +2706,13 @@ mod tests {
         let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
         adapter.queue_text("trunk reply");
 
-        // Attach a chat-log store so a projection would be VISIBLE if
-        // one happened — the empty page below is the assertion.
-        let store = Arc::new(ChatLogStore::new(temp.path().join("chat_log")));
         let manager = PrincipalManager::with_path_resolver(
             path_resolver,
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
             crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         )
-        .with_resolver(resolver)
-        .with_chat_log_store(store.clone());
+        .with_resolver(resolver);
         let principal = create_test_principal(&manager, "stressy").await;
         let id = principal.id.clone();
 
@@ -2832,19 +2745,6 @@ mod tests {
                 .join("root:cron:user:test-owner.jsonl")
                 .exists(),
             "trunk turn must not create the per-owner cron session"
-        );
-
-        // No chat-log projection for the owner thread.
-        let owner = Subject::User("test-owner".to_string());
-        let key = ChatThreadKey::new(principal.did().await, owner);
-        let page = store
-            .read_page(&key, None, 100, None)
-            .await
-            .expect("read_page should succeed");
-        assert!(
-            page.messages.is_empty(),
-            "trunk turns must not project to the chat log, got {} messages",
-            page.messages.len()
         );
     }
 

@@ -22,7 +22,7 @@ This document defines every on-disk and in-memory data format used by the Peko r
    - [5.4 Session Index File](#54-session-index-file)
    - [5.5 Context Cache (Derived)](#55-context-cache-derived)
    - [5.6 Compaction](#56-compaction)
-   5½. [Chat Log — Consumer-Visible Conversation History](#5½-chat-log--consumer-visible-conversation-history)
+   5½. [Chat Log — Consumer-Visible Conversation History (RETIRED)](#5½-chat-log--consumer-visible-conversation-history-retired)
    5¾. [Channel Store — Multi-Principal Chat Event Log](#5¾-channel-store--multi-principal-chat-event-log)
 6. [Agent Package Format (.agent) (RETIRED)](#6-agent-package-format-agent-retired)
 7. [Team Package Format (.team) (RETIRED)](#7-team-package-format-team-retired)
@@ -1217,8 +1217,8 @@ are never created anymore:
   and the IPC `principal_send` handler find-or-create the peer's child
   (`ensure_peer_child`) and drive the turn in it via the shared
   `PeerChildTurns` bundle (`SubagentExecutor::resume_streaming` under
-  the hood). The permission check (`build_router_context`), chat-log
-  projection (same `(principal_did, peer)` keys), and the per-peer
+  the hood). The permission check (`build_router_context`), DM-channel
+  projection (the peer's `dm-<slug>` channel), and the per-peer
   serial queue all survive — the run permit and steering inbox are
   re-keyed to the CHILD session id, and the child run drains that
   shared inbox at iteration boundaries (a concurrent second send
@@ -1246,11 +1246,10 @@ are never created anymore:
   runs in `root:self` (`ChannelKind::Trunk`). Trunk turns skip slash
   preprocessing and keep the per-session run permit + steering
   fallback (a second tick steers the live run).
-- **Chat log:** trunk turns are NOT projected into the chat log —
-  the log is a per-peer consumer projection keyed by
-  `(principal_did, peer)` and the trunk has no peer thread. A
-  self-thread convention is deliberately deferred; the session JSONL
-  is the durable record.
+- **Conversation record:** trunk turns are NOT projected into any
+  per-peer conversation record — the trunk has no peer thread. The
+  trunk session JSONL is the durable record (the chat-log store that
+  once held per-peer projections was retired in Phase 13).
 - **Messenger:** `peer_from_session_key("root:self")` returns `None`
   — the trunk has no external peer and must never misparse as a peer
   literally named "self". The retired `root:{peer}` /
@@ -1265,7 +1264,7 @@ single destination — the trunk:
 
 | Value | Fire behavior |
 |-------|---------------|
-| absent / `null` (default) | The turn fires into `root:self` via `receive_trunk`; the prompt is projected to the `(principal_did, owner)` chat-log thread via `record_cron_input`, and the outcome is cross-posted as a `⏰ [cron job '<name>' fired] …` note to the OWNER'S PEER CHILD session (found via `find_peer_child` — the retired `root:{owner}` is never addressed) |
+| absent / `null` (default) | The turn fires into `root:self` via `receive_trunk`; the fired prompt lives in the trunk session JSONL (the `record_cron_input` chat-log projection was dropped in Phase 13), and the outcome is cross-posted as a `⏰ [cron job '<name>' fired] …` note to the OWNER'S PEER CHILD session (found via `find_peer_child` — the retired `root:{owner}` is never addressed) |
 | `"trunk"` | Identical to the default — the Phase-3 "trunk skips the note" special case is gone (the note lives in the owner child, not the trunk, so it no longer duplicates anything) |
 | anything else | Structured error at JSON load, at `CronScheduler::add_job`, and (defensively) at fire time |
 
@@ -1353,17 +1352,22 @@ out of use.
 
 ---
 
-## 5½. Chat Log — Consumer-Visible Conversation History
+## 5½. Chat Log — Consumer-Visible Conversation History (RETIRED)
 
-> **Superseded for peer conversations (sprint 3 Phase 11,
-> 2026-08-18).** The per-peer conversation projection moved onto the
-> Phase-10 **peer DM channels**: `peko log` and the `principal_log`
-> IPC read the DM channel's `Posted` events (see §channels), not
-> these shards. The remaining writers are the cron `Send` projection
-> (`PrincipalManager::record_cron_input`) and the peer messenger's
-> user-branch notes; the crate and its files stay on disk until
-> Phase 13 decides migration/removal. The description below is kept
-> for the retained cron/messenger use and for the on-disk history.
+> **RETIRED (sprint 3 Phase 13, 2026-08-19).** The `peko-chat-log`
+> crate was deleted from the workspace once its last writer — the
+> cron `Send` fired-prompt projection
+> (`PrincipalManager::record_cron_input`) — was dropped (sprint 3
+> Phase 11 had already moved the peer-conversation projection onto
+> the per-peer DM channels, and Phase 12b moved the messenger's
+> notes there too). The consumer-visible conversation record is now
+> the **peer DM channel** (§5¾): `peko log` and the `principal_log`
+> IPC read the DM channel's `Posted` events, and the row type lives
+> on as `peko_core::ipc::packet::PrincipalLogMessage` (same wire
+> shape as the old `ChatLogMessage`). Pre-Phase-11 shards under
+> `<data-dir>/chat_logs/` stay on disk unread; nothing reads or
+> writes them anymore. The description below is preserved only as
+> historical reference for the on-disk history.
 
 The chat log is the runtime-owned, append-only, **consumer-visible**
 record of the text messages an external participant actually
@@ -1523,10 +1527,12 @@ removes only its own view.
 
 ## 5¾. Channel Store — Multi-Principal Chat Event Log
 
-`peko-channel` (`peko-rs/channel/`) storage. Distinct from both
-session JSONL (§5, the principal's private working memory) and the
-chat log (§5½, the consumer-facing projection): a channel's log is
-an append-only event log shared by its members.
+`peko-channel` (`peko-rs/channel/`) storage. Distinct from the
+session JSONL (§5, the principal's private working memory): a
+channel's log is an append-only event log shared by its members.
+Since Phase 13 it also IS the consumer-visible conversation record
+(the chat log, §5½, is retired) — `peko log` reads the peer DM
+channels.
 
 ### 5¾.1 On-Disk Layout
 
@@ -1571,7 +1577,7 @@ daemon's `PassiveBindingResponder` wakes the bound session on every
 inbound `posted` event from another member, runs one LLM turn there
 (via the subagent resume path), and posts the reply back as the
 principal. Self-authored posts are suppressed (anti-loop invariant),
-and channel-origin turns never project into the chat log — the
+and channel-origin turns never project anywhere else — the
 channel's own `events.jsonl` is the durable record of both
 directions. See `peko-rs/core/src/daemon/channel_binding.rs`.
 
@@ -2255,6 +2261,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.1.0 | 2026-08-19 | Phase 13 (sprint 3): §5½ Chat Log RETIRED — the `peko-chat-log` crate left the workspace; the cron `Send` fired-prompt projection (`record_cron_input`) dropped (fired prompts live in the trunk session JSONL); `PathResolver::chat_logs_dir` removed. The `peko log` row DTO moved to `peko_core::ipc::packet::PrincipalLogMessage` (wire shape unchanged); the peer DM channels (§5¾) are the consumer-visible conversation record. |
 | 0.1.0 | 2026-08-17 | Phase 7 ingress re-route (§5.9/§5.10): all external peer ingress lands in per-peer standing children of the trunk; per-peer root sessions (`root:{peer}`, `root:cron:{peer}`) retired (routing deleted); cron `Send` default target is the trunk (`target = "trunk"` accepted, same route); cron notes target the owner's peer child + `[notify]` self-view in the trunk; engine-managed guards + prune exemption narrowed to exactly `root:self`. |
 | 0.1.0 | 2026-08-15 | Principal trunk session (§5.9): constant `root:self` self session; `ChannelKind::Trunk`; `CronJobAction::Send.target` (`"trunk"` or absent, validated on load); trunk turns skip chat-log projection and the cron note cross-post. |
 | 0.1.0 | 2026-08-13 | Round 7 (§5.8): chapter concept deleted — session ids are stable for life; `chapters.json` removed; oversized JSONLs page in place to `<id>.N.jsonl` with transparent read-path stitching; legacy `#`-suffixed files inert on disk. |

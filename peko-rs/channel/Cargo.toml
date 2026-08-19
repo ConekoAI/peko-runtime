@@ -3,7 +3,7 @@ name = "peko-channel"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
-description = "Multi-principal chat primitive (channels) — `ChannelPort` + `ChannelStore` (append-only JSONL) + `ChannelSubscriber` poll loop. PR-1 shipped the trait surface; PR-3 added fan-out cap + shared-tier opt-in; PR-4a added the `ChannelRead` tool; PR-5b replaced the `peko_plan`-backed DAG with an append-only JSONL log (symmetric with `peko_chat_log::ChatLogStore`)."
+description = "Multi-principal chat primitive (channels) — `ChannelPort` + `ChannelStore` (append-only JSONL) + `ChannelSubscriber` poll loop. PR-1 shipped the trait surface; PR-3 added fan-out cap + shared-tier opt-in; PR-4a added the `ChannelRead` tool; PR-5b replaced the `peko_plan`-backed DAG with an append-only JSONL log."
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 

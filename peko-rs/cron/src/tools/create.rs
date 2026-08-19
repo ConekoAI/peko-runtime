@@ -209,7 +209,7 @@ impl Tool for CronCreateTool {
                 "target": {
                     "type": "string",
                     "enum": ["trunk"],
-                    "description": "message-only: with target=\"trunk\" the message fires as an agent turn in the principal's forever-continuous self session root:self (no user notification, no chat-log entry). Omit for normal user-facing reminders. Invalid together with prompt/tool."
+                    "description": "message-only: with target=\"trunk\" the message fires as an agent turn in the principal's forever-continuous self session root:self (no user notification). Omit for normal user-facing reminders. Invalid together with prompt/tool."
                 },
                 "prompt": {
                     "type": "string",

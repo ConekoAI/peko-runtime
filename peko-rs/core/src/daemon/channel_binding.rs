@@ -26,14 +26,13 @@
 //!   (`principal/router.rs`); since turns do NOT flow through the
 //!   router, the variant would have no consumer and is deliberately
 //!   skipped.
-//! - **No chat-log projection.** Channel-origin turns never touch
-//!   `peko-chat-log` (its remaining writers — the cron `Send`
-//!   projection and the peer messenger — are paths this module never
-//!   calls). The channel's own append-only event log is the durable
-//!   record of both directions (the inbound post and the posted
-//!   reply); the bound session's JSONL is the principal's private
-//!   working memory. This preserves the channel/session/chat-log
-//!   three-way separation (ADR-044, PEKO.md).
+//! - **No chat-log projection.** Channel-origin turns never touch a
+//!   separate conversation log (the chat-log crate was retired in
+//!   sprint 3 Phase 13). The channel's own append-only event log is
+//!   the durable record of both directions (the inbound post and the
+//!   posted reply); the bound session's JSONL is the principal's
+//!   private working memory. This preserves the channel/session
+//!   separation (ADR-044, PEKO.md).
 //! - **Author-based turn-ownership partition (Phase 11).** The peer DM
 //!   channels are driven by the ingress handlers (`peko send` IPC,
 //!   manager `receive*`/A2A/Hub, IPC steer): the handler posts the

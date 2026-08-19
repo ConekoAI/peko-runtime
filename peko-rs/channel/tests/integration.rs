@@ -7,8 +7,7 @@
 //!   to the responder, no spurious calls on re-tick.
 //!
 //! Tests run against the file-backed `ChannelStore` rooted in a
-//! `tempfile::TempDir` so the storage layer is exercised end-to-end
-//! (matches `peko-rs/chat-log/src/store.rs:392-495` style).
+//! `tempfile::TempDir` so the storage layer is exercised end-to-end.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

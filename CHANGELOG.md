@@ -188,6 +188,38 @@ bespoke signed-envelope RPC stack is deleted.
 - Integration tests `direct_connection.rs` +
   `direct_transport_policy.rs` (with their `[[test]]` entries).
 
+#### Phase 13 — `peko-chat-log` retired (2026-08-19)
+
+With DM channels as the durable record of every peer conversation
+(Phases 10–12b), the chat-log crate had one writer left (the cron
+`Send` fired-prompt projection) and no readers. It is removed from
+the workspace (22 → 21 members).
+
+##### Changed
+- **`peko log` row type moved + renamed**: `ChatLogMessage` →
+  `peko_core::ipc::packet::PrincipalLogMessage` (+
+  `PRINCIPAL_LOG_SCHEMA_VERSION`), serde wire shape byte-identical.
+- **Cron `Send` no longer projects the fired prompt** to a
+  consumer-visible log — it lives in the trunk session JSONL and the
+  outcome note lands on the owner's DM channel (Phase 12b).
+  `PrincipalManager::{record_cron_input, with_chat_log_store,
+  chat_log_store}`, the AppState store construction, and
+  `PathResolver::chat_logs_dir` are gone.
+- On-disk `chat_logs/` shards from before this sprint are orphaned
+  in place (prelaunch; delete them by hand if you care).
+
+##### Removed
+- The `peko-chat-log` crate (`ChatLogStore`, `ChatThreadKey`,
+  `ChatLogPage`), its workspace membership, the core + CLI dep
+  edges, and 17 forbidden-edge rules in
+  `check_workspace_deps.py`.
+
+With this phase the reviewer's finding is fully closed: channels are
+the external-I/O primitive for BOTH directions of every peer
+conversation — a peer DM is a 1:1 passive-bound channel, group
+channels stay active (cron-read via `ChannelRead`, post via
+`ChannelSend`), and no parallel per-peer record exists.
+
 ### Channel tool reachability fixes (reviewer findings, 2026-08-18)
 
 The `ChannelRead` / `ChannelSend` built-in tools were wired in but

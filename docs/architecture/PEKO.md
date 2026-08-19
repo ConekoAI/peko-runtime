@@ -92,7 +92,11 @@ rather than a passive request handler.
   ancestor descent.
 - **Channels are external I/O**, not children — read via `channel read`,
   posted via `channel send`, stored in a separate append-only event
-  log, never part of session JSONL.
+  log, never part of session JSONL. Since sprint 3 (Phases 10–13)
+  this holds for DMs too: every peer has a per-peer DM channel, and
+  that channel's event log IS the consumer-visible conversation
+  record `peko log` reads (the chat-log projection store is
+  retired).
 
 ---
 
@@ -111,8 +115,8 @@ rather than a passive request handler.
 - External peers — modeled as channels, not children.
 - Other principals' PEKOs — each principal owns exactly one.
 - Channel logs — separate append-only event log; not session JSONL.
-- Chat-log projections — `peko log` is a consumer-facing view, not
-  part of the PEKO.
+- The consumer-facing `peko log` view — reads the peer DM channels;
+  not part of the PEKO.
 
 ### Cardinality
 

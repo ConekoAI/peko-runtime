@@ -131,12 +131,6 @@ pub(crate) struct AppState {
     /// runtime; this field is the cross-runtime-typed accessor.
     tunnel_channel_port: Arc<crate::tunnel::TunnelChannelPort>,
 
-    /// Runtime-owned, append-only chat-log store. Each principal
-    /// boundary message that passes authorization is persisted here
-    /// alongside its authoritative response. Distinct from the
-    /// principal-owned session JSONL (mutable working memory).
-    chat_log_store: Arc<peko_chat_log::ChatLogStore>,
-
     /// F20: peer quota registry. `Some` after daemon startup loads
     /// `<runtime>/peers/` and materializes each peer's meter. The
     /// quota handler reads this to resolve `is_peer=true` requests;
@@ -848,17 +842,6 @@ impl AppState {
             Arc::clone(&extension_store),
             Arc::clone(&extension_services),
         ));
-        // Runtime-owned, append-only chat-log store. Constructed
-        // before the PrincipalManager so the manager builder captures
-        // the same `Arc`. Phase 11 narrowed its writers to the cron
-        // `Send` projection (`record_cron_input`) and the peer
-        // messenger's user-branch notes — peer conversation ingress
-        // now posts to the per-peer DM channels instead. The store is
-        // independent of any principal's session JSONL — deleting a
-        // principal deletes only that principal's chat-log shards.
-        let chat_log_store = Arc::new(peko_chat_log::ChatLogStore::new(
-            path_resolver.chat_logs_dir(),
-        ));
         let principal_manager = {
             let root = path_resolver.principals_root_dir();
             let _ = std::fs::create_dir_all(&root);
@@ -874,7 +857,6 @@ impl AppState {
             .with_slash_dispatcher(slash_dispatcher)
             .with_extension_store(Arc::clone(&extension_store))
             .with_observability(Arc::clone(&observability))
-            .with_chat_log_store(Arc::clone(&chat_log_store))
             // Sprint 3 Phase 10: peer ingress auto-provisions the
             // peer's DM channel through the daemon-global port.
             .with_channel_port(channel_port.clone());
@@ -1031,7 +1013,6 @@ impl AppState {
             resolver,
             vault: Arc::clone(&vault),
             principal_manager,
-            chat_log_store,
             // PR-2c: instantiate the file-backed channel port against
             // the typed path resolver's runtime dir. PR-1 only ships
             // Runtime-tier; PR-3 may add a Shared-tier sibling adapter.
@@ -1302,14 +1283,6 @@ impl AppState {
         &self,
     ) -> Arc<crate::daemon::channel_binding::ChannelBindingSupervisor> {
         Arc::clone(&self.channel_binding_supervisor)
-    }
-
-    /// Runtime-owned chat-log store. Always present after daemon
-    /// startup (the daemon builds it before `principal_manager` so
-    /// the manager builder captures the same `Arc`).
-    #[must_use]
-    pub fn chat_log_store(&self) -> &Arc<peko_chat_log::ChatLogStore> {
-        &self.chat_log_store
     }
 
     /// F20: get the peer quota registry. `None` when the daemon

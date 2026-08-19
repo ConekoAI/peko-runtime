@@ -449,7 +449,7 @@ mod tests {
     /// A delivered note lands in all three homes — the peer child's
     /// session JSONL (working memory), the peer's DM channel (the
     /// durable record `peko log` reads), and the trunk `[notify]`
-    /// self-view — and writes NOTHING to the chat log.
+    /// self-view.
     #[tokio::test(flavor = "multi_thread")]
     // This test mutates process-global state (PEKO_HOME,
     // init_global_core). All such tests share the plain `serial`
@@ -491,7 +491,6 @@ mod tests {
             shared_dir: None,
         }));
         let channel_port: Arc<dyn ChannelPort> = store.clone();
-        let chat_logs_dir = tmp.path().join("chat_logs");
         let manager = Arc::new(
             crate::principal::PrincipalManager::with_path_resolver(
                 path_resolver,
@@ -500,10 +499,7 @@ mod tests {
                 crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver)
-            .with_channel_port(channel_port.clone())
-            .with_chat_log_store(Arc::new(peko_chat_log::ChatLogStore::new(
-                chat_logs_dir.clone(),
-            ))),
+            .with_channel_port(channel_port.clone()),
         );
 
         let workspace = tmp.path().join("principals");
@@ -617,16 +613,6 @@ mod tests {
         assert!(
             trunk_jsonl.contains("[notify] 📨 agent some-session sent to user:local"),
             "trunk must carry the notify self-view: {trunk_jsonl}"
-        );
-
-        // 4. The chat log is untouched (Phase 12b removed the
-        //    chat-log projection).
-        let chat_log_entries = std::fs::read_dir(&chat_logs_dir)
-            .map(|d| d.count())
-            .unwrap_or(0);
-        assert_eq!(
-            chat_log_entries, 0,
-            "deliver_note must not write chat-log shards anymore"
         );
     }
 }

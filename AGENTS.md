@@ -190,7 +190,6 @@ contracts and binaries live under `peko-rs/. Final workspace members:
 
 ```text
 peko-rs/
-├── chat-log/               # Append-only chat-log storage (peko-chat-log, Phase 5)
 ├── cli/                    # CLI binary (`peko` bin, Phase 0.Z-B — extracted from `peko-rs/core/`)
 │   └── src/
 │       ├── commands/       # All `peko <subcommand>` handlers (lifted from root commands/)
@@ -337,8 +336,8 @@ Big root-only domains remain: `src/providers/` (~12k lines),
 `src/daemon/` (~6k lines), `src/agents/` (~8k lines),
 `src/tunnel/` (~11k lines), `src/ipc/` (~16k lines),
 `src/principal/` (~6k lines), `src/registry/` (~7k lines),
-`src/auth/` (~2k lines), `src/identity/` (~3k lines),
-`src/chat_log/` (~700 lines). Deferred tool extractions:
+`src/auth/` (~2k lines), `src/identity/` (~3k lines).
+Deferred tool extractions:
 `BashTool`, `ToolSearchTool`, `AgentCatalog`, `ToolRuntime`.
 
 The cleanup goal is **codex-rs-like cleanliness**: no top-level
@@ -355,7 +354,7 @@ domain size.
 | 2 | Consolidate duplicate `CompletionEvent` (engine vs extension-host) | `peko::extensions::framework::async_exec::executor::completion_queue::CompletionEvent` |
 | 3 | Extract `peko-identity` | `peko::identity::*` |
 | 4 | Extract `peko-auth` | `peko::auth::*` |
-| 5 | Extract `peko-chat-log` | `peko::chat_log::*` |
+| 5 | Extract `peko-chat-log` | `peko::chat_log::*` (crate later retired in sprint 3 Phase 13, 2026-08-19) |
 | 6 | Extract `peko-providers` | `peko::providers::*` |
 | 7 | Extract `peko-session` (incl. `InboxRegistry`) | `peko::session::*` |
 | 8 | Bulk-move extension host implementation into `peko-extension-host` | `peko::extensions::framework::*` |
@@ -395,12 +394,13 @@ domain size.
 | F7 | **AGENTS.md + dep-graph updates for F2/F3/F4 foldbacks** (✅ merged 2026-07-25) | no root path breakage; doc + script updates |
 | 0.Z-E | **Delete `peko-tools-builtin`** (✅ merged 2026-07-25) | cron port + DTOs + 3 cron tools → `peko-cron/src/tools/`; `tool_search_metadata` → `peko-engine/src/tool_search_metadata.rs` (already canonical); `peko_cron::tools::{CronRuntime, set_global_runtime, global_runtime}` is the new home; `DaemonCronAdapter` stays in root (cycle prevention — depends on `DaemonClient`); 12 forbidden-edge entries + 1 header docstring removed from `check_workspace_deps.py` |
 
-#### Current crate layout (20 workspace members, 2026-07-25)
+#### Current crate layout (21 workspace members, 2026-08-19)
 
 Already extracted (`peko-rs/):
 
 - `auth` — auth + DID helpers.
-- `chat-log` — append-only chat-log storage.
+- `channel` — multi-principal chat primitive (channels; `ChannelPort` + `ChannelStore` + `ChannelSubscriber`). Since sprint 3 Phases 10–13 the per-peer DM channels are also the consumer-visible conversation record `peko log` reads.
+- ~~`chat-log`~~ — **deleted in sprint 3 Phase 13** (2026-08-19). The peer DM channels replaced it as the conversation record; the `peko log` row DTO moved into root as `peko_core::ipc::packet::PrincipalLogMessage` (wire shape unchanged); the last writer (cron `Send` fired-prompt projection `record_cron_input`) was dropped.
 - `cron` — cron scheduler + idle detection + event-trigger (Phase 14.b).
 - `engine` — agentic loop core (Phase 9 series).
 - `events` — neutral agentic event contract.
@@ -913,9 +913,28 @@ cargo test --all-features
     root (replacing the chat-log projection; find-only posture
     unchanged), and keeps the trunk `[notify]` self-view. `peko log`
     needs no change — it already reads the DM channels (Phase 11).
+  - **2026-08-19 sprint 3 Phase 13 (`peko-chat-log` retired):** with
+    the conversation record re-founded on the peer DM channels
+    (Phases 10–12b), the crate had one writer left — the cron `Send`
+    fired-prompt projection (`PrincipalManager::record_cron_input`)
+    — and zero readers. The projection is dropped (a fired prompt
+    already lives in the trunk session JSONL; the outcome note lands
+    on the owner's DM channel via `deliver_note`), the
+    `chat_log_store` plumbing is gone from `PrincipalManager` /
+    `AppState` (and `PathResolver::chat_logs_dir` with it), and the
+    `peko-rs/chat-log/` crate is deleted from the workspace (22 → 21
+    members). The `peko log` row DTO survives, moved and renamed to
+    `peko_core::ipc::packet::PrincipalLogMessage` +
+    `PRINCIPAL_LOG_SCHEMA_VERSION` (wire shape byte-identical to the
+    old `ChatLogMessage`; the daemon still mints `chan_<line>` ids
+    from the DM channel's line numbers). `ChatThreadKey` /
+    `ChatLogPage` / `ChatLogStore` / `ChatLogError` died with the
+    store. Pre-Phase-11 shards under `<data-dir>/chat_logs/` stay on
+    disk unread. 17 forbidden-edge entries removed from
+    `check_workspace_deps.py`.
   - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
-- **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.
+- **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 97-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.
 
 ---
 

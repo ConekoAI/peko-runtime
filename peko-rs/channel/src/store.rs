@@ -12,9 +12,9 @@
 //!       events.jsonl    # one ChannelEvent per line, append-only
 //! ```
 //!
-//! Symmetric with [`peko_chat_log::ChatLogStore`] — append-only JSONL
-//! with [`FileLock`] + [`append_bytes_durable`] for crash safety. The
-//! cursor is a count-based offset into `events.jsonl`.
+//! Append-only JSONL with [`FileLock`] + [`append_bytes_durable`]
+//! for crash safety (the pattern the retired chat-log store used).
+//! The cursor is a count-based offset into `events.jsonl`.
 //!
 //! ## Why no DAG
 //!
@@ -78,8 +78,9 @@ const MEMBERS_FILE: &str = "members.json";
 /// JSON-serialized with a trailing `\n`.
 const EVENTS_FILE: &str = "events.jsonl";
 
-/// Per-shard lock timeout for `events.jsonl` writes. Mirrors
-/// `peko_chat_log::store::CHAT_LOG_LOCK_TIMEOUT_MS`.
+/// Per-shard lock timeout for `events.jsonl` writes. Ten seconds —
+/// the same budget the retired chat-log store used; appends are
+/// single-line writes, so a holder past this is wedged, not slow.
 const CHANNEL_LOCK_TIMEOUT_MS: u64 = 10_000;
 
 // ---------------------------------------------------------------------------

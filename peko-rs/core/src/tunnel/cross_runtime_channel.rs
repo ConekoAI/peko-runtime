@@ -10,7 +10,7 @@
 //!   correlation registry — the source runtime queues a
 //!   `TunnelChannelEvent` for each remote member's runtime and
 //!   considers the send done.
-//! - **No `principal_manager` or `chat_log_store` in this
+//! - **No `principal_manager` in this
 //!   commit.** The outbound send path is owned by
 //!   `peko-channel`'s `TunnelChannelPort` (added in PR-B), which
 //!   has its own `ChannelStore` for local persistence and does not

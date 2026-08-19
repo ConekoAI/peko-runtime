@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "peko-rs/auth",
     "peko-rs/channel",
-    "peko-rs/chat-log",
     "peko-rs/cli",
     "peko-rs/core",
     "peko-rs/cron",

@@ -620,11 +620,12 @@ impl CronEngine {
     /// Phase 7 (sprint 2, 2026-08-17): the trunk is the DEFAULT (and
     /// only) destination — `target: None` and `target = "trunk"` are
     /// the same route; the per-owner `root:cron:{owner}` session is
-    /// retired. The owner-facing projection survives unchanged:
-    /// `record_cron_input` writes the fired prompt to the
-    /// `(principal_did, owner)` chat-log thread, and
+    /// retired. The owner-facing projection survives:
     /// `deliver_send_job_note` cross-posts the labeled outcome note
     /// into the owner's standing peer child (via the peer messenger).
+    /// The fired prompt itself lives in the trunk session JSONL (the
+    /// Phase-13 retirement of the chat-log crate dropped the separate
+    /// `record_cron_input` projection).
     async fn run_send_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         let Some(pm) = self.principal_manager.as_ref() else {
             return Ok((
@@ -663,23 +664,6 @@ impl CronEngine {
             let config = principal.config.read().await;
             config.owner.clone()
         };
-
-        // Chat-log projection: the cron prompt is owner-authored
-        // (the cron fires on the owner's behalf) and the trunk path
-        // skips chat-log projection by design — so we record it
-        // directly here. The outcome surfaces via
-        // `deliver_send_job_note`'s chat-log row. Best-effort: a
-        // failed chat-log write logs a warning but does not block the
-        // run.
-        if let Err(e) = pm
-            .record_cron_input(&principal, &peer, &job.task_description())
-            .await
-        {
-            warn!(
-                "cron Send: chat-log inbound append failed for job '{}': {e}",
-                job.name
-            );
-        }
 
         match pm
             .receive_trunk(principal.id.clone(), job.task_description(), None)

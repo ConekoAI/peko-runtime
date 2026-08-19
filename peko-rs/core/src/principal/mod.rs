@@ -111,8 +111,7 @@ pub struct Principal {
     /// `path_resolver.principal_layout(name).local.plans_dir`.
     ///
     /// Reached via `principal.plan_port`; no separate `AppState`
-    /// plumbing needed (plans are per-principal, not runtime-global
-    /// like `chat_log_store`).
+    /// plumbing needed (plans are per-principal, not runtime-global).
     pub plan_port: Arc<dyn peko_plan::PlanPort>,
 }
 

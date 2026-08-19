@@ -240,11 +240,11 @@ pub mod principal;
 // engine-side `AuditEventView` to `peko_observability`.
 pub mod observability;
 
-// ============================================================================
-// Append-only runtime surfaces
-// ============================================================================
-
-// [extract:phase-5] peko-chat-log — moved to peko-rs/chat-log/
+// [extract:phase-5] chat-log crate — RETIRED (sprint 3 Phase 13,
+// 2026-08-19): the crate was deleted from the workspace once its last
+// writer (the cron `Send` fired-prompt projection) was dropped. The
+// `peko log` row DTO lives on as `ipc::packet::PrincipalLogMessage`;
+// the peer DM channels are the conversation record.
 
 // ============================================================================
 // Infrastructure

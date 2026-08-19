@@ -231,8 +231,8 @@ pub enum CronJobAction {
     /// the per-owner cron session `root:cron:{owner}` and the outcome
     /// is cross-posted as a note to `root:{owner}`. `"trunk"` routes
     /// the turn into the principal's forever-continuous self session
-    /// `root:self` (no chat-log projection, no note cross-post — the
-    /// turn already IS in the principal's own session). No other value
+    /// `root:self` (no separate conversation projection — the turn
+    /// already IS in the principal's own session). No other value
     /// is accepted (see [`validate_send_target`]).
     Send {
         message: String,

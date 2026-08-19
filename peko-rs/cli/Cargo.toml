@@ -21,7 +21,6 @@ peko_core = { package = "peko", path = "../core" }
 # underscores (`peko_auth`); package names use hyphens (`peko-auth`) and
 # resolve via the path.
 peko-auth = { path = "../auth" }
-peko-chat-log = { path = "../chat-log" }
 peko-cron = { path = "../cron" }
 peko-channel = { path = "../channel" }
 peko-protocol = { path = "../protocol" }

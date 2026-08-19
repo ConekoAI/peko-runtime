@@ -467,70 +467,24 @@ The actor identity attached to a session (peer, caller). Replaces the pre-ADR-03
 
 ## Module: `chat_log` (Runtime-Owned Consumer-Visible History)
 
-**Status:** ACTIVE  
+**Status:** RETIRED (sprint 3 Phase 13, 2026-08-19)  
 **ADRs:** ADR-042 (no external `session` concept in CLI/IPC surface)
 
-The chat log is the runtime-owned, append-only, consumer-visible
-record of the text messages an external participant actually
-exchanged with a Principal. It is **separate from the session
-JSONL** (see §`principal` and the data-model section §5½). The
-chat log is the only store the `principal_log` IPC, the desktop's
-chat page, and the `peko log` CLI read from. Internal execution
-detail (tool calls, thinking, compactions, model changes) never
-crosses into chat-log storage.
+The `peko-chat-log` crate (`ChatLogStore` / `ChatThreadKey` /
+`ChatLogMessage` / `ChatLogPage` / `ChatLogError`) was deleted from
+the workspace. Sprint 3 re-founded the consumer-visible conversation
+record on the per-peer **DM channels** (see the `channel` module):
+`peko log` and the `principal_log` IPC read the DM channel's
+`Posted` events. The cron `Send` fired-prompt projection
+(`PrincipalManager::record_cron_input`) — the store's last writer —
+was dropped; fired prompts live in the trunk session JSONL.
 
-### Public Types
+The `peko log` row DTO survives, moved and renamed:
 
-#### `chat_log::ChatLogStore` (ACTIVE)
-
-```rust
-pub struct ChatLogStore { ... }
-
-impl ChatLogStore {
-    pub fn new(root: PathBuf) -> Self;
-    pub async fn append_message(
-        &self,
-        key: &ChatThreadKey,
-        message: &ChatLogMessage,
-    ) -> Result<(), ChatLogError>;
-    pub async fn read_page(
-        &self,
-        key: &ChatThreadKey,
-        cursor: Option<&str>,
-        limit: usize,
-        since: Option<DateTime<Utc>>,
-    ) -> Result<ChatLogPage, ChatLogError>;
-    pub async fn remove_principal(&self, principal: &PrincipalDID)
-        -> Result<(), ChatLogError>;
-}
-```
-
-The runtime-owned chat-log store. Root path is resolved from
-`PathResolver::chat_logs_dir()` (`<data-dir>/chat_logs`) and
-shared via `AppState::chat_log_store`. The store is the only
-abstraction over chat-log shards — there is no in-memory
-representation, no global index, and no migration path from
-session JSONL to chat log.
-
-#### `chat_log::ChatThreadKey` (ACTIVE)
+#### `ipc::packet::PrincipalLogMessage` (ACTIVE)
 
 ```rust
-pub struct ChatThreadKey {
-    pub principal: PrincipalDID,
-    pub peer: Subject,
-}
-```
-
-Identifies one chat thread. `principal` is the **stable DID**
-(`PrincipalDID`), never the restart-local `PrincipalId`, so the
-same thread survives `peko` restarts and principal migrations.
-`peer` is the `Subject` that completes the pair (`User`,
-`Principal`, or `Public`).
-
-#### `chat_log::ChatLogMessage` (ACTIVE)
-
-```rust
-pub struct ChatLogMessage {
+pub struct PrincipalLogMessage {
     pub schema_version: u8,
     pub id: String,
     pub sender: Subject,
@@ -540,43 +494,11 @@ pub struct ChatLogMessage {
 }
 ```
 
-One immutable consumer-visible message. `correlation_id` pairs
-request/response lines for principal-to-principal exchanges;
-otherwise it's `None`.
-
-#### `chat_log::ChatLogPage` (ACTIVE)
-
-```rust
-pub struct ChatLogPage {
-    pub messages: Vec<ChatLogMessage>,
-    pub next_cursor: Option<String>,
-    pub has_more: bool,
-}
-```
-
-A bounded page of messages, ordered **oldest-to-newest**. Cursors
-are opaque, thread-bound, and remain stable across subsequent
-appends.
-
-#### `chat_log::ChatLogError` (ACTIVE)
-
-```rust
-pub enum ChatLogError {
-    Io(std::io::Error),
-    Serialization(serde_json::Error),
-    Lock(String),
-    Cursor(CursorError),
-    ThreadMismatch,
-    InvalidSender,
-    UnsupportedVersion(u8),
-    InvalidOffset { offset: u64, file_len: u64 },
-}
-```
-
-The full error surface for chat-log operations. `ThreadMismatch`
-fires when a shard's header doesn't match the hashed path the
-caller requested; `InvalidSender` fires when an append carries a
-sender that isn't one of the two participants of the thread.
+One immutable consumer-visible message — the row type of
+`ResponsePacket::PrincipalLog`. Wire shape is byte-identical to the
+retired `ChatLogMessage` (camelCase fields,
+`PRINCIPAL_LOG_SCHEMA_VERSION`); the daemon mints `chan_<line>` ids
+from the DM channel's line numbers.
 
 ### IPC: `RequestPacket::PrincipalLog` / `ResponsePacket::PrincipalLog`
 

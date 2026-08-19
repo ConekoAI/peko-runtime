@@ -240,8 +240,10 @@ The essential built-in tool set for a working principal is therefore:
 principal chat container. Agent-facing tools exist: `peko_channel_read` /
 `peko_channel_send` (`peko-rs/core/src/tools/builtin/channel/`),
 capability-gated, thin over `ChannelPort::peek` / `post`. Channel storage
-is a file-backed append-only JSONL event log, separate from session JSONL;
-`peko-chat-log` is a third, consumer-facing projection (`peko log`).
+is a file-backed append-only JSONL event log, separate from session JSONL.
+Since sprint 3 (Phases 10–13) the per-peer DM channels are also the
+consumer-facing conversation record `peko log` reads — the
+`peko-chat-log` projection crate is retired.
 
 **(implemented, correcting "poll-only")** The daemon's `ChannelSubscriber`
 polls every 5s, but the store also has a fully wired **push broadcast**:
@@ -324,6 +326,17 @@ The tunnel *transport* itself stays regardless.
 > therefore historical: pending-correlation is gone (structural reply
 > matching + per-target serialization instead), and envelope
 > verification lives on the channel envelopes.
+>
+> **Update (sprint 3 Phase 13, 2026-08-19):** the unification is
+> CLOSED. Phase 10 provisioned per-peer DM channels on ingress, Phase
+> 11 moved the conversation record onto them (`peko log` reads the DM
+> channel), Phase 12a/12b took DM cross-runtime (invite/mirror
+> fan-out; `send_peer` over channels), and Phase 13 retired the
+> `peko-chat-log` crate itself — its last writer (the cron `Send`
+> fired-prompt projection) was dropped and the `peko log` row DTO
+> moved into root as `ipc::packet::PrincipalLogMessage`. The
+> "chat-log projection of both directions" item above no longer
+> exists; the DM channel's `events.jsonl` is the only record.
 
 ## 4. Cron: the principal's heartbeat
 
@@ -386,7 +399,7 @@ audit measured the current tool surface against that need:
 | Passive DM → per-peer child session (`/user-x`, `/principal-{did}`) | ✅ implemented (Phase 7, sprint 2) | `principal/manager.rs::receive` + `peer_children.rs` + `child_turns.rs`; `root:{peer}` retired |
 | Channel read/send tools | ✅ implemented | `core/src/tools/builtin/channel/` |
 | Channel push broadcast (`subscribe_events`) | ✅ implemented (desktop UI only consumer) | `channel/src/store.rs:296-320` |
-| Channel log ≠ session log | ✅ implemented | `peko-rs/channel/`, `peko-rs/chat-log/` |
+| Channel log ≠ session log | ✅ implemented | `peko-rs/channel/` (DM channels double as the consumer-visible record since Phase 13) |
 | Cron turn/notify/spawn-tool + idle/event schedules | ✅ implemented | `peko-rs/cron/`, `daemon/cron_engine/` |
 | Principal trunk `/` (self session, cron-kept, supervising) | ✅ implemented (Phase 3) | `root:self` via `trunk_session_id()` + `ChannelKind::Trunk` + `receive_trunk`; cron `Send target:"trunk"` (§2.1) |
 | Standing named children (`/memory`, `/about-user`, …) | ✅ implemented (Phase 2) | `principal.toml` `[children]` + `principal/children.rs` ensure-declared; Agent `new`-with-name attach (§2.2) |

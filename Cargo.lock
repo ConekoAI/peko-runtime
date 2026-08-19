@@ -2292,7 +2292,6 @@ dependencies = [
  "libc",
  "peko-auth",
  "peko-channel",
- "peko-chat-log",
  "peko-cron",
  "peko-engine",
  "peko-extension-api",
@@ -2381,24 +2380,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "peko-chat-log"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "blake3",
- "chrono",
- "peko-fs-persistence",
- "peko-subject",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "peko-cli"
 version = "0.1.0"
 dependencies = [
@@ -2413,7 +2394,6 @@ dependencies = [
  "peko",
  "peko-auth",
  "peko-channel",
- "peko-chat-log",
  "peko-cron",
  "peko-extension-api",
  "peko-identity",

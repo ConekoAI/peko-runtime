@@ -43,7 +43,8 @@ use crate::daemon::state::StreamingRunHandle;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
-    PrincipalSendControlMode, RequestPacket, ResponsePacket, RunUsageSummary, ToolErrorEntry,
+    PrincipalLogMessage, PrincipalSendControlMode, RequestPacket, ResponsePacket, RunUsageSummary,
+    ToolErrorEntry, PRINCIPAL_LOG_SCHEMA_VERSION,
 };
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
@@ -94,7 +95,7 @@ enum PrincipalLogError {
     NotFound(String),
     Forbidden(String),
     /// Cursor was malformed, bound to another thread, or issued by an
-    /// older chat-log schema. Distinct from `Internal` so the CLI can
+    /// older log schema. Distinct from `Internal` so the CLI can
     /// recover by dropping the cursor and retrying the read.
     BadCursor(String),
     Internal(String),
@@ -106,7 +107,7 @@ enum PrincipalLogError {
 struct PrincipalLogResponse {
     name: String,
     peer: Subject,
-    messages: Vec<peko_chat_log::ChatLogMessage>,
+    messages: Vec<PrincipalLogMessage>,
     next_cursor: Option<String>,
     has_more: bool,
 }
@@ -3243,7 +3244,7 @@ async fn read_principal_log(
         .map_err(|e| PrincipalLogError::Internal(format!("channel read failed: {e}")))?;
     let principal_author = principal.id.to_string();
     let principal_subject = Subject::Principal(principal.did().await);
-    let mut rows: Vec<(u64, peko_chat_log::ChatLogMessage)> = Vec::new();
+    let mut rows: Vec<(u64, PrincipalLogMessage)> = Vec::new();
     for (line, event) in events {
         let ChannelEvent::Posted { author, text, at, .. } = event else {
             continue;
@@ -3270,8 +3271,8 @@ async fn read_principal_log(
         };
         rows.push((
             line_num,
-            peko_chat_log::ChatLogMessage {
-                schema_version: peko_chat_log::CHAT_LOG_SCHEMA_VERSION,
+            PrincipalLogMessage {
+                schema_version: PRINCIPAL_LOG_SCHEMA_VERSION,
                 id: format!("chan_{line_num}"),
                 sender,
                 timestamp: parsed_at,
@@ -3567,7 +3568,7 @@ mod tests {
             assert_eq!(page.messages[1].text, "answer 0");
             assert_eq!(
                 page.messages[0].schema_version,
-                peko_chat_log::CHAT_LOG_SCHEMA_VERSION
+                PRINCIPAL_LOG_SCHEMA_VERSION
             );
         }
 
