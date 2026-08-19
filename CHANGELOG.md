@@ -129,6 +129,65 @@ user-facing switches over yet (12b rewires `send_peer`).
   Trade-off: threaded human replies (`PostMsg::reply` via
   `ChannelSend`) no longer wake a bound session — root posts only.
 
+#### Phase 12b — `send_peer` + messenger over channels; A2A RPC retired
+
+Principal-to-principal DM now runs over the mirrored DM channel; the
+bespoke signed-envelope RPC stack is deleted.
+
+##### Changed (breaking)
+- **`send_peer` principal branch is channel-based.** Remote targets:
+  ensure the caller's DM channel for the peer (first contact fires
+  `fanout_dm_invite` with the caller's real DID), post a root message
+  (author = caller's raw id — self-skipped locally, fires the remote
+  responder), await the peer's reply on the channel broadcast with
+  the 1-minute `response_timeout` (reply = first parent-bearing post
+  after the send line not authored by the caller; per-target mutex
+  serializes overlapping awaits). Local targets use a two-channel
+  design: the exchange runs on the TARGET's DM channel (exact
+  `author == target` matching) and is mirrored onto the caller's own
+  DM channel for `peko log` (outbound as a self-authored root; the
+  reply via `post_attributed` with `parent` set so the caller's
+  responder skips it).
+- **`send_peer` `session_id` arg dropped** — channel continuity
+  replaces it (the child session is implied by the peer pair);
+  `PrincipalSendResult.session_id` now returns the caller's
+  standing-child id.
+- **Peer notes (`send_peer` user branch, cron `Notify`/`Send`
+  outcomes) post to the DM channel** instead of projecting a chat-log
+  row. `deliver_note` keeps the find-only child-JSONL append (the
+  agent's working memory of what was said on its behalf — notes have
+  no turn) and the trunk `[notify]` self-view. After this the ONLY
+  chat-log writer left is the cron `Send` input projection
+  (`record_cron_input`).
+- **Per-target `Permission::Chat` check dropped** with the retired
+  RPC path — directory resolution + exposure gates are the boundary
+  now. Flagged for a product decision.
+- **Accepted gap:** cross-runtime channels are push-only — a post
+  fanned out while the peer runtime is offline is not re-delivered on
+  reconnect (the caller's copy is durable; the await times out with a
+  structured error). Replay-on-reconnect is a follow-up.
+
+##### Removed (prelaunch, no migration)
+- `TunnelMessage::PrincipalToPrincipal{Request,Response}` envelopes,
+  their dispatcher handlers, and the pending-response machinery
+  (`tunnel/a2a_pending.rs`, `tunnel/a2a_audit.rs`; from
+  `a2a_signature.rs` only the request/response signing — the
+  pre-image helpers stay for channel signatures and invite tokens).
+- The whole `tunnel/direct/` transport stack (client, server,
+  manager, routing, handshake — it existed only for the
+  principal-send RPC); `tls.rs` relocated to `tunnel/tls.rs` (still
+  used by the tunnel client). `DirectHealth`, the direct-server
+  startup, and `network.direct` runtime wiring removed from AppState
+  (the hub-directory metadata fields stay).
+- `PrincipalManager::receive` (its only production callers were the
+  two retired paths); test callers migrated to `receive_streaming` /
+  `receive_trunk`.
+- `CrossRuntimeA2aCtx` trimmed to `{ directory, caller_runtime_id,
+  principal_manager, channel_port (concrete TunnelChannelPort),
+  response_timeout }`.
+- Integration tests `direct_connection.rs` +
+  `direct_transport_policy.rs` (with their `[[test]]` entries).
+
 ### Channel tool reachability fixes (reviewer findings, 2026-08-18)
 
 The `ChannelRead` / `ChannelSend` built-in tools were wired in but

@@ -204,20 +204,10 @@ pub(crate) struct AppState {
     /// handler) share the same view.
     pub invite_revocation_set: Arc<crate::tunnel::InviteRevocationSet>,
 
-    /// Loaded peko configuration (network.direct used by direct transport).
+    /// Loaded peko configuration (`network.direct.advertise_endpoint`
+    /// is still announced to the hub directory; the direct transport
+    /// itself retired in sprint 3 Phase 12b).
     pub peko_config: PekoConfig,
-
-    /// Direct connection manager for outbound direct transport.
-    pub direct_manager: Arc<crate::tunnel::direct::DirectConnectionManager>,
-
-    /// Direct server bound address, if started.
-    pub direct_bound_addr: Arc<RwLock<Option<std::net::SocketAddr>>>,
-
-    /// Direct server cancellation token.
-    pub direct_cancel: Arc<RwLock<Option<tokio_util::sync::CancellationToken>>>,
-
-    /// Last direct server error, if any.
-    pub direct_last_error: Arc<RwLock<Option<String>>>,
 
     /// Shared idle detector used by the cron engine and IPC server to
     /// track Principal activity for idle-triggered jobs.
@@ -269,15 +259,6 @@ pub(crate) struct AppState {
     /// to surface the `disconnected` state with a non-zero attempt count.
     tunnel_attempts: Arc<RwLock<u32>>,
 
-    /// Cross-runtime a2a response correlation registry. Issue #29.
-    /// Shared between the outbound `PrincipalSendTool` path (which
-    /// registers a oneshot under `request_id`) and the inbound
-    /// tunnel dispatcher arm (which completes the oneshot when the
-    /// matching `PrincipalToPrincipalResponse` arrives). Initialized lazily
-    /// (a fresh `PendingA2aResponses`) so the registry exists even
-    /// before the tunnel connects.
-    pending_a2a_responses: Arc<crate::tunnel::PendingA2aResponses>,
-
     /// In-flight principal-send runs, keyed by the original
     /// `request_id`. Both IPC variants — `RequestPacket::PrincipalSend`
     /// and `RequestPacket::PrincipalSendStream` — register here, so
@@ -289,9 +270,8 @@ pub(crate) struct AppState {
     /// here to issue soft-interrupt or push a steering message into
     /// the run's session inbox.
     ///
-    /// `std::sync::Mutex` matches the `PendingA2aResponses` pattern:
-    /// every operation is hash-map-only, no `.await` is held across
-    /// the lock. See `src/tunnel/a2a_pending.rs:53-55`.
+    /// `std::sync::Mutex` (not the tokio one): every operation is
+    /// hash-map-only, no `.await` is held across the lock.
     streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>>,
 
     /// Slot for the live outbound tunnel handle. The
@@ -321,7 +301,7 @@ pub(crate) struct AppState {
 /// mode) or push a steering message into its session inbox (Steer
 /// mode). See `src/ipc/server.rs` for the streaming handler and the
 /// `PrincipalSendControl` IPC handler.
-#[allow(dead_code)] // field-by-field — see DirectHealth note. Kept as public-ish surface for tests.
+#[allow(dead_code)] // field-by-field — kept as public-ish surface for tests.
 pub(crate) struct StreamingRunHandle {
     /// Principal name — diagnostic only, included in control responses.
     pub principal_name: String,
@@ -572,7 +552,6 @@ impl AppState {
         // tunnel client, direct connection manager, and direct server.
         let runtime_signing_key = load_runtime_signing_key(&runtime_identity, &vault)?;
         let peko_config = load_peko_config(&config_dir);
-        let pending_a2a_responses = Arc::new(crate::tunnel::PendingA2aResponses::new());
         let invite_revocation_set = Arc::new(crate::tunnel::InviteRevocationSet::new());
         // peko-channel cross-runtime PR-B commit 2: the concrete
         // `TunnelChannelPort` field on `AppState` is populated during
@@ -585,13 +564,6 @@ impl AppState {
         let mut tunnel_channel_port: Option<Arc<crate::tunnel::TunnelChannelPort>> = None;
         let streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let direct_manager = Arc::new(crate::tunnel::direct::DirectConnectionManager::new(
-            runtime_signing_key.clone(),
-            runtime_identity.runtime_did.clone(),
-            peko_config.network.direct.tls_required,
-            pending_a2a_responses.clone(),
-        ));
-
         let trust_store = crate::registry::packaging::TrustStore::load_or_create(&path_resolver)?;
         let trust_store = std::sync::Arc::new(tokio::sync::RwLock::new(trust_store));
 
@@ -1093,10 +1065,6 @@ impl AppState {
             runtime_signing_key,
             invite_revocation_set,
             peko_config,
-            direct_manager,
-            direct_bound_addr: Arc::new(RwLock::new(None)),
-            direct_cancel: Arc::new(RwLock::new(None)),
-            direct_last_error: Arc::new(RwLock::new(None)),
             idle_detector: None,
             cron_engine: None,
             runtime_metadata,
@@ -1113,12 +1081,9 @@ impl AppState {
             tunnel_attempts: Arc::new(RwLock::new(0)),
             tunnel_last_error: Arc::new(RwLock::new(None)),
             tunnel_degraded: Arc::new(RwLock::new(false)),
-            // Issue #29: cross-runtime a2a response correlation
-            // registry + outbound tunnel handle slot. Initialized
-            // eagerly so the registry exists before the tunnel
-            // connects; the slot starts as `None` and is filled by
-            // the dispatcher's handle-publisher on every reconnect.
-            pending_a2a_responses,
+            // Issue #29: outbound tunnel handle slot. Starts as
+            // `None` and is filled by the dispatcher's
+            // handle-publisher on every reconnect.
             streaming_runs,
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
         })
@@ -1519,65 +1484,13 @@ impl AppState {
 
         let dispatcher = TunnelDispatcher::new(Arc::new(self.clone()));
 
-        // If direct cross-runtime connections are enabled, start the
-        // inbound direct server now. It shares the same dispatcher
-        // callback as the tunnel so inbound A2A traffic is handled
-        // identically regardless of transport.
-        if self.peko_config.network.direct.enabled {
-            let direct_cancel = tokio_util::sync::CancellationToken::new();
-            {
-                let mut dc = self.direct_cancel.write().await;
-                *dc = Some(direct_cancel.clone());
-            }
-            let direct_config = self.peko_config.network.direct.clone();
-            let direct_runtime_id = self.runtime_identity.runtime_did.clone();
-            let direct_signing_key = self.runtime_signing_key.clone();
-            let direct_known_runtimes = self.known_runtimes.clone();
-            let direct_dispatcher = dispatcher.clone();
-            let direct_handler: crate::tunnel::direct::DirectMessageHandler = Arc::new(
-                move |msg: crate::tunnel::TunnelMessage, handle: crate::tunnel::TunnelHandle| {
-                    let d = direct_dispatcher.clone();
-                    Box::pin(async move { d.handle_message(msg, handle).await })
-                        as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                },
-            );
-            let direct_server = crate::tunnel::direct::DirectServer::new(
-                direct_config,
-                direct_signing_key,
-                direct_runtime_id,
-                direct_known_runtimes,
-                direct_handler,
-            );
-            let direct_bound_addr = self.direct_bound_addr.clone();
-            let direct_last_error = self.direct_last_error.clone();
-            tokio::spawn(async move {
-                match direct_server.start(direct_cancel).await {
-                    Ok(addr) => {
-                        tracing::info!("Direct server bound to {addr}");
-                        if let Ok(mut g) = direct_bound_addr.try_write() {
-                            *g = Some(addr);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Direct server failed to start: {e}");
-                        if let Ok(mut g) = direct_last_error.try_write() {
-                            *g = Some(e.to_string());
-                        }
-                    }
-                }
-            });
-        }
-
-        // Issue #29: build the cross-runtime a2a dispatch ctx
-        // (Slice B + Slice C bootstrap). Wires the
-        // `HubAgentDirectoryClient` (HTTP client to the hub's
-        // agent directory API) + the runtime's signing key + the
-        // pending registry + the tunnel handle slot into a single
-        // `Arc<CrossRuntimeA2aCtx>` and registers it on the
-        // `ExtensionServices` so every per-agent `PrincipalSendTool`
-        // gets the ctx injected (via `agent.rs`).
+        // Build the cross-runtime dispatch ctx for `send_peer`
+        // (sprint 3 Phase 12b: directory + caller runtime id +
+        // principal manager + the concrete `TunnelChannelPort`) and
+        // register it on the `ExtensionServices` so every per-agent
+        // `SendPeerTool` gets the ctx injected (via `agent.rs`).
         //
-        // If the directory client or signing-key build fails, log
+        // If the directory client build fails, log
         // a warning and skip the registration — the local a2a path
         // still works, and the operator can debug the directory
         // config without losing tunnel connectivity.
@@ -1704,15 +1617,6 @@ impl AppState {
         *connected
     }
 
-    /// Cross-runtime a2a response correlation registry (issue #29).
-    /// Shared with the `CrossRuntimeA2aCtx` on every `PrincipalSendTool`
-    /// and the inbound `PrincipalToPrincipalResponse` arm of the
-    /// `TunnelDispatcher`. Returns a clone of the inner `Arc`, so
-    /// call sites hold a cheap reference.
-    pub fn pending_a2a_responses(&self) -> Arc<crate::tunnel::PendingA2aResponses> {
-        self.pending_a2a_responses.clone()
-    }
-
     /// In-flight `PrincipalSendStream` run registry. Looked up by the
     /// `PrincipalSendControl` IPC handler for soft-interrupt and
     /// steer operations. Returns a clone of the inner `Arc<Mutex>`
@@ -1730,11 +1634,21 @@ impl AppState {
         self.tunnel_handle_slot.clone()
     }
 
-    /// Install the cross-runtime a2a dispatch context on the
-    /// `ExtensionServices` so every per-agent `PrincipalSendTool` is
-    /// built with the ctx (issue #29, Slice B + Slice C
-    /// bootstrap). Called by `start_tunnel` after the dispatcher
-    /// is built but before the tunnel client starts.
+    /// Install the cross-runtime dispatch context for the `send_peer`
+    /// tool on the `ExtensionServices` so every per-agent
+    /// `SendPeerTool` is built with it. Called by `start_tunnel` after
+    /// the dispatcher is built but before the tunnel client starts.
+    ///
+    /// Sprint 3 Phase 12b: the ctx slimmed down to what the
+    /// channel-based principal DM path needs — the directory (target
+    /// runtime resolution), the caller runtime id, the principal
+    /// manager (peer-child + DM-channel provisioning), and the
+    /// concrete `TunnelChannelPort` (posts, reply subscription, and
+    /// the DM invite fan-out). The retired RPC stack's signing key,
+    /// pending-response registry, tunnel handle slot, direct
+    /// manager, known-runtimes registry, and chat-log store are
+    /// gone from this ctx (the channel ctx carries the first four
+    /// for its own envelope fan-out).
     ///
     /// The default response timeout is 60s — long enough to absorb
     /// a hub round-trip and a target-runtime dispatch without
@@ -1749,38 +1663,31 @@ impl AppState {
         use crate::tunnel::CrossRuntimeA2aCtx;
         use std::time::Duration;
 
-        // 1. Shared directory + signing key + runtime_id. Same
-        //    components the channel ctx consumes; factored out so the
-        //    two install paths cannot drift on credential decoding
-        //    (`peko-channel` cross-runtime PR-B commit 3).
-        let (directory, signing_key, caller_runtime_id) =
+        // Shared directory + runtime_id. Same components the channel
+        // ctx consumes; factored out so the two install paths cannot
+        // drift on credential decoding (`peko-channel` cross-runtime
+        // PR-B commit 3). The signing key is the channel ctx's
+        // concern now — the `send_peer` path signs nothing (the
+        // channel envelopes it triggers are signed inside
+        // `TunnelChannelPort`).
+        let (directory, _signing_key, caller_runtime_id) =
             self.build_cross_runtime_ctx_parts(cred, vault)?;
 
-        // 2. Build the ctx. The handle slot is shared with the
-        //    `TunnelDispatcher` so the outbound path sees the
-        //    freshest handle on every reconnect. The direct manager
-        //    and known-runtimes registry enable per-peer transport
-        //    selection.
         let ctx = Arc::new(CrossRuntimeA2aCtx {
             directory,
-            pending: self.pending_a2a_responses(),
-            signing_key,
             caller_runtime_id,
-            tunnel: self.tunnel_handle_slot(),
-            direct_manager: self.direct_manager.clone(),
-            known_runtimes: self.known_runtimes.clone(),
             principal_manager: self.principal_manager().clone(),
-            chat_log_store: self.chat_log_store.clone(),
+            channel_port: Arc::clone(&self.tunnel_channel_port),
             response_timeout: Duration::from_mins(1),
         });
         // The framework stores the ctx as `Arc<dyn Any + Send + Sync>`
         // to avoid a framework → tunnel dependency.
         let ctx: Arc<dyn std::any::Any + Send + Sync + 'static> = ctx;
 
-        // 4. Register on the `ExtensionServices`. The per-agent
-        //    `PrincipalSendTool` constructor in `agent.rs` consults
-        //    `services().cross_runtime_a2a_ctx()` and calls
-        //    `with_cross_runtime(ctx)` if present.
+        // Register on the `ExtensionServices`. The per-agent
+        //    `SendPeerTool` constructor in `agent.rs` consults
+        //    `services().cross_runtime_a2a_ctx()` and builds with the
+        //    ctx if present.
         //
         //    `tool_runtime.extension_core().services()` returns
         //    `Arc<ExtensionServices>`; we set the ctx on the
@@ -1942,42 +1849,6 @@ impl AppState {
         self.tunnel_last_error.read().await.clone()
     }
 
-    /// Stop the inbound direct server, if it is running.
-    pub async fn stop_direct_server(&self) {
-        let mut dc = self.direct_cancel.write().await;
-        if let Some(ref cancel) = *dc {
-            cancel.cancel();
-        }
-        *dc = None;
-        let mut addr = self.direct_bound_addr.write().await;
-        *addr = None;
-        let mut err = self.direct_last_error.write().await;
-        *err = None;
-    }
-
-    /// Get the bound address of the direct server, if started.
-    pub async fn direct_bound_addr(&self) -> Option<std::net::SocketAddr> {
-        *self.direct_bound_addr.read().await
-    }
-
-    /// High-level direct server health snapshot.
-    pub async fn direct_health(&self) -> DirectHealth {
-        let enabled = self.peko_config.network.direct.enabled;
-        let bound = self.direct_bound_addr.read().await.clone();
-        let error = self.direct_last_error.read().await.clone();
-
-        if !enabled {
-            return DirectHealth::Disabled;
-        }
-        if let Some(err) = error {
-            return DirectHealth::Error(err);
-        }
-        match bound {
-            Some(addr) => DirectHealth::Listening(addr),
-            None => DirectHealth::Starting,
-        }
-    }
-
     /// Compute a high-level `TunnelHealth` snapshot used by
     /// `peko daemon status --json` (issue #8).
     ///
@@ -2059,55 +1930,6 @@ impl TunnelHealth {
             Self::Disabled | Self::Connected => None,
             Self::Disconnected { last_error, .. } => last_error.as_deref(),
             Self::Degraded { last_error, .. } => Some(last_error.as_str()),
-        }
-    }
-}
-
-/// High-level snapshot of direct inbound server health.
-#[derive(Debug, Clone, PartialEq, Eq)]
-// Same explanation as `impl AppState` above: this is genuine API surface
-// for tests and the inline e2e harness; cargo build's dead-code pass
-// doesn't see those callers after the F9 narrowing to `pub(crate)`.
-#[allow(dead_code)]
-pub(crate) enum DirectHealth {
-    /// Direct inbound connections are disabled in configuration.
-    Disabled,
-    /// Server is starting but has not bound a port yet.
-    Starting,
-    /// Server is listening on the given address.
-    Listening(std::net::SocketAddr),
-    /// Server failed to start or crashed.
-    Error(String),
-}
-
-#[allow(dead_code)] // JSON formatting helpers — used by IPC handler serialisation; not reachable from cargo build's graph.
-impl DirectHealth {
-    /// String discriminator used in JSON output (`direct.state`).
-    #[must_use]
-    pub fn state_str(&self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::Starting => "starting",
-            Self::Listening(_) => "listening",
-            Self::Error(_) => "error",
-        }
-    }
-
-    /// Bound socket address, if listening.
-    #[must_use]
-    pub fn bound_addr(&self) -> Option<std::net::SocketAddr> {
-        match self {
-            Self::Listening(addr) => Some(*addr),
-            _ => None,
-        }
-    }
-
-    /// Last error string, if any.
-    #[must_use]
-    pub fn last_error(&self) -> Option<&str> {
-        match self {
-            Self::Error(e) => Some(e.as_str()),
-            _ => None,
         }
     }
 }
@@ -2240,10 +2062,6 @@ impl crate::tunnel::TunnelHost for AppState {
 
     fn jwt_validator(&self) -> Option<peko_auth::jwt::JwtValidator> {
         self.jwt_validator.clone()
-    }
-
-    fn pending_a2a_responses(&self) -> Arc<crate::tunnel::PendingA2aResponses> {
-        self.pending_a2a_responses.clone()
     }
 
     fn observability(&self) -> Arc<Observability> {

@@ -23,7 +23,6 @@ const MAX_CONCURRENT_DISPATCHES: usize = 64;
 
 use peko_auth::Subject;
 
-use super::a2a_audit;
 use super::host::TunnelHost;
 use super::protocol::{
     ExposureUpdatePayload, InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload,
@@ -31,14 +30,12 @@ use super::protocol::{
 };
 use super::TunnelHandle;
 use super::{
-    a2a_signature::{verify_request, SignedFields},
     did_key::did_key_to_verifying_key,
     tunnel_channel_audit, tunnel_channel_signature::{
         verify_channel_event, verify_channel_invite, ChannelInviteSignedFields,
         ChannelSignedFields,
     },
 };
-use crate::tunnel::principal_send_tool::{HubErrorResponse, PrincipalSendResult};
 
 use peko_auth::ownership::Permission;
 
@@ -212,10 +209,10 @@ pub struct TunnelDispatcher {
     state: Arc<RwLock<TunnelDispatcherState>>,
     runtime_display_name: String,
     /// Slot the dispatcher writes the live tunnel handle to on
-    /// every inbound message. The `CrossRuntimeA2aCtx` (issue #29)
-    /// holds a clone of this `Arc` and reads the handle when
-    /// sending outbound `PrincipalToPrincipalRequest` envelopes, so
-    /// the outbound path always uses the most-recent handle without
+    /// every inbound message. The cross-runtime channel ctx
+    /// (`CrossRuntimeChannelCtx`) holds a clone of this `Arc` and
+    /// reads the handle when fanning out outbound channel envelopes,
+    /// so the outbound path always uses the most-recent handle without
     /// having to be re-built on reconnect. `None` until the first
     /// inbound message lands.
     tunnel_handle_slot: Arc<tokio::sync::RwLock<Option<TunnelHandle>>>,
@@ -256,10 +253,10 @@ impl TunnelDispatcher {
             state.tunnel_handle = Some(handle.clone());
         }
         // Publish the live handle to the AppState slot so the
-        // outbound `CrossRuntimeA2aCtx` can send on the most-recent
-        // tunnel. Doing this synchronously (not under the spawn
-        // boundary) means the ctx sees the new handle before any
-        // a2a call started by the inbound message could race.
+        // outbound `CrossRuntimeChannelCtx` fan-out can send on the
+        // most-recent tunnel. Doing this synchronously (not under the
+        // spawn boundary) means the ctx sees the new handle before any
+        // channel fan-out started by the inbound message could race.
         {
             let mut slot = self.tunnel_handle_slot.write().await;
             *slot = Some(handle.clone());
@@ -569,44 +566,6 @@ impl TunnelDispatcher {
             TunnelMessage::Disconnect { reason } => {
                 info!("Tunnel disconnect: {}", reason);
                 self.mark_disconnected().await;
-            }
-            // Issue #29 (Slice C): inbound `PrincipalToPrincipalRequest`
-            // from a peer runtime (proxied by pekohub). Verify the
-            // caller's signature against the `caller_runtime_id` they
-            // claim, look up the local principal by
-            // `target_principal_did`, attribute the dispatch under
-            // `Subject::Principal(caller_principal_did)`, run it, and
-            // send back an `PrincipalToPrincipalResponse` carrying the
-            // `PrincipalSendResult` payload.
-            TunnelMessage::PrincipalToPrincipalRequest {
-                request_id,
-                caller_runtime_id,
-                caller_principal_did,
-                target_principal_did,
-                message,
-                signature,
-            } => {
-                self.handle_inbound_principal_to_principal_request(
-                    handle,
-                    request_id,
-                    caller_runtime_id,
-                    caller_principal_did,
-                    target_principal_did,
-                    message,
-                    signature,
-                )
-                .await?;
-            }
-            // Inbound `PrincipalToPrincipalResponse` for a request the
-            // outbound `PrincipalSendTool` path registered in the pending
-            // registry. Complete the oneshot so the outbound
-            // `execute_remote` unblocks and decodes the payload.
-            TunnelMessage::PrincipalToPrincipalResponse {
-                request_id,
-                payload,
-            } => {
-                self.handle_inbound_principal_to_principal_response(request_id, payload)
-                    .await?;
             }
             // peko-channel cross-runtime PR-A commit 3: inbound
             // `TunnelChannelEvent` from a peer runtime (proxied by
@@ -1228,205 +1187,6 @@ impl TunnelDispatcher {
         Ok(())
     }
 
-    /// Handle an inbound `PrincipalToPrincipalRequest` from a peer runtime
-    /// (proxied by pekohub). Issue #29 Slice C.
-    ///
-    /// Steps:
-    /// 1. Derive the caller's `VerifyingKey` from `caller_runtime_id`
-    ///    (did:key is self-certifying).
-    /// 2. Re-verify the signature on the canonical pre-image — the
-    ///    hub's source-allowlist is the primary gate; this is
-    ///    defense in depth against a hub bug or a stale forwarder.
-    /// 3. Look up the local agent by `target_principal_did`.
-    /// 4. Build a `PrincipalMessageRequest` with `caller_principal =
-    ///    Subject::Principal(caller_principal_did)` (issue #24 + #28).
-    /// 5. Dispatch via `StatelessAgentService`.
-    /// 6. Serialize the result to `PrincipalSendResult` and send back via
-    ///    the same tunnel as an `PrincipalToPrincipalResponse`.
-    ///
-    /// Every error path sends a structured `HubErrorResponse`
-    /// back to the caller so the caller can distinguish "target
-    /// not found" from "target rejected me" from "I'm broken"
-    /// rather than waiting for a timeout.
-    #[allow(clippy::too_many_arguments)]
-    async fn handle_inbound_principal_to_principal_request(
-        &self,
-        handle: TunnelHandle,
-        request_id: String,
-        caller_runtime_id: String,
-        caller_principal_did: String,
-        target_principal_did: String,
-        message: String,
-        signature: String,
-    ) -> anyhow::Result<()> {
-        // 1. Derive the verifying key from the caller's runtime_id.
-        let verifying_key = match did_key_to_verifying_key(&caller_runtime_id) {
-            Ok(k) => k,
-            Err(e) => {
-                warn!(
-                    "inbound PrincipalToPrincipalRequest: invalid caller_runtime_id {caller_runtime_id}: {e}"
-                );
-                return self
-                    .send_hub_error(
-                        &handle,
-                        &request_id,
-                        "internal_error",
-                        &format!("invalid caller_runtime_id: {e}"),
-                    )
-                    .await;
-            }
-        };
-
-        // 2. Re-verify the signature on the canonical pre-image.
-        //
-        // NOTE: `SignedFields` no longer includes `session_id`. ADR-042
-        // dropped `session_id` from the cross-runtime wire envelope; it
-        // remains local-storage correlation only (see
-        // `tunnel::a2a_audit`) and is NOT signed.
-        let signed = SignedFields {
-            request_id: &request_id,
-            caller_runtime_id: &caller_runtime_id,
-            caller_principal_did: &caller_principal_did,
-            target_principal_did: &target_principal_did,
-            message: &message,
-        };
-        if let Err(e) = verify_request(&verifying_key, signed, &signature) {
-            warn!(
-                "inbound PrincipalToPrincipalRequest: signature verification failed for caller_runtime_id={caller_runtime_id}: {e}"
-            );
-            return self
-                .send_hub_error(
-                    &handle,
-                    &request_id,
-                    "forbidden",
-                    &format!("signature did not verify: {e}"),
-                )
-                .await;
-        }
-
-        // 3. Look up the local Principal by target_principal_did (which is the
-        // Principal's stable DID in the new single-actor model).
-        let principal_manager = self.host.principal_manager();
-        let local_principal = match principal_manager.find_by_did(&target_principal_did).await {
-            Some(p) => p,
-            None => {
-                return self
-                    .send_hub_error(
-                        &handle,
-                        &request_id,
-                        "target_not_found",
-                        &format!(
-                            "no local principal has did={target_principal_did} (request_id={request_id})"
-                        ),
-                    )
-                    .await;
-            }
-        };
-
-        // Slice D: emit the inbound-receive audit event now that
-        // the request has been verified and the Principal has been located.
-        let local_runtime_id = self.host.runtime_did();
-        let received_event = a2a_audit::build_a2a_received_inbound(
-            "", // session_id
-            &request_id,
-            &caller_runtime_id,
-            &caller_principal_did,
-            &local_runtime_id,
-            &target_principal_did,
-            &message,
-        );
-        a2a_audit::emit_a2a_received(&received_event);
-
-        // 4 + 5. Dispatch to the Principal.
-        let caller_principal = Subject::Principal(caller_principal_did.clone().into());
-        let channel = crate::principal::router::ChannelContext {
-            kind: crate::principal::router::ChannelKind::A2a,
-            streaming: false,
-        };
-
-        let result = principal_manager
-            .receive(
-                local_principal.id.clone(),
-                caller_principal,
-                message.clone(),
-                channel,
-                None,
-            )
-            .await;
-
-        // 6. Serialize and respond.
-        //
-        // `PrincipalSendResult.session_id` is local-storage correlation
-        // for the receiving runtime. Cross-runtime, the inbound
-        // dispatcher never sees the caller's session_id (it was dropped
-        // from the wire envelope per ADR-042), so the response carries
-        // an empty string — the receiving runtime may internally index
-        // the exchange for its own audit log, but the value is not
-        // round-tripped back through the response payload.
-        let a2a_result = match result {
-            Ok(response) => PrincipalSendResult {
-                success: true,
-                response: response.content,
-                session_id: String::new(),
-                kind: Some("principal".to_string()),
-                iterations: None,
-                tool_calls: None,
-                duration_ms: None,
-                error: None,
-            },
-            Err(e) => PrincipalSendResult {
-                success: false,
-                response: String::new(),
-                session_id: String::new(),
-                kind: Some("principal".to_string()),
-                iterations: None,
-                tool_calls: None,
-                duration_ms: None,
-                error: Some(e.to_string()),
-            },
-        };
-
-        let payload = match serde_json::to_vec(&a2a_result) {
-            Ok(p) => p,
-            Err(e) => {
-                return self
-                    .send_hub_error(
-                        &handle,
-                        &request_id,
-                        "internal_error",
-                        &format!("failed to serialize PrincipalSendResult: {e}"),
-                    )
-                    .await;
-            }
-        };
-
-        // Slice D: emit the response-side audit event before sending.
-        let response_preview = if a2a_result.success {
-            a2a_result.response.clone()
-        } else {
-            a2a_result
-                .error
-                .clone()
-                .unwrap_or_else(|| "(no error message)".to_string())
-        };
-        let sent_response_event = a2a_audit::build_a2a_sent_response(
-            "", // session_id
-            &request_id,
-            &caller_runtime_id,
-            &caller_principal_did,
-            &local_runtime_id,
-            &target_principal_did,
-            &response_preview,
-        );
-        a2a_audit::emit_a2a_sent(&sent_response_event);
-
-        handle.send(TunnelMessage::PrincipalToPrincipalResponse {
-            request_id,
-            payload,
-        })?;
-        Ok(())
-    }
-
     /// Handle an inbound `TunnelChannelEvent` — a push-only channel
     /// fan-out from a peer runtime. peko-channel cross-runtime PR-A
     /// commit 3.
@@ -1694,56 +1454,6 @@ impl TunnelDispatcher {
             initial_members.len()
         );
 
-        Ok(())
-    }
-
-    /// Handle an inbound `PrincipalToPrincipalResponse` — the half of the
-    /// round-trip that completes the `oneshot::Receiver` the
-    /// outbound `PrincipalSendTool` is awaiting on. Issue #29 Slice C.
-    async fn handle_inbound_principal_to_principal_response(
-        &self,
-        request_id: String,
-        payload: Vec<u8>,
-    ) -> anyhow::Result<()> {
-        let pending = self.host.pending_a2a_responses();
-        let delivered = pending.complete(&request_id, payload);
-        if !delivered {
-            // The caller already timed out, the request was
-            // cancelled, or the request_id is spurious (e.g. a
-            // pekohub test forwarding a synthetic response to a
-            // nonexistent id). Logging as a warn is the right
-            // signal — it's a peer contract violation, not a crash.
-            warn!(
-                "inbound PrincipalToPrincipalResponse: no pending a2a request for request_id={request_id} \
-                 (probably already timed out or cancelled)"
-            );
-        }
-        Ok(())
-    }
-
-    /// Synthesize a `HubErrorResponse` and send it back to the
-    /// caller over the live tunnel handle. Used by
-    /// `handle_inbound_principal_to_principal_request` on every error
-    /// path so the caller's `execute_remote` decodes a structured
-    /// error (target_not_found / forbidden / internal_error)
-    /// rather than a hang or a generic "remote a2a failed" string.
-    async fn send_hub_error(
-        &self,
-        handle: &TunnelHandle,
-        request_id: &str,
-        code: &str,
-        message: &str,
-    ) -> anyhow::Result<()> {
-        let payload = serde_json::to_vec(&HubErrorResponse {
-            kind: "error".to_string(),
-            code: code.to_string(),
-            message: message.to_string(),
-        })
-        .map_err(|e| anyhow::anyhow!("failed to serialize HubErrorResponse: {e}"))?;
-        handle.send(TunnelMessage::PrincipalToPrincipalResponse {
-            request_id: request_id.to_string(),
-            payload,
-        })?;
         Ok(())
     }
 
@@ -2610,149 +2320,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // -- Issue #29 (Slice C): inbound PrincipalToPrincipalRequest + Response -----
-
-    /// `handle_inbound_principal_to_principal_request` rejects a request with
-    /// a malformed caller_runtime_id (cannot be parsed as a did:key)
-    /// by sending back an `internal_error` `HubErrorResponse`
-    /// rather than crashing the dispatcher.
-    #[tokio::test]
-    async fn test_inbound_principal_to_principal_request_rejects_malformed_caller_did() {
-        let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
-        let (handle, mut rx) = mock_tunnel_handle();
-
-        dispatcher
-            .handle_inbound_principal_to_principal_request(
-                handle,
-                "req-malformed".to_string(),
-                "did:peko:agent:not-a-real-did-key".to_string(), // not a did:key form
-                "did:peko:agent:caller".to_string(),
-                "did:peko:agent:target".to_string(),
-                "hi".to_string(),
-                "sig".to_string(),
-            )
-            .await
-            .expect("handler must not panic; errors are reported via the response");
-
-        // The handler should have sent back a structured
-        // HubErrorResponse. Drain the response and check the shape.
-        let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::PrincipalToPrincipalResponse {
-            request_id,
-            payload,
-        } = response
-        else {
-            panic!("expected PrincipalToPrincipalResponse, got: {response:?}");
-        };
-        assert_eq!(request_id, "req-malformed");
-        let err: HubErrorResponse =
-            serde_json::from_slice(&payload).expect("payload must be a HubErrorResponse");
-        assert_eq!(err.kind, "error");
-        assert_eq!(err.code, "internal_error");
-        assert!(
-            err.message.contains("invalid caller_runtime_id"),
-            "error must name the cause; got: {}",
-            err.message
-        );
-    }
-
-    /// `handle_inbound_principal_to_principal_request` rejects a request with
-    /// an invalid signature (key is well-formed but signature bytes
-    /// don't verify) by sending back a `forbidden`
-    /// `HubErrorResponse`.
-    #[tokio::test]
-    async fn test_inbound_principal_to_principal_request_rejects_bad_signature() {
-        let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
-        let (handle, mut rx) = mock_tunnel_handle();
-
-        // Use a known-good did:key (from a generated keypair) but
-        // sign with a DIFFERENT key — signature must not verify.
-        let kp_caller = peko_identity::keys::KeyPair::generate();
-        let kp_attacker = peko_identity::keys::KeyPair::generate();
-        let caller_did = crate::tunnel::verifying_key_to_did_key(&kp_caller.verifying_key);
-        let signed = crate::tunnel::SignedFields {
-            request_id: "req-bad-sig",
-            caller_runtime_id: &caller_did,
-            caller_principal_did: "did:peko:agent:caller",
-            target_principal_did: "did:peko:agent:target",
-            message: "hi",
-        };
-        let sig = crate::tunnel::sign_request(&kp_attacker.signing_key, signed);
-
-        dispatcher
-            .handle_inbound_principal_to_principal_request(
-                handle,
-                "req-bad-sig".to_string(),
-                caller_did,
-                "did:peko:agent:caller".to_string(),
-                "did:peko:agent:target".to_string(),
-                "hi".to_string(),
-                sig,
-            )
-            .await
-            .expect("handler must not panic");
-
-        let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::PrincipalToPrincipalResponse {
-            request_id,
-            payload,
-        } = response
-        else {
-            panic!("expected PrincipalToPrincipalResponse, got: {response:?}");
-        };
-        assert_eq!(request_id, "req-bad-sig");
-        let err: HubErrorResponse = serde_json::from_slice(&payload).expect("payload must decode");
-        assert_eq!(err.code, "forbidden");
-        assert!(
-            err.message.contains("signature did not verify"),
-            "error must name the cause; got: {}",
-            err.message
-        );
-    }
-
-    /// `handle_inbound_principal_to_principal_response` completes the
-    /// matching pending oneshot on the `PendingA2aResponses`
-    /// registry so the outbound `PrincipalSendTool` awaiter unblocks.
-    #[tokio::test]
-    async fn test_inbound_principal_to_principal_response_completes_pending() {
-        let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
-        let pending = app_state.pending_a2a_responses();
-
-        // Register a waiter for a known request_id, then send
-        // the matching response through the dispatcher.
-        let rx = pending
-            .register("req-1")
-            .expect("register must succeed for a fresh request_id");
-
-        dispatcher
-            .handle_inbound_principal_to_principal_response("req-1".to_string(), b"hello".to_vec())
-            .await
-            .expect("handler must not panic");
-
-        let delivered = rx.await.expect("waiter must complete");
-        assert_eq!(delivered, b"hello");
-    }
-
-    /// `handle_inbound_principal_to_principal_response` for a request_id with
-    /// no pending waiter is a no-op (logged as a warn). Catches the
-    /// failure mode where a stale or duplicate response would
-    /// panic.
-    #[tokio::test]
-    async fn test_inbound_principal_to_principal_response_unknown_request_id_is_noop() {
-        let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
-        dispatcher
-            .handle_inbound_principal_to_principal_response(
-                "unknown-request-id".to_string(),
-                b"orphan".to_vec(),
-            )
-            .await
-            .expect("handler must not panic on unknown id");
-    }
-
     /// `handle_message` publishes the live `TunnelHandle` to
     /// `AppState.tunnel_handle_slot()` so the outbound
     /// `CrossRuntimeA2aCtx` can send on the most-recent handle on
@@ -2874,72 +2441,6 @@ mod tests {
         );
     }
 
-    /// An inbound `PrincipalToPrincipalRequest` addressed to a Principal's stable DID
-    /// is routed to that Principal and a structured response is sent back.
-    #[tokio::test]
-    async fn inbound_a2a_routes_to_principal_by_did() {
-        let app_state = create_test_app_state().await;
-        let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
-        let (handle, mut rx) = mock_tunnel_handle();
-
-        let kp_caller = peko_identity::keys::KeyPair::generate();
-        let caller_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp_caller.verifying_key);
-        let caller_principal_did = "did:peko:agent:caller".to_string();
-
-        let principal = create_test_principal(
-            &app_state,
-            "a2a-target",
-            Subject::User("user:owner".to_string()),
-            vec![PermissionGrant {
-                subject: Subject::Principal(caller_principal_did.clone().into()),
-                permission: Permission::Chat,
-                granted_at: "2026-06-27T00:00:00Z".to_string(),
-                granted_by: Subject::User("user:owner".to_string()),
-            }],
-            peko_auth::Exposure::Public,
-        )
-        .await;
-        let target_principal_did = principal.did().await.0;
-
-        let signed = crate::tunnel::SignedFields {
-            request_id: "req-a2a",
-            caller_runtime_id: &caller_runtime_id,
-            caller_principal_did: &caller_principal_did,
-            target_principal_did: &target_principal_did,
-            message: "ping",
-        };
-        let sig = crate::tunnel::sign_request(&kp_caller.signing_key, signed);
-
-        dispatcher
-            .handle_inbound_principal_to_principal_request(
-                handle,
-                "req-a2a".to_string(),
-                caller_runtime_id,
-                caller_principal_did,
-                target_principal_did,
-                "ping".to_string(),
-                sig,
-            )
-            .await
-            .expect("handler must not panic");
-
-        let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::PrincipalToPrincipalResponse {
-            request_id,
-            payload,
-        } = response
-        else {
-            panic!("expected PrincipalToPrincipalResponse, got: {response:?}");
-        };
-        assert_eq!(request_id, "req-a2a");
-        let result: PrincipalSendResult =
-            serde_json::from_slice(&payload).expect("payload must decode");
-        assert!(
-            result.error.is_some() || !result.response.is_empty() || result.success,
-            "A2A result should reflect that the Principal was reached; got: {result:?}"
-        );
-    }
-
     // -----------------------------------------------------------------
     // peko-channel cross-runtime PR-A commit 3:
     // `TunnelChannelEvent` inbound handler tests.
@@ -3006,8 +2507,7 @@ mod tests {
             &event,
         );
 
-        // Direct call to the inbound handler (same as
-        // `inbound_a2a_routes_to_principal_by_did` for the DM path).
+        // Direct call to the inbound handler.
         dispatcher
             .handle_inbound_tunnel_channel_event(
                 "chan-evt-1".to_string(),

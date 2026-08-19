@@ -1025,135 +1025,19 @@ impl PrincipalManager {
     /// channels (`Cron`) and explicit trunk turns delegate to
     /// [`Self::receive_trunk`]: the trunk (`root:self`) is cron-only.
     ///
-    /// Kept from the pre-Phase-7 flow: slash preprocessing, the
-    /// permission check + recall via [`Self::build_router_context`],
-    /// the chat-log projection (same `(principal_did, peer)` keys),
-    /// and the per-session serial queue — re-keyed to the CHILD
-    /// session id, so a message arriving while the peer's child has a
-    /// run in flight is queued as a steering message (drained by the
-    /// live child run at its next iteration boundary).
-    pub async fn receive(
-        &self,
-        principal_id: PrincipalId,
-        peer: Subject,
-        message: String,
-        channel: ChannelContext,
-        // Per-message configured model override. Existing callers (tunnel,
-        // cron, principal_send tool, `peko send` non-flag mode) pass
-        // `None` and use the principal's pinned model.
-        override_model: Option<String>,
-    ) -> Result<PrincipalResponse, PrincipalManagerError> {
-        // Automation + trunk channels: the trunk path owns its own
-        // discipline (no slash preprocessing, no chat-log projection).
-        if matches!(channel.kind, ChannelKind::Trunk | ChannelKind::Cron) {
-            return self
-                .receive_trunk(principal_id, message, override_model)
-                .await;
-        }
-
-        let principal = self
-            .get(principal_id)
-            .await
-            .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
-
-        let (slash_response, message) = self
-            .preprocess_slash(&principal, message, false, OutputFormat::Human)
-            .await?;
-        if let Some(content) = slash_response.as_ref() {
-            // Phase 11: slash responses are no longer persisted
-            // anywhere (the pre-Phase-11 chat-log projection is
-            // superseded by the peer DM channels, and slash output is
-            // transport UX, not conversation).
-            return Ok(PrincipalResponse::text(content.clone()));
-        }
-
-        let ctx = self
-            .build_router_context(
-                &principal,
-                peer.clone(),
-                message,
-                channel,
-                override_model.clone(),
-            )
-            .await?;
-
-        // Phase 7: the turn runs in the peer's standing child of the
-        // trunk. The recalled/plan context assembled on `ctx` is
-        // intentionally NOT forwarded — the child session IS the
-        // peer's continuous memory (its JSONL history loads on
-        // resume); `ctx` is kept for the permission check.
-        //
-        // Phase 11: the inbound message is posted to the peer's DM
-        // channel (attributed to the peer) before dispatch — a post
-        // failure rejects dispatch so the consumer cannot believe they
-        // sent something that never entered the conversation's
-        // durable home. Port-less contexts (tests / standalone) skip
-        // the post.
-        let turns = self.peer_child_turns_for(&principal).await?;
-        let ingress = turns.ensure_child_ingress(&peer).await.map_err(|e| {
-            PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
-        })?;
-        let child_id = ingress.child_id.clone();
-        if let (Some(port), Some(dm)) = (&self.channel_port, &ingress.dm_channel) {
-            post_peer_dm_inbound(port, &principal.id, dm, &peer.to_string(), &ctx.message)
-                .await
-                .map_err(|e| {
-                    PrincipalManagerError::Config(format!("peer DM inbound post: {e:#}"))
-                })?;
-        }
-
-        // Serial queue per peer: only one run may be active for a
-        // given peer child at a time. If a message arrives while the
-        // child has a run in flight, queue it as a steering message in
-        // the child session inbox; the active run drains it on its
-        // next iteration.
-        match self.inbox_registry.try_acquire_run(&child_id).await {
-            Some(_permit) => {
-                let outcome = turns
-                    .drive_turn(&child_id, &ctx.message, override_model)
-                    .await
-                    .map_err(|e| {
-                        PrincipalManagerError::RouterError(RouterError::AgentFailed(format!(
-                            "{e:?}"
-                        )))
-                    })?;
-                let response = outcome.final_text;
-                if let (Some(port), Some(dm)) = (&self.channel_port, &ingress.dm_channel) {
-                    post_peer_dm_reply(port, &principal.id, dm, &response).await;
-                }
-                self.record_peer_recall(&principal, &peer, &child_id, &response)
-                    .await;
-                Ok(PrincipalResponse::text(response))
-            }
-            None => {
-                let inbox = self.inbox_registry.get_or_create(&child_id).await;
-                inbox
-                    .push(SteeringMessage::new(ctx.message.clone()).into())
-                    .await;
-                // Phase 11: the "Queued…" notice is transport UX, not
-                // conversation — no DM channel row. The inbound post
-                // above is already the durable record.
-                let queued = format!("Queued for root agent session {child_id}.");
-                Ok(PrincipalResponse::queued(queued))
-            }
-        }
-    }
-
-    /// Streaming entry point: like [`receive`](Self::receive), but drives
-    /// the peer-child turn via
+    /// The turn is driven via
     /// [`crate::principal::child_turns::PeerChildTurns::drive_turn_streaming`]
     /// so token deltas are delivered to `on_event` as they are produced.
-    /// Permission checks, session recall, and the per-peer serial queue
-    /// are identical to `receive` — both funnel through
-    /// [`build_router_context`](Self::build_router_context) and acquire
-    /// the same `inbox_registry` run permit (keyed by the CHILD session
-    /// id, Phase 7), so the streaming and one-shot paths can't drift.
     ///
     /// The returned [`PrincipalResponse`] carries the authoritative final
-    /// answer (the same value `receive` would return). Callers that
-    /// forwarded the streamed deltas can ignore the body; callers that
-    /// need a single final string — or that hit the queued path, which
-    /// emits no events — use it.
+    /// answer. Callers that forwarded the streamed deltas can ignore the
+    /// body; callers that need a single final string — or that hit the
+    /// queued path, which emits no events — use it.
+    ///
+    /// Sprint 3 Phase 12b: the blocking one-shot sibling (`receive`)
+    /// was retired with the A2A RPC stack — its only production callers
+    /// were the principal-to-principal dispatcher arm and the
+    /// `send_peer` tool's local branch, both now channel-based.
     pub async fn receive_streaming(
         &self,
         principal_id: PrincipalId,
@@ -1669,11 +1553,12 @@ mod tests {
         let peer = Subject::User("alice".to_string());
         for i in 0..turns {
             let response = manager
-                .receive(
+                .receive_streaming(
                     id.clone(),
                     peer.clone(),
                     format!("message {i}"),
                     cli_channel(),
+                    Box::new(|_| {}),
                     None,
                 )
                 .await
@@ -1711,7 +1596,7 @@ mod tests {
         for i in 0..peers {
             let peer = Subject::User(format!("peer-{i}"));
             let response = manager
-                .receive(id.clone(), peer, format!("hello {i}"), cli_channel(), None)
+                .receive_streaming(id.clone(), peer, format!("hello {i}"), cli_channel(), Box::new(|_| {}), None)
                 .await
                 .expect("receive should succeed");
             assert!(response.content.contains(&format!("peer reply {i}")));
@@ -1754,11 +1639,12 @@ mod tests {
                 // session")` race; with the lock held end-to-end the
                 // race can't happen, and this receive is a one-shot.
                 manager
-                    .receive(
+                    .receive_streaming(
                         id.clone(),
                         peer.clone(),
                         format!("hello {i}"),
                         cli_channel(),
+                        Box::new(|_| {}),
                         None,
                     )
                     .await
@@ -1839,7 +1725,7 @@ mod tests {
             let peer = peer.clone();
             let handle = tokio::spawn(async move {
                 manager
-                    .receive(id, peer, format!("hello {i}"), cli_channel(), None)
+                    .receive_streaming(id, peer, format!("hello {i}"), cli_channel(), Box::new(|_| {}), None)
                     .await
             });
             handles.push(handle);
@@ -1875,11 +1761,12 @@ mod tests {
         // loop drains the queued steering at its first iteration.
         drop(permit_hold);
         let response = manager
-            .receive(
+            .receive_streaming(
                 id.clone(),
                 peer.clone(),
                 "after".to_string(),
                 cli_channel(),
+                Box::new(|_| {}),
                 None,
             )
             .await
@@ -2000,7 +1887,7 @@ mod tests {
             .expect("update_config should succeed");
         let stranger = Subject::User("stranger".to_string());
         let result = manager
-            .receive(id, stranger, "hello".to_string(), cli_channel(), None)
+            .receive_streaming(id, stranger, "hello".to_string(), cli_channel(), Box::new(|_| {}), None)
             .await;
         assert!(
             matches!(result, Err(PrincipalManagerError::PermissionDenied(_))),
@@ -2017,7 +1904,7 @@ mod tests {
         // Owner always passes.
         let owner = Subject::User("test-owner".to_string());
         let response = manager
-            .receive(id.clone(), owner, "hello".to_string(), cli_channel(), None)
+            .receive_streaming(id.clone(), owner, "hello".to_string(), cli_channel(), Box::new(|_| {}), None)
             .await
             .expect("owner should be allowed");
         assert!(response.content.contains("owner reply"));
@@ -2038,7 +1925,7 @@ mod tests {
         adapter.queue_text("friend reply".to_string());
         let friend = Subject::User("friend".to_string());
         let response = manager
-            .receive(id, friend, "hi".to_string(), cli_channel(), None)
+            .receive_streaming(id, friend, "hi".to_string(), cli_channel(), Box::new(|_| {}), None)
             .await
             .expect("grantee should be allowed");
         assert!(response.content.contains("friend reply"));
@@ -2319,7 +2206,7 @@ mod tests {
 
         let peer = Subject::User("alice".to_string());
         let response = manager
-            .receive(id, peer.clone(), "hello principal".to_string(), cli_channel(), None)
+            .receive_streaming(id, peer.clone(), "hello principal".to_string(), cli_channel(), Box::new(|_| {}), None)
             .await
             .expect("receive should succeed");
         assert!(response.content.contains("hello alice"));
@@ -2382,11 +2269,12 @@ mod tests {
 
         for i in 0..2 {
             let response = manager
-                .receive(
+                .receive_streaming(
                     id.clone(),
                     peer.clone(),
                     format!("hello {i}"),
                     cli_channel(),
+                    Box::new(|_| {}),
                     None,
                 )
                 .await
@@ -2725,11 +2613,12 @@ mod tests {
 
         let peer = Subject::User("local".to_string());
         let response = manager
-            .receive(
+            .receive_streaming(
                 id.clone(),
                 peer.clone(),
                 "hello".to_string(),
                 cli_channel(),
+                Box::new(|_| {}),
                 None,
             )
             .await
@@ -2779,7 +2668,7 @@ mod tests {
             streaming: false,
         };
         let response = manager
-            .receive(id.clone(), peer.clone(), "ping".to_string(), channel, None)
+            .receive_streaming(id.clone(), peer.clone(), "ping".to_string(), channel, Box::new(|_| {}), None)
             .await
             .expect("receive should succeed");
         assert!(response.content.contains("a2a reply"));

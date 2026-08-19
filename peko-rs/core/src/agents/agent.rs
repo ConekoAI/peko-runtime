@@ -326,11 +326,13 @@ impl Agent {
         }
 
         // Add the send_peer tool (peer messaging: user notes +
-        // principal-to-principal cross-runtime RPC). Replaces the
+        // principal-to-principal DM over channels). Replaces the
         // legacy `a2a_send` tool (ADR-023 + root-agent unification):
         // the principal-branch target is a Principal DID (not an agent
-        // name on a target runtime), and dispatch flows through the
-        // tunnel even when caller and target share a daemon.
+        // name on a target runtime), and the exchange runs on the
+        // pair's DM channel (sprint 3 Phase 12b) — cross-runtime via
+        // the channel invite/mirror fan-out, same-runtime via the
+        // two-channel local design.
         //
         // Registration needs only the caller's principal DID. The
         // cross-runtime ctx is pulled from extension services (set by

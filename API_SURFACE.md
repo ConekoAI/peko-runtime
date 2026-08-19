@@ -507,8 +507,7 @@ impl ChatLogStore {
 
 The runtime-owned chat-log store. Root path is resolved from
 `PathResolver::chat_logs_dir()` (`<data-dir>/chat_logs`) and
-shared via `AppState::chat_log_store` and
-`CrossRuntimeA2aCtx::chat_log_store`. The store is the only
+shared via `AppState::chat_log_store`. The store is the only
 abstraction over chat-log shards — there is no in-memory
 representation, no global index, and no migration path from
 session JSONL to chat log.
@@ -889,7 +888,23 @@ children of the trunk. New/changed public items:
 | `PeerChildTurns` (`ensure_child`, `drive_turn{,_streaming}`) | `principal::child_turns` | ✅ New | Persona-inheriting child turn driver (shared with channel binding) |
 | `SubagentExecutor::resume_streaming` / `StreamingResumeOutcome` | `agents::subagent_executor` | ✅ New | Streaming child turns (same event shape as the root path) |
 | `PrincipalManager::record_peer_recall` | `principal::manager` | ✅ New | Per-peer recall artifact → peer-child session id |
-| `PrincipalManager::receive` / `receive_streaming` | `principal::manager` | ⚠️ Changed | Peer channels route to peer children; Trunk/Cron → `receive_trunk` |
+| ~~`PrincipalManager::receive`~~ / `receive_streaming` | `principal::manager` | ❌ Deleted / ⚠️ Changed | Peer channels route to peer children; Trunk/Cron → `receive_trunk`. The one-shot `receive` was deleted in sprint 3 Phase 12b (its only production callers were the retired A2A RPC paths) |
+
+### Sprint 3 Phase 12b (2026-08-19) — principal DM over channels; A2A RPC stack retired
+
+Breaking (prelaunch): principal-to-principal messaging runs over the
+peer DM channels now. Deleted/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `TunnelMessage::{PrincipalToPrincipalRequest, PrincipalToPrincipalResponse}` | `tunnel::protocol` | ❌ Deleted | Signed RPC envelopes superseded by `TunnelChannelEvent`/`TunnelChannelInvite` fan-out |
+| `PendingA2aResponses` / `A2aResponsePayload` / `A2aWaitError`; `tunnel::a2a_audit` | `tunnel::{a2a_pending,a2a_audit}` | ❌ Deleted | Response correlation registry + audit helpers for the retired RPC stack |
+| `SignedFields` / `sign_request` / `verify_request` | `tunnel::a2a_signature` | ❌ Deleted | `build_pre_image` / `sign_pre_image` / `verify_pre_image` / `A2A_SIGNATURE_DOMAIN` remain (shared by `tunnel_channel_signature` + `invite_token`) |
+| `tunnel::direct` (server/client/manager/routing/handshake) | `tunnel::direct` | ❌ Deleted | Direct transport retired; `tls.rs` relocated to `tunnel::tls` (tunnel client still consumes `build_client_config`) |
+| `TunnelHost::pending_a2a_responses`; `AppState::{pending_a2a_responses, direct_manager, direct_*}`; `DirectHealth` | `tunnel::host`, `daemon::state` | ❌ Deleted | Host/state surface of the retired stack |
+| `CrossRuntimeA2aCtx` | `tunnel::cross_runtime` | ⚠️ Changed | Now `{ directory, caller_runtime_id, principal_manager, channel_port: Arc<TunnelChannelPort>, response_timeout }` |
+| `SendPeerArgs.session_id` | `tunnel::principal_send_tool` | ❌ Deleted | Channel continuity replaces session resumption; `PrincipalSendResult.session_id` returns the caller's standing child id |
+| `PeerMessenger::deliver_note` | `principal::messenger` | ⚠️ Changed | Note posts to the peer's DM channel (principal-authored root) instead of the chat log; child-JSONL append + trunk `[notify]` unchanged |
 | ~~`root_session_id`~~; `root_session_id_for_channel` (trunk-only) | `principal::routers::root` | ❌ Deleted / narrowed | Per-peer root routing retired |
 | Cron `Send` default target | `daemon::cron_engine`, `peko_cron` | ⚠️ Changed | Default = trunk; `TRUNK_MIN_INTERVAL_MS` covers `target: None` |
 | `TRUNK_MIN_INTERVAL_MS` / `validate_trunk_send_interval` | `peko_cron::tools` | ✅ New | Phase 3b: 60s floor for trunk-targeted `Every` keepalive (token-burn guard); SpawnTool wake posts to `root:self` |

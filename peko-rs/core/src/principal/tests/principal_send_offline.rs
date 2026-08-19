@@ -1,9 +1,14 @@
-//! Same-runtime offline `principal_send` integration test.
+//! Same-runtime offline `send_peer` integration test (sprint 3 Phase
+//! 12b rewrite).
 //!
 //! Verifies that `LocalFirstAgentDirectory` resolves a target principal
-//! without consulting the hub, and that `SendPeerTool::execute`
-//! short-circuits locally via `PrincipalManager::receive`. This test is
-//! self-contained and runs in the regular unit/integration job.
+//! without consulting the hub, and that `SendPeerTool::execute`'s
+//! same-runtime branch runs over the DM channels: the message is
+//! durably posted to BOTH the caller's own DM channel (the `peko log`
+//! mirror) and the target's DM channel (where the target's responder
+//! would fire), and — with no live responder in this harness — the
+//! reply await surfaces a structured timeout. Offline behavior is now
+//! exactly "durable local post + await timeout".
 //!
 //! Originally `tests/principal_send_offline.rs` (gated by `--features
 //! test-utils`). Moved inline as part of F9.3 so the gated surface can
@@ -19,31 +24,27 @@ use crate::principal::config::{Exposure, TransportPreference};
 use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };
-use crate::tunnel::a2a_pending::PendingA2aResponses;
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
-use crate::tunnel::direct::DirectConnectionManager;
 use crate::tunnel::hub_directory::{AgentDirectory, AgentResolution, DirectoryError};
-use crate::tunnel::known_runtimes::KnownRuntimes;
 use crate::tunnel::local_directory::LocalFirstAgentDirectory;
 use crate::tunnel::principal_send_tool::{PrincipalSendResult, SendPeerTool};
+use crate::tunnel::TunnelChannelPort;
 use async_trait::async_trait;
-use ed25519_dalek::SigningKey;
 use peko_auth::Subject;
-use peko_chat_log::ChatLogStore;
+use peko_channel::{ChannelEvent, ChannelPort, Checkpoint};
 use peko_providers::LlmResolver;
 use peko_subject::PrincipalDID;
 use peko_tools_core::Tool;
-use tokio::sync::RwLock;
 
 /// A directory client that panics if consulted. Wrapping it inside
 /// `LocalFirstAgentDirectory` proves the hub fallback is never reached
-/// for same-runtime principals.
+/// for same-runtime send_peer.
 struct PanicDirectory;
 
 #[async_trait]
 impl AgentDirectory for PanicDirectory {
     async fn resolve_by_did(&self, _did: &str) -> Result<AgentResolution, DirectoryError> {
-        panic!("hub directory should not be consulted for same-runtime principal_send");
+        panic!("hub directory should not be consulted for same-runtime send_peer");
     }
 
     async fn resolve_by_handle(
@@ -51,7 +52,7 @@ impl AgentDirectory for PanicDirectory {
         _owner: &str,
         _name: &str,
     ) -> Result<AgentResolution, DirectoryError> {
-        panic!("hub directory should not be consulted for same-runtime principal_send");
+        panic!("hub directory should not be consulted for same-runtime send_peer");
     }
 }
 
@@ -92,9 +93,42 @@ async fn create_test_principal(
     manager.create(config).await.unwrap()
 }
 
+/// The `(author, parent, text)` rows of every `Posted` event on the
+/// channel bound to `binding` for `principal` (find-only — the sends
+/// above already provisioned it).
+async fn dm_posted_rows(
+    port: &Arc<dyn ChannelPort>,
+    principal: &Arc<crate::principal::Principal>,
+    peer: &Subject,
+) -> Vec<(String, Option<String>, String)> {
+    let slug = crate::principal::peer_children::peer_child_slug(peer).unwrap();
+    let channel = crate::principal::peer_dm::find_peer_dm_channel(
+        port,
+        &principal.id,
+        &format!("/{slug}"),
+    )
+    .await
+    .expect("dm lookup")
+    .expect("DM channel exists after send_peer");
+    port.peek(&channel, &Checkpoint::default())
+        .await
+        .expect("peek")
+        .iter()
+        .filter_map(|ev| match ev {
+            ChannelEvent::Posted {
+                author,
+                parent,
+                text,
+                ..
+            } => Some((author.clone(), parent.clone(), text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-#[serial_test::serial(global_core_lock)]
-async fn same_runtime_principal_send_short_circuits_offline() {
+#[serial_test::serial]
+async fn same_runtime_send_peer_posts_to_dm_channels_then_times_out() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_var("PEKO_HOME", temp.path());
 
@@ -113,8 +147,20 @@ async fn same_runtime_principal_send_short_circuits_offline() {
     tokio::fs::create_dir_all(&workspace).await.unwrap();
 
     let catalog_path = temp.path().join("models.toml");
-    let (resolver, adapter) =
+    let (resolver, _adapter) =
         LlmResolver::mock(peko_providers::MockAdapter::new(), &catalog_path).await;
+
+    // The channel port both the manager (DM provisioning) and the
+    // ctx (posts + reply subscription) share — one underlying store,
+    // exactly like the daemon wiring.
+    let store = Arc::new(peko_channel::ChannelStore::new(
+        peko_channel::ChannelConfig {
+            runtime_dir: temp.path().join("runtime"),
+            shared_dir: None,
+        },
+    ));
+    let tunnel_port = TunnelChannelPort::new(store);
+    let channel_port: Arc<dyn ChannelPort> = Arc::new(tunnel_port.clone());
 
     let principal_manager = Arc::new(
         PrincipalManager::with_path_resolver(
@@ -123,7 +169,8 @@ async fn same_runtime_principal_send_short_circuits_offline() {
             Arc::new(DefaultPrincipalRouterFactory),
             crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         )
-        .with_resolver(resolver),
+        .with_resolver(resolver)
+        .with_channel_port(channel_port.clone()),
     );
 
     // Caller principal — its DID becomes the owner of the target.
@@ -141,7 +188,7 @@ async fn same_runtime_principal_send_short_circuits_offline() {
         cfg.did.as_ref().unwrap().0.clone()
     };
 
-    // Target principal — owned by the caller so the permission check passes.
+    // Target principal — owned by the caller.
     let target = create_test_principal(
         &principal_manager,
         &workspace_ref,
@@ -157,37 +204,19 @@ async fn same_runtime_principal_send_short_circuits_offline() {
     };
 
     let caller_runtime_id = "did:key:test-runtime".to_string();
-    let signing_key = Arc::new(SigningKey::from_bytes(&[9u8; 32]));
-    let pending = Arc::new(PendingA2aResponses::new());
-
     let ctx = Arc::new(CrossRuntimeA2aCtx {
         directory: Arc::new(LocalFirstAgentDirectory::new(
             caller_runtime_id.clone(),
             principal_manager.clone(),
             Arc::new(PanicDirectory),
         )),
-        pending: pending.clone(),
-        signing_key: signing_key.clone(),
         caller_runtime_id,
-        tunnel: Arc::new(RwLock::new(None)),
-        direct_manager: Arc::new(DirectConnectionManager::new(
-            signing_key,
-            "did:key:test-runtime".to_string(),
-            false,
-            pending,
-        )),
-        known_runtimes: Arc::new(RwLock::new(KnownRuntimes::new())),
-        principal_manager,
-        chat_log_store: Arc::new(ChatLogStore::new(std::env::temp_dir().join(format!(
-            "peko-principal-send-offline-chatlog-{}",
-            uuid::Uuid::new_v4()
-        )))),
-        response_timeout: Duration::from_secs(5),
+        principal_manager: principal_manager.clone(),
+        channel_port: Arc::new(tunnel_port),
+        response_timeout: Duration::from_millis(200),
     });
 
-    let tool = SendPeerTool::new(caller_did, ctx);
-
-    adapter.queue_text("mock offline response");
+    let tool = SendPeerTool::new(caller_did.clone(), ctx);
 
     let result = tool
         .execute(serde_json::json!({
@@ -197,7 +226,34 @@ async fn same_runtime_principal_send_short_circuits_offline() {
         .await
         .expect("execute should not throw");
 
+    // No live responder in this harness → the reply await times out
+    // with a structured error.
     let parsed: PrincipalSendResult = serde_json::from_value(result).expect("parse result");
-    assert!(parsed.success, "principal_send should succeed offline");
-    assert_eq!(parsed.response, "mock offline response");
+    assert!(!parsed.success, "no responder → await must time out");
+    let err = parsed.error.expect("timeout error must be set");
+    assert!(
+        err.contains("timed out"),
+        "error must name the timeout; got: {err}"
+    );
+
+    // …but the message stands durably on BOTH DM channels:
+    // 1. the caller's own channel (self-authored root — the `peko log`
+    //    mirror);
+    let caller_peer = Subject::Principal(PrincipalDID(target_did.clone()));
+    let caller_rows = dm_posted_rows(&channel_port, &caller, &caller_peer).await;
+    assert_eq!(
+        caller_rows,
+        vec![(caller.id.0.clone(), None, "ping".to_string())],
+        "caller's DM channel must hold the self-authored outbound post"
+    );
+
+    // 2. the target's channel (caller-authored root — the post the
+    //    target's responder would fire on).
+    let target_peer = Subject::Principal(PrincipalDID(caller_did.clone()));
+    let target_rows = dm_posted_rows(&channel_port, &target, &target_peer).await;
+    assert_eq!(
+        target_rows,
+        vec![(caller.id.0.clone(), None, "ping".to_string())],
+        "target's DM channel must hold the caller's root post"
+    );
 }

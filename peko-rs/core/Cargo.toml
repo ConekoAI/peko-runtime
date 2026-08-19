@@ -342,14 +342,6 @@ path = "tests/scenarios/s7_capability_grant_revoke_list_e2e.rs"
 name = "tunnel_security"
 path = "tests/tunnel_security.rs"
 
-[[test]]
-name = "direct_connection"
-path = "tests/direct_connection.rs"
-
-[[test]]
-name = "direct_transport_policy"
-path = "tests/direct_transport_policy.rs"
-
 # Core tool parity harness for the Claude Code built-in tool surface.
 [[test]]
 name = "core_tools"

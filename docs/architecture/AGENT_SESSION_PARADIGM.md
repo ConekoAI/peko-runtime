@@ -315,6 +315,16 @@ walk), and the user branch of `send_peer` (subsumed by a DM-channel post —
 the principal branch's sync RPC is not).
 The tunnel *transport* itself stays regardless.
 
+> **Update (sprint 3 Phase 12b, 2026-08-19):** the principal branch's
+> sync RPC WAS ultimately subsumed — `send_peer` now posts to the pair's
+> DM channel and awaits the reply on the channel broadcast (remote:
+> 12a invite/mirror fan-out; local: two-channel design), and the
+> `PrincipalToPrincipalRequest`/`Response` envelopes, pending registry,
+> and direct transport were deleted. The "tunnel-only" list above is
+> therefore historical: pending-correlation is gone (structural reply
+> matching + per-target serialization instead), and envelope
+> verification lives on the channel envelopes.
+
 ## 4. Cron: the principal's heartbeat
 
 Cron is what makes a principal an *active* actor: it provides the rhythm

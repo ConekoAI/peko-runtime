@@ -642,7 +642,7 @@ mod tests {
     /// `core()` returns *whatever* the daemon-global is, never a
     /// fresh per-call instance.
     #[tokio::test]
-    #[serial(global_core_lock)]
+    #[serial]
     async fn core_returns_global_singleton() {
         let dir = tempfile::tempdir().unwrap();
         let memory: Arc<dyn PrincipalMemory> =

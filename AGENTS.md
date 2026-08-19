@@ -654,7 +654,9 @@ cargo test --all-features
   - **2026-08-08 `send_peer` unification:** `principal_send` was
     renamed `send_peer` and gained a user branch (fire-and-forget
     notes to a human peer's conversational session) alongside the
-    principal branch (the legacy sync RPC; wire/IPC names unchanged).
+    principal branch (then the legacy sync RPC; re-founded on the
+    peer DM channels in sprint 3 Phase 12b — see the 2026-08-19
+    note).
     Delivery goes through the `PeerMessenger` port
     (`peko-rs/core/src/principal/messenger.rs` — trait + global
     registry mirroring the `CronRuntime` pattern, installed by the
@@ -742,8 +744,9 @@ cargo test --all-features
     (`PrincipalManager::set_dm_subscriber_hook` →
     `ChannelBindingSupervisor::ensure_subscriber`), so it gets its
     `PassiveBindingResponder` subscriber WITHOUT a restart. Remote
-    (`principal:<did>`) peers get the LOCAL channel only —
-    cross-runtime invite/`join_remote` fan-out is Phase 12. Bound
+    (`principal:<did>`) peers got the LOCAL channel only at Phase 10 —
+    the cross-runtime invite/`join_remote` fan-out landed in Phase
+    12a/12b. Bound
     channels are also **push-woken** now: `ChannelStore::append_event`
     is the single disk-append chokepoint and fires the per-channel
     broadcast on EVERY append (local posts, membership events, and
@@ -782,9 +785,10 @@ cargo test --all-features
     (`find_peer_dm_channel` → `peek_with_ids`, `Posted` events only,
     in-memory limit/cursor paging, `since` cutoff on the event's
     `at`); pre-Phase-11 chat-log history stays on disk unread (Phase
-    13 decides migration). A2A gets local DM posting as a side effect
-    of the shared manager funnel — no await-reply, no fan-out (Phase
-    12).
+    13 decides migration). A2A got local DM posting as a side effect
+    of the shared manager funnel; Phase 12b switched the principal
+    branch of `send_peer` itself onto the channels (await-reply over
+    the channel broadcast, invite/fan-out for cross-runtime).
   - **2026-08-19 sprint 3 Phase 12a (cross-runtime DM channel
     lifecycle + anti-loop rule):** the additive plumbing for
     principal-to-principal DM over channels. Nothing user-facing
@@ -848,6 +852,67 @@ cargo test --all-features
       `ChannelSend`) no longer wakes a bound session — root posts
       only; local ingress reply projections (`post_peer_dm_reply`)
       stay root posts (self-authored + self-skipped anyway).
+  - **2026-08-19 sprint 3 Phase 12b (principal DM switches to
+    channels; the A2A RPC stack retires):** `send_peer`'s principal
+    branch now runs over the peer DM channels and the old
+    request/response stack is deleted. **Remote target:** the caller's
+    own DM channel for the peer is ensured
+    (`ensure_peer_child_ingress`), first contact is detected by the
+    absence of a remote-member row for the target's runtime
+    (`TunnelChannelPort::local().list_remote_members`) and fires
+    `fanout_dm_invite` DIRECTLY with the caller's real DID (the bare
+    `ChannelPort::invite` trait path has no DID resolver), the tool
+    subscribes the channel broadcast BEFORE posting, root-posts the
+    message as the caller's raw id (self-skipped locally, fires the
+    remote responder), and awaits the mirrored reply under
+    `response_timeout` (60s): on each broadcast wake (and on `Lagged`
+    repair) it re-reads `peek_with_ids(Checkpoint(L))` and takes the
+    first `Posted { parent: Some(_), author, .. }` with author ≠ the
+    caller's raw/DID forms and not a `user:*`/`public` form — `parent`
+    can't be matched exactly because mirror line numbers diverge.
+    Overlapping awaits to the same target are serialized by a
+    per-tool-instance mutex map (no wire correlation id exists; the
+    remote responder's turn lock already serializes replies).
+    **Local target** (same runtime — one store, so no mirror trick;
+    two-channel design): the caller is invited into the TARGET's DM
+    channel for the caller peer, the root post lands there (author =
+    caller raw id ⇒ the target's responder fires), the reply is
+    awaited on that channel with exact matching (`parent.is_some() &&
+    author == target.id`), and the exchange is mirrored onto the
+    caller's own DM channel for `peko log` — outbound as a
+    self-authored root, the reply via `post_attributed(author =
+    target.id, PostMsg::reply(L_own, …))` (parent set ⇒ the caller's
+    responder skips it; `L_own` exists so the parent validates).
+    Accepted behavior change: the per-target Chat permission check the
+    retired `PrincipalManager::receive` applied is gone — the
+    directory/exposure gates are the boundary now. The `session_id`
+    tool arg is DROPPED (channel continuity replaces session
+    resumption); `PrincipalSendResult.session_id` now returns the
+    caller's standing child id. **Retired:** the
+    `PrincipalToPrincipalRequest`/`PrincipalToPrincipalResponse` wire
+    variants + dispatcher arms + `handle_inbound_principal_to_principal_*`
+    + `send_hub_error`, `tunnel/a2a_pending.rs` and
+    `tunnel/a2a_audit.rs` (whole modules), `SignedFields` /
+    `sign_request` / `verify_request` from `a2a_signature.rs`
+    (`build_pre_image` / `sign_pre_image` / `verify_pre_image` /
+    `A2A_SIGNATURE_DOMAIN` stay — `tunnel_channel_signature` and
+    `invite_token` reuse them), the whole `tunnel/direct/` transport
+    (server/client/manager/routing/handshake; `tls.rs` relocated to
+    `tunnel/tls.rs` — `tunnel::client` still uses
+    `build_client_config`), `AppState::{pending_a2a_responses,
+    direct_manager, direct_*, DirectHealth}` + the direct-server
+    startup, `TunnelHost::pending_a2a_responses`, and
+    `PrincipalManager::receive` (its only production callers were the
+    two retired paths; test callers migrated to `receive_streaming`).
+    `CrossRuntimeA2aCtx` is now `{ directory, caller_runtime_id,
+    principal_manager, channel_port: Arc<TunnelChannelPort> (concrete —
+    the tool needs `fanout_dm_invite` + `list_remote_members`),
+    response_timeout }`. The `PeerMessenger` port survives:
+    `deliver_note` keeps the child-JSONL append (notes have no turn),
+    posts the note to the peer's DM channel as a principal-authored
+    root (replacing the chat-log projection; find-only posture
+    unchanged), and keeps the trunk `[notify]` self-view. `peko log`
+    needs no change — it already reads the DM channels (Phase 11).
   - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
 - **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.

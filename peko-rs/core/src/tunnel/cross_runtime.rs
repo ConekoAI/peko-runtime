@@ -1,5 +1,21 @@
-//! Cross-runtime a2a dispatch context — shared bundle for the
-//! outbound a2a path. Issue #29 Slice B (and follow-ups).
+//! Cross-runtime dispatch context for the `send_peer` tool — the
+//! shared bundle for the outbound principal-to-principal path.
+//!
+//! Sprint 3 Phase 12b: principal-to-principal DM runs over **channels**
+//! now — the retired RPC stack (signed `PrincipalToPrincipalRequest`
+//! envelopes, the pending-response registry, the direct transport) is
+//! gone, and with it the signing key / pending registry / tunnel slot /
+//! direct manager / known-runtimes / chat-log fields this ctx used to
+//! carry. What remains is exactly what the channel-based path needs:
+//!
+//! - the **directory** (which runtime hosts the target principal),
+//! - the caller's own **runtime id** (same-runtime detection),
+//! - the **principal manager** (peer-child + DM-channel provisioning
+//!   via `ensure_peer_child_ingress`),
+//! - the concrete **`TunnelChannelPort`** (DM channel posts, the reply
+//!   broadcast subscription, remote-member reads, and the
+//!   `fanout_dm_invite` first-contact invite), and
+//! - the per-call **response timeout**.
 //!
 //! Lives in `tunnel/` (not `tools/`) because both `extension` and
 //! `tools` reference it, and `tools` already depends on
@@ -7,91 +23,48 @@
 //! dependency graph acyclic: both the bootstrap side
 //! (`extension::core::ExtensionServices` holds the ctx as an
 //! optional slot) and the consumer side
-//! (`crate::tunnel::principal_send_tool::PrincipalSendTool`) import it
+//! (`crate::tunnel::principal_send_tool::SendPeerTool`) import it
 //! from here.
 
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
-
-use ed25519_dalek::SigningKey;
 
 use crate::principal::PrincipalManager;
-use crate::tunnel::direct::DirectConnectionManager;
 use crate::tunnel::hub_directory::AgentDirectory;
-use crate::tunnel::known_runtimes::KnownRuntimes;
-use crate::tunnel::{PendingA2aResponses, TunnelHandle};
-use peko_chat_log::ChatLogStore;
+use crate::tunnel::TunnelChannelPort;
 
-/// Cross-runtime a2a dispatch context. Holds the dependencies the
-/// outbound `principal_send` path needs: the directory client to resolve
-/// the target, the pending registry to correlate the response, the
-/// signing key for the envelope, the caller's runtime_id, the live
-/// tunnel handle slot, the direct connection manager, the known-runtimes
-/// registry for transport selection, and the per-call response timeout.
-///
-/// Built once at daemon-state startup (Slice B' / B+C) and held
-/// behind an `Arc` so every per-agent `PrincipalSendTool` instance shares
-/// the same registry, signing key, and tunnel slot.
+/// Cross-runtime dispatch context for `send_peer`. Built once at
+/// daemon-state startup and held behind an `Arc` so every per-agent
+/// `SendPeerTool` instance shares the same directory, manager, and
+/// channel port.
 pub struct CrossRuntimeA2aCtx {
     /// Directory client (`HubAgentDirectoryClient` in production,
     /// a `FakeAgentDirectory` in tests). The outbound path calls
-    /// `resolve_by_did` / `resolve_by_handle` to learn where to
-    /// send.
+    /// `resolve_by_did` / `resolve_by_handle` to learn which runtime
+    /// hosts the target principal.
     pub directory: Arc<dyn AgentDirectory>,
 
-    /// Response correlation registry. Shared with the inbound
-    /// `PrincipalToPrincipalResponse` arm of the `TunnelDispatcher`.
-    pub pending: Arc<PendingA2aResponses>,
-
-    /// The runtime's own `PekoHubCredential` signing key. Used to
-    /// sign the `PrincipalToPrincipalRequest` envelope so the target
-    /// runtime can verify the caller's runtime identity end-to-end.
-    pub signing_key: Arc<SigningKey>,
-
-    /// The runtime's own `runtime_id` (did:key form). Echoed
-    /// verbatim into the `caller_runtime_id` field of every
-    /// outbound request.
+    /// The runtime's own `runtime_id` (did:key form). A resolution
+    /// whose `runtime_id` matches takes the same-runtime (two-channel
+    /// local) branch; anything else takes the cross-runtime branch.
     pub caller_runtime_id: String,
 
-    /// Slot for the live outbound `TunnelHandle`. The
-    /// `TunnelDispatcher` writes the freshest handle on every
-    /// tunnel reconnect; the outbound path reads it under the
-    /// lock. `None` means the tunnel is not currently connected,
-    /// in which case the outbound path errors with a "tunnel not
-    /// connected" message instead of trying to send on a stale
-    /// handle.
-    ///
-    /// The slot is an `Arc<RwLock<...>>` (shared with the
-    /// `TunnelDispatcher`'s handle-publisher) rather than a plain
-    /// `TunnelHandle` so reconnects are visible without rebuilding
-    /// the ctx.
-    pub tunnel: Arc<RwLock<Option<TunnelHandle>>>,
-
-    /// Manager for direct connections to peer runtimes. Used when
-    /// transport selection chooses the direct path.
-    pub direct_manager: Arc<DirectConnectionManager>,
-
-    /// Local known-runtimes registry. Used to decide whether to use
-    /// the PekoHub tunnel or a direct connection for a given peer.
-    pub known_runtimes: Arc<RwLock<KnownRuntimes>>,
-
-    /// Principal manager for the caller's runtime. Enables the local
-    /// same-runtime shortcut in `principal_send`.
+    /// Principal manager for the caller's runtime. Used to resolve
+    /// principals by DID and to find-or-create the peer standing
+    /// child + DM channel (`ensure_peer_child_ingress`).
     pub principal_manager: Arc<PrincipalManager>,
 
-    /// Runtime-owned chat-log store. Used by `principal_send` to
-    /// record the caller's principal-to-principal view: a request
-    /// line on outbound accept, and a response line after a
-    /// successfully decoded reply. The target manager records its
-    /// own view through `PrincipalManager::receive` with
-    /// `ChannelKind::A2a`, so each side keeps its own shard.
-    pub chat_log_store: Arc<ChatLogStore>,
+    /// The daemon's concrete channel port. The tool needs the
+    /// concrete type (not `Arc<dyn ChannelPort>`) for the DM-specific
+    /// surface the trait doesn't carry: `fanout_dm_invite` (the
+    /// first-contact invite takes the caller's real DID, which the
+    /// bare `ChannelPort::invite` path cannot resolve) and
+    /// `local().list_remote_members` (first-contact detection).
+    pub channel_port: Arc<TunnelChannelPort>,
 
-    /// How long to wait for the matching `PrincipalToPrincipalResponse`
-    /// before surfacing a `Timeout` error to the calling agent.
-    /// Production default is 60s (configurable via daemon config
-    /// in Slice B'); tests use sub-second values.
+    /// How long to wait for the peer's reply post on the DM channel
+    /// before surfacing a timeout error to the calling agent.
+    /// Production default is 60s; tests use sub-second values.
     pub response_timeout: Duration,
 }
 
@@ -99,14 +72,9 @@ impl std::fmt::Debug for CrossRuntimeA2aCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CrossRuntimeA2aCtx")
             .field("directory", &"<dyn AgentDirectory>")
-            .field("pending", &self.pending)
-            .field("signing_key", &"<redacted: ed25519 SigningKey>")
             .field("caller_runtime_id", &self.caller_runtime_id)
-            .field("tunnel", &self.tunnel)
-            .field("direct_manager", &"<DirectConnectionManager>")
-            .field("known_runtimes", &"<KnownRuntimes>")
             .field("principal_manager", &"<PrincipalManager>")
-            .field("chat_log_store", &self.chat_log_store)
+            .field("channel_port", &self.channel_port)
             .field("response_timeout", &self.response_timeout)
             .finish()
     }

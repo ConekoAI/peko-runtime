@@ -20,12 +20,14 @@
 //!   responder's reply post and the `ChannelSend` tool both post with
 //!   sender = the principal and require membership).
 //!
-//! ## Remote principals (Phase 12 gap)
+//! ## Remote principals
 //!
-//! For `principal:<did>` peers only the LOCAL channel is provisioned.
-//! Cross-runtime invite / `join_remote` fan-out (so the remote
-//! runtime mirrors the DM channel) is deliberately NOT wired here —
-//! that is sprint 3 Phase 12.
+//! For `principal:<did>` peers this helper provisions the LOCAL
+//! channel only. The cross-runtime half landed in sprint 3 Phase
+//! 12a/12b: the caller side invites the peer's runtime via
+//! `TunnelChannelPort::fanout_dm_invite` (from the `send_peer` tool,
+//! on first contact), and the receiver bootstraps its mirror through
+//! `TunnelHost::dm_channel_mirror_bootstrap`.
 //!
 //! ## Concurrency
 //!
@@ -148,7 +150,9 @@ pub(crate) async fn ensure_peer_dm_channel(
 
     // Create: the principal is the creator (auto-member). For
     // `principal:<did>` peers this provisions the LOCAL channel only —
-    // cross-runtime invite/`join_remote` fan-out is Phase 12.
+    // the cross-runtime invite/mirror fan-out is the caller's job
+    // (sprint 3 Phase 12a/12b: `send_peer` invites on first contact;
+    // the receiver bootstraps via `dm_channel_mirror_bootstrap`).
     let channel = port
         .create(
             principal,

@@ -939,6 +939,11 @@ mod tests {
     }
 
     #[test]
+    // Touches the process-global PEKO_HOME (removes + restores it) —
+    // serialize with the other env-mutating tests (2026-08-19 group
+    // unification; the SAFETY comment below's "tests don't run in
+    // parallel" claim is only true inside one serial group).
+    #[serial_test::serial]
     fn test_path_resolver_default() {
         // Some earlier tests (notably subagent_integration_tests) leak a
         // temp `PEKO_HOME` via `Box::leak`-ed fixtures, so by the time this

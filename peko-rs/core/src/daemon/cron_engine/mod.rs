@@ -1699,7 +1699,7 @@ mod tests {
         // 1. A conversational (CLI) turn creates the owner's standing
         //    peer child.
         manager
-            .receive(
+            .receive_streaming(
                 principal.id.clone(),
                 owner.clone(),
                 "hello there".to_string(),
@@ -1707,6 +1707,7 @@ mod tests {
                     kind: ChannelKind::Cli,
                     streaming: false,
                 },
+                Box::new(|_| {}),
                 None,
             )
             .await
@@ -1880,7 +1881,7 @@ mod tests {
         //    peer child — so the note cross-post has somewhere to
         //    land.
         manager
-            .receive(
+            .receive_streaming(
                 principal.id.clone(),
                 owner.clone(),
                 "hello there".to_string(),
@@ -1888,6 +1889,7 @@ mod tests {
                     kind: ChannelKind::Cli,
                     streaming: false,
                 },
+                Box::new(|_| {}),
                 None,
             )
             .await
@@ -2266,7 +2268,7 @@ mod tests {
 
         // A conversational turn creates the owner's peer child.
         manager
-            .receive(
+            .receive_streaming(
                 principal.id.clone(),
                 owner.clone(),
                 "hello there".to_string(),
@@ -2274,6 +2276,7 @@ mod tests {
                     kind: ChannelKind::Cli,
                     streaming: false,
                 },
+                Box::new(|_| {}),
                 None,
             )
             .await

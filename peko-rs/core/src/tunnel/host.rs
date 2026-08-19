@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use super::a2a_pending::PendingA2aResponses;
 use super::invite_token::InviteRevocationSet;
 use super::TunnelChannelPort;
 use super::TunnelHandle;
@@ -77,9 +76,6 @@ pub trait TunnelHost: Send + Sync {
 
     /// JWT validator for verifying PekoHub-proxied caller identity.
     fn jwt_validator(&self) -> Option<JwtValidator>;
-
-    /// Cross-runtime a2a response correlation registry.
-    fn pending_a2a_responses(&self) -> Arc<PendingA2aResponses>;
 
     /// Observability handle for emitting audit events.
     fn observability(&self) -> Arc<Observability>;
