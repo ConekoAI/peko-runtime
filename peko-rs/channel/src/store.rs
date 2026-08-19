@@ -53,6 +53,7 @@ use crate::port::{
     ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result, TaskId,
     Tier,
 };
+use crate::fs::channel_dir_name;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -115,13 +116,20 @@ impl ChannelConfig {
         self.shared_dir.as_ref().map(|d| d.join(CHANNELS_DIR))
     }
 
-    /// Pick the channel dir for the given tier.
+    /// Pick the channel dir for the given tier. The on-disk
+    /// directory name is the wire-form id with colons replaced by
+    /// `.3A.` (see [`crate::fs::channel_dir_name`]) so the typed
+    /// prefixes (`principal:<did>` / `user:<id>` / `group:<slug>`)
+    /// are filesystem-safe on Windows and classic Unix. Bare
+    /// `chan_<...>` ids have no colons, so the helper is a no-op for
+    /// them and the legacy on-disk layout is unchanged.
     fn channel_dir_for(&self, tier: Tier, channel: &ChannelId) -> Result<PathBuf> {
+        let on_disk = channel_dir_name(channel);
         match tier {
-            Tier::Runtime => Ok(self.channel_dir(channel)),
+            Tier::Runtime => Ok(self.channels_dir().join(on_disk)),
             Tier::Shared => self
                 .shared_channels_dir()
-                .map(|d| d.join(channel.as_str()))
+                .map(|d| d.join(on_disk))
                 .ok_or_else(|| {
                     ChannelError::Adapter(
                         "ChannelConfig::shared_dir is None; cannot resolve Shared tier"
@@ -132,8 +140,10 @@ impl ChannelConfig {
     }
 
     /// `<runtime_dir>/channels/<chan_id>/` — the per-channel sandbox.
+    /// Public on `ChannelStore` (via [`ChannelStore::channel_dir`])
+    /// but private on `ChannelConfig`; callers go through the store.
     fn channel_dir(&self, channel: &ChannelId) -> PathBuf {
-        self.channels_dir().join(channel.as_str())
+        self.channels_dir().join(channel_dir_name(channel))
     }
 }
 
@@ -169,21 +179,23 @@ impl MetaJson {
         channel_dir.join(META_FILE)
     }
 
-    async fn load(channel_dir: &Path) -> Result<Self> {
+    /// Load `meta.json` for `channel`. The `channel_dir` is
+    /// pre-resolved by the caller (already normalized via
+    /// [`channel_dir_name`] for typed-prefix channels).
+    ///
+    /// `NotFound` reports the WIRE form of the channel id (the
+    /// caller passes it in) — not the on-disk file_name, which
+    /// would be `principal.3A.did.3A...` for a typed channel and
+    /// would surface confusing debug output.
+    async fn load(channel_dir: &Path, channel: &ChannelId) -> Result<Self> {
         let p = Self::path_in(channel_dir);
         match fs::read(&p).await {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
                 ChannelError::Adapter(format!("decode {}: {e}", p.display()))
             }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ChannelError::NotFound(
-                ChannelId(
-                    channel_dir
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("")
-                        .to_string(),
-                ),
-            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(ChannelError::NotFound(channel.clone()))
+            }
             Err(e) => Err(ChannelError::Adapter(format!("read {}: {e}", p.display()))),
         }
     }
@@ -381,7 +393,7 @@ impl ChannelStore {
     /// surface `NotFound` cleanly via the directory load).
     async fn resolve_tier(&self, channel: &ChannelId) -> Result<Tier> {
         let chan_dir = self.cfg.channel_dir(channel);
-        let meta = MetaJson::load(&chan_dir).await?;
+        let meta = MetaJson::load(&chan_dir, channel).await?;
         Ok(meta.tier)
     }
 
@@ -519,7 +531,12 @@ impl ChannelStore {
     }
 
     /// Walk `<runtime_dir>/channels/` and return every `ChannelId` for
-    /// which `principal` is in `members.json`.
+    /// which `principal` is in `members.json`. Accepts both wire-form
+    /// directory names (bare `chan_<...>` ids — no colons) and
+    /// on-disk-normalized names (typed prefixes — colons replaced
+    /// with `.3A.` via [`crate::fs::channel_dir_name`]). The
+    /// reconstruction uses [`crate::fs::channel_dir_name_inverse`] so
+    /// the returned ids always carry the wire form.
     async fn list_channels_for_principal(
         &self,
         principal: &PrincipalId,
@@ -541,16 +558,23 @@ impl ChannelStore {
         })? {
             let name = entry.file_name();
             let Some(name_str) = name.to_str() else { continue };
-            if ChannelId::parse(name_str).is_none() {
+            // Try the wire form first (bare ids live under their own
+            // name on disk; typed ids live under the `.3A.`-encoded
+            // form).
+            let channel_id = if let Some(id) = ChannelId::parse(name_str) {
+                id
+            } else if let Some(id) = crate::fs::channel_dir_name_inverse(name_str) {
+                id
+            } else {
                 continue;
-            }
+            };
             let chan_dir = entry.path();
             let members = match MembersJson::load(&chan_dir).await {
                 Ok(m) => m,
                 Err(_) => continue, // skip corrupt / incomplete dirs
             };
             if members.members.iter().any(|m| m == &principal.to_string()) {
-                out.push(ChannelId(name_str.to_string()));
+                out.push(channel_id);
             }
         }
         Ok(out)
@@ -929,8 +953,21 @@ impl ChannelPort for ChannelStore {
         creator: &PrincipalId,
         opts: CreateOpts,
     ) -> Result<ChannelId> {
-        let channel = ChannelId::generate();
+        // Sprint 4: honor `opts.id` (set by the peer-DM auto-provisioning
+        // path) when supplied; otherwise mint a fresh `chan_<8 base36>`
+        // as before. Both paths converge through the same
+        // `fs::create_dir_all` + collision check.
+        let channel = opts.id.clone().unwrap_or_else(ChannelId::generate);
         let chan_dir = self.cfg.channel_dir_for(opts.tier, &channel)?;
+        // Collision guard: if the resolved on-disk dir already exists
+        // (a previous create with the same id), refuse rather than
+        // silently clobber. Mirrors `join_remote`'s idempotency check
+        // at `:770-772`.
+        if chan_dir.exists() {
+            return Err(ChannelError::Adapter(format!(
+                "channel id collision: {channel}"
+            )));
+        }
         fs::create_dir_all(&chan_dir).await?;
 
         // Write the meta + members files BEFORE appending the event so
@@ -1046,11 +1083,12 @@ impl ChannelPort for ChannelStore {
     /// pinned-to-shared channel still reports its binding.
     async fn passive_binding(&self, channel: &ChannelId) -> Result<Option<String>> {
         let runtime_dir = self.cfg.channel_dir(channel);
-        match MetaJson::load(&runtime_dir).await {
+        match MetaJson::load(&runtime_dir, channel).await {
             Ok(meta) => Ok(meta.passive_binding),
             Err(ChannelError::NotFound(_)) => match self.cfg.shared_channels_dir() {
                 Some(shared) => {
-                    let meta = MetaJson::load(&shared.join(channel.as_str())).await?;
+                    let meta = MetaJson::load(&shared.join(channel_dir_name(channel)), channel)
+                        .await?;
                     Ok(meta.passive_binding)
                 }
                 None => Err(ChannelError::NotFound(channel.clone())),
@@ -1115,7 +1153,7 @@ impl ChannelPort for ChannelStore {
         let runtime_chan_dir = self.cfg.channel_dir(channel);
 
         // Defense-in-depth: source must exist.
-        let _ = MetaJson::load(&runtime_chan_dir).await?;
+        let _ = MetaJson::load(&runtime_chan_dir, channel).await?;
 
         if let Some(parent) = shared_chan_dir.parent() {
             fs::create_dir_all(parent).await?;
@@ -1813,7 +1851,7 @@ mod tests {
 
         // meta.json: creator + name + tier = Runtime, and the
         // receiver-local binding persists (Phase 12a).
-        let meta = MetaJson::load(&chan_dir).await.unwrap();
+        let meta = MetaJson::load(&chan_dir, &channel).await.unwrap();
         assert_eq!(meta.creator, "prin_alice");
         assert_eq!(meta.name, "team-chat");
         assert_eq!(meta.tier, Tier::Runtime);
@@ -1977,12 +2015,151 @@ mod tests {
 
         // The original name + binding survive (the second call did
         // not overwrite meta.json).
-        let meta = MetaJson::load(&cfg.channel_dir(&channel)).await.unwrap();
+        let meta = MetaJson::load(&cfg.channel_dir(&channel), &channel).await.unwrap();
         assert_eq!(meta.name, "team-chat", "original name must survive");
         assert_eq!(
             meta.passive_binding.as_deref(),
             Some("/principal-alice"),
             "original binding must survive"
         );
+    }
+
+    // -- Sprint 4 (sprint 4 phase 2): CreateOpts::id + on-disk normalizer
+    // -----
+
+    /// `CreateOpts::id` mints the channel under a specific id rather
+    /// than via `ChannelId::generate`. The store returns the caller's
+    /// id verbatim and the on-disk directory uses the normalized
+    /// form (colons replaced with `.3A.`). Used by the DM
+    /// auto-provisioning path so both sides of a peer exchange derive
+    /// the same id from the same DID.
+    #[tokio::test]
+    async fn create_with_explicit_id_succeeds() {
+        let cfg = tmp_cfg("explicit-id");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let explicit = ChannelId::for_principal("did:key:zBob");
+        let opts = CreateOpts::runtime("dm-bob").with_id(explicit.clone());
+        let returned = store.create(&creator, opts).await.unwrap();
+
+        assert_eq!(returned, explicit, "create must return the caller-supplied id");
+
+        // On-disk dir uses the .3A. normalizer, NOT the wire form.
+        let on_disk = cfg.channel_dir(&explicit);
+        assert!(
+            on_disk.exists(),
+            "expected {} to exist; list: {:?}",
+            on_disk.display(),
+            std::fs::read_dir(cfg.channels_dir()).unwrap().map(|e| e.unwrap().path()).collect::<Vec<_>>()
+        );
+        assert!(
+            !on_disk
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains(':'),
+            "filesystem dir names must not contain colons; got {:?}",
+            on_disk.file_name()
+        );
+    }
+
+    /// A duplicate `opts.id` returns `Adapter` rather than silently
+    /// clobbering the existing channel. Mirrors `join_remote`'s
+    /// idempotency check (`:770-772`).
+    #[tokio::test]
+    async fn create_with_duplicate_id_returns_adapter_error() {
+        let cfg = tmp_cfg("dup-id");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let explicit = ChannelId::for_principal("did:key:zBob");
+        let opts = CreateOpts::runtime("dm-bob").with_id(explicit.clone());
+        store.create(&creator, opts.clone()).await.unwrap();
+
+        let err = store.create(&creator, opts).await.unwrap_err();
+        assert!(
+            matches!(err, ChannelError::Adapter(ref msg) if msg.contains("channel id collision")),
+            "duplicate id must surface Adapter with 'collision' in the message; got: {err:?}"
+        );
+    }
+
+    /// `CreateOpts::id: None` preserves the pre-PR behavior: the
+    /// store mints a fresh `chan_<8 base36>` and the on-disk dir is
+    /// the bare id verbatim (no `.3A.` markers).
+    #[tokio::test]
+    async fn create_without_id_mints_fresh_chan_prefix_id() {
+        let cfg = tmp_cfg("fresh-id");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        assert!(
+            channel.as_str().starts_with(ChannelId::PREFIX),
+            "default id must be chan_<...>; got {channel}"
+        );
+        let on_disk = cfg.channel_dir(&channel);
+        assert_eq!(
+            on_disk.file_name().unwrap().to_str().unwrap(),
+            channel.as_str(),
+            "bare id is its own dir name; no normalization"
+        );
+    }
+
+    /// `list_channels_for_principal` walks the on-disk directory and
+    /// reconstructs the wire form for typed-prefix channels (the
+    /// `.3A.` marker is decoded). Without this, a typed channel would
+    /// silently disappear from the boot sweep's enumeration.
+    #[tokio::test]
+    async fn list_channels_for_principal_reconstructs_wire_form() {
+        let cfg = tmp_cfg("list-reconstruct");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let principal_id = ChannelId::for_principal("did:key:zBob");
+        let bare_id = ChannelId::generate();
+
+        // Create one typed + one bare.
+        store
+            .create(&creator, CreateOpts::runtime("dm").with_id(principal_id.clone()))
+            .await
+            .unwrap();
+        store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        assert_eq!(bare_id.as_str().is_empty(), false); // sanity
+
+        let listed = store.list_for_principal(&creator).await.unwrap();
+        assert!(
+            listed.contains(&principal_id),
+            "typed id must appear in wire form, not .3A. form; got {listed:?}"
+        );
+        assert!(
+            listed.iter().any(|id| id.as_str().starts_with(ChannelId::PREFIX)),
+            "bare id must appear; got {listed:?}"
+        );
+    }
+
+    /// `passive_binding` reports the wire form on `NotFound` rather
+    /// than the on-disk-normalized form. The previous impl used
+    /// `chan_dir.file_name()`, which for a typed channel produced
+    /// `principal.3A.did.3A...` and surfaced as confusing debug
+    /// output.
+    #[tokio::test]
+    async fn not_found_error_carries_wire_form() {
+        let cfg = tmp_cfg("not-found-wire");
+        let store = ChannelStore::new(cfg);
+        let bogus = ChannelId::for_principal("did:key:zMissing");
+        let result = store.passive_binding(&bogus).await;
+        match result {
+            Err(ChannelError::NotFound(id)) => {
+                assert_eq!(
+                    id, bogus,
+                    "NotFound must carry the wire-form id; got {id}"
+                );
+            }
+            other => panic!("expected NotFound; got {other:?}"),
+        }
     }
 }

@@ -271,6 +271,19 @@ impl PostMsg {
 pub struct CreateOpts {
     pub name: String,
     pub tier: Tier,
+    /// Sprint 4 (`feat!`: consolidate `send_peer` into `ChannelSend`):
+    /// optional explicit [`ChannelId`]. When `Some`, the store uses
+    /// this id verbatim (after `parse`) instead of minting a fresh
+    /// `chan_<8 base36>` via [`ChannelId::generate`]. Used by the
+    /// peer-DM auto-provisioning path
+    /// (`peko-rs/core/src/principal/peer_dm.rs`) to mint a
+    /// deterministic `principal:<did>` channel id — both sides of a
+    /// DM exchange derive the same id from the same DID.
+    ///
+    /// Collisions surface as [`ChannelError::Adapter`] (mirrors the
+    /// idempotency check at `ChannelStore::join_remote`). The default
+    /// `None` preserves the pre-PR `ChannelId::generate()` behavior.
+    pub id: Option<ChannelId>,
     /// Phase 4 (agent-session paradigm sprint): optional **passive
     /// binding** — a session id or `/path` in the creator principal's
     /// session tree. When set, the daemon's `PassiveBindingResponder`
@@ -288,6 +301,7 @@ impl CreateOpts {
         Self {
             name: name.into(),
             tier: Tier::Runtime,
+            id: None,
             passive_binding: None,
         }
     }
@@ -299,6 +313,7 @@ impl CreateOpts {
         Self {
             name: name.into(),
             tier: Tier::Shared,
+            id: None,
             passive_binding: None,
         }
     }
@@ -307,6 +322,15 @@ impl CreateOpts {
     /// [`Self::passive_binding`].
     pub fn with_passive_binding(mut self, binding: impl Into<String>) -> Self {
         self.passive_binding = Some(binding.into());
+        self
+    }
+
+    /// Sprint 4: pin a specific [`ChannelId`] for `create` to use.
+    /// The id is validated at the store layer (parsed via
+    /// `ChannelId::parse`); an invalid wire form surfaces as
+    /// [`ChannelError::Adapter`].
+    pub fn with_id(mut self, id: ChannelId) -> Self {
+        self.id = Some(id);
         self
     }
 }

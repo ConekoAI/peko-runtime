@@ -418,6 +418,7 @@ async fn tier_rule_rejects_non_runtime_in_pr1() {
     let opts = CreateOpts {
         name: "future-shared".into(),
         tier: Tier::Runtime, // PR-1 only allows Runtime; this stays
+        id: None,            // sprint 4: explicit id (None = mint fresh)
         passive_binding: None,
     };
     let _ = opts; // sanity: Tier::Runtime is the only valid option

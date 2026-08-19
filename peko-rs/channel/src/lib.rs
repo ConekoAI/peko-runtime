@@ -73,6 +73,7 @@
 pub mod cli_handlers;
 pub mod cost;
 pub mod cursors;
+pub mod fs;
 pub mod port;
 pub mod responder;
 pub mod store;
