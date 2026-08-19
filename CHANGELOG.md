@@ -246,6 +246,60 @@ unreachable and inert in production; two layered bugs, both fixed.
   `peko_channel::global_channel_port()` with `NoopChannelPort` only as
   the test/standalone fallback.
 
+### PEKO sprint 4: `send_peer` consolidated into `ChannelSend` (2026-08-19)
+
+Sprint 4 closes the loop on the sprint 3 design promise: `send_peer` and
+`ChannelSend` now share one delivery mechanism — there is one tool
+(`ChannelSend`) whose `channel` parameter's wire form selects the
+dispatch branch. The LLM picks the prefix; the runtime owns the
+await / timeout / mirror / exposure-gate / originating-user-gate
+policies.
+
+#### Added
+- **Typed `ChannelId` prefixes** (`peko-protocol`): `chan_<8 base36>`
+  (Bare), `principal:<did>` (Principal), `user:<id>` (User),
+  `group:<slug>` (Group). Bare form unchanged for backward compat;
+  typed forms carry the routing identity on the wire (no separate
+  indirection table for `peko log`).
+- **`CreateOpts::id`** (`peko-channel`): callers can pin the channel id
+  on creation. Used by `peer_dm` for principal peers so the routing
+  ChannelId is `principal:<did>` and `peko log` consumers and
+  `ChannelSend`'s principal-branch agree without translation.
+- **On-disk path normalizer** (`peko-channel/fs.rs`): typed-prefix ids
+  gain colons that are invalid in directory names on Windows /
+  classic Unix filesystems; `channel_dir_name` replaces `:` with
+  `.3A.` for the storage path only. Wire form unchanged.
+
+#### Changed (breaking)
+- **`ChannelSend` is now per-agent** with the caller's principal DID
+  bound at construction (mirrors pre-PR `send_peer` shape). The F37
+  funnel's `ToolContext` does NOT carry the caller DID, so the tool
+  needs it bound at registration. Bare / group / user branches work
+  in local-only mode (no cross-runtime ctx); principal branch returns
+  a structured error. Global registration in `engine/tool_runtime.rs`
+  is removed; `ExtensionServices` gains `set_channel_port` /
+  `channel_port()` so the per-agent constructor can find the file-backed
+  `ChannelPort`.
+- **`peko-rs/core/src/tunnel/principal_send_tool.rs` deleted** (1775
+  lines). The consolidated `ChannelSend` absorbs the executor code;
+  `SendPeerArgs` / `PrincipalSendResult` are renamed to
+  `ChannelSendArgs` / `ChannelSendResult`. The new dispatch on
+  `ChannelId::kind()` selects Bare / Group (bare post), Principal
+  (`execute_local` / `execute_remote`, await reply up to 1 minute,
+  mirror), or User (peer messenger note, originating-user gate).
+- **`peer_dm` routing id**: principal peers now route on
+  `ChannelId::for_principal(did)`; display name stays `dm-<slug>` for
+  `peko log` continuity. User / public peers keep the slug-based
+  routing id (the user-branch dispatch is messenger-port).
+
+#### Removed (prelaunch, no migration)
+- **`tool:send_peer` capability**: retired outright, no compatibility
+  alias. Principals with the legacy grant lose it post-cutover.
+  `Capabilities::starter_bundle()` no longer includes the grant;
+  `starter_bundle_does_not_grant_send_peer` pins the absence. Use
+  `tool:ChannelSend` with a typed channel id (`chan_*` / `principal:<did>`
+  / `user:<id>` / `group:<slug>`) to dispatch.
+
 ### PEKO sprint 2: external ingress off the root (2026-08-17)
 
 External traffic (CLI `peko send`, tunnel A2A, Hub webchat) moves off the
