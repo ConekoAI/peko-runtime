@@ -57,32 +57,6 @@ type TaskId = String;
 
 use crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx;
 
-/// Extract the runtime id from a principal DID's `@<runtime-id>`
-/// suffix. Returns `None` if the DID has no suffix (local invite —
-/// no envelope to send).
-///
-/// Examples:
-///
-/// - `prin_alice` → `None` (local)
-/// - `prin_bob@did:key:zRuntimeB` → `Some("did:key:zRuntimeB")`
-/// - `did:peko:agent:bob@did:key:zRuntimeB` → `Some("did:key:zRuntimeB")`
-///
-/// This is the lightweight directory resolver for
-/// peko-channel cross-runtime PR-3a commit 3. The full
-/// directory-backed lookup
-/// (`CrossRuntimeChannelCtx.directory.resolve_principal`) threads
-/// through the invite path in a follow-up; today the suffix
-/// heuristic is sufficient for principals whose DIDs carry an
-/// `@<runtime>` suffix (the convention other parts of the runtime
-/// use for cross-runtime member rows — see
-/// `peko_protocol::channel::RemoteMember`).
-fn extract_runtime_id_from_principal(principal_did: &str) -> Option<String> {
-    // Find the LAST `@` so a DID like `did:peko:agent:bob@did:key:zRuntimeB`
-    // resolves to the runtime suffix, not to the `did:peko:agent:` prefix.
-    let idx = principal_did.rfind('@')?;
-    Some(principal_did[idx + 1..].to_string())
-}
-
 /// Concrete `ChannelPort` impl that wraps a local [`ChannelStore`]
 /// and (in commit 3) fans events out to the channel's remote
 /// members over the tunnel.
@@ -328,11 +302,10 @@ impl TunnelChannelPort {
     }
 
     /// Add a remote-member row to the channel's `members.json` and
-    /// persist it. Used by the outbound `invite` path when the
-    /// directory resolves the invitee to a non-self runtime. Called
-    /// before the fan-out so the receiver-side append has a
-    /// matching row in the local mirror.
-    #[allow(dead_code)]
+    /// persist it. Used by the outbound DM invite path
+    /// ([`Self::fanout_dm_invite`]) to record the recipient before
+    /// fan-out so [`Self::fanout_event`] sees the channel as
+    /// cross-runtime and later posts actually leave the runtime.
     pub(crate) async fn add_remote_member(
         &self,
         channel: &ChannelId,
@@ -348,7 +321,7 @@ impl TunnelChannelPort {
     /// send one `TunnelChannelInvite` envelope to the invitee's
     /// hosting runtime. Parallel to [`Self::fanout_event`] but for
     /// the invite bootstrap path (peko-channel cross-runtime PR-3a
-    /// commit 3).
+    /// commit 3; DM-aware since sprint 3 Phase 12a).
     ///
     /// ## `invitee_runtime_id` resolution
     ///
@@ -364,37 +337,65 @@ impl TunnelChannelPort {
     /// default — the local `ChannelPort::invite` already recorded
     /// the `MemberJoined` row).
     ///
-    /// ## What gets sent
+    /// ## Phase 12a additions
     ///
-    /// - `creator` + `name` snapshotted from the local `meta.json`
-    ///   so the receiver doesn't need a follow-up `peek`.
-    /// - `initial_members` = the full membership snapshot
-    ///   (local `members` rows + `remote_members` rows partitioned
-    ///   into `InitialMember`s with `runtime_id: None` for local
-    ///   and `Some(...)` for remote).
-    /// - The signing key is `ctx.signing_key`; the receiver
-    ///   verifies against the `did:key` form of the runtime id.
+    /// - **The remote-member row is recorded FIRST.** Before the
+    ///   envelope is built, the invitee is filed in the source's own
+    ///   `members.json` as a `RemoteMember` (`runtime_id` = the
+    ///   invitee's runtime, `principal_id` = the invitee's bare
+    ///   id/DID with the `@<runtime>` suffix stripped). This is what
+    ///   makes [`Self::fanout_event`] see the channel as
+    ///   cross-runtime, so the source's later posts actually leave
+    ///   the runtime. Local bookkeeping deliberately does NOT depend
+    ///   on tunnel connectivity: the row is written before the
+    ///   tunnel-handle check.
+    /// - **`creator_did`** — the channel creator principal's stable
+    ///   DID — joins the envelope (and its signed pre-image): the
+    ///   receiver names its peer child for the creator from it
+    ///   (`principal:<creator_did>`), which `creator` /
+    ///   `source_principal_did` (source-local ids) cannot support.
+    ///   The bare `ChannelPort::invite` path has no DID resolver on
+    ///   the trait surface, so it passes the inviter's local id; the
+    ///   DM provisioning path (Phase 12b) calls this method directly
+    ///   with the real DID.
+    /// - **DM marker.** The channel's own `passive_binding` (read
+    ///   from `meta.json`) rides the envelope. Only its PRESENCE is
+    ///   meaningful — the receiver derives its own `/​<slug>`
+    ///   binding from its own session tree (slug collision suffixes
+    ///   are runtime-local).
+    /// - **Snapshot re-keying.** The port-owner's own membership
+    ///   rows are emitted with `runtime_id:
+    ///   Some(ctx.caller_runtime_id)` (from the receiver's view they
+    ///   are remote); pre-existing remote rows keep their runtime;
+    ///   the invitee row is emitted bare-DID with `runtime_id:
+    ///   None` — "addressed to you, receiver". The receiver's
+    ///   `join_remote` maps that row to its own local principal id.
     ///
     /// ## Failure mode
     ///
     /// Returns `Ok(())` if the invitee is local (no envelope to
     /// send) or if the tunnel handle is `None` (logged + dropped —
-    /// local invite already succeeded). Returns `Err(...)` if the
+    /// the local invite + remote-member row already succeeded, so a
+    /// reconnect-era post still fans out). Returns `Err(...)` if the
     /// envelope construction or `TunnelHandle::send` fails so the
     /// caller can decide to log / escalate.
-    #[allow(clippy::too_many_arguments)]
-    async fn fanout_invite(
+    pub(crate) async fn fanout_dm_invite(
         &self,
         channel: &ChannelId,
         inviter: &PrincipalId,
+        creator_did: &str,
         invitee: &PrincipalId,
     ) -> std::result::Result<(), String> {
         // Resolve invitee → runtime_id via the @suffix convention.
         // No suffix → local invite only; no envelope to send.
-        let invitee_runtime_id = match extract_runtime_id_from_principal(&invitee.0) {
-            Some(rid) => rid,
-            None => return Ok(()),
+        let Some(at) = invitee.0.rfind('@') else {
+            return Ok(());
         };
+        let invitee_runtime_id = invitee.0[at + 1..].to_string();
+        // The invitee's identity as the REMOTE runtime knows it —
+        // suffix stripped. Recorded as the remote-member row's
+        // `principal_id` and emitted as the invitee row's DID.
+        let invitee_bare = invitee.0[..at].to_string();
 
         // Self-invite → local only; no envelope to send.
         let ctx = match self.ctx.read().await.clone() {
@@ -404,6 +405,21 @@ impl TunnelChannelPort {
         if invitee_runtime_id == ctx.caller_runtime_id {
             return Ok(());
         }
+
+        // Record the remote-member row FIRST (Phase 12a): this is
+        // what unwires the previously dead `add_remote_member` —
+        // without it, `fanout_event` saw no remote members and every
+        // post stayed local-only. Done before the tunnel-handle
+        // check so a transient disconnect doesn't lose the routing
+        // state.
+        self.add_remote_member(channel, &invitee_runtime_id, &invitee_bare)
+            .await
+            .map_err(|e| {
+                format!(
+                    "add_remote_member failed (channel={}): {e}",
+                    channel.as_str()
+                )
+            })?;
 
         // Snapshot the live tunnel handle once.
         let handle = {
@@ -422,9 +438,10 @@ impl TunnelChannelPort {
             }
         };
 
-        // Read meta.json for creator + name. We read it directly
-        // via the store's `meta_path` so a missing meta surfaces as
-        // an error rather than silently using defaults.
+        // Read meta.json for creator + name + the DM marker. We read
+        // it directly via the store's `channel_dir` so a missing
+        // meta surfaces as an error rather than silently using
+        // defaults.
         let chan_dir = self.local.channel_dir(channel);
         let meta_bytes = match tokio::fs::read(chan_dir.join("meta.json")).await {
             Ok(b) => b,
@@ -439,6 +456,9 @@ impl TunnelChannelPort {
         struct MetaSnapshot {
             creator: String,
             name: String,
+            // Phase 12a: the DM marker. Absent on unbound channels
+            // (`skip_serializing_if` on the store's write side).
+            passive_binding: Option<String>,
         }
         let meta: MetaSnapshot = serde_json::from_slice(&meta_bytes).map_err(|e| {
             format!(
@@ -447,7 +467,15 @@ impl TunnelChannelPort {
             )
         })?;
 
-        // Build `initial_members` from the local snapshot.
+        // Build `initial_members` re-keyed to the receiver's view
+        // (Phase 12a): the source's own rows are remote from the
+        // receiver's side, so they carry `Some(caller_runtime_id)`;
+        // pre-existing remote rows keep their runtime; the invitee
+        // row carries `None` — "addressed to you". The invitee's
+        // local row (written by `ChannelStore::invite` when the
+        // caller came through the trait) and its just-recorded
+        // remote row are both excluded — the invitee is neither
+        // local to the source nor remote-to-itself.
         let local = self.local.list_members(channel).await.map_err(|e| {
             format!(
                 "list_members failed while building invite envelope (channel={}): {e}",
@@ -462,15 +490,26 @@ impl TunnelChannelPort {
         })?;
         let initial_members: Vec<peko_protocol::channel::InitialMember> = local
             .iter()
+            .filter(|p| p.0 != invitee.0)
             .map(|p| peko_protocol::channel::InitialMember {
                 principal_did: p.0.clone(),
-                runtime_id: None,
+                runtime_id: Some(ctx.caller_runtime_id.clone()),
             })
-            .chain(remote.iter().map(|rm| {
-                peko_protocol::channel::InitialMember {
-                    principal_did: rm.principal_id.clone(),
-                    runtime_id: Some(rm.runtime_id.clone()),
-                }
+            .chain(
+                remote
+                    .iter()
+                    .filter(|rm| {
+                        !(rm.runtime_id == invitee_runtime_id
+                            && rm.principal_id == invitee_bare)
+                    })
+                    .map(|rm| peko_protocol::channel::InitialMember {
+                        principal_did: rm.principal_id.clone(),
+                        runtime_id: Some(rm.runtime_id.clone()),
+                    }),
+            )
+            .chain(std::iter::once(peko_protocol::channel::InitialMember {
+                principal_did: invitee_bare.clone(),
+                runtime_id: None,
             }))
             .collect();
 
@@ -489,7 +528,9 @@ impl TunnelChannelPort {
             source_principal_did: &inviter.to_string(),
             channel_id: channel.as_str(),
             creator: &meta.creator,
+            creator_did,
             name: &meta.name,
+            passive_binding: meta.passive_binding.as_deref().unwrap_or(""),
             initial_members_bytes: &initial_members_bytes,
         };
         let signature = crate::tunnel::sign_channel_invite(&ctx.signing_key, signed);
@@ -517,7 +558,9 @@ impl TunnelChannelPort {
             source_principal_did: inviter.to_string(),
             channel_id: channel.as_str().to_string(),
             creator: meta.creator.clone(),
+            creator_did: creator_did.to_string(),
             name: meta.name.clone(),
+            passive_binding: meta.passive_binding.clone(),
             initial_members,
             signature,
         };
@@ -530,10 +573,11 @@ impl TunnelChannelPort {
     }
 
     /// Bootstrap a local mirror for a cross-runtime channel the
-    /// receiver was invited to. Called by the dispatcher on inbound
-    /// `TunnelChannelInvite` envelopes (peko-channel cross-runtime
-    /// PR-3a commit 2) **after** the signature has verified — the
-    /// caller is responsible for that gate.
+    /// receiver was invited to. Called by the AppState's
+    /// `TunnelHost::dm_channel_mirror_bootstrap` on inbound
+    /// `TunnelChannelInvite` envelopes (sprint 3 Phase 12a) **after**
+    /// the signature has verified — the caller is responsible for
+    /// that gate.
     ///
     /// Thin pass-through to
     /// [`peko_channel::ChannelStore::join_remote`]. The wrapper does
@@ -546,16 +590,27 @@ impl TunnelChannelPort {
     /// (delegates to the store's `meta.json`-existence check). This
     /// is the contract that makes the dispatcher safe to retry on a
     /// duplicate envelope.
-    #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn join_remote(
         &self,
         channel: &ChannelId,
         creator: &str,
         name: &str,
         initial_members: &[peko_protocol::channel::InitialMember],
+        self_principal: &PrincipalId,
+        source_runtime_id: &str,
+        passive_binding: Option<String>,
     ) -> Result<()> {
         self.local
-            .join_remote(channel, creator, name, initial_members)
+            .join_remote(
+                channel,
+                creator,
+                name,
+                initial_members,
+                self_principal,
+                source_runtime_id,
+                passive_binding,
+            )
             .await
     }
 }
@@ -591,12 +646,13 @@ impl ChannelPort for TunnelChannelPort {
         self.local.invite(channel, inviter, invitee).await?;
 
         // 2. Outbound cross-runtime fan-out: if the invitee lives on
-        // a non-self runtime, emit a signed `TunnelChannelInvite`
-        // envelope to that runtime so the receiver can bootstrap a
-        // local mirror. We snapshot the channel's `members.json`
-        // (local + remote) and the channel's `meta.json` to build
-        // the envelope — the receiver must see the same snapshot
-        // the inviter just persisted so its mirror matches.
+        // a non-self runtime, record its remote-member row and emit a
+        // signed `TunnelChannelInvite` envelope to that runtime so
+        // the receiver can bootstrap a local mirror (Phase 12a). The
+        // envelope snapshots the channel's `members.json` (re-keyed
+        // to the receiver's view) + `meta.json` (creator / name / the
+        // DM marker) so the receiver's mirror matches what the
+        // inviter just persisted.
         //
         // We resolve `invitee → runtime_id` via a "did:key:z"
         // heuristic: principal DIDs that include `@<runtime-id>`
@@ -607,11 +663,16 @@ impl ChannelPort for TunnelChannelPort {
         // suffix is present, which mirrors the
         // no-cross-runtime-invite default.
         //
+        // The trait surface carries no principal-DID resolver, so
+        // `creator_did` degrades to the inviter's source-local id
+        // here; the DM provisioning path (Phase 12b) calls
+        // `fanout_dm_invite` directly with the principal's real DID.
+        //
         // Failures here never error the local invite — the local
         // mirror is authoritative; remote runtimes hydrate off the
         // next event or via a follow-up invite.
         if let Err(e) = self
-            .fanout_invite(channel, inviter, invitee)
+            .fanout_dm_invite(channel, inviter, &inviter.to_string(), invitee)
             .await
         {
             warn!(
@@ -1408,10 +1469,13 @@ mod tests {
     /// `ChannelPort::invite` to a principal whose DID carries an
     /// `@<runtime-id>` suffix emits exactly one signed
     /// `TunnelChannelInvite` envelope to that runtime's mock
-    /// `TunnelHandle`. The local `members.json` records the
-    /// invitee as a remote row (NOT a local row — the
-    /// `@<runtime>` suffix marks it as cross-runtime), and the
-    /// signature on the wire verifies against `ctx.signing_key`.
+    /// `TunnelHandle`. Phase 12a: the invitee is ALSO recorded as a
+    /// `RemoteMember` row on the source (so later posts fan out —
+    /// the previously dead `add_remote_member` is wired), the
+    /// snapshot is re-keyed to the receiver's view (source-local
+    /// rows carry `Some(source_runtime_id)`; the invitee row is
+    /// bare with `None` — "addressed to you"), and the envelope
+    /// carries `creator_did` + the DM marker.
     ///
     /// Mirrors `post_fans_out_to_unique_recipient_runtime` for the
     /// invite path. Pins the contract for PR-3's desktop invite UX:
@@ -1449,6 +1513,19 @@ mod tests {
         .await
         .expect("local invite must succeed before fan-out");
 
+        // Phase 12a: the invitee is filed as a RemoteMember on the
+        // SOURCE (bare id, suffix stripped) so subsequent posts fan
+        // out to runtime B.
+        let remote = port.local().list_remote_members(&channel).await.unwrap();
+        assert_eq!(
+            remote,
+            vec![peko_channel::port::RemoteMember {
+                runtime_id: "did:key:zRuntimeB".to_string(),
+                principal_id: "prin_bob".to_string(),
+            }],
+            "invite must record the remote-member row before sending"
+        );
+
         // Outbound: exactly one TunnelChannelInvite reached the
         // mock tunnel, addressed to runtime B.
         let env = rx
@@ -1462,7 +1539,9 @@ mod tests {
             source_principal_did,
             channel_id,
             creator,
+            creator_did,
             name,
+            passive_binding,
             initial_members,
             signature,
         ) = match env {
@@ -1473,7 +1552,9 @@ mod tests {
                 source_principal_did,
                 channel_id,
                 creator,
+                creator_did,
                 name,
+                passive_binding,
                 initial_members,
                 signature,
             } => (
@@ -1483,7 +1564,9 @@ mod tests {
                 source_principal_did,
                 channel_id,
                 creator,
+                creator_did,
                 name,
+                passive_binding,
                 initial_members,
                 signature,
             ),
@@ -1497,36 +1580,28 @@ mod tests {
         assert_eq!(source_principal_did, "prin_alice");
         assert_eq!(channel_id, channel.as_str());
         assert_eq!(creator, "prin_alice");
+        // The bare `invite` trait path has no DID resolver — the
+        // inviter's local id stands in (see the `invite` comment).
+        assert_eq!(creator_did, "prin_alice");
         assert_eq!(name, "team");
+        assert_eq!(passive_binding, None, "unbound channel → no DM marker");
         assert_eq!(request_id.len(), 36, "request_id should be a UUIDv4");
         assert!(!signature.is_empty(), "envelope must carry a signature");
 
-        // initial_members snapshot must include the creator (alice)
-        // as local + the just-invited invitee (bob). The local
-        // `invite` records bob as a local row first; the
-        // `@<runtime>` suffix only governs fan-out routing, not the
-        // local membership row. Both are local here; a future
-        // follow-up that wires `directory.resolve_principal` into
-        // `fanout_invite` will additionally record a `RemoteMember`
-        // row for bob in the source's `members.json`.
+        // Phase 12a snapshot re-keying: the source's own row (alice)
+        // is remote from the receiver's view; the invitee row is
+        // bare + `None` ("addressed to you"). Exactly two rows.
         assert_eq!(initial_members.len(), 2, "alice + bob in this channel");
         assert_eq!(initial_members[0].principal_did, "prin_alice");
         assert_eq!(
-            initial_members[0].runtime_id, None,
-            "creator must be local (None)"
+            initial_members[0].runtime_id.as_deref(),
+            Some("did:key:zRuntimeA"),
+            "source-local rows are emitted as remote for the receiver"
         );
-        // Local invite stored the full DID (suffix included); the
-        // `@<runtime>` suffix only governs fan-out routing, not the
-        // local membership row's `principal_did`. The snapshot
-        // carries the same full string so the receiver's
-        // `join_remote` produces a byte-identical membership row.
-        assert_eq!(
-            initial_members[1].principal_did,
-            "prin_bob@did:key:zRuntimeB"
-        );
+        assert_eq!(initial_members[1].principal_did, "prin_bob");
         assert_eq!(
             initial_members[1].runtime_id, None,
-            "invitee row is local until a follow-up promotes it to RemoteMember"
+            "the invitee row is the receiver-addressed one"
         );
 
         // Signature verifies against ctx.signing_key.
@@ -1540,7 +1615,9 @@ mod tests {
                 source_principal_did: &source_principal_did,
                 channel_id: &channel_id,
                 creator: &creator,
+                creator_did: &creator_did,
                 name: &name,
+                passive_binding: "",
                 initial_members_bytes: &initial_members_bytes,
             },
             &signature,
@@ -1553,5 +1630,197 @@ mod tests {
             rx.try_recv().is_err(),
             "must not send a second envelope for the same recipient runtime"
         );
+
+        // Phase 12a: with the remote-member row recorded, a post now
+        // fans out — before the fix this was a silent no-op.
+        port.post(
+            &channel,
+            &PrincipalId("prin_alice".into()),
+            PostMsg::root("after-invite post"),
+        )
+        .await
+        .unwrap();
+        let env = rx
+            .recv()
+            .await
+            .expect("post after invite must fan out (remote row recorded)");
+        assert!(
+            matches!(
+                env,
+                crate::tunnel::TunnelMessage::TunnelChannelEvent { .. }
+            ),
+            "expected TunnelChannelEvent after the invite, got {env:?}"
+        );
+    }
+
+    /// The DM entry point: a bound channel invited via
+    /// `fanout_dm_invite` with the creator's real DID emits an
+    /// envelope whose `creator_did` + `passive_binding` DM marker
+    /// sign and verify.
+    #[tokio::test]
+    async fn dm_invite_carries_creator_did_and_binding_marker() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        }));
+        let port = TunnelChannelPort::new(store.clone());
+
+        let (ctx, mut rx) = build_test_ctx("did:key:zRuntimeA").await;
+        port.set_ctx(ctx.clone()).await;
+
+        // A DM-tier channel (bound), as `ensure_peer_dm_channel`
+        // provisions it.
+        let channel = port
+            .create(
+                &PrincipalId("prin_alice".into()),
+                CreateOpts::runtime("dm-principal-bob").with_passive_binding("/principal-bob"),
+            )
+            .await
+            .unwrap();
+
+        port.fanout_dm_invite(
+            &channel,
+            &PrincipalId("prin_alice".into()),
+            "did:peko:principal:alice",
+            &PrincipalId("did:peko:principal:bob@did:key:zRuntimeB".into()),
+        )
+        .await
+        .expect("DM invite fan-out must succeed");
+
+        let env = rx.recv().await.expect("DM invite envelope expected");
+        let (
+            request_id,
+            source_runtime_id,
+            recipient_runtime_id,
+            creator_did,
+            passive_binding,
+            initial_members,
+            signature,
+        ) = match env {
+            crate::tunnel::TunnelMessage::TunnelChannelInvite {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                creator_did,
+                passive_binding,
+                initial_members,
+                signature,
+                ..
+            } => (
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                creator_did,
+                passive_binding,
+                initial_members,
+                signature,
+            ),
+            other => panic!("expected TunnelChannelInvite, got {other:?}"),
+        };
+
+        assert_eq!(source_runtime_id, "did:key:zRuntimeA");
+        assert_eq!(recipient_runtime_id, "did:key:zRuntimeB");
+        assert_eq!(creator_did, "did:peko:principal:alice");
+        assert_eq!(
+            passive_binding.as_deref(),
+            Some("/principal-bob"),
+            "the DM marker rides the envelope"
+        );
+        // The invitee row is the receiver-addressed one: bare DID,
+        // no runtime id.
+        let invitee_row = initial_members
+            .iter()
+            .find(|m| m.runtime_id.is_none())
+            .expect("invitee row present");
+        assert_eq!(invitee_row.principal_did, "did:peko:principal:bob");
+
+        // The full signed field set verifies.
+        let initial_members_bytes = serde_json::to_vec(&initial_members).unwrap();
+        crate::tunnel::verify_channel_invite(
+            &ctx.signing_key.verifying_key(),
+            crate::tunnel::ChannelInviteSignedFields {
+                request_id: &request_id,
+                source_runtime_id: &source_runtime_id,
+                recipient_runtime_id: &recipient_runtime_id,
+                source_principal_did: "prin_alice",
+                channel_id: channel.as_str(),
+                creator: "prin_alice",
+                creator_did: &creator_did,
+                name: "dm-principal-bob",
+                passive_binding: "/principal-bob",
+                initial_members_bytes: &initial_members_bytes,
+            },
+            &signature,
+        )
+        .expect("DM invite signature must verify");
+    }
+
+    /// Mirror-side fan-back (Phase 12a): after `join_remote` with the
+    /// new parameters, the receiver's own principal is a local member
+    /// (its post passes the membership check) and the creator's
+    /// remote row routes the post back to the source runtime — an
+    /// envelope is captured on the receiver's mock tunnel.
+    #[tokio::test]
+    async fn mirror_side_post_fans_back_to_source_runtime() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        }));
+        let port = TunnelChannelPort::new(store.clone());
+
+        // The RECEIVER's ctx: its own runtime is B; the source was A.
+        let (ctx, mut rx) = build_test_ctx("did:key:zRuntimeB").await;
+        port.set_ctx(ctx).await;
+
+        let channel = ChannelId("chan_mirror01".to_string());
+        let initial_members = vec![
+            peko_protocol::channel::InitialMember {
+                principal_did: "prin_alice".to_string(),
+                runtime_id: Some("did:key:zRuntimeA".to_string()),
+            },
+            peko_protocol::channel::InitialMember {
+                principal_did: "did:peko:principal:bob".to_string(),
+                runtime_id: None,
+            },
+        ];
+        port.join_remote(
+            &channel,
+            "prin_alice",
+            "dm-principal-bob",
+            &initial_members,
+            &PrincipalId("prin_bob_local".into()),
+            "did:key:zRuntimeA",
+            Some("/principal-alice".to_string()),
+        )
+        .await
+        .expect("join_remote must succeed");
+
+        // The receiver posts a reply on its mirror...
+        port.post(
+            &channel,
+            &PrincipalId("prin_bob_local".into()),
+            PostMsg::root("hello back"),
+        )
+        .await
+        .expect("receiver is a local member of its mirror");
+
+        // ...and the post fans back out to the source runtime.
+        let env = rx
+            .recv()
+            .await
+            .expect("mirror-side post must fan out to the source runtime");
+        match env {
+            crate::tunnel::TunnelMessage::TunnelChannelEvent {
+                source_runtime_id,
+                recipient_runtime_id,
+                ..
+            } => {
+                assert_eq!(source_runtime_id, "did:key:zRuntimeB");
+                assert_eq!(recipient_runtime_id, "did:key:zRuntimeA");
+            }
+            other => panic!("expected TunnelChannelEvent, got {other:?}"),
+        }
     }
 }

@@ -1582,6 +1582,43 @@ directions. See `peko-rs/core/src/daemon/channel_binding.rs`.
 principal itself (`peko-rs/core/src/principal/peer_dm.rs`). Find is by
 binding match, so the on-disk shape is unchanged.
 
+**Sprint 3 Phase 12a (2026-08-19):** cross-runtime DM mirrors. An
+inbound `TunnelChannelInvite` bootstraps a local mirror via
+`ChannelStore::join_remote`, which now writes `passive_binding` into
+the mirror's `meta.json`. The binding is **receiver-local**: the
+envelope carries the source's binding only as a DM marker (`Some(_)`
+= DM-tier; the value is never adopted verbatim), and the receiver
+derives its own `/<slug>` from its own peer child for the creator —
+each side's binding names its OWN child for the other principal, and
+`-N` slug-collision suffixes are runtime-local. `creator` in a
+mirror's `meta.json` remains the SOURCE-runtime-local creator id
+(display only).
+
+### 5¾.3 Mirror `members.json` partition (Phase 12a)
+
+`join_remote` re-partitions the invite's source-keyed membership
+snapshot to the receiver's view:
+
+- `members` (local) is exactly the receiver's own principal id —
+  resolved by the host bootstrap (`AppState::dm_channel_mirror_bootstrap`)
+  from the invitee row (the snapshot row with `runtime_id: None`,
+  which carries the invited principal's DID). This is what makes the
+  mirror visible to `list_for_principal` (the boot sweep) and lets
+  the receiver's own `post` pass the membership check — source-side
+  id forms never match the receiver's local `prin_<uuid>`.
+- `remote_members` is the creator (filed under the envelope's
+  `source_runtime_id`) plus every snapshot row carrying a
+  `runtime_id`, deduped on the `(runtime_id, principal_id)` pair —
+  so the receiver's own posts fan back out to the source runtime.
+- Invitee rows (`runtime_id: None`) are dropped once the receiver's
+  local principal is resolved; they carry no receiver-local meaning.
+
+The source side, symmetrically, records the invitee as a
+`RemoteMember` when the invite fans out
+(`TunnelChannelPort::fanout_dm_invite` calls `add_remote_member`
+before sending), with `principal_id` = the invitee's bare id/DID
+(its `@<runtime>` routing suffix stripped).
+
 ---
 
 ## 6. Agent Package Format (.agent) (RETIRED)

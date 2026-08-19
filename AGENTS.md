@@ -785,6 +785,69 @@ cargo test --all-features
     13 decides migration). A2A gets local DM posting as a side effect
     of the shared manager funnel — no await-reply, no fan-out (Phase
     12).
+  - **2026-08-19 sprint 3 Phase 12a (cross-runtime DM channel
+    lifecycle + anti-loop rule):** the additive plumbing for
+    principal-to-principal DM over channels. Nothing user-facing
+    switches over yet — `send_peer`/messenger/cron and the old A2A
+    RPC stack are untouched (12b rewires them); `peer_dm.rs` still
+    provisions only the LOCAL channel for `principal:<did>` peers.
+    - **Wire** (`tunnel/protocol.rs`): `TunnelChannelInvite` gains
+      `creator_did` (the creator principal's stable DID — the
+      receiver names its peer child from it; `creator` and
+      `source_principal_did` are source-local ids) and
+      `passive_binding` (DM marker; the VALUE is ignored by the
+      receiver — each side's binding names its OWN child for the
+      other principal, and `-N` slug suffixes are runtime-local).
+      Both fields join the signed pre-image
+      (`ChannelInviteSignedFields`; `passive_binding` signs as the
+      empty string when `None`).
+    - **Outbound** (`tunnel/tunnel_channel_port.rs`): `invite` routes
+      through the new `fanout_dm_invite`, which records the invitee
+      as a `RemoteMember` on the SOURCE **before** sending (unwiring
+      the previously dead `add_remote_member` — without it
+      `fanout_event` saw no remote members and posts stayed
+      local-only) and re-keys the membership snapshot to the
+      receiver's view: source-local rows go out with
+      `runtime_id: Some(caller_runtime_id)`, pre-existing remote rows
+      keep their runtime, and the single `runtime_id: None` row is
+      the invitee ("addressed to you") carrying the invited
+      principal's DID. The bare `ChannelPort::invite` trait surface
+      has no DID resolver, so it passes the inviter's local id as
+      `creator_did`; the DM provisioning path (12b) calls
+      `fanout_dm_invite` directly with the real DID.
+    - **Mirror bootstrap**: `ChannelStore::join_remote` gained
+      `self_principal` / `source_runtime_id` / `passive_binding`
+      params and re-partitions membership (see DATA_MODEL §5¾.3).
+      Inbound envelopes now go through the new
+      `TunnelHost::dm_channel_mirror_bootstrap` (AppState impl in
+      `daemon/state.rs`): resolve the invited local principal from
+      the invitee row's DID (`PrincipalManager::find_by_did`; unknown
+      DID ⇒ log + skip); for DM invites, CHILD-ONLY ensure the peer
+      child for `principal:<creator_did>` (`ensure_peer_child` — NOT
+      `ensure_child_ingress`, which would provision a second
+      local-only DM channel), derive `/<slug>` from the child's real
+      slug (`peer_dm::peer_child_slug_readback`, factored out of
+      `ensure_peer_dm_channel`; the session-manager construction is
+      `child_turns::peer_child_session_manager`, factored out of
+      `PeerChildTurns::build`), then `join_remote`, then
+      `ChannelBindingSupervisor::ensure_subscriber` — closing the
+      Phase 10 live-hook gap (mirrors get their
+      `PassiveBindingResponder` immediately; unbound mirrors get the
+      meter-only Noop subscriber, matching the boot sweep).
+    - **Anti-loop** (`daemon/channel_binding.rs`): responder replies
+      are threaded — `RespondCtx.event_id` (new; the subscriber
+      populates it from `peek_with_ids`'s line id) flows into
+      `PostMsg::reply(event_id, …)`, and `response_trigger` now
+      requires `parent.is_none()`, so no responder ever reacts to a
+      reply and cross-runtime ping-pong is structurally impossible
+      (mirror line numbers diverge between runtimes, so
+      correlation-based dedup can't work — the parent-presence bit
+      is all the rule needs; `append_remote_event` skips parent
+      validation, so dangling remote parents are fine). Accepted
+      trade-off: a threaded human reply (`PostMsg::reply` via
+      `ChannelSend`) no longer wakes a bound session — root posts
+      only; local ingress reply projections (`post_peer_dm_reply`)
+      stay root posts (self-authored + self-skipped anyway).
   - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
 - **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.

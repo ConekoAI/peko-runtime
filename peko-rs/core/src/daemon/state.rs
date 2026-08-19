@@ -2220,6 +2220,7 @@ impl Default for DaemonConfigSnapshot {
 // F5: AppState is the only type that knows both `daemon` and `tunnel`, so it
 // implements the tunnel's narrow host port here. The dispatcher holds an
 // `Arc<dyn TunnelHost>` and never names `AppState` (boundary rule 9).
+#[async_trait::async_trait]
 impl crate::tunnel::TunnelHost for AppState {
     fn principal_manager(&self) -> Arc<PrincipalManager> {
         Arc::clone(&self.principal_manager)
@@ -2268,6 +2269,110 @@ impl crate::tunnel::TunnelHost for AppState {
     /// verifying the envelope signature.
     fn tunnel_channel_port(&self) -> Arc<crate::tunnel::TunnelChannelPort> {
         Arc::clone(&self.tunnel_channel_port)
+    }
+
+    /// Sprint 3 Phase 12a: cross-runtime DM mirror bootstrap. The
+    /// dispatcher calls this after the invite signature verifies (see
+    /// the trait docs for the contract).
+    async fn dm_channel_mirror_bootstrap(
+        &self,
+        invite: crate::tunnel::DmChannelInviteBootstrap,
+    ) -> anyhow::Result<()> {
+        // 1. WHICH local principal was invited: the invitee row (the
+        //    one with `runtime_id: None` — "addressed to you")
+        //    carries the invited principal's DID.
+        let Some(invitee_did) = invite
+            .initial_members
+            .iter()
+            .find(|m| m.runtime_id.is_none())
+            .map(|m| m.principal_did.clone())
+        else {
+            tracing::warn!(
+                channel = %invite.channel_id,
+                "DM mirror bootstrap: invite carries no invitee row; skipping"
+            );
+            return Ok(());
+        };
+        let Some(principal) = self.principal_manager.find_by_did(&invitee_did).await else {
+            tracing::warn!(
+                channel = %invite.channel_id,
+                invitee_did = %invitee_did,
+                "DM mirror bootstrap: invitee DID matches no loaded principal; skipping"
+            );
+            return Ok(());
+        };
+
+        // 2. DM invites (binding marker present): CHILD-ONLY ensure
+        //    of the receiver's peer child for the creator and derive
+        //    the receiver-local binding from the child's real slug.
+        //    Deliberately NOT `ensure_child_ingress` — that would also
+        //    provision a local-only DM channel (a second, unmirrored
+        //    channel for the same peer). The wire binding VALUE is
+        //    ignored: each side's binding names its own child, and
+        //    `-N` slug suffixes are runtime-local.
+        let binding = match invite.passive_binding.as_ref() {
+            Some(_) => {
+                let peer = peko_auth::Subject::Principal(peko_subject::PrincipalDID(
+                    invite.creator_did.clone(),
+                ));
+                let (owner, agent_name) = {
+                    let config = principal.config.read().await;
+                    (
+                        config.owner.clone(),
+                        crate::principal::child_turns::peer_child_agent_config(
+                            &config,
+                            &principal.workspace_path,
+                        )
+                        .name,
+                    )
+                };
+                let session_manager = crate::principal::child_turns::peer_child_session_manager(
+                    &principal,
+                    &agent_name,
+                    &owner,
+                );
+                let child_id = crate::principal::peer_children::ensure_peer_child(
+                    &agent_name,
+                    &owner,
+                    &peer,
+                    &session_manager,
+                )
+                .await?;
+                let slug = crate::principal::peer_dm::peer_child_slug_readback(
+                    &session_manager,
+                    &child_id,
+                    &peer,
+                )
+                .await?;
+                Some(format!("/{slug}"))
+            }
+            None => None,
+        };
+
+        // 3. Bootstrap the mirror. `join_remote` is idempotent on the
+        //    meta.json-existence check, so a duplicate envelope is a
+        //    no-op (the subscriber ensure below is deduped too).
+        let channel = peko_channel::ChannelId(invite.channel_id.clone());
+        self.tunnel_channel_port
+            .join_remote(
+                &channel,
+                &invite.creator,
+                &invite.name,
+                &invite.initial_members,
+                &principal.id,
+                &invite.source_runtime_id,
+                binding,
+            )
+            .await?;
+
+        // 4. Live subscriber — closes the Phase 10 live-hook gap:
+        //    bound mirrors get their `PassiveBindingResponder`
+        //    immediately; unbound mirrors get the meter-only `Noop`
+        //    responder, matching the boot sweep's treatment of
+        //    unbound channels (`select_responder`).
+        self.channel_binding_supervisor()
+            .ensure_subscriber(principal.id.clone(), channel);
+        Ok(())
     }
 }
 

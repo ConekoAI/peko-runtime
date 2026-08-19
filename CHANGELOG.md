@@ -90,6 +90,45 @@ projections on these paths are deleted.
   the `_ingress` forms). `record_cron_input` stays — cron projection
   is unchanged and keeps `peko-chat-log` alive until Phase 13.
 
+#### Phase 12a — cross-runtime DM channel plumbing + anti-loop rule
+
+Additive only: the new machinery exists and is tested, but nothing
+user-facing switches over yet (12b rewires `send_peer`).
+
+##### Added
+- **DM-aware channel invites**: `TunnelChannelInvite` gains
+  `creator_did` + `passive_binding` (both join the signed pre-image).
+  The binding value is only a "this is a DM channel" marker — each
+  side's binding names its OWN child for the other principal, and
+  slug-collision suffixes are runtime-local, so the receiver derives
+  its own `/​<slug>` binding from its own session tree.
+- **`ChannelStore::join_remote` re-partition**: member rows arrive
+  keyed to the SOURCE runtime's view; the mirror maps the invitee row
+  to the receiver's LOCAL `PrincipalId` (so the receiver can post and
+  the mirror shows up in `list_for_principal`) and files the creator
+  + runtime-stamped rows as `remote_members` (so the receiver's posts
+  fan back out). `passive_binding` is persisted on the mirror.
+- **Fan-out actually wired**: `TunnelChannelPort::fanout_dm_invite`
+  records the invitee as a `RemoteMember` (unwiring the previously
+  dead `add_remote_member` — before this, `remote_members` stayed
+  empty and `fanout_event` no-oped) before the tunnel-handle check,
+  so routing state survives a transient disconnect.
+- **Inbound mirror bootstrap**: new `TunnelHost::
+  dm_channel_mirror_bootstrap` (AppState impl) — resolves the invited
+  local principal by DID, ensures its peer child for
+  `principal:<creator_did>` (child-only; no second local channel),
+  derives the binding from the child's real slug, `join_remote`s with
+  it, and ensures the `ChannelBindingSupervisor` subscriber — closing
+  the Phase 10 gap where mirrored channels got no responder until
+  next boot.
+- **Anti-loop rule**: responder replies are posted with
+  `PostMsg::reply(event_id, …)` (`RespondCtx` now carries the
+  triggering event's line id) and `response_trigger` only fires on
+  ROOT posts (`parent.is_none()`). Cross-runtime ping-pong is
+  structurally impossible: no responder ever reacts to a reply.
+  Trade-off: threaded human replies (`PostMsg::reply` via
+  `ChannelSend`) no longer wake a bound session — root posts only.
+
 ### Channel tool reachability fixes (reviewer findings, 2026-08-18)
 
 The `ChannelRead` / `ChannelSend` built-in tools were wired in but

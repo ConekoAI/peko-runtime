@@ -85,6 +85,35 @@ pub(crate) struct PeerDmProvision {
     pub created: bool,
 }
 
+/// Read the peer child's REAL slug back from session metadata (the
+/// `-N` collision suffix case means the derived base slug is only a
+/// fallback). Factored out of [`ensure_peer_dm_channel`] so the Phase
+/// 12a cross-runtime DM mirror bootstrap
+/// (`TunnelHost::dm_channel_mirror_bootstrap`) derives the
+/// receiver-local binding from the same source of truth.
+pub(crate) async fn peer_child_slug_readback(
+    session_manager: &Arc<RwLock<SessionManager>>,
+    child_id: &str,
+    peer: &Subject,
+) -> Result<String> {
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await?;
+    match metas
+        .iter()
+        .find(|m| m.session_id == child_id)
+        .and_then(|m| m.slug.clone())
+    {
+        Some(slug) => Ok(slug),
+        // `ensure_peer_child` guarantees a slug was assigned; fall
+        // back to the derived base slug if the metadata read somehow
+        // comes up empty.
+        None => peer_child_slug(peer),
+    }
+}
+
 /// Find-or-create the peer's DM channel. Idempotent per peer: a
 /// second call returns the same channel with `created: false`.
 ///
@@ -102,24 +131,7 @@ pub(crate) async fn ensure_peer_dm_channel(
     session_manager: &Arc<RwLock<SessionManager>>,
     lock: &Mutex<()>,
 ) -> Result<PeerDmProvision> {
-    // Resolve the child's ACTUAL slug. `ensure_peer_child` guarantees
-    // one was assigned; fall back to the derived base slug if the
-    // metadata read somehow comes up empty.
-    let slug = {
-        let metas = session_manager
-            .write()
-            .await
-            .list_all_sessions(false)
-            .await?;
-        match metas
-            .iter()
-            .find(|m| m.session_id == child_id)
-            .and_then(|m| m.slug.clone())
-        {
-            Some(slug) => slug,
-            None => peer_child_slug(peer)?,
-        }
-    };
+    let slug = peer_child_slug_readback(session_manager, child_id, peer).await?;
     let name = format!("dm-{slug}");
     let binding = format!("/{slug}");
 

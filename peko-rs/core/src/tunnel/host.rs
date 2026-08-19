@@ -23,10 +23,45 @@ use crate::principal::PrincipalManager;
 use peko_auth::jwt::JwtValidator;
 use peko_observability::Observability;
 
+/// Everything the host needs to bootstrap the local mirror of an
+/// inbound `TunnelChannelInvite` (sprint 3 Phase 12a). Bundled as a
+/// struct so the trait method stays readable; the dispatcher fills it
+/// from the verified envelope.
+#[derive(Debug, Clone)]
+pub struct DmChannelInviteBootstrap {
+    /// The channel id (`chan_<8 base36>`) the mirror is bootstrapped
+    /// under.
+    pub channel_id: String,
+    /// The source-runtime-local creator id (display only — written
+    /// into the mirror's `meta.json`).
+    pub creator: String,
+    /// The creator principal's stable DID. The receiver names its
+    /// peer child for the creator from this (`principal:<did>`) —
+    /// `creator` / `source_principal_did` are source-local ids and
+    /// cannot support that.
+    pub creator_did: String,
+    /// Human-readable channel name snapshot.
+    pub name: String,
+    /// Source-keyed membership snapshot. The single row with
+    /// `runtime_id: None` is the invitee row ("addressed to you")
+    /// and carries the invited principal's DID — the host resolves
+    /// WHICH local principal was invited from it.
+    pub initial_members: Vec<peko_protocol::channel::InitialMember>,
+    /// The source runtime's `did:key` (signature already verified by
+    /// the dispatcher before this is called).
+    pub source_runtime_id: String,
+    /// DM marker. `Some(_)` means the channel is DM-tier on the
+    /// source; the VALUE is ignored (the receiver derives its own
+    /// binding from its own session tree — slug suffixes are
+    /// runtime-local).
+    pub passive_binding: Option<String>,
+}
+
 /// Narrow host interface the tunnel dispatcher uses to reach daemon services.
 ///
 /// Implemented only by `daemon::state::AppState`. Production and tests hand
 /// the dispatcher an `Arc<dyn TunnelHost>`.
+#[async_trait::async_trait]
 pub trait TunnelHost: Send + Sync {
     /// Principal manager used to list/lookup principals for announce + receive.
     fn principal_manager(&self) -> Arc<PrincipalManager>;
@@ -74,4 +109,31 @@ pub trait TunnelHost: Send + Sync {
     /// does the actual mirror append; `TunnelChannelPort` is just the
     /// typed port the dispatcher reaches through.
     fn tunnel_channel_port(&self) -> Arc<TunnelChannelPort>;
+
+    /// Sprint 3 Phase 12a: bootstrap the local mirror for an inbound
+    /// `TunnelChannelInvite` and give it a live subscriber. The
+    /// dispatcher calls this AFTER the envelope signature verifies,
+    /// in place of a bare `join_remote`.
+    ///
+    /// The host owns the parts the tunnel layer cannot know:
+    ///
+    /// - WHICH local principal was invited (the invitee row's DID →
+    ///   the principal registry);
+    /// - for DM invites (`passive_binding: Some`), the receiver-local
+    ///   peer child for `principal:<creator_did>` (child-only ensure
+    ///   — no local-only DM channel) and the `/​<slug>` binding
+    ///   derived from that child's real slug;
+    /// - the post-bootstrap `ChannelBindingSupervisor::ensure_subscriber`
+    ///   kickoff, so the mirror's `PassiveBindingResponder` starts
+    ///   immediately (closing the Phase 10 live-hook gap).
+    ///
+    /// Non-DM invites (`passive_binding: None`) bootstrap an unbound
+    /// mirror and still get the subscriber (the meter-only `Noop`
+    /// responder), matching the boot sweep's treatment of unbound
+    /// channels. An invite whose invitee DID matches no loaded
+    /// principal is logged and skipped (Ok) — invites are push-only.
+    async fn dm_channel_mirror_bootstrap(
+        &self,
+        invite: DmChannelInviteBootstrap,
+    ) -> anyhow::Result<()>;
 }

@@ -491,18 +491,37 @@ pub enum TunnelMessage {
         /// `prin_alice`). Mirrors the `creator` field written into
         /// the local mirror's `meta.json`.
         creator: String,
+        /// Sprint 3 Phase 12a: the creator principal's stable DID
+        /// (`did:peko:principal:…`). `creator` /
+        /// `source_principal_did` are source-runtime-LOCAL ids the
+        /// receiver cannot resolve; the DID is what the receiver
+        /// names its peer child for (`principal:<creator_did>`).
+        creator_did: String,
         /// Human-readable channel name (`team`, `general`, etc.).
         /// Snapshotted from the source runtime's `meta.json` at
         /// invite time so the receiver doesn't need a follow-up
         /// `peek` to display the channel.
         name: String,
+        /// Sprint 3 Phase 12a: DM marker — the source channel's
+        /// `passive_binding`, carried so the receiver knows to
+        /// bootstrap a DM-tier mirror (with a
+        /// `PassiveBindingResponder` subscriber). The VALUE is
+        /// ignored by the receiver: each side's binding names its
+        /// OWN child for the other principal and `-N` slug-collision
+        /// suffixes are runtime-local, so the receiver derives its
+        /// own `/​<slug>` binding from its own session tree. `None`
+        /// means a plain (unbound) cross-runtime channel.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passive_binding: Option<String>,
         /// Initial membership snapshot: every principal that
         /// should appear in the receiver's `members.json` row
-        /// table. Each row pairs a principal DID with the runtime
-        /// that hosts it (`runtime_id: None` = local to the
-        /// source). The receiver builds both the local-members
-        /// (`local_members`) and `remote_members` arrays from this
-        /// list by partitioning on the optional `runtime_id`.
+        /// table. Phase 12a keying: rows for principals on OTHER
+        /// runtimes (including the source's own) carry
+        /// `runtime_id: Some(...)`; the single row with
+        /// `runtime_id: None` is the invitee row addressed to the
+        /// RECEIVER ("this is you"), carrying the invitee
+        /// principal's DID so the receiver can resolve which of its
+        /// local principals was invited.
         initial_members: Vec<InitialMember>,
         /// Ed25519 signature, base64url-no-pad, over the canonical
         /// pre-image described in `tunnel_channel_signature`. Same
@@ -1231,7 +1250,9 @@ mod tests {
             source_principal_did: "prin_alice".to_string(),
             channel_id: "chan_abcdefgh".to_string(),
             creator: "prin_alice".to_string(),
+            creator_did: "did:peko:principal:alice".to_string(),
             name: "team-chat".to_string(),
+            passive_binding: Some("/principal-bob".to_string()),
             initial_members,
             signature: "base64url-sig".to_string(),
         };
@@ -1288,7 +1309,9 @@ mod tests {
                 source_principal_did,
                 channel_id,
                 creator,
+                creator_did,
                 name,
+                passive_binding,
                 initial_members: decoded_members,
                 signature,
             } => {
@@ -1298,7 +1321,9 @@ mod tests {
                 assert_eq!(source_principal_did, "prin_alice");
                 assert_eq!(channel_id, "chan_abcdefgh");
                 assert_eq!(creator, "prin_alice");
+                assert_eq!(creator_did, "did:peko:principal:alice");
                 assert_eq!(name, "team-chat");
+                assert_eq!(passive_binding.as_deref(), Some("/principal-bob"));
                 assert_eq!(signature, "base64url-sig");
                 assert_eq!(decoded_members.len(), 2);
                 assert_eq!(decoded_members[0].principal_did, "prin_alice");

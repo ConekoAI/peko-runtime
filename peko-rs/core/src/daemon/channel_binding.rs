@@ -46,10 +46,25 @@
 //!   event whose author parses as a Subject wire form. The responder
 //!   owns exactly the raw-principal-id-authored posts: another local
 //!   principal posting via `peko channel send` / `ChannelSend`
-//!   (existing Phase 4 behavior) and future Phase 12 A2A fan-out
-//!   posts. Known gap (Phase 12 owns cross-runtime semantics and will
-//!   revisit): remote-mirrored posts whose author is a Subject wire
-//!   form (e.g. `user:*`) are also skipped by this rule.
+//!   (existing Phase 4 behavior) and Phase 12 cross-runtime fan-out
+//!   posts (a mirrored DM post arrives with author = the peer
+//!   principal's source-local id — a raw form, not a Subject wire
+//!   form). Remote-mirrored posts whose author IS a Subject wire form
+//!   (e.g. `user:*`) are still skipped by this rule — the remote
+//!   side's ingress handler owns those turns.
+//! - **Root-post-only rule (Phase 12a).** The trigger additionally
+//!   requires `parent.is_none()`: every responder reply is posted via
+//!   `PostMsg::reply(triggering_line, …)`, so no responder ever reacts
+//!   to a reply. Cross-runtime ping-pong (A's mirrored reply wakes B's
+//!   responder, whose reply wakes A's, …) is then STRUCTURALLY
+//!   impossible — mirror line numbers diverge between runtimes, so
+//!   correlation-based dedup can't work and the parent-presence bit is
+//!   all the rule needs (`append_remote_event` skips parent
+//!   validation, so a dangling remote parent value is fine).
+//!   Trade-off, accepted: a threaded human reply (`PostMsg::reply` via
+//!   `ChannelSend`) no longer wakes a bound session — root posts only.
+//!   Local ingress reply projections (`post_peer_dm_reply`) stay root
+//!   posts (self-authored + self-skipped anyway).
 //! - **Self-post suppression (anti-loop invariant).** The responder
 //!   posts its reply via `ChannelPort::post` as the principal, then
 //!   observes its own post on the subscriber's next poll tick.
@@ -59,9 +74,9 @@
 //!   separation"). Author matching is unambiguous: `ChannelStore::post`
 //!   writes `author: sender.to_string()` and the responder compares
 //!   against the same `PrincipalId::to_string()` form. Together with
-//!   the Subject-wire-form skip above, the partition is: posts the
-//!   responder acts on are exactly raw-principal-id posts from OTHER
-//!   principals.
+//!   the Subject-wire-form skip and the root-post-only rule above, the
+//!   partition is: posts the responder acts on are exactly
+//!   raw-principal-id ROOT posts from OTHER principals.
 //! - **Run concurrency.** `consider_response` spawns the turn as a
 //!   detached task and returns immediately, so the subscriber's cursor
 //!   keeps advancing (persisted cursors, Phase 0) instead of blocking
@@ -202,23 +217,31 @@ impl PassiveBindingResponder {
     }
 
     /// The anti-loop filter. Returns the message text to act on, or
-    /// `None` to drop the event. Only `Posted` events from OTHER
+    /// `None` to drop the event. Only `Posted` ROOT events from OTHER
     /// members trigger a turn — `Created`/`MemberJoined`/`MemberLeft`
-    /// are channel bookkeeping, and self-authored posts are the loop
-    /// vector this filter exists to close.
+    /// are channel bookkeeping, self-authored posts are the loop
+    /// vector this filter exists to close, and parent-bearing posts
+    /// are replies (every responder reply carries `parent: Some`, so
+    /// reacting to one would make cross-runtime ping-pong possible).
     ///
     /// Phase 11 turn-ownership partition: posts whose author is a
     /// Subject wire form (`user:*`, `principal:*`, `public`) are
     /// ingress-handler-owned — the handler already posted them AND
     /// drives the turn, so the responder must skip them (no
-    /// double-turn). The responder drives only raw-principal-id posts
-    /// from other principals (local `peko channel send` / `ChannelSend`
-    /// cross-principal posts; Phase 12 A2A fan-out).
+    /// double-turn). The responder drives only raw-principal-id root
+    /// posts from other principals (local `peko channel send` /
+    /// `ChannelSend` cross-principal posts; Phase 12 cross-runtime
+    /// fan-out posts).
     fn response_trigger(principal: &PrincipalId, event: &ChannelEvent) -> Option<String> {
         match event {
-            ChannelEvent::Posted { author, text, .. }
-                if *author != principal.to_string()
-                    && peko_subject::Subject::from_str(author).is_err() =>
+            ChannelEvent::Posted {
+                author,
+                text,
+                parent,
+                ..
+            } if *author != principal.to_string()
+                && parent.is_none()
+                && peko_subject::Subject::from_str(author).is_err() =>
             {
                 Some(text.clone())
             }
@@ -230,8 +253,9 @@ impl PassiveBindingResponder {
 impl ResponderInner {
     /// One full passive-binding cycle for `text`: resolve the binding
     /// (cached), drive the turn (serialized per channel), post the
-    /// reply. All failures are log-only — see the module docs.
-    async fn run_turn(&self, text: String) {
+    /// reply threaded onto the triggering event (`event_id`). All
+    /// failures are log-only — see the module docs.
+    async fn run_turn(&self, event_id: String, text: String) {
         let _turn_guard = self.turn_lock.lock().await;
 
         let session_id = match self
@@ -261,9 +285,18 @@ impl ResponderInner {
                     );
                     return;
                 }
+                // Phase 12a: the reply is threaded onto the triggering
+                // event so `response_trigger`'s root-post-only rule
+                // never reacts to it — here (self-author skip already
+                // covers the local echo) and on every remote mirror the
+                // reply fans out to.
                 if let Err(e) = self
                     .port
-                    .post(&self.channel, &self.principal, PostMsg::root(reply))
+                    .post(
+                        &self.channel,
+                        &self.principal,
+                        PostMsg::reply(event_id, reply),
+                    )
                     .await
                 {
                     warn!(
@@ -293,7 +326,7 @@ impl ChannelResponder for PassiveBindingResponder {
         // must not block on an LLM turn (see module docs). The turn
         // lock inside `run_turn` serializes concurrent arrivals.
         let inner = Arc::clone(&self.inner);
-        tokio::spawn(async move { inner.run_turn(text).await });
+        tokio::spawn(async move { inner.run_turn(ctx.event_id, text).await });
         Ok(())
     }
 }
@@ -487,11 +520,12 @@ pub(crate) fn select_responder(
 /// per principal (first bound channel), not once per message.
 ///
 /// Post-boot approach: hook-driven, not a periodic rescan. The IPC
-/// `ChannelCreate` / `ChannelInvite` success arms already call
-/// `ChannelHost` hooks; wiring those is cheaper and immediate. Known
-/// gap (documented, deliberate): channels joined via the cross-runtime
-/// tunnel bootstrap (`join_remote`) fire no hook today — their
-/// subscribers appear at the next daemon boot via `spawn_all`.
+/// `ChannelCreate` / `ChannelInvite` success arms call `ChannelHost`
+/// hooks, and (Phase 12a) the cross-runtime invite bootstrap
+/// (`TunnelHost::dm_channel_mirror_bootstrap`) calls
+/// [`Self::ensure_subscriber`] right after `join_remote`, so a
+/// mirrored channel gets its subscriber immediately instead of at the
+/// next boot sweep.
 pub(crate) struct ChannelBindingSupervisor {
     port: Arc<dyn ChannelPort>,
     meter: Arc<dyn ChannelMeter>,
@@ -574,6 +608,17 @@ impl ChannelBindingSupervisor {
             };
             let _ = this.spawn_one(principal, channel).await;
         });
+    }
+
+    /// Test seam: has a subscriber been spawned for this
+    /// (principal, channel) pair? `ensure_subscriber` is
+    /// fire-and-forget, so tests poll this to observe the spawn.
+    #[cfg(test)]
+    pub(crate) fn has_subscriber(&self, principal: &PrincipalId, channel: &ChannelId) -> bool {
+        self.spawned
+            .lock()
+            .expect("spawned mutex poisoned")
+            .contains(&(principal.clone(), channel.clone()))
     }
 
     /// Spawn one subscriber unless the pair already has one. Returns
@@ -751,15 +796,27 @@ mod tests {
         }
     }
 
+    fn posted_reply(author: &str, parent: &str, text: &str) -> ChannelEvent {
+        ChannelEvent::Posted {
+            channel: chan(),
+            author: author.to_string(),
+            parent: Some(parent.to_string()),
+            text: text.to_string(),
+            at: "2026-08-15T00:00:00Z".to_string(),
+        }
+    }
+
     fn respond_ctx(
         principal: &PrincipalId,
         channel: &ChannelId,
+        event_id: &str,
         event: ChannelEvent,
     ) -> RespondCtx {
         RespondCtx {
             channel: channel.clone(),
             principal: principal.clone(),
             event,
+            event_id: event_id.to_string(),
             now: std::time::SystemTime::now(),
         }
     }
@@ -943,6 +1000,24 @@ mod tests {
         }
     }
 
+    // -- Phase 12a: root-post-only rule ---------------------------------
+
+    /// A parent-bearing post is a reply — and every responder reply
+    /// carries `parent: Some` — so the trigger must drop it even when
+    /// the author is another principal's raw id. This is the bit that
+    /// makes cross-runtime ping-pong structurally impossible: B's
+    /// mirrored reply never wakes A's responder.
+    #[test]
+    fn response_trigger_skips_parent_bearing_posts() {
+        let principal = pid("prin_self");
+        let ev = posted_reply("prin_other", "7", "a threaded reply");
+        assert_eq!(
+            PassiveBindingResponder::response_trigger(&principal, &ev),
+            None,
+            "replies (parent-bearing posts) must never trigger a turn"
+        );
+    }
+
     // -- responder end-to-end (stub driver, real ChannelStore) -------------
 
     async fn bound_responder(
@@ -983,10 +1058,22 @@ mod tests {
         let (responder, store, channel, principal, _tmp) =
             bound_responder("prin_self", driver, resolver).await;
 
+        // Write the inbound post to the store first so the reply's
+        // `parent` (the triggering event's line id) validates against
+        // the log — in production the subscriber only ever hands the
+        // responder line ids that exist.
+        let other = pid("prin_other");
+        store.invite(&channel, &principal, &other).await.unwrap();
+        let line = store
+            .post(&channel, &other, PostMsg::root("hi"))
+            .await
+            .unwrap();
+
         responder
             .consider_response(respond_ctx(
                 &principal,
                 &channel,
+                &line,
                 posted("prin_other", "hi"),
             ))
             .await
@@ -998,12 +1085,15 @@ mod tests {
             ("session-1".to_string(), "hi".to_string())
         );
 
-        // The reply lands on the channel as the principal, and the
+        // The reply lands on the channel as the principal, THREADED
+        // onto the triggering event (Phase 12a — the root-post-only
+        // trigger rule relies on replies carrying `parent`), and the
         // channel's own event log is the only record (no chat-log
         // projection anywhere on this path).
         let store2 = Arc::clone(&store);
         let channel2 = channel.clone();
         let principal2 = principal.clone();
+        let line2 = line.clone();
         assert!(
             eventually(|| async {
                 store2
@@ -1012,11 +1102,14 @@ mod tests {
                     .unwrap()
                     .iter()
                     .any(|ev| {
-                        matches!(ev, ChannelEvent::Posted { author, text, .. }
-                    if *author == principal2.to_string() && text == "the reply")
+                        matches!(ev, ChannelEvent::Posted { author, text, parent, .. }
+                    if *author == principal2.to_string()
+                        && text == "the reply"
+                        && parent.as_deref() == Some(line2.as_str()))
                     })
             })
-            .await
+            .await,
+            "reply must land threaded onto the triggering event"
         );
     }
 
@@ -1036,6 +1129,7 @@ mod tests {
             .consider_response(respond_ctx(
                 &principal,
                 &channel,
+                "1",
                 posted("prin_self", "my reply"),
             ))
             .await
@@ -1060,6 +1154,7 @@ mod tests {
                 .consider_response(respond_ctx(
                     &principal,
                     &channel,
+                    "1",
                     posted("prin_other", text),
                 ))
                 .await
@@ -1091,6 +1186,7 @@ mod tests {
             .consider_response(respond_ctx(
                 &principal,
                 &channel,
+                "1",
                 posted("prin_other", "m1"),
             ))
             .await
@@ -1103,6 +1199,7 @@ mod tests {
             .consider_response(respond_ctx(
                 &principal,
                 &channel,
+                "1",
                 posted("prin_other", "m2"),
             ))
             .await
@@ -1112,6 +1209,120 @@ mod tests {
         // Order preserved: the queue is FIFO.
         assert_eq!(calls.lock().unwrap()[0].1, "m1");
         assert_eq!(calls.lock().unwrap()[1].1, "m2");
+    }
+
+    /// Two-runtime ping-pong simulation (Phase 12a anti-loop
+    /// end-to-end). Two stores stand in for two runtimes' views of the
+    /// same DM channel; events are hand-forwarded the way the tunnel
+    /// fan-out delivers them. A mirrored ROOT post drives exactly one
+    /// turn on the receiving side; the reply — posted with
+    /// `parent = triggering line` — is then mirrored back and
+    /// observed by the originating side's responder, which must drop
+    /// it. Zero turns on replies, exactly one turn per root post.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cross_runtime_replies_never_trigger_another_turn() {
+        // Runtime A: the channel creator's side.
+        let (driver_a, calls_a) = StubDriver::new("reply-from-a");
+        let resolver_a = StubResolver {
+            id: "session-a".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder_a, store_a, channel_a, principal_a, _tmp_a) =
+            bound_responder("prin_a", driver_a, resolver_a).await;
+        // Runtime B: the mirror side.
+        let (driver_b, calls_b) = StubDriver::new("reply-from-b");
+        let resolver_b = StubResolver {
+            id: "session-b".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder_b, store_b, channel_b, principal_b, _tmp_b) =
+            bound_responder("prin_b", driver_b, resolver_b).await;
+
+        // A posts a root post (line 1; Created is line 0).
+        let line_a = store_a
+            .post(&channel_a, &principal_a, PostMsg::root("hello from A"))
+            .await
+            .unwrap();
+
+        // The fan-out mirrors it to B (the tunnel's inbound append
+        // path). The mirrored event keeps the source's author +
+        // timestamp verbatim; B's line numbers are its own.
+        let mirrored = ChannelEvent::Posted {
+            channel: channel_b.clone(),
+            author: principal_a.to_string(),
+            parent: None,
+            text: "hello from A".to_string(),
+            at: "2026-08-19T00:00:00Z".to_string(),
+        };
+        let line_b = store_b
+            .append_remote_event(&channel_b, &mirrored)
+            .await
+            .unwrap();
+
+        // B's responder observes the mirrored root post: exactly one
+        // turn, then a threaded reply on B's log.
+        responder_b
+            .consider_response(respond_ctx(&principal_b, &channel_b, &line_b, mirrored))
+            .await
+            .unwrap();
+        assert!(eventually(|| async { calls_b.lock().unwrap().len() == 1 }).await);
+
+        let store_b2 = Arc::clone(&store_b);
+        let channel_b2 = channel_b.clone();
+        let principal_b2 = principal_b.clone();
+        assert!(
+            eventually(|| async {
+                store_b2
+                    .peek(&channel_b2, &peko_channel::Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|ev| {
+                        matches!(ev, ChannelEvent::Posted { author, parent, .. }
+                            if *author == principal_b2.to_string() && parent.is_some())
+                    })
+            })
+            .await,
+            "B's reply must land threaded (parent = Some)"
+        );
+
+        // B's reply fans back to A. A's responder observes the
+        // parent-bearing post and must NOT drive a turn — the
+        // ping-pong vector is closed.
+        let reply_events = store_b
+            .peek_with_ids(&channel_b, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        let reply = reply_events
+            .into_iter()
+            .map(|(_, ev)| ev)
+            .find(|ev| {
+                matches!(ev, ChannelEvent::Posted { author, parent, .. }
+                    if *author == principal_b.to_string() && parent.is_some())
+            })
+            .expect("B's reply event exists");
+        let line_a_reply = store_a
+            .append_remote_event(&channel_a, &reply)
+            .await
+            .unwrap();
+        responder_a
+            .consider_response(respond_ctx(&principal_a, &channel_a, &line_a_reply, reply))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            calls_b.lock().unwrap().len(),
+            1,
+            "exactly one turn per root post"
+        );
+        assert!(
+            calls_a.lock().unwrap().is_empty(),
+            "a mirrored reply must never trigger a turn"
+        );
+        // Silence the unused binding: A's root line is what B's mirror
+        // diverges from (line numbers are runtime-local by design).
+        let _ = line_a;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1128,6 +1339,7 @@ mod tests {
             .consider_response(respond_ctx(
                 &principal,
                 &channel,
+                "1",
                 posted("prin_other", "hi"),
             ))
             .await
@@ -1175,6 +1387,7 @@ mod tests {
             .consider_response(respond_ctx(
                 &principal,
                 &channel,
+                "1",
                 posted("prin_other", "hi"),
             ))
             .await
@@ -1208,6 +1421,7 @@ mod tests {
             .consider_response(respond_ctx(
                 &principal,
                 &channel,
+                "1",
                 posted("prin_other", "hi"),
             ))
             .await
@@ -1244,6 +1458,7 @@ mod tests {
             .consider_response(respond_ctx(
                 &principal,
                 &channel,
+                "1",
                 posted("prin_other", "hi"),
             ))
             .await

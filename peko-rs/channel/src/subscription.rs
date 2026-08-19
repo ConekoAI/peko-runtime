@@ -154,16 +154,18 @@ impl ChannelSubscriber {
                 tracing::warn!(?e, "channel meter record_event failed");
             }
 
-            // Hand to the responder.
+            // Hand to the responder. `event_id` is the source line
+            // number so a responder reply can thread onto the
+            // triggering event (`PostMsg::reply`).
             let ctx = RespondCtx {
                 channel: self.channel.clone(),
                 principal: self.principal.clone(),
                 event: ev.clone(),
+                event_id: task_id,
                 now: std::time::SystemTime::now(),
             };
             self.responder.consider_response(ctx).await?;
 
-            let _ = task_id;
             delivered.push(ev);
         }
 

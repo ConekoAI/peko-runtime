@@ -8,7 +8,7 @@
 //!   channels/
 //!     <chan_id>/
 //!       meta.json       # { creator, name, created_at, tier, passive_binding? }
-//!       members.json    # { members: [String] }
+//!       members.json    # { members: [String], remote_members: [RemoteMember] }
 //!       events.jsonl    # one ChannelEvent per line, append-only
 //! ```
 //!
@@ -691,15 +691,44 @@ impl ChannelStore {
     /// Creates the channel directory under the runtime tier and
     /// writes:
     ///
-    /// - `meta.json` — `{ creator, name, created_at: now, tier: Runtime }`
-    /// - `members.json` — partitioned from `initial_members` (the
-    ///   creator is always local; rows with `runtime_id: None` are
-    ///   local; rows with `runtime_id: Some(id)` become
-    ///   `RemoteMember` rows)
+    /// - `meta.json` — `{ creator, name, created_at: now, tier: Runtime,
+    ///   passive_binding? }`. `creator` is the SOURCE-runtime-local
+    ///   creator string (display only); `passive_binding` is the
+    ///   receiver-LOCAL binding the caller derived from its own
+    ///   session tree (sprint 3 Phase 12a — the wire value is only a
+    ///   "this is a DM channel" marker: each side's binding names its
+    ///   OWN child for the other principal, and `-N` slug-collision
+    ///   suffixes are runtime-local, so the source's value can never
+    ///   be adopted verbatim).
+    /// - `members.json` — re-partitioned from the source's view to the
+    ///   receiver's (see below).
     /// - `events.jsonl` — pre-seeded with a synthetic
     ///   [`ChannelEvent::Created`] so the receiver's `peko-stream`
     ///   listener (PR-2b) fires on the desktop the same way it does
     ///   for a local channel create.
+    ///
+    /// ## Member re-partition (sprint 3 Phase 12a)
+    ///
+    /// `initial_members` is keyed to the SOURCE runtime's view (its
+    /// own rows carry `runtime_id: Some(source_runtime_id)`; the
+    /// invitee row addressed to the receiver carries `None`). The
+    /// mirror re-keys it:
+    ///
+    /// - `members` (local) is exactly `[self_principal]` — the
+    ///   receiver's own local principal id, which the caller resolved
+    ///   from the invitee row. This is what makes the mirror visible
+    ///   to `list_for_principal(self_principal)` (the boot sweep) and
+    ///   lets the receiver's own `post` pass `check_membership` — the
+    ///   source-side id forms (`prin_<uuid>` minted on another
+    ///   runtime, DID forms) never match the receiver's local id.
+    /// - `remote_members` is the creator (filed under
+    ///   `source_runtime_id`) plus every snapshot row that carries a
+    ///   `runtime_id`, deduped — so the receiver's own posts fan back
+    ///   out to the source runtime.
+    /// - Snapshot rows with `runtime_id: None` are invitee rows
+    ///   addressed to the receiver. They carry no receiver-local
+    ///   meaning once `self_principal` is resolved, so they are
+    ///   dropped here.
     ///
     /// **Idempotent.** If `meta.json` already exists, returns `Ok(())`
     /// without touching disk. This is the contract that makes the
@@ -720,12 +749,16 @@ impl ChannelStore {
     /// `members.json` or `events.jsonl` is written (the synthetic
     /// event append goes through `append_event`, which also fails
     /// fast on missing meta).
+    #[allow(clippy::too_many_arguments)]
     pub async fn join_remote(
         &self,
         channel: &ChannelId,
         creator: &str,
         name: &str,
         initial_members: &[peko_protocol::channel::InitialMember],
+        self_principal: &PrincipalId,
+        source_runtime_id: &str,
+        passive_binding: Option<String>,
     ) -> Result<()> {
         let chan_dir = self.cfg.channel_dir(channel);
         let meta_path = chan_dir.join(META_FILE);
@@ -741,28 +774,35 @@ impl ChannelStore {
             ChannelError::Adapter(format!("mkdir {}: {e}", chan_dir.display()))
         })?;
 
-        // Partition `initial_members` into local + remote. The creator
-        // is always local; de-dup so we don't list the same principal
-        // twice if the source runtime included them in the snapshot.
-        let mut local_members: Vec<String> = vec![creator.to_string()];
-        let mut remote_members: Vec<RemoteMember> = Vec::new();
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        seen.insert(creator);
+        // Re-partition the source-keyed snapshot to the receiver's
+        // view (see the doc comment). The creator is filed as a remote
+        // row under `source_runtime_id`; dedup on the
+        // (runtime_id, principal_id) pair keeps a creator that also
+        // appears in the snapshot from landing twice.
+        let mut remote_members: Vec<RemoteMember> = vec![RemoteMember {
+            runtime_id: source_runtime_id.to_string(),
+            principal_id: creator.to_string(),
+        }];
+        let mut seen: std::collections::HashSet<(String, String)> = remote_members
+            .iter()
+            .map(|rm| (rm.runtime_id.clone(), rm.principal_id.clone()))
+            .collect();
         for m in initial_members {
-            if !seen.insert(m.principal_did.as_str()) {
+            let Some(rid) = &m.runtime_id else {
+                // Invitee row addressed to the receiver — represented
+                // by `self_principal` in the local member set.
                 continue;
-            }
-            match &m.runtime_id {
-                None => local_members.push(m.principal_did.clone()),
-                Some(rid) => remote_members.push(RemoteMember {
+            };
+            if seen.insert((rid.clone(), m.principal_did.clone())) {
+                remote_members.push(RemoteMember {
                     runtime_id: rid.clone(),
                     principal_id: m.principal_did.clone(),
-                }),
+                });
             }
         }
 
         let members = MembersJson {
-            members: local_members,
+            members: vec![self_principal.to_string()],
             remote_members,
         };
         members.save(&chan_dir).await?;
@@ -778,10 +818,10 @@ impl ChannelStore {
             name: name.to_string(),
             created_at: now,
             tier: Tier::Runtime,
-            // Cross-runtime invites carry no binding on the wire
-            // (`TunnelChannelInvite` has no such field); mirrors always
-            // bootstrap unbound.
-            passive_binding: None,
+            // Sprint 3 Phase 12a: the receiver-LOCAL binding derived by
+            // the caller (the wire marker's value is never adopted
+            // verbatim — see the doc comment).
+            passive_binding,
         };
         meta.save(&chan_dir).await?;
 
@@ -1710,7 +1750,7 @@ mod tests {
         );
     }
 
-    // -- join_remote (PR-3a commit 2) -----------------------------------
+    // -- join_remote (PR-3a commit 2; re-partitioned in Phase 12a) -----
 
     /// `join_remote` on an unknown channel id creates the directory,
     /// writes `meta.json` + `members.json`, and seeds `events.jsonl`
@@ -1719,26 +1759,45 @@ mod tests {
     /// bootstrap path: after a successful `join_remote`, `peek` and
     /// `list_members` work as if the channel had been `create`-d
     /// locally.
+    ///
+    /// Phase 12a member re-partition: the snapshot is keyed to the
+    /// SOURCE runtime (its own rows carry `Some(source_runtime_id)`;
+    /// the invitee row carries `None`). The mirror maps the receiver's
+    /// `self_principal` to the ONLY local row and files the creator +
+    /// every runtime-stamped row as `RemoteMember`s — so the receiver
+    /// can post (membership check passes), the mirror shows up in
+    /// `list_for_principal`, and the receiver's posts have a remote
+    /// row to fan back out to.
     #[tokio::test]
     async fn join_remote_creates_files_for_new_channel() {
         use peko_protocol::channel::InitialMember;
         let cfg = tmp_cfg("join-remote-new");
         let store = ChannelStore::new(cfg.clone());
         let channel = ChannelId::generate();
+        let receiver = pid("prin_self_local");
         let initial_members = vec![
-            // Creator is local to the source runtime.
+            // The source's own row — filed as remote on the mirror.
             InitialMember {
                 principal_did: "prin_alice".to_string(),
-                runtime_id: None,
+                runtime_id: Some("did:key:zRuntimeA".to_string()),
             },
-            // Bob lives on runtime B — must land in remote_members.
+            // The invitee row addressed to the receiver — dropped in
+            // favor of `self_principal`.
             InitialMember {
-                principal_did: "prin_bob".to_string(),
-                runtime_id: Some("did:key:zRuntimeB".to_string()),
+                principal_did: "did:peko:principal:self".to_string(),
+                runtime_id: None,
             },
         ];
         store
-            .join_remote(&channel, "prin_alice", "team-chat", &initial_members)
+            .join_remote(
+                &channel,
+                "prin_alice",
+                "team-chat",
+                &initial_members,
+                &receiver,
+                "did:key:zRuntimeA",
+                Some("/principal-alice".to_string()),
+            )
             .await
             .expect("join_remote must succeed on a new channel");
 
@@ -1751,23 +1810,50 @@ mod tests {
             "events.jsonl must exist"
         );
 
-        // meta.json: creator + name + tier = Runtime.
+        // meta.json: creator + name + tier = Runtime, and the
+        // receiver-local binding persists (Phase 12a).
         let meta = MetaJson::load(&chan_dir).await.unwrap();
         assert_eq!(meta.creator, "prin_alice");
         assert_eq!(meta.name, "team-chat");
         assert_eq!(meta.tier, Tier::Runtime);
+        assert_eq!(meta.passive_binding.as_deref(), Some("/principal-alice"));
+        assert_eq!(
+            store.passive_binding(&channel).await.unwrap().as_deref(),
+            Some("/principal-alice"),
+            "the binding must read back through the port accessor"
+        );
 
-        // members.json: alice local (creator), bob remote on B.
+        // members.json: the receiver's local id is the ONLY local
+        // row; the creator (and any runtime-stamped row) is remote.
         let members = MembersJson::load(&chan_dir).await.unwrap();
-        assert_eq!(members.members, vec!["prin_alice".to_string()]);
-        assert_eq!(members.remote_members.len(), 1);
-        assert_eq!(members.remote_members[0].runtime_id, "did:key:zRuntimeB");
-        assert_eq!(members.remote_members[0].principal_id, "prin_bob");
+        assert_eq!(members.members, vec!["prin_self_local".to_string()]);
+        assert_eq!(
+            members.remote_members,
+            vec![fake_remote("did:key:zRuntimeA", "prin_alice")],
+            "creator dedups against the identical snapshot row"
+        );
+
+        // The receiver's own post passes the membership check.
+        store
+            .post(&channel, &receiver, PostMsg::root("receiver talking"))
+            .await
+            .expect("receiver must be able to post to its own mirror");
+
+        // The mirror is visible to the boot sweep's enumeration.
+        let listed = store.list_for_principal(&receiver).await.unwrap();
+        assert!(
+            listed.contains(&channel),
+            "list_for_principal must include the mirror; got {listed:?}"
+        );
 
         // events.jsonl: synthetic Created at line 0 — exactly the
         // shape PR-2b's peko-stream listener expects.
         let events = store.peek(&channel, &Checkpoint::default()).await.unwrap();
-        assert_eq!(events.len(), 1, "synthetic Created event lands at line 0");
+        assert_eq!(
+            events.len(),
+            2,
+            "synthetic Created at line 0 + the receiver's post at line 1"
+        );
         match &events[0] {
             ChannelEvent::Created { creator, name, .. } => {
                 assert_eq!(creator, "prin_alice");
@@ -1775,6 +1861,39 @@ mod tests {
             }
             other => panic!("expected Created, got {other:?}"),
         }
+    }
+
+    /// A non-DM invite (`passive_binding: None`) bootstraps an
+    /// unbound mirror: `meta.json` omits the field entirely (the
+    /// `skip_serializing_if` shape unbound channels have always had).
+    #[tokio::test]
+    async fn join_remote_without_binding_bootstraps_unbound_mirror() {
+        let cfg = tmp_cfg("join-remote-unbound");
+        let store = ChannelStore::new(cfg.clone());
+        let channel = ChannelId::generate();
+        store
+            .join_remote(
+                &channel,
+                "prin_alice",
+                "team-chat",
+                &[],
+                &pid("prin_self_local"),
+                "did:key:zRuntimeA",
+                None,
+            )
+            .await
+            .expect("join_remote must succeed");
+
+        assert_eq!(store.passive_binding(&channel).await.unwrap(), None);
+        let raw = std::fs::read_to_string(cfg.channel_dir(&channel).join("meta.json")).unwrap();
+        assert!(
+            !raw.contains("passive_binding"),
+            "unbound mirror meta.json must not carry the field; got {raw}"
+        );
+        // Even with an empty snapshot, the creator row is filed as
+        // remote so the receiver's posts fan back out.
+        let remote = store.list_remote_members(&channel).await.unwrap();
+        assert_eq!(remote, vec![fake_remote("did:key:zRuntimeA", "prin_alice")]);
     }
 
     /// `join_remote` on a channel that already exists is a no-op:
@@ -1788,13 +1907,22 @@ mod tests {
         let cfg = tmp_cfg("join-remote-idem");
         let store = ChannelStore::new(cfg.clone());
         let channel = ChannelId::generate();
+        let receiver = pid("prin_self_local");
         let initial_members = vec![InitialMember {
-            principal_did: "prin_alice".to_string(),
+            principal_did: "did:peko:principal:self".to_string(),
             runtime_id: None,
         }];
         // First call creates the mirror.
         store
-            .join_remote(&channel, "prin_alice", "team-chat", &initial_members)
+            .join_remote(
+                &channel,
+                "prin_alice",
+                "team-chat",
+                &initial_members,
+                &receiver,
+                "did:key:zRuntimeA",
+                Some("/principal-alice".to_string()),
+            )
             .await
             .expect("first join_remote must succeed");
         let first_meta_mtime = std::fs::metadata(cfg.channel_dir(&channel).join(META_FILE))
@@ -1813,10 +1941,19 @@ mod tests {
         // is portable because we just need any elapsed time).
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
-        // Second call with a different name must NOT clobber the
-        // first meta.json or append a second Created event.
+        // Second call with a different name + binding must NOT
+        // clobber the first meta.json or append a second Created
+        // event.
         store
-            .join_remote(&channel, "prin_alice", "different-name", &initial_members)
+            .join_remote(
+                &channel,
+                "prin_alice",
+                "different-name",
+                &initial_members,
+                &receiver,
+                "did:key:zRuntimeA",
+                Some("/other-binding".to_string()),
+            )
             .await
             .expect("second join_remote must succeed (no-op)");
         let second_meta_mtime = std::fs::metadata(cfg.channel_dir(&channel).join(META_FILE))
@@ -1837,9 +1974,14 @@ mod tests {
             "no synthetic Created event on idempotent join"
         );
 
-        // The original name survives (the second call did not
-        // overwrite meta.json).
+        // The original name + binding survive (the second call did
+        // not overwrite meta.json).
         let meta = MetaJson::load(&cfg.channel_dir(&channel)).await.unwrap();
         assert_eq!(meta.name, "team-chat", "original name must survive");
+        assert_eq!(
+            meta.passive_binding.as_deref(),
+            Some("/principal-alice"),
+            "original binding must survive"
+        );
     }
 }

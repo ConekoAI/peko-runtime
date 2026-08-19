@@ -37,7 +37,7 @@ pub use cross_runtime::CrossRuntimeA2aCtx;
 pub use cross_runtime_channel::CrossRuntimeChannelCtx;
 pub use did_key::{did_key_to_verifying_key, verifying_key_to_did_key};
 pub use dispatcher::TunnelDispatcher;
-pub use host::TunnelHost;
+pub use host::{DmChannelInviteBootstrap, TunnelHost};
 pub use hub_directory::{
     AgentDirectory, AgentResolution, DirectoryError, HubAgentDirectoryClient, ResolvedExposure,
 };

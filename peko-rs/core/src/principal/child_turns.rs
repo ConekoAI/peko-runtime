@@ -91,6 +91,27 @@ pub(crate) struct PeerChildIngress {
     pub dm_channel: Option<peko_channel::ChannelId>,
 }
 
+/// The session manager a principal's peer children live in. Mirrors
+/// `agent_runner`'s root-agent construction: same sessions dir, root
+/// agent prompt name, owner as the session peer. Factored out of
+/// [`PeerChildTurns::build`] so the Phase 12a cross-runtime DM mirror
+/// bootstrap (`TunnelHost::dm_channel_mirror_bootstrap`) can do a
+/// child-only ensure without building the full turn bundle (which
+/// requires a resolvable model).
+pub(crate) fn peer_child_session_manager(
+    principal: &Principal,
+    agent_name: &str,
+    owner: &Subject,
+) -> Arc<RwLock<SessionManager>> {
+    Arc::new(RwLock::new(
+        SessionManager::new()
+            .with_sessions_dir_internal(principal.memory.sessions_dir())
+            .with_agent_name(agent_name)
+            .with_peer_principal(owner.clone())
+            .with_user(&owner.to_string()),
+    ))
+}
+
 /// Per-principal peer-child turn bundle: the shared
 /// [`SubagentExecutor`] (persona-carrying), the session manager the
 /// peer children live in, and the ownership anchor for the resume
@@ -179,15 +200,8 @@ impl PeerChildTurns {
             .await?;
 
         // Session manager mirrors `agent_runner`'s root-agent
-        // construction: same sessions dir, root agent prompt name,
-        // owner as the session peer.
-        let session_manager = Arc::new(RwLock::new(
-            SessionManager::new()
-                .with_sessions_dir_internal(principal.memory.sessions_dir())
-                .with_agent_name(&agent_name)
-                .with_peer_principal(owner.clone())
-                .with_user(&owner.to_string()),
-        ));
+        // construction (see `peer_child_session_manager`).
+        let session_manager = peer_child_session_manager(principal, &agent_name, &owner);
 
         // `SubagentExecutor::new`'s agent name keys the GLOBAL async
         // task registry — see "Registry key" in the module docs.
