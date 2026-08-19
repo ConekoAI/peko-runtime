@@ -1,5 +1,7 @@
-//! Cross-runtime dispatch context for the `send_peer` tool — the
+//! Cross-runtime dispatch context for the ChannelSend tool — the
 //! shared bundle for the outbound principal-to-principal path.
+//! (Sprint 4: this used to be the `send_peer` tool's context;
+//! ChannelSend's `principal:<did>` branch reuses it 1:1.)
 //!
 //! Sprint 3 Phase 12b: principal-to-principal DM runs over **channels**
 //! now — the retired RPC stack (signed `PrincipalToPrincipalRequest`

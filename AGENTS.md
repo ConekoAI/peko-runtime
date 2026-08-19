@@ -651,13 +651,25 @@ cargo test --all-features
     `Cargo.toml` deps from the cron-tools migration: `chrono-tz` was
     already lifted in F4; `uuid` + `async-trait` joined `peko-cron`'s
     direct deps.
-  - **2026-08-08 `send_peer` unification:** `principal_send` was
-    renamed `send_peer` and gained a user branch (fire-and-forget
-    notes to a human peer's conversational session) alongside the
-    principal branch (then the legacy sync RPC; re-founded on the
-    peer DM channels in sprint 3 Phase 12b — see the 2026-08-19
-    note).
-    Delivery goes through the `PeerMessenger` port
+  - **2026-08-19 `ChannelSend` consolidation (sprint 4):**
+    `send_peer` and the bare-post `ChannelSend` are folded into one
+    tool — `ChannelSend` (registered per-agent with caller DID bound
+    at construction). The LLM picks the dispatch branch by choosing
+    the wire form of its `channel` parameter:
+
+      - `chan_<8 base36>` (Bare) — plain fire-and-forget post.
+      - `principal:<did>` (Principal) — RPC: ensure_peer_child +
+        await reply up to 1 minute, mirror onto the caller's own
+        DM channel.
+      - `user:<id>` (User) — peer messenger note, gated to the
+        originating user of the run.
+      - `group:<slug>` (Group) — plain fire-and-forget post to a
+        group channel.
+
+    `tool:send_peer` is retired outright (no compat alias — prelaunch).
+    The dispatch replaces the legacy `principal_send` (re-founded on
+    peer DM channels in sprint 3 Phase 12b). Delivery of the user
+    branch still goes through the `PeerMessenger` port
     (`peko-rs/core/src/principal/messenger.rs` — trait + global
     registry mirroring the `CronRuntime` pattern, installed by the
     daemon at startup). Originating-peer resolution derives from the
@@ -787,12 +799,12 @@ cargo test --all-features
     `at`); pre-Phase-11 chat-log history stays on disk unread (Phase
     13 decides migration). A2A got local DM posting as a side effect
     of the shared manager funnel; Phase 12b switched the principal
-    branch of `send_peer` itself onto the channels (await-reply over
+    branch of `ChannelSend` itself onto the channels (await-reply over
     the channel broadcast, invite/fan-out for cross-runtime).
   - **2026-08-19 sprint 3 Phase 12a (cross-runtime DM channel
     lifecycle + anti-loop rule):** the additive plumbing for
     principal-to-principal DM over channels. Nothing user-facing
-    switches over yet — `send_peer`/messenger/cron and the old A2A
+    switches over yet — `ChannelSend`/messenger/cron and the old A2A
     RPC stack are untouched (12b rewires them); `peer_dm.rs` still
     provisions only the LOCAL channel for `principal:<did>` peers.
     - **Wire** (`tunnel/protocol.rs`): `TunnelChannelInvite` gains
@@ -853,9 +865,10 @@ cargo test --all-features
       only; local ingress reply projections (`post_peer_dm_reply`)
       stay root posts (self-authored + self-skipped anyway).
   - **2026-08-19 sprint 3 Phase 12b (principal DM switches to
-    channels; the A2A RPC stack retires):** `send_peer`'s principal
-    branch now runs over the peer DM channels and the old
-    request/response stack is deleted. **Remote target:** the caller's
+    channels; the A2A RPC stack retires):** `ChannelSend`'s
+    principal branch (sprint 4: this used to be `send_peer`'s
+    principal branch; sprint 4 unifies both tools) now runs over the
+    peer DM channels and the old request/response stack is deleted. **Remote target:** the caller's
     own DM channel for the peer is ensured
     (`ensure_peer_child_ingress`), first contact is detected by the
     absence of a remote-member row for the target's runtime

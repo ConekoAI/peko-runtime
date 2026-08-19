@@ -304,7 +304,12 @@ parity program:
 - `glob`, `grep` — peko-specific filesystem helpers.
 - `session` — peko-specific session introspection.
 - `message` — peko-specific channel messaging.
-- `send_peer` — peko peer messaging: fire-and-forget notes to a human user (`user:<id>`, delivered as a labeled session note by the originating agent or any subagent) and principal-to-principal messaging over the pair's standing DM channel (`did:peko:…`; the reply is awaited on the channel — cross-runtime via the 12a/12b invite/mirror fan-out). (Renamed from `principal_send` when the user branch landed; replaces the legacy `a2a_send` tool from ADR-023. The signed-RPC `PrincipalToPrincipalRequest` stack was retired in sprint 3 Phase 12b.)
+- `ChannelSend` — peko channel write primitive: one tool with a typed-prefix `channel` parameter that selects the dispatch —
+  - `chan_<8 base36>`: bare post to the named channel (the original `ChannelSend` shape);
+  - `principal:<did>`: principal-to-principal RPC over the pair's standing DM channel (reply awaited up to 1 minute, mirrored back onto the caller's own DM channel; cross-runtime via the 12a/12b invite/mirror fan-out);
+  - `user:<id>`: fire-and-forget note to a human peer (delivered as a labeled session note by the originating agent or any subagent, gated to the originating user of the current run);
+  - `group:<slug>`: fire-and-forget post to a named group channel.
+  The legacy `send_peer` tool (sprint 2 rename of `principal_send`, itself the successor to `a2a_send` from ADR-023) is retired in sprint 4 — its principal branch (RPC) and user branch (messenger note) are now reachable through the `principal:<did>` and `user:<id>` channel-id forms respectively. The signed-RPC `PrincipalToPrincipalRequest` stack was retired in sprint 3 Phase 12b.
 - MCP-provided tools (`web_search`, `fetch`, etc.) — provided via MCP servers.
 - Skills — still prompt-injected via the `prompt:skills` hook.
 

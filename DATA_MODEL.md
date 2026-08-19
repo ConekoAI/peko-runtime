@@ -1547,6 +1547,33 @@ channels.
 Shared-tier channels (PR-3d `pin_to_shared`) use the same layout
 under `<shared_dir>/channels/<channel_id>/`.
 
+### 5¾.½ ChannelId Typed Prefixes (sprint 4)
+
+A `ChannelId` (`peko-rs/protocol/src/channel.rs`) is a `String` newtype
+whose wire form selects the dispatch branch of `ChannelSend`:
+
+| Wire form             | Kind       | Dispatch                                   |
+|-----------------------|------------|--------------------------------------------|
+| `chan_<8 base36>`     | `Bare`     | Plain fire-and-forget post                 |
+| `principal:<did>`     | `Principal`| RPC: ensure_peer_child + await reply       |
+| `user:<id>`           | `User`     | Peer messenger note (originating-user gate)|
+| `group:<slug>`        | `Group`    | Plain fire-and-forget post                 |
+
+`ChannelId::parse` accepts any of the four forms; `ChannelId::kind()`
+returns the dispatch kind in O(1). The wire form IS the routing
+identity for `principal:<did>` channels (sprint 4 — `peer_dm` sets
+`CreateOpts::id` to `ChannelId::for_principal(did)` so `peko log`
+consumers and `ChannelSend`'s dispatch agree without translation).
+
+**On-disk path normalization**: typed-prefix ids contain colons
+(invalid in directory names on Windows / classic Unix filesystems).
+The wire form is human-readable; the storage path uses `.3A.` in
+place of every `:` (`peko-rs/channel/src/fs.rs::channel_dir_name`).
+Bare `chan_*` ids are unchanged (no colons). `channel_dir_name` and
+`channel_dir_name_inverse` are inverses on every valid wire form.
+
+### 5¾.2 `meta.json` Schema
+
 ### 5¾.2 `meta.json` Schema
 
 ```json

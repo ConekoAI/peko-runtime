@@ -96,7 +96,14 @@ rather than a passive request handler.
   this holds for DMs too: every peer has a per-peer DM channel, and
   that channel's event log IS the consumer-visible conversation
   record `peko log` reads (the chat-log projection store is
-  retired).
+  retired). **Sprint 4 unifies the write surface**: `ChannelSend` is
+  one tool whose `channel` parameter's wire form
+  (`chan_<8 base36>` / `principal:<did>` / `user:<id>` / `group:<slug>`)
+  selects the dispatch — bare post, principal RPC (ensure_peer_child
+  + await reply + mirror), peer messenger note, or group post. The
+  parallel `send_peer` tool retired outright; the design promise
+  "`send_peer` and `ChannelSend` share one delivery mechanism" is
+  now literal.
 
 ---
 

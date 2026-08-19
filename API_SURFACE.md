@@ -812,6 +812,37 @@ children of the trunk. New/changed public items:
 | `PrincipalManager::record_peer_recall` | `principal::manager` | ✅ New | Per-peer recall artifact → peer-child session id |
 | ~~`PrincipalManager::receive`~~ / `receive_streaming` | `principal::manager` | ❌ Deleted / ⚠️ Changed | Peer channels route to peer children; Trunk/Cron → `receive_trunk`. The one-shot `receive` was deleted in sprint 3 Phase 12b (its only production callers were the retired A2A RPC paths) |
 
+### Sprint 4 (2026-08-19) — `send_peer` consolidated into `ChannelSend`
+
+Breaking (prelaunch): the parallel `send_peer` tool and the bare-post
+`ChannelSend` are folded into one tool — `ChannelSend` (registered
+per-agent with caller DID bound at construction). The LLM picks the
+dispatch branch by choosing the wire form of its `channel` parameter:
+
+| `channel` value        | Dispatch                                  |
+|------------------------|-------------------------------------------|
+| `chan_<8 base36>`      | Bare post (today's `ChannelSend`)         |
+| `principal:<did>`      | RPC: ensure_peer_child + await reply      |
+| `user:<id>`            | Peer messenger note (originating-user gate) |
+| `group:<slug>`         | Bare post to a group channel              |
+
+The runtime owns await / timeout / mirror / exposure-gate /
+originating-user-gate policies — no parallel state machine, no second
+tool name. Deleted/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `tunnel::principal_send_tool` (`SendPeerTool`, `SendPeerArgs`, `PrincipalSendResult`, `build_tool`) | `tunnel::principal_send_tool` | ❌ Deleted | Whole module retired (1775 lines); consolidated into `tools::builtin::channel::ChannelSendTool` with typed-prefix dispatch |
+| `ChannelSendTool::new` (single-arg constructor) | `tools::builtin::channel::channel_send` | ❌ Deleted | Replaced by `new_with_peer(port, did, ctx)` (per-agent, full principal / cross-runtime support) and `new_local_only(port, did)` (bare / group / user only). The global `Arc::new(ChannelSendTool::new(port))` registration in `engine/tool_runtime.rs` is removed — the tool is now per-agent only. |
+| `SendPeerArgs` / `PrincipalSendResult` | (renamed) | ⚠️ Renamed | `ChannelSendArgs` / `ChannelSendResult` in `tools::builtin::channel`. JSON wire shape `{ channel, text, parent?, label? }` — no `target` / `message` fields; the wire form of `channel` carries the routing identity. |
+| `tool:send_peer` capability grant | `peko-extension-api::capabilities` | ❌ Removed | Retired outright (no compat alias). `Capabilities::starter_bundle()` no longer includes the grant; `starter_bundle_does_not_grant_send_peer` pins the absence. Use `tool:ChannelSend` with a typed channel id. |
+| `ChannelSend` registration | `peko::runtime::builtin_tools` | ⚠️ Moved | Was in `GLOBAL_TOOL_NAMES` (singleton, no caller DID); now in `AGENT_SPECIFIC_TOOL_NAMES` (per-agent, caller DID bound at construction). `send_peer` removed. |
+| `ExtensionServices::channel_port()` / `set_channel_port` | `extensions::framework::core::config` | ✅ New | Lets the per-agent `ChannelSendTool` constructor find the file-backed `ChannelPort`. `daemon/state.rs` installs it on the same path as `set_cross_runtime_a2a_ctx`. |
+| `ChannelId` constructors | `peko_protocol::channel` | ✅ New | `ChannelId::for_principal(did)`, `for_user(id)`, `for_group(slug)`. `parse()` accepts any of the four wire forms; `kind()` returns the dispatch kind. |
+| `CreateOpts::id` | `peko_channel::port` | ✅ New | Pin the channel id on creation. Used by `peer_dm` for principal peers so the routing `ChannelId` is `principal:<did>` and `peko log` consumers and `ChannelSend`'s principal-branch agree without translation. |
+| `peko_channel::fs` (`channel_dir_name`, `channel_dir_name_inverse`, `id_needs_colon_normalization`) | `peko_channel::fs` | ✅ New | On-disk path normalizer: typed-prefix ids gain colons that are invalid in directory names on Windows / classic Unix filesystems; `.3A.` replaces `:` for the storage path only. Wire form unchanged. |
+| `ensure_peer_dm_channel` routing id | `principal::peer_dm` | ⚠️ Changed | Principal peers now route on `ChannelId::for_principal(did)` (`CreateOpts::id`). Display name stays `dm-<slug>` for `peko log` continuity (tests pin). User / public peers keep the slug-based routing id since the user-branch dispatch is messenger-port, not channel-port. |
+
 ### Sprint 3 Phase 12b (2026-08-19) — principal DM over channels; A2A RPC stack retired
 
 Breaking (prelaunch): principal-to-principal messaging runs over the
@@ -825,7 +856,6 @@ peer DM channels now. Deleted/changed public items:
 | `tunnel::direct` (server/client/manager/routing/handshake) | `tunnel::direct` | ❌ Deleted | Direct transport retired; `tls.rs` relocated to `tunnel::tls` (tunnel client still consumes `build_client_config`) |
 | `TunnelHost::pending_a2a_responses`; `AppState::{pending_a2a_responses, direct_manager, direct_*}`; `DirectHealth` | `tunnel::host`, `daemon::state` | ❌ Deleted | Host/state surface of the retired stack |
 | `CrossRuntimeA2aCtx` | `tunnel::cross_runtime` | ⚠️ Changed | Now `{ directory, caller_runtime_id, principal_manager, channel_port: Arc<TunnelChannelPort>, response_timeout }` |
-| `SendPeerArgs.session_id` | `tunnel::principal_send_tool` | ❌ Deleted | Channel continuity replaces session resumption; `PrincipalSendResult.session_id` returns the caller's standing child id |
 | `PeerMessenger::deliver_note` | `principal::messenger` | ⚠️ Changed | Note posts to the peer's DM channel (principal-authored root) instead of the chat log; child-JSONL append + trunk `[notify]` unchanged |
 | ~~`root_session_id`~~; `root_session_id_for_channel` (trunk-only) | `principal::routers::root` | ❌ Deleted / narrowed | Per-peer root routing retired |
 | Cron `Send` default target | `daemon::cron_engine`, `peko_cron` | ⚠️ Changed | Default = trunk; `TRUNK_MIN_INTERVAL_MS` covers `target: None` |

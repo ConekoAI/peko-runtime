@@ -985,7 +985,10 @@ impl PrincipalManager {
     /// Sprint 3 Phase 12b: the blocking one-shot sibling (`receive`)
     /// was retired with the A2A RPC stack — its only production callers
     /// were the principal-to-principal dispatcher arm and the
-    /// `send_peer` tool's local branch, both now channel-based.
+    /// `ChannelSend` tool's local (principal) branch, both now
+    /// channel-based. Sprint 4: `send_peer` is retired entirely; the
+    /// local branch of `ChannelSend` covers the same workload via the
+    /// `principal:<did>` channel-id form.
     pub async fn receive_streaming(
         &self,
         principal_id: PrincipalId,

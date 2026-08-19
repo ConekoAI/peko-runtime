@@ -1,6 +1,7 @@
 //! Peer messenger — agent-originated notes into a peer's session
 //!
-//! The delivery half of the `send_peer` unification (2026-08-08): any
+//! The delivery half of the ChannelSend `user:<id>` branch (sprint 4):
+//! any
 //! agent in a run tree (trunk, peer child, subagent, cron-spawned) can
 //! surface a message to a human peer without owning the peer's
 //! conversational session.
@@ -97,7 +98,8 @@ fn non_spawn_subject(s: &str) -> Option<Subject> {
 ///
 /// `deliver_note` takes the note fully formatted — call sites own
 /// their label conventions (`⏰ [cron job …]` for the cron engine,
-/// `📨 [<agent>]` for `send_peer`). It returns `Ok(false)` when the
+/// `📨 [<agent>]` for the ChannelSend `user:<id>` branch). It returns
+/// `Ok(false)` when the
 /// peer has no conversational session yet (silent skip: the note has
 /// nothing to attach to; the outcome still lives in the caller's own
 /// session). **No session is ever created** (Phase 7 spawn-on-contact
@@ -108,7 +110,8 @@ fn non_spawn_subject(s: &str) -> Option<Subject> {
 /// land as soon as the owner has chatted once).
 ///
 /// When `caller_label` is supplied (e.g. `"agent <session_id>"` for a
-/// `send_peer` call, `"cron job <name>"` for a cron fire), the
+/// ChannelSend `user:<id>` call, `"cron job <name>"` for a cron fire),
+/// the
 /// messenger ALSO writes a structured `[notify] …` line to the
 /// principal's TRUNK session (`root:self` — Phase 7: the principal's
 /// self-view lives in the trunk now) so the principal sees what was
@@ -201,7 +204,8 @@ impl PeerMessenger for PrincipalPeerMessenger {
         };
 
         // Sprint 3 Phase 12b: the DM channel post replaces the retired
-        // chat-log projection. Peer notes (📨 from `send_peer`, ⏰ from
+        // chat-log projection. Peer notes (📨 from ChannelSend's
+        // `user:<id>` branch, ⏰ from
         // cron Send/Notify) are principal-authored root posts on the
         // peer's DM channel — `peko log` reads them there, and the
         // bound `PassiveBindingResponder` self-skips them (author ==
