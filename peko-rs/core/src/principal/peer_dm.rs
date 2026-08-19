@@ -1,14 +1,21 @@
 //! Peer DM channel auto-provisioning (agent-session paradigm, sprint
-//! 3 Phase 10).
+//! 3 Phase 10 — sprint 4 routing-id update).
 //!
 //! Every peer who gets a standing child session on first contact
 //! ([`crate::principal::peer_children::ensure_peer_child`]) also gets a
 //! 1:1 **DM channel** — the channel-tier home of that peer's
 //! conversation with the principal:
 //!
-//! - name: `dm-<peer_child_slug>` (e.g. `dm-local-user`, `dm-user-a`,
-//!   `dm-principal-<fragment>`), matching the fixture convention the
-//!   passive-binding tests already use;
+//! - routing id:
+//!   - `principal:<did>` peers → `ChannelId::for_principal(did)`
+//!     (sprint 4: the principal prefix is now the routing id, so the
+//!     `peko log` consumer and the `ChannelSend` principal-branch
+//!     dispatch agree on identity without an indirection table).
+//!   - user / public peers → `dm-<peer_child_slug>` (unchanged; the
+//!     user-branch dispatch is messenger-port, not channel-port).
+//! - display name: `dm-<peer_child_slug>` for all peer kinds (display
+//!   convention, not routing — kept for `peko log` continuity and the
+//!   `dm-…` prefix tests pin);
 //! - `passive_binding`: the peer child's `/`-path (`/<slug>`) — the
 //!   shape the `PassiveBindingResponder` fixtures
 //!   (`daemon::channel_binding`) and `SessionStoreBindingResolver`'s
@@ -25,9 +32,9 @@
 //! For `principal:<did>` peers this helper provisions the LOCAL
 //! channel only. The cross-runtime half landed in sprint 3 Phase
 //! 12a/12b: the caller side invites the peer's runtime via
-//! `TunnelChannelPort::fanout_dm_invite` (from the `send_peer` tool,
-//! on first contact), and the receiver bootstraps its mirror through
-//! `TunnelHost::dm_channel_mirror_bootstrap`.
+//! `TunnelChannelPort::fanout_dm_invite` (from the principal branch
+//! of `ChannelSend`, on first contact), and the receiver bootstraps
+//! its mirror through `TunnelHost::dm_channel_mirror_bootstrap`.
 //!
 //! ## Concurrency
 //!
@@ -35,9 +42,9 @@
 //! must be cheap and race-tolerant. The scan side is
 //! `list_for_principal` + one `meta.json` read per channel (small;
 //! channels per principal are few). The create side is NOT name- or
-//! binding-checked by the store (`ChannelStore::create` always
-//! generates a fresh `ChannelId`), so find-or-create is serialized by
-//! a caller-supplied per-principal `Mutex` — the same
+//! binding-checked by the store (`ChannelStore::create` mints a fresh
+//! `ChannelId` when `CreateOpts::id` is `None`), so find-or-create is
+//! serialized by a caller-supplied per-principal `Mutex` — the same
 //! `session_creation_lock` the manager already uses to serialize
 //! first-contact session work. Two concurrent first-contacts for the
 //! same peer then cannot double-create.
@@ -67,7 +74,7 @@ use anyhow::Result;
 use peko_auth::Subject;
 use peko_channel::{ChannelId, ChannelPort, CreateOpts, PostMsg};
 use peko_session::manager::SessionManager;
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalDID, PrincipalId};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, warn};
 
@@ -151,14 +158,22 @@ pub(crate) async fn ensure_peer_dm_channel(
     // Create: the principal is the creator (auto-member). For
     // `principal:<did>` peers this provisions the LOCAL channel only —
     // the cross-runtime invite/mirror fan-out is the caller's job
-    // (sprint 3 Phase 12a/12b: `send_peer` invites on first contact;
-    // the receiver bootstraps via `dm_channel_mirror_bootstrap`).
-    let channel = port
-        .create(
-            principal,
-            CreateOpts::runtime(name.clone()).with_passive_binding(binding.clone()),
-        )
-        .await?;
+    // (sprint 3 Phase 12a/12b: the principal branch of `ChannelSend`
+    // invites on first contact; the receiver bootstraps via
+    // `dm_channel_mirror_bootstrap`).
+    //
+    // Sprint 4: routing id is `ChannelId::for_principal(did)` for
+    // principal peers (so `peko log` consumers and `ChannelSend`'s
+    // dispatch see the same id without an indirection table); user /
+    // public peers keep the slug-based routing id (`dm-<slug>`) since
+    // the user-branch dispatch is messenger-port, not channel-port.
+    // Display name stays `dm-<slug>` either way — tests at lines
+    // ~305, ~343, ~445 pin the convention.
+    let mut opts = CreateOpts::runtime(name.clone()).with_passive_binding(binding.clone());
+    if let Subject::Principal(PrincipalDID(did)) = peer {
+        opts = opts.with_id(ChannelId::for_principal(did));
+    }
+    let channel = port.create(principal, opts).await?;
     tracing::info!(
         channel = %channel,
         name = %name,

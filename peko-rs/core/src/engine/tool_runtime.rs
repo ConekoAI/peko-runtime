@@ -17,7 +17,7 @@ use crate::common::paths::PathResolver;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::tools::builtin::BashTool;
-use crate::tools::builtin::{ChannelReadTool, ChannelSendTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
+use crate::tools::builtin::{ChannelReadTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use anyhow::Result;
 use peko_channel::{ChannelPort, NoopChannelPort};
 use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
@@ -216,11 +216,13 @@ impl ToolRuntime {
             // boundary is preserved because the principal invokes the
             // tool itself.
             Arc::new(ChannelReadTool::new(channel_port.clone())),
-            // PR-5c — symmetric channel send. Same boundary semantics
-            // as ChannelRead; `ctx.principal_id` is the `post` sender.
-            // Marked `parallelizable=false` (see ChannelSendTool impl)
-            // so the F37 executor serializes same-channel posts.
-            Arc::new(ChannelSendTool::new(channel_port)),
+            // Sprint 4: `ChannelSend` is now per-agent (registered in
+            // `agents/agent.rs` with `caller_principal_did` bound at
+            // construction). The global registration is gone — the
+            // tool needs the caller's DID and (optionally) the
+            // cross-runtime ctx, both unavailable from a process-wide
+            // singleton. `ChannelRead` remains global because it
+            // doesn't need caller binding.
         ];
 
         // Built-in tools are visible to every principal and registered exactly

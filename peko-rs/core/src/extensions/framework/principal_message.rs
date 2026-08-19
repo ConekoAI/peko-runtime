@@ -22,7 +22,7 @@
 //! The same execution engine (`StatelessAgentService`, the sole implementor
 //! of `PrincipalMessageService`) services both:
 //!   - **across-principal**: tunnel-driven `principal_send` traffic
-//!     (`src/principal/principal_send_tool.rs`); and
+//!     (the principal branch of `ChannelSend` — sprint 4 unification); and
 //!   - **within-principal**: synchronous same-runtime agent dispatch (CLI
 //!     frontends, IPC `Execute` path).
 //!

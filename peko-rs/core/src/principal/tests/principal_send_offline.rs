@@ -1,8 +1,8 @@
-//! Same-runtime offline `send_peer` integration test (sprint 3 Phase
-//! 12b rewrite).
+//! Same-runtime offline `ChannelSend` (principal branch) integration
+//! test (sprint 4 — was sprint 3 Phase 12b rewrite).
 //!
 //! Verifies that `LocalFirstAgentDirectory` resolves a target principal
-//! without consulting the hub, and that `SendPeerTool::execute`'s
+//! without consulting the hub, and that `ChannelSendTool`'s
 //! same-runtime branch runs over the DM channels: the message is
 //! durably posted to BOTH the caller's own DM channel (the `peko log`
 //! mirror) and the target's DM channel (where the target's responder
@@ -24,10 +24,10 @@ use crate::principal::config::{Exposure, TransportPreference};
 use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };
+use crate::tools::builtin::channel::{ChannelSendResult, ChannelSendTool};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentDirectory, AgentResolution, DirectoryError};
 use crate::tunnel::local_directory::LocalFirstAgentDirectory;
-use crate::tunnel::principal_send_tool::{PrincipalSendResult, SendPeerTool};
 use crate::tunnel::TunnelChannelPort;
 use async_trait::async_trait;
 use peko_auth::Subject;
@@ -38,13 +38,13 @@ use peko_tools_core::Tool;
 
 /// A directory client that panics if consulted. Wrapping it inside
 /// `LocalFirstAgentDirectory` proves the hub fallback is never reached
-/// for same-runtime send_peer.
+/// for same-runtime `ChannelSend` principal branch.
 struct PanicDirectory;
 
 #[async_trait]
 impl AgentDirectory for PanicDirectory {
     async fn resolve_by_did(&self, _did: &str) -> Result<AgentResolution, DirectoryError> {
-        panic!("hub directory should not be consulted for same-runtime send_peer");
+        panic!("hub directory should not be consulted for same-runtime ChannelSend");
     }
 
     async fn resolve_by_handle(
@@ -52,7 +52,7 @@ impl AgentDirectory for PanicDirectory {
         _owner: &str,
         _name: &str,
     ) -> Result<AgentResolution, DirectoryError> {
-        panic!("hub directory should not be consulted for same-runtime send_peer");
+        panic!("hub directory should not be consulted for same-runtime ChannelSend");
     }
 }
 
@@ -109,7 +109,7 @@ async fn dm_posted_rows(
     )
     .await
     .expect("dm lookup")
-    .expect("DM channel exists after send_peer");
+    .expect("DM channel exists after ChannelSend");
     port.peek(&channel, &Checkpoint::default())
         .await
         .expect("peek")
@@ -128,7 +128,7 @@ async fn dm_posted_rows(
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
-async fn same_runtime_send_peer_posts_to_dm_channels_then_times_out() {
+async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_var("PEKO_HOME", temp.path());
 
@@ -216,19 +216,32 @@ async fn same_runtime_send_peer_posts_to_dm_channels_then_times_out() {
         response_timeout: Duration::from_millis(200),
     });
 
-    let tool = SendPeerTool::new(caller_did.clone(), ctx);
+    // Sprint 4: ChannelSendTool replaces SendPeerTool. The principal
+    // branch is selected by the `principal:<did>` wire form on the
+    // `channel` parameter — exactly the same dispatch shape the
+    // LLM-facing tool will use. The principal branch needs a
+    // `ToolContext` (the F37 funnel supplies one in production); the
+    // test stands up a minimal context with the caller's principal id
+    // bound.
+    let tool = ChannelSendTool::new_with_peer(channel_port.clone(), caller_did.clone(), ctx);
+    let principal_id_string = caller.id.0.clone();
+    let tool_ctx = peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
+        .with_principal_id(principal_id_string);
 
     let result = tool
-        .execute(serde_json::json!({
-            "target": target_did,
-            "message": "ping"
-        }))
+        .execute_with_context(
+            serde_json::json!({
+                "channel": format!("principal:{target_did}"),
+                "text": "ping",
+            }),
+            &tool_ctx,
+        )
         .await
-        .expect("execute should not throw");
+        .expect("execute_with_context should not throw");
 
     // No live responder in this harness → the reply await times out
     // with a structured error.
-    let parsed: PrincipalSendResult = serde_json::from_value(result).expect("parse result");
+    let parsed: ChannelSendResult = serde_json::from_value(result).expect("parse result");
     assert!(!parsed.success, "no responder → await must time out");
     let err = parsed.error.expect("timeout error must be set");
     assert!(

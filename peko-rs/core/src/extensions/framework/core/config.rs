@@ -72,6 +72,13 @@ pub struct ExtensionServices {
     /// so that extension code (e.g. MCP sampling) can request host-model
     /// completions without holding provider-specific state.
     llm_resolver: std::sync::RwLock<Option<Arc<peko_providers::LlmResolver>>>,
+
+    /// Channel port (sprint 4 — `ChannelSend` per-agent tool needs the
+    /// file-backed `ChannelPort` so the bare / group / principal branches
+    /// can post to channels. Set by AppState once the channel store is
+    /// wired; `None` on tests that construct an `ExtensionServices` via
+    /// `new()` without a real channel store.
+    channel_port: std::sync::RwLock<Option<Arc<dyn peko_channel::ChannelPort>>>,
 }
 
 impl std::fmt::Debug for ExtensionServices {
@@ -92,6 +99,7 @@ impl std::fmt::Debug for ExtensionServices {
                 &"<RwLock<Option<Arc<dyn Any + Send + Sync>>>>",
             )
             .field("llm_resolver", &"<RwLock<Option<Arc<LlmResolver>>>>")
+            .field("channel_port", &"<RwLock<Option<Arc<dyn ChannelPort>>>>")
             .finish_non_exhaustive()
     }
 }
@@ -142,6 +150,7 @@ impl ExtensionServices {
             // the local-only path (the same behavior as pre-#29).
             cross_runtime_a2a_ctx: std::sync::RwLock::new(None),
             llm_resolver: std::sync::RwLock::new(None),
+            channel_port: std::sync::RwLock::new(None),
         }
     }
 
@@ -225,6 +234,23 @@ impl ExtensionServices {
     #[must_use]
     pub fn llm_resolver(&self) -> Option<Arc<peko_providers::LlmResolver>> {
         self.llm_resolver.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Set the channel port. Called by AppState once the channel store
+    /// has been wired (the same handle that `PrincipalManager::channel_port`
+    /// already caches). The per-agent `ChannelSendTool` constructor in
+    /// `agent.rs` reads via `channel_port` so the bare / group / principal
+    /// branches can post to channels.
+    pub fn set_channel_port(&self, port: Arc<dyn peko_channel::ChannelPort>) {
+        if let Ok(mut guard) = self.channel_port.write() {
+            *guard = Some(port);
+        }
+    }
+
+    /// Get the channel port, if one is installed.
+    #[must_use]
+    pub fn channel_port(&self) -> Option<Arc<dyn peko_channel::ChannelPort>> {
+        self.channel_port.read().ok().and_then(|g| g.clone())
     }
 
     /// Record a hook invocation

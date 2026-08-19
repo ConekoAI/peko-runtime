@@ -737,6 +737,15 @@ impl AppState {
         // (2026-08-18 reviewer finding). Set-once; silently ignored
         // if a previous daemon init in this process already set it.
         peko_channel::set_global_channel_port(channel_port.clone());
+        // Sprint 4: install the channel port on the ExtensionServices
+        // so the per-agent `ChannelSendTool` constructor in `agent.rs`
+        // can find it (mirrors `set_cross_runtime_a2a_ctx` /
+        // `set_llm_resolver` above). Without this the per-agent
+        // registration falls through to the `No ChannelPort` branch
+        // and ChannelSend is skipped entirely.
+        global_core
+            .services()
+            .set_channel_port(channel_port.clone());
         let tool_runtime = Arc::new(
             ToolRuntime::with_workspace_and_core_and_channel_port(
                 path_resolver_clone.clone(),
@@ -1457,11 +1466,12 @@ impl AppState {
 
         let dispatcher = TunnelDispatcher::new(Arc::new(self.clone()));
 
-        // Build the cross-runtime dispatch ctx for `send_peer`
-        // (sprint 3 Phase 12b: directory + caller runtime id +
+        // Build the cross-runtime dispatch ctx for `ChannelSend`'s principal
+        // branch (sprint 4: this used to live in `send_peer`; sprint 4
+        // unifies both surfaces — directory + caller runtime id +
         // principal manager + the concrete `TunnelChannelPort`) and
         // register it on the `ExtensionServices` so every per-agent
-        // `SendPeerTool` gets the ctx injected (via `agent.rs`).
+        // `ChannelSendTool` gets the ctx injected (via `agent.rs`).
         //
         // If the directory client build fails, log
         // a warning and skip the registration — the local a2a path
@@ -1607,10 +1617,11 @@ impl AppState {
         self.tunnel_handle_slot.clone()
     }
 
-    /// Install the cross-runtime dispatch context for the `send_peer`
-    /// tool on the `ExtensionServices` so every per-agent
-    /// `SendPeerTool` is built with it. Called by `start_tunnel` after
-    /// the dispatcher is built but before the tunnel client starts.
+    /// Install the cross-runtime dispatch context for the `ChannelSend`
+    /// tool's principal branch on the `ExtensionServices` so every
+    /// per-agent `ChannelSendTool` is built with it. Called by
+    /// `start_tunnel` after the dispatcher is built but before the
+    /// tunnel client starts.
     ///
     /// Sprint 3 Phase 12b: the ctx slimmed down to what the
     /// channel-based principal DM path needs — the directory (target
@@ -1640,9 +1651,9 @@ impl AppState {
         // ctx consumes; factored out so the two install paths cannot
         // drift on credential decoding (`peko-channel` cross-runtime
         // PR-B commit 3). The signing key is the channel ctx's
-        // concern now — the `send_peer` path signs nothing (the
-        // channel envelopes it triggers are signed inside
-        // `TunnelChannelPort`).
+        // concern now — the `ChannelSend` principal branch signs
+        // nothing (the channel envelopes it triggers are signed
+        // inside `TunnelChannelPort`).
         let (directory, _signing_key, caller_runtime_id) =
             self.build_cross_runtime_ctx_parts(cred, vault)?;
 
@@ -1658,7 +1669,7 @@ impl AppState {
         let ctx: Arc<dyn std::any::Any + Send + Sync + 'static> = ctx;
 
         // Register on the `ExtensionServices`. The per-agent
-        //    `SendPeerTool` constructor in `agent.rs` consults
+        //    `ChannelSendTool` constructor in `agent.rs` consults
         //    `services().cross_runtime_a2a_ctx()` and builds with the
         //    ctx if present.
         //

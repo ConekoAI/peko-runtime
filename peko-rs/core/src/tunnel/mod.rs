@@ -16,7 +16,6 @@ pub mod hub_directory;
 pub mod invite_token;
 pub mod known_runtimes;
 pub mod local_directory;
-pub mod principal_send_tool;
 pub mod protocol;
 pub mod tls;
 pub mod tunnel_channel_audit;
@@ -43,7 +42,6 @@ pub use invite_token::{
     MAX_REVOKED_JTIS,
 };
 pub use local_directory::LocalFirstAgentDirectory;
-pub use principal_send_tool::{PrincipalSendResult, SendPeerArgs, SendPeerTool};
 pub use protocol::TunnelMessage;
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
 pub use tunnel_channel_port::TunnelChannelPort;

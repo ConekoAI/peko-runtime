@@ -325,48 +325,66 @@ impl Agent {
             );
         }
 
-        // Add the send_peer tool (peer messaging: user notes +
-        // principal-to-principal DM over channels). Replaces the
-        // legacy `a2a_send` tool (ADR-023 + root-agent unification):
-        // the principal-branch target is a Principal DID (not an agent
-        // name on a target runtime), and the exchange runs on the
-        // pair's DM channel (sprint 3 Phase 12b) — cross-runtime via
-        // the channel invite/mirror fan-out, same-runtime via the
-        // two-channel local design.
+        // Add the consolidated `ChannelSend` tool — sprint 4
+        // unification: this single tool replaces both the bare-post
+        // `ChannelSend` AND the per-agent `send_peer`. The dispatch
+        // branch (`Bare` / `Principal` / `User` / `Group`) is
+        // selected by the wire form of the `channel` parameter the
+        // LLM passes; see `tools/builtin/channel/channel_send.rs` for
+        // the dispatch table.
         //
-        // Registration needs only the caller's principal DID. The
-        // cross-runtime ctx is pulled from extension services (set by
-        // the daemon-state after `start_tunnel`); when it is absent
-        // (tunnel down, test harnesses) the tool still registers in
-        // local-only mode — the user branch works, principal targets
-        // return a structured error.
+        // Per-agent construction carries the caller's principal DID —
+        // the F37 funnel's `ToolContext` does NOT carry the caller
+        // DID, so the tool needs it bound at registration. When the
+        // cross-runtime ctx is absent (tunnel down, test harnesses)
+        // the tool still registers in local-only mode — the bare /
+        // group / user branches work; principal targets return a
+        // structured error.
         if let Some(caller_did) = self.caller_principal_did.as_ref() {
             let cross_ctx = self
                 .extension_core
                 .services()
                 .cross_runtime_a2a_ctx()
                 .and_then(|ctx| Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok());
-            let tool = match cross_ctx {
-                Some(ctx) => crate::tunnel::principal_send_tool::build_tool(
-                    caller_did.clone(),
-                    ctx,
-                ),
-                None => {
+            let port = self
+                .extension_core
+                .services()
+                .channel_port();
+            match (port, cross_ctx) {
+                (Some(port), Some(ctx)) => {
+                    tools.push(std::sync::Arc::new(
+                        crate::tools::builtin::channel::ChannelSendTool::new_with_peer(
+                            port,
+                            caller_did.clone(),
+                            ctx,
+                        ),
+                    ) as std::sync::Arc<dyn peko_tools_core::Tool>);
+                }
+                (Some(port), None) => {
                     tracing::debug!(
                         "CrossRuntimeA2aCtx not available on ExtensionCore — \
-                         send_peer registers local-only (user branch) for agent {}",
+                         ChannelSend registers local-only (no principal branch) for agent {}",
                         self.config.name
                     );
-                    std::sync::Arc::new(crate::tunnel::principal_send_tool::SendPeerTool::new_local_only(
-                        caller_did.clone(),
-                    )) as std::sync::Arc<dyn peko_tools_core::Tool>
+                    tools.push(std::sync::Arc::new(
+                        crate::tools::builtin::channel::ChannelSendTool::new_local_only(
+                            port,
+                            caller_did.clone(),
+                        ),
+                    ) as std::sync::Arc<dyn peko_tools_core::Tool>);
                 }
-            };
-            tools.push(tool);
+                (None, _) => {
+                    tracing::warn!(
+                        "No ChannelPort on ExtensionCore services — \
+                         ChannelSend will not be registered for agent {}",
+                        self.config.name
+                    );
+                }
+            }
         } else {
             tracing::debug!(
                 "Caller identity not bound on agent {} — \
-                 send_peer tool will not be registered",
+                 ChannelSend tool will not be registered",
                 self.config.name
             );
         }

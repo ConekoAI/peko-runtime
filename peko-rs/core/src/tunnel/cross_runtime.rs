@@ -23,7 +23,8 @@
 //! dependency graph acyclic: both the bootstrap side
 //! (`extension::core::ExtensionServices` holds the ctx as an
 //! optional slot) and the consumer side
-//! (`crate::tunnel::principal_send_tool::SendPeerTool`) import it
+//! (`crate::tools::builtin::channel::ChannelSendTool` — sprint 4
+//!   unified tool, principal branch) import it
 //! from here.
 
 use std::sync::Arc;
@@ -33,10 +34,10 @@ use crate::principal::PrincipalManager;
 use crate::tunnel::hub_directory::AgentDirectory;
 use crate::tunnel::TunnelChannelPort;
 
-/// Cross-runtime dispatch context for `send_peer`. Built once at
-/// daemon-state startup and held behind an `Arc` so every per-agent
-/// `SendPeerTool` instance shares the same directory, manager, and
-/// channel port.
+/// Cross-runtime dispatch context for `ChannelSend` (principal branch).
+/// Built once at daemon-state startup and held behind an `Arc` so every
+/// per-agent `ChannelSendTool` instance shares the same directory,
+/// manager, and channel port.
 pub struct CrossRuntimeA2aCtx {
     /// Directory client (`HubAgentDirectoryClient` in production,
     /// a `FakeAgentDirectory` in tests). The outbound path calls
