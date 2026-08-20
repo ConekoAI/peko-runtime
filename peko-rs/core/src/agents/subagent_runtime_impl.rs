@@ -323,11 +323,19 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             // (context seeding) must be the caller's own session or
             // inside its subtree. The auto-detected default (caller
             // key == parent key) always passes.
-            if let Some(ref caller) = request.caller_session_key {
+            //
+            // `validate_context_parent` resolves the LLM-facing
+            // reference (slug path, caller-relative slug, or raw id)
+            // to a canonical session id and returns it; we use the
+            // resolved value downstream so the in-subtree check is
+            // not the only thing that sees the resolved id.
+            let parent_session_key = if let Some(ref caller) = request.caller_session_key {
                 self.executor
                     .validate_context_parent(&parent_session_key, caller)
-                    .await?;
-            }
+                    .await?
+            } else {
+                parent_session_key
+            };
             self.executor
                 .execute_and_wait(
                     &prompt,

@@ -998,14 +998,19 @@ impl SubagentExecutor {
             (caller_context(parent_session_key, &metas), metas)
         };
 
-        // A `/`-rooted `session_key` is a session path (slug segments
-        // anchored at the root of the caller's tree); resolve it to the
-        // canonical session id BEFORE the guards — they all run on ids.
-        let resolved_target = if resume_session_id.starts_with('/') {
-            peko_session::path::resolve_path(&metas, &caller.current_session_id, resume_session_id)?
-        } else {
-            resume_session_id.to_string()
-        };
+        // Resolve the LLM-facing reference (slug path, caller-
+        // relative slug, or raw id) to a canonical session id BEFORE
+        // the guards — they all run on ids. Engine-internal
+        // entrypoint: accepts raw ids from the runtime itself
+        // (peer-child session ids just minted by `spawn_child`,
+        // `caller_session_key` echoed back). The LLM-facing tool
+        // layer uses `resolve_reference` (the strict variant) so
+        // the model still sees the structured refusal.
+        let resolved_target = peko_session::path::resolve_id_or_path(
+            &metas,
+            &caller.current_session_id,
+            resume_session_id,
+        )?;
         let resume_session_id = resolved_target.as_str();
 
         // Guard: target must exist.
@@ -1015,8 +1020,8 @@ impl SubagentExecutor {
             .cloned()
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "session '{resume_session_id}' not found — pass a session id from the \
-                     session tool's list"
+                    "session '{resume_session_id}' not found — pass a slug path from the \
+                     session tool's list (`path` field)"
                 )
             })?;
         // Guard: cannot run inside the caller's own session or an
@@ -1142,14 +1147,18 @@ impl SubagentExecutor {
             (caller_context(caller_session_key, &metas), metas)
         };
 
-        // A `/`-rooted target is a session path (slug segments anchored
-        // at the root of the caller's tree); resolve to the canonical
-        // session id BEFORE the guards — they all run on ids.
-        let resolved_target = if target.starts_with('/') {
-            peko_session::path::resolve_path(&metas, &caller.current_session_id, target)?
-        } else {
-            target.to_string()
-        };
+        // Resolve the LLM-facing reference (slug path, caller-
+        // relative slug, or raw id) to a canonical session id BEFORE
+        // the guards — they all run on ids. Engine-internal
+        // entrypoint: same dispatch as `resolve_reference` but raw
+        // ids pass through (the runtime hands us the peer-child
+        // session id directly). The LLM-facing tool layer uses the
+        // strict variant.
+        let resolved_target = peko_session::path::resolve_id_or_path(
+            &metas,
+            &caller.current_session_id,
+            target,
+        )?;
         let target = resolved_target.as_str();
 
         // Guard: target must exist.
@@ -1159,8 +1168,8 @@ impl SubagentExecutor {
             .cloned()
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "session '{target}' not found — pass a session id from the \
-                     session tool's list"
+                    "session '{target}' not found — pass a slug path from the session \
+                     tool's list (`path` field)"
                 )
             })?;
         // Guard: the caller's own session or an ancestor compacts
@@ -1205,23 +1214,42 @@ impl SubagentExecutor {
     /// context seeding) against the caller's ownership tree. The
     /// caller's own session (the auto-detected default) always passes;
     /// principal-level callers pass for any session.
+    ///
+    /// Resolves the LLM-facing reference (slug path, caller-relative
+    /// slug, or raw id) to a canonical session id before the
+    /// in-subtree check. Returns the resolved id so the caller can
+    /// pass it forward without re-resolving.
     pub async fn validate_context_parent(
         &self,
         context_parent: &str,
         caller_session_key: &str,
-    ) -> Result<()> {
+    ) -> Result<String> {
         use crate::session::ownership::{caller_context, err_context_out_of_tree, in_subtree};
 
-        if context_parent == caller_session_key {
-            return Ok(());
-        }
         let mut manager = self.session_manager.write().await;
         let metas = manager.list_all_sessions(false).await?;
-        let caller = caller_context(caller_session_key, &metas);
-        if caller.is_base || caller.privileged || in_subtree(&caller, context_parent, &metas) {
-            return Ok(());
+
+        // Resolve the LLM-facing reference first so raw ids are
+        // normalized to canonical session ids (consistent with the
+        // rest of the runtime) before the in-subtree check. Engine-
+        // internal entrypoint: raw ids from the runtime are accepted
+        // verbatim. The tool layer uses the strict variant
+        // (`resolve_reference`) so the model gets the structured
+        // refusal.
+        let context_parent = peko_session::path::resolve_id_or_path(
+            &metas,
+            caller_session_key,
+            context_parent,
+        )?;
+
+        if context_parent == caller_session_key {
+            return Ok(context_parent);
         }
-        Err(err_context_out_of_tree(context_parent, caller_session_key))
+        let caller = caller_context(caller_session_key, &metas);
+        if caller.is_base || caller.privileged || in_subtree(&caller, &context_parent, &metas) {
+            return Ok(context_parent);
+        }
+        Err(err_context_out_of_tree(&context_parent, caller_session_key))
     }
 
     /// Register and dispatch one subagent run on the unified executor.

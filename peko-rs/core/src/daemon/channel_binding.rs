@@ -341,6 +341,18 @@ impl ChannelResponder for PassiveBindingResponder {
 /// (Phase 2). A dangling owner root (no human has chatted yet) fails
 /// path resolution with a clear error; the responder logs and retries
 /// on the next event.
+///
+/// **Note (sprint 5):** bindings are config-authored, not LLM-authored
+/// (the user puts a `local-user:<id>` entry in `principals.toml` and
+/// it never goes through the tool surface), so the raw-id passthrough
+/// here is deliberate — it diverges from the LLM-facing
+/// `peko_session::path::resolve_reference` which refuses raw ids. The
+/// engine-internal `peko_session::path::resolve_id_or_path` accepts
+/// raw ids by design (used by `resume_preflight` /
+/// `request_compaction` / `validate_context_parent` for ids the
+/// runtime itself produced); this resolver sits closer to that
+/// surface than the LLM-facing one. Do not "fix" this without first
+/// wiring bindings through the same resolver.
 pub(crate) struct SessionStoreBindingResolver {
     session_manager: Arc<RwLock<SessionManager>>,
     anchor: String,
@@ -359,6 +371,9 @@ impl SessionStoreBindingResolver {
 impl BindingResolver for SessionStoreBindingResolver {
     async fn resolve(&self, binding: &str) -> anyhow::Result<String> {
         if !binding.starts_with('/') {
+            // Deliberate passthrough — see the doc comment on the
+            // struct. Bindings come from `principals.toml` and are
+            // already canonical ids.
             return Ok(binding.to_string());
         }
         let metas = self

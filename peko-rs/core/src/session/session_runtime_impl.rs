@@ -133,23 +133,26 @@ impl SessionManagerRuntime {
 
     /// Resolve a tool-supplied session reference to a session id.
     ///
-    /// A value starting with `/` is a session path (slug segments
-    /// anchored at the root of the caller's tree — see
-    /// [`peko_session::path`]); anything else is a raw session id and
-    /// passes through unchanged. The ownership/scoping guards run
-    /// AFTER this resolution, on the resolved id.
+    /// Three accepted forms (see [`peko_session::path::resolve_reference`]):
+    ///
+    /// - `/a/b/c` — absolute slug path (anchored at the caller's
+    ///   tree root, never a global root).
+    /// - `agent-c` — caller-relative slug, descends the caller's
+    ///   subtree via BFS; ambiguous matches error with all paths.
+    /// - Raw session ids (anything containing `:` or a bare UUID) —
+    ///   REFUSED with a structured message so the model learns to
+    ///   use the `path` field from `session list` instead.
+    ///
+    /// The ownership/scoping guards run AFTER this resolution, on
+    /// the resolved id.
     fn resolve_ref(
         &self,
         caller: &CallerContext,
         metas: &[SessionMetadata],
         reference: &str,
     ) -> anyhow::Result<String> {
-        if reference.starts_with('/') {
-            peko_session::path::resolve_path(metas, &caller.current_session_id, reference)
-                .map_err(|e| self.refuse(e))
-        } else {
-            Ok(reference.to_string())
-        }
+        peko_session::path::resolve_reference(metas, &caller.current_session_id, reference)
+            .map_err(|e| self.refuse(e))
     }
 }
 
@@ -860,20 +863,29 @@ mod tests {
     }
 
     /// Tree used by most tests:
-    /// `root:user:alice` (live) ── `spawn1` ── `child1`
-    ///                     └──── `spawn2`
+    /// `root:user:alice` (live) ── `spawn1` ("a") ── `child1` ("b")
+    ///                     └──── `spawn2` ("c")
     ///
     /// Phase 7 note: the base id's `root:` prefix carries NO special
     /// semantics anymore — the engine-managed family guard matches
     /// exactly `root:self` (the trunk), so this fixture's base is
     /// simply a plain parentless (base-caller) session id. Tests that
     /// exercise the family guard use `root:self` explicitly.
+    ///
+    /// Sprint 5 note: the runtime now refuses raw session ids at the
+    /// tool boundary (see [`resolve_ref`] → [`resolve_reference`]),
+    /// so every child carries a slug from the start. Tests that want
+    /// to exercise raw-id paths should construct their own tree with
+    /// `Harness::create` directly.
     async fn tree_harness(current: &str) -> Harness {
         let h = Harness::new().await;
         h.create("root:user:alice", None).await;
         h.create("spawn1", Some("root:user:alice")).await;
+        h.set_slug("spawn1", "a").await;
         h.create("child1", Some("spawn1")).await;
+        h.set_slug("child1", "b").await;
         h.create("spawn2", Some("root:user:alice")).await;
+        h.set_slug("spawn2", "c").await;
         h.set_current(current).await;
         h
     }
@@ -895,9 +907,9 @@ mod tests {
 
         // Reads on any session.
         h.add_user_message("spawn2", "hello from spawn2").await;
-        let history = h.runtime.get_history("spawn2", 10, false).await.unwrap();
+        let history = h.runtime.get_history("/c", 10, false).await.unwrap();
         assert_eq!(history.len(), 1);
-        let status = h.runtime.get_status("spawn2").await.unwrap();
+        let status = h.runtime.get_status("/c").await.unwrap();
         assert_eq!(status.session_id, "spawn2");
 
         // Search spans the store.
@@ -908,78 +920,74 @@ mod tests {
 
         // Rename / archive / unarchive / compact / branch on others.
         h.runtime
-            .rename_session("spawn2", Some("renamed".to_string()), None)
+            .rename_session("/c", Some("renamed".to_string()), None)
             .await
             .unwrap();
-        h.runtime.set_archived("spawn2", true).await.unwrap();
+        h.runtime.set_archived("/c", true).await.unwrap();
         let listed = h
             .runtime
             .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
         assert_eq!(listed.len(), 3, "archived hidden by default");
-        let err = h.runtime.request_compaction("spawn2").await.unwrap_err();
+        let err = h.runtime.request_compaction("/c").await.unwrap_err();
         assert!(err.to_string().contains("unarchive"), "{err}");
-        h.runtime.set_archived("spawn2", false).await.unwrap();
-        h.runtime.request_compaction("spawn2").await.unwrap();
-        let outcome = h.runtime.branch_session("spawn2", None).await.unwrap();
+        h.runtime.set_archived("/c", false).await.unwrap();
+        h.runtime.request_compaction("/c").await.unwrap();
+        let outcome = h.runtime.branch_session("/c", None).await.unwrap();
         assert_eq!(outcome.parent_session_id, "spawn2");
 
         // Branching the CURRENT session is allowed (lock-safe copy).
-        h.runtime
-            .branch_session("root:user:alice", None)
-            .await
-            .unwrap();
+        h.runtime.branch_session("/", None).await.unwrap();
 
         // Compacting the CURRENT session is allowed (fires next iteration).
-        h.runtime
-            .request_compaction("root:user:alice")
-            .await
-            .unwrap();
+        h.runtime.request_compaction("/").await.unwrap();
     }
 
     #[tokio::test]
     async fn principal_level_self_and_live_base_guards() {
+        // Sprint 5: the resolver refuses raw ids, so engine-internal
+        // tests for sibling-root behavior use slugs. The point of
+        // each guard (self, engine-managed trunk, retired-shape
+        // unprotected) is preserved — the id shape is opaque to the
+        // runtime; only the guard logic cares.
         let h = tree_harness("root:user:alice").await;
 
         // Self: delete / archive / rename the current session → refused.
-        let err = h
-            .runtime
-            .delete_session("root:user:alice", true)
-            .await
-            .unwrap_err();
+        let err = h.runtime.delete_session("/", true).await.unwrap_err();
+        assert!(err.to_string().contains("currently running in"), "{err}");
+        let err = h.runtime.set_archived("/", true).await.unwrap_err();
         assert!(err.to_string().contains("currently running in"), "{err}");
         let err = h
             .runtime
-            .set_archived("root:user:alice", true)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("currently running in"), "{err}");
-        let err = h
-            .runtime
-            .rename_session("root:user:alice", Some("x".to_string()), None)
+            .rename_session("/", Some("x".to_string()), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("currently running in"), "{err}");
 
         // The trunk (`root:self`) — the only engine-managed id left
-        // after Phase 7 — refuses delete/archive.
-        h.create("root:self", None).await;
+        // after Phase 7 — refuses delete/archive. We address it as a
+        // child of root:user:alice via a slug so the resolver can
+        // find it (sibling-root addressing is out of scope for v1;
+        // see sprint 5 plan).
+        h.create("root:self", Some("root:user:alice")).await;
+        h.set_slug("root:self", "self").await;
         let err = h
             .runtime
-            .delete_session("root:self", true)
+            .delete_session("/self", true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("managed by the engine"), "{err}");
-        let err = h.runtime.set_archived("root:self", true).await.unwrap_err();
+        let err = h.runtime.set_archived("/self", true).await.unwrap_err();
         assert!(err.to_string().contains("managed by the engine"), "{err}");
 
         // A retired-shape id (`root:cron:*`) has no family protection
         // anymore: it deletes like any plain session.
-        h.create("root:cron:alice", None).await;
+        h.create("root:cron:alice", Some("root:user:alice")).await;
+        h.set_slug("root:cron:alice", "cron-alice").await;
         let outcome = h
             .runtime
-            .delete_session("root:cron:alice", true)
+            .delete_session("/cron-alice", true)
             .await
             .unwrap();
         assert_eq!(outcome.deleted, vec!["root:cron:alice".to_string()]);
@@ -990,18 +998,18 @@ mod tests {
         let h = tree_harness("root:user:alice").await;
 
         // spawn1 has child1: non-recursive refuses and names the child.
-        let err = h.runtime.delete_session("spawn1", false).await.unwrap_err();
+        let err = h.runtime.delete_session("/a", false).await.unwrap_err();
         assert!(err.to_string().contains("child1"), "{err}");
         assert!(err.to_string().contains("recursive:true"), "{err}");
 
         // Recursive deletes children first.
-        let outcome = h.runtime.delete_session("spawn1", true).await.unwrap();
+        let outcome = h.runtime.delete_session("/a", true).await.unwrap();
         assert_eq!(
             outcome.deleted,
             vec!["child1".to_string(), "spawn1".to_string()]
         );
-        assert!(h.runtime.get_status("spawn1").await.is_err());
-        assert!(h.runtime.get_status("child1").await.is_err());
+        assert!(h.runtime.get_status("/a").await.is_err());
+        assert!(h.runtime.get_status("/a/b").await.is_err());
     }
 
     #[tokio::test]
@@ -1009,12 +1017,12 @@ mod tests {
         let h = tree_harness("root:user:alice").await;
 
         let guard = h.registry.try_acquire_run("spawn2").await.unwrap();
-        let err = h.runtime.delete_session("spawn2", false).await.unwrap_err();
+        let err = h.runtime.delete_session("/c", false).await.unwrap_err();
         assert!(err.to_string().contains("spawn2"), "{err}");
         assert!(err.to_string().contains("active run"), "{err}");
         drop(guard);
 
-        let outcome = h.runtime.delete_session("spawn2", false).await.unwrap();
+        let outcome = h.runtime.delete_session("/c", false).await.unwrap();
         assert_eq!(outcome.deleted, vec!["spawn2".to_string()]);
     }
 
@@ -1023,11 +1031,11 @@ mod tests {
         let h = tree_harness("root:user:alice").await;
 
         let guard = h.registry.try_acquire_run("spawn2").await.unwrap();
-        let err = h.runtime.set_archived("spawn2", true).await.unwrap_err();
+        let err = h.runtime.set_archived("/c", true).await.unwrap_err();
         assert!(err.to_string().contains("active run"), "{err}");
         drop(guard);
 
-        h.runtime.set_archived("spawn2", true).await.unwrap();
+        h.runtime.set_archived("/c", true).await.unwrap();
     }
 
     #[tokio::test]
@@ -1114,31 +1122,31 @@ mod tests {
         let h = tree_harness("spawn1").await;
 
         // Out-of-tree targets refuse every mutation.
-        let err = h.runtime.delete_session("spawn2", true).await.unwrap_err();
+        let err = h.runtime.delete_session("/c", true).await.unwrap_err();
         assert!(
             err.to_string().contains("outside your session subtree"),
             "{err}"
         );
-        let err = h.runtime.set_archived("spawn2", true).await.unwrap_err();
+        let err = h.runtime.set_archived("/c", true).await.unwrap_err();
         assert!(
             err.to_string().contains("outside your session subtree"),
             "{err}"
         );
         let err = h
             .runtime
-            .rename_session("spawn2", Some("x".to_string()), None)
+            .rename_session("/c", Some("x".to_string()), None)
             .await
             .unwrap_err();
         assert!(
             err.to_string().contains("outside your session subtree"),
             "{err}"
         );
-        let err = h.runtime.request_compaction("spawn2").await.unwrap_err();
+        let err = h.runtime.request_compaction("/c").await.unwrap_err();
         assert!(
             err.to_string().contains("outside your session subtree"),
             "{err}"
         );
-        let err = h.runtime.branch_session("spawn2", None).await.unwrap_err();
+        let err = h.runtime.branch_session("/c", None).await.unwrap_err();
         assert!(
             err.to_string().contains("outside your session subtree"),
             "{err}"
@@ -1147,27 +1155,27 @@ mod tests {
         // Ancestor delete refuses (ancestor guard, not the tree message).
         let err = h
             .runtime
-            .delete_session("root:user:alice", true)
+            .delete_session("/", true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("ancestor"), "{err}");
 
         // Self delete refuses.
-        let err = h.runtime.delete_session("spawn1", true).await.unwrap_err();
+        let err = h.runtime.delete_session("/a", true).await.unwrap_err();
         assert!(err.to_string().contains("currently running in"), "{err}");
 
         // In-tree mutations work.
-        h.runtime.set_archived("child1", true).await.unwrap();
-        h.runtime.set_archived("child1", false).await.unwrap();
-        h.runtime.request_compaction("child1").await.unwrap();
-        let branch = h.runtime.branch_session("child1", None).await.unwrap();
+        h.runtime.set_archived("/a/b", true).await.unwrap();
+        h.runtime.set_archived("/a/b", false).await.unwrap();
+        h.runtime.request_compaction("/a/b").await.unwrap();
+        let branch = h.runtime.branch_session("/a/b", None).await.unwrap();
         h.runtime
-            .rename_session("child1", Some("kid".to_string()), None)
+            .rename_session("/a/b", Some("kid".to_string()), None)
             .await
             .unwrap();
         // child1 now has the branch as a descendant: recursive delete
         // removes both, branch first.
-        let outcome = h.runtime.delete_session("child1", true).await.unwrap();
+        let outcome = h.runtime.delete_session("/a/b", true).await.unwrap();
         assert_eq!(
             outcome.deleted,
             vec![branch.new_session_id, "child1".to_string()]
@@ -1200,21 +1208,21 @@ mod tests {
         // history/status: out-of-tree explicit keys refuse; in-tree works.
         let err = h
             .runtime
-            .get_history("spawn2", 10, false)
+            .get_history("/c", 10, false)
             .await
             .unwrap_err();
         assert!(
             err.to_string().contains("outside your session subtree"),
             "{err}"
         );
-        let err = h.runtime.get_status("spawn2").await.unwrap_err();
+        let err = h.runtime.get_status("/c").await.unwrap_err();
         assert!(
             err.to_string().contains("outside your session subtree"),
             "{err}"
         );
-        let history = h.runtime.get_history("child1", 10, false).await.unwrap();
+        let history = h.runtime.get_history("/a/b", 10, false).await.unwrap();
         assert_eq!(history.len(), 1);
-        h.runtime.get_status("child1").await.unwrap();
+        h.runtime.get_status("/a/b").await.unwrap();
     }
 
     /// A `privileged` spawned caller (sprint 2 peer-child provisioning)
@@ -1243,20 +1251,22 @@ mod tests {
 
         // Out-of-subtree mutations pass: rename, archive, move, delete.
         h.runtime
-            .rename_session("spawn2", Some("renamed".to_string()), None)
+            .rename_session("/c", Some("renamed".to_string()), None)
             .await
             .unwrap();
-        h.runtime.set_archived("spawn2", true).await.unwrap();
-        h.runtime.set_archived("spawn2", false).await.unwrap();
+        h.runtime.set_archived("/c", true).await.unwrap();
+        h.runtime.set_archived("/c", false).await.unwrap();
         h.runtime
-            .move_session("spawn2", "spawn1".to_string())
+            .move_session("/c", "/a".to_string())
             .await
             .unwrap();
-        let outcome = h.runtime.delete_session("spawn2", true).await.unwrap();
+        // After the move, spawn2 is under spawn1 (caller). Address it
+        // via the new path /a/c.
+        let outcome = h.runtime.delete_session("/a/c", true).await.unwrap();
         assert_eq!(outcome.deleted, vec!["spawn2".to_string()]);
 
         // Self-mutation is still refused.
-        let err = h.runtime.delete_session("spawn1", true).await.unwrap_err();
+        let err = h.runtime.delete_session("/a", true).await.unwrap_err();
         assert!(err.to_string().contains("currently running in"), "{err}");
 
         // The caller's base ancestor is still refused as an ancestor
@@ -1265,12 +1275,18 @@ mod tests {
         // to the trunk alone, so the archive assertion targets it.
         let err = h
             .runtime
-            .delete_session("root:user:alice", true)
+            .delete_session("/", true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("ancestor"), "{err}");
-        h.create("root:self", None).await;
-        let err = h.runtime.set_archived("root:self", true).await.unwrap_err();
+        // Hang root:self under root:user:alice with a slug so the
+        // resolver can address it from a non-self caller (sibling-root
+        // addressing isn't supported in the resolver scope; see
+        // sprint 5 plan). The engine-managed guard fires on the id
+        // shape regardless of where it sits in the tree.
+        h.create("root:self", Some("root:user:alice")).await;
+        h.set_slug("root:self", "self").await;
+        let err = h.runtime.set_archived("/self", true).await.unwrap_err();
         assert!(err.to_string().contains("managed by the engine"), "{err}");
     }
 
@@ -1283,10 +1299,11 @@ mod tests {
         // Principal-level caller: move child1 (with its subtree) from
         // spawn1 to spawn2.
         h.runtime
-            .move_session("child1", "spawn2".to_string())
+            .move_session("/a/b", "/c".to_string())
             .await
             .unwrap();
-        let status = h.runtime.get_status("child1").await.unwrap();
+        // After move, child1 sits under spawn2 → path /c/b.
+        let status = h.runtime.get_status("/c/b").await.unwrap();
         assert_eq!(status.parent_session.as_deref(), Some("spawn2"));
 
         // Audit trail: a System "reparent" event landed in child1's
@@ -1303,23 +1320,26 @@ mod tests {
         assert_eq!(reparent.detail["old_parent"], "spawn1");
         assert_eq!(reparent.detail["new_parent"], "spawn2");
 
-        // Moving UNDER a live root:* session is allowed.
+        // Moving UNDER a live root:* session is allowed. child1's
+        // current path is /c/b (just moved under spawn2).
         h.runtime
-            .move_session("child1", "root:user:alice".to_string())
+            .move_session("/c/b", "/".to_string())
             .await
             .unwrap();
-        let status = h.runtime.get_status("child1").await.unwrap();
+        // After this move, child1 sits directly under root:user:alice
+        // with slug "b" → path /b.
+        let status = h.runtime.get_status("/b").await.unwrap();
         assert_eq!(status.parent_session.as_deref(), Some("root:user:alice"));
 
         // Unknown endpoints error.
         assert!(h
             .runtime
-            .move_session("ghost", "spawn2".to_string())
+            .move_session("/ghost", "/c".to_string())
             .await
             .is_err());
         assert!(h
             .runtime
-            .move_session("child1", "ghost".to_string())
+            .move_session("/b", "/ghost".to_string())
             .await
             .is_err());
     }
@@ -1330,7 +1350,7 @@ mod tests {
         let h = tree_harness("spawn1").await;
         let err = h
             .runtime
-            .move_session("spawn1", "spawn2".to_string())
+            .move_session("/a", "/c".to_string())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("currently running in"), "{err}");
@@ -1339,7 +1359,7 @@ mod tests {
         let h = tree_harness("child1").await;
         let err = h
             .runtime
-            .move_session("spawn1", "spawn2".to_string())
+            .move_session("/a", "/c".to_string())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("ancestor"), "{err}");
@@ -1352,7 +1372,7 @@ mod tests {
         // Target outside the caller's subtree.
         let err = h
             .runtime
-            .move_session("spawn2", "child1".to_string())
+            .move_session("/c", "/a/b".to_string())
             .await
             .unwrap_err();
         assert!(
@@ -1363,7 +1383,7 @@ mod tests {
         // Destination outside the caller's subtree.
         let err = h
             .runtime
-            .move_session("child1", "spawn2".to_string())
+            .move_session("/a/b", "/c".to_string())
             .await
             .unwrap_err();
         assert!(
@@ -1373,11 +1393,12 @@ mod tests {
 
         // Fully in-tree move works.
         h.create("grandchild1", Some("child1")).await;
+        h.set_slug("grandchild1", "g").await;
         h.runtime
-            .move_session("grandchild1", "spawn1".to_string())
+            .move_session("/a/b/g", "/a".to_string())
             .await
             .unwrap();
-        let status = h.runtime.get_status("grandchild1").await.unwrap();
+        let status = h.runtime.get_status("/a/g").await.unwrap();
         assert_eq!(status.parent_session.as_deref(), Some("spawn1"));
     }
 
@@ -1390,7 +1411,7 @@ mod tests {
         // silently on cycles, so this must be refused at move time.
         let err = h
             .runtime
-            .move_session("spawn1", "child1".to_string())
+            .move_session("/a", "/a/b".to_string())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("cycle"), "{err}");
@@ -1398,7 +1419,7 @@ mod tests {
         // Moving a session under itself is the degenerate cycle.
         let err = h
             .runtime
-            .move_session("child1", "child1".to_string())
+            .move_session("/a/b", "/a/b".to_string())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("cycle"), "{err}");
@@ -1407,20 +1428,26 @@ mod tests {
     #[tokio::test]
     async fn move_root_source_refused() {
         let h = tree_harness("root:user:alice").await;
-        h.create("root:self", None).await;
+        // Hang root:self under root:user:alice with a slug so the
+        // resolver can address it (sibling-root addressing isn't
+        // supported in the resolver scope). The engine-managed guard
+        // fires on the id shape regardless of where it sits.
+        h.create("root:self", Some("root:user:alice")).await;
+        h.set_slug("root:self", "self").await;
 
         let err = h
             .runtime
-            .move_session("root:self", "spawn1".to_string())
+            .move_session("/self", "/a".to_string())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("managed by the engine"), "{err}");
 
         // A retired-shape id (`root:cron:*`) moves like any plain
         // session — Phase 7 narrowed the family guard to the trunk.
-        h.create("root:cron:alice", None).await;
+        h.create("root:cron:alice", Some("root:user:alice")).await;
+        h.set_slug("root:cron:alice", "cron-alice").await;
         h.runtime
-            .move_session("root:cron:alice", "spawn1".to_string())
+            .move_session("/cron-alice", "/a".to_string())
             .await
             .unwrap();
     }
@@ -1432,17 +1459,18 @@ mod tests {
         let guard = h.registry.try_acquire_run("child1").await.unwrap();
         let err = h
             .runtime
-            .move_session("child1", "spawn2".to_string())
+            .move_session("/a/b", "/c".to_string())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("active run"), "{err}");
         drop(guard);
 
         h.runtime
-            .move_session("child1", "spawn2".to_string())
+            .move_session("/a/b", "/c".to_string())
             .await
             .unwrap();
-        let status = h.runtime.get_status("child1").await.unwrap();
+        // After move, child1 sits under spawn2 → /c/b.
+        let status = h.runtime.get_status("/c/b").await.unwrap();
         assert_eq!(status.parent_session.as_deref(), Some("spawn2"));
     }
 
@@ -1455,14 +1483,14 @@ mod tests {
         let guard = h.registry.try_acquire_run("child1").await.unwrap();
         let err = h
             .runtime
-            .move_session("spawn1", "spawn2".to_string())
+            .move_session("/a", "/c".to_string())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("active run"), "{err}");
         drop(guard);
 
         h.runtime
-            .move_session("spawn1", "spawn2".to_string())
+            .move_session("/a", "/c".to_string())
             .await
             .unwrap();
     }
@@ -1479,7 +1507,12 @@ mod tests {
         use peko_tools_core::traits::Tool;
 
         let h = tree_harness("root:user:alice").await;
-        h.create("root:self", None).await;
+        // Hang root:self under root:user:alice with a slug so the
+        // resolver can address it (sibling-root addressing isn't
+        // supported). The engine-managed guard fires on the id shape
+        // regardless of where it sits.
+        h.create("root:self", Some("root:user:alice")).await;
+        h.set_slug("root:self", "self").await;
         let runtime: SharedSessionRuntime = Arc::new(SessionManagerRuntime::new(
             Arc::clone(&h.manager),
             Arc::clone(&h.current),
@@ -1489,13 +1522,13 @@ mod tests {
         let tool = SessionTool::new(runtime);
 
         let err = tool
-            .execute(json!({"action": "archive", "session_key": "root:self"}))
+            .execute(json!({"action": "archive", "session_key": "/self"}))
             .await
             .expect_err("archiving the trunk session must be refused");
         assert!(err.to_string().contains("managed by the engine"), "{err}");
 
         // A non-root session archives fine through the same surface.
-        tool.execute(json!({"action": "archive", "session_key": "spawn2"}))
+        tool.execute(json!({"action": "archive", "session_key": "/c"}))
             .await
             .unwrap();
     }
@@ -1509,25 +1542,31 @@ mod tests {
     /// `move_root_source_refused`).
     #[tokio::test]
     async fn trunk_session_is_engine_managed() {
-        let h = tree_harness("root:user:alice").await;
+        // Caller IS the trunk — `/` resolves to root:self from here,
+        // and the guard stack refuses the mutation. The self-guard
+        // fires first; the engine-managed guard would also fire on
+        // a non-self caller but addressing a sibling root isn't
+        // supported in the resolver scope (see sprint 5 plan).
+        //
+        // `move_session` is omitted because resolving the new_parent
+        // requires the destination to be reachable from the caller,
+        // and root:self has no slugged children to use as a target.
+        let h = tree_harness("root:self").await;
         h.create("root:self", None).await;
 
-        let err = h
-            .runtime
-            .delete_session("root:self", true)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("managed by the engine"), "{err}");
+        let err = h.runtime.delete_session("/", true).await.unwrap_err();
+        assert!(
+            err.to_string().contains("currently running in")
+                || err.to_string().contains("managed by the engine"),
+            "{err}"
+        );
 
-        let err = h.runtime.set_archived("root:self", true).await.unwrap_err();
-        assert!(err.to_string().contains("managed by the engine"), "{err}");
-
-        let err = h
-            .runtime
-            .move_session("root:self", "spawn1".to_string())
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("managed by the engine"), "{err}");
+        let err = h.runtime.set_archived("/", true).await.unwrap_err();
+        assert!(
+            err.to_string().contains("currently running in")
+                || err.to_string().contains("managed by the engine"),
+            "{err}"
+        );
     }
 
     // ─── Slugs + path addressing (Phase 1b) ─────────────────────────
@@ -1629,7 +1668,7 @@ mod tests {
         // Sibling conflict (spawn1 already owns "a" under the root).
         let err = h
             .runtime
-            .rename_session("spawn2", None, Some("a".to_string()))
+            .rename_session("/c", None, Some("a".to_string()))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("spawn1"), "{err}");
@@ -1637,7 +1676,7 @@ mod tests {
 
         // Same slug under a DIFFERENT parent is fine.
         h.runtime
-            .rename_session("child1", None, Some("c".to_string()))
+            .rename_session("/a/b", None, Some("c".to_string()))
             .await
             .unwrap();
         let status = h.runtime.get_status("/a/c").await.unwrap();
@@ -1646,7 +1685,7 @@ mod tests {
         // Invalid slug format: structured error.
         let err = h
             .runtime
-            .rename_session("spawn2", None, Some("has/slash".to_string()))
+            .rename_session("/c", None, Some("has/slash".to_string()))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("invalid slug"), "{err}");
@@ -1661,7 +1700,7 @@ mod tests {
 
         let err = h
             .runtime
-            .move_session("child1", "spawn2".to_string())
+            .move_session("/a/b", "/c".to_string())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("child2"), "{err}");
@@ -1669,7 +1708,7 @@ mod tests {
 
         // Moving under a parent with no conflicting child slug works.
         h.runtime
-            .move_session("child1", "root:user:alice".to_string())
+            .move_session("/a/b", "/".to_string())
             .await
             .unwrap();
         let status = h.runtime.get_status("/b").await.unwrap();
@@ -1701,17 +1740,10 @@ mod tests {
             .unwrap();
         assert_eq!(meta2.slug.as_deref(), Some("a-branch-2"));
 
-        // Branching a slugless source leaves the branch slugless.
-        h.create("plain", Some("root:user:alice")).await;
-        let outcome3 = h.runtime.branch_session("plain", None).await.unwrap();
-        let meta3 = h
-            .manager
-            .write()
-            .await
-            .get_session_metadata(&outcome3.new_session_id)
-            .await
-            .unwrap();
-        assert_eq!(meta3.slug, None);
+        // Sprint 5: slugless sources no longer exist (slug required at
+        // spawn — see commit 2). The branch-uniquification contract
+        // is fully covered by the previous assertions. The
+        // "slugless source → slugless branch" behavior is gone.
     }
 
     #[tokio::test]
@@ -1731,5 +1763,137 @@ mod tests {
         // Slugless sessions fall back to their raw id as last segment.
         assert_eq!(by_id("root:user:alice").slug, None);
         assert_eq!(by_id("root:user:alice").path, "/root:user:alice");
+    }
+
+    // ─── Sprint 5: relative addressing + raw-id refusal ──────────────
+
+    /// Build a tree with slugs for the relative-addressing tests:
+    /// root:user:alice ── spawn1 ("a") ── child1 ("b") ── grandchild1 ("g")
+    ///                  └──── spawn2 ("c") ── kid2 ("k") ── leaf2 ("leaf")
+    ///                              └──── spawn3 ("c2") (slug collision)
+    async fn deep_tree_harness(current: &str) -> Harness {
+        let h = tree_harness(current).await;
+        h.set_slug("spawn1", "a").await;
+        h.set_slug("child1", "b").await;
+        h.set_slug("spawn2", "c").await;
+        h.create("grandchild1", Some("child1")).await;
+        h.set_slug("grandchild1", "g").await;
+        h.create("kid2", Some("spawn2")).await;
+        h.set_slug("kid2", "k").await;
+        h.create("leaf2", Some("kid2")).await;
+        h.set_slug("leaf2", "leaf").await;
+        // Slug "c2" under spawn2 collides with... nothing visible from
+        // the trunk at this depth, but makes the descent easy to
+        // reason about.
+        h.create("spawn3", Some("spawn2")).await;
+        h.set_slug("spawn3", "c2").await;
+        h
+    }
+
+    #[tokio::test]
+    async fn relative_slug_resolves_end_to_end() {
+        // From the trunk, a grandchild slug is reachable by descent
+        // when no same-name sibling collides under the caller.
+        let h = deep_tree_harness("root:user:alice").await;
+        let status = h.runtime.get_status("g").await.unwrap();
+        assert_eq!(status.session_id, "grandchild1");
+
+        // From a mid-tree caller (spawn2), a grandchild slug resolves
+        // by descent within the caller's subtree.
+        let h = deep_tree_harness("spawn2").await;
+        let status = h.runtime.get_status("leaf").await.unwrap();
+        assert_eq!(status.session_id, "leaf2");
+
+        // Same slug appearing under two different children of the
+        // caller (both spawn2 and spawn3's children could share a slug
+        // — but in this fixture "leaf" appears only under kid2). Add
+        // an unambiguous match: "c2" lives under spawn2, unambiguous
+        // from the trunk.
+        let h = deep_tree_harness("root:user:alice").await;
+        let status = h.runtime.get_status("c2").await.unwrap();
+        assert_eq!(status.session_id, "spawn3");
+    }
+
+    #[tokio::test]
+    async fn relative_slug_ambiguous_lists_all_paths() {
+        // Two same-name grandchildren under different children of the
+        // trunk — the relative resolver must error with all paths.
+        let h = tree_harness("root:user:alice").await;
+        h.set_slug("spawn1", "a").await;
+        h.set_slug("child1", "b").await;
+        h.set_slug("spawn2", "c").await;
+        // Both spawn1 and spawn2 get a child named "notes".
+        h.create("notes_a", Some("spawn1")).await;
+        h.set_slug("notes_a", "notes").await;
+        h.create("notes_c", Some("spawn2")).await;
+        h.set_slug("notes_c", "notes").await;
+
+        let err = h.runtime.get_status("notes").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'notes' is ambiguous"), "{msg}");
+        assert!(msg.contains("/a/notes"), "{msg}");
+        assert!(msg.contains("/c/notes"), "{msg}");
+
+        // Narrowing with an absolute path resolves.
+        let status = h.runtime.get_status("/c/notes").await.unwrap();
+        assert_eq!(status.session_id, "notes_c");
+    }
+
+    /// Raw session ids — anything with `:` or a long hex shape — are
+    /// REFUSED at the LLM-facing surface so the model learns to use
+    /// the `path` field from `session list` instead.
+    #[tokio::test]
+    async fn raw_id_refused_with_actionable_message() {
+        let h = tree_harness("root:user:alice").await;
+        h.set_slug("spawn1", "a").await;
+        h.set_slug("child1", "b").await;
+        h.set_slug("spawn2", "c").await;
+
+        // `:`-bearing id: refused with actionable message.
+        // (Skip the self-reference shortcut: caller IS
+        // `root:user:alice`, so passing that id returns Ok. Use a
+        // different raw id instead.)
+        let err = h
+            .runtime
+            .get_status("spawn2:root:user:alice")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
+        // UUID-shaped id: also refused.
+        let err = h
+            .runtime
+            .get_status("550e8400-e29b-41d4-a716-446655440000")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
+
+        // The refusal is consistent across actions (history / rename /
+        // delete all flow through `resolve_ref`).
+        let err = h
+            .runtime
+            .get_history("spawn2", 10, false)
+            .await
+            .unwrap_err();
+        // "spawn2" isn't a session id shape, so it falls through to
+        // `resolve_relative` — which errors because no descendant has
+        // slug "spawn2" (the slug is "c"). The refusal is different
+        // from the raw-id refusal but proves the same boundary.
+        assert!(
+            err.to_string().contains("no child or descendant"),
+            "{err}"
+        );
+
+        // Now use an actual raw id (UUID) — refused uniformly.
+        let raw_id = "550e8400-e29b-41d4-a716-446655440000";
+        let err = h.runtime.get_history(raw_id, 10, false).await.unwrap_err();
+        assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
+        let err = h
+            .runtime
+            .rename_session(raw_id, Some("renamed".to_string()), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
+        let err = h.runtime.delete_session(raw_id, false).await.unwrap_err();
+        assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
     }
 }
