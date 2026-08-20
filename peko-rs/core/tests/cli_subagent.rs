@@ -256,7 +256,7 @@ async fn subagent_blocking_t1_write_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER, "name": "t1-write" }).to_string()
             } },
             "BLOCKING_SUCCESS",
         ],
@@ -337,6 +337,7 @@ async fn subagent_blocking_t2_isolated() {
                     "prompt": task_for_child,
                     "subagent_type": WORKER,
                     "isolated": true,
+                    "name": "t2-iso",
                 }).to_string()
             } },
             "ISOLATED_SUCCESS",
@@ -415,7 +416,7 @@ async fn subagent_blocking_t4_inline_read() {
             } },
             // Parent turn 2: spawn the child.
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER, "name": "t4-child" }).to_string()
             } },
             // Parent turn 3: report success. The child text was
             // `INLINE_RESULT_OK` and the parent's blocking tool
@@ -503,13 +504,13 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child_a, "subagent_type": WORKER }).to_string()
+                serde_json::json!({ "prompt": task_for_child_a, "subagent_type": WORKER, "name": "t1-child-a" }).to_string()
             } },
             "NESTING_SUCCESS",
         ],
         child_a_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_grandchild, "subagent_type": WORKER }).to_string()
+                serde_json::json!({ "prompt": task_for_grandchild, "subagent_type": WORKER, "name": "t1-grandchild" }).to_string()
             } },
             "CHILD_A_DONE",
         ],
@@ -597,19 +598,19 @@ async fn subagent_nesting_t2_depth_limit() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child_a, "subagent_type": WORKER }).to_string()
+                serde_json::json!({ "prompt": task_for_child_a, "subagent_type": WORKER, "name": "t2-child-a" }).to_string()
             } },
             "PARENT_DONE",
         ],
         child_a_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_grandchild, "subagent_type": WORKER }).to_string()
+                serde_json::json!({ "prompt": task_for_grandchild, "subagent_type": WORKER, "name": "t2-grandchild" }).to_string()
             } },
             "CHILD_A_DONE",
         ],
         grandchild_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": "would-be-depth-3-task", "subagent_type": WORKER }).to_string()
+                serde_json::json!({ "prompt": "would-be-depth-3-task", "subagent_type": WORKER, "name": "t2-depth-3" }).to_string()
             } },
             "GRANDCHILD_DONE",
         ],
@@ -675,6 +676,7 @@ async fn subagent_isolation_t1_shared_workspace() {
                     "prompt": task_for_child,
                     "subagent_type": WORKER,
                     "isolated": false,
+                    "name": "t1-shared",
                 }).to_string()
             } },
             "SHARED_OK",
@@ -744,6 +746,7 @@ async fn subagent_isolation_t2_isolated_writes_file() {
                     "prompt": task_for_child,
                     "subagent_type": WORKER,
                     "isolated": true,
+                    "name": "t2-iso-file",
                 }).to_string()
             } },
             "ISOLATED_OK",
@@ -813,7 +816,7 @@ async fn subagent_blocking_t1_flat_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER, "name": "t1-flat" }).to_string()
             } },
             "BLOCKING_SUCCESS",
         ],
